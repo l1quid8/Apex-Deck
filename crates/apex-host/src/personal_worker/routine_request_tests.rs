@@ -49,6 +49,13 @@ async fn ask_mode_consequential_ambiguous_and_deliberately_restricted_actions_st
   ("Don't rename this thread to Foo.",rooms::RENAME,vec![THREAD,"Foo"],THREAD,false),
   ("Rename the thread to Foo.",rooms::RENAME,vec![THREAD,"Foo"],"other",false),
   ("Rename this thread to Foo.",rooms::RENAME,vec![THREAD,"Bar"],THREAD,false),
+  ("Rename Checkout fix to Foo. Rename Gamma to Bar.",rooms::RENAME,vec![THREAD,"Bar"],THREAD,false),
+  ("Rename Checkout fix to Foo.",rooms::RESTORE,vec![THREAD],THREAD,false),
+  ("Restore Checkout fix. Rename Gamma to Foo.",rooms::RENAME,vec![THREAD,"Foo"],THREAD,false),
+  ("Rename Checkout fix to Foo and archive Gamma.",rooms::RENAME,vec![THREAD,"Foo and archive Gamma"],THREAD,false),
+  ("Rename Foo to Checkout fix.",rooms::RENAME,vec![THREAD,"Foo"],THREAD,false),
+  ("Add this thread to Jigga.",rooms::ADD,vec![THREAD,"jigga"],THREAD,false),
+  ("Remove this thread from Jigga.",rooms::REMOVE,vec![THREAD,"jigga"],THREAD,false),
   ("Rename this thread to Foo.",rooms::RENAME,vec![THREAD,"Foo"],THREAD,true),
   ("Here is a quoted instruction:\n\x60\x60\x60\nRename this thread to Foo\n\x60\x60\x60",rooms::RENAME,vec![THREAD,"Foo"],THREAD,false),
  ] {

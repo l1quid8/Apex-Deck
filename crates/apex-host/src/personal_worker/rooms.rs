@@ -297,33 +297,78 @@ impl Host {
         let EventSource::Human{text,view_context}=&event.source else{return None};
         if text!=asked || text.contains(&char::from(96).to_string().repeat(3))
             || text.lines().any(|line|line.trim_start().starts_with('>')) {return None}
-        let said=words(&direct_request_text(text,capability(&op)));
-        if said.is_empty(){return None}
-        let contains=|name:&str|{let name=words(name);!name.is_empty()&&said.windows(name.len()).any(|part|part==name)};
+        if direct_request_text(text,capability(&op)).is_empty(){return None}
+        fn prefix<'a>(text:&'a str,start:&str)->Option<&'a str> {
+            text.get(..start.len()).filter(|part|part.eq_ignore_ascii_case(start)).map(|_|&text[start.len()..])
+        }
+        fn label(text:&str)->&str {
+            let text=text.trim();
+            for (open,close) in [("“","”"),("‘","’"),("\"","\""),("'","'")] {
+                if let Some(value)=text.strip_prefix(open).and_then(|value|value.strip_suffix(close)){return value.trim()}
+            }
+            text
+        }
+        fn identity(text:&str)->String {label(text).split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()}
+        fn roles<'a>(body:&'a str,separator:&str)->Option<(&'a str,&'a str)> {
+            if body.matches(separator).count()!=1{return None}
+            body.split_once(separator).map(|(object,target)|(object.trim(),target.trim()))
+        }
+        // One whole imperative supplies one proof. Joining independently
+        // recognized words across clauses could mix a target with a different
+        // command's destination, participant or even action verb.
+        let mut command=text.trim().trim_end_matches(['.','!','?']).trim_end();
+        if command.chars().any(|c|matches!(c,'.'|'!'|'?'|';'|'\n'|'\r'|'`'|'<'|'>')){return None}
+        for start in ["can you please ","could you please ","would you please ","will you please ","can you ","could you ","would you ","will you ","please "] {
+            if let Some(rest)=prefix(command,start){command=rest;break}
+        }
+        if words(command).windows(2).any(|pair|matches!(pair[0].as_str(),"and"|"then")&&matches!(pair[1].as_str(),"create"|"rename"|"archive"|"trash"|"restore"|"add"|"remove")){return None}
+        let (verb,body)=command.split_once(' ')?;
+        let expected_verb=match tool {ADD=>"add",REMOVE=>"remove",_=>tool.strip_prefix("room.")?};
+        if !verb.eq_ignore_ascii_case(expected_verb){return None}
+        let body=prefix(body.trim(),"only ").unwrap_or(body.trim());
         let focused=view_context.as_ref().is_some_and(|v|v.host_id==room.project.host_id&&v.focused_thread_id.as_deref()==Some(&room.thread));
-        let deictic_names=["the thread","this thread","current thread","the chat","this chat","here","it"];
-        let deictic=deictic_names.iter().any(|name|contains(name));
+        let deictic_names=["the thread","this thread","current thread","the chat","this chat","here","it","this"];
         let reachable=self.personal_rooms(assistant).ok()?;
-        let unique_title=!room.title.is_empty()&&!reachable.iter().any(|r|r.thread!=room.thread&&words(&r.title)==words(&room.title));
-        let deictic_title=deictic_names.iter().any(|name|words(name)==words(&room.title));
-        let named=contains(&room.thread)||(unique_title&&!deictic_title&&contains(&room.title));
-        let project=tool==CREATE&&contains(&room.project.cwd);
-        if !(named||project||(focused&&deictic)){return None}
+        let aliases=|target:&Target|->Vec<String>{
+            [&target.thread,&target.title].into_iter().filter(|name|!name.is_empty()).flat_map(|name|
+                [name.clone(),format!("thread {name}"),format!("chat {name}"),format!("the thread {name}"),format!("the chat {name}")])
+                .map(|name|identity(&name)).filter(|name|!deictic_names.contains(&name.as_str())).collect()
+        };
+        let others:std::collections::HashSet<_>=reachable.iter().filter(|target|target.thread!=room.thread).flat_map(aliases).collect();
+        let mut names=aliases(room);names.retain(|name|!others.contains(name));
+        if focused {names.extend(deictic_names.into_iter().map(str::to_owned));}
+        let target=|name:&str|names.contains(&identity(name));
         match tool {
-            CREATE if !contains(&op.argv[2])=>return None,
-            RENAME if !contains(&op.argv[1])=>return None,
+            RENAME=>{
+                let (name,title)=roles(body," to ")?;
+                if !target(name)||label(title)!=op.argv[1]{return None}
+            },
+            CREATE=>{
+                let body=prefix(body,"a ").unwrap_or(body);
+                let title=prefix(body,"thread ")?;
+                let title=prefix(title,"named ").or_else(||prefix(title,"titled ")).unwrap_or(title);
+                let (title,place)=if let Some(parts)=roles(title," in "){parts}
+                    else if let Some(title)=title.strip_suffix(" here"){(title,"here")}
+                    else{return None};
+                let project=identity(place)==identity(&room.project.cwd)||identity(place)==identity(&format!("project {}",room.project.cwd));
+                if label(title)!=op.argv[2]||!(target(place)||project||(focused&&identity(place)=="this project")){return None}
+            },
             ADD|REMOVE=>{
+                let (person,name)=roles(body,if tool==ADD{" to "}else{" from "})?;
+                if !target(name){return None}
                 let mut workers=room.workers.clone();
                 if tool==ADD {
                     workers.extend(self.chat_saved_profiles().ok()?.into_iter().map(|p|(p.id.to_string(),p.display_name)));
                     for other in reachable.iter().filter(|r|r.project==room.project){workers.extend(other.workers.clone());}
                 }
                 let id=&op.argv[1];
-                let named=contains(id)||workers.iter().any(|(worker,name)|worker==id&&contains(name)
-                    &&!workers.iter().any(|(other,title)|other!=id&&words(title)==words(name)));
-                if !named||!workers.iter().any(|(worker,_)|worker==id){return None}
+                let person=identity(person);
+                let named=|worker:&str,name:&str|identity(worker)==person||(!name.is_empty()&&identity(name)==person);
+                if !workers.iter().any(|(worker,name)|worker==id&&named(worker,name))
+                    || workers.iter().any(|(worker,name)|worker!=id&&named(worker,name)){return None}
             },
-            _=>{},
+            ARCHIVE|TRASH|RESTORE if target(body)=>{},
+            _=>return None,
         }
         Some(op.hash())
     }
