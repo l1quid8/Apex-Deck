@@ -42,6 +42,7 @@ pub enum Command {
     /// Review diffs are left out unless asked for: one can be megabytes and the phone never shows them.
     AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String>, #[serde(default)] include_diffs: bool },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
+    ProjectTaskLifecycle { #[serde(flatten)] input: crate::personal_task_lifecycle::ProjectLifecycleInput },
     /// Snapshot pre-provenance ledgers (originals untouched) and describe an import. Read-only.
     LegacyImportPreview {},
     /// Import exactly the previewed legacy sources, bound by their sha256. Protected.
@@ -60,6 +61,7 @@ pub enum Command {
     /// An assistant proposes project work. Creates a proposal; never dispatches.
     PersonalProjectDelegate { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
     PersonalProjectDelegateUi { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
+    PersonalProjectProposeUi { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
     PersonalSend { assistant_id: String, request_id: String, text: String, #[serde(default)] view_context: Option<crate::personal::PersonalViewContext> },
     PersonalReact { assistant_id: String, message_id: String, emoji: String, enabled: bool },
     PersonalApprovalOptions { assistant_id: String, decision_id: String, params_hash: String },
@@ -67,6 +69,7 @@ pub enum Command {
     PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
     PersonalArchive { assistant_id: String, expected_revision: u64, archived: bool },
     PersonalTaskLifecycle { #[serde(flatten)] input: crate::personal_task_lifecycle::LifecycleInput },
+    PersonalTodo { #[serde(flatten)] input: crate::personal_todos::TodoInput },
     PersonalReplyCancel { assistant_id: String, request_id: String, event_id: String },
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
@@ -293,7 +296,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalProjectProposeUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalTodo { .. } | Self::ProjectTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -458,6 +461,7 @@ impl Host {
             }
             PersonalProjectDelegate { input } => reply(self.personal_project_delegate(input).await?),
             PersonalProjectDelegateUi { input } => reply(self.personal_project_delegate_ui(input)?),
+            PersonalProjectProposeUi { input } => reply(self.personal_project_propose_ui(input)?),
             PersonalSend { assistant_id, request_id, text, view_context } => reply(self.personal_send_with_context(&assistant_id, &request_id, &text, view_context)?),
             PersonalReact { assistant_id, message_id, emoji, enabled } => reply(serde_json::json!({"assistant": self.personal_react(&assistant_id, &message_id, &emoji, enabled)?})),
             PersonalApprovalOptions { assistant_id, decision_id, params_hash } => reply(self.personal_approval_options(&assistant_id,&decision_id,&params_hash)?),
@@ -465,6 +469,8 @@ impl Host {
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
             PersonalArchive { assistant_id, expected_revision, archived } => reply(self.personal_archive(&assistant_id, expected_revision, archived)?),
             PersonalTaskLifecycle { input } => reply(self.personal_task_lifecycle(input).await?),
+            PersonalTodo { input } => reply(self.personal_todo(input)?),
+            ProjectTaskLifecycle { input } => reply(self.project_task_lifecycle(input).await?),
             PersonalReplyCancel { assistant_id, request_id, event_id } => reply(self.personal_reply_cancel(&assistant_id, &request_id, &event_id)?),
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
             PersonalConversationNew { assistant_id } => reply(self.personal_conversation_new(&assistant_id)?),
@@ -744,6 +750,9 @@ mod tests {
         let delegation = Command::from_json(json!({"cmd":"personal_project_delegate_ui","args":{"assistantId":"nonexistent","project":{"hostId":"host","workspaceId":"workspace","cwd":"/repo"},"sourceEventId":"","delegationId":"ui-task","brief":"Inspect login","destination":{"threadId":"thread","workers":["worker"],"newThread":false},"mode":"read_only","expectedRevision":1}})).unwrap();
         let error = runtime.block_on(host.call(delegation)).unwrap_err();
         assert!(error.contains("protected provenance receipt"), "{error}");
+        let proposal = Command::from_json(json!({"cmd":"personal_project_propose_ui","args":{"assistantId":"nonexistent","project":{"hostId":"host","workspaceId":"workspace","cwd":"/repo"},"sourceEventId":"","delegationId":"ui-proposal","brief":"Inspect login","destination":{"threadId":"thread","workers":["worker"],"newThread":false},"mode":"read_only","expectedRevision":1}})).unwrap();
+        let error = runtime.block_on(host.call(proposal)).unwrap_err();
+        assert!(error.contains("protected provenance receipt"), "{error}");
         for value in [
             json!({"cmd":"room_runner_start","args":{"id":"r","requestId":"forged","runner":{"schemaVersion":1,"kind":"goal","objective":"unauthorized","workers":["w"],"limits":{"schemaVersion":1,"maxTurns":1,"maxInvocations":1,"lifetimeMs":60000}}}}),
             json!({"cmd":"room_runner_action","args":{"id":"r","runnerId":"r","expectedRevision":1,"requestId":"forged-action","action":{"action":"resume"}}}),
@@ -933,7 +942,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 218);
+        assert_eq!(names.len(), 221);
         for name in [
             "room_curate",
             "room_curate_undo",
@@ -967,6 +976,7 @@ mod tests {
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"personal_project_delegate".to_string()));
         assert!(names.contains(&"personal_project_delegate_ui".to_string()));
+        assert!(names.contains(&"personal_project_propose_ui".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"room_steps".to_string()));
         assert!(names.contains(&"personal_workspace_configure".to_string()));

@@ -2608,3 +2608,127 @@ async fn native_management_always_does_not_infer_targets_from_suffix_or_punctuat
         assert!(f.host.store().chat_meta(THREAD).unwrap().is_none_or(|m|!m.archived));
     }
 }
+
+
+#[tokio::test]
+async fn lifecycle_exact_purge_only_confirmed_settled_tasks_and_keeps_replay() {
+    let f=Fixture::new();let fake=Fake::new(true);fake.say(DISK_TASK);
+    f.host.personal_send(&f.id,"exact-purge-human","Check disk").unwrap();f.drain(&fake.tools()).await;
+    let id=f.task().id;
+    f.host.change_assistant(&f.id,|a|{a.task_mut(&id).unwrap().status=TaskStatus::Done;let mut other=a.tasks[0].clone();other.id="unselected".into();other.deleted_at=Some(1);a.tasks.push(other);Ok(())}).unwrap();
+    let input=serde_json::json!({"assistantId":f.id,"expectedRevision":f.get().revision,"action":"purge","tasks":[{"source":"personal","taskId":id}]});
+    f.host.personal_task_lifecycle(serde_json::from_value(input).unwrap()).await.unwrap();
+    assert_eq!(f.get().tasks.iter().map(|t|t.id.as_str()).collect::<Vec<_>>(),vec!["unselected"]);
+    assert!(f.get().extra["purgedTaskAuthority"][&id].is_object());
+    f.host.change_assistant(&f.id,|a|{a.events.clear();Ok(())}).unwrap();
+    assert!(f.host.personal_send(&f.id,"exact-purge-human","Check disk").is_err());
+}
+
+#[tokio::test]
+async fn lifecycle_project_purge_requires_owner_revision_and_preserves_unlinked_replay() {
+    let f=Fixture::new();let a=f.get();
+    let owner=crate::assistant_tasks::TaskOwner{workspace_id:"w".into(),host_id:a.host_id,cwd:f.root.to_string_lossy().into_owned(),conversation_id:"c".into()};
+    let request=crate::assistant_tasks::HumanRequest{request_id:"old-project-purge".into(),owner:owner.clone(),text:"Inspect".into(),destination:None};
+    let task=f.host.assistant_tasks.submit_human_request(request.clone(),"Inspect".into(),None).unwrap();
+    let task=f.host.assistant_tasks.transition(&task.id,task.revision,&owner,crate::assistant_tasks::TaskStatus::Cancelled,None).unwrap();
+    let command=|owner:crate::assistant_tasks::TaskOwner,revision| {let command=crate::command::Command::from_json(serde_json::json!({"cmd":"project_task_lifecycle","args":{"taskId":task.id,"revision":revision,"owner":owner,"action":"purge"}})).unwrap();assert!(command.requires_provenance());let crate::command::Command::ProjectTaskLifecycle{input}=command else {panic!("wrong command")};input};
+    let mut wrong=owner.clone();wrong.conversation_id="other".into();
+    assert!(f.host.project_task_lifecycle(command(wrong,task.revision)).await.is_err());
+    assert!(f.host.project_task_lifecycle(command(owner.clone(),task.revision-1)).await.is_err());
+    f.host.project_task_lifecycle(command(owner,task.revision)).await.unwrap();
+    assert!(f.host.assistant_tasks.get(&task.id).unwrap().is_none());
+    assert!(f.host.assistant_tasks.submit_human_request(request,"Inspect".into(),None).is_err());
+}
+
+
+#[tokio::test]
+async fn lifecycle_exact_purge_refuses_unsettled_personal_selection_without_partial_delete() {
+    let f=Fixture::new();let fake=Fake::new(true);fake.say(DISK_TASK);
+    f.host.personal_send(&f.id,"unsafe-purge","Check disk").unwrap();f.drain(&fake.tools()).await;let id=f.task().id;
+    let purge=|revision,tasks:serde_json::Value|serde_json::from_value(serde_json::json!({"assistantId":f.id,"expectedRevision":revision,"action":"purge","tasks":tasks})).unwrap();
+    assert!(f.host.personal_task_lifecycle(purge(f.get().revision,serde_json::json!([{"source":"personal","taskId":id}]))).await.is_err());
+    f.host.change_assistant(&f.id,|a|{let t=a.task_mut(&id).unwrap();t.status=TaskStatus::Cancelled;t.receipts.push(serde_json::from_value(serde_json::json!({"opId":"once","paramsHash":"sha256:once","phase":"attempted","outputExcerpt":"","rerunAfterRestart":false,"startedAt":1})).unwrap());Ok(())}).unwrap();
+    assert!(f.host.personal_task_lifecycle(purge(f.get().revision,serde_json::json!([{"source":"personal","taskId":id}]))).await.unwrap_err().contains("final receipt"));
+    f.host.change_assistant(&f.id,|a|{a.task_mut(&id).unwrap().receipts.clear();Ok(())}).unwrap();
+    assert!(f.host.personal_task_lifecycle(purge(f.get().revision-1,serde_json::json!([{"source":"personal","taskId":id}]))).await.is_err());
+    assert!(f.host.personal_task_lifecycle(purge(f.get().revision,serde_json::json!([{"source":"personal","taskId":id},{"source":"personal","taskId":"missing"}]))).await.is_err());
+    assert_eq!(f.get().tasks.len(),1);
+    let key=format!("{}:{id}",f.id);f.host.personal_stops.lock().unwrap().insert(key.clone(),Arc::new(tokio::sync::Notify::new()));
+    assert!(f.host.personal_task_lifecycle(purge(f.get().revision,serde_json::json!([{"source":"personal","taskId":id}]))).await.is_err(),"live operation must settle before its task disappears");
+    f.host.personal_stops.lock().unwrap().remove(&key);
+}
+
+#[tokio::test]
+async fn lifecycle_project_purge_refuses_actual_checkout_hold_even_without_metadata() {
+    let f=Fixture::new();let a=f.get();
+    let owner=crate::assistant_tasks::TaskOwner{workspace_id:"w".into(),host_id:a.host_id,cwd:f.root.to_string_lossy().into_owned(),conversation_id:"c".into()};
+    let task=f.host.assistant_tasks.submit_human_request(crate::assistant_tasks::HumanRequest{request_id:"held-purge".into(),owner:owner.clone(),text:"Inspect".into(),destination:None},"Inspect".into(),None).unwrap();
+    let task=f.host.assistant_tasks.transition(&task.id,task.revision,&owner,crate::assistant_tasks::TaskStatus::Cancelled,None).unwrap();
+    f.host.checkout_gate(&f.root).restore_hold(&task.id).unwrap();
+    let command=crate::command::Command::from_json(serde_json::json!({"cmd":"project_task_lifecycle","args":{"taskId":task.id,"revision":task.revision,"owner":owner,"action":"purge"}})).unwrap();
+    let crate::command::Command::ProjectTaskLifecycle{input}=command else {panic!("wrong command")};
+    assert!(f.host.project_task_lifecycle(input).await.is_err(),"retained checkout hold must refuse purge even when leaseHeld metadata is absent");
+    assert!(f.host.assistant_tasks.get(&task.id).unwrap().is_some());
+}
+
+
+#[tokio::test]
+async fn lifecycle_exact_delegated_purge_preserves_worker_chat_checkout_notebook_and_receipts() {
+    let f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);let a=f.get();
+    let owner=crate::assistant_tasks::TaskOwner{workspace_id:project.workspace_id.clone(),host_id:project.host_id.clone(),cwd:project.cwd.clone(),conversation_id:"c".into()};
+    let reference=crate::personal_workspace::AssistantRef{host_id:a.host_id.clone(),assistant_id:a.id.clone()};
+    let input=crate::assistant_tasks::HandoffPreparation{request_id:"exact-delegated".into(),batch_id:"b".into(),owner:owner.clone(),revision:1,original_request:"Inspect".into(),brief:"Inspect".into(),destination:crate::assistant_tasks::TaskDestination{thread_id:Some(THREAD.into()),workers:vec!["jigga".into()],new_thread:false},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],lineage:Some(crate::assistant_tasks::AssistantLineage{assistant:reference.clone(),project:project.clone(),source_event_id:"source-event".into(),delegation_id:"exact-delegated".into()}),context:None};
+    let task=f.host.assistant_tasks.prepare_handoff(input.clone()).unwrap();
+    let task=f.host.assistant_tasks.bind_execution(&task.id,task.revision,&owner,THREAD.into(),task.mode,None).unwrap();
+    let task=f.host.assistant_tasks.transition(&task.id,task.revision,&owner,crate::assistant_tasks::TaskStatus::Cancelled,None).unwrap();
+    let mut foreign_input=input.clone();foreign_input.request_id="foreign-exact".into();foreign_input.lineage.as_mut().unwrap().assistant.assistant_id="other".into();
+    let foreign=f.host.assistant_tasks.prepare_handoff(foreign_input).unwrap();let foreign=f.host.assistant_tasks.transition(&foreign.id,foreign.revision,&owner,crate::assistant_tasks::TaskStatus::Cancelled,None).unwrap();
+    assert!(f.host.personal_task_lifecycle(serde_json::from_value(serde_json::json!({"assistantId":f.id,"expectedRevision":f.get().revision,"action":"purge","tasks":[{"source":"delegated","taskId":foreign.id,"revision":foreign.revision}]})).unwrap()).await.unwrap_err().contains("different assistant"));
+    let chat_before=serde_json::to_value(f.host.store().room(THREAD).unwrap()).unwrap();
+    let worktree=crate::assistant_git::task_dir(f.host.assistant_data_dir(),&task.id).unwrap().join("worktree");std::fs::create_dir_all(&worktree).unwrap();std::fs::write(worktree.join("worker.txt"),"worker content").unwrap();
+    let accepted=std::path::Path::new(&project.cwd).join("accepted.txt");std::fs::write(&accepted,"accepted content").unwrap();
+    let note=f.host.project_memory.save(serde_json::from_value(serde_json::json!({"project":project,"text":"Accepted notebook fact","kind":"fact","source":{"taskId":task.id},"now":1})).unwrap()).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.delegated_result_receipts.insert("old receipt".into());Ok(())}).unwrap();
+    let purge=|revision|serde_json::from_value(serde_json::json!({"assistantId":f.id,"expectedRevision":f.get().revision,"action":"purge","tasks":[{"source":"delegated","taskId":task.id,"revision":revision}]})).unwrap();
+    assert!(f.host.personal_task_lifecycle(purge(task.revision-1)).await.is_err());
+    f.host.personal_task_lifecycle(purge(task.revision)).await.unwrap();
+    assert!(f.host.assistant_tasks.get(&task.id).unwrap().is_none());
+    assert!(f.host.assistant_tasks.get(&foreign.id).unwrap().is_some());
+    assert_eq!(serde_json::to_value(f.host.store().room(THREAD).unwrap()).unwrap(),chat_before);
+    assert_eq!(std::fs::read_to_string(worktree.join("worker.txt")).unwrap(),"worker content");assert_eq!(std::fs::read_to_string(accepted).unwrap(),"accepted content");
+    assert_eq!(f.host.project_memory.list(&project,2).unwrap(),vec![note]);
+    assert!(f.get().delegated_result_receipts.contains("old receipt"));
+    assert!(f.host.assistant_tasks.execution(THREAD).unwrap().unwrap().is_tombstoned());
+    assert_eq!(f.host.assistant_tasks.purged_for_assistant(&reference),vec![task.id]);
+    assert!(f.host.assistant_tasks.prepare_handoff(input.clone()).is_err());
+    let mut second_input=input;second_input.request_id="project-linked-cleanup".into();second_input.lineage.as_mut().unwrap().delegation_id="project-linked-cleanup".into();
+    let second=f.host.assistant_tasks.prepare_handoff(second_input).unwrap();let second=f.host.assistant_tasks.transition(&second.id,second.revision,&owner,crate::assistant_tasks::TaskStatus::Cancelled,None).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.post("assistant","result","Linked task status".into(),Some(second.id.clone()),None,1);a.post("assistant","chat","Normal conversation".into(),None,None,1);a.notices.push(crate::personal::Notice{id:"linked-notice".into(),text:"Linked status".into(),task_id:Some(second.id.clone()),urgent:false,at:1,deliver_at:1,delivered_at:None,seen_at:None,fingerprint:"linked-notice".into()});Ok(())}).unwrap();
+    let command=crate::command::Command::from_json(serde_json::json!({"cmd":"project_task_lifecycle","args":{"taskId":second.id,"revision":second.revision,"owner":owner,"action":"purge"}})).unwrap();
+    let crate::command::Command::ProjectTaskLifecycle{input}=command else {panic!("wrong command")};f.host.project_task_lifecycle(input).await.unwrap();
+    assert!(!f.get().messages.iter().any(|m|m.task_id.as_deref()==Some(second.id.as_str())),"linked project purge must clear assistant status lines");
+    assert!(f.get().messages.iter().any(|m|m.text=="Normal conversation"));
+    assert!(!f.get().notices.iter().any(|notice|notice.task_id.as_deref()==Some(second.id.as_str())));
+    assert_eq!(serde_json::to_value(f.host.store().room(THREAD).unwrap()).unwrap(),chat_before);
+}
+
+
+#[tokio::test]
+async fn lifecycle_exact_schedule_purge_requires_cancelled_and_settled_generated_work() {
+    let f=Fixture::new();let fake=Fake::new(true);fake.say(DISK_TASK);f.host.personal_send(&f.id,"schedule-generated","Check disk").unwrap();f.drain(&fake.tools()).await;let task_id=f.task().id;
+    f.host.change_assistant(&f.id,|a|{a.task_mut(&task_id).unwrap().schedule_id=Some("selected-schedule".into());for id in ["selected-schedule","unselected-schedule"] {a.schedules.push(serde_json::from_value(serde_json::json!({"id":id,"goal":"Inspect","argv":["disk"],"status":"active","createdAt":1,"paramsHash":"sha256:schedule","lastTaskId":task_id,"runs":1})).unwrap());}Ok(())}).unwrap();
+    let purge=||serde_json::from_value(serde_json::json!({"assistantId":f.id,"expectedRevision":f.get().revision,"action":"purge","tasks":[{"source":"schedule","taskId":"selected-schedule"}]})).unwrap();
+    for status in [crate::personal::ScheduleStatus::Active,crate::personal::ScheduleStatus::Proposed,crate::personal::ScheduleStatus::Cancelled] {
+        f.host.change_assistant(&f.id,|a|{a.schedules[0].status=status;Ok(())}).unwrap();
+        assert!(f.host.personal_task_lifecycle(purge()).await.is_err());
+    }
+    f.host.change_assistant(&f.id,|a|{let t=a.task_mut(&task_id).unwrap();t.status=TaskStatus::Done;t.receipts.push(serde_json::from_value(serde_json::json!({"opId":"schedule-once","paramsHash":"sha256:once","phase":"attempted","outputExcerpt":"","rerunAfterRestart":false,"startedAt":1})).unwrap());Ok(())}).unwrap();
+    assert!(f.host.personal_task_lifecycle(purge()).await.is_err());
+    f.host.change_assistant(&f.id,|a|{a.task_mut(&task_id).unwrap().receipts[0].finished_at=Some(2);for id in ["selected-schedule","unselected-schedule"] {a.notices.push(crate::personal::Notice{id:id.into(),text:"Schedule status".into(),task_id:Some(id.into()),urgent:false,at:1,deliver_at:1,delivered_at:None,seen_at:None,fingerprint:id.into()});}Ok(())}).unwrap();
+    f.host.personal_task_lifecycle(purge()).await.unwrap();
+    assert_eq!(f.get().schedules.iter().map(|s|s.id.as_str()).collect::<Vec<_>>(),vec!["unselected-schedule"]);
+    assert!(!f.get().notices.iter().any(|n|n.task_id.as_deref()==Some("selected-schedule")));assert!(f.get().notices.iter().any(|n|n.task_id.as_deref()==Some("unselected-schedule")));
+    assert_eq!(f.task().id,task_id);assert_eq!(f.task().receipts[0].op_id,"schedule-once");
+    assert_eq!(f.get().extra["purgedScheduleAuthority"]["selected-schedule"]["paramsHash"],"sha256:schedule");
+    assert!(f.get().events.iter().any(|e|e.request_id=="schedule-generated"));
+}
