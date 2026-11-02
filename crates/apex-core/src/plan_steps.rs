@@ -79,15 +79,15 @@ impl PlanRun {
     /// Mark skips and start running. Returns the instruction for the bot, or
     /// `None` (state unchanged) when the plan has no steps.
     pub fn approve(&mut self, skip: &[String]) -> Option<String> {
+        self.state = PlanRunState::Running;
         if self.steps.is_empty() {
             return None;
         }
         for step in &mut self.steps {
-            if skip.contains(&step.id) {
+            if skip.contains(&step.id) && step.state == PlanStepState::Open {
                 step.state = PlanStepState::Skipped;
             }
         }
-        self.state = PlanRunState::Running;
         let line = |s: &PlanRunStep| format!("[{}] {}", s.id, s.text);
         let steps: Vec<String> = self
             .steps
@@ -116,6 +116,9 @@ impl PlanRun {
             let Some(id) = tag_of(&item.text) else { continue };
             let Some(step) = self.steps.iter_mut().find(|s| s.id == id) else { continue };
             self.reporting = true;
+            if self.state == PlanRunState::Stopped {
+                self.state = PlanRunState::Running;
+            }
             if step.state == PlanStepState::Skipped {
                 if matches!(item.status, TodoStatus::InProgress | TodoStatus::Completed) {
                     step.off_plan = true;
@@ -132,7 +135,7 @@ impl PlanRun {
                 TodoStatus::Cancelled => PlanStepState::Cancelled,
             };
         }
-        if self.state == PlanRunState::Running && self.reporting && !self.has_open_steps() {
+        if self.state == PlanRunState::Running && self.reporting && self.finished() {
             self.state = PlanRunState::Done;
         }
     }
@@ -141,7 +144,16 @@ impl PlanRun {
         if self.state != PlanRunState::Running {
             return;
         }
-        self.state = if self.has_open_steps() { PlanRunState::Stopped } else { PlanRunState::Done };
+        self.state = if self.steps.is_empty() || self.finished() {
+            PlanRunState::Done
+        } else {
+            PlanRunState::Stopped
+        };
+    }
+
+    /// No Open/Active steps and at least one Done.
+    fn finished(&self) -> bool {
+        !self.has_open_steps() && self.steps.iter().any(|s| s.state == PlanStepState::Done)
     }
 
     fn has_open_steps(&self) -> bool {
@@ -379,8 +391,7 @@ mod tests {
     fn an_empty_step_list_tracks_nothing() {
         let mut r = run("just prose");
         assert!(r.approve(&[]).is_none());
-        assert_eq!(r.state, PlanRunState::Waiting);
-        r.state = PlanRunState::Running;
+        assert_eq!(r.state, PlanRunState::Running);
         r.turn_ended();
         assert_eq!(r.state, PlanRunState::Done);
     }
@@ -389,5 +400,45 @@ mod tests {
         let r = run(THREE);
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains("\"state\":\"waiting\"") && j.contains("\"off_plan\":false"));
+    }
+
+    #[test]
+    fn a_stopped_run_resumes_on_a_matching_tag_and_can_finish() {
+        let mut r = run("1. A\n2. B\n");
+        r.approve(&[]);
+        r.turn_ended();
+        assert_eq!(r.state, PlanRunState::Stopped);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Completed)]);
+        assert_eq!(r.state, PlanRunState::Running);
+        r.apply_todos(&[todo("[S2] B", TodoStatus::Completed)]);
+        assert_eq!(r.state, PlanRunState::Done);
+    }
+    #[test]
+    fn a_stopped_run_ignores_untagged_todos() {
+        let mut r = run("1. A\n2. B\n");
+        r.approve(&[]);
+        r.turn_ended();
+        r.apply_todos(&[todo("A", TodoStatus::Completed)]);
+        assert_eq!(r.state, PlanRunState::Stopped);
+    }
+    #[test]
+    fn all_cancelled_is_not_done_but_one_done_plus_cancelled_is() {
+        let mut r = run("1. A\n2. B\n");
+        r.approve(&[]);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Cancelled), todo("[S2] B", TodoStatus::Cancelled)]);
+        assert_eq!(r.state, PlanRunState::Running);
+        r.turn_ended();
+        assert_eq!(r.state, PlanRunState::Stopped);
+        let mut r = run("1. A\n2. B\n");
+        r.approve(&[]);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Completed), todo("[S2] B", TodoStatus::Cancelled)]);
+        assert_eq!(r.state, PlanRunState::Done);
+    }
+    #[test]
+    fn approve_only_skips_open_steps() {
+        let mut r = run("1. A\n2. B\n");
+        r.steps[0].state = PlanStepState::Done;
+        r.approve(&["S1".to_string()]);
+        assert_eq!(r.steps[0].state, PlanStepState::Done);
     }
 }
