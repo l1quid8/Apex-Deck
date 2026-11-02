@@ -5,6 +5,7 @@ import { Markdown } from "./Markdown";
 import { KIND_LABEL, ago, exportName, newestFirst, pickVersion, type ArtifactFile, type ArtifactKind } from "./artifacts";
 import { frameDocument } from "./artifactFrame";
 import { compact, lineDiff } from "./lineDiff";
+import { copyText } from "./copyText";
 
 // The artifacts panel: in the side panel's Artifacts tab, beside the
 // conversation, over it in a narrow thread, or over the whole deck in full
@@ -160,11 +161,10 @@ export function ArtifactsPanel({ file, view, onView, onClose, overlay, nameOf, c
   const previous = artifact.versions.find((v) => v.n === version.n - 1);
   const who = version.by ? nameOf(version.by) : "someone";
   const name = exportName(artifact, version.n);
-  const copy = () => {
-    navigator.clipboard?.writeText(version.source).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }, () => {});
+  const copy = async () => {
+    if (!await copyText(version.source)) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
   const run = (action: Promise<unknown>) => { action.catch((error) => setFailed(`Couldn't do that: ${String(error)}`)); };
   const onFrameLoad = () => {

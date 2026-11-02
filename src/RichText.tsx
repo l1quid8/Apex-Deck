@@ -1,5 +1,6 @@
 import { parseServerRequests } from "./serverRequests";
 import { useEffect, useState, type ReactNode } from "react";
+import { copyText } from "./copyText";
 
 interface Props {
   text: string;
@@ -95,7 +96,7 @@ export function RichText({ text, onOpen }: Props) {
   if (last < text.length) parts.push(...prose(last, text.length));
 
   const copy = (value: string) => {
-    navigator.clipboard?.writeText(value).catch(() => {});
+    void copyText(value);
   };
 
   return (

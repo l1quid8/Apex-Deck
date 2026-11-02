@@ -5,6 +5,7 @@ import { DeckIcon } from './DeckIcon.tsx';
 import { messageTime } from './messageActions.ts';
 import { ReadAloudAction } from './ReadAloudAction.tsx';
 import './apex-agent-message-actions.css';
+import { deckClipboard } from "./copyText";
 
 const REACTIONS: MessageReaction[] = ['👍', '❤️', '😂', '🎉', '👀', '🙏'];
 const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
@@ -33,7 +34,7 @@ export function ApexAgentMessageActions({ reactions = [], onToggleReaction, onRe
   const [expanded, setExpanded] = useState(false);
   useEffect(() => { root.current?.closest('article')?.classList.toggle('apex-agent-message-pinned', pinned); }, [pinned]);
   const reply = onReply && <button type="button" className="msg-action quote" onClick={onReply} disabled={disabled} aria-label="Reply to this message" title="Reply"><DeckIcon name="reply" size={18} /></button>;
-  const copy = text !== undefined && <button type="button" className="msg-action copy" aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy'} onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setFailure(''); setTimeout(() => setCopied(false), 1600); } catch { setFailure('Could not copy message.'); } }}>{copied ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}</button>;
+  const copy = text !== undefined && <button type="button" className="msg-action copy" aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy'} onClick={async () => { try { await deckClipboard.writeText(text); setCopied(true); setFailure(''); setTimeout(() => setCopied(false), 1600); } catch { setFailure('Could not copy message.'); } }}>{copied ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}</button>;
   const pin = stateKey && <button type="button" className="msg-action pin-action" aria-label={pinned ? 'Unpin message' : 'Pin message'} aria-pressed={pinned} title={pinned ? 'Unpin (this device)' : 'Pin (this device)'} onClick={(event) => { try { localStorage.setItem(`apex-agent-pin:${stateKey}`, String(!pinned)); setPinned(!pinned); event.currentTarget.closest('article')?.classList.toggle('apex-agent-message-pinned', !pinned); } catch { setFailure('Could not save pin.'); } }}><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? 'currentColor' : 'none'}/><path d="M12 16v6" /></svg></button>;
   const retry = onRetry && <button type="button" className="msg-action retry" disabled={disabled || pending} aria-label="Retry answer" title="Request another answer; history and files are preserved" onClick={async () => { setPending(true); try { await onRetry(); setFailure(''); } catch (error) { setFailure(String(error)); } finally { setPending(false); } }}>{retryIcon}</button>;
   const revert = onRevert && <button type="button" className="msg-action revert" disabled={disabled} aria-label="Revert to composer" title="Restore message to composer; history and files are preserved" onClick={onRevert}>{revertIcon}</button>;

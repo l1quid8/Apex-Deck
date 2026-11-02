@@ -4,7 +4,7 @@
 // relays lines and does what needs the machine with the screen. Each window
 // runs on one host, this Mac or another machine, so two can sit side by side.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, session, shell, systemPreferences, WebContentsView, webContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, session, shell, systemPreferences, WebContentsView, webContents } from 'electron';
 import { VoiceRuntimeManager } from './voiceRuntime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -401,6 +401,12 @@ app.whenReady().then(() => {
     if(process.platform==='darwin') void systemPreferences.askForMediaAccess('microphone').then(callback).catch(()=>callback(false));
     else callback(true);
   });
+});
+
+// The real clipboard, so a copy never depends on the page's clipboard permission. Smoke runs keep their stand-in.
+handle('clipboard:write', (_entry, text) => {
+  if (typeof text !== 'string' || process.env.APEX_DECK_SMOKE) throw new Error('Clipboard unavailable.');
+  clipboard.writeText(text);
 });
 
 handle('connection:current', async ({ host }) => {

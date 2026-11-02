@@ -102,7 +102,8 @@ import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../room
 import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
 import type { ProjectMonitor } from "../apexAgentModel";
-import { folderCopyText, writeClipboard } from "../threadCopy";
+import { folderCopyText } from "../threadCopy";
+import { copyText } from "../copyText";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
 import { planKey, planOf } from "../plans";
@@ -1840,7 +1841,7 @@ export function PhoneApp() {
 
   /** Put a message on the clipboard; false when the phone couldn't. */
   async function copyMessage(text: string) {
-    const ok = await writeClipboard(text, navigator.clipboard);
+    const ok = await copyText(text);
     if (!ok) setNotice("The phone couldn't copy that message.");
     return ok;
   }
@@ -2005,7 +2006,7 @@ export function PhoneApp() {
   function copyPath(path: string) {
     const text = folderCopyText(path);
     if (!text) { setNotice("This project has no folder."); return; }
-    void writeClipboard(text, navigator.clipboard).then((ok) => setNotice(ok ? `Copied ${text}` : "The phone couldn't copy that path."));
+    void copyText(text).then((ok) => setNotice(ok ? `Copied ${text}` : "The phone couldn't copy that path."));
   }
 
   const draft = openKey ? draftFor(openKey) : emptyDraft();

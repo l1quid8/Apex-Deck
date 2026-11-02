@@ -42,6 +42,7 @@ try {
 }
 
 contextBridge.exposeInMainWorld('apexDeck', {
+  clipboard: { writeText: (text) => ipcRenderer.invoke('clipboard:write', text) },
   voice: {
     status: () => ipcRenderer.invoke('voice:status'),
     install: () => ipcRenderer.invoke('voice:install'),

@@ -66,7 +66,8 @@ import { ProjectSidebar } from "./Sidebar";
 import { ConnectionDialog, type ConnectionMode } from "./ConnectionDialog";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { archiveThreads, hostTints, noteActive, reorderProject, setCollapsed, setUnread, toggleProjectPin, twinPath, unarchiveThreads } from "./sidebarModel.ts";
-import { COPIED, folderCopyText, writeClipboard } from "./threadCopy.ts";
+import { COPIED, folderCopyText } from "./threadCopy.ts";
+import { copyText } from "./copyText.ts";
 import { chooseOutcome, pickerRows, shortName, workInRows } from "./destinations.ts";
 import { Glyph, ProjectFolder } from "./SidebarIcons";
 import type { WorkContext } from "./WorkBar";
@@ -1360,7 +1361,7 @@ export function App() {
   };
   /** Put text on the clipboard and say what happened; never claims a copy that didn't happen. */
   const copyOut = (text: string, kind: CopyKind) => {
-    void writeClipboard(text, navigator.clipboard).then((ok) => toast(ok ? `Copied ${COPIED[kind]}.` : "Couldn't reach the clipboard, so nothing was copied."));
+    void copyText(text).then((ok) => toast(ok ? `Copied ${COPIED[kind]}.` : "Couldn't reach the clipboard, so nothing was copied."));
   };
   const onThreadCopy = useCallback((text: string, kind: "markdown" | "reply") => {
     if (!text) { toast("There's nothing to copy yet."); return; }
@@ -1685,7 +1686,7 @@ export function App() {
       const path = chatFolder(pane, workspaces.find((w) => w.id === pane.workspaceId));
       if (path) copyOut(path, "path");
     } else if (action === "copy_address") {
-      if (pane.url) void writeClipboard(pane.url, navigator.clipboard).then((ok) => toast(ok ? "Copied the address." : "Couldn't reach the clipboard, so nothing was copied."));
+      if (pane.url) void copyText(pane.url).then((ok) => toast(ok ? "Copied the address." : "Couldn't reach the clipboard, so nothing was copied."));
     } else if (action === "close") closePane(pane.id);
     else if (action === "fork" || action === "export" || action === "share_pdf") {
       if (pane.closed) focusPane(pane);

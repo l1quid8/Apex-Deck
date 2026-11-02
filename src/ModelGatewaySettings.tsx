@@ -3,6 +3,7 @@ import type { Backend } from './backend';
 import { ConfirmDialog, type Question } from './ConfirmDialog';
 import { gatewayApi, gatewayOwner, issueGatewaySpec, type GatewayIssued, type GatewayKey, type GatewayProvider, type GatewayStatus } from './modelGateway';
 import './model-gateway-settings.css';
+import { deckClipboard } from "./copyText";
 
 export function ModelGatewaySettings({ backend }: { backend: Backend }) {
   if (!gatewayOwner(backend)) return <p role="status">Only the local host owner can manage the model gateway.</p>;
@@ -67,7 +68,7 @@ function OwnerGateway({ backend }: { backend: Backend }) {
     await refresh();
   }); } });
   const copy = async (text: string) => {
-    try { await navigator.clipboard.writeText(text); if (alive.current) setNote('Copied to clipboard.'); }
+    try { await deckClipboard.writeText(text); if (alive.current) setNote('Copied to clipboard.'); }
     catch { if (alive.current) setProblem('Could not copy. Select and copy the text manually.'); }
   };
   const changed = status && (bind.trim() !== status.bind || port !== String(status.port));

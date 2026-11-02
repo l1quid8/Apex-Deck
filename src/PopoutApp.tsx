@@ -29,6 +29,7 @@ import type { ArtifactsHost } from "./ArtifactsPanel";
 import type { DetailsHost } from "./ThreadDetails";
 import type { Pane, ParticipantConfig } from "./types";
 import "./popout.css";
+import { copyText } from "./copyText";
 
 /** Before the owner's first bundle arrives; replaced by the snapshot's right away. */
 const EMPTY_BUNDLE: ChatBundle = {
@@ -436,7 +437,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
                 onActivity={() => {}}
                 onSignal={() => {}}
                 onCopy={(text) => {
-                  void navigator.clipboard?.writeText(text).catch(() => {});
+                  void copyText(text);
                 }}
               />
             </div>

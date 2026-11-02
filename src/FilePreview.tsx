@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { FilePreview as Preview, ThreadDiff } from "./types";
 import type { Backend } from "./backend";
 import { Markdown } from "./Markdown";
-import { writeClipboard } from "./threadCopy";
+import { copyText } from "./copyText";
 import { FileEditSession } from "./FileEditSession";
 import { isEditable } from "./fileEditorModel";
 
@@ -30,7 +30,7 @@ export function FilePreviewPanel({ root, path, backend, diff, local, paneId, vie
     if (!highlightLine || view !== "file") return;
     requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-file-line="${highlightLine}"]`)?.scrollIntoView({ block: "center" }));
   }, [highlightLine, preview, view]);
-  const copyPath = async () => { const ok = await writeClipboard(relative, navigator.clipboard); setCopyStatus(ok ? "Copied" : "Clipboard unavailable"); window.setTimeout(() => setCopyStatus(""), 1500); };
+  const copyPath = async () => { const ok = await copyText(relative); setCopyStatus(ok ? "Copied" : "Clipboard unavailable"); window.setTimeout(() => setCopyStatus(""), 1500); };
   const addToChat = () => { if (paneId) window.dispatchEvent(new CustomEvent("deck:insert-composer", { detail: { paneId, text: `\`${relative}\`` } })); };
   const size = savedSize ?? (preview && "size" in preview ? preview.size : null);
   const sizeLabel = (value: number | null) => value === null ? "" : value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;

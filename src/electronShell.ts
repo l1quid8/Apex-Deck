@@ -19,6 +19,7 @@ import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
+  clipboard?: { writeText(text: string): Promise<void> };
   voice?: {
     status(): Promise<{supported:boolean;installed:boolean;installing:boolean;downloadBytes:number;requiredDiskBytes:number}>;
     install(): Promise<unknown>; cancelInstall():Promise<void>;
