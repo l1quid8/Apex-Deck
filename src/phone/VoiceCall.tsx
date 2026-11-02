@@ -85,8 +85,7 @@ function Clock({ since }: { since?: number }) {
   }, []);
   return <span className="ph-call-timer">{callClock(since ? now - since : 0)}</span>;
 }
-function Mute({ call, voice, small }: { call: Call; voice: PhoneVoice; small?: boolean }) {
-  const m = call.state.muted;
+function Mute({ muted: m, voice, small }: { muted: boolean; voice: PhoneVoice; small?: boolean }) {
   return (
     <button type="button" className={`ph-call-round${small ? " small" : ""}`} aria-pressed={m} aria-label={m ? "Unmute" : "Mute"}
       onClick={() => voice.controller.mute(!m)}>
@@ -124,7 +123,7 @@ export function PhoneCallStrip(props: Base) {
       </button>
       <Wave mode={call.line.wave} />
       <Clock since={call.state.startedAt} />
-      <Mute call={call} voice={props.voice} />
+      <Mute muted={call.state.muted} voice={props.voice} />
       <End voice={props.voice} />
     </div>
   );
@@ -233,7 +232,7 @@ export function VoiceCall(props: Base & {
   const button =
     props.button === false ? null : live && call.look === "pill" ? (
       <span className={`ph-call-pill${tone(call)}`} role="group" aria-label={`Voice call with ${call.name}`} style={agentStyle(who, state.scope?.participantId)}>
-        <Mute call={call} voice={voice} small />
+        <Mute muted={call.state.muted} voice={voice} small />
         <button type="button" className="ph-call-pill-mid" aria-label={`${call.line.status}. Call settings`} onClick={() => setOpen("settings")}>
           <Wave mode={call.line.wave} />
           <Clock since={state.startedAt} />
@@ -398,18 +397,26 @@ export function VoiceCall(props: Base & {
   );
 }
 
-/** A call running in another thread: tap to go back to it. */
-export function PhoneCallBar({ voice, onOpen, hidden = false }: { voice: PhoneVoice; hidden?: boolean; onOpen(hostId: string, roomId: string): void }) {
+/** A call running elsewhere, docked in the page flow above the tabs so it never covers a row. Tap to go back to it. */
+export function PhoneCallBar({ voice, onOpen, who, last = false, hidden = false }: { voice: PhoneVoice; who?: PhoneVoiceWho; /** Nothing below it, so it clears the home indicator itself. */ last?: boolean; hidden?: boolean; onOpen(hostId: string, roomId: string): void }) {
   const [, redraw] = useState(0);
   useEffect(() => voice.subscribe(() => redraw((n) => n + 1)), [voice]);
   const state = voice.controller.getState(),
     s = state.scope;
   if (hidden || !s || LIVE_OFF.includes(state.status)) return null;
-  const agent = voice.candidates(s.hostId, s.roomId).find((c) => c.participantId === s.participantId)?.name ?? s.participantId;
+  const candidate = voice.candidates(s.hostId, s.roomId).find((c) => c.participantId === s.participantId);
+  const agent = candidate?.name ?? s.participantId;
+  const minutes = Math.floor((state.startedAt ? Date.now() - state.startedAt : 0) / 60_000);
+  const needs = voice.view().attention ? ", needs you" : "";
   return (
-    <button type="button" className="ph-call-bar" onClick={() => onOpen(s.hostId, s.roomId)}>
-      On call with {agent}
-      {voice.view().attention ? " · needs you" : ""}
-    </button>
+    <div className={`ph-call-bar${last ? " last" : ""}`} role="group" aria-label={`Call with ${agent}`}>
+      <button type="button" className="ph-call-bar-main" aria-label={`On call with ${agent}, ${minutes} minute${minutes === 1 ? "" : "s"}${needs}. Double tap to return to call`} onClick={() => onOpen(s.hostId, s.roomId)}>
+        <i className="ph-call-live" aria-hidden="true" /><Face who={who} id={s.participantId} />
+        <span className="ph-call-bar-text">On call with {agent}{needs ? " · needs you" : ""}</span>
+        <Clock since={state.startedAt} />
+      </button>
+      <Mute muted={state.muted} voice={voice} small />
+      <End voice={voice} small />
+    </div>
   );
 }
