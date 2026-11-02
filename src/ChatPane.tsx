@@ -106,6 +106,7 @@ import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.t
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { copyText, plainCopy } from "./copyText";
+import { canApplyAccessNow } from "./accessChange";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHold, type TurnKind } from "./turnQueue";
 import { queueSync } from "./phoneQueue";
 import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
@@ -731,6 +732,10 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   };
   const [quickSettings, setQuickSettings] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [pendingSettings, setPendingSettings] = useState<Record<string, boolean>>({});
+  /** Access changed while a bot works: what it was, until the reply ends or it is applied. */
+  const [accessFrom, setAccessFrom] = useState<Record<string, Access>>({});
+  /** "Access changed to Read at 3:04 PM" lines for this sitting. */
+  const [accessNotes, setAccessNotes] = useState<{ key: number; text: string }[]>([]);
   const closeQuickSettings = () => setQuickSettings(null);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState(talkOnly ? chatDraft : "");
@@ -1114,6 +1119,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         case "participant_idle":
           setAnswered(({ [event.id]: _said, ...rest }) => rest);
           setPendingSettings(({ [event.id]: _applied, ...rest }) => rest);
+          setAccessFrom(({ [event.id]: _settled, ...rest }) => rest);
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
           reportApprovals();
@@ -1161,6 +1167,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           break;
         case "allowed_changed":
           setAllowed(event.allowed);
+          break;
+        case "access_changed":
+          setAccessNotes((notes) => [...notes, { key: Date.now(), text: `${nameOf(event.id)}: Access changed to ${accessLabel(event.access)} at ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` }]);
           break;
         case "plan_changed":
           setPlanOn(event.on);
@@ -3680,13 +3689,25 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
       {!profileMode && legacy && <div className="legacy-room-marker"><LegacyBadge scope="room" /></div>}
       {!profileMode && !talkOnly && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} accessChange={(() => {
+        const from = accessFrom[quickSettings.id], bot = participants.find(p => p.id === quickSettings.id);
+        return from && bot && from !== bot.access ? { from, to: bot.access, canApply: canApplyAccessNow(bot) } : undefined;
+      })()} onApplyAccess={() => {
+        const id = quickSettings.id;
+        setAccessFrom(({ [id]: _applied, ...rest }) => rest);
+        setPendingSettings(({ [id]: _applied, ...rest }) => rest);
+        void backend.roomApplyAccess(pane.id, id).catch((error) => notify(`Could not apply access now: ${String(error)}`, "error"));
+      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+        const before = participants.find(p => p.id === config.id)?.access;
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
         if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
-        if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
+        if (turnQueue.state[config.id] === "working") {
+          setPendingSettings(all => ({ ...all, [config.id]: true }));
+          if (before && before !== actual.access) setAccessFrom(all => ({ ...all, [config.id]: all[config.id] ?? before }));
+        }
       }} /> }
       {!profileMode && !talkOnly && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
       {profileMode && !adding && participants.length > 0 && <div className="chat-bar"><div className="chips">{addButton}</div></div>}
@@ -3895,6 +3916,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
             </div>
           );
         })}
+        {accessNotes.map((note) => <div key={note.key} className="access-note muted" role="status">{note.text}</div>)}
         {queued.map((item) => {
           const who = item.to.map((id) => names.get(id) ?? id).join(", ");
           const steerable = !item.failed && item.kind === "message" && item.to.some((id) => working[id]);

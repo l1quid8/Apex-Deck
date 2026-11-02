@@ -367,6 +367,8 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "next_steps"; id: string; steps: NextStep[]; pending: boolean }
   /** The thread's Plan switch was turned on or off. */
   | { type: "plan_changed"; on: boolean }
+  /** A bot's access was changed while it was working. */
+  | { type: "access_changed"; id: string; access: Access }
   /** The thread's whole "Always allow" list, after it changed. */
   | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */

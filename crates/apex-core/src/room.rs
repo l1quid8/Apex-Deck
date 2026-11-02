@@ -161,6 +161,8 @@ pub enum RoomEvent {
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
     CurationsChanged { curations: Vec<Curation> },
+    /// A bot's access was changed while it was working.
+    AccessChanged { id: ParticipantId, access: crate::Access },
     /// The user pressed stop.
     Stopped,
     /// The room finished handling the user message.

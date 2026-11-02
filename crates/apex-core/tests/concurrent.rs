@@ -850,6 +850,32 @@ fn targeted_stop_keeps_streamed_text_and_does_not_poison_the_next_turn() {
 }
 
 #[test]
+fn a_bot_restarted_right_after_its_stop_runs_again_and_is_told_why() {
+    block_on(async {
+        let (runtime, _release) = setup();
+        let null = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let stopped = std::sync::atomic::AtomicBool::new(false);
+        let sink = |event: RoomEvent| {
+            if matches!(&event, RoomEvent::Delta { id, .. } if id == &null) && !stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                runtime.stop(Some(&null));
+            }
+            events.lock().unwrap().push(event);
+        };
+        let first = runtime.begin_post("@null first", None, &sink).await.unwrap();
+        let restart = async {
+            while !stopped.load(std::sync::atomic::Ordering::SeqCst) { futures_timer::Delay::new(std::time::Duration::from_millis(1)).await; }
+            let next = runtime.begin_turn(vec![null.clone()], None).await.unwrap().with_runner_context("Your access changed.".into(), false);
+            runtime.run(next, &sink).await;
+        };
+        futures::join!(runtime.run(first, &sink), restart);
+        let seen = events.lock().unwrap();
+        let starts = seen.iter().filter(|e| matches!(e, RoomEvent::TurnStarted { id } if id == &null)).count();
+        assert_eq!(starts, 2, "the restart must not be swallowed by the stop: {seen:?}");
+    });
+}
+
+#[test]
 fn targeted_approval_rejection_leaves_the_other_participant_waiting() {
     let desk = apex_core::ApprovalDesk::default();
     let (_, null) = desk.open_for(ParticipantId::new("null"));

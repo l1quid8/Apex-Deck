@@ -81,6 +81,17 @@ fn apply_user_identity(settings: &serde_json::Value) {
     apex_core::set_user_identity(&field("userName"), &field("userNickname"));
 }
 
+/// What a bot restarted by Apply now is told, so it neither repeats work nor retries what is now blocked.
+fn apply_access_note(access: apex_core::Access) -> String {
+    let level = match access {
+        apex_core::Access::Read => "Read: you may look but must not change anything",
+        apex_core::Access::Ask => "Ask first: each edit or command is put to the user",
+        apex_core::Access::Edits => "Edits: you may edit files",
+        apex_core::Access::Full => "Full",
+    };
+    format!("The user changed your access to {level}, which stopped your last turn partway and restarted you. You have no memory of the commands you ran in it. Some of its work may already be on disk, and a command may have been cut off, so check before repeating anything. Then carry on with the request within the new access, and say what you can't do.")
+}
+
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
     /// Serializes snapshot reads with persistence and numbered event emission.
@@ -1857,6 +1868,28 @@ impl Host {
     }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
+    /// Apply a saved access change now: stop `participant` and run it again under
+    /// the new level. A tool takes its access when it starts and Deck keeps no session,
+    /// so the new run sees only the chat and the files, and is told so.
+    pub async fn room_apply_access(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
+        self.refuse_moved_chat(&id)?;
+        if self.assistant_tasks.execution(&id).ok().flatten().is_some() {
+            return Err("Access on a task's worker applies after this reply.".into());
+        }
+        let handle = self.handle(&id)?;
+        let config = handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p| p.id == participant).cloned()
+            .ok_or("that participant is no longer in this room")?;
+        if matches!(config.backend, apex_core::Backend::Agent { tool: AgentTool::Gemini, .. }) {
+            return Err("Antigravity can't be held to an access level, so restarting it wouldn't change what it can do.".into());
+        }
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        handle.runtime.stop(Some(&participant));
+        // Each bot's turns run one after another, so this starts once the stopped turn has let go.
+        let batch = handle.runtime.begin_turn(vec![participant], None).await?.with_runner_context(apply_access_note(config.access), false);
+        self.run_batch_in_background(id, handle, batch);
+        Ok(())
+    }
+
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
         self.computer.revoke(Some(&id),participant.as_ref().map(ParticipantId::as_str));
         // Runner: Stop during countdown also pauses
@@ -2133,6 +2166,7 @@ impl Host {
         self.ensure_task_read_access(&id, &next)?;
         if next.access != current.access { self.computer.revoke(Some(&id),Some(name.as_str())); }
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
+        let access_moved = next.access != current.access && handle.runtime.busy();
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
@@ -2140,6 +2174,7 @@ impl Host {
         } else { room.replace_participant(replacement); }
         self.invalidate_room_runner(&id)?;
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+        if access_moved { self.persist_and_emit(&id, &handle, RoomEvent::AccessChanged { id: name.clone(), access: next.access })?; }
         // Save and broadcast under the same room lock as the merge so concurrent
         // devices cannot emit older settings after newer ones.
         self.persist_and_emit(&id, &handle, RoomEvent::ParticipantChanged { participant: next.clone() })?;
@@ -4636,6 +4671,31 @@ mod host_tests {
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
             persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None
         }
+    }
+
+    #[test]
+    fn apply_access_runs_the_bot_again_but_refuses_antigravity() {
+        let (host, runtime, data) = host("apply-access");
+        let null = ParticipantId::new("null");
+        host.room_create("r".into(), vec![scripted("null", &["again"])], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        runtime.block_on(Arc::clone(&host).room_apply_access("r".into(), null.clone())).unwrap();
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::MessageAdded { message } if message.text == "again")).is_some());
+
+        let mut gemini = scripted("agy", &[]);
+        gemini.backend = apex_core::Backend::Agent { tool: AgentTool::Gemini, model: None };
+        host.room_create("g".into(), vec![gemini], RoomOptions::default(), None).unwrap();
+        let refused = runtime.block_on(Arc::clone(&host).room_apply_access("g".into(), ParticipantId::new("agy"))).unwrap_err();
+        assert!(refused.contains("Antigravity"), "{refused}");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn the_restart_note_names_the_access_and_warns_of_lost_steps() {
+        let note = apply_access_note(apex_core::Access::Read);
+        assert!(note.contains("Read") && note.contains("check before repeating"));
     }
 
     fn wait_for(seen: &Arc<Mutex<Vec<HostEvent>>>, found: impl Fn(&RoomEvent) -> bool) -> Option<RoomEvent> {

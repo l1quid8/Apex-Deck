@@ -3,6 +3,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode 
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { Access, ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
+import { applyNowFirst } from './accessChange';
 import { Segmented } from './AgentPicker';
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from './speed';
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
@@ -31,6 +32,9 @@ interface Props {
   meters?: ReactNode;
   talkOnly?: boolean;
   accessPending?: boolean;
+  /** A change made while this bot works, with Apply now offered when that can work. */
+  accessChange?: { from: Access; to: Access; canApply: boolean };
+  onApplyAccess?: () => void;
   /** The provider's usage resets, shown under Access. */
   resets?: ReactNode;
   /** Assistant-owned snapshots never create or fetch a room. */
@@ -44,9 +48,10 @@ interface Props {
   /** Owning-host text choices for a scoped assistant; no generic fallback models. */
   offeredModels?: ModelChoice[];
 }
-export function BotSettings({ config, roomId, anchor = null, inline = false, backend, save, close, avatar, meters, accessPending = false, talkOnly = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
+export function BotSettings({ config, roomId, anchor = null, inline = false, backend, save, close, avatar, meters, accessPending = false, accessChange, onApplyAccess, talkOnly = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
+  const [laterChosen, setLaterChosen] = useState(false);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
   const apiUrl = api?.base_url ?? null;
   const apiKeyEnv = api?.api_key_env ?? null;
@@ -335,7 +340,15 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
       {talkOnly ? <div className="bot-access"><span className="model-select-label">Access</span><span>Talk only</span></div> : (tool || api) && <>
         <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
-        {accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
+        {accessPending && accessChange?.canApply && !laterChosen
+          ? <div className="bot-access-choice" role="group" aria-label="When to apply this access">
+              <p className="muted bot-access-note">Applies after this reply. Apply now stops this bot and restarts it from the chat, so it loses track of its current steps and a running command is cut off.</p>
+              <div>
+                <button type="button" className={applyNowFirst(accessChange.from, accessChange.to) ? "primary" : ""} onClick={onApplyAccess}>Apply now</button>
+                <button type="button" className={applyNowFirst(accessChange.from, accessChange.to) ? "" : "primary"} onClick={() => setLaterChosen(true)}>After this reply</button>
+              </div>
+            </div>
+          : accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
       </>}
       {resets}
       {api && !mediaType && !talkOnly && <details className="bot-computer">

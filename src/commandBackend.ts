@@ -113,6 +113,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomPost: (id, text, interactiveAnswers) => call("room_post", { id, text, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }) }),
     roomTargets: (id, text) => call<string[]>("room_targets", { id, text }),
     roomRefreshPlans: (id) => call<void>("room_refresh_plans", { id }),
+    roomApplyAccess: (id, participant) => call<void>("room_apply_access", { id, participant }),
     roomPostTo: (id, text, targets, interactiveAnswers, voice) => call("room_post_to", { id, text, targets, ...voice, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }) }),
     roomTurn: (id, participants, hops, interactiveAnswers) => call("room_turn", { id, participants, hops, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }) }),
     voiceCapabilities: () => call("voice_capabilities", {}),
