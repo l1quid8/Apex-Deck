@@ -327,7 +327,8 @@ impl crate::host::Host {
                     if !assistant.delegated_result_receipts.insert(receipt.clone()) { continue; }
                     let label = if attempt.status == crate::assistant_tasks::TaskStatus::Interrupted && attempt.result.as_deref() == Some(crate::assistant_watchdog::RESTARTED_RESULT) { crate::assistant_watchdog::RESTARTED_LABEL } else { match attempt.status { crate::assistant_tasks::TaskStatus::Done => "Result available", crate::assistant_tasks::TaskStatus::ReadyForReview => "Result ready for your review", crate::assistant_tasks::TaskStatus::Cancelled => "Task cancelled", _ => "Task needs your attention" } };
                     let brief: String = task.brief.chars().take(140).collect();
-                    assistant.post("assistant", "result", format!("{label}: {brief}"), Some(task.id.clone()), Some(lineage.source_event_id.clone()), crate::personal::now());
+                    let text = if attempt.result.as_deref() == Some(crate::assistant_git::SAVE_TOO_LONG) { crate::assistant_watchdog::save_too_long_text(&brief) } else { format!("{label}: {brief}") };
+                    assistant.post("assistant", "result", text, Some(task.id.clone()), Some(lineage.source_event_id.clone()), crate::personal::now());
                     assistant.revision += 1;
                 }
             }

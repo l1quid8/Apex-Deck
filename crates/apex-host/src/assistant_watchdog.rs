@@ -34,6 +34,10 @@ pub(crate) const RESTARTED_RESULT: &str = "The watchdog stopped this attempt aft
 pub(crate) const RESTARTED_LABEL: &str = "Restarting a stuck job";
 const NUDGE: &str = "Deck's watchdog stopped your last attempt because nothing happened for a long time. Check how far the work got, then continue the original task. If a command hung, don't run it the same way again. If you are blocked, say what you need.";
 
+pub(crate) fn save_too_long_text(brief: &str) -> String {
+    format!("Saving your delegated job's result took too long, so I stopped that step: {brief}. The work is still in its folder. Open the task to retry or cancel it.")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict { Fine, Restart, Tell }
 
@@ -157,11 +161,15 @@ impl crate::host::Host {
     }
 
     /// The save was ended, so the job has failed and needs the human's decision.
+    /// Its ordinary receipt carries the words, so this only adds the phone push.
     pub(crate) fn tell_save_too_long(&self, task_id: &str, run_id: &str) -> Result<(), String> {
         let task = self.assistant_tasks.get(task_id).map_err(|e| e.to_string())?.ok_or("The task is gone.")?;
-        if task.lineage.is_none() { return Ok(()) }
-        let brief: String = task.brief.chars().take(140).collect();
-        self.tell_human(&task, &format!("watchdog:{}:{run_id}", task.id), format!("Saving your delegated job's result took too long, so I stopped that step: {brief}. The work is still in its folder. Open the task to retry or cancel it."), crate::personal::now())
+        let Some(lineage) = &task.lineage else { return Ok(()) };
+        let text = save_too_long_text(&task.brief.chars().take(140).collect::<String>());
+        self.change_assistant(&lineage.assistant.assistant_id, |assistant| {
+            crate::personal_worker::notify::notify(assistant, text.clone(), Some(task.id.clone()), true, format!("watchdog:{}:{run_id}", task.id), crate::personal::now());
+            Ok(())
+        })
     }
 
     /// A notice alone can be swallowed when the human is on screen, so the

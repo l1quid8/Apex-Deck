@@ -4880,16 +4880,20 @@ mod tests {
         panic!("did not enter the real result-capture boundary");
     }
 
+    /// Deck only ends Git itself on Windows, so a filter outlives it there.
+    #[cfg(unix)]
     fn filter_is_dead(f: &Fixture) -> bool {
         let pid: i32 = std::fs::read_to_string(f.root.join(".git/review-filter-pid")).unwrap().trim().parse().unwrap();
         unsafe { libc::kill(pid, 0) != 0 }
     }
 
+    #[cfg(unix)]
     fn act(f: &Fixture, id: &str, action: &str) -> Result<AssistantTask, String> {
         let task = f.host.assistant_tasks.get(id).unwrap().unwrap();
         f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id,revision:task.revision,owner:task.owner,action:action.into(),mode:None,text:None,destination:None,new_worker_profiles:vec![],checks:None,spend_limit_micros:None}))
     }
 
+    #[cfg(unix)]
     #[test]
     fn pausing_during_a_hung_review_diff_leaves_the_job_paused_not_failed() {
         let f = fixture();
@@ -4932,6 +4936,7 @@ mod tests {
         assert_eq!(wait_for(&f, &task.id).status, TaskStatus::ReadyForReview);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_save_past_its_limit_fails_the_job_keeps_the_work_and_tells_the_human() {
         let f = fixture();
@@ -4944,17 +4949,22 @@ mod tests {
         assert!(filter_is_dead(&f));
         assert_eq!(std::fs::read_to_string(f.root.join("tracked.txt")).unwrap(), "completed edit\n");
         let told = |f: &Fixture| watchdog_messages(f, &assistant).into_iter().filter(|s| s.contains("took too long")).count();
+        let pushed = |f: &Fixture| f.host.personal_get(&assistant).unwrap().notices.iter().filter(|n| n.urgent && n.text.contains("took too long")).count();
         for _ in 0..1_000 {
-            if told(&f) > 0 { break }
+            if told(&f) > 0 && pushed(&f) > 0 { break }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        f.host.reconcile_delegation_results().unwrap();
         assert_eq!(told(&f), 1);
+        assert_eq!(pushed(&f), 1);
+        assert!(!watchdog_messages(&f, &assistant).iter().any(|s| s.contains("needs your attention")), "one failure gets one result");
         assert!(!f.host.assistant_runs.lock().unwrap().contains_key(&task.id), "the attempt must really end");
         assert!(failed.result_data.as_ref().unwrap()["leaseHeld"] == true, "the work stays protected until the human decides");
         let cancelled = act(&f, &task.id, "cancel").unwrap();
         assert!(cancelled.result_data.as_ref().unwrap()["leaseHeld"] == false);
     }
 
+    #[cfg(unix)]
     #[test]
     fn cancelling_a_hung_save_ends_it_and_frees_the_checkout() {
         let f = fixture();
@@ -4966,6 +4976,7 @@ mod tests {
         assert!(filter_is_dead(&f));
     }
 
+    #[cfg(unix)]
     #[test]
     fn pausing_a_hung_save_ends_it_and_keeps_the_work() {
         let f = fixture();
