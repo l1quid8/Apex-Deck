@@ -23,7 +23,9 @@ class PlaybackCredits:
   import asyncio
   if size>self.capacity:raise ValueError('Audio chunk exceeds playback window')
   while self.pending+size>self.capacity:
-   self.wake.clear();await asyncio.wait_for(self.wake.wait(),10)
+   self.wake.clear()
+   # No fatal timeout: the caller (server) logs stalls and keeps waiting.
+   await self.wake.wait()
   self.pending+=size
  def consumed(self,size):
   if not isinstance(size,int) or size<0 or size>self.capacity:raise ValueError('Invalid playback credit')

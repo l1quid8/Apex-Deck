@@ -31,9 +31,17 @@ class Engines:
   from mlx_whisper import transcribe
   r=transcribe(np.frombuffer(pcm,dtype='<i2').astype(np.float32)/32768,path_or_hf_repo=self.stt_path,language='en',temperature=0.,condition_on_previous_text=False,initial_prompt=', '.join(hints),verbose=None)
   segments=r.get('segments') or []
-  if not segments or all(s.get('no_speech_prob',0)>.8 for s in segments):return ''
+  no_speech=[s.get('no_speech_prob',0) for s in segments]
+  logprobs=[s.get('avg_logprob',0) for s in segments]
+  ratios=[s.get('compression_ratio',0) for s in segments]
+  # Return detailed metrics for logging; filtering of made-up is done in server (still keep fallback)
+  if not segments or all(p>.8 for p in no_speech):
+   return {'text':'','no_speech':no_speech,'logprob':logprobs,'ratio':ratios}
   text=r['text'].strip()
-  return '' if made_up(text,hints,[s.get('compression_ratio',0) for s in segments],[s.get('no_speech_prob',0) for s in segments],[s.get('avg_logprob',0) for s in segments]) else text
+  # Keep original early made_up filtering for backward compat, but also expose metrics so server can log rejection reason
+  if made_up(text,hints,ratios,no_speech,logprobs):
+   return {'text':'','no_speech':no_speech,'logprob':logprobs,'ratio':ratios,'filtered':'madeUp'}
+  return {'text':text,'no_speech':no_speech,'logprob':logprobs,'ratio':ratios}
  def synthesize(self,text,voice):
   import numpy as np
   if voice not in self.voices:raise ValueError('Choose an installed voice')
