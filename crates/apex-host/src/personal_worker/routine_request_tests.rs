@@ -18,6 +18,7 @@ async fn ask_mode_routine_changes_do_not_reconfirm_a_direct_human_request() {
  for (text,tool,args) in [
   ("rename the thread to tyler is cool",rooms::RENAME,vec![THREAD,"tyler is cool"]),
   ("Please rename this thread to “A fresh title”.",rooms::RENAME,vec![THREAD,"A fresh title"]),
+  ("Rename the thread to “Foo and delete Gamma”.",rooms::RENAME,vec![THREAD,"Foo and delete Gamma"]),
   ("Can you rename Checkout fix to Hello world?",rooms::RENAME,vec![THREAD,"Hello world"]),
   ("Create a thread named Next steps here.",rooms::CREATE,vec![THREAD,"new-ask-thread","Next steps"]),
   ("Archive the thread.",rooms::ARCHIVE,vec![THREAD]),
@@ -52,6 +53,8 @@ async fn ask_mode_consequential_ambiguous_and_deliberately_restricted_actions_st
   ("Rename Checkout fix to Foo. Rename Gamma to Bar.",rooms::RENAME,vec![THREAD,"Bar"],THREAD,false),
   ("Rename Checkout fix to Foo.",rooms::RESTORE,vec![THREAD],THREAD,false),
   ("Restore Checkout fix. Rename Gamma to Foo.",rooms::RENAME,vec![THREAD,"Foo"],THREAD,false),
+  ("Rename Checkout fix to Foo and delete Gamma",rooms::RENAME,vec![THREAD,"Foo and delete Gamma"],THREAD,false),
+  ("Rename Checkout fix to Foo then send Gamma a message",rooms::RENAME,vec![THREAD,"Foo then send Gamma a message"],THREAD,false),
   ("Rename Checkout fix to Foo and archive Gamma.",rooms::RENAME,vec![THREAD,"Foo and archive Gamma"],THREAD,false),
   ("Rename Foo to Checkout fix.",rooms::RENAME,vec![THREAD,"Foo"],THREAD,false),
   ("Add this thread to Jigga.",rooms::ADD,vec![THREAD,"jigga"],THREAD,false),

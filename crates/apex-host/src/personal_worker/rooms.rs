@@ -309,6 +309,11 @@ impl Host {
             text
         }
         fn identity(text:&str)->String {label(text).split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()}
+        fn unambiguous_label(text:&str)->bool {
+            // A quoted label is literal. Bare conjunctions may join another
+            // instruction, so their meaning needs an explicit Ask decision.
+            label(text)!=text.trim() || !words(text).iter().any(|word|matches!(word.as_str(),"and"|"then"|"or"))
+        }
         fn roles<'a>(body:&'a str,separator:&str)->Option<(&'a str,&'a str)> {
             if body.matches(separator).count()!=1{return None}
             body.split_once(separator).map(|(object,target)|(object.trim(),target.trim()))
@@ -321,7 +326,6 @@ impl Host {
         for start in ["can you please ","could you please ","would you please ","will you please ","can you ","could you ","would you ","will you ","please "] {
             if let Some(rest)=prefix(command,start){command=rest;break}
         }
-        if words(command).windows(2).any(|pair|matches!(pair[0].as_str(),"and"|"then")&&matches!(pair[1].as_str(),"create"|"rename"|"archive"|"trash"|"restore"|"add"|"remove")){return None}
         let (verb,body)=command.split_once(' ')?;
         let expected_verb=match tool {ADD=>"add",REMOVE=>"remove",_=>tool.strip_prefix("room.")?};
         if !verb.eq_ignore_ascii_case(expected_verb){return None}
@@ -337,11 +341,11 @@ impl Host {
         let others:std::collections::HashSet<_>=reachable.iter().filter(|target|target.thread!=room.thread).flat_map(aliases).collect();
         let mut names=aliases(room);names.retain(|name|!others.contains(name));
         if focused {names.extend(deictic_names.into_iter().map(str::to_owned));}
-        let target=|name:&str|names.contains(&identity(name));
+        let target=|name:&str|unambiguous_label(name)&&names.contains(&identity(name));
         match tool {
             RENAME=>{
                 let (name,title)=roles(body," to ")?;
-                if !target(name)||label(title)!=op.argv[1]{return None}
+                if !target(name)||!unambiguous_label(title)||label(title)!=op.argv[1]{return None}
             },
             CREATE=>{
                 let body=prefix(body,"a ").unwrap_or(body);
@@ -351,11 +355,11 @@ impl Host {
                     else if let Some(title)=title.strip_suffix(" here"){(title,"here")}
                     else{return None};
                 let project=identity(place)==identity(&room.project.cwd)||identity(place)==identity(&format!("project {}",room.project.cwd));
-                if label(title)!=op.argv[2]||!(target(place)||project||(focused&&identity(place)=="this project")){return None}
+                if !unambiguous_label(title)||label(title)!=op.argv[2]||!(target(place)||project||(focused&&identity(place)=="this project")){return None}
             },
             ADD|REMOVE=>{
                 let (person,name)=roles(body,if tool==ADD{" to "}else{" from "})?;
-                if !target(name){return None}
+                if !target(name)||!unambiguous_label(person){return None}
                 let mut workers=room.workers.clone();
                 if tool==ADD {
                     workers.extend(self.chat_saved_profiles().ok()?.into_iter().map(|p|(p.id.to_string(),p.display_name)));
