@@ -226,8 +226,8 @@ test('trying again runs the failed bot first, then what was queued for it', asyn
   const sent = [];
   const q = new ParticipantQueues(async () => ['null'], async (text, _to, kind, hops) => { sent.push({ text, kind, hops }); }, async () => {}, () => {});
   await q.send('@null first');
-  q.error('null'); q.idle('null');
   await q.send('@null later');
+  q.error('null'); q.idle('null'); await tick();
   assert.deepEqual(sent.map(s => s.text), ['@null first'], 'the failure paused Null');
   q.turn(['null'], null); await tick();
   assert.deepEqual(sent.slice(1), [{ text: '', kind: 'turn', hops: null }]);
@@ -493,3 +493,72 @@ for (const kind of ['compact', 'curate', 'curate_undo']) {
     assert.equal(q.active, false);
   });
 }
+
+test('a bot that fails and later runs again releases what waits for it when it finishes', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['null'], async text => { sent.push(text); }, async () => {}, () => {});
+  q.started('null');
+  await q.send('waits for the run');
+  q.error('null'); q.idle('null'); await tick();
+  assert.equal(q.holdOf(q.items[0]), 'failed');
+  q.started('null'); // another bot mentioned Null, and this run succeeds
+  assert.equal(q.holdOf(q.items[0]), null);
+  q.idle('null'); await tick();
+  assert.deepEqual(sent, ['waits for the run']);
+});
+
+test('a Stop still holds the queue when the bot is run again', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['null'], async text => { sent.push(text); }, async () => {}, () => {});
+  q.started('null');
+  await q.send('held');
+  await q.halt('null'); q.idle('null'); q.started('null'); q.idle('null'); await tick();
+  assert.deepEqual(sent, []);
+  assert.equal(q.holdOf(q.items[0]), 'stopped');
+});
+
+test('a new message to a failed bot with nothing waiting goes straight out', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['null'], async text => { sent.push(text); }, async () => {}, () => {});
+  q.started('null'); q.error('null'); q.idle('null');
+  await q.send('go on');
+  assert.deepEqual(sent, ['go on']);
+  assert.equal(q.paused.size, 0);
+});
+
+test('every way a turn ends releases the queue exactly once', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  // Each terminal path reaches the queue as participant_idle, possibly repeated, with room idle after it.
+  for (const end of [q => { q.idle('null'); q.roomIdle(); }, q => { q.roomIdle(); q.idle('null'); }, q => { q.idle('null'); q.idle('null'); q.roomIdle(); q.roomIdle(); }]) {
+    const sent = [];
+    const q = new ParticipantQueues(async () => ['null'], async text => { sent.push(text); }, async () => {}, () => {});
+    q.started('null');
+    await q.send('next');
+    end(q); await tick();
+    assert.deepEqual(sent, ['next']);
+    assert.deepEqual(q.items, []);
+  }
+});
+
+test('coming back on line lets a merely waiting message go, but never a failed send', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  let online = true, fail = false; const sent = [];
+  const q = new ParticipantQueues(async () => ['a'], async text => { sent.push(text); if (fail) throw Error('lost'); }, async () => {}, () => {}, () => {}, () => online);
+  q.started('a');
+  await q.send('waiting');
+  online = false; q.availabilityChanged();
+  assert.equal(q.holdOf(q.items[0]), 'connection');
+  q.idle('a'); await tick();
+  assert.deepEqual(sent, []);
+  online = true; q.availabilityChanged(); await tick();
+  assert.deepEqual(sent, ['waiting']);
+  assert.equal(q.connectionPaused, false);
+
+  fail = true; q.idle('a'); await q.send('unconfirmed'); await tick();
+  online = false; q.availabilityChanged(); online = true; q.availabilityChanged(); await tick();
+  assert.equal(sent.filter(text => text === 'unconfirmed').length, 1);
+  assert.equal(q.items[0].failed, true);
+});
