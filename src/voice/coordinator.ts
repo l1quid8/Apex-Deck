@@ -1,7 +1,8 @@
 import { createVoiceController, type VoiceController } from "./controller.ts";
 import { openVoiceAudio, playVoiceSample } from "./audio.ts";
 import { connectLocalVoice } from "./localClient.ts";
-import { readVoiceSettings, voiceFor } from "./settings.ts";
+import { DEFAULT_SILENCE_MS, readVoiceSettings, voiceFor } from "./settings.ts";
+import { publishPlaybackLevel } from "./playbackLevel.ts";
 import type {
   CallEngine,
   CallScope,
@@ -62,6 +63,9 @@ export function warmVoice() {
   void window.apexDeck?.voice?.warm?.().catch(() => {});
 }
 
+const openCallAudio: typeof openVoiceAudio = (frame, drain, playing, error, consumed) =>
+  openVoiceAudio(frame, drain, playing, error, consumed, publishPlaybackLevel);
+
 /* ---- local engine ---- */
 let localController: ReturnType<typeof createVoiceController>;
 localController = createVoiceController({
@@ -70,7 +74,7 @@ localController = createVoiceController({
     start: () => runtime().start(),
     stop: () => runtime().stop(),
   },
-  openAudio: openVoiceAudio,
+  openAudio: openCallAudio,
   playSample: playVoiceSample,
   connect: connectLocalVoice,
   candidates: () => [...registry.values()].flatMap((r) => r.candidates),
@@ -89,7 +93,7 @@ localController = createVoiceController({
   },
   silence: (): number => {
     const s = localController?.getState().scope;
-    return s ? lookup(s).settings.silenceMs : 100;
+    return s ? lookup(s).settings.silenceMs : DEFAULT_SILENCE_MS;
   },
   focus: (scope: CallScope) => lookup(scope).focus(),
 } as any);
@@ -129,7 +133,7 @@ const metaController = createMetaVoiceController({
     start: () => runtime().start(),
     stop: () => runtime().stop(),
   },
-  openAudio: openVoiceAudio,
+  openAudio: openCallAudio,
   connect: connectLocalVoice,
   playSample: playVoiceSample,
   candidates: () => [...registry.values()].flatMap((r) => r.candidates),
@@ -140,7 +144,7 @@ const metaController = createMetaVoiceController({
   },
   silence: (): number => {
     const s = metaController?.getState().scope ?? localController?.getState().scope;
-    return s ? lookup(s).settings.silenceMs : 100;
+    return s ? lookup(s).settings.silenceMs : DEFAULT_SILENCE_MS;
   },
   voiceSettings: voiceSettingsForScope,
   mintSession: (args: any) => mintMetaForScope((hostId, roomId) => registry.get(scopeKey({ hostId, roomId })), args),

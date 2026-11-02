@@ -1,0 +1,37 @@
+.ph-tasks { min-width: 0; overflow-x: hidden; }
+.ph-tasks .workspace-tasks { padding: 0; min-width: 0; }
+.ph-tasks .workspace-tasks-filters { display: flex; flex-wrap: wrap; }
+.ph-tasks .workspace-tasks-filters input { flex: 1 1 100%; }
+.ph-tasks .workspace-tasks-filters select { flex: 1 1 40%; max-width: 100%; }
+.ph-tasks button, .ph-tasks select, .ph-tasks input:not([type="checkbox"]) { min-height: 44px; }
+.ph-tasks input[type="checkbox"] { width: 24px; height: 24px; margin: 10px; }
+.ph-tasks .workspace-task-row { min-width: 0; }
+.ph-tasks .assistant-tasks { overflow: visible; min-height: 0; height: auto; }
+.ph-tasks .assistant-task-list, .ph-tasks .assistant-task-card, .ph-tasks .assistant-task-detail-scroll { height: auto; overflow: visible; min-width: 0; }
+.ph-tasks .assistant-task-card > header, .ph-tasks .assistant-task-actions { flex-wrap: wrap; }
+.ph-tasks .assistant-task-meta { white-space: normal; }
+.ph-tasks textarea { width: 100%; min-height: 88px; box-sizing: border-box; font-size: 16px; }
+.ph-tasks input, .ph-tasks select { font-size: 16px; }
+.ph-tasks pre { max-width: 100%; overflow: auto; }
+.ph-tasks [role="alertdialog"] { box-sizing: border-box; max-width: calc(100vw - 24px); max-height: calc(100dvh - 120px); overflow: auto; }
+.ph-tasks .workspace-tasks-filters, .ph-tasks .assistant-task-heading { gap: 8px; }
+.ph-tabs > button { position: relative; }
+
+.ph-tasks .workspace-task-trash { min-width: 44px; }
+.ph-tasks .workspace-tasks-add input, .ph-tasks .workspace-tasks-add-options input, .ph-tasks .workspace-tasks-add-options select { font-size: 16px; }
+.ph-tasks .workspace-tasks-add-options label { flex-wrap: wrap; }
+.ph-tasks .workspace-tasks-add-options input { max-width: 100%; }
+/* Keep primary actions in the available phone content area, above its tab bar. */
+.ph-tasks:has(.workspace-task-owner) { display: flex; flex-direction: column; }
+.ph-tasks:has(.workspace-task-owner) > .workspace-tasks { flex: 1; display: flex; flex-direction: column; }
+.ph-tasks .workspace-tasks > div:has(> .workspace-task-owner) { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.ph-tasks .workspace-todo-detail { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.ph-tasks .workspace-detail-actions,
+.ph-tasks .assistant-task-decision-actions,
+.ph-tasks .assistant-task-status-actions { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); background: var(--panel, var(--bg)); border-top: 1px solid var(--line); }
+.ph-tasks .workspace-detail-actions > button { flex: 1 1 auto; }
+.ph-tasks .assistant-task-review > .assistant-task-primary { position: sticky; bottom: calc(12px + env(safe-area-inset-bottom)); min-height: 44px; }
+.ph-tasks .assistant-projects, .ph-tasks .assistant-project-detail, .ph-tasks .assistant-task-list { flex: 1; display: flex; flex-direction: column; }
+.ph-tasks .assistant-projects .assistant-project-detail .assistant-task-commandbar { order: 20; margin-top: auto; margin-bottom: 0; }
+.ph-tasks .assistant-task-card { flex: 1; }
+.ph-tasks .workspace-todo-detail > .workspace-detail-actions { order: 10; }

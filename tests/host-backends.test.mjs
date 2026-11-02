@@ -223,3 +223,11 @@ test('importing a thread onto an offline host is refused, not queued', async () 
   await assert.rejects(registry.get('at').roomImport('f', { transcript: [] }, '/x'), /connect|nothing was queued/i);
   assert.equal(imports, 0);
 });
+
+test('permanent project task deletion refuses offline writes without queueing', async () => {
+  const connection=store.hostConnectionStore('remote','Remote');
+  let called=0;
+  const backend=mod.guardHostWrites({call:async()=>{called++;}},connection);
+  await assert.rejects(backend.call('project_task_lifecycle',{taskId:'task-1',revision:3,action:'purge',owner:{hostId:'remote',workspaceId:'p',cwd:'/p',conversationId:'m'}}),/nothing was queued/);
+  assert.equal(called,0);
+});

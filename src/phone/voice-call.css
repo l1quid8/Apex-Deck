@@ -50,7 +50,7 @@
 .ph-call-wave i:nth-child(3) { --h: 17px; animation-delay: -0.1s; }
 .ph-call-wave i:nth-child(4) { --h: 11px; animation-delay: -0.7s; }
 .ph-call-wave i:nth-child(5) { --h: 6px; animation-delay: -0.35s; }
-.ph-call-wave[data-mode="flat"] i { height: 3px; opacity: 0.45; }
+.ph-call-wave[data-mode="flat"] i, .ph-call-wave[data-mode="mic"] i, .ph-call-wave[data-mode="muted"] i { height: 3px; opacity: 0.45; }
 .ph-call-wave[data-mode="dots"] { gap: 3px; }
 .ph-call-wave[data-mode="dots"] i { width: 5px; height: 5px; border-radius: 50%; background: var(--agent); animation: ph-call-dot 1.2s ease-in-out infinite; }
 .ph-call-wave[data-mode="dots"] i:nth-child(n + 4) { display: none; }

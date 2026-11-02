@@ -25,6 +25,8 @@ test("each moment of a call has its own words and wave", () => {
   assert.equal(callLine(state({ status: "waiting" }), "Null").wave, "dots");
   assert.equal(callLine(state({ status: "hearing" }), "Null").wave, "you");
   assert.equal(callLine(state({ status: "listening" }), "Null").status, "Listening");
+  assert.equal(callLine(state({ status: "listening" }), "Null").wave, "mic");
+  assert.equal(callLine(state({ status: "waiting", muted: true }), "Null").wave, "muted");
   assert.equal(callLine(state({ status: "warming" }), "Null").status, "Starting…");
 });
 
@@ -39,7 +41,7 @@ test("reconnecting, problems and mute read differently from a normal call", () =
   const muted = callLine(state({ muted: true }), "Null");
   assert.equal(muted.status, "Muted · Null can still talk");
   assert.equal(muted.tone, "muted");
-  assert.equal(muted.wave, "flat");
+  assert.equal(muted.wave, "muted");
   // A muted call still shows the bot's voice moving while it talks.
   assert.equal(callLine(state({ muted: true, status: "speaking" }), "Null").wave, "bot");
 });

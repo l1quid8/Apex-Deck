@@ -4,6 +4,7 @@
  * TTS reuses the local helper's speak path so voice replies are still spoken via Kokoro.
  */
 import type { CallScope, VoiceCandidate, VoiceState, VoiceSettings, ThreadVoiceBridge, VoiceRuntime, HelperEvent, VoiceTurn } from "./types.ts";
+import { AGENT_FAILED_SPEECH, createCallFlow } from "./callFlow.ts";
 import type { VoiceAudio } from "./audio.ts";
 import type { LocalVoiceClient } from "./localClient.ts";
 import { resolveCallCommand } from "./routing.ts";
@@ -44,6 +45,7 @@ const same = (a: CallScope, b: CallScope) =>
   a.hostId === b.hostId && a.roomId === b.roomId && a.participantId === b.participantId;
 
 export function createMetaVoiceController(deps: MetaControllerDeps) {
+  let markMutedTurns = () => {};
   let state: VoiceState = { status: "off", muted: false, voices: [] };
   const listeners = new Set<() => void>();
   let runtimeAcquired: VoiceRuntime | undefined;
@@ -68,6 +70,9 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
   let cleanup: Promise<unknown> = Promise.resolve();
   const utterances = new Set<string>();
   let pendingSwitchText = "";
+  let submitting = 0;
+  // Words heard but not yet with the agent. Newer words join them, so a pause never loses the first half.
+  let unsent = "";
   const submittedAt = new Map<string, number>();
   const seenTiming = new Set<string>();
   const metric = (stage: string, ms: number, requestId?: string) => {
@@ -83,6 +88,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     }
   };
   const set = (patch: Partial<VoiceState>) => {
+    if (patch.status && patch.status !== state.status)
+      note("stateTransition", { from: state.status, to: patch.status });
     state = { ...state, ...patch };
     listeners.forEach((fn) => fn());
   };
@@ -90,10 +97,18 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
   const stopAudio = (resetInput = false) => {
     generation++;
     audio?.flush(generation);
+    flow.flushed();
     control({ type: "cancel", resetInput });
   };
   const note = (event: string, detail: Record<string, unknown> = {}) =>
-    console.warn("[voice meta event] " + JSON.stringify({ callId, event, ...detail }));
+    console.warn("[voice meta event] " + JSON.stringify({ ts: new Date().toISOString(), callId, event, ...detail }));
+  const flow = createCallFlow({
+    publish: (status) => {
+      if (!["off", "setup", "error"].includes(state.status) && !state.reconnecting) set({ status });
+    },
+    hold: (value) => audio?.hold?.(value),
+    log: note,
+  });
 
   let reconnecting = false;
   function error(e: Error) {
@@ -113,8 +128,10 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
   }
 
   function detach() {
-    active?.unlisten();
+    if (!active) return;
+    active.unlisten();
     active = undefined;
+    flow.turnEnd();
   }
   let interrupted: typeof active;
   function cancel() {
@@ -135,7 +152,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
 
   async function end(reason = "ended by user") {
     if (callId || state.status !== "off")
-      console.warn("[voice meta end] " + JSON.stringify({ callId, reason, status: state.status }));
+      console.warn("[voice meta end] " + JSON.stringify({ ts: new Date().toISOString(), callId, reason, status: state.status }));
     epoch++;
     try { metaAbort?.abort(); } catch {}
     metaAbort = undefined;
@@ -150,7 +167,9 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     client = undefined;
     generation++;
     pendingSwitchText = "";
+    unsent = "";
     release();
+    flow.reset();
     const stopping = cleanup;
     set({
       status: "off",
@@ -182,6 +201,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     metaAbort = undefined;
     generation++;
     audio?.flush(generation);
+    flow.flushed();
     set({ status: "warming", reconnecting: true });
     // Any other value means a switch took ownership of Meta during recovery.
     let recoveryMeta: AbortController | undefined;
@@ -215,7 +235,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
             return;
           }
           metaAsr = meta;
-          set({ reconnecting: false });
+          set({ status: flow.status, reconnecting: false });
           note("helper reconnected", { attempt });
           return;
         } catch (e) {
@@ -233,7 +253,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       }
     } finally {
       reconnecting = false;
-      if (state.reconnecting) set({ reconnecting: false });
+      if (state.reconnecting) set({ status: flow.status, reconnecting: false });
     }
   }
 
@@ -257,6 +277,9 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       mintSession: (args) => deps.mintSession({ ...args, model: wantedModel }),
     };
 
+    const mutedTurns = new Set<number>();
+    const liveTurns = new Set<number>();
+    markMutedTurns = () => { for (const id of liveTurns) mutedTurns.add(id); };
     const client = await connectMetaAsr(
       metaDeps,
       scope,
@@ -265,26 +288,40 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
           // ignore for now, but could emit debug
         },
         onTranscript: (transcript, _turnId, _isFinal, _utteranceId) => {
-          if (state.muted) return;
+          liveTurns.add(_turnId);
+          if (state.muted) mutedTurns.add(_turnId);
+          if (state.muted || mutedTurns.has(_turnId)) return;
           // Partial feedback – show hearing state
-          if (transcript && transcript.trim()) set({ status: "hearing" });
+          if (transcript && transcript.trim()) flow.speechStart();
         },
-        onSpeechStart: () => {
-          if (!state.muted) {
-            stopAudio();
-            interrupt();
-            set({ status: "hearing" });
-          }
+        onSpeechStart: (turnId) => {
+          liveTurns.add(turnId);
+          if (state.muted) mutedTurns.add(turnId);
+          // Noise can sound like speech, so this only pauses the reply. The final transcript decides.
+          if (!state.muted) flow.speechStart();
         },
-        onSpeechEnd: () => {
-          if (!state.muted) set({ status: "waiting" });
-        },
+        onSpeechEnd: () => {},
         onSpeechComplete: (transcript, _turnId, utteranceId) => {
-          if (state.muted) return;
-          if (!transcript || !transcript.trim()) return;
+          liveTurns.delete(_turnId);
+          const rejected = mutedTurns.delete(_turnId);
+          note("sttResult", { turnId: _turnId, charLen: transcript.length, rejected: state.muted || rejected });
+          if (state.muted || rejected || !transcript || !transcript.trim()) {
+            flow.speechRejected(rejected || state.muted ? "muted" : "empty");
+            return;
+          }
           if (utterances.has(utteranceId)) return;
           utterances.add(utteranceId);
-          void submit(transcript, utteranceId).catch((err) => error(Error(String(err))));
+          const words = unsent ? unsent + " " + transcript : transcript;
+          if (flow.speechConfirmed() || submitting) stopAudio();
+          interrupt();
+          submitting++;
+          unsent = words;
+          void submit(words, utteranceId)
+            .catch((err) => error(Error(String(err))))
+            .finally(() => {
+              submitting--;
+              if (unsent === words) unsent = "";
+            });
         },
         onError: (err) => error(err),
         onClose: (reason) => {
@@ -315,6 +352,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
   function say(text: string, requestId: string) {
     sinceSubmit("first-speech-submit", requestId);
     if (!client || !state.scope) return;
+    flow.spoken();
     control({ type: "speak", text, requestId, segmentId: ++segment, voice: deps.voice(state.scope) });
   }
 
@@ -328,14 +366,17 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     } else if (e.type === "approval" || e.type === "question") {
       say(e.type === "approval" ? "Approval is needed in the thread." : "There is a question in the thread.", a.id);
       deps.focus(a.scope);
-      set({ status: "needs-attention" });
+      flow.attention(true);
     } else if (e.type === "failed") {
+      // A failed reply is that reply's problem; the call stays up and says so.
       a.failed = true;
-      error(Error(e.text ?? "Agent call failed"));
+      note("agentFailed", { reason: e.text ?? "Agent call failed" });
+      say(AGENT_FAILED_SPEECH, a.id);
+      detach();
     } else if (e.type === "done" || e.type === "canceled") {
       if (e.type === "done" && !a.failed) for (const part of a.speech.push("", true)) say(part, a.id);
       detach();
-      set({ status: "listening" });
+      if (!state.candidates?.length) flow.attention(false);
     }
   }
 
@@ -365,7 +406,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       if (["cancel", "never mind", "nevermind", "no"].includes(answer)) {
         pendingSwitchText = "";
         stopAudio(true);
-        set({ status: "listening", candidates: undefined, threadQuery: undefined, error: undefined });
+        set({ candidates: undefined, threadQuery: undefined, error: undefined });
+        flow.attention(false);
         return;
       }
       const matching = choices.filter(
@@ -375,7 +417,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       if (pick.length === 1 && deps.candidates().some((c) => same(c, pick[0]))) {
         parsed = { kind: "switch", candidate: pick[0], text: "" };
       } else {
-        set({ status: "needs-attention" });
+        flow.attention(true);
         say("Say a thread name from the list, or say cancel.", crypto.randomUUID());
         return;
       }
@@ -386,7 +428,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     }
     if (parsed.kind === "unknown") {
       pendingSwitchText = "";
-      set({ status: "needs-attention", candidates: undefined, threadQuery: undefined, error: "No matching agent. Choose a recipient." });
+      set({ candidates: undefined, threadQuery: undefined, error: "No matching agent. Choose a recipient." });
+      flow.attention(true);
       return;
     }
     if (parsed.kind === "ambiguous") {
@@ -394,7 +437,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       const titles = [...new Set(parsed.candidates.map((c) => c.roomTitle?.trim() || "Untitled thread"))];
       const single = parsed.candidates.length === 1;
       const question = parsed.threadQuery !== undefined ? (single ? `Did you mean “${titles[0]}”?` : "Which thread did you mean?") : "Choose which agent to call.";
-      set({ status: "needs-attention", candidates: parsed.candidates, threadQuery: parsed.threadQuery, error: question });
+      set({ candidates: parsed.candidates, threadQuery: parsed.threadQuery, error: question });
+      flow.attention(true);
       if (parsed.threadQuery !== undefined) {
         const options = !single ? titles.slice(0, 3).join(", ") + ". " : "";
         const instructions = !single && titles.length === 1 ? "Several open threads share that title. Choose one from the list, or say cancel." : `Say ${single ? "yes or " : ""}the thread name, or say cancel.`;
@@ -425,11 +469,17 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     active = {
       id, scope, bridge, unlisten: bridge.subscribe(bridgeEvent), speech: new SpeechText(), failed: false,
     };
-    set({ status: "waiting", error: undefined });
+    set({ error: undefined });
+    flow.turnStart();
+    unsent = "";
     try {
       await bridge.submit(turn);
     } catch (e) {
-      if (currentEpoch === epoch && active?.id === id) error(e instanceof Error ? e : Error(String(e)));
+      if (currentEpoch === epoch && active?.id === id) {
+        note("agentFailed", { reason: e instanceof Error ? e.message : String(e) });
+        say(AGENT_FAILED_SPEECH, id);
+        detach();
+      }
     }
   }
 
@@ -439,7 +489,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       return;
     }
     if (state.candidates?.some((c) => same(c, scope)) && !deps.candidates().some((c) => same(c, scope))) {
-      set({ status: "needs-attention", error: "That thread is no longer available. Choose another thread." });
+      set({ error: "That thread is no longer available. Choose another thread." });
+      flow.attention(true);
       return;
     }
     const pending = state.candidates?.some((c) => same(c, scope)) ? pendingSwitchText : "";
@@ -447,7 +498,8 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     stopAudio(true);
     release();
     if (!callId) return;
-    set({ scope, status: "listening", candidates: undefined, threadQuery: undefined, error: undefined });
+    set({ scope, candidates: undefined, threadQuery: undefined, error: undefined });
+    flow.attention(false);
     deps.focus(scope);
     // Reconnect Meta to new scope's participant context if needed
     try { metaAbort?.abort(); } catch {}
@@ -488,12 +540,16 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       const valid = state.scope && voices.includes(deps.voice(state.scope));
       const muted = state.muted || !valid;
       set({
-        status: valid ? "listening" : "needs-attention",
+        status: valid ? flow.status : "needs-attention",
         voices,
         semantic: e.semantic === true,
         muted,
         error: valid ? undefined : "Choose an installed voice, then unmute the microphone.",
       });
+      if (!valid) flow.attention(true);
+    } else if (e.type === "speechDropped") {
+      note("speechDropped", { requestId: e.requestId });
+      flow.dropped();
     } else if (e.type === "error") {
       error(Error(e.message ?? "Local voice failed"));
     } else if (e.type === "audioEnd" && e.segmentId !== undefined) {
@@ -608,14 +664,16 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
           // Also feed to local helper for its internal VAD? We skip helper audio upload for meta path to avoid duplicate STT triggering.
           // But we still need to keep helper alive – its audio path not used for STT in meta mode.
         },
-        (_id) => {
-          // drain
+        (id) => {
+          note("playbackComplete", { segmentId: id });
+          control({ type: "playbackComplete", segmentId: id });
+          if (callId) flow.drained();
         },
         () => {
-          set({ status: "speaking" });
+          if (callId) flow.playing();
         },
         (e) => error(e),
-        () => {},
+        (bytes) => control({ type: "playbackProgress", bytes }),
       );
       if (myEpoch !== epoch) {
         audioInstance.close();
@@ -644,7 +702,7 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
       metaAsr = meta;
 
       sendStart(scope);
-      set({ status: "listening", scope, startedAt: Date.now(), muted: false, error: undefined });
+      set({ status: flow.status, scope, startedAt: Date.now(), muted: false, error: undefined });
       deps.focus(scope);
     } catch (e) {
       if (myEpoch !== epoch) return;
@@ -664,8 +722,14 @@ export function createMetaVoiceController(deps: MetaControllerDeps) {
     },
     start,
     end,
-    switchAgent: async (scope: CallScope) => { await switchAgent(scope); },
+    // Words meant for the agent you are leaving stay with it.
+    switchAgent: async (scope: CallScope) => { unsent = ""; await switchAgent(scope); },
     mute(value: boolean) {
+      if (value) {
+        markMutedTurns();
+        flow.speechRejected("muted");
+      }
+      note("mute", { muted: value });
       set({ muted: value });
     },
     preview(voice: string) {

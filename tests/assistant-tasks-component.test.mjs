@@ -796,3 +796,21 @@ test('task results render as formatted text', async () => {
   assert.ok(find(tree, node => node.type === MarkdownStub && node.props.text === '**Fix first:** prune rows'));
   h.unmount();
 });
+
+test('task manager legacy review requires changes and check inspection for this revision',async()=>{
+  let current=task({reviewCriteria:[]});
+  const view={display:'tasks',selectedKey:taskViewModule.projectTaskKey(owner.hostId,owner.workspaceId,current.id),openTask(){},report(){}};
+  const h=harness({demo:false,call:async()=>snapshot([current])},{taskView:view});
+  h.render();await tick();let tree=h.render();h.setReviewVisible();tree=h.render();
+  assert.equal(button(tree,'Accept and mark done').props.disabled,true);
+  const inspect=label=>{const node=find(tree,n=>n.type==='details'&&textOf(n.children[0])===label);assert.ok(node,`missing ${label}`);node.props.onToggle({currentTarget:{open:true}});tree=h.render();};
+  inspect('Inspect current result');inspect('Inspect changes');
+  assert.equal(button(tree,'Accept and mark done').props.disabled,true);
+  inspect('Inspect check evidence');
+  assert.equal(button(tree,'Accept and mark done').props.disabled,false);
+  current={...current,revision:5};
+  h.setProps({owner:{...owner,conversationId:'monitor-b'}});h.render();await tick();h.render();
+  h.setProps({owner});h.render();await tick();tree=h.render();h.setReviewVisible();tree=h.render();
+  assert.equal(button(tree,'Accept and mark done').props.disabled,true);
+  h.unmount();
+});

@@ -104,7 +104,7 @@ import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
 import { WorkspaceTasks } from "./WorkspaceTasksScreen";
 import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
-import { collectWorkspaceTasks, workspaceTaskHostMatches, type WorkspaceTaskRow } from "./workspaceTasks";
+import { guardWorkspaceTaskBackend, collectWorkspaceTasks, workspaceTaskHostMatches, type WorkspaceTaskRow } from "./workspaceTasks";
 import type { DashboardDestination } from "./dashboardModel";
 import { placeDashboardPane } from "./dashboardNavigation";
 import { SharedBrowser } from "./SharedBrowser";
@@ -241,7 +241,7 @@ export function App() {
   const { workspaces, panes: savedPanesForSession, importedHostSessions } = records;
   const panes = savedPanesForSession;
   const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
-  const globalTaskFeed = useRef<{ rows: WorkspaceTaskRow[]; problems: string[] }>({ rows: [], problems: [] });
+  const globalTaskFeed = useRef<{ rows: WorkspaceTaskRow[]; problems: string[]; personalSources: import('./workspaceTasks.ts').PersonalTaskSource[]; delegationTargets: import('./taskManagerDelegation.ts').TaskDelegationTarget[] }>({ rows: [], problems: [], personalSources: [], delegationTargets: [] });
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
   const [assistantTaskSignals, setAssistantTaskSignals] = useState<Record<string, Signal>>({});
   const [, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
@@ -1487,7 +1487,7 @@ export function App() {
       chatConfig: chatConfigOf(workspace, hostId),
       ...(selected?.kind === "chat" ? { activeChatId: selected.id } : { activeChatId: null }),
       ...(tab.kind === "dashboard" ? { dashboardRows } : {}),
-      ...(tab.kind === "tasks" ? { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems } : {}),
+      ...(tab.kind === "tasks" ? { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems, taskPersonalSources: globalTaskFeed.current.personalSources, taskDelegationTargets: globalTaskFeed.current.delegationTargets } : {}),
     };
     return bridge.open(snapshot, bounds).then(({ token }) => {
       setPanel(takeout.panel);
@@ -1503,7 +1503,7 @@ export function App() {
   }, popOutPane, popOutTab, error => toast(`Could not restore external windows: ${String(error)}`));
 
   /** The newest pop-outs and pane edits, for window events that arrive between renders. */
-  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id), focusPane: (_pane: Pane) => {}, openDashboard: (_id: string, _destination?: DashboardDestination) => {} });
+  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id), focusPane: (_pane: Pane) => {}, openTaskProject: (_project:ProjectRef) => {}, keepTaskThread: (_project:ProjectRef,_id:string) => {}, openTaskThread: (_project:ProjectRef,_id:string) => {}, createTaskWorker: (_project:ProjectRef,_profile:ParticipantConfig,_assistant:AssistantRef):Promise<string> => Promise.reject(new Error('Task owner is unavailable.')), openDashboard: (_id: string, _destination?: DashboardDestination) => {} });
   popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, mounts, hostBackend: (id:string) => hostBackend(id) };
   /** The last patch pushed to each pop-out, so unchanged renders send nothing. */
   const lastSent = useRef(new Map<string, string>());
@@ -1546,6 +1546,15 @@ export function App() {
         setStartRequests((all) => ({ ...all, [(action.type === "restart-terminal" ? rec.id : action.id)]: (all[action.type === "restart-terminal" ? rec.id : action.id] ?? 0) + 1 }));
       } else if (action.type === "dashboard-open") {
         if (tabRec?.tab.kind === "dashboard") live.openDashboard(action.id, action.destination);
+      } else if (action.type === "task-open-project" || action.type === "task-open-thread" || action.type === "task-keep-thread" || action.type === "task-create-worker") {
+        if (tabRec?.tab.kind !== 'tasks') return;
+        if (action.type === 'task-open-project') live.openTaskProject(action.project);
+        else if (action.type === 'task-open-thread') live.openTaskThread(action.project, action.id);
+        else if (action.type === 'task-keep-thread') live.keepTaskThread(action.project, action.id);
+        else void live.createTaskWorker(action.project, action.profile, action.assistant).then(
+          threadId => bridge.update(token, {taskWorkerResult:{requestId:action.requestId,title:threadId}}),
+          error => bridge.update(token, {taskWorkerResult:{requestId:action.requestId,error:error instanceof Error?error.message:String(error)}}),
+        ).catch(() => {});
       } else if (action.type === "show-pane") {
         const pane = latest.current.panes.find((p) => p.id === action.id);
         if (pane) live.focusPane(pane);
@@ -2070,24 +2079,30 @@ export function App() {
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
   const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
   const workspaceTaskProblems = Object.entries(assistantTaskErrors).filter(([id]) => workspaces.some(workspace => workspace.id === id && !workspace.hidden)).map(([id, error]) => `${workspaces.find(workspace => workspace.id === id)?.name ?? id}: ${error}`);
+  const workspacePersonalSources = assistants.assistants.flatMap(summary => {
+    const lane = assistants.lane(summary.ref);
+    const host = assistants.hosts.find(host => host.hostId === summary.ref.hostId);
+    return lane?.assistant ? [{assistant:summary.ref,name:summary.name,hostName:summary.hostName,tasks:lane.assistant.tasks,todos:lane.assistant.taskManagerTodos,schedules:lane.assistant.schedules,revision:lane.assistant.revision,offline:summary.offline,observedAt:summary.lastSeen,routeHostId:host?.routeHostId}] : [];
+  });
+  const workspaceDelegationTargets = assistants.assistants.flatMap(summary => (assistants.lane(summary.ref)?.assistant?.projects ?? []).filter(binding => binding.tools !== 'off').map(binding => ({assistant:summary.ref,project:binding.project,name:workspaces.find(workspace => workspace.id === binding.project.workspaceId)?.name ?? binding.project.cwd})));
   let workspaceTaskRows: WorkspaceTaskRow[] = [];
   try {
     workspaceTaskRows = collectWorkspaceTasks(assistants.assistants.flatMap(summary => {
       const lane = assistants.lane(summary.ref);
       const host = assistants.hosts.find(host => host.hostId === summary.ref.hostId);
-      return lane?.assistant ? [{ assistant: summary.ref, name: summary.name, tasks: lane.assistant.tasks, offline: summary.offline, observedAt: summary.lastSeen, routeHostId: host?.routeHostId }] : [];
+      return lane?.assistant ? [{ assistant: summary.ref, name: summary.name, hostName: summary.hostName, tasks: lane.assistant.tasks, todos: lane.assistant.taskManagerTodos, schedules: lane.assistant.schedules, revision: lane.assistant.revision, offline: summary.offline, observedAt: summary.lastSeen, routeHostId: host?.routeHostId }] : [];
     }), Object.values(currentAssistantRegistry.owners).flatMap(entry => entry.snapshot ? [{
       project: entry.snapshot.project ?? { hostId: entry.authenticatedHostId ?? entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner, authenticatedHostId: entry.authenticatedHostId,
-      name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId,
+      name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId, hostName: entry.owner.hostId === 'local' ? 'This Mac' : hostNameFor(entry.owner.hostId),
       snapshot: entry.snapshot, offline: offlineHost(entry.owner.hostId) || !!assistantTaskErrors[entry.owner.workspaceId] || !workspaceTaskHostMatches({ verifiedHostId: entry.snapshot.project?.hostId ?? entry.authenticatedHostId ?? null }, taskRouteStatus(entry.owner.hostId)), observedAt: entry.observedAt ?? 0,
     }] : []));
   } catch (cause) { workspaceTaskProblems.push(`Could not verify task owners: ${cause instanceof Error ? cause.message : String(cause)}`); }
-  globalTaskFeed.current = { rows: workspaceTaskRows, problems: workspaceTaskProblems };
+  globalTaskFeed.current = { rows: workspaceTaskRows, problems: workspaceTaskProblems, personalSources: workspacePersonalSources, delegationTargets: workspaceDelegationTargets };
   const globalTaskFeedVersion = JSON.stringify(globalTaskFeed.current);
   useEffect(() => {
     const bridge = window.apexDeck?.popout;
     if (!bridge) return;
-    for (const rec of poppedTabs) if (rec.tab.kind === 'tasks') void bridge.update(rec.token, { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems }).catch(() => {});
+    for (const rec of poppedTabs) if (rec.tab.kind === 'tasks') void bridge.update(rec.token, { workspaceTaskRows: globalTaskFeed.current.rows, workspaceTaskProblems: globalTaskFeed.current.problems, taskPersonalSources: globalTaskFeed.current.personalSources, taskDelegationTargets: globalTaskFeed.current.delegationTargets }).catch(() => {});
   }, [globalTaskFeedVersion, poppedTabs]);
   const [assistantBrowser,setAssistantBrowser]=useState<AssistantBrowserPresentation>('closed');
   const [assistantVoiceHost,setAssistantVoiceHost]=useState<HTMLElement|null>(null);
@@ -2477,6 +2492,15 @@ export function App() {
     setFocusedPane(pane.id);
     if (maximized && maximized !== pane.id) setMaximized(null);
   };
+  const createTaskWorkerThread = async (project:ProjectRef, profile:ParticipantConfig, assistant:AssistantRef) => {
+    const workspace = resolveAssistantProject(project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace);
+    if (!workspace || project.hostId !== assistant.hostId) throw new Error('Reconnect this project before choosing a worker.');
+    const route = guardWorkspaceTaskBackend({verifiedHostId:assistant.hostId}, hostBackend(workspaceHost(workspace)));
+    const threadId = newId('pane');
+    await route.roomCreate(threadId, [profile], settings.newThread, project.cwd);
+    setPanes(list => [...list, { id: threadId, workspaceId: workspace.id, kind: 'chat', assistantDraftFor: assistant, title: `${profile.display_name} · Task worker`, started: true, participants: [profile], options: settings.newThread }]);
+    return threadId;
+  };
   const openAssistantProjectCanvas = (project:ProjectRef) => {
     const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
     if(!workspace){toast('Reconnect this project to open it.');return;}
@@ -2486,6 +2510,18 @@ export function App() {
     setMaximized(destination.maximized);
   };
   // Window events for pop-outs arrive between renders; they need the newest focus.
+  popoutLive.current.openTaskProject = openAssistantProjectCanvas;
+  popoutLive.current.createTaskWorker = createTaskWorkerThread;
+  popoutLive.current.keepTaskThread = (project, id) => {
+    const workspace = resolveAssistantProject(project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace);
+    const pane = workspace && viewPanes.find(pane => pane.id === id && pane.workspaceId === workspace.id);
+    if (pane) keepAssistantThread(pane); else toast('Reconnect this task conversation before keeping it.');
+  };
+  popoutLive.current.openTaskThread = (project, id) => {
+    const workspace = resolveAssistantProject(project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace);
+    const pane = workspace && viewPanes.find(pane => pane.id === id && pane.workspaceId === workspace.id);
+    if (pane) focusPane(pane); else toast('Reconnect this project to open its worker conversation.');
+  };
   popoutLive.current.focusPane = focusPane;
   const openDashboard = (id: string, destination?: DashboardDestination) => {
     const pane = listed.find((item) => item.id === id && (item.kind === "chat" || item.kind === "terminal"));
@@ -3050,9 +3086,12 @@ export function App() {
           <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}`} style={sidePanelFull ? undefined : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
             <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} onPopout={(tabId) => popOutTab(tabId)} onPopoutDragOut={(tabId, x, y) => popOutTab(tabId, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 })} taskAttention={{ count: workspaceTaskRows.filter(row => row.group === 'waiting').length, details: workspaceTaskRows.filter(row => row.group === 'waiting').map(row => `${row.assistantName} · ${row.projectName}: ${row.title}`).join("\n") }} bodies={{
               dashboard: (_tab, visible) => <RightDashboard rows={dashboardRows} onOpen={openDashboard} visible={visible && detailsOpen} />,
-              tasks: () => <WorkspaceTasks rows={workspaceTaskRows} problems={workspaceTaskProblems} renderDetail={row => {
+              tasks: () => <WorkspaceTasks profiles={profiles} delegationTargets={workspaceDelegationTargets} onCreateWorkerThread={createTaskWorkerThread} rows={workspaceTaskRows} problems={workspaceTaskProblems} personalSources={workspacePersonalSources} backendForRow={row => { try { return hostBackend(row.routeHostId); } catch { return null; } }} renderDetail={row => {
                 let route: Backend | null = null; try { route = hostBackend(row.routeHostId); } catch { /* Keep the last known owner visible. */ }
-                return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const workspace = row.project ? resolveAssistantProject(row.project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace) : null; const pane = workspace ? viewPanes.find(item => item.id === id && item.workspaceId === workspace.id) : undefined; if (pane) focusPane(pane); }} />;
+                return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes}
+                  onOpenProject={openAssistantProjectCanvas}
+                  onOpenNotebook={project => { if (!row.assistant) return; setAssistantNotebookProject(project); setMainView({ kind: 'assistant', assistant: row.assistant, section: 'memory' }); }}
+                  onCreateWorkerThread={(project, profile) => { if (!row.assistant) return Promise.reject(new Error('This task has no assistant owner.')); return createTaskWorkerThread(project, profile, row.assistant); }} onKeepThread={(project, id) => { const pane = viewPanes.find(p => p.id === id && p.workspaceId === project.workspaceId); if (pane) keepAssistantThread(pane); else toast('Reconnect this task conversation before keeping it.'); }} onOpenThread={id => { const workspace = row.project ? resolveAssistantProject(row.project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace) : null; const pane = workspace ? viewPanes.find(item => item.id === id && item.workspaceId === workspace.id) : undefined; if (pane) focusPane(pane); }} />;
               }} />,
               browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onShare={(url) => { setBrowserAddress({ url, hostId: "local" }); setBrowserPin({ hostId: "local", focus: browserFocus }); setPanel((current) => openTab({ ...current, open: true }, "assistantbrowser", Date.now())); }} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
               assistantbrowser: (_tab, visible) => {

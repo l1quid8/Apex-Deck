@@ -382,7 +382,7 @@ const voiceLog = () => path.join(app.getPath('userData'), 'voice-calls.log');
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', (...args) => {
     const message = String(args[0]?.message ?? args[2] ?? '');
-    if (!message.startsWith('[voice end]') && !message.startsWith('[voice event]')) return;
+    if (!/^\[voice (?:end|event|meta (?:end|event))\]/.test(message)) return;
     fs.promises.appendFile(voiceLog(), `${new Date().toISOString()} ${message}\n`).catch(() => {});
   });
 });

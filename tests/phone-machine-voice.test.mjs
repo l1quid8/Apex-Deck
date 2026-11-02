@@ -17,7 +17,7 @@ test("machine settings fill only what the phone left alone", () => {
   assert.deepEqual(preferenceFor(merged, "mac-id", "p1", "r1", "p1"), { voice: "bf_emma", aliases: ["Nul"] });
   const own = machineVoice(
     readVoiceSettings({
-      silenceMs: 100,
+      silenceMs: 400,
       look: "capsule",
       preferences: { [voicePreferenceKey("mac-id", "p1", "r1", "p1")]: { voice: "am_adam", aliases: [] } },
     }),
@@ -25,7 +25,7 @@ test("machine settings fill only what the phone left alone", () => {
     { silence: true, look: true },
     "mac-id",
   );
-  assert.equal(own.silenceMs, 100);
+  assert.equal(own.silenceMs, 400);
   assert.equal(own.look, "capsule");
   assert.equal(preferenceFor(own, "mac-id", "p1", "r1", "p1").voice, "am_adam");
 });

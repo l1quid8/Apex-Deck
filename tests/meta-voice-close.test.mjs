@@ -9,11 +9,14 @@ class FakeSocket {
   static all = [];
   static afterAck;
   readyState = 1;
+  bufferedAmount = 0;
+  sent = [];
   constructor() {
     FakeSocket.all.push(this);
     queueMicrotask(() => this.onopen?.());
   }
   send(data) {
+    this.sent.push(data);
     if (typeof data === "string") queueMicrotask(() => {
       this.onmessage?.({ data: JSON.stringify({ sessionId: "s" }) });
       FakeSocket.afterAck?.(this);
@@ -31,11 +34,11 @@ class FakeSocket {
 
 const scope = { hostId: "h", roomId: "r", participantId: "a" };
 
-async function call({ mint = async () => ({ token: "t", model: "m" }), candidates = [], stop = async () => {}, autoStart = true, connectGate } = {}) {
+async function call({ mint = async () => ({ token: "t", model: "m" }), candidates = [], stop = async () => {}, autoStart = true, connectGate, cancel = async () => {} } = {}) {
   globalThis.WebSocket = FakeSocket;
   FakeSocket.all = [];
   FakeSocket.afterAck = undefined;
-  let helperError;
+  let helperError, audioCallbacks;
   const submitted = [];
   const helpers = [];
   const c = createMetaVoiceController({
@@ -44,7 +47,7 @@ async function call({ mint = async () => ({ token: "t", model: "m" }), candidate
       start: async () => ({ port: 1, token: "x", protocolVersion: 1 }),
       stop,
     },
-    openAudio: async () => ({ mute() {}, play() {}, segmentEnd() {}, flush() {}, close() {}, echoCancellation: true }),
+    openAudio: async (...callbacks) => { audioCallbacks = callbacks; return { mute() {}, play() {}, segmentEnd() {}, flush() {}, close() {}, echoCancellation: true }; },
     connect: async (_runtime, _event, _audio, error) => {
       helperError = error;
       const helper = { sent: [], closed: false, event: _event, send(message) { this.sent.push(message); }, close() { this.closed = true; } };
@@ -58,7 +61,7 @@ async function call({ mint = async () => ({ token: "t", model: "m" }), candidate
         submitted.push(turn);
         return {};
       },
-      cancel: async () => {},
+      cancel,
       subscribe: () => () => {},
     }),
     voice: (scope) => "voice-" + scope.participantId,
@@ -68,7 +71,7 @@ async function call({ mint = async () => ({ token: "t", model: "m" }), candidate
     focus() {},
   });
   if (autoStart) await c.start(scope);
-  return { c, submitted, helpers, socket: () => FakeSocket.all.at(-1), helperError: (e) => helperError(e) };
+  return { c, submitted, helpers, audioCallbacks: () => audioCallbacks, socket: () => FakeSocket.all.at(-1), helperError: (e) => helperError(e) };
 }
 
 test("Meta closing a live call without an error ends it and shows why", async () => {
@@ -435,4 +438,71 @@ test("a failed Meta recovery attempt closes its helper before retrying", async (
   } finally {
     await c.end();
   }
+});
+
+
+test("Meta returns consumed playback credits and segment completion to helper", async () => {
+  const { c, helpers, audioCallbacks } = await call();
+  audioCallbacks()[4](48000);
+  audioCallbacks()[1](7);
+  assert.ok(helpers[0].sent.some(m => m.type === 'playbackProgress' && m.bytes === 48000));
+  assert.ok(helpers[0].sent.some(m => m.type === 'playbackComplete' && m.segmentId === 7));
+  await c.end();
+});
+test("Meta turn begun muted cannot submit after unmute", async () => {
+  const { c, socket, submitted } = await call();
+  const emit = e => socket().onmessage({data: JSON.stringify(e)});
+  c.mute(true);
+  emit({type:'speechStart',turnId:9});
+  c.mute(false);
+  emit({type:'speechComplete',turnId:9,transcript:'phantom words'});
+  await tick();
+  assert.equal(submitted.length, 0);
+  await c.end();
+});
+
+test("Meta mic send queue remains bounded and resumes after congestion", async () => {
+  const { c, socket, audioCallbacks } = await call();
+  socket().bufferedAmount = 40000;
+  for(let i=0;i<100;i++) audioCallbacks()[0](new Int16Array(512));
+  assert.equal(socket().sent.filter(x=>typeof x !== 'string').length,0);
+  socket().bufferedAmount = 0;
+  audioCallbacks()[0](new Int16Array(512));
+  assert.equal(socket().sent.filter(x=>typeof x !== 'string').length,1);
+  assert.equal(c.getState().status,'listening');
+  await c.end();
+});
+
+test("noise over a Meta call does not cancel anything, and an empty final resumes", async () => {
+  const { c, socket, submitted, helpers } = await call();
+  const emit = (e) => socket().onmessage({ data: JSON.stringify(e) });
+  const cancels = () => helpers.at(-1).sent.filter((m) => m.type === "cancel").length;
+  const before = cancels();
+  emit({ type: "speechStart", turnId: 9 });
+  assert.equal(c.getState().status, "hearing");
+  emit({ type: "speechEnd", turnId: 9 });
+  assert.equal(c.getState().status, "hearing", "nothing is known yet, so no working dots");
+  emit({ type: "speechComplete", turnId: 9, transcript: "" });
+  await tick();
+  assert.equal(c.getState().status, "listening");
+  assert.equal(cancels(), before);
+  assert.equal(submitted.length, 0);
+});
+
+test("a second sentence while the first waits on cleanup keeps both", async () => {
+  let release;
+  const { c, submitted, socket } = await call({ cancel: () => new Promise((r) => (release = r)) });
+  const finished = (turnId, transcript) => socket().onmessage({ data: JSON.stringify({ type: "speechComplete", turnId, transcript }) });
+  await tick();
+  finished(1, "first");
+  await tick();
+  finished(2, "Give me three different");
+  await tick();
+  finished(3, "options to choose from");
+  await tick();
+  release();
+  await tick();
+  assert.deepEqual(submitted.map((t) => t.text), ["first", "Give me three different options to choose from"]);
+  release = undefined;
+  await c.end();
 });

@@ -17,6 +17,38 @@ const owner={hostId:'route-host',workspaceId:'workspace',cwd:'/work/project',con
 const profile={id:'worker',display_name:'Codex',backend:{kind:'agent',tool:'codex'}};
 const record={id:'assistant',hostId:'host',revision:3,allowedFolders:['/work'],projects:[{project,tools:'ask'}],messages:[]};
 const baseTask={id:'task',workspaceId:'workspace',owner,lineage:{assistant:{hostId:'host',assistantId:'assistant'},project,sourceEventId:'event',delegationId:'delegation'},status:'running',brief:'Inspect login',originalRequest:'Inspect login',workers:['worker'],attempts:[],reviewCriteria:[],result:null,revision:2,mode:'read_only',destination:{threadId:'thread',workers:['worker'],newThread:false},resultData:{}};
+
+test('linked project details recover pending integration before offering retry or deletion',async()=>{
+  const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'interrupted',mode:'isolated',resultData:{integrationPlan:{},applyJournal:'pending.json'}});
+  let tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+  assert.ok(button(tree,'Recover interrupted integration'));
+  assert.equal(button(tree,'Retry task'),null);
+  assert.equal(button(tree,'Delete').props.disabled,true);
+  button(tree,'Recover interrupted integration').props.onClick();await tick();
+  assert.equal(h.calls.find(call=>call.cmd==='assistant_task_action').args.action,'reconcile');
+});
+test('linked terminal isolated tasks retain explicit worktree archiving',async()=>{
+  const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'done',mode:'isolated'});
+  let tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+  assert.ok(button(tree,'Archive isolated worktree'));
+  const previousWindow=globalThis.window;globalThis.window={confirm:()=>true};
+  try { button(tree,'Archive isolated worktree').props.onClick();await tick(); } finally { globalThis.window=previousWindow; }
+  assert.equal(h.calls.find(call=>call.cmd==='assistant_task_action').args.action,'archive');
+});
+for(const [status,label,action] of [['ready_for_review','Request changes','request_changes'],['needs_clarification','Send clarification','clarify'],['running','Send note','note']])test(`linked task details retain ${action} with a written response`,async()=>{
+  const h=harness({taskScopes:[{project,owner}]},{...baseTask,status,result:'Current result'});
+  let tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+  assert.ok(button(tree,label));assert.equal(button(tree,label).props.disabled,true);
+  find(tree,node=>node.type==='textarea'&&node.props['aria-label']==='Task response').props.onChange({target:{value:'Please inspect the missing edge case.'}});
+  tree=h.render();button(tree,label).props.onClick();await tick();
+  const call=h.calls.find(call=>call.cmd==='assistant_task_action');assert.equal(call.args.action,action);assert.equal(call.args.text,'Please inspect the missing edge case.');assert.equal(call.args.revision,2);
+});
+test('linked budget-paused task exposes explicit budget continuation',async()=>{
+ const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'needs_you',resultData:{budgetPaused:true}});
+ let tree=h.render();await tick();tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.ok(button(tree,'Continue with current budget'));button(tree,'Continue with current budget').props.onClick();await tick();
+ assert.equal(h.calls.find(call=>call.cmd==='assistant_task_action').args.action,'resume_budget');
+});
 function harness(extra={},initialTask=null,routingThreads=[]){
   const calls=[],states=[],refs=[],effects=[];let cursor=0,task=initialTask;
   const React={createElement:(type,props,...children)=>({type,props:props??{},children:children.flat(Infinity)})};

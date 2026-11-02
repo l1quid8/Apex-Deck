@@ -19,6 +19,7 @@ export type StopCondition = { exitCode?: number; outputContains?: string; output
 /** When and how often an approved operation runs. Part of what an approval covers. */
 export type RunPlan = { startAt?: number; everyMs?: number; maxRuns?: number; until?: StopCondition; timeoutMs?: number; deadlineAt?: number; after?: string };
 export type TaskWait = { kind: "timer"; at: number } | { kind: "dependency"; taskId: string } | { kind: "machine"; hostId: string };
+export type PersonalTodo = { id: string; text: string; status: 'open' | 'done'; createdAt: number; updatedAt: number; dueAt?: number; remindAt?: number };
 export type PersonalTask = {
   deletedAt?: number;
   id: string; goal: string; completionCriteria: string[]; targetHost: string;
@@ -69,6 +70,7 @@ export type PersonalAssistantRecord = PersonalSettings & {
   /** Missing on older hosts; assignments do not create machine/folder grants. */
   projects?: AssistantProjectBinding[];
   messages: PersonalMessage[]; tasks: PersonalTask[];
+  taskManagerTodos?: PersonalTodo[];
   purgedDelegatedTaskIds?: string[];
   taskLifecycleSnapshotRevision?: number;
   deletedDelegatedTasks?: import("./assistantTaskModel.ts").AssistantTask[];

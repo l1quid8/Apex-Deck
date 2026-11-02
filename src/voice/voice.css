@@ -157,7 +157,11 @@
 }
 .voice-wave[data-mode="bot"] { color: var(--agent); }
 .voice-wave[data-mode="bot"] i { animation: voice-bounce 0.9s ease-in-out infinite; }
+.voice-wave[data-mode="bot"][data-metered] i { animation: none; height: calc(4px + (var(--h) - 4px) * var(--level, 0)); transition: height 60ms linear; }
 .voice-wave[data-mode="you"] { color: var(--text); }
+.voice-wave[data-mode="mic"] { color: var(--muted); }
+.voice-wave[data-mode="muted"] { color: var(--warn, #f59e0b); }
+.voice-wave[data-mode="you"] svg { animation: voice-dot 1.1s ease-in-out infinite; }
 .voice-wave[data-mode="you"] i { --h: 9px; animation: voice-bounce 1.3s ease-in-out infinite; }
 .voice-wave i:nth-child(1) { --h: 7px; animation-delay: -0.2s; }
 .voice-wave i:nth-child(2) { --h: 13px; animation-delay: -0.5s; }
@@ -174,7 +178,7 @@
 @keyframes voice-bounce { 0%, 100% { height: 4px; } 50% { height: var(--h); } }
 @keyframes voice-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .voice-wave i, .voice-live-dot { animation: none !important; }
+  .voice-wave i, .voice-wave svg, .voice-live-dot { animation: none !important; }
 }
 
 /* A: the call bar over the chat box. */

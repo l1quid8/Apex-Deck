@@ -735,7 +735,7 @@ function CallsSection({ settings, onChange, backend, highlightId }: { settings: 
       </span>
     </Row>
     <Row id="pause" label="Pause before reply" note="Silence before agent replies (local calls)." highlight={highlightId==='pause'}>
-      <input type="range" min={100} max={2000} step={50} value={voice.silenceMs} onChange={e=>onChange({ ...settings, voice: { ...voice, silenceMs: e.target.valueAsNumber } })} />
+      <input type="range" min={300} max={2000} step={50} value={voice.silenceMs} onChange={e=>onChange({ ...settings, voice: { ...voice, silenceMs: e.target.valueAsNumber } })} />
       <span>{voice.silenceMs} ms</span>
     </Row>
     <Row id="call-controls" label="Call controls" note="How a running call shows. Applies to all chats, including pop-outs." highlight={highlightId==='call-controls'}>

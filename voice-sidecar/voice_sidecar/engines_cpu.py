@@ -79,11 +79,15 @@ class Engines:
         segments, _ = self.stt.transcribe(audio, language='en', beam_size=1, temperature=0.0,
                                         condition_on_previous_text=False, initial_prompt=', '.join(hints) or None, vad_filter=False)
         segments = list(segments)
-        if not segments or all(s.no_speech_prob > .8 for s in segments):
-            return ''
-        text = ' '.join(s.text.strip() for s in segments).strip()
-        return '' if made_up(text, hints, [s.compression_ratio for s in segments],
-                             [s.no_speech_prob for s in segments], [s.avg_logprob for s in segments]) else text
+        no_speech=[s.no_speech_prob for s in segments]
+        logprobs=[s.avg_logprob for s in segments]
+        ratios=[s.compression_ratio for s in segments]
+        if not segments or all(p>.8 for p in no_speech):
+            return {'text':'','no_speech':no_speech,'logprob':logprobs,'ratio':ratios}
+        text=' '.join(s.text.strip() for s in segments).strip()
+        if made_up(text, hints, ratios, no_speech, logprobs):
+            return {'text':'','no_speech':no_speech,'logprob':logprobs,'ratio':ratios,'filtered':'madeUp'}
+        return {'text':text,'no_speech':no_speech,'logprob':logprobs,'ratio':ratios}
 
     def synthesize(self, text, voice):
         import numpy as np

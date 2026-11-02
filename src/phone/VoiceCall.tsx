@@ -321,7 +321,7 @@ export function VoiceCall(props: Base & {
               </label>
               <label className="ph-call-set col">
                 <span>Pause before reply · <b>{call.settings.silenceMs} ms</b></span>
-                <input type="range" min="100" max="2000" step="1" value={call.settings.silenceMs} onChange={(e) => save({ silenceMs: Number(e.target.value) })} />
+                <input type="range" min="300" max="2000" step="1" value={call.settings.silenceMs} onChange={(e) => save({ silenceMs: Number(e.target.value) })} />
               </label>
             </>
           )}

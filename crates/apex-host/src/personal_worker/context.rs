@@ -189,6 +189,20 @@ pub fn assemble_seen_reserved(assistant: &PersonalAssistant, text: &str, now: u6
         out.push('\n');
     }
 
+    if let Some(todos) = assistant.extra.get("taskManagerTodos").and_then(serde_json::Value::as_array) {
+        let open: Vec<_> = todos.iter().filter(|todo| todo["status"] == "open").collect();
+        if !open.is_empty() {
+            out.push_str("Human to-dos (private context, not permission to execute):\n");
+            let cap=out.len()+budget/10;
+            for todo in open {
+                let line=format!("- {}: {}{}\n", cut(todo["id"].as_str().unwrap_or("unknown"),40), cut(todo["text"].as_str().unwrap_or(""),200), todo["dueAt"].as_u64().map(|due|format!(" (due epoch ms {due})")).unwrap_or_default());
+                if out.len()+line.len()>cap {break;}
+                out.push_str(&line);
+            }
+            out.push('\n');
+        }
+    }
+
     let open: Vec<_> = assistant.tasks.iter().filter(|t| !t.status.settled()).collect();
     if !open.is_empty() {
         out.push_str("Open tasks (facts from the app):\n");
@@ -264,4 +278,17 @@ pub fn consolidate_prompt(assistant: &PersonalAssistant, question: &str, reports
     }
     out.push_str("Answer with JSON only: {\"reply\": \"...\"}\n");
     out
+}
+
+#[cfg(test)]
+mod task_manager_todo_tests {
+    use super::*;
+    #[test]
+    fn open_todos_are_bounded_private_context_and_never_execution_authority() {
+        let mut assistant:PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","hostId":"h","name":"A","style":"","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[],"taskManagerTodos":[{"id":"todo-1","text":"Buy the blue cable","status":"open","dueAt":5000},{"id":"todo-2","text":"Already completed secret","status":"done"}]})).unwrap();
+        let text=assemble(&assistant,"What do I have to do?",1000,&[]);
+        assert!(text.contains("Buy the blue cable"));assert!(text.contains("not permission to execute"));assert!(!text.contains("Already completed secret"));
+        assistant.extra.insert("taskManagerTodos".into(),serde_json::json!([{"id":"todo-big","text":"x".repeat(50000),"status":"open"}]));
+        assert!(assemble(&assistant,"To-dos?",1000,&[]).len()<30000);
+    }
 }

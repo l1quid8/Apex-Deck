@@ -27,6 +27,7 @@ export function connectLocalVoice(
     let sequence = 0;
     let closed = false;
     let opened = false;
+    let dropped = 0;
     const timer = setTimeout(() => {
       ws.close();
       reject(Error("Voice connection timed out"));
@@ -43,7 +44,8 @@ export function connectLocalVoice(
         },
         audio: (pcm, generation) => {
           if (ws.bufferedAmount > 32000) {
-            failure(Error("Voice capture overloaded"));
+            if (++dropped === 1 || dropped % 32 === 0)
+              console.warn("[voice event] " + JSON.stringify({ ts: new Date().toISOString(), event: "micSendDropped", engine: "local", dropped, bytes: pcm.byteLength, bufferedBytes: ws.bufferedAmount }));
             return;
           }
           if (ws.readyState === WebSocket.OPEN)

@@ -339,7 +339,16 @@ impl crate::host::Host {
     /// The explicit delegation form supplies its own human authorization. Keep
     /// that event Done so the personal model never also processes the brief.
     /// Retries keep the same event and the ordinary delegation receipt.
-    pub(crate) fn personal_project_delegate_ui(self: &std::sync::Arc<Self>, mut input: DelegationInput) -> Result<Value, String> {
+    pub(crate) fn personal_project_delegate_ui(self: &std::sync::Arc<Self>, input: DelegationInput) -> Result<Value, String> {
+        self.personal_project_ui_internal(input, false)
+    }
+
+    /// Quick task entry always leaves a durable proposal for separate approval.
+    pub(crate) fn personal_project_propose_ui(self: &std::sync::Arc<Self>, input: DelegationInput) -> Result<Value, String> {
+        self.personal_project_ui_internal(input, true)
+    }
+
+    fn personal_project_ui_internal(self: &std::sync::Arc<Self>, mut input: DelegationInput, force_proposal: bool) -> Result<Value, String> {
         if !input.source_event_id.is_empty() { return Err("UI delegation records its own human request.".into()); }
         let assistant = self.personal_get(&input.assistant_id)?;
         let binding = assistant.projects.iter().find(|b| b.project == input.project).ok_or("Project is not assigned.")?;
@@ -366,8 +375,8 @@ impl crate::host::Host {
         })?;
         input.source_event_id=event_id;
         input.expected_revision=self.personal_get(&input.assistant_id)?.revision;
-        let receipt=self.prepare_personal_delegation(input)?;
-        if receipt["standingTrust"]==true {self.redispatch_recovered_queued()?;}
+        let receipt=self.prepare_personal_delegation_internal(input,None,force_proposal)?;
+        if !force_proposal && receipt["standingTrust"]==true {self.redispatch_recovered_queued()?;}
         Ok(receipt)
     }
 
@@ -382,17 +391,17 @@ impl crate::host::Host {
     }
 
     pub(crate) fn prepare_personal_delegation(&self, input: DelegationInput) -> Result<Value, String> {
-        self.prepare_personal_delegation_internal(input,None)
+        self.prepare_personal_delegation_internal(input,None,false)
     }
 
     /// A model reply's actual cost is recorded once with the completed reply.
     /// Reserve after that pending debit without inserting a duplicate cost or
     /// changing the human's saved daily limit before the reply is committed.
     pub(crate) fn prepare_personal_delegation_with_reply_cost(&self, input: DelegationInput, pending_actual_micros: u64) -> Result<Value, String> {
-        self.prepare_personal_delegation_internal(input,Some(pending_actual_micros))
+        self.prepare_personal_delegation_internal(input,Some(pending_actual_micros),false)
     }
 
-    fn prepare_personal_delegation_internal(&self, input: DelegationInput, returned_reply_cost: Option<u64>) -> Result<Value, String> {
+    fn prepare_personal_delegation_internal(&self, input: DelegationInput, returned_reply_cost: Option<u64>, force_proposal: bool) -> Result<Value, String> {
         let assistants = self.store().personal()?.unwrap_or_default().assistants;
         let assistant = assistants
             .iter()
@@ -406,6 +415,9 @@ impl crate::host::Host {
             let lineage = AssistantLineage {assistant:reference.clone(),project:input.project.clone(),source_event_id:input.source_event_id.clone(),delegation_id:input.delegation_id.clone()};
             if saved.lineage.as_ref() != Some(&lineage) || saved.brief != input.brief || saved.destination != input.destination || saved.mode != input.mode || saved.review_criteria != input.review_criteria {
                 return Err("Delegation ID already belongs to a different proposal.".into());
+            }
+            if force_proposal && task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true) {
+                return Err("This delegation ID already belongs to executable standing-authority work. Use a new proposal ID.".into());
             }
             return Ok(json!({"taskId":task.id,"project":lineage.project,"lineage":lineage,"status":task.status,"receiptId":saved.request_id,"standingTrust":task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true)}));
         }
@@ -429,8 +441,13 @@ impl crate::host::Host {
             let source = current.events.iter().find(|e| e.id == input.source_event_id).ok_or("Source event is no longer available.")?;
             // Hold the personal pause/configuration lock through proposal save.
             plan_delegation(current, &input, source, plan.owner.clone(), plan.preparation.revision)?;
+            // A concurrent normal delegation may have saved this receipt while context loaded.
+            // Recheck while holding the shared admission lock before proposal-only preparation.
+            if force_proposal && self.assistant_tasks.handoff_for_request(&plan.preparation.request_id).map_err(|e|e.to_string())?.is_some_and(|(_, task)|task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true)) {
+                return Err("This delegation ID already belongs to executable standing-authority work. Use a new proposal ID.".into());
+            }
             let returned_event=returned_reply_cost.map(|_|input.source_event_id.as_str());
-            let mut authority=standing_authority(current,&input.project,&profiles,input.mode,returned_event)?;
+            let mut authority=if force_proposal {None} else {standing_authority(current,&input.project,&profiles,input.mode,returned_event)?};
             if let Some(authority)=authority.as_mut() {
                 authority.remaining_budget_micros=authority.remaining_budget_micros.map(|remaining|remaining.saturating_sub(returned_reply_cost.unwrap_or(0)));
             }
