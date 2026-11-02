@@ -1879,9 +1879,6 @@ impl Host {
         let handle = self.handle(&id)?;
         let config = handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p| p.id == participant).cloned()
             .ok_or("that participant is no longer in this room")?;
-        if matches!(config.backend, apex_core::Backend::Agent { tool: AgentTool::Gemini, .. }) {
-            return Err("Antigravity can't be held to an access level, so restarting it wouldn't change what it can do.".into());
-        }
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         handle.runtime.stop(Some(&participant));
         // Each bot's turns run one after another, so this starts once the stopped turn has let go.
@@ -4674,7 +4671,7 @@ mod host_tests {
     }
 
     #[test]
-    fn apply_access_runs_the_bot_again_but_refuses_antigravity() {
+    fn apply_access_runs_the_bot_again() {
         let (host, runtime, data) = host("apply-access");
         let null = ParticipantId::new("null");
         host.room_create("r".into(), vec![scripted("null", &["again"])], RoomOptions::default(), None).unwrap();
@@ -4683,12 +4680,6 @@ mod host_tests {
         host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
         runtime.block_on(Arc::clone(&host).room_apply_access("r".into(), null.clone())).unwrap();
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::MessageAdded { message } if message.text == "again")).is_some());
-
-        let mut gemini = scripted("agy", &[]);
-        gemini.backend = apex_core::Backend::Agent { tool: AgentTool::Gemini, model: None };
-        host.room_create("g".into(), vec![gemini], RoomOptions::default(), None).unwrap();
-        let refused = runtime.block_on(Arc::clone(&host).room_apply_access("g".into(), ParticipantId::new("agy"))).unwrap_err();
-        assert!(refused.contains("Antigravity"), "{refused}");
         let _ = std::fs::remove_dir_all(data);
     }
 

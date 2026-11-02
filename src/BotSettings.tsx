@@ -32,8 +32,8 @@ interface Props {
   meters?: ReactNode;
   talkOnly?: boolean;
   accessPending?: boolean;
-  /** A change made while this bot works, with Apply now offered when that can work. */
-  accessChange?: { from: Access; to: Access; canApply: boolean };
+  /** A change made while this bot works, offered Apply now. */
+  accessChange?: { from: Access; to: Access };
   onApplyAccess?: () => void;
   /** The provider's usage resets, shown under Access. */
   resets?: ReactNode;
@@ -340,7 +340,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
       {talkOnly ? <div className="bot-access"><span className="model-select-label">Access</span><span>Talk only</span></div> : (tool || api) && <>
         <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
-        {accessPending && accessChange?.canApply && !laterChosen
+        {accessPending && accessChange && !laterChosen
           ? <div className="bot-access-choice" role="group" aria-label="When to apply this access">
               <p className="muted bot-access-note">Applies after this reply. Apply now stops this bot and restarts it from the chat, so it loses track of its current steps and a running command is cut off.</p>
               <div>

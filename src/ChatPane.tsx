@@ -106,7 +106,6 @@ import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.t
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { copyText, plainCopy } from "./copyText";
-import { canApplyAccessNow } from "./accessChange";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHold, type TurnKind } from "./turnQueue";
 import { queueSync } from "./phoneQueue";
 import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
@@ -3691,7 +3690,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
 
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} accessChange={(() => {
         const from = accessFrom[quickSettings.id], bot = participants.find(p => p.id === quickSettings.id);
-        return from && bot && from !== bot.access ? { from, to: bot.access, canApply: canApplyAccessNow(bot) } : undefined;
+        return from && bot && from !== bot.access ? { from, to: bot.access } : undefined;
       })()} onApplyAccess={() => {
         const id = quickSettings.id;
         setAccessFrom(({ [id]: _applied, ...rest }) => rest);
