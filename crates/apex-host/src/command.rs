@@ -230,6 +230,7 @@ pub enum Command {
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     RoomTargets { id: String, text: String },
+    RoomRefreshPlans { id: String },
     RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     VoiceCapabilities {},
     RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
@@ -641,6 +642,7 @@ impl Host {
                 _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
+            RoomRefreshPlans { id } => reply(self.room_refresh_plans(id)?),
             RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id } => {
                 if let Some(request_id) = client_turn_id {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
@@ -942,8 +944,9 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 221);
+        assert_eq!(names.len(), 222);
         for name in [
+            "room_refresh_plans",
             "room_curate",
             "room_curate_undo",
             "chat_profiles",

@@ -135,6 +135,8 @@ export interface Backend {
   worktreePrune(path: string): Promise<void>;
   roomPost(id: string, text: string, interactiveAnswers?: boolean): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
+  /** Read this thread's bots' plans again; the answer arrives as `plan_usage` events. */
+  roomRefreshPlans(id: string): Promise<void>;
   roomPostTo(id: string, text: string, targets: string[], interactiveAnswers?: boolean, voice?: { client_turn_id: string; max_bot_hops: 0 }): Promise<void>;
   /** Run participants on the transcript as it is, one after another, without
    *  posting anything. `hops` caps the rounds of bots answering bots that may
@@ -825,6 +827,7 @@ function demoBackend(): Backend {
     worktreeForget: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreePrune: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     roomTargets: async (id, text) => targetsFor(id, text),
+    roomRefreshPlans: async () => {},
     roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),
     roomPostTo: async (id, text, targets) => {
       if (!rooms.has(id) || targets.some(target => !rooms.get(id)!.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");

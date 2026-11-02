@@ -100,6 +100,7 @@ const COMMANDS = [
   ['roomPost', ['t', 'hi'], 'room_post', { id: 't', text: 'hi' }],
   ['roomPost', ['t', 'hi', true], 'room_post', { id: 't', text: 'hi', interactive_answers: true }],
   ['roomTargets', ['t', 'hi'], 'room_targets', { id: 't', text: 'hi' }],
+  ['roomRefreshPlans', ['t'], 'room_refresh_plans', { id: 't' }],
   ['roomPostTo', ['t', 'hi', ['p']], 'room_post_to', { id: 't', text: 'hi', targets: ['p'] }],
   ['roomPostTo', ['t', 'hi', ['p'], true], 'room_post_to', { id: 't', text: 'hi', targets: ['p'], interactive_answers: true }],
   ['roomTurn', ['t', ['p'], null], 'room_turn', { id: 't', participants: ['p'], hops: null }],

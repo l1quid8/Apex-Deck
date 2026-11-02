@@ -19,6 +19,9 @@ use apex_core::{AgentTool, PlanUsage};
 
 /// How long an answer is reused before the next caller reads again.
 const FRESH: Duration = Duration::from_secs(60);
+/// A turn that just ended spent plan, so an answer this old is already out of
+/// date. Long enough that bots finishing together share one read.
+pub(crate) const AFTER_TURN: Duration = Duration::from_secs(15);
 
 /// Why a read failed and how long to leave the source alone afterwards.
 #[derive(Debug)]
@@ -49,8 +52,13 @@ struct Slot {
 
 impl Slot {
     /// The answer to give without reading, or `None` when a read is due.
+    #[cfg(test)]
     fn answer(&self, now: Instant) -> Option<Option<PlanUsage>> {
-        let fresh = self.read_at.is_some_and(|at| now < at + FRESH);
+        self.answer_within(now, FRESH)
+    }
+
+    fn answer_within(&self, now: Instant, fresh: Duration) -> Option<Option<PlanUsage>> {
+        let fresh = self.read_at.is_some_and(|at| now < at + fresh);
         let quiet = self.quiet_until.is_some_and(|until| now < until);
         (fresh || quiet).then(|| self.last.clone())
     }
@@ -118,12 +126,12 @@ impl Provider {
     /// The shared answer for `key`, reading with `read` only when one is due.
     /// `Err` is given once per failed read; callers that come after it during
     /// the wait get the last answer quietly.
-    async fn get<F>(&self, key: &str, read: impl FnOnce() -> F) -> Result<Option<PlanUsage>, Failure>
+    async fn get<F>(&self, key: &str, fresh: Duration, read: impl FnOnce() -> F) -> Result<Option<PlanUsage>, Failure>
     where
         F: Future<Output = Result<PlanUsage, Failure>>,
     {
         let _gate = self.gate.lock().await;
-        if let Some(answer) = self.slots().entry(key.to_string()).or_default().answer(Instant::now()) {
+        if let Some(answer) = self.slots().entry(key.to_string()).or_default().answer_within(Instant::now(), fresh) {
             return Ok(answer);
         }
         let result = read().await;
@@ -168,8 +176,16 @@ pub(crate) async fn get<F>(tool: AgentTool, model: Option<&str>, read: impl FnOn
 where
     F: Future<Output = Result<PlanUsage, Failure>>,
 {
+    get_within(tool, model, FRESH, read).await
+}
+
+/// `get`, reusing an answer only while it is younger than `fresh`.
+pub(crate) async fn get_within<F>(tool: AgentTool, model: Option<&str>, fresh: Duration, read: impl FnOnce() -> F) -> Result<Option<PlanUsage>, Failure>
+where
+    F: Future<Output = Result<PlanUsage, Failure>>,
+{
     match provider(tool) {
-        Some(provider) => provider.get(&slot_key(model), read).await,
+        Some(provider) => provider.get(&slot_key(model), fresh, read).await,
         None => Ok(None),
     }
 }
@@ -202,6 +218,16 @@ mod tests {
             partial,
             reset_credits: None,
         }
+    }
+
+    #[test]
+    fn a_finished_turn_reads_sooner_but_a_burst_shares_one_read() {
+        let mut slot = Slot::default();
+        let now = Instant::now();
+        slot.remember(now, &plan(5, false));
+        assert_eq!(slot.answer_within(now + AFTER_TURN / 2, AFTER_TURN), Some(Some(plan(5, false))));
+        assert_eq!(slot.answer_within(now + AFTER_TURN, AFTER_TURN), None);
+        assert!(slot.answer(now + AFTER_TURN).is_some(), "an ordinary caller still reuses it");
     }
 
     #[test]
@@ -263,7 +289,7 @@ mod tests {
                 let (provider, reads) = (provider.clone(), reads.clone());
                 tokio::spawn(async move {
                     provider
-                        .get("", || async {
+                        .get("", FRESH, || async {
                             reads.fetch_add(1, Ordering::SeqCst);
                             tokio::time::sleep(Duration::from_millis(20)).await;
                             Ok(plan(5, false))
@@ -286,8 +312,8 @@ mod tests {
             reads.fetch_add(1, Ordering::SeqCst);
             Err(Failure::new("429", Failure::LIMITED))
         };
-        assert!(provider.get("", read).await.is_err());
-        assert_eq!(provider.get("", read).await.unwrap(), None);
+        assert!(provider.get("", FRESH, read).await.is_err());
+        assert_eq!(provider.get("", FRESH, read).await.unwrap(), None);
         assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 
@@ -297,10 +323,10 @@ mod tests {
         let read = |percent: u32| {
             move || async move { Ok(plan(percent, false)) }
         };
-        assert_eq!(provider.get("gemini-4-argon", read(100)).await.unwrap(), Some(plan(100, false)));
+        assert_eq!(provider.get("gemini-4-argon", FRESH, read(100)).await.unwrap(), Some(plan(100, false)));
         // A second model must not be handed the first one's answer.
-        assert_eq!(provider.get("gemini-3.8-flash", read(2)).await.unwrap(), Some(plan(2, false)));
-        assert_eq!(provider.get("gemini-4-argon", read(0)).await.unwrap(), Some(plan(100, false)));
+        assert_eq!(provider.get("gemini-3.8-flash", FRESH, read(2)).await.unwrap(), Some(plan(2, false)));
+        assert_eq!(provider.get("gemini-4-argon", FRESH, read(0)).await.unwrap(), Some(plan(100, false)));
         // The unnamed slot is still empty: a turn report would fill it.
         assert_eq!(provider.last(), None);
         assert_eq!(slot_key(Some(" Gemini-4-Argon ")), "gemini-4-argon");

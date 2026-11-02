@@ -460,6 +460,7 @@ interface TurnProgress {
 
 /** How long Copy reads "Copied". */
 const COPIED_MS = 1500;
+const PLAN_REFRESH_MS = 60_000;
 /** Said beside a paused queued message, so Resume is never a mystery. */
 const HOLD_REASON: Record<Exclude<QueueHold, "connection">, string> = { stopped: "you stopped this bot", failed: "its last reply failed" };
 
@@ -1690,6 +1691,16 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     const changed = () => turnQueue.availabilityChanged();
     changed(); return store.subscribe(changed);
   }, [backend, turnQueue]);
+  // Coming back to a thread, and every minute it keeps working, reads the plan again.
+  // The host shares reads, so several panes asking cost one; a finished turn it reads by itself.
+  useEffect(() => {
+    if (!watching) return;
+    const refresh = () => void backend.roomRefreshPlans(pane.id).catch(() => {});
+    refresh();
+    if (!busy) return;
+    const timer = setInterval(refresh, PLAN_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [watching, busy, backend, pane.id]);
   const voiceHost=backend.host?.id??'local';
   const voiceConfig=readVoiceSettings(voiceSettings);
   const voiceCandidates=profileMode || talkOnly?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,agentVoice:p.voice,roomTitle:pane.title,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));

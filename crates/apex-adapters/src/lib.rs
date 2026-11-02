@@ -236,6 +236,15 @@ pub fn participant_for_room(
 /// small quota group of its own (Antigravity's Argon), so the answer for one
 /// model is not the answer for another, and each model keeps its own answer.
 pub async fn plan_usage(tool: AgentTool, model: Option<&str>, context: &BuildContext) -> Option<PlanUsage> {
+    plan_usage_within(tool, model, context, None).await
+}
+
+/// `plan_usage` right after a turn, when an older answer no longer holds.
+pub async fn plan_usage_after_turn(tool: AgentTool, model: Option<&str>, context: &BuildContext) -> Option<PlanUsage> {
+    plan_usage_within(tool, model, context, Some(plan_cache::AFTER_TURN)).await
+}
+
+async fn plan_usage_within(tool: AgentTool, model: Option<&str>, context: &BuildContext, fresh: Option<std::time::Duration>) -> Option<PlanUsage> {
     let name = match tool {
         AgentTool::ClaudeCode => "Claude",
         AgentTool::Codex => "Codex",
@@ -254,8 +263,11 @@ pub async fn plan_usage(tool: AgentTool, model: Option<&str>, context: &BuildCon
             AgentTool::Muse => unreachable!("answered from the last turn above"),
         }
     };
-    plan_cache::get(tool, model, read)
-        .await
+    let answer = match fresh {
+        Some(fresh) => plan_cache::get_within(tool, model, fresh, read).await,
+        None => plan_cache::get(tool, model, read).await,
+    };
+    answer
         .map_err(|failure| {
             let wait = failure.wait.as_secs();
             eprintln!("[apex-deck] could not read {name} plan limits: {}; trying again in {wait}s", failure.why)
