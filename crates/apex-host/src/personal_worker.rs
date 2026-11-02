@@ -905,6 +905,8 @@ impl Host {
         if !initial.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) { return Ok(()); }
         let room = reply.task.as_ref().filter(|t| t.tool.as_deref().is_some_and(rooms::known))
             .map(|t| self.personal_room_target(&initial, t.argv.first().map(String::as_str).unwrap_or_default()));
+        let native_request = room.as_ref().and_then(|r| r.as_ref().ok()).and_then(|target|
+            reply.task.as_ref().and_then(|task| self.personal_management_request(&initial, target, event_id, asked, task)));
         let mut delegation_notes = Vec::new();
         for (index, proposed) in reply.delegations.iter().take(3).enumerate() {
             let current = self.personal_get(assistant_id)?;
@@ -940,7 +942,7 @@ impl Host {
             let forget: &[String] = if asked_to_forget { &reply.forget } else { &[] };
             apply_memory(assistant, remember, forget, event_id, at);
             if let Some(proposed) = reply.task {
-                propose_task(assistant, tools, &local, event_id, asked, proposed, room, outside, at);
+                propose_task(assistant, tools, &local, event_id, asked, proposed, room, native_request, outside, at);
             }
             if let Some(proposed) = reply.schedule {
                 propose_schedule(assistant, event_id, proposed, at);
@@ -1540,7 +1542,7 @@ fn queue_report(assistant: &mut PersonalAssistant, task_id: &str, op_id: &str, a
 
 /// A proposed task goes through the gateway: it runs, asks or is handed over.
 #[allow(clippy::too_many_arguments)]
-fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &str, event_id: &str, asked: &str, proposed: ProposedTask, room: Option<Result<rooms::Target, String>>, outside: bool, at: u64) {
+fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &str, event_id: &str, asked: &str, proposed: ProposedTask, room: Option<Result<rooms::Target, String>>, native_request: Option<String>, outside: bool, at: u64) {
     let tool = proposed.tool.clone().unwrap_or_else(|| COMMAND_TOOL.to_owned());
     if let Some(Err(why)) = &room {
         assistant.post("system", "update", format!("No task was made: {why}"), None, Some(event_id.to_owned()), at);
@@ -1596,11 +1598,18 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
     };
     let gate = gateway::gate(assistant, &task, Some(asked));
     let direct=crate::personal::permissions::direct_request_text(asked,crate::personal::permissions::capability(&operation));
+    // Only a checked current human request plus a live Always grant can
+    // distinguish requested native metadata changes from retrieved instructions.
+    // Keep the original outside flag for every other tool and permission mode.
+    let requested_always = native_request.as_deref() == Some(operation.hash().as_str())
+        && assistant.permissions.resolve(&operation, false, false).is_some_and(|g|
+            !g.revoked && g.mode == crate::personal::permissions::GrantMode::Always);
+    let authorization_outside = outside && !requested_always;
     let gate = match &room {
-        Some(target) => target.gate(gate, task.class, gateway::operation_mode(assistant, &operation, task.class), &operation.argv, if task.class==ToolClass::Read {asked}else{&direct}, outside),
+        Some(target) => target.gate(gate, task.class, gateway::operation_mode(assistant, &operation, task.class), &operation.argv, if task.class==ToolClass::Read {asked}else{&direct}, authorization_outside),
         None => gate,
     };
-    let permission_marker = crate::personal::permissions::marker(assistant, &task, false, outside);
+    let permission_marker = crate::personal::permissions::marker(assistant, &task, false, authorization_outside);
     let gate = if matches!(gate, gateway::Gate::Run(_)) && permission_marker.is_err() { gateway::Gate::Ask } else { gate };
     let class_word = match task.class { ToolClass::Read => "reading", ToolClass::Write => "changing things", ToolClass::Send => "sending", ToolClass::Spend => "spending" };
     let plan = operation.plan.as_ref().map(|p| describe_plan(assistant, p)).filter(|p| !p.is_empty()).map(|p| format!(" ({p})")).unwrap_or_default();
@@ -2020,7 +2029,7 @@ mod native_proposal_regression {
             let mut input=serde_json::json!({"goal":"Assign a worker","argv":["room.assign","thread","worker","Review this"]});
             if let Some(tool)=tool {input["tool"]=tool.into();}
             let proposed: ProposedTask=serde_json::from_value(input).unwrap();
-            propose_task(&mut assistant,&WorkerTools::real(),"h","pe-1","Assign a worker",proposed,None,false,5);
+            propose_task(&mut assistant,&WorkerTools::real(),"h","pe-1","Assign a worker",proposed,None,None,false,5);
             assert!(assistant.tasks.is_empty(),"a native action must never become a command approval or executable task");
             let refusal=&assistant.messages.last().expect("visible refusal").text;
             assert!(refusal.contains("No task was made")&&refusal.contains("room.assign")&&refusal.contains("tool"),"refusal should explain the native tool form: {refusal}");

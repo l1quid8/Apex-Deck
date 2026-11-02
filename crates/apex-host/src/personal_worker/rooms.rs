@@ -271,6 +271,99 @@ impl Host {
             .ok_or_else(|| "That chat isn't in a project this assistant can reach.".to_owned())
     }
 
+    /// Proof of exact parameters in the current trusted human event. This is
+    /// deliberately a small single-imperative grammar, not a search for verbs
+    /// inside quoted, conditional or explanatory material. The proof is bound
+    /// to the native operation hash; a live Always grant is checked separately.
+    pub(super) fn personal_management_request(&self, assistant: &PersonalAssistant, room: &Target, event_id: &str, asked: &str, proposed: &super::ProposedTask) -> Option<String> {
+        use crate::personal::{EventSource, permissions::{capability, direct_request_text}};
+        let tool = proposed.tool.as_deref()?;
+        if !matches!(tool, CREATE | RENAME | ARCHIVE | TRASH | RESTORE | DELETE | ADD | REMOVE)
+            || proposed.machine.is_some() || proposed.every_minutes.is_some()
+            || proposed.start_in_minutes.is_some() || proposed.after.is_some() { return None; }
+        let op = OperationSpec { tool: tool.into(), host: room.project.host_id.clone(), cwd: room.project.cwd.clone(), argv: proposed.argv.clone(), plan: None };
+        if op.argv.first() != Some(&room.thread) || room.refusal(tool, &op.argv, false, false).is_some() { return None; }
+        if tool == CREATE && self.store().room(&op.argv[1]).ok()?.is_some() { return None; }
+        let event = assistant.events.iter().find(|e| e.id == event_id)?;
+        let EventSource::Human { text, view_context } = &event.source else { return None; };
+        if text != asked || text.chars().any(|c| c.is_control() || matches!(c, '`' | '\'' | '"' | '<' | '>'))
+            || direct_request_text(text, capability(&op)).is_empty() { return None; }
+        let text = text.trim();
+        let mut command = text;
+        for prefix in ["can you please ", "could you please ", "would you please ", "will you please ", "can you ", "could you ", "would you ", "will you ", "please "] {
+            if command.get(..prefix.len()).is_some_and(|s| s.eq_ignore_ascii_case(prefix)) { command = &command[prefix.len()..]; break; }
+        }
+        let (verb, body) = command.split_once(' ')?;
+        let body = body.strip_prefix("only ").unwrap_or(body);
+        let reachable = self.personal_rooms(assistant).ok()?;
+        let aliases = |target: &Target| -> Vec<String> {
+            [&target.thread, &target.title].into_iter().filter(|name| !name.is_empty()).flat_map(|name|
+                [name.clone(), format!("thread {name}"), format!("chat {name}"), format!("the thread {name}"), format!("the chat {name}"), format!("the disposable thread {name}"), format!("disposable thread {name}")]).collect()
+        };
+        let other_names: std::collections::HashSet<_> = reachable.iter().filter(|r| r.thread != room.thread).flat_map(aliases).collect();
+        let mut names = aliases(room);
+        // Resolve complete expressions, including prefixes and IDs. A raw
+        // unique title can still collide with another room's expanded alias.
+        names.retain(|name| !other_names.contains(name) && !name.ends_with('.')
+            && !(tool == DELETE && name.to_lowercase().ends_with(" permanently")));
+        // Delete's optional suffix must not also name a different literal room.
+        // Punctuated/suffix-shaped titles can still be addressed by ID or focus.
+        if tool == DELETE && other_names.iter().any(|name| body == name || body == format!("{name} permanently")) { return None; }
+        // More than one structural separator can change the source/destination
+        // split. Complex names stay with the human instead of guessing.
+        let separator = match tool { RENAME | ADD => Some(" to "), REMOVE => Some(" from "), CREATE => Some(" in "), _ => None };
+        if separator.is_some_and(|separator| body.to_lowercase().matches(separator).count() > 1) { return None; }
+        let focused = view_context.as_ref().is_some_and(|v| v.host_id == room.project.host_id && v.focused_thread_id.as_deref() == Some(&room.thread));
+        // A saved title cannot turn a deictic phrase into a literal target.
+        // Explicit forms such as "thread here" remain available for that title.
+        if !focused { names.retain(|name| !["this thread", "this chat", "this", "here", "this project"].contains(&name.to_lowercase().as_str())); }
+        if focused {
+            names.extend(["this thread", "this chat", "this", "here"].map(str::to_owned));
+        }
+        if tool == CREATE {
+            names.push(format!("project {}", room.project.cwd));
+            if focused { names.push("this project".into()); }
+        }
+        let mut expected = Vec::new();
+        match tool {
+            RENAME if verb.eq_ignore_ascii_case("rename") => for name in names { expected.push(format!("{name} to {}", op.argv[1])); },
+            CREATE if verb.eq_ignore_ascii_case("create") => for name in names {
+                for article in ["", "a "] {
+                    // Parse explicit title labels before the unlabeled form;
+                    // otherwise a model title could swallow the word "titled".
+                    let labelled = ["thread titled ", "thread named ", "a thread titled ", "a thread named "].iter().any(|prefix| body.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(prefix)));
+                    if !labelled {
+                        expected.push(format!("{article}thread {} in {name}", op.argv[2]));
+                        if name == "here" { expected.push(format!("{article}thread {} here", op.argv[2])); }
+                    }
+                    for label in ["titled", "named"] {
+                        expected.push(format!("{article}thread {label} {} in {name}", op.argv[2]));
+                        if name == "here" { expected.push(format!("{article}thread {label} {} here", op.argv[2])); }
+                    }
+                }
+            },
+            ARCHIVE | TRASH | RESTORE | DELETE if verb.eq_ignore_ascii_case(tool.strip_prefix("room.")?) => {
+                for name in names { expected.push(name.clone()); if tool == DELETE { expected.push(format!("{name} permanently")); } }
+            },
+            ADD | REMOVE if verb.eq_ignore_ascii_case(if tool == ADD {"add"} else {"remove"}) => {
+                let id = &op.argv[1];
+                let mut workers = room.workers.clone();
+                if tool == ADD {
+                    for other in reachable.iter().filter(|r| r.project == room.project) { workers.extend(other.workers.clone()); }
+                    workers.extend(self.chat_saved_profiles().ok()?.into_iter().map(|p| (p.id.to_string(), p.display_name)));
+                }
+                if !workers.iter().any(|(worker, _)| worker == id) { return None; }
+                let mut identities = vec![id.clone()];
+                for (worker, name) in &workers {
+                    if worker == id && !name.is_empty() && !workers.iter().any(|(other, title)| other != id && (title == name || other == name)) { identities.push(name.clone()); }
+                }
+                for name in names { for identity in &identities { expected.push(format!("{identity} {} {name}", if tool == ADD {"to"} else {"from"})); } }
+            },
+            _ => return None,
+        }
+        expected.iter().any(|expected| body == expected).then(|| op.hash())
+    }
+
     pub(crate) fn room_entry(&self, room: &Target) -> Value {
         let saved = self.store().room(&room.thread).ok().flatten();
         let last = saved.as_ref().and_then(|s| s.snapshot.transcript.last());
