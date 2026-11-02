@@ -306,13 +306,16 @@ final class Accessibility {
     }
     guard string(window, kAXDocumentAttribute) == s.document else { throw Refusal("window_document_changed") }
     guard let focus = s.focus, pid(focus) == s.app.processIdentifier, safe(focus) else { return nil }
-    if let print = s.focusFingerprint, print != fingerprint(focus) { throw Refusal("focused_control_changed") }
     return focus
   }
   /// Keys and text land on the app's focused control, so it must be the one the bot read.
   func liveFocus(_ s: Snapshot) throws -> AXUIElement {
     let root = AXUIElementCreateApplication(s.app.processIdentifier)
-    guard let focus = try validate(s), same(element(root, kAXFocusedUIElementAttribute), focus) else {
+    guard let focus = try validate(s) else { throw Refusal("foreign_secure_or_unknown_focus") }
+    // Numbered actions revalidate their engine target, independently of focus.
+    // Only untargeted input depends on the focused control's captured geometry/label.
+    if let print = s.focusFingerprint, print != fingerprint(focus) { throw Refusal("focused_control_changed") }
+    guard same(element(root, kAXFocusedUIElementAttribute), focus) else {
       throw Refusal("foreign_secure_or_unknown_focus")
     }
     guard attr(focus, kAXEnabledAttribute) as? Bool != false else { throw Refusal("focus_disabled") }

@@ -33,6 +33,29 @@ final class BrowserLiveTests: XCTestCase {
     let s = try read(ax, session, latch)
     print("LIVE read", bundle, "bytes", s.output.utf8.count, "partial", s.output.contains("reading: partial"), "pixels", s.screenshotSafe)
   }
+  /// An unrelated focused control can move while the retained button remains valid.
+  /// A numbered action validates its own engine target; only untargeted keys/text
+  /// depend on the captured focus fingerprint.
+  func testWindowReadingSurvivesChangedUnrelatedFocusButKeysStillRefuse() throws {
+    guard let bundle = ProcessInfo.processInfo.environment["APEX_LIVE_READ"] else { throw XCTSkip("live only") }
+    let ax = Accessibility(); ax.targetBundle = bundle
+    let session = EngineSession(); let latch = Latch(); latch.start(); latch.setTap(true)
+    let native = try ax.capture(epoch: latch.state().0)
+    let window = try XCTUnwrap(native.window)
+    // Model a retained focus whose label/frame has changed since observation.
+    // The window is a real safe AX element in the app, so validation reaches
+    // the stale fingerprint check rather than failing on an invalid handle.
+    let staleFocus = Snapshot(id: native.id, app: native.app, launch: native.launch,
+      window: window, document: native.document, focus: window, value: nil,
+      range: nil, epoch: native.epoch, focusFingerprint: "previous focus geometry",
+      controls: native.controls, output: native.output, screenshotSafe: native.screenshotSafe)
+    XCTAssertNoThrow(try ax.validate(staleFocus), "window validation must not depend on an unrelated focus")
+    XCTAssertNoThrow(try session.capture(native: staleFocus, id: "live", latch: latch, ax: ax),
+      "a fresh reading must survive unrelated focus changes")
+    XCTAssertThrowsError(try ax.liveFocus(staleFocus)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "focused_control_changed")
+    }
+  }
   private func liveServer(_ bundle: String) throws -> Server {
     let server = Server()
     let turn: [String: Any] = ["threadId": "thread", "participantId": "agent", "turnToken": String(repeating: "b", count: 64),
