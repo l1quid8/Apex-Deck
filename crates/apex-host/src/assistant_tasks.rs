@@ -147,6 +147,16 @@ pub struct AssistantLineage {
     pub delegation_id: String,
 }
 
+/// Constructed only after the saved assistant and selected project have been
+/// checked under the personal configuration lock. Never accepted from IPC.
+pub(crate) struct StandingHandoffAuthority {
+    pub policy_hash: String,
+    pub worker_hash: String,
+    pub budget_day: u64,
+    pub remaining_budget_micros: Option<u64>,
+    pub unknown_cost_accepted: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum DesiredState { #[default] Running, Paused, Cancelled }
@@ -523,22 +533,68 @@ impl AssistantTasks {
 
     /// Receipt, proposal and batch metadata share one durable ledger mutation.
     pub fn prepare_handoff(&self, input: HandoffPreparation) -> Result<AssistantTask, TaskError> {
+        self.prepare_handoff_authorized(input, None)
+    }
+
+    /// Standing authority and the queued task are committed together; a crash
+    /// cannot leave an apparent human approval or an intermediate proposal.
+    pub(crate) fn prepare_handoff_authorized(&self, input: HandoffPreparation, authority: Option<StandingHandoffAuthority>) -> Result<AssistantTask, TaskError> {
         let mut document = self.inner.document.lock().unwrap();
         if let Some(task) = handoff_receipt(&document, &input)? { return Ok(task); }
         if document.requests.contains_key(&input.request_id) {
             return Err(TaskError::new(TaskErrorKind::RequestIdConflict, "Request ID already belongs to a human request."));
         }
+        let remaining = if let Some(authority) = &authority {
+            let lineage = input.lineage.as_ref().ok_or_else(||TaskError::new(TaskErrorKind::InvalidRequest,"Standing delegation needs verified assistant lineage."))?;
+            authority.remaining_budget_micros.map(|available| available.saturating_sub(standing_budget_committed(&document, &lineage.assistant, authority.budget_day, None)))
+        } else { None };
+        if remaining == Some(0) { return Err(TaskError::new(TaskErrorKind::InvalidRequest,"The remaining daily budget is exhausted or reserved by another delegated task.")); }
         let before = document.clone();
-        let mut task = make_task(&mut document, input.owner.clone(), Some(input.destination.clone()), TaskOrigin::Proposal, input.original_request.clone(), input.brief.clone(), TaskStatus::Proposed);
+        let status = if authority.is_some() {TaskStatus::Queued} else {TaskStatus::Proposed};
+        let mut task = make_task(&mut document, input.owner.clone(), Some(input.destination.clone()), TaskOrigin::Proposal, input.original_request.clone(), input.brief.clone(), status);
         task.mode = input.mode;
         task.review_criteria = input.review_criteria.clone();
         task.result_data = Some(serde_json::json!({"batchId":input.batch_id,"requestId":input.request_id,"monitorRevision":input.revision,"mode":input.mode,"checks":[],"taskHistory":[{"kind":"request","text":input.original_request}]}));
         task.lineage = input.lineage.clone();
         if let Some(context) = &input.context { task.result_data.as_mut().unwrap()["delegationContext"] = context.clone(); }
+        if let Some(authority) = authority {
+            let data = task.result_data.as_mut().unwrap();
+            data["standingTrust"] = serde_json::json!(true);
+            data["humanApproved"] = serde_json::json!(false);
+            data["standingTrustPolicy"] = serde_json::json!(authority.policy_hash);
+            data["standingWorkerHash"] = serde_json::json!(authority.worker_hash);
+            data["budgetDay"] = serde_json::json!(authority.budget_day);
+            data["spendLimitMicros"] = serde_json::json!(remaining);
+            data["unknownCostAccepted"] = serde_json::json!(authority.unknown_cost_accepted);
+        }
         document.tasks.insert(task.id.clone(), task.clone());
         document.handoffs.insert(input.request_id.clone(), HandoffReceipt { payload: input, task_id: task.id.clone() });
         save_mutation(&self.inner, &mut document, before)?;
         Ok(task)
+    }
+
+    pub(crate) fn standing_budget_available(&self, task: &AssistantTask, day: u64, available: u64) -> bool {
+        let Some(lineage) = &task.lineage else {return false};
+        let document = self.inner.document.lock().unwrap();
+        let committed = standing_budget_committed(&document, &lineage.assistant, day, Some(&task.id));
+        task.result_data.as_ref().and_then(|data|data["spendLimitMicros"].as_u64())
+            .is_some_and(|limit|limit > 0 && limit <= available.saturating_sub(committed))
+    }
+
+    pub(crate) fn standing_spent_or_reserved(&self, assistant: &crate::personal_workspace::AssistantRef, day: u64) -> u64 {
+        standing_budget_committed(&self.inner.document.lock().unwrap(), assistant, day, None)
+    }
+
+    pub(crate) fn hold_standing_queue(&self, current: &AssistantTask, reason: &str) -> Result<AssistantTask, TaskError> {
+        let mut document=self.inner.document.lock().unwrap();let before=document.clone();
+        let task=document.tasks.get_mut(&current.id).ok_or_else(||TaskError::new(TaskErrorKind::NotFound,"Task not found."))?;
+        check_owner_revision(task,current.revision,&current.owner)?;
+        if task.status!=TaskStatus::Queued || !task.attempts.is_empty() || task.result_data.as_ref().is_none_or(|data|data["standingTrust"]!=true) {
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition,"Only an unstarted standing delegation can wait for a provider cost."));
+        }
+        if task.result.as_deref()==Some(reason) {return Ok(task.clone())}
+        task.result=Some(reason.into());task.updated_at_ms=now_ms();
+        let held=task.clone();save_mutation(&self.inner,&mut document,before)?;Ok(held)
     }
 
     /// Proactive proposals never dispatch until separately authorized.
@@ -1236,6 +1292,22 @@ impl AssistantTasks {
         }
         Ok(())
     }
+}
+
+fn standing_budget_committed(document: &Document, assistant: &crate::personal_workspace::AssistantRef, day: u64, exclude: Option<&str>) -> u64 {
+    document.tasks.values().filter(|task| {
+        exclude != Some(task.id.as_str()) && task.lineage.as_ref().is_some_and(|lineage|&lineage.assistant==assistant)
+            && task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true && data["budgetDay"].as_u64()==Some(day))
+    }).map(|task| {
+        if matches!(task.status,TaskStatus::Done|TaskStatus::Cancelled|TaskStatus::Failed) && task.attempts.is_empty() {return 0}
+        let settled=task.attempts.last().is_some_and(|attempt|attempt.finished_at_ms.is_some());
+        if settled && !matches!(task.status,TaskStatus::Queued|TaskStatus::Running) {
+            if let Some(usage)=task.usage.as_ref().filter(|usage|usage.unknown_cost_turns==0) {
+                if let Some(cost)=usage.cost_micros {return cost}
+            }
+        }
+        task.result_data.as_ref().and_then(|data|data["spendLimitMicros"].as_u64()).unwrap_or(0)
+    }).fold(0u64,u64::saturating_add)
 }
 
 fn make_task(

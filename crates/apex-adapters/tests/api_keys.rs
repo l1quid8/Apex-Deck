@@ -29,6 +29,7 @@ async fn setup() -> tokio::sync::MutexGuard<'static, ()> {
 
 fn config(id: &str, backend: Backend) -> ParticipantConfig {
     ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new(id),
         display_name: id.to_string(),
         backend,
@@ -43,6 +44,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
 
 fn request(text: &str) -> TurnRequest {
     TurnRequest {
+        computer: None,
         effort_override: None,
         access: None,
         system: "You are a test bot.".into(),

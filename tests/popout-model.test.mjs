@@ -256,3 +256,39 @@ test('Artifacts popout follows its visible thread and workspace while another to
   assert.equal(followedTabPane('artifacts',[thread,terminal],'thread',null),null,'no hidden thread leaks into the tab');
   assert.equal(followedTabPane('files',[thread,terminal],'terminal','thread'),terminal,'other tools still follow focus');
 });
+
+
+test("the floating assistant window is a view: it shows one conversation and can only ask", async () => {
+  const { assistantFloatState, validFloatAction, assistantCallCandidate } = await import("../src/assistantFloat.ts");
+  const ref = { hostId: "h", assistantId: "a" };
+  const lane = { name: "Alfred", offline: false, assistant: { conversationFrom: 10, messages: [
+    { id: "old", role: "human", kind: "chat", text: "old", at: 5 },
+    { id: "new", role: "assistant", kind: "chat", text: "hi", at: 20 },
+    { id: "ask", role: "system", kind: "approval", text: "private detail", at: 21 },
+    { id: "note", role: "system", kind: "notice", text: "n", at: 22 },
+  ] } };
+  const voice = { status: "listening", muted: true, startedAt: 7, scope: { hostId: "h", roomId: "assistant:a" } };
+  const state = assistantFloatState({ lane, ref, draft: "typed", error: "", alwaysOnTop: false, voice });
+  assert.deepEqual(state.lines.map(line => line.id), ["new", "ask"], "a new conversation hides older lines, which stay saved");
+  assert.equal(state.lines[1].approval, true);
+  assert.deepEqual(state.call, { muted: true, startedAt: 7 });
+  assert.equal(state.draft, "typed");
+  assert.equal(assistantFloatState({ lane, ref, draft: "", error: "", alwaysOnTop: false, voice: { ...voice, scope: { hostId: "other", roomId: "assistant:a" } } }).call, null, "the same id on another host is another call");
+  assert.equal(assistantFloatState({ lane, ref, draft: "", error: "", alwaysOnTop: false, voice: { ...voice, status: "off" } }).call, null);
+  assert.equal(assistantCallCandidate(lane, ref).roomId, "assistant:a");
+  assert.ok(validFloatAction({ type: "assistant-send", text: "hi", requestId: "r-1" }));
+  for (const bad of [null, { type: "close-pane" }, { type: "assistant-send", text: " ", requestId: "r" }, { type: "assistant-send", text: "hi", requestId: "../x" }, { type: "assistant-mute", muted: "yes" }]) assert.equal(validFloatAction(bad), false);
+});
+
+test("an assistant window keeps its place and pin, and survives the restore of panes", async () => {
+  const { PopoutLayoutStore, fitPopoutBounds } = await import("../desktop/popoutLayout.mjs");
+  const dir = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "float-layout-"));
+  const store = new PopoutLayoutStore(dir + "/layout.json");
+  store.set({ kind: "assistant", id: "[h,a]", bounds: { x: 3000, y: 10, width: 380, height: 560 }, maximized: false, alwaysOnTop: true });
+  store.set({ kind: "pane", id: "gone", bounds: { x: 0, y: 0, width: 400, height: 300 }, maximized: false });
+  assert.deepEqual(store.restore({ panes: [], tabs: [] }), [], "an assistant window reopens only by choice");
+  const saved = new PopoutLayoutStore(dir + "/layout.json").get("assistant", "[h,a]");
+  assert.equal(saved.alwaysOnTop, true);
+  const fitted = fitPopoutBounds(saved.bounds, [{ x: 0, y: 0, width: 1440, height: 900 }]);
+  assert.ok(fitted.x + fitted.width <= 1440, "a removed screen pulls the window back");
+});

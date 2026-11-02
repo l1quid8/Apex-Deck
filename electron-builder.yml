@@ -27,6 +27,8 @@ files:
   - "!desktop/generated-ui/run-packaged-*.mjs"
   - "!desktop/generated-ui/runtime-smoke.mjs"
 extraResources:
+  - from: build/unified-computer-use/Unified Computer Use.app
+    to: Unified Computer Use.app
   - from: voice-sidecar
     to: voice-sidecar
     filter: ["**/*", "!**/__pycache__/**", "!tests/**", "!.venv/**"]
@@ -58,7 +60,7 @@ dmg:
   # One fixed name, like the installer: each build overwrites the last one
   # instead of leaving release/ full of near-identical disk images. The version
   # and the stamped commit are in the bundle and in the .pkg manifest sidecar.
-  artifactName: Apex-Deck.${ext}
+  artifactName: Apex-Deck_${version}_${arch}.${ext}
 
 # These are flipped before signing. JS startup checks are only a second layer.
 electronFuses:

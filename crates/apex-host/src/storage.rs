@@ -65,11 +65,19 @@ pub struct ChatMovedTo {
 #[serde(rename_all = "camelCase")]
 pub struct ChatRoomMeta {
     #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_managed: bool,
+    #[serde(default)]
+    pub archive_managed: bool,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub updated_at: u64,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,12 +132,20 @@ fn crash_here(_: PromoteCrash) -> Result<(), String> { Ok(()) }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatListEntry {
+    #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_explicit: bool,
+    #[serde(default)]
+    pub archive_explicit: bool,
     pub id: String,
     pub kind: apex_core::RoomKind,
     pub title: String,
     pub participants: Vec<apex_core::ParticipantConfig>,
     pub updated_at: u64,
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
     pub cwd: Option<String>,
     pub folder_name: Option<String>,
     pub promoted_from: Option<String>,
@@ -1001,12 +1017,13 @@ impl Store {
         let mut metas = self.chat_metas_held()?;
         let mut meta = metas.remove(id).unwrap_or_default();
         f(&mut meta);
+        meta.metadata_revision=meta.metadata_revision.checked_add(1).ok_or("Thread metadata revision exhausted.")?;
         metas.insert(id.into(), meta.clone());
         self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
         Ok(meta)
     }
 
-    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    /// Every authority-validated saved chat or Work room. Catalog metadata is optional.
     pub fn chat_list(&self) -> Result<Vec<ChatListEntry>, String> {
         let metas = self.chat_metas_held()?;
         let authorities = self.room_authorities()?;
@@ -1040,9 +1057,6 @@ impl Store {
                 Ok(saved) => saved,
                 Err(_) => continue,
             };
-            if !saved.snapshot.kind.is_chat() && meta.is_none() {
-                continue;
-            }
             let meta = meta.unwrap_or_default();
             let last_msg_at = saved
                 .snapshot
@@ -1052,6 +1066,7 @@ impl Store {
                 .max()
                 .unwrap_or(0);
             let updated_at = meta.updated_at.max(last_msg_at);
+            let title_explicit=meta.title_managed&&!meta.title.trim().is_empty();
             let title = if meta.title.trim().is_empty() {
                 "New chat".to_string()
             } else {
@@ -1078,12 +1093,16 @@ impl Store {
                 })
                 .collect();
             out.push(ChatListEntry {
+                metadata_revision: meta.metadata_revision,
+                title_explicit,
+                archive_explicit: meta.archive_managed,
                 id,
                 kind: saved.snapshot.kind,
                 title,
                 participants,
                 updated_at,
                 archived: meta.archived,
+                trashed_at: meta.trashed_at,
                 cwd: saved.cwd,
                 folder_name,
                 promoted_from: meta.promoted_from,
@@ -1328,6 +1347,30 @@ mod tests {
         assert_eq!(std::fs::read(store.room_path("destination")).unwrap(), bytes);
         drop(host);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_list_includes_native_zero_bot_work_rooms_without_optional_metadata() {
+        let runtime=tokio::runtime::Runtime::new().unwrap();
+        let root=temp();
+        let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();
+        let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let host=crate::Host::new(crate::HostPaths{data:root.clone(),downloads:None},runtime.handle().clone());
+        let snapshot=host.room_create("native-work".into(),vec![],RoomOptions::default(),Some(cwd.clone())).unwrap();
+        assert_eq!(snapshot.kind,apex_core::RoomKind::Work);assert!(snapshot.participants.is_empty());
+        assert!(host.store().chat_meta("native-work").unwrap().is_none(),"normal native creation does not require catalog metadata");
+        let rows=host.store().chat_list().unwrap();
+        let row=rows.iter().find(|row|row.id=="native-work").expect("the native Work thread must be discoverable before naming it or adding bots");
+        assert_eq!(row.kind,apex_core::RoomKind::Work);assert_eq!(row.cwd.as_deref(),Some(cwd.as_str()));assert!(row.participants.is_empty());
+        assert!(!row.archived);assert!(row.trashed_at.is_none());assert!(!row.title_explicit);
+        host.chat_update_meta("native-work".into(),Some("Native work".into()),Some(true),None).unwrap();
+        host.room_set_trashed("native-work".into(),true).unwrap();
+        let row=host.store().chat_list().unwrap().into_iter().find(|row|row.id=="native-work").unwrap();
+        assert_eq!(row.title,"Native work");assert!(row.archived);assert!(row.trashed_at.is_some());
+        host.room_delete("native-work".into()).unwrap();
+        drop(host);drop(runtime);
+        // Native checkpoint workers may still be finishing in this temp fixture.
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]

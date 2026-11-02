@@ -2277,6 +2277,7 @@ mod tests {
         impl apex_core::Participant for FileWriterBot {
             fn config(&self) -> &apex_core::ParticipantConfig {
                 Box::leak(Box::new(apex_core::ParticipantConfig {
+                    can_read_images: false,
                     id: self.id.clone(),
                     display_name: self.id.as_str().to_string(),
                     backend: apex_core::Backend::Scripted { lines: vec![] },
@@ -2394,6 +2395,7 @@ mod tests {
         impl apex_core::Participant for WaitingBotA {
             fn config(&self) -> &apex_core::ParticipantConfig {
                 Box::leak(Box::new(apex_core::ParticipantConfig {
+                    can_read_images: false,
                     id: ParticipantId::new("A"),
                     display_name: "A".into(),
                     backend: apex_core::Backend::Scripted { lines: vec![] },
@@ -2428,6 +2430,7 @@ mod tests {
         impl apex_core::Participant for FastBotB {
             fn config(&self) -> &apex_core::ParticipantConfig {
                 Box::leak(Box::new(apex_core::ParticipantConfig {
+                    can_read_images: false,
                     id: ParticipantId::new("B"),
                     display_name: "B".into(),
                     backend: apex_core::Backend::Scripted { lines: vec![] },

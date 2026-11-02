@@ -45,6 +45,7 @@ export function noteLines(curation: Curation, name: string, sealed: boolean, tim
   const count = countOf(curation);
   const ranges = curation.hidden.map(rangeOf).join(", ");
   if (curation.undone != null) {
+    if (sealed) return [`${name} hid ${count === 1 ? "message" : "messages"} ${ranges} at ${time(curation.when)}. You restored ${count === 1 ? "this message" : "these messages"} at ${time(curation.undone)}. ${count === 1 ? "It’s" : "They’re"} now before the latest /compact. ${originals(count)}`];
     const them = count === 1 ? "it" : "them";
     return [`${name} hid ${count === 1 ? "message" : "messages"} ${ranges} at ${time(curation.when)}. You brought ${them} back at ${time(curation.undone)}, so bots see ${them} again.`];
   }

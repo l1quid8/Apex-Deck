@@ -1348,3 +1348,62 @@ fn read_only_line_never_doubles_the_full_stop() {
         "Beta is read-only this turn: Alpha is editing and Deck couldn't make a separate copy (The folder is not a Git repository)."
     );
 }
+
+#[derive(Clone)]
+struct LifecycleProbe {
+    starts: Arc<Mutex<Vec<apex_core::Access>>>,
+    finishes: Arc<AtomicUsize>,
+}
+struct LifecycleLease(Arc<AtomicUsize>);
+impl Drop for LifecycleLease { fn drop(&mut self) {self.0.fetch_add(1,Ordering::SeqCst);} }
+impl apex_core::TurnLifecycleHook for LifecycleProbe {
+    fn start<'a>(&'a self,_:&'a ParticipantId,_:&'a mut TurnRequest,access:apex_core::Access)->futures::future::BoxFuture<'a,Option<Box<dyn Send>>> {
+        Box::pin(async move {self.starts.lock().unwrap().push(access);Some(Box::new(LifecycleLease(self.finishes.clone())) as Box<dyn Send>)})
+    }
+}
+#[test]
+fn lifecycle_lease_finishes_on_success_failure_stop_and_dropped_future() {
+    use futures::FutureExt;
+    struct Failing(ParticipantConfig);
+    #[async_trait]
+    impl Participant for Failing {
+        fn config(&self)->&ParticipantConfig {&self.0}
+        async fn respond(&self,_:TurnRequest,_:DeltaSink<'_>)->Result<Reply,ParticipantError>{Err(ParticipantError::Failed("fixture".into()))}
+    }
+    block_on(async {
+        let probe=LifecycleProbe {starts:Arc::default(),finishes:Arc::default()};
+        for mode in 0..4 {
+            let (sender,release)=oneshot::channel();
+            let config=ScriptedParticipant::new("null",&[]).config().clone();
+            let bot:Arc<dyn Participant>=match mode {
+                0=>Arc::new(ScriptedParticipant::new("null",&["done"])),
+                1=>Arc::new(Failing(config)),
+                _=>Arc::new(Held {config,release:Mutex::new(Some(release)),started:None,cleanup_error:false})
+            };
+            let runtime=ConcurrentRoom::new(Room::new(vec![bot],RoomOptions::default())).with_turn_lifecycle(Arc::new(probe.clone()));
+            let batch=runtime.begin_post("@null go",None,&|_|{}).await.unwrap();
+            let mut run=Box::pin(runtime.run(batch,&|_|{}));
+            if mode<2 {run.await;} else {
+                assert!(run.as_mut().now_or_never().is_none());
+                if mode==2 {runtime.stop(None);run.await;} else {drop(run);}
+                drop(sender);
+            }
+            assert_eq!(probe.finishes.load(Ordering::SeqCst),mode+1);
+        }
+        assert_eq!(probe.starts.lock().unwrap().len(),4);
+    });
+}
+
+#[test]
+fn lifecycle_receives_read_scope_for_planning_turns_without_a_workspace() {
+    block_on(async {
+        let probe=LifecycleProbe {starts:Arc::default(),finishes:Arc::default()};
+        let mut config=ScriptedParticipant::new("null",&["plan"]).config().clone();config.access=apex_core::Access::Full;
+        let room=Room::new(vec![Arc::new(ScriptedParticipant::from_config(config))],RoomOptions::default());
+        room.plan_handle().store(true,Ordering::SeqCst);
+        let runtime=ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(probe.clone()));
+        let batch=runtime.begin_post("@null plan",None,&|_|{}).await.unwrap();runtime.run(batch,&|_|{}).await;
+        assert_eq!(*probe.starts.lock().unwrap(),vec![apex_core::Access::Read]);
+        assert_eq!(probe.finishes.load(Ordering::SeqCst),1);
+    });
+}

@@ -223,6 +223,10 @@ pub fn parse_picks(reply: &str, offered: &[usize]) -> Result<Picks, String> {
         }
     }
     let object = last.ok_or("missing valid object with a hide list")?;
+    // The schema example is not a decision, even when those IDs happen to exist.
+    if object == serde_json::json!({"hide":["120-340","355"],"reason":"one short line"}) {
+        return Err("curator repeated the prompt example".into());
+    }
     let list = object
         .get("hide")
         .and_then(|v| v.as_array())
@@ -336,7 +340,7 @@ pub fn journal_text(transcript: &[Message], roster: &[ParticipantConfig]) -> Str
 pub fn journal_section(path: Option<&str>) -> String {
     let intro="\nOlder messages in this chat may be hidden to save space. A line like [#120–#340 hidden, 221 messages] marks each gap, and a summary may stand in for earlier ones. ";
     match path {
-        Some(path)=>format!("{intro}If you can read files, `{path}` holds their exact text, up to the message named on its first line. Each #number · speaker starts a message. Concatenate decoded | JSON strings to recover the original; ? strings repeat boundary text for search only. Search it before you rely on anything hidden, and never guess what a hidden message said.\n"),
+        Some(path)=>format!("{intro}If you can read files, `{path}` holds their exact text, up to the message named on its first line. Each #number · speaker starts a message. Concatenate decoded | JSON strings to recover the original; ? strings repeat boundary text for search only. When a request depends on anything from earlier in this chat (a decision, requirement, reason, number, name, path, or who said what) that isn't in the messages you can see, search this file first. Do that before you answer from memory or a summary, and before you say you don't know or that it never came up. If you can't read the file or the search finds nothing, say so, and never guess what a hidden message said.\n"),
         None=>format!("{intro}Their text can't be read right now, so never guess what a hidden message said. Tell the human if you need one.\n"),
     }
 }

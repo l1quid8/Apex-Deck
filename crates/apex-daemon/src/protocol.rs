@@ -356,7 +356,7 @@ where
         "max_frame_bytes": if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME },
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
-        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"],
+        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"],
         // The exact build, so a UI can tell two builds of the same version apart.
         "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
     } });
@@ -475,9 +475,13 @@ where
                             _ => None,
                         };
                         if let Some((model, voice_name, instructions, tools)) = maybe_realtime {
+                            // An assistant id must name one on this machine; it is no room id.
+                            let unknown = matches!(&request, crate::voice::session::VoiceRequest::VoiceRealtimeSession { room, .. }
+                                if room.strip_prefix("assistant:").is_some_and(|assistant| daemon.host.personal_get(assistant).is_err()));
                             // Realtime session mint – never log key or secret.
                             let api_key = crate::voice::realtime::lookup_key();
                             let result = match api_key {
+                                _ if unknown => Err("This assistant isn't on this machine.".to_string()),
                                 None => Err("Missing OpenAI API key. Add OPENAI_API_KEY in Settings → Providers or environment.".to_string()),
                                 Some(key) => {
                                     let args = crate::voice::realtime::MintArgs { model, voice: voice_name, instructions, tools };
@@ -1191,7 +1195,7 @@ mod tests {
 
     /// What a welcome lists; phone voice calls only where this daemon can run the helper.
     fn hello_capabilities() -> Value {
-        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"]);
+        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"]);
         if crate::voice::platform_support().is_ok() {
             caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
         }

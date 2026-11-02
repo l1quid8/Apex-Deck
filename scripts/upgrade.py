@@ -96,9 +96,22 @@ def app_running(uid=None):
     who=('-U',str(uid)) if uid is not None else ()
     return run('/usr/bin/pgrep',*who,'-x','Apex Deck',required=False).returncode == 0
 
+def require_helper_stopped():
+    # The helper caches its parent daemon's signing hash at launch. Replacing
+    # that daemon under a live helper leaves it unable to authorize new turns.
+    # Match the protected executable exactly, across every signed-in account;
+    # never stop a helper that may still own another person's active turn.
+    helper=TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp'
+    processes=run('/bin/ps','-axo','comm=',required=False)
+    if processes.returncode:
+        raise RuntimeError('Could not check whether Unified Computer Use is still running, so nothing was installed. Try the update again.')
+    if str(helper) in (line.strip() for line in processes.stdout.splitlines()):
+        raise RuntimeError('Unified Computer Use is still running from the installed Apex Deck, so nothing was installed. Finish any active computer-use work, then sign out of the macOS account running it and sign back in before retrying the update. Other signed-in accounts may also need to sign out.')
+
 def preflight(payload=False):
     if os.geteuid()!=0: raise RuntimeError('macOS Installer administrator authorization is required')
     if app_running(): raise RuntimeError('Quit Apex Deck before installing this upgrade, then retry in Installer.')
+    require_helper_stopped()
     protected(ROOT); protected(ROOT/'TrustedUI'); protected(TRUSTED); protected(ROOT/'apex-provenance'); protected(BROKER_PLIST)
     for name in (*AUTHORITY,'config.json'):
         regular(ROOT/name); protected(ROOT/name)
@@ -213,6 +226,7 @@ def install(notes=None):
         if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode==0: raise RuntimeError('An Apex Deck background service that the update couldn\'t stop is still running on this Mac, such as one from a development build, so nothing was installed. Quit it, then try the update again.')
         if app_running(user.pw_uid): raise RuntimeError('Apex Deck was opened again while the update was starting, so nothing was installed. Quit it, then try the update again.')
         if app_running(): raise RuntimeError('Apex Deck was opened in another account on this Mac while the update was starting, so nothing was installed. Quit it there, then try the update again.')
+        require_helper_stopped()
         if broker_loaded:
             run('/bin/launchctl','bootout','system/dev.apexdeck.provenance'); broker_stopped=True
         # Snapshot only after both writers have stopped. No user-store files are touched.
@@ -236,6 +250,7 @@ def install(notes=None):
         if applications_candidate.exists() or applications_candidate.is_symlink(): raise RuntimeError('Application staging path already exists')
         run('/usr/bin/ditto',candidate,applications_candidate)
         validate_bundle(applications_candidate)
+        require_helper_stopped()
         if digest(agent)!=agent_hash or app_running(): raise RuntimeError('Service settings or active app changed during staging')
         def swap(active,replacement,saved):
             # Save each original before replacing; recovery never removes an original.

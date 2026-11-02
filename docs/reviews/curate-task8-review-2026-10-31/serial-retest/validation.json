@@ -1,0 +1,33 @@
+{
+  "base": "b5c4f9ee",
+  "branch": "fix/curate-alternative-handle",
+  "checks": {
+    "cargo test -p apex-core": {
+      "passed": 217,
+      "failed": 0
+    },
+    "TMPDIR=/tmp cargo test -p apex-host": {
+      "passed": 864,
+      "failed": 0,
+      "ignored": 9
+    },
+    "cargo test -p apex-daemon authority": {
+      "passed": 6,
+      "failed": 0
+    },
+    "npm test": {
+      "passed": 2889,
+      "failed": 0,
+      "skipped": 3
+    },
+    "npx tsc --noEmit": {
+      "exit": 0
+    },
+    "git diff --check": {
+      "exit": 0
+    }
+  },
+  "red_stage": "Renamed alternative assertion failed with Message @backup before mention_for fix",
+  "native_build": "861824670088; new source fix not installed",
+  "queue": "Native reproduction with and without retained failed send; characterization tests only, no production queue change"
+}

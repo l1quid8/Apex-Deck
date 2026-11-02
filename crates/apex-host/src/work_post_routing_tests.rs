@@ -187,3 +187,20 @@ fn work_voice_turn_ids_still_deduplicate_and_reject_mismatched_message_ids() {
         assert_eq!(saved.transcript[0].client_message_id.as_deref(), Some("voice-turn"));
     });
 }
+
+#[test]
+fn computer_bang_is_discoverable_and_disabled_requests_explain_setup() {
+    let f = Fixture::new("computer-bang", false);
+    f.host.handle("r").unwrap().checkpoint.lock().unwrap().snapshot.participants[0].backend = apex_core::Backend::OpenAiCompatible {
+        base_url: "http://127.0.0.1:9/v1".into(), api_key_env: None, model: "fixture".into(),
+    };
+    f.runtime.block_on(async {
+        let servers = f.host.list_tool_servers("r".into(), "bot".into()).await.unwrap();
+        if cfg!(target_os = "macos") {
+            assert!(servers.iter().any(|s| s.token == "unified-computer-use"));
+        }
+        let error = f.call("room_post", "!unified-computer-use open TextEdit", None).await.unwrap_err();
+        assert!(error.contains("Settings → Unified Computer Use"), "{error}");
+        assert!(f.host.room_state("r".into()).unwrap()["active"].as_array().unwrap().is_empty());
+    });
+}

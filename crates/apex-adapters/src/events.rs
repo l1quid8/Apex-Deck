@@ -123,6 +123,8 @@ pub(crate) struct EventReader {
     /// Each work step as last reported, by key, so a result only fills in
     /// what it adds and an unchanged step is not reported again.
     work: HashMap<String, WorkStep>,
+    computer_calls: HashSet<String>,
+    computer_content: bool,
     /// Claude Code: to-do tool calls waiting for their result, by tool-use
     /// id, with the tool's name and input.
     todo_calls: HashMap<String, (String, Value)>,
@@ -165,6 +167,8 @@ impl EventReader {
             helper_threads: HashSet::new(),
             earlier: None,
             work: HashMap::new(),
+            computer_calls: HashSet::new(),
+            computer_content: false,
             todo_calls: HashMap::new(),
             tasks: Vec::new(),
             background_calls: HashSet::new(),
@@ -212,10 +216,9 @@ impl EventReader {
         };
         attach_images(&mut text, &self.images);
         let has_reply = !text.trim().is_empty();
+        let error=self.failure.or(if has_reply {None}else{self.last_error});
         Outcome {
-            error: self
-                .failure
-                .or(if has_reply { None } else { self.last_error }),
+            error: if self.computer_content && error.is_some() {Some("Computer tool session failed; private content hidden".into())} else {error},
             text,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
@@ -283,6 +286,8 @@ impl EventReader {
     }
 
     /// Everything shown as reply text so far.
+    pub(crate) fn has_computer_content(&self)->bool {self.computer_content}
+
     pub(crate) fn streamed(&self) -> &str {
         &self.streamed
     }
@@ -370,6 +375,7 @@ impl EventReader {
                 let inner = &event["event"];
                 match inner["type"].as_str() {
                     Some("message_start") => self.new_message(steps),
+                    Some("content_block_start") if inner["content_block"]["name"].as_str().and_then(crate::mcp::computer_tool).is_some() => {self.computer_content=true;},
                     Some("content_block_delta") if inner["delta"]["type"] == "text_delta" => {
                         if let Some(text) = inner["delta"]["text"].as_str() {
                             self.pieces_seen = true;
@@ -569,6 +575,9 @@ impl EventReader {
         input: &Value,
         steps: &mut Vec<Step>,
     ) {
+        if crate::mcp::computer_tool(name).is_some() {
+            self.computer_content=true;self.computer_calls.insert(id.into());
+        }
         if work_feed::grok_todo_tool(name) {
             // The list arrives in the result; see `claude_tool_result`.
             self.todo_calls.insert(id.to_string(), (name.to_string(), input.clone()));
@@ -596,7 +605,7 @@ impl EventReader {
     /// `tool_use_result`, which says what id a new task got.
     fn claude_tool_result(&mut self, id: &str, block: &Value, meta: &Value, steps: &mut Vec<Step>) {
         let failed = block["is_error"].as_bool().unwrap_or(false);
-        let text = work_feed::claude_result_text(&block["content"]);
+        let text = if self.computer_calls.contains(id) {String::new()} else {work_feed::claude_result_text(&block["content"])};
         if let Some((tool, input)) = self.todo_calls.remove(id) {
             if work_feed::grok_todo_tool(&tool) {
                 match work_feed::grok_todos(&text).filter(|_| !failed) {
@@ -664,6 +673,7 @@ impl EventReader {
     }
 
     fn claude_activity(&self, tool: &str, input: &Value) -> String {
+        if let Some(tool)=crate::mcp::computer_tool(tool) {return crate::mcp::redacted_step(tool,input).label;}
         let field = |key: &str| input[key].as_str().map(str::trim).filter(|s| !s.is_empty());
         let path = || {
             field("file_path")
@@ -909,7 +919,10 @@ impl EventReader {
                 Some("mcpToolCall") => {
                     let server = item["server"].as_str().unwrap_or("a connected tool");
                     let tool = item["tool"].as_str().unwrap_or("");
-                    self.doing(format!("Using {server} {tool}").trim().to_string(), steps);
+                    if crate::mcp::is_computer_server(server) {
+                        self.computer_content=true;
+                        self.doing(crate::mcp::redacted_step(tool,&item["arguments"]).label,steps);
+                    } else {self.doing(format!("Using {server} {tool}").trim().to_string(), steps);}
                 }
                 Some("reasoning") => self.doing("Thinking".to_string(), steps),
                 _ => {}
@@ -1043,6 +1056,14 @@ impl EventReader {
     /// left the detail empty (a web search before its query is known) and
     /// the completion has it.
     fn codex_item_step(&mut self, item: &Value, parent: Option<&str>, done: bool, steps: &mut Vec<Step>) {
+        let key=item["id"].as_str().unwrap_or("");
+        let private=item["type"]=="mcpToolCall" && (item["server"].as_str().is_none_or(crate::mcp::is_computer_server) || self.computer_calls.contains(key));
+        let sanitized;
+        let item=if private {
+            self.computer_content=true;self.computer_calls.insert(key.into());
+            sanitized=serde_json::json!({"id":item["id"],"type":"mcpToolCall","server":"apex-computer","tool":item["tool"],"arguments":item["arguments"],"status":item["status"]});
+            &sanitized
+        }else{item};
         let Some(mut step) = work_feed::codex_step(item, parent, self.cwd.as_deref(), done) else {
             return;
         };
@@ -1931,6 +1952,30 @@ mod tests {
             outcome.text,
             "Here it is.\n\nAttached image: /tmp/apple.png"
         );
+    }
+
+    #[test]
+    fn computer_cli_feeds_never_retain_arguments_results_unknown_names_or_base64() {
+        use serde_json::json;
+        for server in ["apex-computer","apex_computer"] {
+            for tool in ["type_text","private-operation-SCREEN_SECRET"] {
+                let events=[json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"private","name":format!("mcp__{server}__{tool}"),"input":{"text":"TYPED_SECRET","app":"APP_SECRET"}}]}}),
+                    json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"private","content":[{"type":"text","text":"SCREEN_SECRET"},{"type":"image","data":"BASE64_SECRET"}]}]}})];
+                let stream=events.iter().map(|e|format!("{e}\n")).collect::<String>();
+                let (steps,_)=read(OutputFormat::ClaudeStream,&[&stream]);
+                let saved=format!("{steps:?}");
+                for secret in ["TYPED_SECRET","APP_SECRET","SCREEN_SECRET","BASE64_SECRET"] {assert!(!saved.contains(secret),"{server}: {saved}");}
+                for omit_completed_server in [false,true] {
+                    let started=json!({"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"private","server":server,"tool":tool,"arguments":{"text":"TYPED_SECRET"}}}});
+                    let mut done=json!({"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"private","server":server,"tool":tool,"arguments":{"text":"TYPED_SECRET"},"status":"completed","result":{"content":[{"type":"image","data":"BASE64_SECRET"}]},"error":{"message":"SCREEN_SECRET"}}}});
+                    if omit_completed_server {done["params"]["item"].as_object_mut().unwrap().remove("server");}
+                    let stream=format!("{started}\n{done}\n");
+                    let (steps,_)=read(OutputFormat::CodexServer,&[&stream]);
+                    let saved=format!("{steps:?}");
+                    for secret in ["TYPED_SECRET","SCREEN_SECRET","BASE64_SECRET"] {assert!(!saved.contains(secret),"{server}: {saved}");}
+                }
+            }
+        }
     }
 
     #[test]

@@ -1,0 +1,130 @@
+# Native computer-use spike (Task 2, throwaway)
+
+Status on 2026-10-31: **embedded agent-desktop engine built, signed and source-reviewed; stopped/refusal checks passed live; model-driven input proof pending Deck approvals and Human menu Start.** This is not a production helper, grant/lease system, or evidence that DS4 can complete the task. No successful model-driven TextEdit input is claimed. The installed Deck backend is `326f28926989`; actual Accessibility and Input Monitoring checks passed on the replacement helper, while Screen Recording remains off. The Task 4 Human go/no-go remains required before Tasks 5–11.
+
+
+## Embedded engine proof candidate (2026-10-31)
+
+The signed stable helper now statically embeds agent-desktop core/macOS at `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc`. It reuses memory-only snapshots, retained controls and native action verification, retaining Swift screenshot capture and proof guards. No agent-desktop app or CLI is installed. See `computer-helper/engine/PROVENANCE.md` and `computer-helper/spike/PROOF-HOST-BRIDGE.md`.
+
+Verification: 69 combined Swift tests, 49 scoped Rust tests, TypeScript, a release build and strict bundle signature verification pass. Fresh live relay tests confirm stopped reads/control refuse without returning a screen. These checks do not establish native-task success. Signed artifact hashes and current permission evidence: `/tmp/apex-agent-engine-signed-artifacts.json`; source review: `/tmp/apex-agent-engine-integration-review.md`.
+
+Proof room `pane-mvwz3alu-1` in isolated `proof-project` has only the DS4 API bot (`dsfoe`). Computer-tool registration is local to that independent disposable Git root. Prepare the three normal Deck approvals while stopped, then start a fresh bound relay during the native proof turn and have the Human select **Start new isolated run**. Host Stop/turn completion revoke the proof binding; no automatic restart. Broader authenticated sessions/providers/app grants remain behind Task 4.
+
+## Artifact and identity
+
+Build only this standalone package with `computer-helper/spike/scripts/build-spike.sh`. It does not build Deck, produce a DMG, or add production dependencies. Runtime artifacts and SwiftPM output are excluded from Git.
+
+Stable bundle: `~/Library/Application Support/Apex Computer Spike/Apex Computer Spike.app`.
+
+MCP command: the absolute path to that bundle's `Contents/Helpers/SpikeMCP`. LaunchServices opens the enclosing app without activation; all AX reads and task input occur inside that app, not in the stdio relay.
+
+Signing identifier `dev.apexdeck.computer.spike`; Developer ID Application: Tyler Caldwell (`75N5HW62JH`), matching Deck's Developer ID team. Build refuses ad-hoc fallback and refuses replacing a running spike executable. `codesign --verify --deep --strict` passes for the app and nested helpers.
+
+Designated requirement:
+
+```
+identifier "dev.apexdeck.computer.spike" and anchor apple generic
+and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */
+and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */
+and certificate leaf[subject.OU] = "75N5HW62JH"
+```
+
+## Human setup and Stop
+
+1. In System Settings → Privacy & Security → Accessibility, use `+` and select the exact stable `.app` above, then enable it. The agent has not requested a prompt, granted access, reset TCC, or edited permission databases.
+2. Run the quoted absolute `Contents/Helpers/SpikeMCP --status` command for actual `accessibilityTrusted`, `listenEventAccess`, and `tapHealthy` booleans. A requested or selected permission is not proof of trust.
+3. Recheck listen access after Accessibility changes. Whether this machine needs a separate Input Monitoring grant remains unmeasured. Only if necessary, the Human may enable this exact app in Privacy & Security → Input Monitoring; the agent must not do so itself.
+4. Use the **Computer Spike** macOS menu-bar item. **STOP — cancel all input** sets the cancellation latch on the main thread immediately. **Start new isolated run** explicitly clears Stop/cancelled requests and retries a missing tap. Quit/relaunch the same signed bundle if macOS requires a restart after granting access, then recheck status.
+5. The app starts stopped. Opening then closing a relay connection, including `--status`, stops the fixture. Establish the persistent proof bot's MCP connection first, then the Human chooses **Start new isolated run** before asking that one bot to act. A subsequent disconnect stops it again. Only the Human menu resets Stop; there is no MCP reset tool.
+
+The main thread never performs an AX tree traversal. JSON reading and matching `notifications/cancelled` handling remain independent of the sequential action worker. EOF/socket loss, app termination, per-action deadlines, and the menu Stop cancel control. This does **not** claim that Deck's own Stop already cancels an MCP call; its turn bridge remains unverified.
+
+## Tools and bounds
+
+The current signed stable bundle lists `request_app`, `read_screen`, `click`, `type_text`, `press_key`. Prepared Task 4a source also lists `get_screenshot`; that source has not replaced the stable bundle. Exactly `com.apple.TextEdit` is accepted as the MCP target. All four control tools truthfully advertise `readOnlyHint:false`; both reading tools advertise true. Ordinary Deck approvals apply.
+
+- `request_app({app})` is the only operation that launches/focuses TextEdit, rejecting ambiguous instances. `read_screen({})` neither launches nor focuses.
+- Snapshots use random IDs and retain in-memory process launch identity, AX window/document, focus identity/fingerprint/value/range, and activity epoch. Every control requires the current snapshot. Human input, foreign or secure focus, changed window/document, changed focused control, stopped state, missing/broken tap, or a target-process change refuses further input.
+- AX traversal bounds: 500 listed controls, 2,000 visited nodes, depth 20, approximately two seconds aggregate plus one in-flight AX call; individual messaging timeout 0.1 seconds. Children are fetched in chunks of 32. Secure values and foreign-owned subtree content are omitted. Labels/values are capped at 200 characters; output stays below 24,000 UTF-8 bytes plus metadata. Large focused editable values over 4,096 UTF-16 units are refused for typing.
+- Click takes a numbered element, preferring live AXPress. Text controls without AXPress require matching identity, enabled state, frontmost target and live hit-test ancestry. There are no arbitrary coordinates in MCP.
+- Typing uses one Unicode grapheme per tagged CGEvent down/up pair; at most 256 graphemes and ten seconds per call. It verifies expected text and UTF-16 selection after each cluster before sending the next. Unsupported editable state is a refusal. Error results count delivered clusters and attempt a fresh bounded reading without making it actionable.
+- Keys are limited to Cmd-N, Shift-Cmd-T, Cmd-S, Shift-Cmd-G, Return, Escape, Tab and four arrow keys. Key actions and clicks have two-second deadlines. Down/up pairs have no held key spanning an AX wait. Keyup is immediate cleanup of the event just posted.
+- No clipboard access, AppleScript save shortcut, filesystem document-write shortcut, or production grant bypass exists. The prepared screenshot path is bounded below; no real screenshot has been taken.
+
+The listen-only global session tap observes mouse and keyboard categories, counts this process's tagged events separately, and invalidates snapshots for every other event. Tap disablement invalidates observations and prevents control. Event tags and process fields are **not** authorization or authenticated hardware-origin evidence. Actual tag survival, keyboard-mask coverage, hardware vs untagged synthetic behavior and permission requirements remain to be measured. Callback work is limited to category/counter/latch updates; no AX reads or content logging occur there.
+
+Private socket directory mode is 0700 and socket mode 0600; one relay connection is admitted. These permissions are not a sandbox or protection from another same-user process. The spike is suitable only for the isolated harmless proof fixture.
+
+## Isolated registration (not performed)
+
+Create one dedicated canonical proof-project path, used as one Work room with exactly one proof bot. Use a unique proof folder and run-numbered filenames; never overwrite an existing Documents file. Document creation and saving must remain native. Its `.mcp.json` owns `mcpServers.apex-computer` with the absolute signed relay command. Add only that canonical project's `enabledMcpjsonServers += ["apex-computer"]` in Claude settings, preserving before-state and other keys. Do not add a global `mcpServers` registration or `enableAllProjectMcpServers`; do not add a second bot. This is project/room isolation, not a per-bot ACL. Ask access and Plan off are required for the proof; normal tool approvals remain in force.
+
+The parent owns the actual registration and fresh signed backend deployment carrying Task 1's redaction. No `.mcp.json`, `~/.claude.json`, shared settings, live bot, or Deck daemon/model process was changed by this implementation.
+
+## Operator diagnostics (not run)
+
+`SpikeMCP --probe-ds4` reads the existing running `local.ds4.app` only. It returns aggregate roles, counts, press-action count, menu-bar presence and truncation. It does not launch, focus, click, send keys, or start/stop DS4's model server. If DS4 is absent, it refuses. No labels or values are persisted.
+
+`SpikeMCP --show-test-dialog` deliberately opens/activates the spike's own one-window synthetic-click test dialog. Do not call until the Human and parent coordinate it. The nested `SpikeEventProbe --untagged-dialog-click`, invoked as an ordinary bot-shell child, posts an untagged down/up at that dialog's recorded button center only while the spike remains frontmost. Record whether its button count changes, then compare with a manual click. This is an exposure test, never authorization. No diagnostic dialog or synthetic probe has been invoked yet.
+
+`SpikeMCP --status` reports only generic permission/state/event-category/probe counts. Stderr contains generic failure codes; neither process logs screen/typed data to disk. Screen data exists in tool responses and transient snapshots, so the parent must verify Task 1 on the actual protected backend before proof and inspect saved step logs afterward.
+
+## Evidence and remaining experiments
+
+Build/signature checks and fourteen focused safety/protocol tests pass. The no-permission protocol smoke checks initialization, all five truthful schemas, unknown-method rejection, denied screen reading and invalid control refusals without a valid input request. `npx tsc --noEmit` passes. These checks do not prove native UI behavior.
+
+Resumption checks: the exact signed stable bundle reports `accessibilityTrusted=false`, `listenEventAccess=false`, `tapHealthy=false`, `stopped=true`. Its executable code/data sections match the reviewed release build for all three binaries. The actual live daemon's hello reports commit `861824670088`, so it does not carry the new privacy/image code. The candidate below is ready but has not been installed. A harmless function-calling compatibility request to `gpt-6-luna` with `reasoning_effort=none` returned HTTP 200 and `proof_ready({ready:true})` using the existing Deck-saved Keychain credential. No credential was printed or copied to a config. This checks account/API compatibility only; it is not the vision/native proof. Official model requirements: <https://developers.openai.com/api/docs/models/gpt-6-luna>.
+
+### Concrete backend candidate and remaining handoff
+
+- Package: `/Users/tylercaldwell/Downloads/apex-deck/release/Apex-Deck_0.9.7_computer-326f28926989_20261031_upgrade.pkg`.
+- SHA-256: `9dc072db1e5d303efe38c7d8c7920e07e206c768b659f84dbfa21eb327b6f11d` (parent independently read back).
+- Frozen source: `release/apex-computer-proof-source` at `326f28926989`; packaged UI and daemon carry that clean stamp. The candidate's native spike is the separate reviewed stable bundle, not a production bundled helper.
+- Developer ID signed/hardened app payload; strict bundle verification passes. Existing packaging creates an unsigned `.pkg` container and skipped notarization. Do not describe the installer itself as signed or notarized.
+- Existing upgrade scripts preserve authority and verify the payload. Installation requires quitting Deck and native administrator authentication; no installer has been launched and the live service has not been replaced. Do not reset or repin authority to test.
+- After the Human grants the exact spike Accessibility and installs the candidate, read back both OS trust and the real daemon commit. Then create the isolated one-bot Work proof room, use normal Human approval cards, and start the supervised DS4 runs. Only afterward run the vision proof; Screen Recording permission is still a separate future prerequisite. Tasks 5–11 remain behind the explicit Task 4 approval.
+
+| Required measurement | Current result |
+|---|---|
+| App Accessibility trust after signed relaunch | false; no prompt requested |
+| Listen access / tap health | false / false before Human grants anything |
+| Five DS4 TextEdit/save runs | pending; zero executed, zero passes claimed |
+| Exact saved bytes and native Save panel ownership | pending |
+| Stop/cancellation during real typing | pending; pure latch semantics tested |
+| TextEdit/DS4 AX coverage | pending permission and operator coordination |
+| Idle/active app+relay CPU/RSS | idle baseline may be sampled; active pending |
+| DS4 tokens/s with/without helper, longest tool gap | pending same-prompt controlled runs |
+| Synthetic vs manual click exposure | pending |
+| Tagged vs hardware vs untagged events; tap CPU | pending |
+| Saved Deck history/diagnostic privacy inspection | pending fresh protected backend and live proof |
+
+DS4 has not finished the experiment. Minimal Task 3 image transport may be staged before the first signed backend upgrade to avoid two privileged installs. DS4 proof still runs before the vision proof; production helper work remains behind both successful proofs.
+
+## Review corrections before the permission request
+
+The input dispatch gate rechecks Stop/cancel, tap health and the original activity epoch after its final accessibility query. Key events, pointer input and AXPress all use it. Action AX reads inherit the action deadline. An unresolved ancestor now refuses; only a verified same-process AXApplication root ends ancestry safely. Both TextEdit and DS4 traversal start with the explicitly selected application's PID, so a foreign-owned root cannot become the allowed scope.
+
+Output uses nonblocking socket writes with a two-second deadline and shuts down a stalled peer so the independent reader can latch Stop. Its read loop tolerates nonblocking EAGAIN without abandoning a live connection. A real socket-pair backpressure regression and final-query Stop/cancel/activity regressions cover these boundaries; none posts native input.
+
+### Normal approval setup for the supervised proof
+
+A normal approval click in Deck changes focus/activity and must invalidate an old snapshot. Keep the helper STOPPED while preparing ordinary per-tool **Always allow** rules in the isolated one-bot proof room; the Human makes each choice in its real card. Never edit the approval store or disable activity/focus guards.
+
+Prime **Request app access**, **Click a control**, and **Press a key** using harmless refused calls, plus **Type N characters** for every planned whole-field Unicode-scalar length. The document text `Apex computer test DS4` has 22 scalars. The native Save sequence using Shift-Cmd-G types `/Users/tylercaldwell/Documents` (30 scalars), then a separate filename: `apex-computer-DS4-20261031-01.txt` (33) or `apex-computer-vision-20261031-01.txt` (36). Whole paths instead have 64/67 scalars; approving those lengths alone does not cover directory and filename fields. Use fixed-width run numbers 01–05 and require each planned field in one call. Rules are participant-specific: repeat normal card setup separately for the later vision participant, including its screenshot tool if a card appears. Variable typing lengths create new cards and need a fresh refusal/setup cycle. Confirm rules in thread details, establish the persistent relay, then the Human starts the isolated run. `request_app` focuses TextEdit and produces a fresh observation after setup activity; leave the Mac hands-off during measured runs. These are ordinary scoped rules, never a production grant or approval bypass. Remove temporary rules/registration after proof.
+
+A disabled event tap remains fail-closed. If the existing tap object was disabled, quit/relaunch the same signed spike and recheck status rather than assuming the menu Start repaired it. No successful native event/cancellation behavior has been claimed yet.
+
+## Task 4a screenshot preparation (source only)
+
+`get_screenshot({})` is a read-only observation of one currently focused TextEdit window. It neither launches nor focuses an app, accepts no target or coordinates, and introduces no production grant/session system. Unlike the older `read_screen` path, this new path requires the isolated run to be started with a healthy activity tap and rejects Stop, cancellation, disconnect or a changed activity epoch before and after capture. The older reading path's latch behavior is unchanged by this preparation.
+
+The capture adapter requires macOS 14.2 or later; earlier versions refuse. It uses the public ScreenCaptureKit `SCContentFilter(desktopIndependentWindow:)` and `SCScreenshotManager`, never a display/desktop filter or capture fallback. `includeChildWindows=false`, `ignoreShadowsSingleWindow=true`, cursor off, audio off. It matches the selected AX window to exactly one on-screen, ordinary-layer SCWindow by TextEdit process, exact title and frame; matching Quartz metadata must confirm PID/frame and a nonzero sharing state. Missing metadata, duplicate matches or unknown sharing status refuse. After capture it rechecks the same SCWindow ID, AX window/focus/document identity, process launch identity, frame/title, activity and bounded traversal. Protected, foreign-owned, unavailable or incomplete AX surfaces refuse the whole screenshot instead of exposing omitted pixels. A service-owned Save panel remains unsupported; do not broaden the filter to make it pass. Matching by public metadata is deliberately conservative and still needs a supervised native check.
+
+Only the explicitly selected window is requested. Child windows/sheets are excluded; later proof must record that limitation and test overlapping foreign windows. A frame is encoded in memory as JPEG with longest side at most 1568 pixels and payload at most 5 MiB; MIME, decodability and dimensions are validated before returning. The MCP response contains fresh associated AX snapshot text, process/window ID, frame, image dimensions/scales and a separate `image/jpeg` image block. No coordinate input was added. Asynchronous metadata/image requests share an eight-second deadline; Stop/cancel/activity is checked while waiting, and late completion is never returned. AX calls retain their existing per-message bounds. This is not an atomic OS snapshot of pixels and AX text.
+
+The tool checks actual Accessibility trust and calls the nonprompting `CGPreflightScreenCaptureAccess()` before any ScreenCaptureKit request. On denial it gives manual System Settings → Privacy & Security → Accessibility or Screen & System Audio Recording instructions for the exact stable app. It never calls an OS permission-request API. No Screen Recording setting has been changed, and no prompt has been requested in this preparation.
+
+Source verification: 22 standalone Swift tests pass (the existing 14 plus eight screenshot cases), including actual encoding of a synthetic in-memory bitmap and a serialized MCP text+image envelope. These tests never capture a screen or send native input. The adapter compiles, but its real OS selection, permissions, overlap/child exclusion and vision behavior remain untested. The stable signed app has not been replaced or restarted by this work. A separately reviewed, signed build is still needed before live use.
+
+For the later pixel-only check, prepare a separate harmless scratch rich-text document in TextEdit with an unlabeled image attachment containing a simple visual cue. The Human must verify that the cue is absent from AX labels/values before the bot identifies it from `get_screenshot`. Keep this separate from the required plain-text save task, since converting to plain text removes an attachment. No such fixture has been created or shown. DS4 proof still precedes vision proof, both have zero successful runs recorded, and Tasks 5–11 still require the explicit Task 4 Human go/no-go.

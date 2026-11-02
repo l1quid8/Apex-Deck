@@ -373,6 +373,7 @@ impl Participant for WorkingBot {
 fn activity_and_token_use_are_reported_alongside_the_reply() {
     let id = ParticipantId::new("worker");
     let config = ParticipantConfig {
+        can_read_images: false,
         id: id.clone(),
         display_name: "worker".into(),
         backend: Backend::Scripted { lines: vec![] },
@@ -561,6 +562,7 @@ impl Participant for AskingBot {
 fn asking_room() -> (Room, ParticipantId) {
     let id = ParticipantId::new("asker");
     let config = ParticipantConfig {
+        can_read_images: false,
         id: id.clone(),
         display_name: "asker".into(),
         backend: Backend::Scripted { lines: vec![] },
@@ -799,6 +801,7 @@ fn server_requests_reach_prompt_and_survive_fork_and_restore() {
 fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
     let id = ParticipantId::new("worker");
     let config = ParticipantConfig {
+        can_read_images: false,
         id: id.clone(),
         display_name: "worker".into(),
         backend: Backend::Scripted { lines: vec![] },

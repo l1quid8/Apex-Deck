@@ -1,3 +1,4 @@
+import { nextSettingsSaveSequence } from "./settingsSaveSequence";
 import { assistantSidebarPanes, assistantThreadKey } from './assistantSidebar';
 import { AssistantBrowser, type AssistantBrowserPresentation } from './AssistantBrowser';
 import { chatFolder } from "./worktreeMount";
@@ -13,7 +14,9 @@ import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./lazyViews";
 import { DEFAULT_LANDING_TEXTURE, DEFAULT_SETTINGS, effectiveLandingTexture, readSettings, type AppSettings } from "./settings";
 import { DEFAULT_APPEARANCE } from "./themes";
-import { useAppearance } from "./useAppearance";
+import { useAppearance, useSystemDark } from "./useAppearance";
+import { useAppearanceDraft } from "./useAppearanceDraft";
+import { AppearanceDraftBar } from "./AppearanceDraftBar";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { ArtifactsHost } from "./ArtifactsPanel";
@@ -34,9 +37,15 @@ import { ApexAgentTasks } from "./lazyViews";
 import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistants } from "./usePersonalAssistants";
+import { assistantViewContext } from "./assistantViewContext.ts";
+import { deriveCompanionCatalog, reconcileCompanionSelection, companionFloatContext, companionViewContext, companionNewThreadTarget, loadCompanionSelection, saveCompanionSelection, type CompanionCatalog, type CompanionSelection } from "./assistantCompanionContext.ts";
 import { AssistantProjects } from './AssistantProjects';
 import { AssistantCreationDialog } from './AssistantCreationDialog';
 import { AssistantWorkspace, AssistantEditor, AssistantWorkspaceAvatar } from "./AssistantWorkspace";
+import { assistantCallCandidate } from "./assistantFloat";
+import { useAssistantFloat, type AssistantFloatHandle } from "./useAssistantFloat";
+import { assistantVoiceKeeperOwner } from "./voice/assistantVoiceOwner";
+import { AssistantVoiceKeeper } from "./voice/AssistantVoiceKeeper";
 import { AssistantDetails } from "./AssistantDetails";
 import { useAssistantOutputs } from "./useAssistantOutputs";
 import { assistantIdentityKey, type AssistantRef, type ProjectRef } from "./assistantIdentity";
@@ -51,7 +60,7 @@ import { TerminalPane } from "./TerminalPane";
 import { PreviewPane, type ServerChoice } from "./PreviewPane";
 import { isRunning, ptyIdFor, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
-import { hostLabel, sameServer } from "./previewAddress";
+import { hostLabel } from "./previewAddress";
 import { copyMenuItems, paneMenuItems, projectMenuItems, type CopyKind, type PaneMenuAction, type ProjectMenuAction } from "./paneMenu";
 import { ProjectSidebar } from "./Sidebar";
 import { ConnectionDialog, type ConnectionMode } from "./ConnectionDialog";
@@ -65,7 +74,7 @@ import { dotState } from "./hostFacts.ts";
 import { MoveRefused, forkThread as importThreadFork, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
 import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
-import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
+import { grid, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { followedTabPane, orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles, type ChatBundle, type PaneSpot, type PopoutAction, type PopoutSnapshot, type PopoutUpdate, type TabSpot } from "./popoutModel.ts";
 import { useRestorePopouts, type PopoutIdentity } from "./useRestorePopouts.ts";
 import { TAB_LABEL } from "./RightPanel";
@@ -98,6 +107,8 @@ import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
 import { collectWorkspaceTasks, workspaceTaskHostMatches, type WorkspaceTaskRow } from "./workspaceTasks";
 import type { DashboardDestination } from "./dashboardModel";
 import { placeDashboardPane } from "./dashboardNavigation";
+import { SharedBrowser } from "./SharedBrowser";
+import { browserHostFor } from "./browserTabs";
 import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
@@ -108,9 +119,11 @@ import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, Parti
 import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
 import { UpdateNotices } from "./UpdateNotices.tsx";
 import { ipcWords } from "./electronShell";
-import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, type ChatPlace } from "./desktopChats.ts";
+import { readOpenChat, restoredChat, saveOpenChat, useDesktopChats, chatKey, workThreadPlace, reconcileWorkPanes, type ChatPlace } from "./desktopChats.ts";
 import { ChatRail, NewChatDialog } from "./DesktopChatsUI.tsx";
 import { TalkOnlyChat } from "./TalkOnlyChat.tsx";
+import { ThreadTrash } from "./ThreadTrashPanel";
+import { closeTrashedPanes, withoutTrashedPanes } from "./threadTrash.ts";
 import { findRoom, type ChatEntry } from "./chatCatalog.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -170,9 +183,9 @@ function withPoppedTabs(state: RightPanelState, out: { tab: PanelTab; spot: TabS
 function tabTitle(tab: PanelTab): string {
   if (tab.kind === "browser" && tab.url) {
     try {
-      return new URL(tab.url).host || "Browser";
+      return new URL(tab.url).host || "Preview";
     } catch {
-      return "Browser";
+      return "Preview";
     }
   }
   return TAB_LABEL[tab.kind];
@@ -202,8 +215,10 @@ export function App() {
     if (status.lastAt) setPanes((list) => noteActive(list, paneId, status.lastAt!));
   }, []);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const appearance = settings.appearance?.current.appearance ?? DEFAULT_APPEARANCE;
-  useAppearance(appearance);
+  const appearanceSettings = settings.appearance;
+  const appearance = appearanceSettings?.current.appearance ?? DEFAULT_APPEARANCE;
+  // Pass full settings when available so System mode can react to OS changes; fallback to raw appearance for legacy boot
+  useAppearance(appearanceSettings ?? appearance);
   const disabledProviders = settings.disabledProviders;
   /** The settings section shown, or null while the deck is. */
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
@@ -260,7 +275,7 @@ export function App() {
   });
   const [keptAssistantThreads,setKeptAssistantThreads]=useState<Set<string>>(()=>{try{return new Set(JSON.parse(localStorage.getItem('apex-assistant-kept-threads')??'[]'));}catch{return new Set();}});
   const keepAssistantThread=(pane:Pane&{hostId?:string})=>setKeptAssistantThreads(old=>{const next=new Set(old);next.add(assistantThreadKey(pane));localStorage.setItem('apex-assistant-kept-threads',JSON.stringify([...next]));return next;});
-  const viewPanes = useMemo(() => {
+  const allViewPanes = useMemo(() => {
     const closed = new Set(closedTaskPanes);
     return mergeAssistantPanes(panes, currentAssistantRegistry).map((pane) => {
       if (!pane.assistantTaskId) return pane;
@@ -362,6 +377,20 @@ export function App() {
   const renameSeq = useRef(0);
   const renameNote = useRef<ReturnType<typeof renameNotes> | null>(null);
   renameNote.current ??= renameNotes(toast);
+  const systemDark = useSystemDark();
+  const appearanceStudio = useAppearanceDraft(settings, setSettings, toast, systemDark);
+  const resumeAppearance = useCallback(() => {
+    const count = appearanceStudio.pending.length;
+    setSettingsOpen("appearance");
+    toast(`Draft restored. ${count} change${count === 1 ? "" : "s"} not applied.`);
+    // Settings loads lazily, so wait for the status row before moving focus to it.
+    const focusStatus = (tries: number) => requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(".studio-pending-btn");
+      if (row) row.focus();
+      else if (tries > 0) focusStatus(tries - 1);
+    });
+    focusStatus(120);
+  }, [appearanceStudio.pending.length, toast]);
   const onCopyRenamed = useCallback((seq: number, outcome: CopyOutcome) => renameNote.current?.heard(seq, outcome), []);
   /** Agents whose name changed from `before` to `after`, for every thread to rename its copy of. */
   const noteRenames = (before: ParticipantConfig[], after: ParticipantConfig[]) => {
@@ -660,10 +689,20 @@ export function App() {
   }, [backend, settingsOpen]);
 
   // settings.json, beside the session file. Written in order, like the session.
+  // Preservation: failed saves retain local value for retry (queue keeps pending value), stale completions not shown as success due to versioned operation tracking.
   useEffect(() => {
     if (!backend || !settingsRead.current) return;
-    settingsQueue.current = settingsQueue.current.catch(() => {}).then(() => backend.settingsSave(settings));
-    settingsQueue.current.catch((error) => setStorageError(`Could not save settings: ${String(error)}`));
+    const seq = nextSettingsSaveSequence();
+    try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'settings' } })); } catch {}
+    settingsQueue.current = settingsQueue.current.catch(() => {}).then(async () => {
+      await backend.settingsSave(settings);
+      try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'settings' } })); } catch {}
+    });
+    settingsQueue.current.catch((error) => {
+      const msg = `Could not save settings: ${String(error)}`;
+      setStorageError(msg);
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'settings', error: msg } })); } catch {}
+    });
   }, [backend, settings]);
 
   // The workspace in view is always a listed one: removing it moves on to the first listed.
@@ -738,6 +777,27 @@ export function App() {
     }
     return threadPaneStatus(threadStatus[pane.id], attention[pane.id]);
   };
+
+  // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
+  // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
+  const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
+  const chats = useDesktopChats({
+    machines: chatMachines,
+    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
+    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
+    onError: (text) => toast(text),
+  });
+  const priorWorkCatalog=useRef(chats.catalog);
+  useEffect(()=>{
+    const previous=priorWorkCatalog.current;priorWorkCatalog.current=chats.catalog;
+    setPanes(before=>reconcileWorkPanes(before,workspaces,chats.catalog,previous,chats.online));
+  },[chats.catalog,workspaces,chats.online,setPanes]);
+  const viewPanes = useMemo(() => withoutTrashedPanes(allViewPanes, workspaces, chats.catalog), [allViewPanes, workspaces, chats.catalog]);
+  // Keep the saved layout, but Restore never reopens a thread that was put away.
+  useEffect(() => {
+    setPanes(before => closeTrashedPanes(before, workspaces, chats.catalog));
+    for (const pane of allViewPanes) if (pane.assistantTaskId && !viewPanes.includes(pane)) setTaskPaneClosed(pane.id, true);
+  }, [workspaces, chats.catalog, setPanes, allViewPanes, viewPanes]);
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
   const listed = useMemo(() => listedPanes(viewPanes, workspaces), [viewPanes, workspaces]);
@@ -897,8 +957,34 @@ export function App() {
     setPicking(false);
   };
 
-  const renamePane = (id: string, title: string) => setPanes(list => list.map(p => p.id === id ? {...p, title} : p));
+  const workTitleRequests=useRef(new Map<string,symbol>());
+  const syncWorkMeta=async(pane:Pane,change:{title?:string;archived?:boolean})=>{
+    if(pane.kind!=='chat'||(pane as Pane & {assistantTaskId?:string}).assistantTaskId)return;
+    const titleRequest=change.title!==undefined?Symbol():undefined;
+    if(titleRequest)workTitleRequests.current.set(pane.id,titleRequest);
+    const host=(pane as Pane & {hostId?:string}).hostId??workspaceHost(workspaces.find(w=>w.id===pane.workspaceId)??{id:'',name:'',path:''});
+    if(change.archived!==undefined)setPanes(list=>list.map(p=>p.id===pane.id?{...p,hostArchivePending:true}:p));
+    try {
+      const row=findRoom(chats.catalog,host,pane.id);
+      if(row) await chats.updateMeta(row,change);
+      else await hostBackend(host).call('chat_update_meta',{id:pane.id,...change});
+      await chats.refresh(host);
+      setPanes(list=>list.map(p=>p.id===pane.id?{...p,...(titleRequest&&workTitleRequests.current.get(pane.id)===titleRequest&&p.hostTitlePending===change.title?{hostTitlePending:undefined}:{}),...(change.archived!==undefined?{hostArchivePending:undefined}:{})}:p));
+    } catch(error) {
+      setPanes(list=>list.map(p=>p.id===pane.id?{...p,
+        ...(titleRequest&&workTitleRequests.current.get(pane.id)===titleRequest&&p.hostTitlePending===change.title?{title:pane.title,hostTitlePending:undefined}:{}),
+        ...(change.archived!==undefined?{archived:pane.archived,closed:pane.closed,hostArchivePending:undefined}:{})}:p));
+      toast(`Could not save thread metadata: ${String(error)}`);
+    }
+  };
+  const renamePane = (id: string, title: string) => {
+    const pane=panes.find(p=>p.id===id);if(!pane)return;
+    setPanes(list=>list.map(p=>p.id===id?{...p,title,...(p.kind==='chat'?{hostTitlePending:title}:{})}:p));
+    void syncWorkMeta(pane,{title});
+  };
 
+  const [browserAddress, setBrowserAddress] = useState<{ url: string; anyPage?: boolean; hostId?: string } | null>(null);
+  const [browserPin, setBrowserPin] = useState<{ hostId: string; focus: string } | null>(null);
   const addPane = (kind: Pane["kind"], title: string, agent?: string, workspaceId = activeWorkspace) => {
     if (!workspaceId) return;
     // A second terminal or preview of the same name in a workspace is numbered: "Codex 2", "Preview 2".
@@ -964,43 +1050,27 @@ export function App() {
       return source ? [{ address, source: source.title, sourceId: id }] : [];
     });
 
+  /** Where the person is. A link's machine stays in the side panel until this changes. */
+  const browserFocus = `${mainView.kind}:${focusedPane ?? ""}:${activeWorkspace ?? ""}`;
   /**
-   * Show a server in a Preview right of the terminal or thread it came from,
-   * on that pane's deck, or focus the Preview already showing it there.
-   * `auto` is a thread's bot naming a new server: the thread's own Preview
-   * moves to it (unless it already shows that server), or one opens, and focus stays where you are.
+   * A local server or link opens in the side panel's Browser, on the tab already showing it if
+   * there is one. `auto` is a thread's bot naming a new server: any page of it counts as showing it.
    */
   const openPreview = (address: string, sourceId: string, auto = false) => {
-    const source = panes.find((p) => p.id === sourceId);
-    if (!source) return;
-    const deck = paneSection(source);
-    const existing = panes.find((p) => p.kind === "preview" && p.workspaceId === source.workspaceId && paneSection(p) === deck && p.url === address);
-    if (existing) {
-      if (!auto) focusPane(existing);
-      return;
-    }
-    const own = auto ? panes.find((p) => p.kind === "preview" && !p.closed && p.servedBy === sourceId && paneSection(p) === deck) : undefined;
-    if (own) {
-      // Another page on the server it already shows is left alone: bots name
-      // paths in passing, and the page you're on shouldn't jump.
-      if (own.url && sameServer(own.url, address)) return;
-      setPreviewAddress(own.id, address, sourceId);
-      return;
-    }
-    const id = newId("pane");
-    const title = nextTitle("Preview", panes.filter((p) => p.workspaceId === source.workspaceId && p.kind === "preview").map((p) => p.title));
-    const preview: Pane = { id, workspaceId: source.workspaceId, kind: "preview", title, url: address, servedBy: sourceId };
-    if (deck === "threads") preview.deck = "threads";
-    const key = layoutKey(null, deck);
-    setPanes((list) => [...list, preview]);
-    setLayouts((all) => (all[key] && leafIds(all[key]).includes(sourceId) ? { ...all, [key]: insertBeside(all[key], sourceId, id, "right") } : all));
-    if (auto) return;
-    setActiveWorkspace(source.workspaceId);
-    setSection(deck);
-    setPicking(false);
-    setFocusedPane(id);
-    setMaximized(null);
+    const source = panes.find((item) => item.id === sourceId);
+    const home = workspaces.find((item) => item.id === source?.workspaceId);
+    // "localhost" means the machine the thread runs on, whichever thread is in front now.
+    const hostId = home ? workspaceHost(home) : undefined;
+    setBrowserAddress({ url: address, anyPage: auto, hostId });
+    if (hostId) setBrowserPin({ hostId, focus: browserFocus });
+    setPanel((current) => openTab({ ...current, open: true }, "assistantbrowser", Date.now()));
   };
+
+  // A link for a machine that's offline has nowhere to open. The panel says so while the person stays put.
+  useEffect(() => {
+    if (!browserAddress?.hostId) return;
+    try { hostBackend(browserAddress.hostId); } catch { setBrowserAddress(null); }
+  }, [browserAddress]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const forkThread = async (source: Pane, title: string, upto: number | null, at: number) => {
     const id = newId("pane");
@@ -1311,10 +1381,12 @@ export function App() {
     const ids = list.map((p) => p.id);
     if (ids.length === 0) return;
     setPanes((all) => archiveThreads(all, ids));
+    for(const pane of list)void syncWorkMeta(pane,{archived:true});
     for (const id of ids) { forgetServer(id); takeOff(id); }
-    toast(words, () => setPanes((all) => unarchiveThreads(all, ids)));
+    toast(words, () => {setPanes((all) => unarchiveThreads(all, ids));for(const pane of list)void syncWorkMeta(pane,{archived:false});});
   };
   const restoreArchived = (pane: Pane) => {
+    void syncWorkMeta(pane,{archived:false});
     setPanes((all) => unarchiveThreads(all, [pane.id]));
     focusPane({ ...pane, archived: undefined, closed: true });
   };
@@ -1361,7 +1433,7 @@ export function App() {
     const { workspace, hostId } = hostOfPane(pane);
     const run = runs[paneId];
     const snapshot: PopoutSnapshot = {
-      kind: "pane", id: pane.id, title: pane.title, appearance,
+      kind: "pane", id: pane.id, title: pane.title, appearance: appearanceSettings ?? appearance,
       ...(pane.kind === "terminal" && run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
       workspaceId: pane.workspaceId, hostId,
       ...(pane.agent ? { agent: pane.agent } : {}),
@@ -1407,7 +1479,7 @@ export function App() {
     const workspace = workspaces.find((w) => w.id === (tab.kind === "artifacts" ? selected?.workspaceId : activeWorkspace)) ?? shownWorkspaces(workspaces)[0] ?? null;
     const hostId = workspace ? workspaceHost(workspace) : "local";
     const snapshot: PopoutSnapshot = {
-      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance,
+      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance: appearanceSettings ?? appearance,
       ...(tab.url !== undefined ? { url: tab.url } : {}),
       workspaceId: workspace?.id, hostId,
       cwd: chatFolder(selected, workspace),
@@ -1542,7 +1614,7 @@ export function App() {
       push(rec.token, {
         title: pane.title,
         cwd: chatFolder(pane, workspace),
-        appearance,
+        appearance: appearanceSettings ?? appearance,
         workspaceId: pane.workspaceId,
         ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
         ...(pane.kind === "preview" ? { previewSource: previewSourceOf(pane) } : {}),
@@ -1554,7 +1626,7 @@ export function App() {
       const tab = panel.tabs.find((t) => t.id === rec.id) ?? rec.tab;
       const selected = followedTabPane(tab.kind, listed, focusedPane, detailsTarget);
       const followWorkspace = workspaces.find((w) => w.id === (selected?.workspaceId ?? activeWorkspace)) ?? null;
-      const patch: PopoutUpdate = { title: tabTitle(tab), appearance };
+      const patch: PopoutUpdate = { title: tabTitle(tab), appearance: appearanceSettings ?? appearance };
       if (tab.kind === "browser" && tab.url !== undefined) patch.url = tab.url;
       if (tab.kind === "dashboard") patch.dashboardRows = dashboardRows;
       if (followWorkspace) {
@@ -1623,6 +1695,20 @@ export function App() {
     else if (action === "delete") deleteThread(pane);
   };
 
+  const threadTrashEntries = (pane: Pane, unavailable?: string): MenuEntry[] => {
+    const {hostId} = hostOfPane(pane);
+    if (pane.kind !== "chat" || chats.backendOf(hostId)?.supports?.("room_trash_v1") !== true) return [];
+    const reason = unavailable ?? (offlineHost(hostId) ? "Reconnect to move this thread to Trash." : undefined);
+    return [{
+      key: "trash", label: "Move to Trash", separated: true, disabled: !!reason, reason,
+      onSelect: () => {
+        const row = findRoom(chats.catalog, hostId, pane.id);
+        if (!row) { toast("This machine hasn't listed the thread yet. Reconnect and try again."); return; }
+        void chats.setTrashed(row, true).then(() => toast(`Moved ${pane.title} to Trash. Restore it from Trash in the sidebar.`)).catch(error => toast(String(error)));
+      },
+    }];
+  };
+
   /** A pane's ⋯ menu, on its head or its sidebar row. */
   const paneMenuEntries = (pane: Pane, from: "rail" | "head"): MenuEntry[] => {
     const taskId = (pane as Pane & { assistantTaskId?: string }).assistantTaskId;
@@ -1637,25 +1723,28 @@ export function App() {
         { key: "delete", label: "Delete", danger: true, separated: true, disabled: !finished,
           reason: finished ? undefined : status ? "This task is still going. Stop it in Tasks first, then delete its chat." : "Still loading this task's status.",
           onSelect: () => runPaneMenu(pane, "delete", from) },
+        ...threadTrashEntries(pane, finished ? undefined : "Stop this task in Tasks before moving its chat to Trash."),
       ];
     }
     const { workspace, hostId } = hostOfPane(pane);
     const found = agentsOn(hostId);
     const items = paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, found), tool: toolName(pane.agent, found), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned, unread: pane.unread, mac: isMac });
     const ssh = hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh;
-    return items.map((item) => ({
+    const entries: MenuEntry[] = items.map((item) => ({
       key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, keys: item.keys,
       submenu: item.action === "project" ? projectEntries(pane)
         : item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(chatFolder(pane, workspace), ssh), id: pane.id })
           .map((c) => ({ key: c.kind, label: c.label, side: c.side, disabled: c.disabled, reason: c.reason, onSelect: () => copyFromThread(pane, c.kind) })) : undefined,
       onSelect: item.submenu ? undefined : () => runPaneMenu(pane, item.action, from),
     }));
+    entries.push(...threadTrashEntries(pane));
+    return entries;
   };
 
   /** Whether a thread has started; one that hasn't reported yet counts by its saved activity. */
   const startedOf = (pane: Pane) => threadStatus[pane.id]?.started ?? Boolean(pane.activeAt);
   /** A host's backend by id: the Mac's own, or a saved server's. */
-  const hostBackend = (hostId: string): Backend => {
+  function hostBackend(hostId: string): Backend {
     if (!backend) throw new Error("The backend is not ready yet.");
     if (hostId === "local") return backend;
     if (!backend.machines) throw new Error("This server is unavailable.");
@@ -1908,16 +1997,38 @@ export function App() {
   const reachable = (hostId:string) => { if(hostId==='local'||!backend?.machines)return true;try{return backend.machines.connection(hostId).get().status.kind==='connected';}catch{return false;} };
   const offlineHost = (hostId:string) => { if(hostId==='local'||!backend?.machines)return false;try{return dotState(backend.machines.connection(hostId).get().status)==='off';}catch{return true;} };
   // Discover every durable personal assistant; discovery and bridges stay active while closed.
-  const assistants = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant', bridge: true, onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
-  // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
-  // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
-  const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
-  const chats = useDesktopChats({
-    machines: chatMachines,
-    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
-    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
-    onError: (text) => toast(text),
-  });
+  const [assistantFloat, setAssistantFloat] = useState<AssistantFloatHandle | null>(null);
+  const companionSelections=useRef(new Map<string,CompanionSelection>());
+  const [,refreshCompanionSelection]=useState(0);
+  function companionCatalogFor(owner:AssistantRef):CompanionCatalog {
+    const summary=assistants.assistants.find(item=>assistantIdentityKey(item.ref)===assistantIdentityKey(owner));
+    const host=assistants.hosts.find(item=>item.hostId===owner.hostId);
+    const routeHostId=host?.routeHostId??'';
+    return deriveCompanionCatalog({owner,assistant:{id:owner.assistantId,hostId:summary?.ref.hostId??'',projects:summary?.projects??[]},routeHostId,authenticatedHostId:authenticatedProjectHost(routeHostId),catalog:chats.catalog,panes:viewPanes,workspaces,focusedPane,excluded:deleting,authenticatedHostForRoute:authenticatedProjectHost,canonicalProjectForWorkspace,threadStatus:(route,id)=>{
+      const pane=viewPanes.find(p=>p.id===id&&workspaceHost(workspaces.find(w=>w.id===p.workspaceId)??{id:'',name:'',path:''})===route);
+      const state=pane&&threadStatus[pane.id];return state?.waiting?.length?'Needs you':state?.busy?'Working':state?'Idle':undefined;
+    }});
+  }
+  function companionChoiceFor(owner:AssistantRef,catalog:CompanionCatalog):CompanionSelection {
+    return companionSelections.current.get(assistantIdentityKey(owner))??loadCompanionSelection(localStorage,owner,catalog);
+  }
+  function chooseCompanionContext(owner:AssistantRef,patch:Partial<CompanionSelection>):void {
+    const catalog=companionCatalogFor(owner);
+    const next=reconcileCompanionSelection(catalog,{...companionChoiceFor(owner,catalog),...patch});
+    companionSelections.current.set(assistantIdentityKey(owner),next);
+    saveCompanionSelection(localStorage,owner,catalog,next);
+    refreshCompanionSelection(version=>version+1);
+  }
+  const assistants:ReturnType<typeof usePersonalAssistants> = usePersonalAssistants({ hosts: hostList, hostBackend, offlineHost, open: mainView.kind === 'assistant' || !!assistantFloat, bridge: true,
+    viewContext: (routeHostId, hostId, owner) => owner?companionViewContext(companionCatalogFor(owner),companionChoiceFor(owner,companionCatalogFor(owner))):assistantViewContext({routeHostId,hostId,panes:viewPanes,workspaces,focusedPane,excluded:deleting}),
+    currentThread: (_routeHostId,_hostId,owner) => {
+      const catalog=companionCatalogFor(owner);
+      const view=companionViewContext(catalog,companionChoiceFor(owner,catalog));
+      const thread=catalog.threads.find(item=>item.id===view.focusedThreadId);
+      const project=thread&&catalog.projectByThread[thread.id];
+      return thread&&project?{id:thread.id,title:thread.title,project:{hostId:project.hostId,cwd:project.cwd}}:undefined;
+    },
+    onOpen: ref => { if(ref){setMainView({kind:'assistant',assistant:ref,section:'chat'});setCreatingAssistant(false);setApexAgentWorkspace(null);} } });
   const [openChat, setOpenChatState] = useState<ChatPlace | null>(() => readOpenChat(localStorage));
   const setOpenChat = (place: ChatPlace | null) => { setOpenChatState(place); saveOpenChat(localStorage, place); };
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -1942,6 +2053,19 @@ export function App() {
     }
     setOpenChat(null);
     focusPane(place.pane);
+  };
+  const restoreTrashedThread = async (row: ChatEntry) => {
+    await chats.setTrashed(row, false);
+    if (row.kind === "work") {
+      const place = workThreadPlace(workspaces, panes, row.hostId, {...row,trashedAt:undefined}, () => newId("ws"), folderName);
+      if (typeof place === "string") {
+        toast(place === "clash" ? `Restored on ${chats.machineName(row.hostId)}. Close the thread with the same id on the other machine before opening this one.` : `Restored on ${chats.machineName(row.hostId)}. Open it from its project.`);
+        return;
+      }
+      if (place.added || place.restored) setWorkspaces(place.workspaces);
+      setPanes(before => place.added ? [...before,{...place.pane,closed:true}] : before.map(pane => pane.id === row.id && hostOfPane(pane).hostId === row.hostId ? {...pane,closed:true} : pane));
+    }
+    toast(`Restored ${row.title}. Open it from its usual list.`);
   };
   const personal = assistants.pendingLane() ?? (assistants.selected ? assistants.lane(assistants.selected) : assistants.emptyLane());
   const taskRouteStatus = (id: string) => { try { return hostBackend(id).host?.connection.get().status; } catch { return undefined; } };
@@ -1972,22 +2096,22 @@ export function App() {
   const openAssistant = (ref:AssistantRef) => { assistants.select(ref); setMainView({kind:'assistant',assistant:ref,section:'chat'}); setCreatingAssistant(false); setSettingsOpen(null); closeApexAgent(); };
   const assistantHost = mainView.kind === 'assistant' ? assistants.hosts.find(host=>host.hostId===mainView.assistant.hostId) : undefined;
   const assistantBackend = assistantHost ? hostBackend(assistantHost.routeHostId) : null;
-  const authenticatedProjectHost = (routeHostId:string):string|undefined => {
+  function authenticatedProjectHost(routeHostId:string):string|undefined {
     try { const status=hostBackend(routeHostId).host?.connection.get().status;return status?.kind==='connected'?status.hostId:undefined; } catch { return undefined; }
-  };
-  const snapshotProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+  }
+  function snapshotProjectForWorkspace(workspace:Workspace):ProjectRef|undefined {
     const hostId=authenticatedProjectHost(workspaceHost(workspace));
     const entry=Object.values(currentAssistantRegistry.owners).find(entry=>entry.owner.workspaceId===workspace.id&&entry.owner.cwd===workspace.path&&entry.owner.hostId===workspaceHost(workspace));
     const project=(entry as {snapshot?:{project?:ProjectRef}}|undefined)?.snapshot?.project;
     return project&&project.hostId===hostId&&project.workspaceId===workspace.id?project:undefined;
-  };
-  const projectAliasKey=(workspace:Workspace,hostId:string)=>JSON.stringify([hostId,workspaceHost(workspace),workspace.id,workspace.path]);
-  const canonicalProjectForWorkspace = (workspace:Workspace):ProjectRef|undefined => {
+  }
+  function projectAliasKey(workspace:Workspace,hostId:string):string {return JSON.stringify([hostId,workspaceHost(workspace),workspace.id,workspace.path]);}
+  function canonicalProjectForWorkspace(workspace:Workspace):ProjectRef|undefined {
     const snapshot=snapshotProjectForWorkspace(workspace);if(snapshot)return snapshot;
     const hostId=authenticatedProjectHost(workspaceHost(workspace));if(!hostId)return;
     const alias=assistantProjectAliases[projectAliasKey(workspace,hostId)];
     try {return alias?.route===hostBackend(workspaceHost(workspace))?alias.project:undefined;}catch{return undefined;}
-  };
+  }
   const projectUnavailable = (project:ProjectRef):string|undefined => resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace) ? undefined : 'This exact project is unavailable. Reconnect its machine or restore its assigned folder.';
   const [workFocus,setWorkFocus]=useState<{project:ProjectRef;taskId:string;nonce:number}|null>(null);
   const workFocusOwner=mainView.kind==='assistant'?assistantIdentityKey(mainView.assistant):'';
@@ -2001,24 +2125,76 @@ export function App() {
   /** The Browser card opens the assistant's browser as a tab beside Details, not a pop-up (§5.3). */
   const openAssistantBrowserTab=()=>{setPanel(current=>openTab(current,'assistantbrowser',Date.now()));};
   /** Closing that tab returns to Details; it leaves whoever controls the page in control. */
-  const closeAssistantBrowserTab=()=>{const tab=panel.tabs.find(item=>item.kind==='assistantbrowser');if(tab)changePanel(closeTab(panel,tab.id));};
   /** Starts the assistant's voice call. The strip and Details share this one path. */
   const startAssistantCall = () => {
     if (!selectedAssistant) return;
     const hostId = selectedAssistant.ref?.hostId ?? selectedAssistant.assistant?.hostId ?? selectedAssistant.hostName;
-    const id = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
-    const candidate = {
-      hostId,
-      roomId: `assistant:${id}`,
-      participantId: id,
-      profileId: `assistant:${id}`,
-      name: selectedAssistant.name,
-      roomTitle: selectedAssistant.name,
-      agentVoice: selectedAssistant.assistant?.profile?.voice,
-      aliases: [],
-    };
-    void voiceController.start(candidate);
+    const assistantId = selectedAssistant.ref?.assistantId ?? selectedAssistant.assistant?.id ?? selectedAssistant.name;
+    void voiceController.start(assistantCallCandidate(selectedAssistant, { hostId, assistantId }));
   };
+  const floatLane = assistantFloat ? assistants.lane(assistantFloat.ref) : null;
+  const floatHost = assistantFloat ? assistants.hosts.find(host => host.hostId === assistantFloat.ref.hostId) : undefined;
+  const floatBackend = floatHost && !offlineHost(floatHost.routeHostId) ? hostBackend(floatHost.routeHostId) : undefined;
+  const floatCatalog=assistantFloat?companionCatalogFor(assistantFloat.ref):null;
+  const floatContext=floatCatalog?companionFloatContext(floatCatalog,companionChoiceFor(floatCatalog.owner,floatCatalog)):undefined;
+  useEffect(()=>{
+    for(const summary of assistants.assistants){
+      const key=assistantIdentityKey(summary.ref);
+      const choice=companionSelections.current.get(key);
+      if(!choice)continue;
+      const catalog=companionCatalogFor(summary.ref);
+      if(!catalog.valid||!catalog.listed)continue;
+      const next=reconcileCompanionSelection(catalog,choice);
+      if(JSON.stringify(next)!==JSON.stringify(choice)){companionSelections.current.set(key,next);refreshCompanionSelection(version=>version+1);}
+      saveCompanionSelection(localStorage,summary.ref,catalog,next);
+    }
+  },[chats.catalog,assistants.assistants,workspaces,viewPanes]);
+  const floatControls = useAssistantFloat({ float: assistantFloat, setFloat: setAssistantFloat, lane: floatLane, backend:floatBackend, threadContext:floatContext,
+    onFollowThreads: ids=>{if(assistantFloat)chooseCompanionContext(assistantFloat.ref,{followedThreadIds:ids});},
+    onActiveThread: id=>{if(assistantFloat)chooseCompanionContext(assistantFloat.ref,{activeThreadId:id});},
+    onNewThread:async()=>{
+      if(!assistantFloat)throw new Error('Open an assistant before creating a thread.');
+      const owner={...assistantFloat.ref};
+      const catalog=companionCatalogFor(owner);
+      const choice=companionChoiceFor(owner,catalog);
+      const target=companionNewThreadTarget(catalog,choice);
+      if(target.kind!=='project')throw new Error(target.message);
+      const route=hostBackend(target.routeHostId);
+      const bound=()=>hostBackend(target.routeHostId)===route&&authenticatedProjectHost(target.routeHostId)===target.hostId&&!offlineHost(target.routeHostId);
+      if(!bound())throw new Error('Reconnect the thread’s owning machine before creating it.');
+      const id=newId('pane');
+      await route.roomCreate(id,[],settings.newThread,target.project.cwd);
+      if(!bound())throw new Error('The machine changed after thread creation. Refresh its thread list before trying again.');
+      await route.call('chat_update_meta',{id,title:'New thread'});
+      await chats.refresh(target.routeHostId);
+      if(!bound())throw new Error('The thread was created, but its machine is no longer connected.');
+      const next={followedThreadIds:[...new Set([...choice.followedThreadIds,id])].slice(-64),activeThreadId:id};
+      companionSelections.current.set(assistantIdentityKey(owner),next);
+      refreshCompanionSelection(version=>version+1);
+      const workspace=resolveAssistantProject(target.project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);
+      if(workspace){
+        const pane:Pane={id,workspaceId:workspace.id,kind:'chat',title:'New thread'};
+        setPanes(before=>before.some(item=>item.id===id)?before.map(item=>item.id===id?{...item,closed:false}:item):[...before,pane]);
+        setOpenChat(null);focusPane(pane);
+      }
+      return {id};
+    },
+    appearance: appearanceSettings ?? appearance, onDetails: ref => {
+    setMainView({ kind: 'assistant', assistant: ref, section: 'chat' });
+    showDetails();
+  } });
+  const popOutAssistant = () => {
+    if (!selectedAssistant?.ref) return;
+    floatControls.open(selectedAssistant.ref, selectedAssistant.name).catch(error => toast(String(error instanceof Error ? error.message : error)));
+  };
+  // A live call outlives its floating view. Main assistant chat owns the same
+  // registration while selected; otherwise keep the actual voice owner alive.
+  const assistantVoiceState=useSyncExternalStore(voiceController.subscribe,voiceController.getState);
+  const keeperOwner=assistantVoiceKeeperOwner({voice:assistantVoiceState,available:assistants.assistants,selected:selectedAssistant?.ref,floating:assistantFloat?.ref});
+  const keeperLane=keeperOwner?assistants.lane(keeperOwner):null;
+  const keeperHost=keeperOwner?assistants.hosts.find(host=>host.hostId===keeperOwner.hostId):undefined;
+  const keeperBackend=keeperHost&&!offlineHost(keeperHost.routeHostId)?hostBackend(keeperHost.routeHostId):undefined;
+  // The route to the assistant's machine, as the main view uses: `ref.hostId` is its identity.
   const assignedProjects = selectedAssistant?.assistant?.projects ?? [];
   const selectedDelegatedTasks = selectedAssistant?.ref ? delegatedTasksForAssistant(currentAssistantRegistry.owners, selectedAssistant.ref, assignedProjects, selectedAssistant.assistant?.deletedDelegatedTasks??[],selectedAssistant.assistant?.purgedDelegatedTaskIds??[]) : [];
   /** What this session's tasks and its own chat made: documents, exports and pages. */
@@ -2288,6 +2464,7 @@ export function App() {
     setMainView({kind:"workspace"});
     setCreatingAssistant(false);
     // Opening a thread reads it, and brings it out of the archive.
+    if(pane.archived)void syncWorkMeta(pane,{archived:false});
     if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId && (pane.closed || pane.unread || pane.archived)) setPanes((list) => list.map((p) => {
       if (p.id !== pane.id) return p;
       const { unread: _read, archived: _out, ...rest } = p;
@@ -2596,6 +2773,7 @@ export function App() {
       <UpdateNotices updates={updates} onRestart={restartToUpdate} />
       {newChatOpen && <NewChatDialog chats={chats} onClose={() => setNewChatOpen(false)} onStarted={(row) => { setNewChatOpen(false); setMainView({kind:"workspace"}); setCreatingAssistant(false); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
+      {appearanceStudio.pending.length > 0 && settingsOpen !== "appearance" && <AppearanceDraftBar studio={appearanceStudio} settings={settings} systemDark={systemDark} onResume={resumeAppearance} />}
       <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
@@ -2604,10 +2782,13 @@ export function App() {
             assistantStatusFor={ref=>{const summary=assistants.assistants.find(item=>assistantIdentityKey(item.ref)===assistantIdentityKey(ref));return assistantStatus({offline:summary?.offline??false,paused:summary?.paused??false,personalTasks:summary?.personalTasks??[],delegatedTasks:summary?delegatedTasksForAssistant(currentAssistantRegistry.owners,ref,summary.projects):[]});}}
             assistantBackend={ref=>{const host=assistants.hosts.find(host=>host.hostId===ref.hostId);if(!host)return undefined;try{return hostBackend(host.routeHostId);}catch{return undefined;}}}
             selectedAssistant={mainView.kind==='assistant'?mainView.assistant:null}
+            floatingAssistant={floatControls.visible?assistantFloat?.ref:null}
             rosterProblem={rosterMessage(assistants.assistants,assistants.hosts)}
             onOpenAssistant={ref=>{setOpenChat(null);openAssistant(ref);}}
+            onPopOutAssistant={window.apexDeck?.popout?ref=>{const lane=assistants.lane(ref);if(lane)void floatControls.open(ref,lane.name).catch(error=>toast(String(error instanceof Error?error.message:error)));}:undefined}
             onCreateAssistant={()=>{setOpenChat(null);setCreatingAssistant(true);setMainView({kind:'workspace'});}}
             chats={<ChatRail chats={chats} openKey={openChat ? chatKey(openChat) : null} onNew={() => setNewChatOpen(true)} onOpen={(row) => { setMainView({kind:"workspace"}); setCreatingAssistant(false); setSettingsOpen(null); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
+            trash={<ThreadTrash chats={chats} onRestore={restoreTrashedThread} />}
             section={section}
             panes={assistantSidebarPanes(viewPanes,currentAssistantRegistry,keptAssistantThreads)}
             workspaces={workspaces}
@@ -2643,6 +2824,7 @@ export function App() {
             settingsOpen={settingsOpen !== null && settingsOpen !== "appearance"}
             onOpenAppearance={() => setSettingsOpen((open) => open === "appearance" ? null : "appearance")}
             onOpenSettings={() => setSettingsOpen((open) => open ? null : "general")}
+            appearanceDraftCount={settingsOpen ? 0 : appearanceStudio.pending.length}
             onRestore={restoreArchived}
             style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}
           />
@@ -2718,7 +2900,7 @@ export function App() {
                     {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : pane.kind === "preview" ? previewStatus[pane.id] ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     {(pane.kind === "terminal" || pane.kind === "chat") && servers[pane.id] && (
-                      <button className="server-chip" onPointerDown={(event) => event.stopPropagation()} onClick={() => openPreview(servers[pane.id], pane.id)} title={pane.kind === "chat" ? "Open in Preview, beside this thread" : "Open in Preview, beside this terminal"}>
+                      <button className="server-chip" onPointerDown={(event) => event.stopPropagation()} onClick={() => openPreview(servers[pane.id], pane.id)} title="Open in the Browser tab">
                         {hostLabel(servers[pane.id])}
                       </button>
                     )}
@@ -2770,7 +2952,8 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
           </div>
-          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
+          {keeperOwner && keeperLane && <AssistantVoiceKeeper key={assistantIdentityKey(keeperOwner)} lane={keeperLane} backend={keeperBackend} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}
+          {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}
             memoryProject={assistantNotebookProject}
             projects={assistantBackend&&selectedAssistant.assistant ? <AssistantProjects compact managementOpen onDetailChange={()=>{}} detailBackLabel={workDetailOrigin==='chat'?'Chat':'Projects & access'} onDetailBack={()=>{if(workDetailOrigin==='chat')navigateAssistant('chat');}} focusTask={workFocus} onFocusHandled={()=>setWorkFocus(null)} lane={selectedAssistant} backend={assistantBackend} profiles={profiles.filter(profile=>!profile.media)}
               onEnsureCoordinator={async(project)=>{
@@ -2804,7 +2987,7 @@ export function App() {
               onKeepThread={(project,id)=>{const pane=viewPanes.find(p=>p.id===id&&p.workspaceId===project.workspaceId);if(pane)keepAssistantThread(pane);else toast('Reconnect this task conversation before keeping it.');}}
               onOpenThread={(project,id)=>{const workspace=resolveAssistantProject(project,workspaces,authenticatedProjectHost,canonicalProjectForWorkspace);const destination=workspace?assistantWorkerThreadDestination(workspace,id,viewPanes,new Set([...deleting,...poppedIds])):null;if(!destination?.pane){toast('Reconnect this project or return its worker thread to Deck to open it.');return;}focusPane(destination.pane);setMaximized(destination.maximized);}}
             />:undefined}
-            editor={assistantBackend ? <AssistantEditor onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;})} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
+            editor={assistantBackend ? <AssistantEditor onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} onArchived={()=>setMainView({kind:'workspace'})} onOpenBrowser={openAssistantBrowser} machineName={selectedAssistant.hostName} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} key={assistantIdentityKey(mainView.assistant)} onOpenMemory={()=>navigateAssistant("memory")} backend={assistantBackend} profiles={profiles} disabledProviders={disabledProviders} lane={selectedAssistant} hostId={mainView.assistant.hostId} projects={workspaces.filter(workspace=>!workspace.hidden && workspaceHost(workspace)===assistantHost?.routeHostId).map(workspace=>{const canonical=canonicalProjectForWorkspace(workspace);return canonical?{...workspace,path:canonical.cwd}:workspace;}).filter(workspace=>Boolean(workspace.path?.trim()))} onCommitted={()=>{void assistants.refresh();}} onSaved={()=>{const owner=mainView.assistant;setMainView(before=>assistantSettingsSaved(before,owner));}}/> : <p role="status">Reconnect the assistant's machine to edit Settings.</p>}
             chat={<ApexAgentAll delegatedTasks={selectedDelegatedTasks} voiceBackend={assistantBackend??undefined} voiceSettings={settings.voice} onVoiceSettings={voice=>setSettings(s=>({...s,voice}))} voiceHeader={assistantVoiceHost} onVoiceFocus={()=>navigateAssistant('chat')} onOpenBrowser={openAssistantBrowser} onOpenProjectTask={key=>{const task=selectedDelegatedTasks.find(t=>projectTaskKey(t.owner.hostId,t.owner.workspaceId,t.id)===key);if(!task)return false;const lists=assistantWorkItems([], [task],assistantProjectName);const item=Object.values(lists).flat().find(i=>i.taskId===task.id);if(!item)return false;openWorkItem(item,'chat');return true;}} key={selectedAssistant.draftKey} focusTask={chatFocus} onFocusHandled={()=>setChatFocus(null)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} draftKey={selectedAssistant.draftKey} assistantAvatar={<AssistantWorkspaceAvatar lane={selectedAssistant} backend={assistantBackend??undefined}/>} embedded personalLaneId={selectedAssistant.draftKey} onNavigatePanel={panel=>navigateAssistant(panel==='activity'?'chat':panel)} workspaces={scopedAssistantWorkspaces} monitors={scopedAssistantMonitors} serversByLane={serversByLane} serverStatusByLane={serverStatusByLane} onReply={replyToAssistant} onMutate={mutateAssistant} onReact={(id,message,emoji,enabled)=>id===selectedAssistant.draftKey?selectedAssistant.react(message,emoji,enabled):reactToAssistant(id,message,emoji,enabled)} saveAttachment={(id,name,bytes)=>id===selectedAssistant.draftKey?selectedAssistant.saveAttachment(name,bytes):saveAssistantAttachment(id,name,bytes)} pickAttachmentFolder={id=>id===selectedAssistant.draftKey?selectedAssistant.pickFolder():pickAssistantAttachmentFolder(id)} onSetUp={openApexAgentProject}  onClose={()=>setMainView({kind:'workspace'})}
             offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence}  overviewEntries={[]} personal={selectedAssistant}
             taskContext={assistantTaskContext && scopedAssistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
@@ -2871,10 +3054,24 @@ export function App() {
                 let route: Backend | null = null; try { route = hostBackend(row.routeHostId); } catch { /* Keep the last known owner visible. */ }
                 return <WorkspaceTaskDetails key={row.key} row={row} backend={route} profiles={profiles} panes={viewPanes} onOpenThread={id => { const workspace = row.project ? resolveAssistantProject(row.project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace) : null; const pane = workspace ? viewPanes.find(item => item.id === id && item.workspaceId === workspace.id) : undefined; if (pane) focusPane(pane); }} />;
               }} />,
-              browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
-              assistantbrowser: (_tab, visible) => mainView.kind === "assistant" && selectedAssistant
-                ? <AssistantBrowser lane={selectedAssistant} presentation={visible ? "expanded" : "closed"} onClose={closeAssistantBrowserTab} />
-                : <p className="muted right-panel-empty">Open an assistant to see its browser.</p>,
+              browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onShare={(url) => { setBrowserAddress({ url, hostId: "local" }); setBrowserPin({ hostId: "local", focus: browserFocus }); setPanel((current) => openTab({ ...current, open: true }, "assistantbrowser", Date.now())); }} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
+              assistantbrowser: (_tab, visible) => {
+                const pane = listed.find((item) => item.id === focusedPane);
+                const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
+                const focusedHost = workspace ? workspaceHost(workspace) : "local";
+                const assistantView = mainView.kind === "assistant" && !!selectedAssistant;
+                const browserHost = browserHostFor(focusedHost, browserAddress, browserPin, browserFocus);
+                // A link shows its own machine, and the thread in front can only share tabs on that thread's machine.
+                const inAssistant = assistantView && !browserAddress?.hostId && browserPin?.focus !== browserFocus;
+                let route: Backend | null = null;
+                try { route = inAssistant ? assistantBackend : hostBackend(browserHost); } catch { /* show the offline state */ }
+                if (!route) return <p className="muted right-panel-empty">Connect to a machine to use its browser.</p>;
+                const browserRoute = route;
+                const browserName = inAssistant ? selectedAssistant!.hostName : hostNameFor(browserHost);
+                const browserKey = inAssistant ? `assistant:${assistantHost?.routeHostId ?? browserName}` : browserHost;
+                return <SharedBrowser key={browserKey} call={(cmd, args) => browserRoute.call(cmd, args)} hostId={browserKey} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
+                  thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} onStopAll={() => { void browserRoute.call("computer_stop").catch(() => {}); }} />;
+              },
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
               terminal: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
@@ -2909,7 +3106,7 @@ export function App() {
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
-        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
+        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} appearanceStudio={appearanceStudio} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       {connectionDialog && backend.hosts && <ConnectionDialog mode={connectionDialog} hosts={hostList} api={backend.hosts}

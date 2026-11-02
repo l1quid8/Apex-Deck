@@ -38,3 +38,8 @@ test("daemon mints via GA client_secrets and sanitizes errors", () => {
   // No secret echo in errors - check 401 message
   assert.match(daemon, /key rejected/i, "401 message without echoing body");
 });
+
+test("mint and client both disable automatic VAD responses",()=>{
+ assert.match(client,/create_response:\s*false/);
+ assert.match(daemon,/"create_response":\s*false/);
+});

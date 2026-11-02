@@ -187,6 +187,7 @@ INPUT: {input}"#
     );
     (
         TurnRequest {
+            computer: None,
             system,
             turns: vec![],
             unseen: vec![],

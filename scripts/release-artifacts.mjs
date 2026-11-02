@@ -65,7 +65,8 @@ export function isStaleReleaseEntry(name) {
   // Versioned names from before the fixed-name rule: they never regenerate now,
   // and the fixed package plus its previous copy covers what they were for.
   if (/^Apex-Deck_.*\.pkg(\.json)?$/i.test(name)) return true;
-  if (/^Apex-Deck_.*\.dmg(\.sha256)?$/i.test(name)) return true;
+  // Versioned DMGs are user-requested release artifacts. Keep them (and their
+  // hashes) after package-pinned's final cleanup, including --skip-pkg builds.
   return false;
 }
 

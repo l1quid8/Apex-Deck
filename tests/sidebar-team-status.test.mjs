@@ -37,7 +37,10 @@ test('offline row says Offline and never says Assistant ·', () => {
 test('selected row is the current page and opens on click', () => {
   const opened = [];
   const tree = row(status('ready', 'Ready'), { selected: true, onOpen: r => opened.push(r) });
-  assert.equal(tree.props['aria-current'], 'page');
-  tree.props.onClick();
+  const mainButton=find(tree,n=>n.type==='button'&&String(n.props.className).split(' ').includes('assistant-team-row'));
+  assert.equal(mainButton.props['aria-current'], 'page');
+  assert.match(tree.props.className,/selected/,'shared full row owns selection');
+  assert.equal(tree.props.onClick,undefined,'container cannot merge the two independent actions');
+  mainButton.props.onClick();
   assert.deepEqual(opened, [assistant.ref]);
 });

@@ -1,0 +1,54 @@
+[workspace]
+members = [".", "vendor/core", "vendor/macos"]
+default-members = ["."]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+version = "1.0.2"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
+thiserror = "2.0"
+tracing = "0.1"
+base64 = "0.23"
+rustc-hash = "2.1"
+libc = "0.2"
+smallvec = { version = "1.13", features = ["serde", "union"] }
+agent-desktop-core = { path = "vendor/core" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unreachable_pub = "allow"
+unused_must_use = "deny"
+let_underscore_drop = "allow"
+
+[workspace.lints.clippy]
+unwrap_used = "allow"
+expect_used = "allow"
+
+[package]
+name = "apex-computer-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+agent-desktop-core.workspace = true
+agent-desktop-macos = { path = "vendor/macos" }
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"

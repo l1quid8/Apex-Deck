@@ -36,6 +36,8 @@ const worker = (id, script) => ({ id, display_name: id, access: 'edits', backend
 
 test('two assistant owners coordinate three canonical isolated projects with reviewed memory and independent controls across restart', { timeout: 90_000 }, async t => {
   const f = await workspaceFixture(t, 'adw-work');
+  // This scenario exercises explicit human approvals; saved Full queues directly.
+  const assistantProfile = { ...f.profile, access: 'ask' };
   fs.writeFileSync(path.join(f.tools, 'claude'), `#!/bin/sh
 case "$*" in
   *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;;
@@ -60,9 +62,9 @@ cat >/dev/null
   for (const host of hosts) {
     const owned = projects.filter(project => project.host === host);
     await host.client.call('session_save', { session: { version: 1, profiles: [f.profile], workspaces: owned.map(p => ({ id: p.workspaceId, hostId: host.hostId, path: p.cwd })) } });
-    let assistant = await host.client.call('personal_create', { name: host === hosts[0] ? 'Alpha' : 'Beta', folder: f.root, profile: f.profile, workspaceVersion: 4, look: { seed: `stable-${host.hostId}`, color: '#336699' } });
+    let assistant = await host.client.call('personal_create', { name: host === hosts[0] ? 'Alpha' : 'Beta', folder: f.root, profile: assistantProfile, workspaceVersion: 4, look: { seed: `stable-${host.hostId}`, color: '#336699' } });
     assert.equal(assistant.id, 'asst-1');
-    assistant = await configure(host, assistant.id, { projects: owned.map(p => ({ project: { hostId: host.hostId, workspaceId: p.workspaceId, cwd: p.cwd }, tools: 'full' })), profile: f.profile });
+    assistant = await configure(host, assistant.id, { projects: owned.map(p => ({ project: { hostId: host.hostId, workspaceId: p.workspaceId, cwd: p.cwd }, tools: 'full' })), profile: assistantProfile });
     await host.client.call('personal_memory_add', { assistantId: assistant.id, expectedRevision: assistant.revision, text: `PRIVATE_${assistant.name}_ONLY` });
     host.assistant = await readAssistant(host);
   }

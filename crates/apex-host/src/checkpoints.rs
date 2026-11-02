@@ -115,10 +115,8 @@ fn isolated_git(
 ) -> Result<Vec<u8>, String> {
     use std::io::Write;
     let mut command = Command::new("git");
-    for (k, _) in std::env::vars() {
-        if k.starts_with("GIT_") {
-            command.env_remove(&k);
-        }
+    for key in inherited_git_vars(std::env::vars().map(|(key, _)| key)) {
+        command.env_remove(key);
     }
     command.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -165,6 +163,11 @@ fn isolated_git(
 fn text(bytes: Vec<u8>) -> String { String::from_utf8_lossy(&bytes).trim().to_string() }
 
 /// A short stable name for a folder, so each folder gets its own store.
+/// The inherited variables that could steer Git into the person's or a bot's settings.
+fn inherited_git_vars(keys: impl Iterator<Item = String>) -> Vec<String> {
+    keys.filter(|key| key.starts_with("GIT_")).collect()
+}
+
 fn folder_key(cwd: &Path) -> String {
     let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -938,6 +941,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn snapshots_drop_every_inherited_git_variable() {
+        let keys = ["GIT_CONFIG_PARAMETERS", "GIT_DIR", "HOME", "DIGIT_X"].map(String::from);
+        assert_eq!(inherited_git_vars(keys.into_iter()), ["GIT_CONFIG_PARAMETERS", "GIT_DIR"]);
+    }
+
+    #[test]
     fn snapshots_run_nothing_from_project_or_environment() {
         let (cwd, snaps) = folder("isolation-safety");
         let base = cwd.parent().unwrap();
@@ -997,9 +1006,6 @@ mod tests {
         std::fs::copy(&script, store_hooks.join("post-commit")).unwrap();
         std::fs::write(store.join("config"), format!("[core]\n\tbare = true\n\tfsmonitor = {}\n[filter \"evil\"]\n\tclean = {}\n", script.to_string_lossy(), script.to_string_lossy())).unwrap();
 
-        // Set inherited GIT_CONFIG_PARAMETERS in environment
-        std::env::set_var("GIT_CONFIG_PARAMETERS", format!("'core.fsmonitor={}'", script.to_string_lossy()));
-
         // Run full checkpoints lifecycle: store(), take(), plan(), restore(), diff_since_start(), compact()
         snaps.take("t", &cwd, 0, Kind::Open, None).unwrap();
         snaps.take("t", &cwd, 0, Kind::Send, None).unwrap();
@@ -1018,8 +1024,6 @@ mod tests {
         assert!(diff.is_some());
 
         snaps.compact();
-
-        std::env::remove_var("GIT_CONFIG_PARAMETERS");
 
         assert!(!marker.exists(), "Hostile script must never be executed by any git operation");
     }

@@ -15,6 +15,7 @@ import { HostPane } from "./HostPane";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { changedProfiles, createForkChannel, type ChatBundle, type PopoutAction, type PopoutSnapshot } from "./popoutModel.ts";
 import { PreviewPane } from "./PreviewPane";
+import { SharedBrowser } from "./SharedBrowser";
 import { RightBrowser } from "./RightBrowser";
 import { RightDashboard } from "./RightDashboard";
 import { RightFilesTab } from "./RightFiles";
@@ -95,8 +96,8 @@ export function PopoutApp({ token }: { token: string }) {
   const renameSent = useRef(false);
   const [winWidth, setWinWidth] = useState(() => window.innerWidth);
   // The owner's skin, sent with the snapshot and again whenever it changes in Deck.
-  const [appearance, setAppearance] = useState<AppearanceValues>(DEFAULT_APPEARANCE);
-  useAppearance(appearance);
+  const [appearance, setAppearance] = useState<AppearanceValues | import("./themes").AppearanceSettings>(DEFAULT_APPEARANCE);
+  useAppearance(appearance as any);
 
   useEffect(() => {
     const measure = () => setWinWidth(window.innerWidth);
@@ -523,6 +524,9 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
   }
   if (tabKind === "worktrees") {
     return <RightWorktreesTab root={cwd || null} backend={route} visible mounted={cwd} pendingMount={snapshot.pendingMount ?? undefined} busyTurn={snapshot.busyTurn} onMount={activeChatId ? path => send({type:"mount-worktree",id:activeChatId,path}) : undefined} onCancelMount={() => { if(activeChatId) send({type:"cancel-mount",id:activeChatId}); }} onOpen={openPath} />;
+  }
+  if (tabKind === "assistantbrowser") {
+    return <SharedBrowser call={(cmd, args) => route.call(cmd, args)} hostName={route.host?.name ?? "This Mac"} visible roomName={() => undefined} assistantName="Assistant" />;
   }
   if (tabKind === "browser") {
     return (

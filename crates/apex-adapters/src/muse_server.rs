@@ -44,6 +44,7 @@ pub(crate) struct Turn<'a> {
     pub effort: Option<&'a str>,
     pub access: Access,
     pub cwd: Option<String>,
+    pub trusted_computer: bool,
 }
 
 /// Why a turn did not produce a reply.
@@ -145,6 +146,10 @@ pub(crate) fn proposal(params: &Value) -> Option<ProposedAction> {
     let subject = &params["subject"];
     let tool = params["toolName"].as_str().unwrap_or("a tool");
     let raw = params["rawArgs"].as_str().unwrap_or_default();
+    if let Some(name) = crate::mcp::computer_tool(tool) {
+        let arguments = serde_json::from_str(raw).unwrap_or(Value::Null);
+        return Some(crate::mcp::action(crate::computer::SERVER, name, &arguments));
+    }
     let (kind, title, detail) = match subject["kind"].as_str()? {
         "shell" => (
             ActionKind::Command,
@@ -236,6 +241,9 @@ pub(crate) fn plan(usage: &Value) -> Option<PlanUsage> {
 pub(crate) fn activity(item: &Value) -> Option<String> {
     let tool = item["tool"].as_str()?;
     let args: Value = item["args"].as_str().and_then(|a| serde_json::from_str(a).ok()).unwrap_or(Value::Null);
+    if let Some(name) = crate::mcp::computer_tool(tool) {
+        return Some(crate::mcp::redacted_step(name, &args).label);
+    }
     let path = args["path"].as_str().or(args["file_path"].as_str());
     let line = match (tool, path) {
         ("bash" | "shell", _) => match args["command"].as_str() {
@@ -437,7 +445,10 @@ pub(crate) async fn run(
                 if let Some(id) = message.get("id") {
                     let _ = send(&mut stdin, &json!({ "jsonrpc": "2.0", "id": id, "result": {} })).await;
                 }
+                let computer_call = params["toolName"].as_str().is_some_and(|tool| crate::mcp::computer_tool(tool).is_some());
                 let decision = match proposal(params) {
+                    // The bundled helper enforces its own thread and app grants.
+                    Some(_) if turn.trusted_computer && computer_call => Decision::Approve,
                     // Helpers Muse started run under the same rules, so
                     // their requests are put to the person too.
                     Some(action) => {
@@ -467,6 +478,11 @@ pub(crate) async fn run(
                 writing.start(item["itemId"].as_str().unwrap_or_default(), on_progress);
             }
             "item/started" if item["kind"] == "toolCall" => {
+                if item["tool"].as_str().and_then(crate::mcp::computer_tool).is_some() {
+                    on_progress(Progress::Work(&crate::work_feed::computer_text_notice(
+                        "Screenshot support for this model isn’t confirmed, so it may rely on accessibility text. Some controls may be missing or interpreted incorrectly.",
+                    )));
+                }
                 if let Some(line) = activity(item) {
                     on_progress(Progress::Activity(&line));
                 }
@@ -596,6 +612,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn computer_calls_show_no_arguments_or_output() {
+        let params = json!({"toolName": "mcp__apex_computer__type_text", "rawArgs": "{\"text\":\"SECRET\"}", "subject": {"kind": "tool"}});
+        let action = proposal(&params).unwrap();
+        assert!(!format!("{} {}", action.title, action.detail).contains("SECRET"));
+        let item = json!({"itemId": "i", "tool": "mcp__apex_computer__type_text", "args": "{\"text\":\"SECRET\"}", "visibleOutput": "SCREEN"});
+        assert!(!activity(&item).unwrap().contains("SECRET"));
+        let mut steps = MuseSteps::new(None);
+        let started = steps.notice("item/started", &json!({"item": {"kind": "toolCall", "itemId": "i", "tool": item["tool"], "args": item["args"]}}));
+        assert!(!format!("{started:?}").contains("SECRET"));
+        let done = steps.notice("item/completed", &json!({"item": {"kind": "toolCall", "itemId": "i", "tool": item["tool"], "visibleOutput": "SCREEN"}}));
+        assert!(!format!("{done:?}").contains("SCREEN"));
+    }
+
+    #[test]
     fn command_ids_are_version_7_uuids() {
         let id = command_id();
         assert_eq!(id.len(), 36);
@@ -618,7 +648,7 @@ mod tests {
 
     #[test]
     fn the_session_and_turn_carry_folder_model_effort_and_images() {
-        let turn = Turn { model: Some("muse-wonder-1.0"), effort: Some("low"), access: Access::Edits, cwd: Some("/w".into()) };
+        let turn = Turn { model: Some("muse-wonder-1.0"), effort: Some("low"), access: Access::Edits, cwd: Some("/w".into()), trusted_computer: false };
         let start = session_start(&turn);
         assert_eq!(start["params"]["workspaceRoot"], "/w");
         assert_eq!(start["params"]["modelId"], "muse-wonder-1.0");

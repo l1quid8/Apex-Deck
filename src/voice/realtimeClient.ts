@@ -28,10 +28,12 @@ export interface RealtimeClient {
   send(event: Record<string, unknown>): void;
   close(reason?: string): void;
   setDefault(nextScope: CallScope): void;
+  setMuted(muted: boolean): void;
 }
 
 export type RealtimeDependencies = {
   mintSession(args: {
+    hostId: string;
     room: string;
     participant?: string;
     model?: string;
@@ -47,6 +49,7 @@ export type RealtimeDependencies = {
 type ToolCallInfo = {
   argumentJson: string;
   name?: string;
+  responseId?: string;
 };
 
 type ConnectOpts = {
@@ -59,6 +62,15 @@ export function buildRealtimeInstructions(cands: VoiceCandidate[], forScope: Cal
     .slice(0, 32)
     .join("\n");
   const defaultTarget = cands.find(c => c.participantId === forScope.participantId)?.name ?? cands[0]?.name ?? "agent";
+  if (forScope.roomId.startsWith("assistant:")) return `You are the live voice of "${defaultTarget}", the user's personal assistant in Apex Deck. ${defaultTarget} holds the conversation, memory and access; you only carry it by voice.
+
+Rules:
+- Send everything the user says to ${defaultTarget} with ask_agent, questions and small talk included, so the one conversation stays whole. Don't answer from your own knowledge.
+- Say once that it's working, then stay quiet until the result arrives.
+- Speak the result closely, adding no facts.
+- If the user asks to stop the current reply, call stop_agent.
+- Ending or muting the call never cancels work.
+`;
   return `You are GPT-Live inside Apex Deck, a voice interface for coding agents.
 Default agent is "${defaultTarget}". Agents available in THIS thread only:
 ${agentList || "- none listed"}
@@ -136,6 +148,7 @@ export async function connectRealtime(
   let minted: RealtimeSessionMint;
   try {
     minted = await deps.mintSession({
+      hostId: scope.hostId,
       room: scope.roomId,
       participant: scope.participantId,
       model,
@@ -182,6 +195,7 @@ export async function connectRealtime(
   const queuedSends: string[] = [];
 
   const rawSendJson = (obj: Record<string, unknown>) => {
+    if (closed || signal?.aborted) return;
     const text = JSON.stringify(obj);
     if (channelOpen && (dc as any).readyState === "open") {
       try { dc.send(text); } catch {}
@@ -196,6 +210,45 @@ export async function connectRealtime(
   type PendingSubmission = { requestId: string; bridgeScope: CallScope };
   const pendingSubmissions = new Map<string, PendingSubmission>();
 
+  // Only an app-created response for a committed, transcribed microphone item
+  // may act as the human. Model tool arguments never supply human-authored text.
+  type InputTurn = { itemId: string; committed: boolean; transcript?: string; token?: string; responseId?: string; consumed: boolean };
+  const inputs = new Map<string, InputTurn>();
+  const seenInputs = new Set<string>();
+  const responseInputs = new Map<string, InputTurn>();
+  const subscriptions = new Set<() => void>();
+  const active = () => !closed && !signal?.aborted && !mic.muted();
+  const revokeInputs = () => { inputs.clear(); responseInputs.clear(); pendingArgs.clear(); };
+  let inFlightResponse: { id?: string; token?: string; eventId: string } | undefined;
+  const readbacks: (string | undefined)[] = [];
+  const flushResponses = () => {
+    if (inFlightResponse || closed || signal?.aborted) return;
+    const input = [...inputs.values()].find(input => input.committed && input.transcript?.trim() && !input.token && !input.consumed);
+    if (active() && input) {
+      input.token = crypto.randomUUID();
+      inFlightResponse = { token: input.token, eventId: crypto.randomUUID() };
+      rawSendJson({ type: "response.create", event_id: inFlightResponse.eventId, response: {
+        output_modalities: ["audio"], metadata: { apex_voice_input: input.token },
+      } });
+      return;
+    }
+    // Do not let an older agent result start speaking during fresh speech/ASR.
+    if ([...inputs.values()].some(input => !input.consumed && !input.token)) return;
+    if (!readbacks.length) return;
+    const instructions = readbacks.shift();
+    inFlightResponse = { eventId: crypto.randomUUID() };
+    rawSendJson({ type: "response.create", event_id: inFlightResponse.eventId, response: {
+      output_modalities: ["audio"], tool_choice: "none",
+      ...(instructions ? { instructions } : {}),
+    } });
+  };
+  const speak = (instructions?: string) => {
+    if (closed || signal?.aborted) return;
+    readbacks.push(instructions);
+    flushResponses();
+  };
+  const respondToInput = (_input: InputTurn) => flushResponses();
+
   const resolveAgent = (nameRaw: string): VoiceCandidate | { ambiguous: true; names: string[] } | null => {
     const lower = nameRaw.trim().toLowerCase();
     if (!lower) return null;
@@ -206,7 +259,7 @@ export async function connectRealtime(
     return null;
   };
 
-  const handleAskAgent = async (callId: string, agentName: string, requestText: string) => {
+  const handleAskAgent = async (callId: string, agentName: string, requestText: string, utteranceId: string) => {
     if (handledCalls.has(callId)) return;
     handledCalls.add(callId);
     try {
@@ -229,18 +282,23 @@ export async function connectRealtime(
       const requestId = crypto.randomUUID();
       const callIdUnique = `${Date.now()}-${requestId}`;
       const generation = 0;
-      const utteranceId = crypto.randomUUID();
 
       let finalText = "";
       let done = false;
       const unlisten = bridge.subscribe(ev => {
-        if (ev.requestId !== requestId) return;
+        if (closed || signal?.aborted || ev.requestId !== requestId) return;
         if (ev.scope.hostId !== target.hostId || ev.scope.roomId !== target.roomId || ev.scope.participantId !== target.participantId) return;
         if (ev.type === "text" && ev.text) finalText += ev.text;
+        if (ev.type === "approval") {
+          try {
+            speak("Briefly say this needs the user's approval in Deck, then stay quiet.");
+          } catch {}
+        }
         if (ev.type === "done" || ev.type === "failed" || ev.type === "canceled") {
           if (!done) {
             done = true;
             unlisten();
+            subscriptions.delete(unlisten);
             pendingSubmissions.delete(callId);
             const output = ev.type === "failed" ? `Agent failed: ${ev.text ?? ""}` : finalText || "(no reply)";
             try {
@@ -252,24 +310,19 @@ export async function connectRealtime(
                   output,
                 },
               }));
-              dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
+              speak();
             } catch {}
           }
         }
       });
 
+      subscriptions.add(unlisten);
       pendingSubmissions.set(callId, { requestId, bridgeScope: target });
 
       setTimeout(() => {
         if (!done) {
           try {
-            dc.send(JSON.stringify({
-              type: "response.create",
-              response: {
-                instructions: `Briefly say: "Asking ${target!.name}, working on it." Then stay quiet until tool output arrives.`,
-                output_modalities: ["audio"],
-              },
-            }));
+            speak(`Briefly say: "Asking ${target!.name}, working on it." Then stay quiet until tool output arrives.`);
           } catch {}
         }
       }, 800);
@@ -293,7 +346,7 @@ export async function connectRealtime(
             output: `Error: ${e instanceof Error ? e.message : String(e)}`,
           },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
+        speak();
       } catch {}
     }
   };
@@ -308,7 +361,7 @@ export async function connectRealtime(
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: callId, output: `Ambiguous agent "${agentName}": ${resolved.names.join(", ")}` },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
+        speak();
       } catch {}
       return;
     }
@@ -321,7 +374,7 @@ export async function connectRealtime(
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: callId, output: `No agent named "${agentName}" in this thread. Available: ${candidatesLive.map(c => c.name).join(", ") || "none"}.` },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
+        speak();
       } catch {}
       return;
     }
@@ -339,39 +392,96 @@ export async function connectRealtime(
         type: "conversation.item.create",
         item: { type: "function_call_output", call_id: callId, output: canceled > 0 ? `Stop requested for ${target.name}.` : `No pending work for ${target.name}.` },
       }));
-      dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
+      speak();
     } catch (e) {
       try {
         dc.send(JSON.stringify({
           type: "conversation.item.create",
           item: { type: "function_call_output", call_id: callId, output: `Error stopping: ${String(e)}` },
         }));
-        dc.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
+        speak();
       } catch {}
     }
   };
 
-  const dispatchFunctionCall = (callId: string, name: string, rawArgs: string | object) => {
-    if (!callId) return;
+  const dispatchFunctionCall = (callId: string, name: string, rawArgs: string | object, responseId: string) => {
+    if (!callId || !active()) return;
     if (handledCalls.has(callId)) return;
+    const input = responseInputs.get(responseId);
+    if (!input || input.consumed || !input.transcript?.trim()) return;
     let args: any = {};
     try { args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs ?? {}; } catch { return; } // ignore incomplete JSON
     if (!args || typeof args !== "object") return;
     if (name === "ask_agent") {
       const req = typeof args.request === "string" ? args.request.trim() : "";
       if (!req) return; // P1 fix: ignore empty/incomplete requests
-      void handleAskAgent(callId, args.agent ?? "", req);
+      input.consumed = true;
+      void handleAskAgent(callId, typeof args.agent === "string" ? args.agent : "", input.transcript, input.itemId);
     } else if (name === "stop_agent") {
       const ag = typeof args.agent === "string" ? args.agent.trim() : "";
       if (!ag) return;
+      // A model selecting stop_agent is not itself a request to stop work.
+      if (!/^\s*(?:(?:please|can you|could you|would you)\s+)?(?:please\s+)?(?:stop|cancel|halt|abort)\b/i.test(input.transcript)) return;
+      input.consumed = true;
       void handleStopAgent(callId, ag);
     }
   };
 
   dc.onmessage = ev => {
+    if (closed || signal?.aborted) return;
     try {
       const msg = JSON.parse(ev.data);
       const type = msg.type as string;
+
+      if (type === "error" && inFlightResponse && msg.error?.event_id === inFlightResponse.eventId) {
+        revokeInputs();
+        readbacks.length = 0;
+        inFlightResponse = undefined;
+        events.onError(new Error("The voice response failed. Start a new call to retry."));
+        return;
+      }
+
+      if (type === "input_audio_buffer.speech_started") {
+        // Barge-in revokes unanswered/canceled audio turns, never agent work.
+        if (typeof msg.item_id !== "string" || !seenInputs.has(msg.item_id)) {
+          revokeInputs();
+          if (typeof msg.item_id === "string") {
+            seenInputs.add(msg.item_id);
+            if (active()) inputs.set(msg.item_id, { itemId: msg.item_id, committed: false, consumed: false });
+          }
+        }
+      } else if (type === "input_audio_buffer.committed") {
+        if (active() && typeof msg.item_id === "string") {
+          const input = inputs.get(msg.item_id);
+          if (input) {
+            input.committed = true;
+            respondToInput(input);
+          }
+        }
+      } else if (type === "conversation.item.input_audio_transcription.completed") {
+        const input = inputs.get(msg.item_id);
+        if (input && active() && typeof msg.transcript === "string" && !input.token) {
+          input.transcript = msg.transcript;
+          if (msg.transcript.trim()) respondToInput(input);
+          else inputs.delete(input.itemId);
+        }
+      } else if (type === "conversation.item.input_audio_transcription.failed" || type === "conversation.item.deleted") {
+        const input = inputs.get(msg.item_id);
+        if (input?.responseId) responseInputs.delete(input.responseId);
+        inputs.delete(msg.item_id);
+      } else if (type === "input_audio_buffer.cleared") {
+        revokeInputs();
+      } else if (type === "response.created") {
+        if (inFlightResponse && !inFlightResponse.id && inFlightResponse.token === msg.response?.metadata?.apex_voice_input && typeof msg.response?.id === "string") {
+          inFlightResponse.id = msg.response.id;
+        }
+        const token = msg.response?.metadata?.apex_voice_input;
+        const input = [...inputs.values()].find(input => input.token && input.token === token);
+        if (active() && input && !input.responseId && typeof msg.response?.id === "string") {
+          input.responseId = msg.response.id;
+          responseInputs.set(msg.response.id, input);
+        }
+      }
 
       // Argument delta accumulation (server_vad tool call streaming)
       if (type === "response.function_call_arguments.delta") {
@@ -380,6 +490,7 @@ export async function connectRealtime(
           const prev = pendingArgs.get(callId) ?? { argumentJson: "" };
           prev.argumentJson += msg.delta ?? "";
           if (msg.name) prev.name = msg.name;
+          if (msg.response_id) prev.responseId = msg.response_id;
           pendingArgs.set(callId, prev);
         }
       } else if (type === "response.function_call_arguments.done") {
@@ -394,7 +505,7 @@ export async function connectRealtime(
             // Ignore empty – don't submit
           } else {
             pendingArgs.delete(callId);
-            dispatchFunctionCall(callId, name, argsStr);
+            dispatchFunctionCall(callId, name, argsStr, msg.response_id ?? info?.responseId ?? "");
           }
         }
       } else if (type === "response.output_item.done" || type === "response.done") {
@@ -407,20 +518,30 @@ export async function connectRealtime(
           if (Array.isArray(response)) return response as any[];
           return [];
         })();
-        for (const out of items) {
-          if (out?.type === "function_call") {
+        const responseId = response?.id ?? msg.response_id ?? "";
+        const canceled = type === "response.done" && response?.status !== "completed";
+        if (canceled) responseInputs.delete(responseId);
+        for (const out of canceled ? [] : items) {
+          if (out?.type === "function_call" && out.status !== "incomplete") {
             const callId = out.call_id ?? out.id;
             const name = out.name;
             const args = out.arguments;
             const argsStr = typeof args === "string" ? args : JSON.stringify(args ?? {});
             if (!argsStr || argsStr.trim() === "{}" || argsStr.trim() === "") continue; // incomplete
             if (callId && name && !handledCalls.has(callId)) {
-              dispatchFunctionCall(callId, name, args);
+              dispatchFunctionCall(callId, name, args, responseId);
             }
           }
         }
+        if (type === "response.done") {
+          if (inFlightResponse?.id === responseId) inFlightResponse = undefined;
+          const input = responseInputs.get(responseId);
+          responseInputs.delete(responseId);
+          if (input) inputs.delete(input.itemId);
+        }
       }
 
+      flushResponses();
       events.onEvent(msg);
     } catch {}
   };
@@ -439,7 +560,7 @@ export async function connectRealtime(
           audio: {
             input: {
               transcription: { model: "whisper-1" },
-              turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
+              turn_detection: { type: "server_vad", create_response: false, threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
             },
             output: { voice },
           },
@@ -508,11 +629,23 @@ export async function connectRealtime(
     close(reason = "closed") {
       if (closed) return;
       closed = true;
+      revokeInputs();
+      for (const unlisten of subscriptions) unlisten();
+      subscriptions.clear();
+      readbacks.length = 0;
+      inFlightResponse = undefined;
       try { dc.close(); } catch {}
       try { pc.close(); } catch {}
       events.onClose(reason);
     },
+    setMuted(muted: boolean) {
+      if (muted) {
+        revokeInputs();
+        rawSendJson({ type: "input_audio_buffer.clear" });
+      }
+    },
     setDefault(nextScope: CallScope) {
+      revokeInputs();
       liveScope = nextScope;
       // Also keep candidates filtered to same thread as new scope (same host/room by definition same-thread switch)
       // For safety re-filter from original all list if room changed; but same-thread switch keeps same room.

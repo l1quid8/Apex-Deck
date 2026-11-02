@@ -1,0 +1,22 @@
+   Compiling apex-core v0.9.7 (/Users/tylercaldwell/Downloads/apex-deck/crates/apex-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.26s
+     Running tests/curation.rs (target/debug/deps/curation-fa1be7d1077114c7)
+
+running 1 test
+test picks_refuse_the_prompt_example_even_when_its_ids_are_offered ... FAILED
+
+failures:
+
+---- picks_refuse_the_prompt_example_even_when_its_ids_are_offered stdout ----
+
+thread 'picks_refuse_the_prompt_example_even_when_its_ids_are_offered' (817743) panicked at crates/apex-core/tests/curation.rs:637:5:
+assertion failed: parse_picks(example, &offered).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    picks_refuse_the_prompt_example_even_when_its_ids_are_offered
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p apex-core --test curation`

@@ -28,7 +28,7 @@ export function mergeParticipant(current: ParticipantConfig, base: ParticipantCo
 }
 
 /** Apply explicit picks to a fresh config, including picks back to the original value. */
-export function applyTurnChange(current: ParticipantConfig, change: { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings }): ParticipantConfig {
+export function applyTurnChange(current: ParticipantConfig, change: { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings; can_read_images?: boolean }): ParticipantConfig {
   let backend = current.backend;
   if ('model' in change) {
     if (backend.kind === 'agent') backend = { ...backend, model: change.model?.trim() || null };
@@ -36,6 +36,7 @@ export function applyTurnChange(current: ParticipantConfig, change: { model?: st
   }
   const next: ParticipantConfig = { ...current, backend, effort: 'effort' in change ? change.effort || null : current.effort };
   if (change.access) next.access = change.access;
+  if ('can_read_images' in change) next.can_read_images = change.can_read_images === true;
   if ('speed' in change) { if (change.speed) next.speed = change.speed; else delete next.speed; }
   // Picture and video choices merge: a change names only the settings it moves.
   if (change.media) next.media = { ...current.media, ...change.media };

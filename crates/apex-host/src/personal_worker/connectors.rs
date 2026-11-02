@@ -20,7 +20,7 @@ pub const TOOLS: &[(&str, &str)] = &[
     ("gmail.read", "Read one Gmail message as text. argv: [\"MESSAGE_ID\"]"),
     ("drive.search", "Search Google Drive by text, read-only. argv: [\"quarterly report\"]"),
     ("drive.read", "Read one Drive file as text. argv: [\"FILE_ID\"]"),
-    ("browser.open", "Open a web page in your own browser and read its text; this asks the human first. argv: [\"https://example.com\"]"),
+    ("browser.open", "Open a web page in your own browser and read its text; follows saved assistant access. argv: [\"https://example.com\"]"),
 ];
 const MAX_TEXT: usize = 48 * 1024;
 

@@ -30,6 +30,8 @@ export type PersonalTask = {
   operation?: { tool: string; host: string; cwd: string; argv: string[]; plan?: RunPlan };
   decision?: PersonalDecision; receipts: PersonalReceipt[]; lastUpdate?: string; updatedAt: number; createdAt?: number;
   wait?: TaskWait; runsDone?: number; parent?: string; scheduleId?: string;
+  /** The host's original human event, for task timing when available. */
+  fromEvent?: string;
 };
 export type Fact = {
   id: string; text: string; kind: "preference" | "fact" | "decision" | "commitment";
@@ -43,6 +45,10 @@ export type Schedule = { id: string; goal: string; argv: string[]; everyMs?: num
 export type Notice = { id: string; text: string; taskId?: string; urgent: boolean; at: number; deliverAt: number; deliveredAt?: number; seenAt?: number; fingerprint: string };
 export type CostEntry = { at: number; purpose: "reply" | "helper" | "summary" | "check" | "avatar"; kind: "text" | "image" | "audio" | "video" | "tool"; source: "reported" | "estimated" | "unknown"; micros?: number; inputTokens?: number; outputTokens?: number; bytesOut: number; endpoint: string };
 export type StandingRule = { id: string; text: string; class: ToolClass; mode: ActionMode; createdAt: number };
+export type AssistantCapability = 'conversationRead' | 'fileRead' | 'statusRead' | 'threadCreate' | 'threadOrganize' | 'threadArchive' | 'threadTrash' | 'threadDelete' | 'participantAdd' | 'participantRemove' | 'agentAssign' | 'agentMessage' | 'workPause' | 'workResume' | 'fileEdit' | 'commandRun' | 'browserUse' | 'computerUse' | 'spend' | 'publish' | 'approvalDelegate';
+export type PermissionScope = {kind:'allProjects'} | {kind:'project';host:string;cwd:string} | {kind:'thread';host:string;cwd:string;thread:string};
+export type PersonalApprovalOptions = {decisionId:string;paramsHash:string;permissionRevision:number;capability:AssistantCapability;label:string;scopes:{scope:PermissionScope;label:string}[];reason?:string|null};
+export type CapabilityGrant = { id:string; capability:AssistantCapability; scope:PermissionScope; mode:'ask'|'onRequest'|'always'; delegate:boolean; revoked:boolean };
 export type PersonalSettings = {
   name: string; style: string; look?: AssistantLook;
   timezone: string; quietHours?: { start: string; end: string };
@@ -56,6 +62,8 @@ export type PersonalAssistantRecord = PersonalSettings & {
   legacy?: PersonalLegacyMarker;
   archivedAt?: number;
   id: string; hostId: string; allowedFolders: string[]; paused?: boolean; revision: number;
+  /** Where the current conversation began. Older messages stay saved. */
+  conversationFrom?: number;
   /** Assistant-owned snapshot; changing it never edits a reusable Agents profile. */
   profile: ParticipantConfig | null;
   /** Missing on older hosts; assignments do not create machine/folder grants. */
@@ -65,6 +73,7 @@ export type PersonalAssistantRecord = PersonalSettings & {
   taskLifecycleSnapshotRevision?: number;
   deletedDelegatedTasks?: import("./assistantTaskModel.ts").AssistantTask[];
   events?: { id: string; requestId: string; state: 'received' | 'processing' | 'held' | 'done' | 'failed'; error?: string; source?: { kind: string; text?: string }; receivedAt?: number }[];
+  permissions?: {revision:number;grants:CapabilityGrant[];audit?:{actor:string;thread:string;request:string;operationHash:string;capability:AssistantCapability;grantIds:string[];revision:number;at:number;result:string}[]};
   rules?: StandingRule[]; facts?: Fact[]; schedules?: Schedule[]; notices?: Notice[]; costs?: CostEntry[];
   machines?: { hostId: string; name: string; folder: string; lastSeen?: number }[];
 };
@@ -84,6 +93,7 @@ export type PersonalLane = {
   ref?: import("./assistantIdentity.ts").AssistantRef;
   draftKey?: string;
   attachmentKey?: string;
+  currentThread?: { id: string; title: string; project?: {hostId:string;cwd:string} };
   name: string;
   hostName: string;
   assistant: PersonalAssistantRecord | null;
@@ -99,15 +109,20 @@ export type PersonalLane = {
   saveAttachment(name: string, bytes: Uint8Array): Promise<string>;
   pickFolder(): Promise<string | null>;
   decide(decisionId: string, paramsHash: string, approve: boolean): Promise<void>;
+  approvalOptions?(decisionId:string,paramsHash:string):Promise<PersonalApprovalOptions>;
+  decideAlways?(options:PersonalApprovalOptions,scope:PermissionScope):Promise<void>;
   cancel(taskId: string): Promise<void>;
   /** Host-backed deletion; restoring cancelled tasks never restarts them. Empty requires the exact displayed key set. */
   taskLifecycle?(action: 'delete' | 'restore' | 'empty', task?: { source: 'personal' | 'delegated'; taskId: string; revision?: number }, expectedDeleted?: string[]): Promise<void>;
   /** Pause stops new work starting; the assistant keeps answering. */
   pause?(paused: boolean): Promise<void>;
+  /** Start fresh: earlier messages leave the view and the model's context, nothing is deleted. */
+  newConversation?(): Promise<void>;
   /** Change name, style, modes, quiet hours, budget or privacy. Only what's given changes. */
   configure?(settings: Partial<PersonalSettings>): Promise<void>;
   /** Only available when the authenticated route advertises assistant_workspace_v4. */
   configureWorkspace?(configuration: PersonalWorkspaceConfigure): Promise<PersonalAssistantRecord | void>;
+  setPermission?(capability:AssistantCapability,scope:PermissionScope,mode:'ask'|'onRequest'|'always',delegate:boolean):Promise<void>;
   addRule?(text: string, cls: ToolClass, mode: ActionMode): Promise<void>;
   removeRule?(ruleId: string): Promise<void>;
   remember?(text: string): Promise<void>;
@@ -130,9 +145,11 @@ export type PersonalLane = {
   browserView?(): Promise<BrowserView>;
   browserTakeOver?(on: boolean): Promise<BrowserView>;
   browserInput?(input: BrowserInput): Promise<BrowserView>;
+  /** The shared browser on this assistant's machine. */
+  browserCall?<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
 };
 export type ConnectorState = { kind: "github" | "gmail" | "drive" | "browser"; connected: boolean; keys: string[] };
-export type BrowserView = { url: string; title: string; image: string; width: number; height: number; takenOver: boolean };
+export type BrowserView = { url: string; title: string; image: string; width: number; height: number; takenOver: boolean; dialogOpen?: boolean };
 export type BrowserInput = { kind: "click"; x: number; y: number } | { kind: "type"; text: string } | { kind: "key"; key: "Enter" | "Backspace" | "Tab" | "Escape" | "ArrowDown" | "ArrowUp" } | { kind: "scroll"; deltaY: number } | { kind: "navigate"; url: string } | { kind: "back" };
 /** One operation the assistant's host hands this Mac to run. */
 export type RemoteOp = { taskId: string; opId: string; operation: { tool: string; host: string; cwd: string; argv: string[] } };

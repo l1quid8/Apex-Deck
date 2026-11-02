@@ -41,3 +41,10 @@ test('access picks persist without overwriting another clients model or persona'
   assert.equal(applyTurnChange(full, { effort: 'high' }).access, 'full');
   assert.equal(bot.access, 'read');
 });
+
+test('computer screenshot support is explicit and survives other bot settings', () => {
+  const vision = applyTurnChange(bot, { can_read_images: true });
+  assert.equal(vision.can_read_images, true);
+  assert.equal(applyTurnChange(vision, { effort: 'high' }).can_read_images, true);
+  assert.equal(applyTurnChange(vision, { can_read_images: false }).can_read_images, false);
+});

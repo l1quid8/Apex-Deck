@@ -79,12 +79,22 @@ pub(crate) fn respond(input: impl Read, socket: Option<&Path>, token: Option<&st
     }
 }
 
+/// This signed executable also has daemon authority. Its hook mode must never
+/// become an arbitrary JSON-RPC relay to an environment-selected Unix socket.
+#[cfg(any(unix,test))]
+fn hook_request(input: Value)->Result<Value,String> {
+    let name=input["tool_name"].as_str().filter(|name|name.starts_with("mcp__") && name.len()<=1024).ok_or("invalid hook tool name")?;
+    let arguments=input.get("tool_input").filter(|value|value.is_object()).ok_or("invalid hook tool input")?;
+    Ok(json!({"tool_name":name,"tool_input":arguments}))
+}
+
 #[cfg(unix)]
 fn ask_deck(input: impl Read, socket: Option<&Path>, token: Option<&str>, deadline: Duration) -> Result<Verdict, String> {
     use std::io::{BufRead, BufReader, Write};
     // One JSON value, without waiting for the end of the input.
     let call = serde_json::Deserializer::from_reader(input).into_iter::<Value>().next()
         .and_then(Result::ok).filter(Value::is_object).ok_or("unreadable hook input")?;
+    let call=hook_request(call)?;
     let mut line = String::new();
     if let Some(token) = token {
         use std::net::{Ipv4Addr, TcpStream};
@@ -238,18 +248,23 @@ fn unix_ms() -> u64 {
 /// never a second call through the same gate.
 #[derive(Default)]
 pub(crate) struct Gates {
+    trusted_computer: bool,
     approved_at_hook: Vec<McpCall>,
     approved_at_codex: Vec<McpCall>,
 }
 
 impl Gates {
+    pub(crate) fn with_computer(mut self, trusted: bool) -> Self {self.trusted_computer=trusted;self}
+
     /// The answer at the hook when nobody needs asking.
     pub(crate) fn at_hook(&mut self, call: &McpCall) -> Option<Decision> {
+        if self.trusted_computer && crate::computer::trusted_name(&call.server) {return Some(Decision::Approve);}
         Self::check(call, &mut self.approved_at_codex)
     }
 
     /// The answer to Codex's own request when nobody needs asking.
     pub(crate) fn at_codex(&mut self, call: &McpCall) -> Option<Decision> {
+        if self.trusted_computer && call.server == crate::computer::SERVER {return Some(Decision::Approve);}
         Self::check(call, &mut self.approved_at_hook)
     }
 
@@ -457,6 +472,15 @@ pub(crate) async fn serve(stream: std::convert::Infallible, _: &mut Gates, _: &d
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn signed_hook_mode_cannot_relay_computer_control_rpc() {
+        assert!(hook_request(json!({"jsonrpc":"2.0","id":1,"method":"unified/register-turn","params":{"turnToken":"private"}})).is_err());
+        let safe=hook_request(json!({"tool_name":"mcp__probe__read","tool_input":{"method":"unified/register-turn"},"method":"unified/register-turn","jsonrpc":"2.0","params":{"turnToken":"private"}})).unwrap();
+        assert_eq!(safe.as_object().unwrap().len(),2);
+        assert!(safe.get("method").is_none() && safe.get("params").is_none() && safe.get("jsonrpc").is_none());
+        assert_eq!(safe["tool_input"]["method"],"unified/register-turn");
+    }
+
     #[test]
     fn hook_cards_are_risky_when_the_call_is() {
         assert!(McpCall::from_hook("mcp__probe__place_order", json!({})).action().risky);
@@ -699,6 +723,15 @@ mod tests {
         let mut buf = [0u8; 4];
         received.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"test");
+    }
+
+    #[test]
+    fn computer_name_alone_never_bypasses_approval() {
+        let call=McpCall::from_hook("mcp__apex_computer__type_text",json!({"text":"private"}));
+        assert_eq!(Gates::default().at_hook(&call),None);
+        assert_eq!(Gates::default().with_computer(true).at_hook(&call),Some(Decision::Approve));
+        let other=McpCall::from_hook("mcp__untrusted__type_text",json!({}));
+        assert_eq!(Gates::default().with_computer(true).at_hook(&other),None);
     }
 
     #[test]

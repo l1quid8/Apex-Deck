@@ -1,0 +1,42 @@
+{
+  "room": "pane-mvwsyria-0",
+  "active": [],
+  "messages": 54,
+  "participants": [
+    {
+      "id": "null",
+      "display_name": "Null",
+      "access": "full"
+    },
+    {
+      "id": "jigga",
+      "display_name": "Jigga",
+      "access": "full"
+    },
+    {
+      "id": "gronk",
+      "display_name": "Gronk",
+      "access": "full"
+    },
+    {
+      "id": "muck",
+      "display_name": "Muck",
+      "access": "full"
+    },
+    {
+      "id": "forge",
+      "display_name": "Forge",
+      "access": "full"
+    },
+    {
+      "id": "dsfoe",
+      "display_name": "Ds4",
+      "access": "full"
+    },
+    {
+      "id": "qa-cli",
+      "display_name": "QA CLI",
+      "access": "read"
+    }
+  ]
+}

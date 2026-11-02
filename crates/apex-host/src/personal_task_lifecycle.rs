@@ -69,7 +69,7 @@ impl Host {
                         }
                         let stop = if task.status.settled() { vec![] } else {
                             record.counters.event += 1;
-                            let event = PersonalEvent { id: format!("pe-{}",record.counters.event), request_id: format!("lifecycle-delete:{}:{}",target.task_id,record.revision), source:EventSource::Cancel {task_id:target.task_id.clone()}, received_at:crate::personal::now(), state:EventState::Processing, attempts:0,error:None,spend_approved:false };
+                            let event = PersonalEvent { id: format!("pe-{}",record.counters.event), request_id: format!("lifecycle-delete:{}:{}",target.task_id,record.revision), source:EventSource::Cancel {task_id:target.task_id.clone()}, received_at:crate::personal::now(), state:EventState::Processing, attempts:0,error:None,spend_approved:false,computer_started:false };
                             record.events.push(event.clone());
                             let stop = crate::personal_worker::apply_control(record, &event);
                             if record.events.iter().find(|saved|saved.id == event.id).is_some_and(|saved|saved.state == EventState::Failed) { return Err("Cancellation failed. The task was not deleted.".into()); }

@@ -7,6 +7,9 @@ use crate::view::ViewTurn;
 /// What a participant is given when it is asked to speak.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TurnRequest {
+    /// Host-issued capability for this turn only. Never serialized or included
+    /// in a prompt. Its helper control connection owns the actual authority.
+    pub computer: Option<ComputerTurn>,
     /// Effective workspace access for this turn, enforced by coding adapters.
     pub access: Option<crate::Access>,
     /// A validated level for this reply only; absent means use saved settings.
@@ -25,6 +28,19 @@ pub struct TurnRequest {
     /// Working folder override for this turn. When absent, adapters use the
     /// room's default workspace folder.
     pub cwd: Option<std::path::PathBuf>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ComputerTurn {
+    pub relay: std::path::PathBuf,
+    pub thread_id: String,
+    pub participant_id: String,
+    pub token: String,
+}
+impl std::fmt::Debug for ComputerTurn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ComputerTurn([private host capability])")
+    }
 }
 
 /// A finished reply.

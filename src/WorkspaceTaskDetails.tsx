@@ -3,7 +3,7 @@ import type { Backend } from './backend.ts';
 import type { Pane, ParticipantConfig } from './types.ts';
 import { ApexAgentTasks } from './lazyViews';
 import { TaskViewContext, projectTaskKey } from './apexAgentTaskView.ts';
-import { requestId, type PersonalAssistantRecord } from './personalAssistant.ts';
+import { requestId, type PersonalApprovalOptions, type PersonalAssistantRecord } from './personalAssistant.ts';
 import { PersonalWorkspaceTaskDetail } from './PersonalWorkspaceTaskDetail';
 import { workspaceTaskHostMatches, guardWorkspaceTaskBackend, type WorkspaceTaskRow } from './workspaceTasks.ts';
 
@@ -47,6 +47,12 @@ export function WorkspaceTaskDetails({ row, backend, profiles, panes = [], onOpe
     setRecord(result.assistant);
   };
   return <PersonalWorkspaceTaskDetail row={row} lane={{ assistant: record, offline: false,
+    approvalOptions: backend.supports?.('assistant_approval_grants_v1')!==true?undefined:async(decisionId,paramsHash)=>{
+      if(!workspaceTaskHostMatches(row,backend.host?.connection.get().status))throw new Error('The assistant machine changed.');
+      const options=await backend.call<PersonalApprovalOptions>('personal_approval_options',{assistantId:assistant.assistantId,decisionId,paramsHash});
+      if(!workspaceTaskHostMatches(row,backend.host?.connection.get().status)||options.decisionId!==decisionId||options.paramsHash!==paramsHash)throw new Error('The approval owner or action changed.');return options;
+    },
+    decideAlways: backend.supports?.('assistant_approval_grants_v1')!==true?undefined:(options,scope)=>act('personal_decide_always',{decisionId:options.decisionId,paramsHash:options.paramsHash,expectedRevision:options.permissionRevision,capability:options.capability,scope}),
     decide: (decisionId, paramsHash, approve) => act('personal_decide', { decisionId, paramsHash, approve }),
     cancel: taskId => act('personal_cancel', { taskId }),
   }} />;

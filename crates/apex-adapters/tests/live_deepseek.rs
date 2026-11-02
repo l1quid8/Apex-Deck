@@ -20,6 +20,7 @@ use apex_core::{
 
 fn config() -> ParticipantConfig {
     ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new("deepseek"),
         display_name: "DeepSeek".into(),
         backend: Backend::OpenAiCompatible {
@@ -47,6 +48,7 @@ fn context() -> BuildContext {
 
 fn request(content: String, think: bool) -> TurnRequest {
     TurnRequest {
+        computer: None,
         effort_override: None,
         access: None,
         system: if think {

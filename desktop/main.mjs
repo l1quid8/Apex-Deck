@@ -28,6 +28,7 @@ import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs'
 import { assertTrustedStartup, attestFrame, needsAttestation, requestUpdate } from './provenance.mjs';
 import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
+import { assistantFloatBounds, movedAssistantFloatBounds } from './assistantFloatLayout.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -915,18 +916,29 @@ function popoutBounds(ownerEntry, bounds) {
  * saver of layout and session; the pop-out is a view that sends actions back.
  */
 function createPopout(ownerEntry, snapshot, bounds) {
-  if (!snapshot || (snapshot.kind !== 'pane' && snapshot.kind !== 'tab') || typeof snapshot.id !== 'string' || typeof snapshot.title !== 'string') {
+  if (!snapshot || !['pane', 'tab', 'assistant'].includes(snapshot.kind) || typeof snapshot.id !== 'string' || typeof snapshot.title !== 'string') {
     throw new Error('That pop-out has nothing to show.');
   }
+  const float = snapshot.kind === 'assistant';
+  // The owning renderer tracks one float. Keep that contract here too, so a
+  // different assistant never leaves a visible window without a live owner.
+  const floats = float ? [...popoutWindows.values()].filter(e => e.ownerId === ownerEntry.win.id && e.floatId && !e.win.isDestroyed()) : [];
+  const open = floats.find(e => e.floatId === snapshot.id);
+  if (open) { open.win.show(); open.win.focus(); return open.token; }
+  // Floats are views only: their conversation, draft and call live in Deck.
+  // Destroy synchronously before returning a replacement handle to the owner.
+  for (const previous of floats) previous.win.destroy();
   const token = crypto.randomBytes(16).toString('hex');
   const saved = popoutLayout.get(snapshot.kind, snapshot.id);
-  const at = popoutBounds(ownerEntry, bounds ?? saved?.bounds);
+  const wanted = bounds ?? saved?.bounds ?? (float ? {x:40,y:80,width:298,height:104} : undefined);
+  const at = float ? assistantFloatBounds(wanted,snapshot.float?.presentation??'pill',screen.getAllDisplays().map(d=>d.workArea)) ?? {x:40,y:80,width:298,height:104} : popoutBounds(ownerEntry,wanted);
   const win = new BrowserWindow({
     ...at,
-    minWidth: 360,
-    minHeight: 240,
+    minWidth: float ? 76 : 360,
+    minHeight: float ? 76 : 240,
+    ...(float ? { frame:false, transparent:true, backgroundColor:'#00000000', hasShadow:false, resizable:false, maximizable:false, fullscreenable:false, alwaysOnTop:saved?.alwaysOnTop===true } : {}),
     title: `Deck: ${snapshot.title}`,
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
+    ...(!float && process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
     webPreferences: {
       devTools: !app.isPackaged,
@@ -952,10 +964,10 @@ function createPopout(ownerEntry, snapshot, bounds) {
     downloads: () => app.getPath('downloads'),
   });
   const ownerId = ownerEntry.win.id;
-  popoutWindows.set(win.id, { win, browser, ownerId, token, role: 'popout' });
+  popoutWindows.set(win.id, { win, browser, ownerId, token, role: 'popout', ...(float ? { floatId: snapshot.id } : {}) });
   popoutSnapshots.set(token, snapshot);
-  trackPopoutWindow(win, snapshot, popoutLayout, () => gate.confirmed || ownerEntry.win.isDestroyed());
-  if (!bounds && saved?.maximized) win.maximize();
+  trackPopoutWindow(win, snapshot, popoutLayout, () => float || gate.confirmed || ownerEntry.win.isDestroyed());
+  if (!float && !bounds && saved?.maximized) win.maximize();
   win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     if ((details.isMainFrame ?? mainFrame) && !(details.isSameDocument ?? inPlace)) browser.hideAll();
   });
@@ -984,7 +996,8 @@ function createPopout(ownerEntry, snapshot, bounds) {
     win.showInactive();
   }
   const query = devUrl.includes('?') ? '&' : '?';
-  void win.loadURL(devUrl ? `${devUrl}${query}popout=${token}` : `app://deck/?popout=${token}`);
+  const route = float ? 'assistant-float' : 'popout';
+  void win.loadURL(devUrl ? `${devUrl}${query}${route}=${token}` : `app://deck/?${route}=${token}`);
   return token;
 }
 
@@ -1004,8 +1017,10 @@ handle('popout:restore', async (entry, available) => {
   popoutLayoutRestored = true;
   return popoutLayout.restore(available ?? {});
 });
-handle('popout:snapshot', async (_entry, token) => {
+handle('popout:snapshot', async (entry, token) => {
   if (!validToken(token)) throw new Error('That pop-out has nothing to show.');
+  const target=[...popoutWindows.values()].find(e=>e.token===token);
+  if(!target || (entry!==target && entry.win.id!==target.ownerId)) throw new Error('That pop-out belongs to another window.');
   const snapshot = popoutSnapshots.get(token);
   if (!snapshot) throw new Error('That pop-out has nothing to show.');
   return snapshot;
@@ -1014,21 +1029,53 @@ handle('popout:update', async (entry, token, patch) => {
   if (!validToken(token)) return;
   const popout = [...popoutWindows.values()].find((e) => e.token === token);
   if (!popout || popout.win.isDestroyed()) return;
-  if (entry.role === 'popout') return;
+  if (entry.role === 'popout' || entry.win.id!==popout.ownerId) return;
+  const existing=popoutSnapshots.get(token);if(existing)popoutSnapshots.set(token,{...existing,...patch});
   popout.win.webContents.send('popout:update', patch ?? {});
 });
 handle('popout:action', async (entry, token, action) => {
   if (!validToken(token)) return;
   if (entry.role !== 'popout') return;
   const owner = windows.get(entry.ownerId);
-  if (owner && !owner.win.isDestroyed()) owner.win.webContents.send('popout:action', token, action);
+  if (!owner || owner.win.isDestroyed()) return;
+  // The token must be the sender's own: a window speaks only for itself.
+  if (entry.floatId && (token !== entry.token)) return;
+  if (entry.floatId && (action?.type === 'assistant-return' || action?.type === 'assistant-details')) { owner.win.show(); owner.win.focus(); }
+  owner.win.webContents.send('popout:action', token, action);
+});
+// Token, sender, kind and owner are checked before every native float move.
+function ownAssistantFloat(entry,token){
+ if(!validToken(token))return null;
+ const target=[...popoutWindows.values()].find(e=>e.token===token);
+ return target?.floatId&&!target.win.isDestroyed()&&(entry===target||entry.win.id===target.ownerId)?target:null;
+}
+handle('popout:assistant-layout',async(entry,token,presentation)=>{
+ const target=ownAssistantFloat(entry,token);if(!target)return;
+ const bounds=assistantFloatBounds(target.win.getBounds(),presentation,screen.getAllDisplays().map(d=>d.workArea));
+ if(bounds)target.win.setBounds(bounds,false);
+});
+handle('popout:assistant-visibility',async(entry,token,visible)=>{
+ const target=ownAssistantFloat(entry,token);if(!target||typeof visible!=='boolean')return;
+ if(visible){target.win.show();target.win.focus();}else target.win.hide();
+});
+handle('popout:assistant-move',async(entry,token,delta)=>{
+ const target=ownAssistantFloat(entry,token);if(!target)return;
+ const bounds=movedAssistantFloatBounds(target.win.getBounds(),delta,screen.getAllDisplays().map(d=>d.workArea));
+ if(bounds)target.win.setBounds(bounds,false);
+});
+handle('popout:always-on-top', async (entry, token, on) => {
+  if (!validToken(token)) return false;
+  const popout = [...popoutWindows.values()].find((e) => e.token === token);
+  if (!popout?.floatId || popout.win.isDestroyed() || (entry !== popout && entry.win.id !== popout.ownerId)) return false;
+  if (typeof on === 'boolean') popout.win.setAlwaysOnTop(on, 'floating');
+  return popout.win.isAlwaysOnTop();
 });
 handle('popout:close', async (entry, token) => {
   if (!validToken(token)) return;
   // The owner closes its own pop-out (its pane is already back); a pop-out closes itself with its window.
   if (entry.role === 'popout') return;
   const popout = [...popoutWindows.values()].find((e) => e.token === token);
-  if (popout && !popout.win.isDestroyed()) popout.win.close();
+  if (popout && entry.win.id===popout.ownerId && !popout.win.isDestroyed()) popout.win.close();
 });
 
 /** Said out loud, before any window: the protected data needs the trusted install, not a quiet downgrade. */

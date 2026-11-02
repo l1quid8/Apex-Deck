@@ -1,0 +1,5 @@
+module CNativeEngine [system] {
+  header "../../../engine/include/apex_engine.h"
+  link "apex_computer_engine"
+  export *
+}
