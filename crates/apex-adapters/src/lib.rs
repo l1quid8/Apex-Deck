@@ -443,7 +443,7 @@ mod curator_preflight_tests {
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(root.join("gemini"), std::fs::Permissions::from_mode(0o700)).unwrap();
-            assert!(curator_profile_ok(&config, Some(path)).is_ok());
+            assert_eq!(curator_profile_ok(&config, Some(path)), chat_profile_ok(&config, Some(path)));
         }
         std::fs::remove_dir_all(root).unwrap();
     }
