@@ -4,11 +4,15 @@
 //!
 //! A restart goes through the ordinary "continue" action, so paused
 //! assistants, spending limits and project access all still apply.
+//!
+//! A hung result save is not restarted: it ends at Git's own time limit, or
+//! shortly after a stop, and the job's ordinary failure path takes over.
 
 use std::sync::{atomic::Ordering, Arc};
 
 use serde_json::json;
 
+use crate::assistant_git::SAVE_LIMIT;
 use crate::assistant_service::{append_history, AssistantActionInput, AssistantRun};
 use crate::assistant_tasks::{AssistantTask, DesiredState, TaskStatus};
 
@@ -18,6 +22,9 @@ const QUIET_MS: u64 = 20 * MINUTE_MS;
 /// A command that is still running reports nothing until it ends, so a long
 /// build gets longer. A command that has truly hung is still caught.
 const QUIET_COMMAND_MS: u64 = 60 * MINUTE_MS;
+/// Git's own limit should have ended a save by now, so this is never a slow
+/// healthy one: it means something outside Git is holding the save up.
+const SAVE_OVERDUE_MS: u64 = SAVE_LIMIT.as_millis() as u64 + 5 * MINUTE_MS;
 const SETTLE_SECONDS: u64 = 30;
 /// The clock runs about once a minute, so a longer gap means the machine slept.
 const ASLEEP_GAP_MS: u64 = 5 * MINUTE_MS;
@@ -26,6 +33,10 @@ const ASLEEP_GAP_MS: u64 = 5 * MINUTE_MS;
 pub(crate) const RESTARTED_RESULT: &str = "The watchdog stopped this attempt after it went quiet, and is restarting it once.";
 pub(crate) const RESTARTED_LABEL: &str = "Restarting a stuck job";
 const NUDGE: &str = "Deck's watchdog stopped your last attempt because nothing happened for a long time. Check how far the work got, then continue the original task. If a command hung, don't run it the same way again. If you are blocked, say what you need.";
+
+pub(crate) fn save_too_long_text(brief: &str) -> String {
+    format!("Saving your delegated job's result took too long, so I stopped that step: {brief}. The work is still in its folder. Open the task to retry or cancel it.")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict { Fine, Restart, Tell }
@@ -59,17 +70,22 @@ impl crate::host::Host {
             let Some(run) = self.assistant_runs.lock().unwrap().get(&task.id).cloned() else { continue };
             if run.stop.load(Ordering::SeqCst) { continue }
             let Some(handle) = task.execution_thread_id.as_deref().and_then(|room| self.handle(room).ok()) else { continue };
-            // A live run in an idle room is saving its result. Stopping can't
-            // interrupt that and a restart would add a second writer, so it is
-            // only ever reported.
-            let saving = !handle.runtime.busy();
+            // Stopping can't interrupt a save and a restart would add a second
+            // writer, so a save past its limit is only ever reported.
+            let saving_since = run.saving_since.load(Ordering::SeqCst);
+            let saving = saving_since != 0;
             if !saving && handle.has_pending_human_waits() { continue }
             let (last_activity, command_running) = handle.worker_activity();
-            let quiet_ms = at.saturating_sub(last_activity.max(attempt.started_at_ms).max(awake_since));
+            let quiet_since = if saving { saving_since } else { last_activity.max(attempt.started_at_ms) };
+            let quiet_ms = at.saturating_sub(quiet_since.max(awake_since));
             let watchdog = task.result_data.as_ref().map(|data| &data["watchdog"]);
             let restarted = watchdog.is_some_and(|saved| saved["restarted"] == true);
             let told = watchdog.is_some_and(|saved| saved["toldRun"].as_str() == Some(attempt.run_id.as_str()));
-            let verdict = judge(quiet_ms, command_running && !saving, restarted || saving, told);
+            let verdict = if saving {
+                if quiet_ms >= SAVE_OVERDUE_MS && !told { Verdict::Tell } else { Verdict::Fine }
+            } else {
+                judge(quiet_ms, command_running, restarted, told)
+            };
             if verdict == Verdict::Fine || self.owner_paused(&task) { continue }
             let run_id = attempt.run_id.clone();
             let result = match verdict {
@@ -130,7 +146,7 @@ impl crate::host::Host {
         let brief: String = task.brief.chars().take(140).collect();
         let minutes = quiet_ms / MINUTE_MS;
         let text = if saving {
-            format!("Your delegated job is stuck saving its result: {brief}. Nothing has happened for {minutes} minutes. Restarting it isn't safe while that step runs, so I left it alone and its checkout stays reserved.")
+            format!("Your delegated job is stuck saving its result: {brief}. That step has run for {minutes} minutes, past the time limit that should have ended it. Restarting it isn't safe while it runs, so I left it alone and its checkout stays reserved.")
         } else {
             format!("Still stuck after a restart: {brief}. Nothing has happened for {minutes} minutes. I left it running, so open the task to cancel or retry it.")
         };
@@ -142,6 +158,18 @@ impl crate::host::Host {
         append_history(&mut data, "watchdog", if saving { "Stuck saving its result, so the watchdog told you." } else { "Still stuck after the restart, so the watchdog told you." });
         self.assistant_tasks.set_result_data(&latest.id, latest.revision, &latest.owner, Some(data)).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// The save was ended, so the job has failed and needs the human's decision.
+    /// Its ordinary receipt carries the words, so this only adds the phone push.
+    pub(crate) fn tell_save_too_long(&self, task_id: &str, run_id: &str) -> Result<(), String> {
+        let task = self.assistant_tasks.get(task_id).map_err(|e| e.to_string())?.ok_or("The task is gone.")?;
+        let Some(lineage) = &task.lineage else { return Ok(()) };
+        let text = save_too_long_text(&task.brief.chars().take(140).collect::<String>());
+        self.change_assistant(&lineage.assistant.assistant_id, |assistant| {
+            crate::personal_worker::notify::notify(assistant, text.clone(), Some(task.id.clone()), true, format!("watchdog:{}:{run_id}", task.id), crate::personal::now());
+            Ok(())
+        })
     }
 
     /// A notice alone can be swallowed when the human is on screen, so the
