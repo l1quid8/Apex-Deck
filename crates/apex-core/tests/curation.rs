@@ -564,6 +564,8 @@ fn journal_hint_is_present_only_for_standing_curations_and_precedes_plan() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let req = request(&r);
     assert!(req.system.contains("/journal/chat.md"));
+    assert!(req.system.contains("isn't in the messages you can see, search this file first"));
+    assert!(req.system.contains("before you say you don't know"));
     assert!(!req.plan);
     r.set_journal_path(None);
     assert!(request(&r).system.contains("can't be read right now"));

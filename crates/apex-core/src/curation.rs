@@ -340,7 +340,7 @@ pub fn journal_text(transcript: &[Message], roster: &[ParticipantConfig]) -> Str
 pub fn journal_section(path: Option<&str>) -> String {
     let intro="\nOlder messages in this chat may be hidden to save space. A line like [#120–#340 hidden, 221 messages] marks each gap, and a summary may stand in for earlier ones. ";
     match path {
-        Some(path)=>format!("{intro}If you can read files, `{path}` holds their exact text, up to the message named on its first line. Each #number · speaker starts a message. Concatenate decoded | JSON strings to recover the original; ? strings repeat boundary text for search only. Search it before you rely on anything hidden, and never guess what a hidden message said.\n"),
+        Some(path)=>format!("{intro}If you can read files, `{path}` holds their exact text, up to the message named on its first line. Each #number · speaker starts a message. Concatenate decoded | JSON strings to recover the original; ? strings repeat boundary text for search only. When a request depends on anything from earlier in this chat (a decision, requirement, reason, number, name, path, or who said what) that isn't in the messages you can see, search this file first. Do that before you answer from memory or a summary, and before you say you don't know or that it never came up. If you can't read the file or the search finds nothing, say so, and never guess what a hidden message said.\n"),
         None=>format!("{intro}Their text can't be read right now, so never guess what a hidden message said. Tell the human if you need one.\n"),
     }
 }
