@@ -53,6 +53,8 @@ const RESUME_TEXT: &str = "Please continue where you stopped.";
 mod bulk_delete;
 #[cfg(test)]
 mod bulk_delete_tests;
+#[cfg(test)]
+mod target_lookup_tests;
 
 pub(super) fn bulk_delete_prompt(operation: &OperationSpec) -> Option<String> {
     bulk_delete::approval_prompt(operation)
@@ -278,8 +280,29 @@ impl Host {
 
     pub(crate) fn personal_room_target(&self, assistant: &PersonalAssistant, thread: &str) -> Result<Target, String> {
         if thread.trim().is_empty() { return Err("The chat wasn't named.".into()); }
-        self.personal_rooms(assistant)?.into_iter().find(|room| room.thread == thread)
-            .ok_or_else(|| "That chat isn't in a project this assistant can reach.".to_owned())
+        let unavailable = || "That chat isn't in a project this assistant can reach.".to_owned();
+        let session = self.store().session()?;
+        let panes = session.as_ref().and_then(|s| s["panes"].as_array());
+        if panes.into_iter().flatten().any(|pane| pane["id"].as_str() == Some(thread) && pane["archived"] == true) {
+            return Err(unavailable());
+        }
+        let bindings: Vec<_> = assistant.projects.iter().filter(|binding| binding.tools != ProjectTools::Off)
+            .filter_map(|binding| self.validate_project_binding(assistant, binding.clone()).ok()).collect();
+        if bindings.is_empty() { return Err(unavailable()); }
+        let meta = self.store().chat_meta(thread)?;
+        if meta.as_ref().is_some_and(|meta| meta.archived) { return Err(unavailable()); }
+        // Exact actions need the selected room's fresh protected authority,
+        // not every transcript and authority manifest in the discovery catalog.
+        let saved = self.store().room(thread)?.ok_or_else(unavailable)?;
+        let cwd = saved.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).canonicalize().ok()).ok_or_else(unavailable)?;
+        let binding = bindings.into_iter().find(|binding| cwd == std::path::Path::new(&binding.project.cwd)).ok_or_else(unavailable)?;
+        let title = meta.map(|meta| meta.title).filter(|title| !title.trim().is_empty()).or_else(|| {
+            panes.into_iter().flatten().filter(|pane| pane["kind"] == "chat" && pane["archived"] != true && pane["id"].as_str() == Some(thread))
+                .filter_map(|pane| pane["title"].as_str().map(str::trim)).filter(|title| !title.is_empty()).last().map(str::to_owned)
+        }).unwrap_or_else(|| thread.to_owned());
+        let workers = saved.snapshot.participants.iter().filter(|profile| crate::assistant_service::task_worker_eligible(profile))
+            .map(|profile| (profile.id.to_string(), profile.display_name.clone())).collect();
+        Ok(Target { project: binding.project, thread: thread.to_owned(), title, workers, tools: binding.tools })
     }
 
     /// Ask mode does not reconfirm a routine change the human just requested.
