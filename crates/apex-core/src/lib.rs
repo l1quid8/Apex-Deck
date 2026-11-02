@@ -22,7 +22,7 @@ mod view;
 mod write_gate;
 pub mod work_steps;
 pub mod plan_steps;
-pub use plan_steps::{plan_steps, PlanStep};
+pub use plan_steps::{plan_steps, PlanRun, PlanRunState, PlanRunStep, PlanStep, PlanStepState};
 
 pub use concurrent::{copy_turn_line, read_only_line, ConcurrentRoom, CopyProvider, TurnBatch, TurnStartHook, TurnLifecycleHook};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};

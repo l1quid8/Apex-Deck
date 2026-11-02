@@ -2,11 +2,153 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::ParticipantId;
+use crate::work_steps::{TodoItem, TodoStatus};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PlanStep {
     pub id: String,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStepState {
+    Open,
+    Active,
+    Done,
+    Skipped,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanRunState {
+    Waiting,
+    Revising,
+    Running,
+    Stopped,
+    Done,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanRunStep {
+    pub id: String,
+    pub text: String,
+    pub state: PlanStepState,
+    /// The bot reported progress on a step the human skipped.
+    pub off_plan: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanRun {
+    pub request: String,
+    pub by: ParticipantId,
+    pub detail: String,
+    pub version: u32,
+    pub state: PlanRunState,
+    pub steps: Vec<PlanRunStep>,
+    /// True once a to-do tag has matched a known step.
+    pub reporting: bool,
+}
+
+/// The step id in a leading `[S<n>]` tag, if any.
+fn tag_of(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    let id = &rest[..end];
+    let digits = id.strip_prefix('S')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(id)
+}
+
+impl PlanRun {
+    pub fn new(request: String, by: ParticipantId, detail: String, version: u32) -> Self {
+        let steps = plan_steps(&detail)
+            .into_iter()
+            .map(|s| PlanRunStep { id: s.id, text: s.text, state: PlanStepState::Open, off_plan: false })
+            .collect();
+        PlanRun { request, by, detail, version, state: PlanRunState::Waiting, steps, reporting: false }
+    }
+
+    /// Mark skips and start running. Returns the instruction for the bot, or
+    /// `None` (state unchanged) when the plan has no steps.
+    pub fn approve(&mut self, skip: &[String]) -> Option<String> {
+        if self.steps.is_empty() {
+            return None;
+        }
+        for step in &mut self.steps {
+            if skip.contains(&step.id) {
+                step.state = PlanStepState::Skipped;
+            }
+        }
+        self.state = PlanRunState::Running;
+        let line = |s: &PlanRunStep| format!("[{}] {}", s.id, s.text);
+        let steps: Vec<String> = self
+            .steps
+            .iter()
+            .filter(|s| s.state != PlanStepState::Skipped)
+            .map(line)
+            .collect();
+        let skipped: Vec<&str> = self
+            .steps
+            .iter()
+            .filter(|s| s.state == PlanStepState::Skipped)
+            .map(|s| s.text.as_str())
+            .collect();
+        let mut out = String::from(
+            "Keep a to-do list with one item per step below, using your to-do tool. Start each item with its tag exactly, like \"[S1] Add parser\". Update it as you go.\n",
+        );
+        out.push_str(&format!("Steps: {}", steps.join("\n")));
+        if !skipped.is_empty() {
+            out.push_str(&format!("\nDo NOT do these steps: {}", skipped.join("\n")));
+        }
+        Some(out)
+    }
+
+    pub fn apply_todos(&mut self, items: &[TodoItem]) {
+        for item in items {
+            let Some(id) = tag_of(&item.text) else { continue };
+            let Some(step) = self.steps.iter_mut().find(|s| s.id == id) else { continue };
+            self.reporting = true;
+            if step.state == PlanStepState::Skipped {
+                if matches!(item.status, TodoStatus::InProgress | TodoStatus::Completed) {
+                    step.off_plan = true;
+                }
+                continue;
+            }
+            if step.state == PlanStepState::Done {
+                continue;
+            }
+            step.state = match item.status {
+                TodoStatus::Pending => PlanStepState::Open,
+                TodoStatus::InProgress => PlanStepState::Active,
+                TodoStatus::Completed => PlanStepState::Done,
+                TodoStatus::Cancelled => PlanStepState::Cancelled,
+            };
+        }
+        if self.state == PlanRunState::Running && self.reporting && !self.has_open_steps() {
+            self.state = PlanRunState::Done;
+        }
+    }
+
+    pub fn turn_ended(&mut self) {
+        if self.state != PlanRunState::Running {
+            return;
+        }
+        self.state = if self.has_open_steps() { PlanRunState::Stopped } else { PlanRunState::Done };
+    }
+
+    fn has_open_steps(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|s| matches!(s.state, PlanStepState::Open | PlanStepState::Active))
+    }
 }
 
 const MAX_CHARS: usize = 160;
@@ -149,5 +291,103 @@ mod tests {
     fn underscores_only_stripped_as_paired_emphasis() {
         let s = plan_steps("1. Fix _this_ in snake_case and my_var_name\n2. B\n");
         assert_eq!(s[0].text, "Fix this in snake_case and my_var_name");
+    }
+
+    fn todo(text: &str, status: TodoStatus) -> TodoItem {
+        TodoItem { text: text.into(), status }
+    }
+    fn run(detail: &str) -> PlanRun {
+        PlanRun::new("r".into(), ParticipantId::new("bot"), detail.into(), 1)
+    }
+    const THREE: &str = "1. A\n2. B\n3. C\n";
+
+    #[test]
+    fn approve_marks_skips_and_tells_the_bot() {
+        let mut r = run("1. S1 text\n2. S2 text\n");
+        let t = r.approve(&["S2".to_string()]).unwrap();
+        assert!(t.contains("Do NOT do these steps: S2 text"));
+        assert!(t.contains("[S1] S1 text"));
+        assert!(!t.contains("[S2]"));
+        assert_eq!(r.steps[1].state, PlanStepState::Skipped);
+        assert_eq!(r.state, PlanRunState::Running);
+    }
+    #[test]
+    fn tagged_todos_tick_their_steps() {
+        let mut r = run(THREE);
+        r.approve(&[]);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Completed), todo("[S2] B", TodoStatus::InProgress)]);
+        assert_eq!(r.steps[0].state, PlanStepState::Done);
+        assert_eq!(r.steps[1].state, PlanStepState::Active);
+        assert!(r.reporting);
+    }
+    #[test]
+    fn untagged_todos_tick_nothing_and_reporting_stays_false() {
+        let mut r = run(THREE);
+        r.approve(&[]);
+        r.apply_todos(&[todo("Do A", TodoStatus::Completed)]);
+        assert!(!r.reporting);
+        assert!(r.steps.iter().all(|s| s.state == PlanStepState::Open));
+    }
+    #[test]
+    fn unknown_tags_are_ignored() {
+        let mut r = run(THREE);
+        r.approve(&[]);
+        r.apply_todos(&[todo("[S9] X", TodoStatus::Completed), todo("[Sx] X", TodoStatus::Completed)]);
+        assert!(!r.reporting);
+    }
+    #[test]
+    fn a_step_never_goes_back_from_done_when_the_list_is_rewritten() {
+        let mut r = run(THREE);
+        r.approve(&[]);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Completed)]);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Pending)]);
+        assert_eq!(r.steps[0].state, PlanStepState::Done);
+    }
+    #[test]
+    fn a_reported_skipped_step_stays_skipped_and_is_flagged_off_plan() {
+        let mut r = run(THREE);
+        r.approve(&["S2".to_string()]);
+        r.apply_todos(&[todo("[S2] B", TodoStatus::Completed)]);
+        assert_eq!(r.steps[1].state, PlanStepState::Skipped);
+        assert!(r.steps[1].off_plan);
+    }
+    #[test]
+    fn all_steps_finished_means_done() {
+        let mut r = run(THREE);
+        r.approve(&["S3".to_string()]);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Completed), todo("[S2] B", TodoStatus::Completed)]);
+        assert_eq!(r.state, PlanRunState::Done);
+    }
+    #[test]
+    fn turn_ended_with_open_steps_is_stopped_never_done() {
+        let mut r = run(THREE);
+        r.approve(&[]);
+        r.apply_todos(&[todo("[S1] A", TodoStatus::Completed)]);
+        r.turn_ended();
+        assert_eq!(r.state, PlanRunState::Stopped);
+    }
+    #[test]
+    fn turn_ended_only_acts_on_a_running_run() {
+        for st in [PlanRunState::Waiting, PlanRunState::Revising, PlanRunState::Stopped, PlanRunState::Done] {
+            let mut r = run(THREE);
+            r.state = st;
+            r.turn_ended();
+            assert_eq!(r.state, st);
+        }
+    }
+    #[test]
+    fn an_empty_step_list_tracks_nothing() {
+        let mut r = run("just prose");
+        assert!(r.approve(&[]).is_none());
+        assert_eq!(r.state, PlanRunState::Waiting);
+        r.state = PlanRunState::Running;
+        r.turn_ended();
+        assert_eq!(r.state, PlanRunState::Done);
+    }
+    #[test]
+    fn plan_run_serializes_snake_case() {
+        let r = run(THREE);
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(j.contains("\"state\":\"waiting\"") && j.contains("\"off_plan\":false"));
     }
 }
