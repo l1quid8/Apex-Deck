@@ -2161,7 +2161,6 @@ export function PhoneApp() {
   }
   return (
     <div className="ph-app" data-rev={tick}>
-      <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(host,room)=>{setTab("threads");setOpenHost(host);setOpenId(room);}} />
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
@@ -2389,6 +2388,7 @@ export function PhoneApp() {
             host.backend.detectAgents().then((found) => setAgents(found.filter((agent) => agent.found).map((agent) => agent.label))).catch(() => setAgents([]));
           }} />
         )}
+        <PhoneCallBar who={callWho} last={inChat} hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(host,room)=>{setTab("threads");setOpenHost(host);setOpenId(room);}} />
         {!inChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
           {([[Command, "Agents", "agents"], [Terminal, "Code", "code"], [MessageSquare, "Threads", "threads"], [Folder, "Library", "library"]] as const).map(([Icon, label, item]) => (
             <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") { setOpenId(null); } }}>
