@@ -13,7 +13,7 @@ const BotSettings = () => null;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function mount(overrides = {}) {
   const profile = { id: 'saved', display_name: 'Null', persona: '', backend: { kind: 'agent', tool: 'claude_code', model: 'one' }, access: 'ask', effort: 'low' };
-  let durable = { id: 'assistant-a', hostId: 'host-a', revision: 7, name: 'Null', profile, allowedFolders: ['/granted'], projects: [], costs: [] };
+  let durable = { id: 'assistant-a', hostId: 'host-a', revision: 7, name: 'Null', profile, allowedFolders: ['/granted'], projects: [], costs: [], ...overrides.record };
   const writes = [];
   const lane = { name: 'Null', hostName: 'Mac', offline: false, assistant: durable, configureWorkspace: async input => { writes.push(input); durable = { ...durable, profile: input.profile, revision: durable.revision + 1 }; }, ...overrides.lane };
   const backend = { sessionLoad:async()=>({profiles:[profile]}), agentModels: async () => [{ id: 'one', efforts: ['low', 'high'] }], detectAgents: async () => [{ key: 'claude_code', found: true }], call: async () => durable, ...overrides.backend };
@@ -41,6 +41,19 @@ test('Full access from quick settings waits for explicit bounded-folder confirma
   assert.equal(h.writes[0].profile.access, 'full');
   assert.equal(h.writes[0].expectedRevision, 7);
   assert.equal(Object.hasOwn(h.writes[0], 'projects'), false);
+});
+
+test('an existing Full runtime saves model changes and returns to Ask without another Full confirmation',async()=>{
+ const profile={id:'saved',display_name:'Null',persona:'',backend:{kind:'agent',tool:'claude_code',model:'one'},access:'full',effort:'low'};
+ const h=mount({record:{profile}});await h.ready();
+ let settings=find(h.render(),node=>node.type===BotSettings);
+ await settings.props.save({...profile,effort:'high'},profile);
+ assert.equal(h.writes[0].profile.access,'full');assert.equal(h.writes[0].profile.effort,'high');
+ assert.equal(find(h.render(),node=>node.props?.['aria-label']==='Confirm Full access'),undefined);
+ settings=find(h.render(),node=>node.type===BotSettings);
+ await settings.props.save({...profile,effort:'high',access:'ask'},{...profile,effort:'high'});
+ assert.equal(h.writes[1].profile.access,'ask');assert.equal(h.writes[1].expectedRevision,8);
+ assert.equal(Object.hasOwn(h.writes[1],'projects'),false);
 });
 
 test('unavailable runtime disables quick changes with a reason and keeps Full Settings available', async () => {

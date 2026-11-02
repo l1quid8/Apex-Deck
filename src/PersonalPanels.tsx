@@ -347,6 +347,7 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
     const rules = rec.rules ?? [];
     return (
       <>
+        <p className="personal-panels-muted">{rec.profile?.access==='full'?'Full access is on. These action modes and approval rules are saved for Ask first; they do not add approval prompts in Full access. Switch to Ask first to use them.':'These action modes and approval rules apply in Ask first. Routine checks and reversible thread changes you request can run without extra approval; consequential actions follow these settings.'}</p>
         {CLASSES.map((cls) => (
           <div className="personal-panels-row" key={cls}>
             <div className="personal-panels-rowmain">
@@ -391,7 +392,7 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
                 {(['ask', 'handOff'] as ActionMode[]).map((mode) => <option key={mode} value={mode}>{MODE_LABEL[mode]}</option>)}
               </select>
             </div>
-            <p className="personal-panels-muted">Rules can only make it more careful.</p>
+            <p className="personal-panels-muted">In Ask first, rules can make the assistant more careful. They stay saved while Full access is on.</p>
             <div><button type="submit" disabled={locked || !rule.text.trim()}>Add rule</button></div>
           </form>
         )}

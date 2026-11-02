@@ -11,8 +11,9 @@ export function AssistantCapabilities({backend,name,profile,record,access,offlin
  const [status,setStatus]=useState<{available?:boolean;enabled?:boolean}|null>(null);
  useEffect(()=>{let live=true;void Promise.resolve().then(()=>backend.call<{available?:boolean;enabled?:boolean}>('computer_status')).then(next=>{if(live)setStatus(next);}).catch(()=>{if(live)setStatus({});});return()=>{live=false;};},[backend]);
  const summary=computerSummary({name,profile,record,access,enabled:status?.enabled,available:status?.available});
+ const fullAccess=(access??profile?.access)==='full';
  return <section className="assistant-settings-section"><h3>Capabilities</h3>
-  <div className="assistant-setting-row"><span>Unified Computer Use<small>Set once for all agents. {name} asks before each app, and your choice lasts for this conversation at most.</small></span><span className="assistant-setting-value" role="status">{status?summary.state:'Checking…'}</span></div>
+  <div className="assistant-setting-row"><span>Unified Computer Use<small>Set once for all agents. {fullAccess?'Full access uses enabled apps without assistant approval prompts. macOS permissions still apply.':`${name} asks before each app, and your choice lasts for this conversation at most.`}</small></span><span className="assistant-setting-value" role="status">{status?summary.state:'Checking…'}</span></div>
   {status&&summary.notes.map(note=><p className="assistant-control-note" key={note}>{note}</p>)}
   <p className="assistant-control-note">Work happens in the background with {name}’s own browser. Your pointer and keyboard stay yours, and anything that would need the foreground is reported instead of done.</p>
   <button type="button" className="assistant-settings-link" onClick={()=>window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT,{detail:'computer'}))}><span>Computer use settings<small>On or off, permissions, cursor and action labels</small></span><span aria-hidden="true">›</span></button>

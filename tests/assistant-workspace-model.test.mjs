@@ -127,7 +127,7 @@ test('dirtyFields lists changed settings in page order',()=>{
  const saved={name:'A',model:'m1',effort:'low',access:'ask',projects:['/a'],look:{seed:'s',color:'#111111',kind:'pixel'}};
  assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved}),[]);
  assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,model:'m2',effort:'high'}),['Model','Reasoning']);
- assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,name:'B',look:{...saved.look,color:'#222222'},access:'full',projects:['/a','/b']}),['Name','Avatar','Project tools','Projects']);
+ assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,name:'B',look:{...saved.look,color:'#222222'},access:'full',projects:['/a','/b']}),['Name','Avatar','Assistant access','Projects']);
  assert.deepEqual(workspaceModel.dirtyFields(saved,{...saved,projects:['/a']}),[],'same projects in a new array is not a change');
 });
 test('an unchanged image avatar is not counted as a change',()=>{
@@ -151,4 +151,16 @@ test("the capability note tells the truth about each limit, with no switch of it
   assert.equal(computerSummary({ ...base, profile: claude, record: { ...record, rules: [{ class: "write", mode: "handOff" }] } }).state, "On · read only");
   assert.match(computerSummary({ ...base, profile: api }).notes.join(), /can't read screenshots/);
   assert.deepEqual(computerSummary({ ...base, profile: { ...api, can_read_images: true } }).notes, []);
+});
+
+test('Full computer access overrides saved Ask handoffs and switching back restores them',async()=>{
+ const {computerSummary}=await import('../src/assistantCapabilities.ts');
+ const record={modes:{write:'handOff'},rules:[{class:'write',mode:'handOff'}]};
+ const base={name:'Alfred',profile:{backend:{kind:'agent',tool:'claude_code'},access:'full'},record,enabled:true,available:true};
+ assert.equal(computerSummary(base).state,'On');
+ assert.equal(computerSummary({...base,access:'full'}).state,'On');
+ assert.equal(computerSummary({...base,access:'ask'}).state,'On · read only');
+ assert.equal(computerSummary({...base,access:'read'}).state,'On · read only');
+ assert.equal(computerSummary({...base,enabled:false}).state,'Off for every agent');
+ assert.deepEqual(record,{modes:{write:'handOff'},rules:[{class:'write',mode:'handOff'}]});
 });
