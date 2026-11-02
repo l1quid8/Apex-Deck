@@ -2602,6 +2602,14 @@ impl Host {
         let data = self.paths.data.clone();
         tokio::task::spawn_blocking(move || crate::bot_copies_ui::set_check(Path::new(&root), &data, cmd)).await.map_err(|e| e.to_string())?
     }
+    pub fn folder_accept(&self, path: String, who: Option<String>) -> Result<serde_json::Value, String> {
+        crate::folder_trust::accept(&self.paths.data, Path::new(&path), who)?;
+        Ok(serde_json::json!({ "accepted": path }))
+    }
+    pub fn folder_withdraw(&self, path: String) -> Result<serde_json::Value, String> {
+        crate::folder_trust::withdraw(&self.paths.data, Path::new(&path))?;
+        Ok(serde_json::json!({ "withdrawn": path }))
+    }
     pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
         tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
     }

@@ -68,7 +68,7 @@ fn run_git(
     envs: &[(&str, &std::ffi::OsStr)],
     args: &[&str],
 ) -> Result<String, String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::project_process::git_command();
     cmd.current_dir(root);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in envs {

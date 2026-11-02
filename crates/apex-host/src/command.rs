@@ -184,6 +184,8 @@ pub enum Command {
     LibraryRemove { file: String },
     LibraryRename { file: String, name: String },
     RoomMount { id: String, cwd: String },
+    FolderAccept { path: String, who: Option<String> },
+    FolderWithdraw { path: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     ChatProfiles {},
     ChatList {},
@@ -707,6 +709,8 @@ impl Host {
             ModFsWrite { path, text } => reply(self.mod_fs_write(path, text)?),
             ModFsStat { path, resolve } => reply(self.mod_fs_stat(path, resolve)?),
             ModEnvGet { name } => reply(self.mod_env_get(name)),
+            FolderAccept { path, who } => reply(self.folder_accept(path, who)?),
+            FolderWithdraw { path } => reply(self.folder_withdraw(path)?),
         }
     }
 }

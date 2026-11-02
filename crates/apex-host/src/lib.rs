@@ -64,6 +64,8 @@ pub mod phone;
 pub mod lock;
 pub mod private_data;
 pub mod runner;
+pub mod folder_trust;
+pub mod project_process;
 
 /// True only when this build compiled the in-process test fixtures. Production
 /// builds, and `cargo test -p apex-host-production-check`, must see false.

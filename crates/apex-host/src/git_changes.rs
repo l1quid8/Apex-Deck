@@ -54,7 +54,7 @@ pub struct Outcome {
 }
 
 fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::project_process::git_command();
     command
         .arg("-C")
         .arg(crate::assistant_git::external_path(cwd).as_os_str())
