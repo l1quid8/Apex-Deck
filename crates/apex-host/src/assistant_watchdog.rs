@@ -59,18 +59,22 @@ impl crate::host::Host {
             let Some(run) = self.assistant_runs.lock().unwrap().get(&task.id).cloned() else { continue };
             if run.stop.load(Ordering::SeqCst) { continue }
             let Some(handle) = task.execution_thread_id.as_deref().and_then(|room| self.handle(room).ok()) else { continue };
-            if !handle.runtime.busy() || handle.has_pending_human_waits() { continue }
+            // A live run in an idle room is saving its result. Stopping can't
+            // interrupt that and a restart would add a second writer, so it is
+            // only ever reported.
+            let saving = !handle.runtime.busy();
+            if !saving && handle.has_pending_human_waits() { continue }
             let (last_activity, command_running) = handle.worker_activity();
             let quiet_ms = at.saturating_sub(last_activity.max(attempt.started_at_ms).max(awake_since));
             let watchdog = task.result_data.as_ref().map(|data| &data["watchdog"]);
             let restarted = watchdog.is_some_and(|saved| saved["restarted"] == true);
             let told = watchdog.is_some_and(|saved| saved["toldRun"].as_str() == Some(attempt.run_id.as_str()));
-            let verdict = judge(quiet_ms, command_running, restarted, told);
+            let verdict = judge(quiet_ms, command_running && !saving, restarted || saving, told);
             if verdict == Verdict::Fine || self.owner_paused(&task) { continue }
             let run_id = attempt.run_id.clone();
             let result = match verdict {
                 Verdict::Restart => self.restart_stuck(task, run, handle),
-                _ => self.tell_still_stuck(&task, &run_id, quiet_ms, at),
+                _ => self.tell_stuck(&task, &run_id, saving, quiet_ms, at),
             };
             if let Err(error) = result { eprintln!("Delegated work watchdog: {error}"); }
         }
@@ -119,17 +123,23 @@ impl crate::host::Host {
         self.assistant_task_action(AssistantActionInput { task_id: latest.id, revision: latest.revision, owner: latest.owner, action: "continue".into(), mode: None, text: Some(NUDGE.into()), destination: None, new_worker_profiles: vec![], checks: None, spend_limit_micros: None }).await.map(|_| ())
     }
 
-    /// The attempt is left running: it has already had its restart, and a slow
-    /// worker that comes back keeps its work. Cancelling is the human's call.
-    fn tell_still_stuck(&self, task: &AssistantTask, run_id: &str, quiet_ms: u64, at: u64) -> Result<(), String> {
+    /// The attempt is left running: it has already had its restart, or is past
+    /// the point a restart can help, and a slow worker that comes back keeps its
+    /// work. Cancelling is the human's call.
+    fn tell_stuck(&self, task: &AssistantTask, run_id: &str, saving: bool, quiet_ms: u64, at: u64) -> Result<(), String> {
         let brief: String = task.brief.chars().take(140).collect();
-        let text = format!("Still stuck after a restart: {brief}. Nothing has happened for {} minutes. I left it running, so open the task to cancel or retry it.", quiet_ms / MINUTE_MS);
+        let minutes = quiet_ms / MINUTE_MS;
+        let text = if saving {
+            format!("Your delegated job is stuck saving its result: {brief}. Nothing has happened for {minutes} minutes. Restarting it isn't safe while that step runs, so I left it alone and its checkout stays reserved.")
+        } else {
+            format!("Still stuck after a restart: {brief}. Nothing has happened for {minutes} minutes. I left it running, so open the task to cancel or retry it.")
+        };
         self.tell_human(task, &format!("watchdog:{}:{run_id}", task.id), text, at)?;
         // Worker usage may have moved the task on since this pass read it.
         let latest = self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("The task is gone.")?;
         let mut data = latest.result_data.clone().unwrap_or_else(|| json!({}));
         data["watchdog"]["toldRun"] = json!(run_id);
-        append_history(&mut data, "watchdog", "Still stuck after the restart, so the watchdog told you.");
+        append_history(&mut data, "watchdog", if saving { "Stuck saving its result, so the watchdog told you." } else { "Still stuck after the restart, so the watchdog told you." });
         self.assistant_tasks.set_result_data(&latest.id, latest.revision, &latest.owner, Some(data)).map_err(|e| e.to_string())?;
         Ok(())
     }

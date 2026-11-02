@@ -4764,4 +4764,110 @@ mod tests {
             panic!("no report: {:?}",watchdog_messages(&f,&assistant));
         });
     }
+    fn controlled_delegation(f: &Fixture, request: &str, mode: TaskMode) -> (AssistantTask, String) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let repo = f.root.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    use std::io::{Read, Write};
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let mut data = Vec::new();
+                    let mut buffer = [0u8; 4096];
+                    let (end, length) = loop {
+                        let Ok(n) = stream.read(&mut buffer) else { return };
+                        if n == 0 { return }
+                        data.extend_from_slice(&buffer[..n]);
+                        if let Some(at) = data.windows(4).position(|s| s == b"\r\n\r\n") {
+                            let header = String::from_utf8_lossy(&data[..at]);
+                            let length = header.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").and_then(|s| s.trim().parse::<usize>().ok())).unwrap_or(0);
+                            break (at+4, length)
+                        }
+                    };
+                    while data.len() < end + length {
+                        let Ok(n) = stream.read(&mut buffer) else { return };
+                        if n == 0 { return }
+                        data.extend_from_slice(&buffer[..n]);
+                    }
+                    let models = data.starts_with(b"GET ");
+                    if !models {
+                        while !repo.join(".git/review-reply").exists() {
+                            if !repo.exists() { return }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                    let body = if models { r#"{"data":[]}"#.to_owned() } else { format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":{"content":"Finished the requested work"}}]})) };
+                    let content_type = if models { "application/json" } else { "text/event-stream" };
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        let worker = profile("hung", Backend::OpenAiCompatible {base_url:format!("http://127.0.0.1:{port}/v1"),model:"fixture".into(),api_key_env:None}, if mode == TaskMode::ReadOnly { Access::Read } else { Access::Edits });
+        let room = format!("hung-{request}");
+        f.host.room_create(room.clone(), vec![worker], RoomOptions::default(), Some(f.owner.cwd.clone())).unwrap();
+        std::fs::write(f.data.join("host-id"),"owner").unwrap();
+        let assistant = f.host.personal_create(crate::personal::CreateInput {
+            name:"Ada".into(),style:String::new(),folder:f.owner.cwd.clone(),
+            profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read),
+            workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None,
+        }).unwrap();
+        let project = crate::personal_workspace::ProjectRef {host_id:assistant.host_id.clone(),workspace_id:f.owner.workspace_id.clone(),cwd:f.root.canonicalize().unwrap().to_string_lossy().into_owned()};
+        f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
+        f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
+        let accepted=f.host.personal_send(&assistant.id,request,"Please inspect login").unwrap();
+        let current=f.host.personal_get(&assistant.id).unwrap();
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread:false},mode:if mode == TaskMode::InPlace { TaskMode::Isolated } else { mode },review_criteria:vec![],expected_revision:current.revision};
+        let receipt=f.host.prepare_personal_delegation(input).unwrap();
+        let task=f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(mode),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
+        let running=wait_for_attempt(f,&task.id,1);
+        (running,assistant.id)
+    }
+
+
+    #[test]
+    fn watchdog_restart_keeps_an_in_place_job_and_its_edits() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "review-in-place", TaskMode::InPlace);
+        std::fs::write(f.root.join("tracked.txt"), "work before restart\n").unwrap();
+        f.host.watch_delegated_work(crate::personal::now() + QUIET_MINUTES, 0).unwrap();
+        let restarted = wait_for_attempt(&f, &task.id, 2);
+        assert_eq!(restarted.mode, TaskMode::InPlace);
+        assert_eq!(std::fs::read_to_string(f.root.join("tracked.txt")).unwrap(), "work before restart\n");
+        assert!(restarted.result_data.as_ref().unwrap()["watchdog"]["restarted"] == true);
+    }
+
+    #[test]
+    fn a_job_stuck_saving_its_result_is_reported_not_restarted() {
+        let f = fixture();
+        let (task, assistant) = controlled_delegation(&f, "review-capture", TaskMode::InPlace);
+        std::fs::write(f.root.join(".git/review-filter.sh"), "touch .git/review-filter-entered\nwhile [ ! -e .git/review-filter-release ]; do sleep 0.05; done\ncat\n").unwrap();
+        assert!(Command::new("git").current_dir(&f.root).args(["config", "filter.watchdog-review.clean", "sh .git/review-filter.sh"]).status().unwrap().success());
+        std::fs::write(f.root.join(".gitattributes"), "tracked.txt filter=watchdog-review\n").unwrap();
+        std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
+        std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();
+        let handle = f.host.handle(task.execution_thread_id.as_deref().unwrap()).unwrap();
+        for _ in 0..1_000 {
+            if f.root.join(".git/review-filter-entered").exists() && !handle.runtime.busy() { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let entered = f.root.join(".git/review-filter-entered").exists();
+        let idle = !handle.runtime.busy();
+        let before = f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        f.host.watch_delegated_work(crate::personal::now() + 3 * 60 * 60_000, 0).unwrap();
+        let stopped = f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run| run.watchdog_stop.load(Ordering::SeqCst));
+        f.host.watch_delegated_work(crate::personal::now() + 3 * 60 * 60_000 + 60_000, 0).unwrap();
+        let reports = watchdog_messages(&f, &assistant).iter().filter(|s| s.contains("stuck saving")).count();
+        std::fs::write(f.root.join(".git/review-filter-release"), "release").unwrap();
+        let finished = wait_for(&f, &task.id);
+        assert!(entered && idle, "did not enter the real result-capture boundary");
+        assert_eq!(before.status, TaskStatus::Running);
+        assert!(!stopped, "stopping can't interrupt the save, and a restart would add a second writer");
+        assert_eq!(reports, 1);
+        assert_eq!(finished.status, TaskStatus::ReadyForReview);
+    }
+
 }
