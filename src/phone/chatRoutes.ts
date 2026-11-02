@@ -162,10 +162,10 @@ export function startingBots(list: readonly ChatProfile[], saved: readonly strin
  *  the machine and the room, since two machines can each have a room with the same id. */
 export const machineThreadKey = (hostId: string, id: string): string => JSON.stringify([hostId, id]);
 
-/** The key a thread's on-phone state (draft, quotes, TL;DR, working bots) is kept under. A chat belongs to
- *  its machine, and two machines can each have a room with the same id, so a chat's key names both. */
-export const threadKey = (pane: { id: string; hostId?: string; workspaceId: string }, isChat: (workspaceId: string) => boolean): string =>
-  pane.hostId && isChat(pane.workspaceId) ? JSON.stringify([pane.hostId, pane.id]) : pane.id;
+/** The key a thread's on-phone state (draft, quotes, TL;DR, working bots) is kept under. A thread belongs to
+ *  its machine, and two machines can each have a room with the same id, so every thread's key names both: a
+ *  chat its own machine, a Work thread the machine its project or its chat list put it on. */
+export const threadKey = (pane: { id: string; hostId?: string }, hostId: string): string => machineThreadKey(pane.hostId || hostId || "local", pane.id);
 
 /** The open thread. With a machine named (a chat or a Work thread opened from Chats), only that machine's
  *  room is it, so a same-id thread in the Mac's session never stands in for it; without one, the session's. */

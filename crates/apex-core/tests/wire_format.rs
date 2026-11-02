@@ -10,6 +10,7 @@ use serde_json::{json, to_value};
 #[test]
 fn participant_config_shapes() {
     let api = ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new("opus"),
         display_name: "Opus".into(),
         backend: Backend::OpenAiCompatible {
@@ -37,6 +38,7 @@ fn participant_config_shapes() {
             },
             "persona": "Be brief.",
             "access": "edits",
+            "can_read_images": false,
             "effort": "high"
         })
     );
@@ -369,4 +371,12 @@ fn work_step_and_todo_events_round_trip() {
     assert_eq!(value["type"], "todo");
     assert_eq!(value["items"][0]["status"], "in_progress");
     assert_eq!(serde_json::from_value::<RoomEvent>(value).unwrap(), todo);
+}
+
+#[test]
+fn old_config_without_the_field_loads() {
+    let config: ParticipantConfig = serde_json::from_value(json!({
+        "id":"old", "display_name":"Old", "backend":{"kind":"scripted","lines":[]}
+    })).unwrap();
+    assert_eq!(to_value(&config).unwrap()["can_read_images"], false);
 }

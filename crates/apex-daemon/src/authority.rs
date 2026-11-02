@@ -59,12 +59,15 @@ pub fn command_needs(command: &Command) -> Need {
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
         ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
-        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. }
-        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
+        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
+        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
         | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
-        | PersonalConnectors {} | PersonalBrowserView {} | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. } => full(Global),
+        | PersonalConnectors {} | PersonalBrowserSession {} | PersonalBrowserView { .. } | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. }
+        // A device that can drive the shared browser reaches every signed-in site in it.
+        | BrowserTabs { .. } | BrowserTabOpen { .. } | BrowserTabClose { .. } | BrowserTabControl { .. } | BrowserTabShare { .. } | BrowserTabFrame { .. }
+        | BrowserTabInput { .. } | BrowserTabResize { .. } | BrowserTabUpload { .. } | BrowserTabStop { .. } => full(Global),
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } | RoomGitStatus { id } => read(thread(id)),
@@ -108,6 +111,7 @@ pub fn command_needs(command: &Command) -> Need {
         // Full, inside one thread.
         RoomMount { id, .. } => full(thread(id)),
         RoomDelete { id } => full(thread(id)),
+        RoomSetTrashed { id, .. } => full(thread(id)),
         RoomUpdateParticipant { id, .. } => full(thread(id)),
         RoomAddParticipant { id, .. } => full(thread(id)),
         RoomRemoveParticipant { id, .. } => full(thread(id)),
@@ -119,7 +123,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomRevert { id, .. } => full(thread(id)),
         RoomPin { id, .. } => full(thread(id)),
         RoomUnpin { id, .. } => full(thread(id)),
-        RoomCompact { id } => full(thread(id)),
+        RoomCompact { id } | RoomCurate { id } | RoomCurateUndo { id } => full(thread(id)),
         RoomClose { id } => full(thread(id)),
         // Spends one of the account's usage resets, which can't be given back.
         RoomPlanReset { room, .. } => full(thread(room)),
@@ -154,6 +158,8 @@ pub fn command_needs(command: &Command) -> Need {
         ArtifactExport { .. } => full(Global),
         ExportThread { .. } => full(Global),
 
+        // Desktop control and permission setup belong to this Mac.
+        ComputerStatus {} | ComputerSetup {} | ComputerSetEnabled { .. } | ComputerSetActionLabels { .. } | ComputerSetCursorOverlay { .. } | ComputerSetCursorImage { .. } | ComputerResetCursorOverlay {} | ComputerStop {} => Need::Never,
         // Never remote.
         DataFolder {} => Need::Never,
         EnvPresent { .. } => Need::Never,
@@ -293,15 +299,35 @@ pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
     match request {
         VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
         VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
-        VoiceServerWarm { room } | VoiceServerOpen { room } => chat(thread(room)),
+        // An assistant is no room: its calls need what its other commands need.
+        VoiceRealtimeSession { room, .. } | VoiceMetaSession { room, .. } if room.starts_with("assistant:") => full(Scope::Global),
+        VoiceServerWarm { room } | VoiceServerOpen { room } | VoiceRealtimeSession { room, .. } | VoiceMetaSession { room, .. } => chat(thread(room)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_grants_require_global_full_but_trash_is_thread_scoped_full() {
+        let permission = Command::from_json(serde_json::json!({"cmd":"personal_permission_set","args":{"assistantId":"a","expectedRevision":0,"capability":"threadCreate","scope":{"kind":"allProjects"},"mode":"always","delegate":false}})).unwrap();
+        assert_eq!(command_needs(&permission), full(Scope::Global));
+        let trash = Command::from_json(serde_json::json!({"cmd":"room_set_trashed","args":{"id":"r","trashed":true}})).unwrap();
+        assert_eq!(command_needs(&trash), full(thread("r")));
+    }
     use crate::devices::tests::id;
     use serde_json::json;
+
+    #[test]
+    fn an_assistant_realtime_session_needs_full_access_not_a_thread_grant() {
+        use crate::voice::session::VoiceRequest::VoiceRealtimeSession;
+        let session = |room: &str| VoiceRealtimeSession { room: room.into(), participant: None, model: None, voice: None, instructions: None, tools: None };
+        let chat_device = device(Tier::Chat, Threads::Only(vec!["assistant:a".into(), "mine".into()]));
+        assert!(check(&chat_device, &voice_needs(&session("mine"))).is_ok());
+        assert!(check(&chat_device, &voice_needs(&session("assistant:a"))).is_err(), "a thread list can't name an assistant");
+        assert!(check(&device(Tier::Full, Threads::All(crate::devices::AllThreads::All)), &voice_needs(&session("assistant:a"))).is_ok());
+    }
 
     fn device(tier: Tier, threads: Threads) -> Device {
         Device { endpoint_id: id(1), label: "Phone".into(), tier, threads, added_at: 0, last_seen: None }
@@ -347,13 +373,18 @@ mod tests {
             ("personal_avatar_asset", Some((Full, "global")), json!({"assistantId":"a","assetId":"x","sha256":"hash"})),
             ("personal_create", Some((Full, "global")), json!({ "name": "A", "folder": "/tmp/a", "profile": participant })),
             ("personal_send", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r1", "text": "hi" })),
+            ("personal_permission_set", Some((Full, "global")), json!({"assistantId":"asst-1","expectedRevision":0,"capability":"threadCreate","scope":{"kind":"allProjects"},"mode":"always","delegate":false})),
+            ("room_set_trashed", Some((Full, "thread")), json!({"id":"mine","trashed":true})),
             ("personal_react", Some((Full, "global")), json!({ "assistantId": "asst-1", "messageId": "m1", "emoji": "👍", "enabled": true })),
+            ("personal_approval_options",Some((Full,"global")),json!({"assistantId":"a","decisionId":"pd-1","paramsHash":"hash"})),
+            ("personal_decide_always",Some((Full,"global")),json!({"assistantId":"a","requestId":"r","decisionId":"pd-1","paramsHash":"hash","expectedRevision":0,"capability":"threadDelete","scope":{"kind":"allProjects"}})),
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
             ("personal_task_lifecycle", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "action": "delete", "task": { "source": "personal", "taskId": "pt-1" } })),
             ("personal_archive", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "archived": true })),
             ("personal_reply_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "eventId": "ev-1" })),
             ("personal_pause", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r4", "paused": true })),
+            ("personal_conversation_new", Some((Full, "global")), json!({ "assistantId": "asst-1" })),
             ("personal_schedule_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "scheduleId": "ps-1" })),
             ("personal_project_delegate", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"pe-1","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
             ("personal_project_delegate_ui", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
@@ -363,7 +394,7 @@ mod tests {
             ("personal_memory_forget", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1" })),
             ("personal_machine_claim", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac" })),
             ("personal_execute_local", Some((Full, "global")), json!({ "assistantId": "asst-1", "assistantHostId": "vps", "operation": { "tool": "host.command", "host": "mac", "cwd": "/x", "argv": ["ls"] } })),
-            ("personal_browser_input", Some((Full, "global")), json!({ "input": { "kind": "back" } })),
+            ("personal_browser_input", Some((Full, "global")), json!({ "session": "s", "input": { "kind": "back" } })),
             ("personal_rule_remove", Some((Full, "global")), json!({ "assistantId": "asst-1", "ruleId": "pr-1" })),
             ("personal_memory_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "x" })),
             ("personal_memory_correct", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1", "text": "x" })),
@@ -380,8 +411,19 @@ mod tests {
             ("personal_machine_allow", Some((Full, "global")), json!({ "assistantId": "asst-1", "assistantHostId": "vps", "folder": "/x" })),
             ("personal_machine_allowed", Some((Full, "global")), json!({})),
             ("personal_connectors", Some((Full, "global")), json!({})),
-            ("personal_browser_view", Some((Full, "global")), json!({})),
-            ("personal_browser_take_over", Some((Full, "global")), json!({ "on": true })),
+            ("personal_browser_session", Some((Full, "global")), json!({})),
+            ("personal_browser_view", Some((Full, "global")), json!({ "session": "s" })),
+            ("browser_tabs", Some((Full, "global")), json!({ "session": "s" })),
+            ("browser_tab_frame", Some((Full, "global")), json!({ "session": "s", "tab": "t", "after": 0 })),
+            ("browser_tab_input", Some((Full, "global")), json!({ "session": "s", "tab": "t", "events": [{ "kind": "reload" }] })),
+            ("browser_tab_share", Some((Full, "global")), json!({ "session": "s", "tab": "t", "thread": "r", "share": true })),
+            ("browser_tab_open", Some((Full, "global")), json!({ "session": "s" })),
+            ("browser_tab_close", Some((Full, "global")), json!({ "session": "s", "tab": "t" })),
+            ("browser_tab_control", Some((Full, "global")), json!({ "session": "s", "tab": "t", "take": true })),
+            ("browser_tab_stop", Some((Full, "global")), json!({ "session": "s", "tab": "t" })),
+            ("browser_tab_resize", Some((Full, "global")), json!({ "session": "s", "tab": "t", "width": 800, "height": 600, "scale": 1.0 })),
+            ("browser_tab_upload", Some((Full, "global")), json!({ "session": "s", "tab": "t", "name": "a.txt", "data": "" })),
+            ("personal_browser_take_over", Some((Full, "global")), json!({ "session": "s", "on": true })),
             ("monitor_check_now", Some((Full, "global")), json!({ "workspaceId": "w" })),
             ("monitor_resolve", Some((Full, "global")), json!({ "workspaceId": "w", "findingId": "f", "status": "resolved" })),
             ("monitor_react", Some((Full, "global")), json!({ "workspaceId": "w", "messageId": "m1", "emoji": "👍", "enabled": true, "cwd": "/p", "hostId": "h", "conversationId": "c" })),
@@ -436,6 +478,8 @@ mod tests {
             ("room_pin", Some((Full, "thread")), json!({ "id": "mine", "fact": "f" })),
             ("room_unpin", Some((Full, "thread")), json!({ "id": "mine", "index": 0 })),
             ("room_compact", Some((Full, "thread")), json!({ "id": "mine" })),
+            ("room_curate", Some((Full, "thread")), json!({ "id": "mine" })),
+            ("room_curate_undo", Some((Full, "thread")), json!({ "id": "mine" })),
             ("room_close", Some((Full, "thread")), json!({ "id": "mine" })),
             ("artifacts_save", Some((Full, "thread")), json!({ "room": "mine", "artifacts": [] })),
             ("list_tool_servers", Some((Full, "thread")), json!({ "room": "mine", "agent": "null" })),
@@ -500,6 +544,14 @@ mod tests {
             ("mod_fs_stat", None, json!({ "path": "x" })),
             ("mod_env_get", None, json!({ "name": "HOME" })),
             // The phone is this Mac's simulator; paired devices can't drive it.
+            ("computer_status", None, json!({})),
+            ("computer_setup", None, json!({})),
+            ("computer_set_enabled", None, json!({"enabled":true})),
+            ("computer_set_action_labels", None, json!({"enabled":true})),
+            ("computer_set_cursor_overlay", None, json!({"prefs":{}})),
+            ("computer_set_cursor_image", None, json!({"imageBase64":""})),
+            ("computer_reset_cursor_overlay", None, json!({})),
+            ("computer_stop", None, json!({})),
             ("phone_status", None, json!({})),
             ("phone_start", None, json!({})),
             ("phone_stop", None, json!({})),

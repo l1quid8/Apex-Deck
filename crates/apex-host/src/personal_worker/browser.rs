@@ -1,25 +1,41 @@
-//! The assistant's own browser: one headless Chromium per host, kept
-//! running with its own profile so sites the human signs into stay signed
-//! in. The assistant only reads pages with it (`browser.open`). The human
-//! can "Take over": the app shows the page and sends clicks and typing,
-//! for example to sign in, and the assistant keeps out until they're done.
+//! The shared browser: one headless Chromium per host, with real tabs that the human, the
+//! assistant and Work-thread bots all use. Its profile keeps sites signed in. Every tab has its
+//! own connection, its own queue of operations and its own holder, so work in one tab never
+//! waits for another. The human watches any tab as a live stream and can take it over; a bot
+//! reaches only tabs scoped to its thread, through [`work`].
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 
+use tabs::{Control, Info, PendingCut, Saved, SavedTab, Scope, HEIGHT, WIDTH};
+
+pub(crate) mod tabs;
+pub(crate) mod work;
+
 static PROFILE: OnceLock<PathBuf> = OnceLock::new();
+static DOWNLOADS: OnceLock<PathBuf> = OnceLock::new();
+static CLOSING: AtomicBool = AtomicBool::new(false);
 static STATE: tokio::sync::Mutex<Option<Running>> = tokio::sync::Mutex::const_new(None);
-/// The human is driving: the assistant doesn't touch the browser.
-static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
-const WIDTH: u32 = 1280;
-const HEIGHT: u32 = 800;
+/// Which browser process is running; a target id only means something within one.
+static INSTANCE: AtomicU64 = AtomicU64::new(0);
+static NEXT_TAB: AtomicU64 = AtomicU64::new(0);
+/// Giving a tab a target shares this; comparing the registry with the browser takes it alone,
+/// so neither side sees a tab halfway through getting its target. Never held across page work.
+static LIFECYCLE: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+/// Live human sessions, newest last. In memory only, so a restarted service asks again.
+static SESSIONS: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
+const SESSION_LIMIT: usize = 16;
+static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
+const VIEWER_IDLE: Duration = Duration::from_secs(5);
+const UPLOAD_LIMIT: usize = 6 * 1024 * 1024;
 
 #[cfg(any(windows, test))]
 fn windows_candidates(mut env: impl FnMut(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
@@ -48,6 +64,39 @@ mod windows_discovery_tests {
     }
 }
 
+/// A session for a caller the host has already verified as the person's own UI or device.
+pub fn session_open() -> String {
+    let session = work::snapshot_id();
+    let mut held = SESSIONS.lock().unwrap();
+    held.push_back(session.clone());
+    while held.len() > SESSION_LIMIT { held.pop_front(); }
+    session
+}
+
+/// The person's browser surface can read and drive every signed-in site, so a caller proves
+/// it's them. Local socket access alone doesn't, and neither does device authority by itself.
+pub fn session_check(session: &str) -> Result<(), String> {
+    let held = SESSIONS.lock().unwrap();
+    let same = |known: &String| known.len() == session.len() && known.bytes().zip(session.bytes()).fold(0, |all, (a, b)| all | (a ^ b)) == 0;
+    if held.iter().any(same) { Ok(()) } else { Err("browser_session_required".into()) }
+}
+
+#[cfg(test)]
+static PAUSES: LazyLock<Mutex<HashMap<&'static str, (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>> = LazyLock::new(Mutex::default);
+
+/// Stops a lifecycle step at a named point so a test can run a rival against it.
+#[cfg(test)]
+async fn pause(point: &'static str) {
+    let hook = PAUSES.lock().unwrap().remove(point);
+    if let Some((reached, resume)) = hook {
+        reached.notify_one();
+        resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause(_point: &'static str) {}
+
 struct Running {
     child: tokio::process::Child,
     port: u16,
@@ -56,6 +105,11 @@ struct Running {
 /// Where the browser keeps its profile. Set once when the worker starts.
 pub fn use_profile(dir: PathBuf) {
     let _ = PROFILE.set(dir);
+}
+
+/// Where downloads go while the human has a tab.
+pub fn use_downloads(dir: PathBuf) {
+    let _ = DOWNLOADS.set(dir);
 }
 
 fn binary() -> Option<PathBuf> {
@@ -98,6 +152,7 @@ pub fn available() -> bool {
 }
 
 async fn ensure() -> Result<u16, String> {
+    if CLOSING.load(Ordering::SeqCst) { return Err("The assistant browser is shutting down.".into()); }
     let mut state = STATE.lock().await;
     if let Some(running) = state.as_mut() {
         if matches!(running.child.try_wait(), Ok(None)) {
@@ -105,7 +160,7 @@ async fn ensure() -> Result<u16, String> {
         }
     }
     let program = binary().ok_or("There's no Chromium on this machine for the assistant's browser.")?;
-    let profile = PROFILE.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("apex-assistant-browser"));
+    let profile = PROFILE.get().cloned().ok_or("The assistant's browser has no profile folder yet.")?;
     std::fs::create_dir_all(&profile).map_err(|e| format!("Could not make the browser's profile folder: {e}"))?;
     let marker = profile.join("DevToolsActivePort");
     let _ = std::fs::remove_file(&marker);
@@ -119,9 +174,13 @@ async fn ensure() -> Result<u16, String> {
     #[cfg(target_os = "linux")]
     command.arg("--no-sandbox");
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
-    let child = command.spawn().map_err(|e| format!("Could not start the browser: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("Could not start the browser: {e}"))?;
     let mut port = None;
     for _ in 0..100 {
+        if CLOSING.load(Ordering::SeqCst) {
+            let _ = child.kill().await;
+            return Err("The assistant browser is shutting down.".into());
+        }
         if let Some(found) = std::fs::read_to_string(&marker).ok().and_then(|t| t.lines().next()?.trim().parse::<u16>().ok()) {
             port = Some(found);
             break;
@@ -130,49 +189,508 @@ async fn ensure() -> Result<u16, String> {
     }
     let port = port.ok_or("The browser didn't start in time.")?;
     *state = Some(Running { child, port });
+    // Every tab of the old process is gone, so nothing read from it can be acted on.
+    INSTANCE.fetch_add(1, Ordering::SeqCst);
+    for tab in all_tabs() { tab.bump(); }
     Ok(port)
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Target {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    title: String,
     #[serde(rename = "type")]
     kind: String,
     web_socket_debugger_url: Option<String>,
 }
 
-async fn page() -> Result<Page, String> {
-    let port = ensure().await?;
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
-    let targets: Vec<Target> = http.get(format!("http://127.0.0.1:{port}/json/list")).send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
-    let url = match targets.into_iter().find(|t| t.kind == "page").and_then(|t| t.web_socket_debugger_url) {
-        Some(url) => url,
-        None => http.put(format!("http://127.0.0.1:{port}/json/new?about:blank")).send().await.map_err(|e| e.to_string())?
-            .json::<Target>().await.map_err(|e| e.to_string())?.web_socket_debugger_url.ok_or("The browser has no page.")?,
-    };
-    let (socket, _) = tokio_tungstenite::connect_async(url.as_str()).await.map_err(|e| format!("Could not reach the browser: {e}"))?;
-    let mut page = Page { socket, next: 0 };
-    page.call("Emulation.setDeviceMetricsOverride", json!({ "width": WIDTH, "height": HEIGHT, "deviceScaleFactor": 1, "mobile": false })).await?;
-    Ok(page)
+fn http() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())
 }
+
+async fn targets(port: u16) -> Result<Vec<Target>, String> {
+    let list: Vec<Target> = http()?.get(format!("http://127.0.0.1:{port}/json/list")).send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
+    Ok(list.into_iter().filter(|t| t.kind == "page" && t.web_socket_debugger_url.is_some()).collect())
+}
+
+async fn new_target(port: u16, url: &str) -> Result<Target, String> {
+    let url = if tabs::restorable(url) { url } else { "about:blank" };
+    let encoded: String = url.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    http()?.put(format!("http://127.0.0.1:{port}/json/new?{encoded}")).send().await.map_err(|e| e.to_string())?.json::<Target>().await.map_err(|e| e.to_string())
+}
+
+/// One CDP call on the browser itself, on its own short-lived connection.
+async fn browser_call(port: u16, method: &str, params: Value) -> Result<Value, String> {
+    let version: Value = http()?.get(format!("http://127.0.0.1:{port}/json/version")).send().await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
+    let url = version["webSocketDebuggerUrl"].as_str().ok_or("Browser control unavailable")?;
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.map_err(|e| e.to_string())?;
+    socket.send(Message::Text(json!({ "id": 1, "method": method, "params": params }).to_string().into())).await.map_err(|e| e.to_string())?;
+    let answer = async {
+        while let Some(Ok(frame)) = socket.next().await {
+            let Message::Text(text) = frame else { continue };
+            let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
+            if value["id"] == 1 { return Ok(value["result"].clone()); }
+        }
+        Err("Browser control closed".to_owned())
+    };
+    tokio::time::timeout(Duration::from_secs(5), answer).await.map_err(|_| "Browser control timed out".to_owned())?
+}
+
+#[derive(Clone)]
+struct Frame { seq: u64, image: Arc<String>, width: u32, height: u32 }
+
+type Reply = tokio::sync::oneshot::Sender<Result<(), String>>;
+enum Order {
+    Dialog { accept: bool, text: Option<String>, reply: Reply },
+    Cast(bool),
+    Downloads(bool),
+}
+
+struct Monitor { target: String, task: tokio::task::JoinHandle<()>, orders: tokio::sync::mpsc::Sender<Order> }
+
+/// One browser tab and everything that keeps it independent of the others.
+pub(crate) struct Tab {
+    pub(crate) id: String,
+    pub(crate) info: Mutex<Info>,
+    /// One operation at a time on this tab. Take over waits here, so nothing checked before it can still land after it.
+    ops: tokio::sync::Mutex<()>,
+    /// Moves on anything that can change the page, so an older reading can't be acted on.
+    epoch: AtomicU64,
+    dialog: Arc<AtomicBool>,
+    /// What the open dialog says, for the person only. It stays in memory and bots never see it.
+    question: Mutex<Option<Value>>,
+    page: tokio::sync::Mutex<Option<Page>>,
+    monitor: tokio::sync::Mutex<Option<Monitor>>,
+    frames: tokio::sync::watch::Sender<Option<Frame>>,
+    viewed: Mutex<Instant>,
+}
+
+#[derive(Default)]
+struct Registry {
+    tabs: BTreeMap<String, Arc<Tab>>,
+    /// Which tab each bot in each thread is working in.
+    bound: HashMap<(String, String), String>,
+    /// The assistant's own tab.
+    primary: Option<String>,
+    loaded: bool,
+}
+
+fn registry() -> std::sync::MutexGuard<'static, Registry> {
+    let mut held = REGISTRY.lock().unwrap();
+    if !held.loaded && PROFILE.get().is_some() {
+        held.loaded = true;
+        if let Some(saved) = store().and_then(|path| std::fs::read(path).ok()).and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok()) {
+            for tab in saved.tabs {
+                held.tabs.insert(tab.id.clone(), Tab::new(tab.id, Info::new(tab.url, tab.title, tab.scope)));
+            }
+            held.primary = saved.primary.filter(|id| held.tabs.contains_key(id));
+            for (thread, participant, tab) in saved.bound {
+                if held.tabs.contains_key(&tab) { held.bound.insert((thread, participant), tab); }
+            }
+        }
+    }
+    held
+}
+
+fn store() -> Option<PathBuf> {
+    Some(PROFILE.get()?.parent()?.join("browser-tabs.json"))
+}
+
+/// Records addresses, scopes and bindings: never a holder, a token or page content.
+fn save() {
+    let Some(path) = store() else { return };
+    let saved = {
+        let held = registry();
+        let tabs = held.tabs.values().map(|tab| {
+            let info = tab.info.lock().unwrap();
+            SavedTab { id: tab.id.clone(), url: info.url.clone(), title: info.title.clone(), scope: info.scope.clone() }
+        }).collect();
+        Saved { primary: held.primary.clone(), tabs, bound: held.bound.iter().map(|((t, p), tab)| (t.clone(), p.clone(), tab.clone())).collect() }
+    };
+    let Ok(bytes) = serde_json::to_vec(&saved) else { return };
+    let temporary = path.with_extension("tmp");
+    if std::fs::write(&temporary, bytes).is_ok() {
+        #[cfg(unix)]
+        { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)); }
+        let _ = std::fs::rename(temporary, path);
+    }
+}
+
+fn all_tabs() -> Vec<Arc<Tab>> {
+    registry().tabs.values().cloned().collect()
+}
+
+fn find(id: &str) -> Result<Arc<Tab>, String> {
+    registry().tabs.get(id).cloned().ok_or_else(|| "tab_not_found".to_owned())
+}
+
+fn add_tab(url: &str, scope: Scope) -> Arc<Tab> {
+    let id = format!("tab-{:x}-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()), NEXT_TAB.fetch_add(1, Ordering::SeqCst));
+    let tab = Tab::new(id.clone(), Info::new(url.to_owned(), String::new(), scope));
+    registry().tabs.insert(id, tab.clone());
+    save();
+    tab
+}
+
+fn remove_tab(id: &str) -> Option<Arc<Tab>> {
+    let mut held = registry();
+    let tab = held.tabs.remove(id);
+    held.bound.retain(|_, bound| bound != id);
+    if held.primary.as_deref() == Some(id) { held.primary = None; }
+    drop(held);
+    if let Some(tab) = &tab {
+        tab.bump();
+        tab.info.lock().unwrap().control = Control::Free;
+        save();
+    }
+    tab
+}
+
+/// The assistant's own tab, made the first time it's needed.
+fn primary() -> Arc<Tab> {
+    let existing = { let held = registry(); held.primary.as_ref().and_then(|id| held.tabs.get(id).cloned()) };
+    if let Some(tab) = existing { return tab; }
+    let tab = add_tab("", Scope { assistant: true, ..Scope::default() });
+    registry().primary = Some(tab.id.clone());
+    save();
+    tab
+}
+
+/// Line up the registry with the browser: tabs closed by their page go, and pages the browser
+/// opened by itself, like sign-in popups, join the scope of the tab that opened them.
+async fn reconcile() -> Result<(), String> {
+    if STATE.lock().await.is_none() { return Ok(()); }
+    let _lifecycle = LIFECYCLE.write().await;
+    let port = ensure().await?;
+    let live = targets(port).await?;
+    pause("reconcile").await;
+    let instance = INSTANCE.load(Ordering::SeqCst);
+    let tabs = all_tabs();
+    let mut changed = false;
+    let mut known = std::collections::HashSet::new();
+    for tab in &tabs {
+        let (target, from) = { let info = tab.info.lock().unwrap(); (info.target.clone(), info.instance) };
+        let Some(target) = target else { continue };
+        if from != instance { continue; }
+        match live.iter().find(|t| t.id == target) {
+            Some(found) => {
+                known.insert(target);
+                let mut info = tab.info.lock().unwrap();
+                if info.url != found.url || info.title != found.title {
+                    info.url = found.url.clone();
+                    info.title = found.title.clone();
+                    changed = true;
+                }
+            }
+            None => { remove_tab(&tab.id); }
+        }
+    }
+    let strangers: Vec<&Target> = live.iter().filter(|t| !known.contains(&t.id)).collect();
+    if !strangers.is_empty() {
+        let openers: HashMap<String, String> = browser_call(port, "Target.getTargets", json!({})).await?["targetInfos"].as_array().into_iter().flatten()
+            .filter_map(|t| Some((t["targetId"].as_str()?.to_owned(), t["openerId"].as_str()?.to_owned()))).collect();
+        // A page with no opener stays out of the registry, so nobody can reach it.
+        for stranger in strangers {
+            let Some(opener) = openers.get(&stranger.id).and_then(|id| tabs.iter().find(|t| t.info.lock().unwrap().target.as_deref() == Some(id))) else { continue };
+            if all_tabs().iter().any(|t| t.info.lock().unwrap().target.as_deref() == Some(stranger.id.as_str())) { continue; }
+            let scope = opener.info.lock().unwrap().scope.clone();
+            let tab = add_tab(&stranger.url, scope);
+            let mut info = tab.info.lock().unwrap();
+            info.target = Some(stranger.id.clone());
+            info.instance = instance;
+            info.title = stranger.title.clone();
+            info.popup = true;
+            changed = true;
+        }
+    }
+    if changed { save(); }
+    Ok(())
+}
+
+fn main_frame(tab: &std::sync::Weak<Tab>) -> Value {
+    tab.upgrade().and_then(|tab| tab.info.lock().unwrap().target.clone()).map_or(Value::Null, Value::String)
+}
+
+impl Tab {
+    fn new(id: String, info: Info) -> Arc<Self> {
+        Arc::new(Self { id, info: Mutex::new(info), ops: tokio::sync::Mutex::const_new(()), epoch: AtomicU64::new(0), dialog: Arc::new(AtomicBool::new(false)), question: Mutex::new(None),
+            page: tokio::sync::Mutex::const_new(None), monitor: tokio::sync::Mutex::const_new(None), frames: tokio::sync::watch::channel(None).0, viewed: Mutex::new(Instant::now()) })
+    }
+
+    fn bump(&self) { self.epoch.fetch_add(1, Ordering::SeqCst); }
+
+    fn summary(&self) -> Value {
+        let dialog = self.dialog.load(Ordering::SeqCst);
+        let question = self.question.lock().unwrap().clone().filter(|_| dialog);
+        self.info.lock().unwrap().summary(&self.id, dialog, question, Instant::now())
+    }
+
+    /// The tab's address is always current, so a crash reopens it where it was.
+    fn navigated(&self, url: String) {
+        self.bump();
+        self.info.lock().unwrap().url = url;
+        save();
+    }
+
+    fn human(&self) -> bool { self.info.lock().unwrap().control == Control::Human }
+
+    /// Keep dialogs, the picture and file choosers observable between calls. Only an explicit
+    /// human answer responds to a dialog; ordinary reads never do.
+    async fn watch(self: &Arc<Self>, target: &str, url: &str) -> Result<(), String> {
+        let mut held = self.monitor.lock().await;
+        if held.as_ref().is_some_and(|m| m.target == target && !m.task.is_finished()) { return Ok(()); }
+        if let Some(monitor) = held.take() { monitor.task.abort(); }
+        let (mut socket, _) = tokio_tungstenite::connect_async(url).await.map_err(|e| e.to_string())?;
+        for (id, method, params) in [(1, "Page.enable", json!({})), (2, "Page.setInterceptFileChooserDialog", json!({ "enabled": true })), (3, "Page.setDownloadBehavior", json!({ "behavior": "deny" }))] {
+            socket.send(Message::Text(json!({ "id": id, "method": method, "params": params }).to_string().into())).await.map_err(|e| e.to_string())?;
+        }
+        self.dialog.store(false, Ordering::SeqCst);
+        let (ready, waiting) = tokio::sync::oneshot::channel();
+        let (orders, mut commands) = tokio::sync::mpsc::channel::<Order>(16);
+        let tab = Arc::downgrade(self);
+        let dialog = self.dialog.clone();
+        let task = tokio::spawn(async move {
+            let mut ready = Some(ready);
+            let mut next = 10u64;
+            let mut seq = 0u64;
+            let mut casting = false;
+            let mut pending = HashMap::<u64, Reply>::new();
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                let frame = tokio::select! {
+                    order = commands.recv() => {
+                        let Some(order) = order else { break };
+                        next += 1;
+                        let message = match order {
+                            Order::Dialog { accept, text, reply } => {
+                                pending.insert(next, reply);
+                                let mut params = json!({ "accept": accept });
+                                if let Some(text) = text { params["promptText"] = json!(text); }
+                                json!({ "id": next, "method": "Page.handleJavaScriptDialog", "params": params })
+                            }
+                            Order::Cast(on) => {
+                                if on == casting { continue; }
+                                casting = on;
+                                json!({ "id": next, "method": if on { "Page.startScreencast" } else { "Page.stopScreencast" }, "params": if on { json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1 }) } else { json!({}) } })
+                            }
+                            Order::Downloads(allow) => {
+                                let folder = DOWNLOADS.get().filter(|_| allow);
+                                json!({ "id": next, "method": "Page.setDownloadBehavior", "params": match folder {
+                                    Some(path) => json!({ "behavior": "allow", "downloadPath": path }),
+                                    None => json!({ "behavior": "deny" }),
+                                } })
+                            }
+                        };
+                        if socket.send(Message::Text(message.to_string().into())).await.is_err() { break; }
+                        continue;
+                    }
+                    _ = tick.tick() => {
+                        let Some(tab) = tab.upgrade() else { break };
+                        if casting && tab.viewed.lock().unwrap().elapsed() > VIEWER_IDLE {
+                            casting = false;
+                            next += 1;
+                            if socket.send(Message::Text(json!({ "id": next, "method": "Page.stopScreencast", "params": {} }).to_string().into())).await.is_err() { break; }
+                        }
+                        continue;
+                    }
+                    frame = socket.next() => match frame { Some(Ok(Message::Text(text))) => text, Some(Ok(_)) => continue, _ => break },
+                };
+                let Ok(value) = serde_json::from_str::<Value>(&frame) else { continue };
+                match value["method"].as_str() {
+                    Some("Page.javascriptDialogOpening") => {
+                        if let Some(tab) = tab.upgrade() { *tab.question.lock().unwrap() = Some(tabs::dialog_question(&value["params"])); }
+                        dialog.store(true, Ordering::SeqCst);
+                    }
+                    Some("Page.javascriptDialogClosed") => dialog.store(false, Ordering::SeqCst),
+                    Some("Page.screencastFrame") => {
+                        let params = &value["params"];
+                        next += 1;
+                        if socket.send(Message::Text(json!({ "id": next, "method": "Page.screencastFrameAck", "params": { "sessionId": params["sessionId"] } }).to_string().into())).await.is_err() { break; }
+                        let Some(tab) = tab.upgrade() else { break };
+                        seq += 1;
+                        let (width, height) = (params["metadata"]["deviceWidth"].as_f64().unwrap_or(WIDTH as f64) as u32, params["metadata"]["deviceHeight"].as_f64().unwrap_or(HEIGHT as f64) as u32);
+                        tab.frames.send_replace(Some(Frame { seq, image: Arc::new(params["data"].as_str().unwrap_or_default().to_owned()), width, height }));
+                    }
+                    Some("Page.fileChooserOpened") => {
+                        if let Some(tab) = tab.upgrade() { tab.info.lock().unwrap().file_chooser = value["params"]["backendNodeId"].as_i64(); }
+                    }
+                    Some("Page.frameNavigated") if value["params"]["frame"]["parentId"].is_null() => {
+                        let frame = &value["params"]["frame"];
+                        let address = format!("{}{}", frame["url"].as_str().unwrap_or_default(), frame["urlFragment"].as_str().unwrap_or_default());
+                        if let Some(tab) = tab.upgrade() { tab.navigated(address); }
+                    }
+                    Some("Page.navigatedWithinDocument") if value["params"]["frameId"] == main_frame(&tab) => {
+                        if let Some(tab) = tab.upgrade() { tab.navigated(value["params"]["url"].as_str().unwrap_or_default().to_owned()); }
+                    }
+                    Some("Inspector.detached") => break,
+                    _ => {}
+                }
+                if value["id"] == 3 || value["method"] == "Page.javascriptDialogOpening" {
+                    if let Some(ready) = ready.take() { let _ = ready.send(()); }
+                }
+                if let Some(reply) = value["id"].as_u64().and_then(|id| pending.remove(&id)) {
+                    let result = value.get("error").map_or(Ok(()), |error| Err(error["message"].as_str().unwrap_or("Dialog response failed").to_owned()));
+                    let _ = reply.send(result);
+                }
+            }
+        });
+        *held = Some(Monitor { target: target.to_owned(), task, orders });
+        tokio::time::timeout(Duration::from_secs(5), waiting).await.map_err(|_| "Browser dialog monitor did not start".to_owned())?.map_err(|_| "Browser dialog monitor closed".to_owned())?;
+        Ok(())
+    }
+
+    async fn order(&self, order: Order) -> Result<(), String> {
+        let sender = self.monitor.lock().await.as_ref().ok_or("Browser dialog monitor is unavailable")?.orders.clone();
+        sender.send(order).await.map_err(|_| "Browser dialog monitor closed".to_owned())
+    }
+
+    async fn answer_dialog(&self, accept: bool, text: Option<String>) -> Result<(), String> {
+        let (reply, waiting) = tokio::sync::oneshot::channel();
+        self.order(Order::Dialog { accept, text, reply }).await?;
+        tokio::time::timeout(Duration::from_secs(5), waiting).await.map_err(|_| "Browser did not answer the dialog response")?.map_err(|_| "Browser dialog monitor closed")?
+    }
+
+    /// This tab's connection. Its target is opened or reopened as needed, so a tab survives a
+    /// browser restart at its last address.
+    async fn page(self: &Arc<Self>) -> Result<tokio::sync::MappedMutexGuard<'_, Page>, String> {
+        let mut held = self.page.lock().await;
+        let instance = INSTANCE.load(Ordering::SeqCst);
+        if held.as_ref().is_some_and(|page| !page.dead && page.instance == instance) && matches!(STATE.lock().await.as_mut().map(|r| r.child.try_wait()), Some(Ok(None))) {
+            let page = held.as_mut().unwrap();
+            page.dialog_open = self.dialog.load(Ordering::SeqCst);
+            return Ok(tokio::sync::MutexGuard::map(held, |page| page.as_mut().unwrap()));
+        }
+        let lifecycle = LIFECYCLE.read().await;
+        let port = ensure().await?;
+        let instance = INSTANCE.load(Ordering::SeqCst);
+        let live = targets(port).await?;
+        let (wanted, from, address) = { let info = self.info.lock().unwrap(); (info.target.clone(), info.instance, info.url.clone()) };
+        let found = wanted.as_ref().filter(|_| from == instance).and_then(|id| live.into_iter().find(|t| t.id == *id));
+        if found.is_none() && wanted.is_some() && from == instance {
+            // Its page closed itself.
+            remove_tab(&self.id);
+            return Err("tab_closed".into());
+        }
+        let target = match found { Some(target) => target, None => new_target(port, &address).await? };
+        pause("assign").await;
+        {
+            let mut info = self.info.lock().unwrap();
+            info.target = Some(target.id.clone());
+            info.instance = instance;
+        }
+        drop(lifecycle);
+        let url = target.web_socket_debugger_url.ok_or("The browser has no page.")?;
+        self.watch(&target.id, &url).await?;
+        let (socket, _) = tokio_tungstenite::connect_async(url.as_str()).await.map_err(|e| format!("Could not reach the browser: {e}"))?;
+        let (width, height, scale) = { let info = self.info.lock().unwrap(); (info.width, info.height, info.scale) };
+        let mut page = Page { socket, next: 0, url: target.url, title: target.title, instance, dialog: self.dialog.clone(), dialog_open: self.dialog.load(Ordering::SeqCst), dead: false, width, height, frames: HashMap::new() };
+        self.bump();
+        if !page.dialog_open {
+            for (method, params) in [("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })), ("Emulation.setDeviceMetricsOverride", json!({ "width": width, "height": height, "deviceScaleFactor": scale, "mobile": false }))] {
+                if let Err(error) = page.call(method, params).await {
+                    if error != "browser_dialog_requires_take_over" { return Err(error); }
+                }
+            }
+        }
+        if self.human() { let _ = self.order(Order::Downloads(true)).await; }
+        *held = Some(page);
+        Ok(tokio::sync::MutexGuard::map(held, |page| page.as_mut().unwrap()))
+    }
+
+    /// The human has this tab from here on. Whatever was mid-step finishes first, and
+    /// everything queued behind it is refused, before the caller is told.
+    async fn fence(self: &Arc<Self>) {
+        self.info.lock().unwrap().control = Control::Human;
+        self.bump();
+        drop(self.ops.lock().await);
+        let _ = self.order(Order::Downloads(true)).await;
+    }
+
+    /// The person touched this tab. A free tab becomes theirs; a bot's has to be taken on purpose.
+    async fn claim_human(self: &Arc<Self>) -> Result<(), String> {
+        let taken = {
+            let mut info = self.info.lock().unwrap();
+            match info.holder(Instant::now()) {
+                Control::Human => false,
+                Control::Free => { info.control = Control::Human; true }
+                _ => return Err("tab_held_by_bot".into()),
+            }
+        };
+        if taken { self.fence().await; }
+        Ok(())
+    }
+}
+
+/// One frame of a tab: `session` when it runs in its own process, `context` when it shares its parent's.
+#[derive(Default)]
+struct Place { session: Option<String>, context: Option<i64>, frame: Option<String> }
 
 struct Page {
     socket: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     next: u64,
+    url: String,
+    title: String,
+    instance: u64,
+    dialog: Arc<AtomicBool>,
+    dialog_open: bool,
+    dead: bool,
+    width: u32,
+    height: u32,
+    /// Frames running in their own process, by frame id, with the session that reaches each.
+    frames: HashMap<String, String>,
 }
 
 impl Page {
     async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_in(None, method, params).await
+    }
+
+    /// `session` reaches a frame in another process; none means this tab's own page.
+    async fn call_in(&mut self, session: Option<&str>, method: &str, params: Value) -> Result<Value, String> {
         self.next += 1;
         let id = self.next;
-        self.socket.send(Message::Text(json!({ "id": id, "method": method, "params": params }).to_string().into())).await.map_err(|e| e.to_string())?;
+        let mut message = json!({ "id": id, "method": method, "params": params });
+        if let Some(session) = session { message["sessionId"] = json!(session); }
+        if let Err(error) = self.socket.send(Message::Text(message.to_string().into())).await {
+            self.dead = true;
+            return Err(error.to_string());
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let frame = tokio::time::timeout(Duration::from_secs(30), self.socket.next()).await
-                .map_err(|_| format!("The browser didn't answer {method} in time."))?
-                .ok_or("The browser closed the connection.")?
-                .map_err(|e| e.to_string())?;
+            if self.dialog.load(Ordering::SeqCst) {
+                self.dialog_open = true;
+                return Err("browser_dialog_requires_take_over".into());
+            }
+            let frame = tokio::select! {
+                result = tokio::time::timeout_at(deadline, self.socket.next()) => match result {
+                    Ok(Some(Ok(frame))) => frame,
+                    _ => { self.dead = true; return Err(format!("The browser connection failed during {method}")); }
+                },
+                _ = tokio::time::sleep(Duration::from_millis(20)) => continue,
+            };
             let Message::Text(text) = frame else { continue };
             let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            if value["method"] == "Page.javascriptDialogOpening" {
+                self.dialog_open = true;
+                return Err("browser_dialog_requires_take_over".into());
+            }
+            match value["method"].as_str() {
+                Some("Target.attachedToTarget") if value["params"]["targetInfo"]["type"] == "iframe" => {
+                    if let (Some(frame), Some(session)) = (value["params"]["targetInfo"]["targetId"].as_str(), value["params"]["sessionId"].as_str()) {
+                        self.frames.insert(frame.to_owned(), session.to_owned());
+                    }
+                }
+                Some("Target.detachedFromTarget") => {
+                    let gone = value["params"]["sessionId"].as_str().unwrap_or_default();
+                    self.frames.retain(|_, session| session != gone);
+                }
+                _ => {}
+            }
             if value["id"] == json!(id) {
                 if let Some(error) = value.get("error") {
                     return Err(format!("The browser refused {method}: {}", error["message"].as_str().unwrap_or("unknown error")));
@@ -182,13 +700,84 @@ impl Page {
         }
     }
 
+    async fn press(&mut self, code: &str, vk: i32, text: &str, modifiers: i32) -> Result<(), String> {
+        self.call("Input.dispatchKeyEvent", json!({ "type": "keyDown", "key": code, "code": code, "windowsVirtualKeyCode": vk, "text": text, "modifiers": modifiers })).await?;
+        self.call("Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": code, "code": code, "windowsVirtualKeyCode": vk, "modifiers": modifiers })).await?;
+        Ok(())
+    }
+
     async fn eval(&mut self, expression: &str) -> Result<Value, String> {
         let result = self.call("Runtime.evaluate", json!({ "expression": expression, "returnByValue": true })).await?;
         Ok(result["result"]["value"].clone())
     }
 
+    /// Where the keyboard is: the frame with focus, which may be nested or run in another process.
+    async fn focused_frame(&mut self) -> Result<Place, String> {
+        let mut place = Place::default();
+        for _ in 0..MAX_FRAME_DEPTH {
+            let answer = self.in_frame(&place, FOCUSED_FRAME, false).await?;
+            let Some(frame) = answer["objectId"].as_str() else { return Ok(place) };
+            let session = place.session.clone();
+            let node = self.call_in(session.as_deref(), "DOM.describeNode", json!({ "objectId": frame })).await.map_err(|_| UNAVAILABLE)?;
+            let frame = node["node"]["frameId"].as_str().ok_or(UNAVAILABLE)?.to_owned();
+            // This reports frames already running elsewhere, and the evaluation after it collects any that arrive late.
+            self.call_in(session.as_deref(), "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true })).await.map_err(|_| UNAVAILABLE)?;
+            self.call_in(session.as_deref(), "Runtime.evaluate", json!({ "expression": "0" })).await.map_err(|_| UNAVAILABLE)?;
+            place = match self.frames.get(&frame) {
+                Some(own) => Place { session: Some(own.clone()), context: None, frame: Some(frame) },
+                None => {
+                    let world = self.call_in(session.as_deref(), "Page.createIsolatedWorld", json!({ "frameId": frame, "worldName": "deck-selection" })).await.map_err(|_| UNAVAILABLE)?;
+                    Place { session, context: Some(world["executionContextId"].as_i64().ok_or(UNAVAILABLE)?), frame: Some(frame) }
+                }
+            };
+        }
+        Err(UNAVAILABLE.into())
+    }
+
+    async fn in_frame(&mut self, place: &Place, expression: &str, by_value: bool) -> Result<Value, String> {
+        let mut asked = json!({ "expression": expression, "returnByValue": by_value });
+        if let Some(context) = place.context { asked["contextId"] = json!(context); }
+        let answer = self.call_in(place.session.as_deref(), "Runtime.evaluate", asked).await.map_err(|_| UNAVAILABLE)?;
+        Ok(answer["result"].clone())
+    }
+
+    /// The selected text where the keyboard is. It fails rather than answer with some other frame's text.
+    async fn selection(&mut self, place: &Place) -> Result<String, String> {
+        Ok(self.in_frame(place, SELECTION, true).await?["value"].as_str().ok_or(UNAVAILABLE)?.to_owned())
+    }
+
+    /// Hold on to the selection where the keyboard is, for [`Page::cut_commit`]. Nothing changes yet.
+    async fn cut_prepare(&mut self, place: &Place) -> Result<Option<(String, String)>, String> {
+        let Some(object) = self.in_frame(place, CUT_PREPARE, false).await?["objectId"].as_str().map(str::to_owned) else { return Ok(None) };
+        let text = self.on_object(place.session.as_deref(), &object, "function(){return this.text}").await?;
+        Ok(Some((object, text.as_str().ok_or(UNAVAILABLE)?.to_owned())))
+    }
+
+    /// Delete the text the clipboard now has, if the same frame still has the same selection.
+    async fn cut_commit(&mut self, cut: PendingCut) -> Result<(), String> {
+        let place = self.focused_frame().await.map_err(|_| CUT_ABANDONED)?;
+        if place.frame != cut.frame { return Err(CUT_ABANDONED.into()); }
+        match self.on_object(cut.session.as_deref(), &cut.object, CUT_COMMIT).await {
+            Ok(Value::Bool(true)) => Ok(()),
+            _ => Err(CUT_ABANDONED.into()),
+        }
+    }
+
+    async fn on_object(&mut self, session: Option<&str>, object: &str, function: &str) -> Result<Value, String> {
+        let answer = self.call_in(session, "Runtime.callFunctionOn", json!({ "objectId": object, "functionDeclaration": function, "returnByValue": true })).await.map_err(|_| UNAVAILABLE)?;
+        if answer.get("exceptionDetails").is_some() { return Err(UNAVAILABLE.into()); }
+        Ok(answer["result"]["value"].clone())
+    }
+
     async fn settle(&mut self) {
+        self.settle_while(&|| true).await
+    }
+
+    async fn settle_while(&mut self, keep: &(dyn Fn() -> bool + Send + Sync)) {
         for _ in 0..60 {
+            if !keep() {
+                return;
+            }
             if self.eval("document.readyState").await.ok().and_then(|v| v.as_str().map(str::to_owned)).as_deref() == Some("complete") {
                 break;
             }
@@ -198,26 +787,52 @@ impl Page {
         tokio::time::sleep(Duration::from_millis(600)).await;
     }
 
-    async fn navigate(&mut self, url: &str) -> Result<(), String> {
+    async fn load(&mut self, url: &str) -> Result<(), String> {
         let url = url.trim();
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err("Only http and https pages can be opened.".into());
         }
-        self.call("Page.navigate", json!({ "url": url })).await?;
+        let result = self.call("Page.navigate", json!({ "url": url })).await?;
+        match result["errorText"].as_str() {
+            Some(error) => Err(format!("The page didn't load: {error}")),
+            None => Ok(()),
+        }
+    }
+
+    async fn navigate(&mut self, url: &str) -> Result<(), String> {
+        self.load(url).await?;
         self.settle().await;
         Ok(())
     }
 }
 
-/// `browser.open`: load a page and return its title, address and text.
+/// `browser.open`: load a page in the assistant's tab and return its title, address and text.
 pub async fn open_text(url: &str) -> Result<(i32, String), String> {
-    if TAKEN_OVER.load(Ordering::SeqCst) {
-        return Err("You're using the browser right now (Take over). I'll leave it alone until you hand it back.".into());
+    let tab = primary();
+    let refused = |control: Control| match control {
+        Control::Human => Some("You're using the browser right now (Take over). I'll leave it alone until you hand it back."),
+        Control::Bot { .. } => Some("A Work bot is using the browser right now. Try again when it finishes."),
+        _ => None,
+    };
+    if let Some(refusal) = refused(tab.info.lock().unwrap().holder(Instant::now())) { return Err(refusal.into()); }
+    let _ops = tab.ops.lock().await;
+    {
+        let mut info = tab.info.lock().unwrap();
+        if let Some(refusal) = refused(info.holder(Instant::now())) { return Err(refusal.into()); }
+        info.control = Control::Assistant;
+        info.cut = None;
     }
-    let mut page = page().await?;
-    page.navigate(url).await?;
-    let text = page.eval("`${document.title}\\n${location.href}\\n\\n${document.body ? document.body.innerText : ''}`").await?;
-    Ok((0, text.as_str().unwrap_or_default().to_owned()))
+    let result = async {
+        let mut page = tab.page().await?;
+        if page.dialog_open { return Err("browser_dialog_requires_take_over".to_owned()); }
+        tab.bump();
+        page.navigate(url).await?;
+        let text = page.eval("`${document.title}\\n${location.href}\\n\\n${document.body ? document.body.innerText : ''}`").await?;
+        Ok((0, text.as_str().unwrap_or_default().to_owned()))
+    }.await;
+    let mut info = tab.info.lock().unwrap();
+    if info.control == Control::Assistant { info.control = Control::Free; }
+    result
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -230,15 +845,28 @@ pub struct View {
     pub width: u32,
     pub height: u32,
     pub taken_over: bool,
+    pub dialog_open: bool,
 }
 
-/// What the browser shows right now, for the Take over screen.
-pub async fn view() -> Result<View, String> {
-    let mut page = page().await?;
-    let shot = page.call("Page.captureScreenshot", json!({ "format": "jpeg", "quality": 60 })).await?;
+async fn view_of(tab: &Arc<Tab>) -> Result<View, String> {
+    let mut page = tab.page().await?;
+    let (width, height, taken_over) = (page.width, page.height, tab.human());
+    if page.dialog_open {
+        return Ok(View { url: page.url.clone(), title: page.title.clone(), image: String::new(), width, height, taken_over, dialog_open: true });
+    }
+    let shot = page.call("Page.captureScreenshot", json!({ "format": "jpeg", "quality": 60 })).await;
+    if page.dialog_open {
+        return Ok(View { url: page.url.clone(), title: page.title.clone(), image: String::new(), width, height, taken_over, dialog_open: true });
+    }
+    let shot = shot?;
     let url = page.eval("location.href").await?.as_str().unwrap_or_default().to_owned();
     let title = page.eval("document.title").await?.as_str().unwrap_or_default().to_owned();
-    Ok(View { url, title, image: shot["data"].as_str().unwrap_or_default().to_owned(), width: WIDTH, height: HEIGHT, taken_over: TAKEN_OVER.load(Ordering::SeqCst) })
+    Ok(View { url, title, image: shot["data"].as_str().unwrap_or_default().to_owned(), width, height, taken_over, dialog_open: false })
+}
+
+/// What the assistant's tab shows right now.
+pub async fn view() -> Result<View, String> {
+    view_of(&primary()).await
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -252,44 +880,338 @@ pub enum Input {
     Back,
 }
 
-/// The human's click or keystroke while they've taken over.
+/// The human's click or keystroke in the assistant's tab while they've taken it over.
 pub async fn input(input: Input) -> Result<View, String> {
-    if !TAKEN_OVER.load(Ordering::SeqCst) {
+    let tab = primary();
+    if !tab.human() {
         return Err("Take over the browser first.".into());
     }
-    let mut page = page().await?;
-    match input {
-        Input::Click { x, y } => {
-            for kind in ["mousePressed", "mouseReleased"] {
-                page.call("Input.dispatchMouseEvent", json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 })).await?;
+    {
+        let _ops = tab.ops.lock().await;
+        let mut page = tab.page().await?;
+        tab.bump();
+        if page.dialog_open {
+            if !matches!(&input, Input::Key { key } if key == "Escape") {
+                return Err("Use Escape in Take over to dismiss this page dialog.".into());
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tab.answer_dialog(false, None).await?;
+        } else {
+            match input {
+                Input::Click { x, y } => {
+                    for kind in ["mousePressed", "mouseReleased"] {
+                        page.call("Input.dispatchMouseEvent", json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 })).await?;
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+                Input::Type { text } => { page.call("Input.insertText", json!({ "text": text })).await?; }
+                Input::Key { key } => {
+                    let (code, vk, text, modifiers) = work::key_event(&key).ok_or("That key isn't supported.")?;
+                    page.press(code, vk, text, modifiers).await?;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    page.settle().await;
+                }
+                Input::Scroll { delta_y } => {
+                    let (x, y) = (page.width / 2, page.height / 2);
+                    page.call("Input.dispatchMouseEvent", json!({ "type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": delta_y })).await?;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Input::Navigate { url } => page.navigate(&url).await?,
+                Input::Back => { page.eval("history.back()").await?; page.settle().await; }
+            }
         }
-        Input::Type { text } => { page.call("Input.insertText", json!({ "text": text })).await?; }
-        Input::Key { key } => {
-            let (code, vk, text) = match key.as_str() {
-                "Enter" => ("Enter", 13, "\r"), "Backspace" => ("Backspace", 8, ""), "Tab" => ("Tab", 9, ""), "Escape" => ("Escape", 27, ""),
-                "ArrowDown" => ("ArrowDown", 40, ""), "ArrowUp" => ("ArrowUp", 38, ""),
-                _ => return Err("That key isn't supported.".into()),
-            };
-            page.call("Input.dispatchKeyEvent", json!({ "type": "keyDown", "key": code, "code": code, "windowsVirtualKeyCode": vk, "text": text })).await?;
-            page.call("Input.dispatchKeyEvent", json!({ "type": "keyUp", "key": code, "code": code, "windowsVirtualKeyCode": vk })).await?;
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            page.settle().await;
-        }
-        Input::Scroll { delta_y } => {
-            page.call("Input.dispatchMouseEvent", json!({ "type": "mouseWheel", "x": WIDTH / 2, "y": HEIGHT / 2, "deltaX": 0, "deltaY": delta_y })).await?;
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        Input::Navigate { url } => page.navigate(&url).await?,
-        Input::Back => { page.eval("history.back()").await?; page.settle().await; }
     }
-    drop(page);
-    view().await
+    view_of(&tab).await
 }
 
-/// The human takes the browser (`true`) or hands it back (`false`).
+/// The human takes the assistant's tab (`true`) or hands it back (`false`).
 pub async fn take_over(on: bool) -> Result<View, String> {
-    TAKEN_OVER.store(on, Ordering::SeqCst);
-    view().await
+    let tab = primary();
+    set_control(&tab, on).await;
+    view_of(&tab).await
+}
+
+async fn set_control(tab: &Arc<Tab>, take: bool) {
+    if take {
+        tab.fence().await;
+    } else {
+        {
+            let mut info = tab.info.lock().unwrap();
+            if info.control == Control::Human { info.control = Control::Free; }
+            info.cut = None;
+        }
+        tab.bump();
+        drop(tab.ops.lock().await);
+        let _ = tab.order(Order::Downloads(false)).await;
+    }
+}
+
+/// Every tab on this host, for the person. Bots get [`work::listing`] instead.
+pub async fn tab_list() -> Result<Value, String> {
+    let _ = reconcile().await;
+    Ok(json!({ "tabs": all_tabs().iter().map(|tab| tab.summary()).collect::<Vec<_>>() }))
+}
+
+/// A new tab the person opened. It belongs to nobody else until they hand it to a room.
+pub async fn tab_open(url: Option<String>) -> Result<Value, String> {
+    let address = url.unwrap_or_default();
+    if !address.is_empty() && !tabs::restorable(&address) { return Err("Only http and https pages can be opened.".into()); }
+    let tab = add_tab(&address, Scope::default());
+    tab.info.lock().unwrap().control = Control::Human;
+    drop(tab.page().await?);
+    let _ = tab.order(Order::Downloads(true)).await;
+    Ok(tab.summary())
+}
+
+pub async fn tab_close(id: &str) -> Result<Value, String> {
+    let tab = find(id)?;
+    tab.fence().await;
+    close_target(&tab).await;
+    remove_tab(id);
+    tab_list().await
+}
+
+async fn close_target(tab: &Arc<Tab>) {
+    let (target, instance) = { let info = tab.info.lock().unwrap(); (info.target.clone(), info.instance) };
+    if let Some(monitor) = tab.monitor.lock().await.take() { monitor.task.abort(); }
+    if let (Some(target), true) = (target, instance == INSTANCE.load(Ordering::SeqCst)) {
+        let port = STATE.lock().await.as_ref().map(|running| running.port);
+        if let (Some(port), Ok(client)) = (port, http()) {
+            let _ = client.get(format!("http://127.0.0.1:{port}/json/close/{target}")).send().await;
+        }
+    }
+}
+
+/// Take a tab (`true`), or hand it back (`false`). Answers once nothing of the old holder can still land.
+pub async fn tab_control(id: &str, take: bool) -> Result<Value, String> {
+    let tab = find(id)?;
+    set_control(&tab, take).await;
+    Ok(tab.summary())
+}
+
+/// Let a Work thread reach this tab, or stop it reaching it. Removing it ends the room's hold.
+pub async fn tab_share(id: &str, thread: &str, share: bool) -> Result<Value, String> {
+    let tab = find(id)?;
+    {
+        let mut info = tab.info.lock().unwrap();
+        if share {
+            info.scope.rooms.insert(thread.to_owned());
+        } else {
+            info.scope.rooms.remove(thread);
+            if matches!(&info.control, Control::Bot { thread: held, .. } if held == thread) { info.control = Control::Free; }
+        }
+    }
+    if !share {
+        registry().bound.retain(|(room, _), bound| !(room == thread && *bound == id));
+        tab.bump();
+        drop(tab.ops.lock().await);
+    }
+    save();
+    Ok(tab.summary())
+}
+
+/// The thread and bot holding a tab, for a Stop aimed at just that tab.
+pub fn tab_holder(id: &str) -> Result<Option<(String, String)>, String> {
+    let tab = find(id)?;
+    let holder = tab.info.lock().unwrap().holder(Instant::now());
+    Ok(match holder { Control::Bot { thread, participant, .. } => Some((thread, participant)), _ => None })
+}
+
+/// The next picture of a tab, waiting briefly for one newer than `after`. Watching changes nothing.
+pub async fn tab_frame(id: &str, after: u64) -> Result<Value, String> {
+    let tab = find(id)?;
+    *tab.viewed.lock().unwrap() = Instant::now();
+    // A bot's step can hold the page while it settles; the picture doesn't need it.
+    let watching = tab.monitor.lock().await.as_ref().is_some_and(|monitor| !monitor.task.is_finished());
+    if !watching { drop(tab.page().await?); }
+    tab.order(Order::Cast(true)).await?;
+    let mut frames = tab.frames.subscribe();
+    let waited = tokio::time::timeout(Duration::from_secs(1), frames.wait_for(|frame| frame.as_ref().is_some_and(|f| f.seq != after))).await;
+    drop(waited);
+    let frame = tab.frames.borrow().clone();
+    let summary = tab.summary();
+    Ok(match frame.filter(|f| f.seq != after) {
+        Some(frame) => json!({ "seq": frame.seq, "image": *frame.image, "width": frame.width, "height": frame.height, "tab": summary }),
+        None => json!({ "seq": after, "tab": summary }),
+    })
+}
+
+/// The person's own input, as it happened.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+pub enum Event {
+    Mouse { action: String, x: f64, y: f64, #[serde(default)] button: String, #[serde(default)] buttons: u32, #[serde(default)] clicks: u32, #[serde(default)] modifiers: u32 },
+    Wheel { x: f64, y: f64, delta_x: f64, delta_y: f64, #[serde(default)] modifiers: u32 },
+    Key { action: String, key: String, code: String, vk: i32, #[serde(default)] text: String, #[serde(default)] modifiers: u32, #[serde(default)] commands: Vec<String> },
+    Text { text: String },
+    Navigate { url: String },
+    Back,
+    Forward,
+    Reload,
+    Copy,
+    /// Reads the selection and removes nothing; the reply's token comes back in `CutCommit`.
+    Cut,
+    /// The clipboard has the text, so the selection can go.
+    CutCommit { token: String },
+    Dialog { accept: bool, #[serde(default)] text: Option<String> },
+}
+
+/// Copy and Cut couldn't read the selection, so neither did anything.
+const UNAVAILABLE: &str = "browser_selection_unavailable";
+/// The selection moved, or the page or the tab's holder changed, so a Cut removed nothing.
+const CUT_ABANDONED: &str = "browser_cut_abandoned";
+/// Frames deeper than this aren't followed for Copy and Cut.
+const MAX_FRAME_DEPTH: usize = 8;
+/// The focused frame's element, in this document, if focus went into one.
+const FOCUSED_FRAME: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;return a&&(a.tagName==='IFRAME'||a.tagName==='FRAME')?a:null})()";
+const SELECTION: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;if(a&&a.type==='password')return'';if(a&&typeof a.selectionStart==='number')return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection())})()";
+const CUT_PREPARE: &str = "(()=>{let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;if(a&&a.type==='password')return null;if(a&&typeof a.selectionStart==='number'){let s=a.selectionStart,e=a.selectionEnd;return e>s?{a,s,e,v:a.value,text:a.value.slice(s,e)}:null}let p=getSelection();if(!p||!p.rangeCount||p.isCollapsed)return null;return{a,r:p.getRangeAt(0).cloneRange(),text:String(p)}})()";
+/// One step in the page, so nothing can move the selection between the check and the delete.
+/// An editing command, because a key would reach the page's own shortcuts.
+const CUT_COMMIT: &str = "function(){let a=document.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;if(a!==this.a)return false;if(this.r){let p=getSelection();if(!p||!p.rangeCount||String(p)!==this.text)return false;let r=p.getRangeAt(0);if(r.compareBoundaryPoints(Range.START_TO_START,this.r)||r.compareBoundaryPoints(Range.END_TO_END,this.r))return false}else if(a.selectionStart!==this.s||a.selectionEnd!==this.e||a.value!==this.v)return false;document.execCommand('delete');return true}";
+
+/// Apply the person's input to one tab. Touching a free tab takes it; pointer movement never
+/// does. A bot's tab has to be taken on purpose first.
+pub async fn tab_input(id: &str, events: Vec<Event>) -> Result<Value, String> {
+    let tab = find(id)?;
+    let (mut copied, mut cut) = (None, None);
+    for event in events {
+        let passive = matches!(&event, Event::Mouse { action, .. } if action == "move");
+        if passive {
+            if !tab.human() { continue; }
+        } else if matches!(&event, Event::CutCommit { .. }) {
+            // Finishing a Cut never takes a tab; whoever holds it now didn't ask for this.
+            if !tab.human() { return Err(CUT_ABANDONED.into()); }
+        } else {
+            tab.claim_human().await?;
+        }
+        let _ops = tab.ops.lock().await;
+        if !tab.human() { return Err("tab_held_by_bot".into()); }
+        let mut page = tab.page().await?;
+        match event {
+            Event::Dialog { accept, text } => {
+                // The browser's own "closed" report clears the flag; doing it here could hide a dialog opened right after.
+                tab.answer_dialog(accept, text).await?;
+                tab.bump();
+                continue;
+            }
+            _ if page.dialog_open => return Err("browser_dialog_requires_answer".into()),
+            _ => {}
+        }
+        tab.bump();
+        match event {
+            Event::Mouse { action, x, y, button, buttons, clicks, modifiers } => {
+                let kind = match action.as_str() { "down" => "mousePressed", "up" => "mouseReleased", "move" => "mouseMoved", _ => return Err("invalid_event".into()) };
+                let button = match button.as_str() { "left" | "right" | "middle" => button, _ => "none".to_owned() };
+                page.call("Input.dispatchMouseEvent", json!({ "type": kind, "x": x, "y": y, "button": button, "buttons": buttons, "clickCount": clicks, "modifiers": modifiers })).await?;
+            }
+            Event::Wheel { x, y, delta_x, delta_y, modifiers } => {
+                page.call("Input.dispatchMouseEvent", json!({ "type": "mouseWheel", "x": x, "y": y, "deltaX": delta_x, "deltaY": delta_y, "modifiers": modifiers })).await?;
+            }
+            Event::Key { action, key, code, vk, text, modifiers, commands } => {
+                let kind = match action.as_str() { "down" if text.is_empty() => "rawKeyDown", "down" => "keyDown", "up" => "keyUp", _ => return Err("invalid_event".into()) };
+                let commands: Vec<String> = commands.into_iter().filter(|name| tabs::editing_command(name)).collect();
+                let mut params = json!({ "type": kind, "key": key, "code": code, "windowsVirtualKeyCode": vk, "modifiers": modifiers, "commands": commands });
+                if !text.is_empty() { params["text"] = json!(text); }
+                page.call("Input.dispatchKeyEvent", params).await?;
+            }
+            Event::Text { text } => { page.call("Input.insertText", json!({ "text": text })).await?; }
+            Event::Navigate { url } => { page.load(&url).await?; }
+            Event::Back => { page.eval("history.back()").await?; }
+            Event::Forward => { page.eval("history.forward()").await?; }
+            Event::Reload => { page.call("Page.reload", json!({})).await?; }
+            Event::Copy => {
+                let place = page.focused_frame().await?;
+                copied = Some(page.selection(&place).await?);
+                cut = None;
+            }
+            Event::Cut => {
+                let place = page.focused_frame().await?;
+                // No selection also means a password field, which stays where it is.
+                let Some((object, text)) = page.cut_prepare(&place).await? else { continue };
+                let token = work::snapshot_id();
+                tab.info.lock().unwrap().cut = Some(PendingCut { token: token.clone(), frame: place.frame, session: place.session, object });
+                copied = Some(text);
+                cut = Some(token);
+            }
+            Event::CutCommit { token } => {
+                let pending = tab.info.lock().unwrap().cut.take().filter(|pending| pending.token == token);
+                page.cut_commit(pending.ok_or(CUT_ABANDONED)?).await?;
+            }
+            Event::Dialog { .. } => unreachable!("answered above"),
+        }
+    }
+    let mut reply = tab.summary();
+    if let Some(text) = copied { reply["copied"] = json!(text); }
+    if let Some(token) = cut { reply["cut"] = json!(token); }
+    Ok(reply)
+}
+
+/// Fit a tab to the person's view. A bot's coordinates stay fixed while it holds the tab.
+pub async fn tab_resize(id: &str, width: u32, height: u32, scale: f64) -> Result<Value, String> {
+    let tab = find(id)?;
+    let (width, height, scale) = (width.clamp(320, 2560), height.clamp(240, 1600), scale.clamp(1.0, 2.0));
+    // Bots claim under this same lock, so nothing can take the tab between the check and the change.
+    let _ops = tab.ops.lock().await;
+    if !matches!(tab.info.lock().unwrap().holder(Instant::now()), Control::Free | Control::Human) { return Ok(tab.summary()); }
+    let mut page = tab.page().await?;
+    page.call("Emulation.setDeviceMetricsOverride", json!({ "width": width, "height": height, "deviceScaleFactor": scale, "mobile": false })).await?;
+    (page.width, page.height) = (width, height);
+    { let mut info = tab.info.lock().unwrap(); (info.width, info.height, info.scale) = (width, height, scale); }
+    tab.bump();
+    Ok(tab.summary())
+}
+
+/// Hand the person's chosen file to the page's waiting file picker.
+pub async fn tab_upload(id: &str, name: &str, bytes: &[u8]) -> Result<Value, String> {
+    if bytes.len() > UPLOAD_LIMIT { return Err("That file is too big to upload here (6 MB at most).".into()); }
+    let tab = find(id)?;
+    tab.claim_human().await?;
+    let _ops = tab.ops.lock().await;
+    let node = tab.info.lock().unwrap().file_chooser.ok_or("The page isn't waiting for a file.")?;
+    let name = std::path::Path::new(name).file_name().and_then(|n| n.to_str()).filter(|n| !n.is_empty()).unwrap_or("upload");
+    let folder = PROFILE.get().and_then(|p| p.parent()).ok_or("The browser has no folder yet.")?.join("browser-uploads").join(&tab.id);
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let path = folder.join(name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    let mut page = tab.page().await?;
+    let result = page.call("DOM.setFileInputFiles", json!({ "files": [path], "backendNodeId": node })).await;
+    tab.info.lock().unwrap().file_chooser = None;
+    result?;
+    Ok(tab.summary())
+}
+
+/// Close only this host's owned browser before service exit; keep its profile and tab list on disk.
+pub(crate) async fn shutdown(data_dir: &std::path::Path) {
+    if PROFILE.get() != Some(&data_dir.join("assistant-browser")) { return; }
+    let _ = reconcile().await;
+    save();
+    CLOSING.store(true, Ordering::SeqCst);
+    let tabs = all_tabs();
+    for tab in &tabs {
+        tab.bump();
+        if let Ok(mut held) = tab.monitor.try_lock() {
+            if let Some(monitor) = held.take() { monitor.task.abort(); }
+        }
+    }
+    let running = STATE.lock().await.take();
+    if let Some(mut running) = running {
+        let close = async {
+            let version: Value = reqwest::Client::new().get(format!("http://127.0.0.1:{}/json/version", running.port))
+                .timeout(Duration::from_secs(1)).send().await.map_err(|e|e.to_string())?.json().await.map_err(|e|e.to_string())?;
+            let url = version["webSocketDebuggerUrl"].as_str().ok_or("Browser control unavailable")?;
+            let (mut socket, _) = tokio_tungstenite::connect_async(url).await.map_err(|e|e.to_string())?;
+            socket.send(Message::Text(json!({"id":1,"method":"Browser.close","params":{}}).to_string().into())).await.map_err(|e|e.to_string())
+        };
+        // An exited child's former port may now belong to an unrelated process.
+        if matches!(running.child.try_wait(), Ok(None)) {
+            let _ = tokio::time::timeout(Duration::from_secs(1), close).await;
+        }
+        if !matches!(tokio::time::timeout(Duration::from_secs(2), running.child.wait()).await, Ok(Ok(_))) {
+            let _ = running.child.kill().await;
+        }
+    }
+    for tab in &tabs {
+        if let Ok(mut page) = tab.page.try_lock() { *page = None; }
+        tab.dialog.store(false, Ordering::SeqCst);
+    }
 }

@@ -230,9 +230,12 @@ test('equal room ids on two machines: the open thread, its draft key and its kep
   assert.equal(pickOpenPane(session, chats, 'shared', null, hostOf), session[0]);
   assert.equal(pickOpenPane(session, chats, 'shared', 'local', hostOf), session[0]);
   assert.equal(pickOpenPane(session, chats, 'shared', 'elsewhere', hostOf), null);
-  // Draft, quotes and TL;DR are kept apart, and a session thread keeps its plain id.
-  assert.notEqual(threadKey(chats[0], isChat), threadKey(chats[1], isChat));
-  assert.equal(threadKey(session[0], isChat), 'shared');
+  // Draft, quotes and TL;DR are kept apart by machine, a chat and a Work thread alike.
+  assert.notEqual(threadKey(chats[0], A.id), threadKey(chats[1], B.id));
+  assert.equal(threadKey(chats[0], 'elsewhere'), threadKey(chats[0], A.id), 'a chat names its own machine');
+  assert.equal(threadKey(session[0], 'local'), JSON.stringify(['local', 'shared']));
+  assert.notEqual(threadKey(session[0], 'local'), threadKey(session[0], B.id), 'a Work thread opened from another machine keeps its own');
+  assert.equal(threadKey({ id: 'shared', hostId: A.id }, 'local'), JSON.stringify([A.id, 'shared']));
   // The copy kept for B's room is B's: A's transcript can't stand in while B is off.
   const h = phone();
   assert.equal(h.controller.snapshot().chats[chatRoute(h.controller.snapshot(), B.id, 'r1').chatId], undefined);

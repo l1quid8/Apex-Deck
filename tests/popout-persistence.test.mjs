@@ -80,6 +80,7 @@ function fakeWindow() {
   win.maximized = false;
   win.getNormalBounds = () => win.bounds;
   win.isMaximized = () => win.maximized;
+  win.isAlwaysOnTop = () => false;
   win.isDestroyed = () => false;
   return win;
 }

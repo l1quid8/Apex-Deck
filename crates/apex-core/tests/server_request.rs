@@ -4,6 +4,14 @@ fn parsing_matches_composer_boundaries() {
  assert_eq!(parse_server_requests("!x-mcp !X_MCP wow! != ![img](url) !! \\!skip `!code` ```\n!hidden\n``` !Hyper-MCP"), vec!["x-mcp", "Hyper-MCP"]);
 }
 #[test]
+fn quoted_code_selections_cannot_request_tool_servers() {
+ assert_eq!(parse_server_requests("@null Make this change !github\n\n> Null wrote:\n> Guard that branch with !curating too."), vec!["github"]);
+}
+#[test]
+fn quoted_backticks_do_not_hide_following_human_requests() {
+ assert_eq!(parse_server_requests("> Use `!curating\r\n  >> !missing\r\n\r\nUse !github"), vec!["github"]);
+}
+#[test]
 fn resolves_original_names_and_typos() {
  let got = resolve(&["hyper_mcp".into(), "x-mpc".into()], &[String::from("Hyper MCP").into()]);
  assert_eq!(got.matched, vec!["hyper-mcp"]);

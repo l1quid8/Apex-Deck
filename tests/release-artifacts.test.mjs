@@ -54,14 +54,14 @@ test('cleanup names build leftovers and nothing else', () => {
     '.temp-abc123.dmg',
     'Apex-Deck_0.9.0_assistant-one-chat-r3_arm64.pkg',
     'Apex-Deck_0.9.0_assistant-one-chat-r3_arm64.pkg.json',
-    'Apex-Deck_0.9.0_arm64.dmg',
-    'Apex-Deck_0.9.0_arm64.dmg.sha256',
   ];
   const kept = [
     'Apex-Deck-upgrade.pkg',
     'Apex-Deck-upgrade.pkg.json',
     'Apex-Deck-upgrade.previous.pkg',
     'Apex-Deck.dmg',
+    'Apex-Deck_0.9.0_arm64.dmg',
+    'Apex-Deck_0.9.0_arm64.dmg.sha256',
     'v0.9.0-assets',
     'verification',
     '.DS_Store',
@@ -131,11 +131,11 @@ test('cleanup removes leftovers, frees their size, and never follows a symlink',
   write(path.join(release, 'Apex-Deck-upgrade.previous.pkg'), 'rollback');
   fs.mkdirSync(path.join(release, 'verification'));
   write(path.join(release, 'verification', 'evidence.json'), '{}');
-  fs.symlinkSync(path.join(outside, 'precious.pkg'), path.join(release, 'Apex-Deck_0.9.0_arm64.dmg'));
+  fs.symlinkSync(path.join(outside, 'precious.pkg'), path.join(release, '.temp-outside.dmg'));
 
   const { removed, bytes } = cleanupRelease(release);
 
-  assert.deepEqual(removed.sort(), ['.temp-1.dmg', 'Apex-Deck_0.9.0_arm64.dmg', 'mac-arm64'].sort());
+  assert.deepEqual(removed.sort(), ['.temp-1.dmg', '.temp-outside.dmg', 'mac-arm64'].sort());
   assert.ok(bytes >= 4096 + 4, 'reports roughly what it freed');
   assert.equal(fs.existsSync(path.join(release, 'mac-arm64')), false);
   assert.equal(fs.readFileSync(path.join(release, 'Apex-Deck-upgrade.pkg'), 'utf8'), 'current');

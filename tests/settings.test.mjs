@@ -73,12 +73,19 @@ const savedAppearance = { current: userSkin, saved: [userSkin] };
 test("defaults keep the pre-appearance settings shape and appearance is opt-in", () => {
   assert.equal("appearance" in DEFAULT_SETTINGS, false);
   assert.deepEqual(readSettings(null), DEFAULT_SETTINGS);
-  assert.deepEqual(readSettings({ ...DEFAULT_SETTINGS, appearance: savedAppearance }).appearance, savedAppearance);
+  const read = readSettings({ ...DEFAULT_SETTINGS, appearance: savedAppearance }).appearance;
+  assert.deepEqual(read.current, savedAppearance.current);
+  assert.deepEqual(read.saved, savedAppearance.saved);
+  // migration adds colorMode
+  assert.ok(read.colorMode);
 });
 
 test("invalid current appearance falls back while valid saved skins are salvaged", () => {
   const read = readSettings({ appearance: { current: { ...userSkin, appearance: { ...userSkin.appearance, hue: 900 } }, saved: [userSkin, null, { ...userSkin, appearance: { ...userSkin.appearance, flat: "yes" } }] } });
-  assert.deepEqual(read.appearance, { current: { format: "apex-glass-playground", version: 2, name: "Classic", appearance: DEFAULT_APPEARANCE }, saved: [userSkin] });
+  assert.deepEqual(read.appearance.current, { format: "apex-glass-playground", version: 2, name: "Classic", appearance: DEFAULT_APPEARANCE });
+  assert.deepEqual(read.appearance.saved, [userSkin]);
+  // colorMode migration adds explicit field but must not break fallback
+  assert.ok(['light','dark','system'].includes(read.appearance.colorMode));
 });
 
 test("saved skin gallery is capped at 50 valid normalized skins", () => {

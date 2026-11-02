@@ -21,6 +21,13 @@ export function prefillAssistantComposer(key: string, text: string): void {
   }
 }
 
+/** Change one composer field from outside the composer, such as the floating window. */
+export function setAssistantComposerField(key: string, field: string, value: unknown): void {
+  const draft = assistantComposerDraftFor(key)!;
+  draft.fields.set(field, value);
+  draft.listeners.get(field)?.forEach(update => update());
+}
+
 export function useAssistantComposerDraftState<T>(key: string | undefined, field: string, initial: T): [T, Dispatch<SetStateAction<T>>] {
   const draft = assistantComposerDraftFor(key);
   if (draft && !draft.fields.has(field)) draft.fields.set(field, initial);

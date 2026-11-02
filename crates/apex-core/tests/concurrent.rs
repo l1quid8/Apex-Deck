@@ -132,6 +132,66 @@ fn second_writer_is_told_why_it_is_read_only() {
 }
 
 #[test]
+fn read_only_turn_keeps_journal_lookup_or_unavailability_guidance() {
+    struct HoldWriter {
+        tx: Mutex<Option<oneshot::Sender<()>>>,
+        rx: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl apex_core::TurnStartHook for HoldWriter {
+        fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                if id.as_str() == "A" {
+                    let rx = self.rx.lock().unwrap().take();
+                    if let Some(rx) = rx { let _ = rx.await; }
+                } else if let Some(tx) = self.tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            })
+        }
+    }
+    for path in [Some("/attachments/deck-journals/r/chat.md"), None] {
+        block_on(async {
+            let make_writer = |id: &str| {
+                let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+                config.access = apex_core::Access::Full;
+                Arc::new(ScriptedParticipant::from_config(config))
+            };
+            let a = make_writer("A");
+            let b = make_writer("B");
+            let mut snapshot = Room::new(vec![a.clone(), b.clone()], RoomOptions {
+                policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0),
+            }).snapshot();
+            snapshot.transcript = (0..30).map(|seq| serde_json::from_value(serde_json::json!({
+                "seq":seq, "speaker":{"kind":"human"}, "text":format!("message {seq}"),
+            })).unwrap()).collect();
+            snapshot.curations = vec![apex_core::Curation {
+                by: ParticipantId::new("A"), at: 30, hidden: vec![[2, 5]],
+                reason: "finished".into(), when: 1, undone: None,
+            }];
+            let mut room = Room::restore(vec![a.clone(), b.clone()], snapshot);
+            room.set_journal_path(path.map(str::to_owned));
+            let (tx, rx) = oneshot::channel();
+            let concurrent = ConcurrentRoom::new(room).with_turn_start(Arc::new(HoldWriter {
+                tx: Mutex::new(Some(tx)), rx: Mutex::new(Some(rx)),
+            }));
+            let batch = concurrent.begin_post("hello", None, &|_| {}).await.unwrap();
+            concurrent.run(batch, &|_| {}).await;
+            assert_eq!(b.requests()[0].access, Some(apex_core::Access::Read));
+            for bot in [a, b] {
+                let requests = bot.requests();
+                let req = &requests[0];
+                assert!(req.turns.iter().any(|t| t.content.contains("[#2–#5 hidden, 4 messages]")));
+                assert!(req.system.contains("never guess what a hidden message said"), "{}", req.system);
+                match path {
+                    Some(path) => assert!(req.system.contains(path)),
+                    None => assert!(req.system.contains("can't be read right now")),
+                }
+            }
+        });
+    }
+}
+
+#[test]
 fn second_writer_gets_copy_and_keeps_write_access() {
     struct FakeProvider {
         copy_path: PathBuf,
@@ -1287,4 +1347,63 @@ fn read_only_line_never_doubles_the_full_stop() {
         apex_core::read_only_line("Beta", "Alpha", "The folder is not a Git repository."),
         "Beta is read-only this turn: Alpha is editing and Deck couldn't make a separate copy (The folder is not a Git repository)."
     );
+}
+
+#[derive(Clone)]
+struct LifecycleProbe {
+    starts: Arc<Mutex<Vec<apex_core::Access>>>,
+    finishes: Arc<AtomicUsize>,
+}
+struct LifecycleLease(Arc<AtomicUsize>);
+impl Drop for LifecycleLease { fn drop(&mut self) {self.0.fetch_add(1,Ordering::SeqCst);} }
+impl apex_core::TurnLifecycleHook for LifecycleProbe {
+    fn start<'a>(&'a self,_:&'a ParticipantId,_:&'a mut TurnRequest,access:apex_core::Access)->futures::future::BoxFuture<'a,Option<Box<dyn Send>>> {
+        Box::pin(async move {self.starts.lock().unwrap().push(access);Some(Box::new(LifecycleLease(self.finishes.clone())) as Box<dyn Send>)})
+    }
+}
+#[test]
+fn lifecycle_lease_finishes_on_success_failure_stop_and_dropped_future() {
+    use futures::FutureExt;
+    struct Failing(ParticipantConfig);
+    #[async_trait]
+    impl Participant for Failing {
+        fn config(&self)->&ParticipantConfig {&self.0}
+        async fn respond(&self,_:TurnRequest,_:DeltaSink<'_>)->Result<Reply,ParticipantError>{Err(ParticipantError::Failed("fixture".into()))}
+    }
+    block_on(async {
+        let probe=LifecycleProbe {starts:Arc::default(),finishes:Arc::default()};
+        for mode in 0..4 {
+            let (sender,release)=oneshot::channel();
+            let config=ScriptedParticipant::new("null",&[]).config().clone();
+            let bot:Arc<dyn Participant>=match mode {
+                0=>Arc::new(ScriptedParticipant::new("null",&["done"])),
+                1=>Arc::new(Failing(config)),
+                _=>Arc::new(Held {config,release:Mutex::new(Some(release)),started:None,cleanup_error:false})
+            };
+            let runtime=ConcurrentRoom::new(Room::new(vec![bot],RoomOptions::default())).with_turn_lifecycle(Arc::new(probe.clone()));
+            let batch=runtime.begin_post("@null go",None,&|_|{}).await.unwrap();
+            let mut run=Box::pin(runtime.run(batch,&|_|{}));
+            if mode<2 {run.await;} else {
+                assert!(run.as_mut().now_or_never().is_none());
+                if mode==2 {runtime.stop(None);run.await;} else {drop(run);}
+                drop(sender);
+            }
+            assert_eq!(probe.finishes.load(Ordering::SeqCst),mode+1);
+        }
+        assert_eq!(probe.starts.lock().unwrap().len(),4);
+    });
+}
+
+#[test]
+fn lifecycle_receives_read_scope_for_planning_turns_without_a_workspace() {
+    block_on(async {
+        let probe=LifecycleProbe {starts:Arc::default(),finishes:Arc::default()};
+        let mut config=ScriptedParticipant::new("null",&["plan"]).config().clone();config.access=apex_core::Access::Full;
+        let room=Room::new(vec![Arc::new(ScriptedParticipant::from_config(config))],RoomOptions::default());
+        room.plan_handle().store(true,Ordering::SeqCst);
+        let runtime=ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(probe.clone()));
+        let batch=runtime.begin_post("@null plan",None,&|_|{}).await.unwrap();runtime.run(batch,&|_|{}).await;
+        assert_eq!(*probe.starts.lock().unwrap(),vec![apex_core::Access::Read]);
+        assert_eq!(probe.finishes.load(Ordering::SeqCst),1);
+    });
 }

@@ -5,7 +5,7 @@ import type { AnswerSaveResult } from "./interactiveAnswers/contract.ts";
 
 import type { Backend, KeyState, LibraryItem } from "./backend";
 import { apiModelList } from "./models.ts";
-import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, ModelMetrics, PersonaDraftResult, PhoneStatus, PhoneView, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
+import type { AgentInfo, AppSession, CurationUndo, CurateReply, FilePreview, FileSearchResult, FolderListing, ModelChoice, ModelMetrics, PersonaDraftResult, PhoneStatus, PhoneView, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
@@ -142,6 +142,8 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomFork: (source, target, upto) => call("room_fork", { source, target, upto }),
     roomImport: (id, snapshot, cwd, replace = false) => call("room_import", { id, snapshot, cwd: cwd || null, replace }),
     roomCompact: (id) => call("room_compact", { id }),
+    roomCurate: (id) => call<CurateReply>("room_curate", { id }),
+    roomCurateUndo: (id) => call<CurationUndo>("room_curate_undo", { id }),
     roomClose: (id) => call("room_close", { id }),
     roomDelete: (id) => call("room_delete", { id }),
     onRoomRunnerChanged: (cb) => transport.listen<{room: string; snapshot: import("./runner/types.ts").RunnerSnapshot | null}>("room-runner-changed", p => cb(p.room,p.snapshot)),

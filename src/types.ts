@@ -53,6 +53,8 @@ export interface ParticipantConfig {
   backend: ParticipantBackend;
   persona: string;
   access: Access;
+  /** Explicitly allow screenshots from Unified Computer Use for this model. */
+  can_read_images?: boolean;
   /** How hard the model should think, in the backend's own words. Null leaves its default. */
   effort: string | null;
   /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
@@ -211,6 +213,8 @@ export interface RoomSnapshot {
   transcript: Message[];
   /** The summary the models see in place of the first `upto` messages, after `/compact`. */
   compaction?: Compaction | null;
+  /** Visibility changes leave every original transcript message intact. */
+  curations?: Curation[];
   /** What the person chose "Always allow" for. */
   allowed?: AllowedRule[];
   /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
@@ -251,6 +255,22 @@ export interface Compaction {
   summary: string;
   upto: number;
 }
+
+export interface Curation {
+  by: string;
+  at: number;
+  /** Inclusive message-number ranges. */
+  hidden: [number, number][];
+  reason: string;
+  when: number;
+  undone?: number;
+}
+export interface CurationUndo { restored: number; sealed: number }
+export type CurateReply = { by: string; unchecked?: number } & (
+  | { status: "hidden"; count: number }
+  | { status: "nothing" }
+  | { status: "stopped" }
+);
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
@@ -360,10 +380,13 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
+  /** Retrieval warning; does not fail or stop a participant's turn. */
+  | { type: "journal_warning"; error: string }
   /** The room cut off bots answering each other; `next` is who the last replies asked. */
   | { type: "hop_limit_reached"; limit: number; next: string[] }
   /** The models now see `summary` in place of the first `upto` messages. */
   | { type: "compacted"; id: string; summary: string; upto: number }
+  | { type: "curations_changed"; curations: Curation[] }
   | { type: "stopped" }
   | { type: "idle" });
 
@@ -434,6 +457,11 @@ export interface WorktreeList { root: string; items: Worktree[]; checkCommand?: 
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {
+  /** Last explicit metadata revision read from this pane's owning host. */
+  hostMetadataRevision?: number;
+  /** Keep a local rename visible until the owning host confirms it. */
+  hostTitlePending?: string;
+  hostArchivePending?: boolean;
   /** A worker destination created for a named assistant; only opt-in lists it. */
   assistantDraftFor?: {hostId:string;assistantId:string};
   /** This chat is mounted in another checkout of its project. */

@@ -1,10 +1,12 @@
+import { PersonalAlwaysPermission } from './PersonalApprovalActions.tsx';
+import { PersonalTaskTiming } from './PersonalTaskTiming';
 import { useState } from 'react';
 import { personalTaskForRow, type WorkspaceTaskRow } from './workspaceTasks.ts';
 import { TASK_STATUS, type PersonalLane } from './personalAssistant.ts';
 import './assistant-projects.css';
 
 /** The lane is resolved by the row's immutable AssistantRef, never by view selection. */
-export function PersonalWorkspaceTaskDetail({ row, lane }: { row: WorkspaceTaskRow; lane: Pick<PersonalLane, 'assistant' | 'offline' | 'decide' | 'cancel'> | null }) {
+export function PersonalWorkspaceTaskDetail({ row, lane }: { row: WorkspaceTaskRow; lane: Pick<PersonalLane, 'assistant' | 'offline' | 'decide' | 'cancel' | 'approvalOptions' | 'decideAlways'> | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const task = personalTaskForRow(row, lane?.assistant ?? null);
@@ -17,9 +19,10 @@ export function PersonalWorkspaceTaskDetail({ row, lane }: { row: WorkspaceTaskR
     <header className="assistant-task-heading"><div><p className="assistant-task-phase">Task details</p><h2 className="assistant-project-title">{task.goal}</h2></div><span className="assistant-project-status" data-state={task.status}>{TASK_STATUS[task.status]}</span></header>
     {task.operation&&<dl className="assistant-task-scope"><div><dt>Machine</dt><dd>{task.operation.host}</dd></div><div><dt>Folder</dt><dd>{task.operation.cwd}</dd></div></dl>}
     {task.lastUpdate&&task.lastUpdate!==receipt?.outputExcerpt&&<p>{task.lastUpdate}</p>}
+    <PersonalTaskTiming task={task} assistant={lane.assistant}/>
     {receipt?.outputExcerpt&&<section className="assistant-task-result-body"><h3>Result</h3><pre>{receipt.outputExcerpt}</pre></section>}
     {task.completionCriteria.length > 0 && <section className="assistant-task-criteria"><h3>Completion criteria</h3><ul>{task.completionCriteria.map((criterion, i) => <li key={i}>{criterion}</li>)}</ul></section>}
-    {decision&&<section className="assistant-task-review"><h3>Waiting for your decision</h3><p>{decision.prompt}</p><div className="assistant-task-commandbar"><button className="primary assistant-task-primary" type="button" disabled={locked} onClick={() => void act(() => lane.decide(decision.id, decision.paramsHash, true))}>Approve</button><button type="button" disabled={locked} onClick={() => void act(() => lane.decide(decision.id, decision.paramsHash, false))}>Dismiss</button></div></section>}
+    {decision&&<section className="assistant-task-review"><h3>Waiting for your decision</h3><p>{decision.prompt}</p><div className="assistant-task-commandbar"><button className="primary assistant-task-primary" type="button" disabled={locked} onClick={() => void act(() => lane.decide(decision.id, decision.paramsHash, true))}>{decision.kind==='handOff'?'I did it':decision.kind==='uncertain'?'Run again':decision.kind==='schedule'?'Confirm schedule':'Allow once'}</button><button type="button" disabled={locked} onClick={() => void act(() => lane.decide(decision.id, decision.paramsHash, false))}>{decision.kind==='handOff'?'Skip':decision.kind==='spend'?'Not now':'Decline'}</button></div><PersonalAlwaysPermission lane={lane} task={task} disabled={locked}/></section>}
     {!['done', 'failed', 'cancelled'].includes(task.status)&&<div className="assistant-task-commandbar"><details className="assistant-task-actions-menu"><summary>Task actions</summary><div className="assistant-task-menu-content"><button type="button" disabled={locked} onClick={() => void act(() => lane.cancel(task.id))}>Cancel task</button></div></details></div>}
     {(task.operation||receipt)&&<details><summary>Operation and receipts</summary>{task.operation&&<><h3>Operation</h3><pre>{task.operation.argv.join(' ')}</pre></>}{receipt&&<><h3>Latest receipt</h3><p>{receipt.phase}{receipt.exitCode !== undefined ? ` · Exit ${receipt.exitCode}` : ''}</p>{receipt.note&&<p>{receipt.note}</p>}</>}</details>}
     {error&&<p role="alert">{error}</p>}

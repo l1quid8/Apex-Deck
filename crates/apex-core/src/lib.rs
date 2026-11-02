@@ -11,6 +11,8 @@
 
 mod approval;
 mod concurrent;
+pub mod curation;
+pub use curation::{journal_text, journal_section,Curation, CurationUndo, CurateOutcome, hidden_line, keep_valid, merge_ranges, stands};
 mod mention;
 mod participant;
 mod room;
@@ -20,11 +22,11 @@ mod view;
 mod write_gate;
 pub mod work_steps;
 
-pub use concurrent::{copy_turn_line, read_only_line, ConcurrentRoom, CopyProvider, TurnBatch, TurnStartHook};
+pub use concurrent::{copy_turn_line, read_only_line, ConcurrentRoom, CopyProvider, TurnBatch, TurnStartHook, TurnLifecycleHook};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
 pub use mention::{mention_clash, mention_for, mentioned_words, mentions_handle, names, parse_mentions, MentionTarget};
 pub use participant::{
-    DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
+    ComputerTurn, DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };
 pub use room::{decide_room_action, ChangeRecord, ClientMessageRecord, ClientMessageRequest, ClientMessageState, Compaction, Room, RoomEvent, RoomKind, RoomOptions, RoomSnapshot, TurnPolicy};
 pub use write_gate::{CheckoutWriteGate, WriteLease, WriteWaitError};

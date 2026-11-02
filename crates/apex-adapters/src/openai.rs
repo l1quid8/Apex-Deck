@@ -71,6 +71,14 @@ impl OpenAiCompatParticipant {
         self
     }
 
+    /// The host-issued computer server as this turn's only tools.
+    pub fn with_computer_tools_only(mut self, context: &crate::BuildContext) -> Self {
+        let mut tools = ToolBox::new(context);
+        tools.computer_only = true;
+        self.tools = Some(Arc::new(tools));
+        self
+    }
+
     /// Let the bot make pictures and videos when its model does, saving
     /// them in `dir`.
     pub fn with_media_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
@@ -319,7 +327,7 @@ impl Participant for OpenAiCompatParticipant {
         let mut turn = match &self.tools {
             Some(tools) if !next_steps && tools_allowed(self.tools_off_until.lock().unwrap().to_owned(), Instant::now()) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
                 let access = request.access.unwrap_or(self.config.access);
-                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_cwd(request.cwd))
+                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress).with_computer(request.computer.as_ref()).with_cwd(request.cwd).with_can_read_images(self.config.can_read_images))
             }
             _ => None,
         };
@@ -345,6 +353,12 @@ impl Participant for OpenAiCompatParticipant {
         let mut rounds: Vec<Usage> = Vec::new();
         let mut stopped_early = false;
         let mut failure: Option<ParticipantError> = None;
+        // Sticky for this request's entire history, including failed calls and
+        // retries that remove tools or reasoning from subsequent requests.
+        let mut computer_content = messages_have_computer_content(&messages);
+        // Indices refer only to images produced by tools in this request.
+        // Human attachment parts never enter this queue.
+        let mut computer_images: VecDeque<(usize, usize)> = VecDeque::new();
         'rounds: for round in 0.. {
             // A failure after tools have run keeps what the reply did so far.
             macro_rules! fail {
@@ -362,6 +376,7 @@ impl Participant for OpenAiCompatParticipant {
                 break;
             }
             let response = loop {
+                computer_content |= messages_have_computer_content(&messages);
                 let mut body = base.clone();
                 body["messages"] = json!(messages);
                 if let Some(turn) = &turn {
@@ -404,7 +419,7 @@ impl Participant for OpenAiCompatParticipant {
                 // turn with its own message below.
                 if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && refuses_tools(&lower) {
                     let now = Instant::now();
-                    eprintln!("[apex-deck] {model} turned tools down; answering without them until {:?} from now: {}", TOOLS_RETRY_AFTER, text.chars().take(200).collect::<String>());
+                    eprintln!("{}", tools_refused_diagnostic(model, &text, computer_content));
                     let off = cooldown_after_error(*self.tools_off_until.lock().unwrap(), status.as_u16(), &lower, now);
                     *self.tools_off_until.lock().unwrap() = off;
                     turn = None;
@@ -412,7 +427,7 @@ impl Participant for OpenAiCompatParticipant {
                     messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS));
                     continue;
                 }
-                let snippet: String = text.chars().take(300).collect();
+                let snippet = provider_text(&text, 300, computer_content);
                 let hint = match status.as_u16() {
                     401 | 403 if key.is_none() => " This server wants an API key. Open this bot's settings and paste one into API key.",
                     401 | 403 => " The saved API key was refused. Open this bot's settings and paste a new one into API key.",
@@ -443,7 +458,7 @@ impl Participant for OpenAiCompatParticipant {
                 on_progress(Progress::Text(text));
                 reply.text.push_str(text);
             };
-            let streamed = match read_stream(response, &url, &mut on_text).await {
+            let streamed = match read_stream(response, &url, &mut on_text, &mut computer_content).await {
                 Ok(streamed) => streamed,
                 Err(error) => fail!(error),
             };
@@ -470,9 +485,28 @@ impl Participant for OpenAiCompatParticipant {
                 said["reasoning_content"] = json!(streamed.reasoning);
             }
             messages.push(said);
+            let mut image_parts = Vec::new();
+            let image_message = messages.len() + streamed.calls.len();
             for call in &streamed.calls {
                 let result = turn.run(call).await;
-                messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": result}));
+                messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": result.text}));
+                if !result.images.is_empty() {
+                    let snapshot = serde_json::from_str::<Value>(&call.arguments).ok()
+                        .and_then(|args| args["arguments"]["snapshot"].as_str().map(str::to_string));
+                    image_parts.push(json!({"type":"text", "text":format!("Computer image from tool call {}{}", call.id,
+                        snapshot.map(|id| format!(", snapshot {id}")).unwrap_or_default())}));
+                    for image in result.images {
+                        computer_images.push_back((image_message, image_parts.len()));
+                        image_parts.push(json!({"type":"image_url", "image_url":{"url":format!("data:{};base64,{}",image.mime,image.data)}}));
+                    }
+                }
+            }
+            if !image_parts.is_empty() {
+                messages.push(json!({"role":"user", "content":image_parts}));
+            }
+            while computer_images.len() > 2 {
+                let (message, part) = computer_images.pop_front().unwrap();
+                messages[message]["content"][part] = json!({"type":"text", "text":"[older computer image omitted]"});
             }
         }
         if let Some(turn) = turn.as_mut() {
@@ -543,7 +577,7 @@ struct Streamed {
 }
 
 /// Read an event stream to its end, passing on the text as it arrives.
-async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn FnMut(&str) + Send)) -> Result<Streamed, ParticipantError> {
+async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn FnMut(&str) + Send), computer_content: &mut bool) -> Result<Streamed, ParticipantError> {
     let mut out = Streamed::default();
     let mut decoder = Utf8Chunks::default();
     let mut line = String::new();
@@ -585,9 +619,19 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
                         call.name = name;
                     }
                     call.arguments.push_str(&arguments);
+                    // Incomplete JSON is normal while streaming any MCP tool.
+                    // Only commit known computer content now; an error/end below
+                    // treats still-malformed calls conservatively as private.
+                    if serde_json::from_str::<Value>(&call.arguments).is_ok() {
+                        *computer_content |= call.has_computer_content();
+                    }
                 }
                 SseLine::Usage { input, output, cached, cost_usd } => out.usage = Usage { input, output, cached, cost_usd },
-                SseLine::Error(message) => return Err(ParticipantError::Failed(format!("stream from {url} failed: {message}"))),
+                SseLine::Error(message) => {
+                    *computer_content |= out.calls.iter().any(ToolCall::has_computer_content);
+                    let message = provider_text(&message, usize::MAX, *computer_content);
+                    return Err(ParticipantError::Failed(format!("stream from {url} failed: {message}")));
+                }
                 SseLine::Done => *done = true,
                 SseLine::Ignored => {}
             }
@@ -611,6 +655,7 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
             handle(&line, &mut out, &mut done)?;
         }
     }
+    *computer_content |= out.calls.iter().any(ToolCall::has_computer_content);
     // A call without a name can't be run; one without an id gets one, since
     // its result has to point back at it.
     out.calls.retain(|c| !c.name.is_empty());
@@ -620,6 +665,23 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
         }
     }
     Ok(out)
+}
+
+/// Provider error bodies may quote the entire request, including tool input
+/// and output. Decide before formatting anything destined for history/logs.
+fn provider_text(text: &str, limit: usize, computer_content: bool) -> String {
+    if computer_content { "[computer content hidden]".into() } else { text.chars().take(limit).collect() }
+}
+
+fn tools_refused_diagnostic(model: &str, text: &str, computer_content: bool) -> String {
+    format!("[apex-deck] {model} turned tools down; answering without them until {:?} from now: {}", TOOLS_RETRY_AFTER, provider_text(text, 200, computer_content))
+}
+
+fn messages_have_computer_content(messages: &[Value]) -> bool {
+    messages.iter().filter_map(|message| message["tool_calls"].as_array()).flatten().any(|call| {
+        ToolCall { name: call["function"]["name"].as_str().unwrap_or("").into(),
+            arguments: call["function"]["arguments"].as_str().unwrap_or("").into(), ..Default::default() }.has_computer_content()
+    })
 }
 
 /// Whether an error says the model doesn't take tools at all, as opposed
@@ -692,6 +754,288 @@ impl OpenAiCompatParticipant {
 mod tests {
     use super::*;
 
+    // Real HTTP + stdio MCP boundaries. A missing image collection, wrong
+    // protocol order, over-broad pruning or missing opt-in breaks these tests.
+    #[cfg(unix)]
+    async fn screenshot_roundtrip(can_read_images: bool, server: &str) -> (Vec<Value>, Vec<String>, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let received = bodies.clone();
+        let server_name = server.to_string();
+        let http = tokio::spawn(async move {
+            let mut round = 0;
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let header_end = loop {
+                    let mut buffer = [0; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") { break end + 4; }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                let length: usize = headers.lines().find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                }).unwrap_or(0);
+                let models = headers.starts_with("GET ");
+                while bytes.len() < header_end + length {
+                    let mut buffer = [0; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buffer[..n]);
+                }
+                if models {
+                    let body = r#"{"data":[]}"#;
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                    continue;
+                }
+                received.lock().unwrap().push(serde_json::from_slice::<Value>(&bytes[header_end..header_end + length]).unwrap());
+                let delta = if round < 3 {
+                    let count = if round == 0 { 2 } else { 1 };
+                    json!({"tool_calls": (0..count).map(|index| json!({"index":index,"id":format!("shot-{round}-{index}"),"type":"function","function":{
+                        "name":"mcp_call","arguments":json!({"server":server_name,"tool":"get_screenshot","arguments":{"snapshot":format!("snapshot-{round}-{index}")}}).to_string()
+                    }})).collect::<Vec<_>>()})
+                } else { json!({"content":"done"}) };
+                let body = format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":delta}]}));
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                round += 1;
+                if round == 4 { break; }
+            }
+        });
+        let script = r#"
+count=0
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) result='{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}' ;;
+    *'"tools/list"'*) result='{"tools":[{"name":"get_screenshot","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}' ;;
+    *'"tools/call"'*)
+      count=$((count+1))
+      case "$count" in
+        1) data='AQ==' ;; 2) data='Ag==' ;; 3) data='Aw==' ;; *) data='BA==' ;;
+      esac
+      result='{"content":[{"type":"text","text":"SCREEN_SECRET"},{"type":"image","mimeType":"image/png","data":"'"$data"'"}]}' ;;
+    *) continue ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
+        let config: ParticipantConfig = serde_json::from_value(json!({"id":"vision", "display_name":"Vision", "backend":{
+            "kind":"open_ai_compatible", "base_url":format!("http://{address}/v1"),"model":"fixture-vision"
+        }, "can_read_images":can_read_images})).unwrap();
+        let tools = ToolBox {
+            mcp: api_tools::mcp_client::fixture_pool(vec![api_tools::mcp_client::ServerSpec { name:server.into(), transport:api_tools::mcp_client::Transport::Stdio{
+                command:"sh".into(), args:vec!["-c".into(),script.into()],env:vec![]
+            }}]),
+            ..ToolBox::new(&crate::BuildContext::default())
+        };
+        let mut bot = OpenAiCompatParticipant::new(config);
+        bot.tools = Some(Arc::new(tools));
+        let path = std::env::temp_dir().join(format!("apex-tool-upload-{}-{}-{server}-{can_read_images}.png",std::process::id(),address.port()));
+        std::fs::write(&path,b"\x89PNG\r\n\x1a\nupload").unwrap();
+        bot = bot.with_attachment_roots(vec![path.parent().unwrap().to_path_buf()]);
+        let request = TurnRequest { computer: None, effort_override:None,access:None,system:"test".into(),turns:vec![apex_core::ViewTurn{
+            role:Role::User,content:format!("Attached image: {}",path.display())
+        }],unseen:vec![],plan:false,cwd:None };
+        let work = Mutex::new(Vec::new());
+        let reply = bot.respond_with_progress(request,&|progress| if let Progress::Work(step)=progress {
+            work.lock().unwrap().push(serde_json::to_string(step).unwrap());
+        }).await.unwrap();
+        http.await.unwrap();
+        let _ = std::fs::remove_file(path);
+        let bodies = bodies.lock().unwrap().clone();
+        (bodies,work.into_inner().unwrap(),reply.text)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tool_message_stays_text_and_image_follows_as_user_message() {
+        let (bodies,work,reply) = screenshot_roundtrip(true,"apex-computer").await;
+        assert_eq!(reply,"done");
+        let messages = bodies[1]["messages"].as_array().unwrap();
+        assert_eq!(messages[3]["role"],"tool");
+        assert!(messages[3]["content"].is_string());
+        assert_eq!(messages[4]["role"],"tool");
+        assert!(messages[4]["content"].is_string());
+        assert_eq!(messages.len(),6,"tool round must add one image user message");
+        assert_eq!(messages[5]["role"],"user");
+        let images: Vec<_> = messages[5]["content"].as_array().unwrap().iter().filter_map(|p|p["image_url"]["url"].as_str()).collect();
+        assert_eq!(images,["data:image/png;base64,AQ==","data:image/png;base64,Ag=="]);
+        let attribution = messages[5]["content"].to_string();
+        assert!(attribution.contains("shot-0-0") && attribution.contains("shot-0-1"));
+        assert!(work.iter().all(|step| !step.contains("SCREEN_SECRET") && !step.contains("AQ==") && !step.contains("snapshot-")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_the_latest_two_tool_images_stay_in_the_request() {
+        let (bodies,_,_) = screenshot_roundtrip(true,"apex-computer").await;
+        let messages = bodies[3]["messages"].as_array().unwrap();
+        let images: Vec<_> = messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter_map(|p|p["image_url"]["url"].as_str()).collect();
+        assert_eq!(images.len(),3,"one uploaded attachment plus the latest two computer images");
+        assert_eq!(images[0],"data:image/png;base64,iVBORw0KGgp1cGxvYWQ=");
+        assert_eq!(&images[1..],["data:image/png;base64,Aw==","data:image/png;base64,BA=="]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn all_tool_replies_come_before_the_image_message() {
+        let (bodies,_,_) = screenshot_roundtrip(true,"apex-computer").await;
+        for body in bodies.iter().skip(1) {
+            let messages = body["messages"].as_array().unwrap();
+            for (index, message) in messages.iter().enumerate().filter(|(_,m)|m["tool_calls"].is_array()) {
+                for (offset,call) in message["tool_calls"].as_array().unwrap().iter().enumerate() {
+                    assert_eq!(messages[index+offset+1]["role"],"tool","all replies precede image user message");
+                    assert_eq!(messages[index+offset+1]["tool_call_id"],call["id"]);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bot_without_can_read_images_gets_no_image_and_the_notice() {
+        let (bodies,_,_) = screenshot_roundtrip(false,"apex-computer").await;
+        let messages = bodies[3]["messages"].as_array().unwrap();
+        let tool_results: Vec<_> = messages.iter().filter(|m|m["role"]=="tool").collect();
+        assert!(tool_results.iter().all(|m|m["content"].as_str().unwrap().contains("This model can't read screenshots and relies on accessibility text.")));
+        assert!(!bodies[3].to_string().contains("SCREEN_SECRET"),"capture must be refused");
+        let images = messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count();
+        assert_eq!(images,1,"only the ordinary uploaded attachment remains");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn images_from_other_servers_stay_text_stubs() {
+        let (bodies,_,_) = screenshot_roundtrip(true,"weather").await;
+        assert!(bodies[3].to_string().contains("[image (image/png, 3 bytes) not shown]"));
+        let messages = bodies[3]["messages"].as_array().unwrap();
+        assert_eq!(messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count(),1);
+    }
+
+    async fn fixture_stream(body: String) -> reqwest::Response {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).unwrap();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        reqwest::get(format!("http://{address}")).await.unwrap()
+    }
+
+    fn computer_frame(arguments: &str) -> String {
+        format!("data: {}\n\n", json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"computer","function":{"name":"mcp_call","arguments":arguments}}]}}]}))
+    }
+
+    #[tokio::test]
+    async fn stream_error_has_no_provider_text_with_computer_content() {
+        for args in [r#"{"server":"apex-computer","tool":"read_screen"}"#, r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#] {
+            let body = format!("{}data: {{\"error\":{{\"message\":\"SCREEN_SECRET TOKEN_SECRET\"}}}}\n\n", computer_frame(args));
+            let response = fixture_stream(body).await;
+            let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut false).await.unwrap_err();
+            assert!(!error.to_string().contains("SECRET"), "provider text reached the error");
+            assert!(error.to_string().contains("provider.test"));
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_errors_keep_their_text_without_computer_content() {
+        let response = fixture_stream("data: {\"error\":{\"message\":\"ordinary problem\"}}\n\n".into()).await;
+        let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut false).await.unwrap_err();
+        assert!(error.to_string().contains("ordinary problem"));
+    }
+
+    #[test]
+    fn provider_error_echoing_screen_text_is_not_reported() {
+        let text = provider_text("SCREEN_SECRET TYPED_SECRET IMAGE_SECRET TOKEN_SECRET", 300, true);
+        assert!(!text.contains("SECRET"));
+    }
+
+    #[test]
+    fn tools_refused_log_has_no_provider_text_with_computer_content() {
+        let text = tools_refused_diagnostic("test-model", "unsupported tools SCREEN_SECRET TOKEN_SECRET", true);
+        assert!(text.contains("test-model"));
+        assert!(!text.contains("SECRET"));
+        assert!(tools_refused_diagnostic("test-model", "unsupported tools ordinary problem", false).contains("ordinary problem"));
+    }
+
+    #[tokio::test]
+    async fn request_history_stays_private_through_failed_calls_and_retries() {
+        // A failure/no-result does not remove the assistant's input from the
+        // next request. Malformed JSON and escaped server names count too.
+        for arguments in [
+            r#"{"server":"apex-computer","tool":"type_text","arguments":{"text":"TYPED_SECRET"}}"#,
+            r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#,
+            r#"{"server":"apex\u002dcomputer","tool":"read_screen"}"#,
+        ] {
+            let mut messages = vec![json!({"role":"assistant", "reasoning_content":"thinking", "tool_calls":[{
+                "id":"failed", "function":{"name":"mcp_call","arguments":arguments}
+            }]})];
+            let mut private = messages_have_computer_content(&messages);
+            assert!(private);
+            // These are the same removals the provider retry path performs.
+            strip_reasoning(&mut messages);
+            private |= messages_have_computer_content(&messages);
+            assert!(!provider_text("SCREEN_SECRET", 300, private).contains("SECRET"));
+            // Even if a retry drops its calls, the prior request remains private.
+            messages.clear();
+            private |= messages_have_computer_content(&messages);
+            let response = fixture_stream("data: {\"error\":{\"message\":\"SCREEN_SECRET\"}}\n\n".into()).await;
+            let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut private).await.unwrap_err();
+            assert!(!error.to_string().contains("SECRET"));
+            assert!(private);
+        }
+    }
+
+    #[test]
+    fn non_computer_history_keeps_provider_diagnostics() {
+        let messages = [json!({"role":"assistant","tool_calls":[{"function":{"name":"mcp_call",
+            "arguments":r#"{"server":"weather","tool":"get_weather"}"#}}]})];
+        assert!(!messages_have_computer_content(&messages));
+        assert_eq!(provider_text("ordinary problem", 300, false), "ordinary problem");
+    }
+
+    #[tokio::test]
+    async fn fragmented_other_tools_keep_provider_error_text() {
+        let body = format!("{}{}data: {{\"error\":{{\"message\":\"ordinary problem\"}}}}\n\n",
+            computer_frame(r#"{"server":"weather","arguments":"#), computer_frame("{}}"));
+        let response = fixture_stream(body).await;
+        let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut false).await.unwrap_err();
+        assert!(error.to_string().contains("ordinary problem"));
+    }
+
+    #[tokio::test]
+    async fn unidentified_server_history_keeps_provider_errors_private() {
+        let cases = [
+            ("missing", None), ("null", Some(Value::Null)), ("number", Some(json!(42))),
+            ("object", Some(json!({"text":"SERVER_SECRET"}))), ("array", Some(json!(["SERVER_SECRET"]))),
+            ("empty", Some(json!(""))), ("whitespace", Some(json!(" \t"))),
+        ];
+        for (case, server) in cases {
+            for name in ["mcp_call", "mcp_list_tools"] {
+                let mut args = json!({"tool":"type_text", "arguments":{"text":"TYPED_SECRET"}});
+                if let Some(server) = &server { args["server"] = server.clone(); }
+                let messages = [json!({"role":"assistant", "tool_calls":[{"id":"failed", "function":{
+                    "name":name, "arguments":args.to_string()
+                }}]})];
+                let mut private = messages_have_computer_content(&messages);
+                assert!(!provider_text("SCREEN_SECRET TOKEN_SECRET", 300, private).contains("SECRET"), "{case}: HTTP diagnostic leaked provider prose");
+                assert!(!tools_refused_diagnostic("model", "SCREEN_SECRET", private).contains("SECRET"), "{case}: refusal diagnostic leaked provider prose");
+                let response = fixture_stream("data: {\"error\":{\"message\":\"SCREEN_SECRET\"}}\n\n".into()).await;
+                let error = read_stream(response, "http://provider.test", &mut |_| {}, &mut private).await.unwrap_err();
+                assert!(!error.to_string().contains("SECRET"), "{case}: SSE diagnostic leaked provider prose");
+                assert!(private, "{case}: unidentified routing must stay private");
+            }
+        }
+    }
+
     #[test]
     fn only_a_real_refusal_turns_tools_off() {
         assert!(refuses_tools("this model does not support tools"));
@@ -751,7 +1095,7 @@ mod tests {
 
     #[test]
     fn effort_is_only_in_the_request_when_set() {
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None };
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None };
         assert!(request_body("m", None, &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert!(request_body("m", Some("  "), &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert_eq!(request_body("m", Some("high"), &request, &[]).unwrap()["reasoning_effort"], "high");
@@ -797,7 +1141,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("apex-vision-{}.png", std::process::id()));
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         let text = format!("Describe this\nAttached image: {}", path.display());
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false, cwd: None };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
@@ -810,7 +1154,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("apex-user-image-{}.png", std::process::id()));
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         let text = format!("Attached image: {}", path.display());
-        let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
                 apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
             unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None };

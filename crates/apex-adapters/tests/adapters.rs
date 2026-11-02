@@ -12,6 +12,7 @@ use tokio::net::TcpListener;
 
 fn config(id: &str, backend: Backend) -> ParticipantConfig {
     ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new(id),
         display_name: id.to_string(),
         backend,
@@ -26,6 +27,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
 
 fn request(text: &str) -> TurnRequest {
     TurnRequest {
+        computer: None,
         effort_override: None,
         access: None,
         system: "You are a test bot.".into(),
@@ -38,7 +40,7 @@ fn request(text: &str) -> TurnRequest {
 
 /// The same request with the thread's Plan switch on, as the room sends it.
 fn planning(text: &str) -> TurnRequest {
-    TurnRequest { effort_override: None, access: Some(Access::Read), plan: true, ..request(text) }
+    TurnRequest { computer: None, effort_override: None, access: Some(Access::Read), plan: true, ..request(text) }
 }
 
 /// Run `respond` and return the result plus everything streamed.
@@ -1110,6 +1112,7 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
     let result = bot
         .respond(
             TurnRequest {
+                computer: None,
                 effort_override: None,
                 access: None,
                 system: "You are a test bot.".into(),
@@ -2823,6 +2826,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
         &BuildContext { cwd: None, ..context_in(&dir) },
     );
     let req_nodir = TurnRequest {
+        computer: None,
         system: "sys".into(),
         turns: vec![ViewTurn { role: Role::User, content: "[Human]: bare first turn".into() }],
         unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],

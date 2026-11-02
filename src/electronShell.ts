@@ -82,11 +82,16 @@ export interface DeckBridge {
     open(snapshot: PopoutSnapshot, bounds?: { x: number; y: number; width: number; height: number }): Promise<{ token: string }>;
     snapshot(token: string): Promise<PopoutSnapshot>;
     close(token: string): Promise<void>;
+    assistantLayout?(token: string, presentation: 'pill'|'threads'|'chat'|'minimized'|'menu'): Promise<void>;
+    assistantVisibility?(token: string, visible: boolean): Promise<void>;
+    moveAssistant?(token: string, delta: {dx:number;dy:number}): Promise<void>;
     update(token: string, patch: PopoutUpdate): Promise<void>;
     sendAction(token: string, action: PopoutAction): Promise<void>;
     onUpdate(cb: (patch: PopoutUpdate) => void): () => void;
     onAction(cb: (token: string, action: PopoutAction) => void): () => void;
     onClosed(cb: (token: string) => void): () => void;
+        /** Reads the assistant window's pin, or sets it when `on` is given. */
+        alwaysOnTop?(token: string, on?: boolean): Promise<boolean>;
   };
   smoke: boolean;
 }

@@ -132,6 +132,8 @@ const COMMANDS = [
   ['roomImport', ['f', { transcript: [] }, '/srv/x'], 'room_import', { id: 'f', snapshot: { transcript: [] }, cwd: '/srv/x', replace: false }],
   ['roomImport', ['f', { transcript: [] }, '', true], 'room_import', { id: 'f', snapshot: { transcript: [] }, cwd: null, replace: true }],
   ['roomCompact', ['t'], 'room_compact', { id: 't' }],
+  ['roomCurate', ['t'], 'room_curate', { id: 't' }],
+  ['roomCurateUndo', ['t'], 'room_curate_undo', { id: 't' }],
   ['roomRunnerState', ['t'], 'room_runner_state', {id:'t'}],
   ['roomRunnerStart', ['t','',0,'req',{schemaVersion:1}], 'room_runner_start', {id:'t',requestId:'req',expectedRoomRevision:0,runner:{schemaVersion:1}}],
   ['roomRunnerAction', ['t','runner',3,'req',{action:'pause'}], 'room_runner_action', {id:'t',runnerId:'runner',expectedRevision:3,requestId:'req',action:{action:'pause'}}],

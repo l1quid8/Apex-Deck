@@ -1,6 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const mod=await import('../src/roomRecovery.ts').catch(()=>({}));
+
+test('curation recovery drops represented events and applies only events after the snapshot', async () => {
+  let finish; let curations; const replayed = [];
+  const old = [{by:'null', at:30, hidden:[[0,9]], reason:'old', when:1}];
+  const saved = [{...old[0], undone:2}];
+  const later = [...saved, {by:'null', at:40, hidden:[[10,19]], reason:'later', when:3}];
+  const recovery = mod.createRoomRecovery({
+    load:()=>new Promise(resolve=>{finish=resolve;}),
+    apply:state=>{curations=state.snapshot.curations;},
+    fail:error=>assert.fail(String(error)), represented:mod.representedRoomEvent,
+    event:event=>{replayed.push(event.recovery_seq);curations=event.curations;},
+  });
+  const loading = recovery.refresh();
+  recovery.capture({type:'curations_changed',curations:old,recovery_seq:1});
+  recovery.capture({type:'curations_changed',curations:saved,recovery_seq:2});
+  recovery.capture({type:'curations_changed',curations:later,recovery_seq:3});
+  const state = {snapshot:{curations:saved},active:[],approvals:[],recovery_seq:2};
+  finish(state); await loading;
+  assert.deepEqual(replayed, [3]);
+  assert.deepEqual(curations, later);
+  assert.equal(mod.representedRoomEvent(state,{type:'curations_changed',curations:old}),false);
+});
 test('late state cannot overwrite newer recovery, and disposed panes ignore replies',async()=>{
   assert.equal(typeof mod.createRoomRecovery,'function');
   const waiting=[];const applied=[];

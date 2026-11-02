@@ -1,0 +1,37 @@
+{
+  "room": "pane-mvwtcdzq-0",
+  "active": [],
+  "messages": 93,
+  "participants": [
+    {
+      "id": "null",
+      "display_name": "Null",
+      "access": "read"
+    },
+    {
+      "id": "jigga",
+      "display_name": "Jigga",
+      "access": "read"
+    },
+    {
+      "id": "gronk",
+      "display_name": "Gronk",
+      "access": "read"
+    },
+    {
+      "id": "muck",
+      "display_name": "Muck",
+      "access": "read"
+    },
+    {
+      "id": "forge",
+      "display_name": "Forge",
+      "access": "read"
+    },
+    {
+      "id": "dsfoe",
+      "display_name": "Ds4",
+      "access": "read"
+    }
+  ]
+}

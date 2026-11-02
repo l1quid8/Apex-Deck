@@ -18,6 +18,10 @@ use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
 #[cfg(test)]
+#[path = "curation_tests.rs"]
+mod curation_tests;
+
+#[cfg(test)]
 #[path = "chat_delivery_tests.rs"]
 mod chat_delivery_tests;
 
@@ -61,6 +65,13 @@ fn reject_registry_link(directory: &Path) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct CurateReply {
+    pub by: String,
+    #[serde(flatten)]
+    pub outcome: apex_core::CurateOutcome,
+}
+
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
     /// Serializes snapshot reads with persistence and numbered event emission.
@@ -75,6 +86,8 @@ pub(crate) struct RoomHandle {
     /// Immutable import attribution read from protected authority when opened.
     legacy: Option<crate::legacy_import::LegacyMarker>,
     pub(crate) deleted: Arc<AtomicBool>,
+    pub(crate) journal: Option<PathBuf>,
+    journal_hint: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
     plan: Arc<AtomicBool>,
@@ -100,6 +113,11 @@ impl RoomHandle {
         let live = self.live.lock().unwrap();
         !live.approvals.is_empty() || !live.questions.is_empty()
     }
+    /// When a worker last did something, and whether a command is still running.
+    pub(crate) fn worker_activity(&self) -> (u64, bool) {
+        let live = self.live.lock().unwrap();
+        (live.last_activity_ms, !live.running_commands.is_empty())
+    }
     pub(crate) fn busy(&self) -> bool { self.runtime.busy() || self.checkout_action.try_write().is_err() }
 }
 
@@ -111,6 +129,9 @@ struct LiveRoomState {
     questions: Vec<serde_json::Value>,
     /// The latest suggested next steps, while they stand.
     next_steps: Option<serde_json::Value>,
+    /// The watchdog's view of the worker. Only worker activity moves it.
+    last_activity_ms: u64,
+    running_commands: std::collections::HashSet<String>,
 }
 
 /// Where the host keeps its files.
@@ -160,6 +181,7 @@ pub struct Host {
     steps: crate::step_buffers::StepBuffers,
     /// The one shared simulator that the person and the bots take turns driving.
     pub(crate) phone: Arc<crate::phone::Phone>,
+    pub(crate) computer: Arc<crate::computer::Computer>,
     pub(crate) fold_queue: Arc<crate::bot_copies::FoldQueue>,
     runner_workers: Mutex<std::collections::HashSet<String>>,
     runner_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -265,8 +287,10 @@ impl Host {
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let fold_queue = Arc::new(crate::bot_copies::FoldQueue::new(paths.data.clone()));
         let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
+        let computer = crate::computer::Computer::new(&paths.data);
         let host = Arc::new(Host {
             paths,
+            computer,
             _ownership: ownership,
             runtime,
             events: Bus::default(),
@@ -311,7 +335,7 @@ impl Host {
                     &host.turn_sink(&thread_id, &handle, &error),
                 ).await?;
                 if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-                checkpoint_room(&handle, &host.store, &thread_id).await?;
+                host.checkpoint_room(&handle, &thread_id).await?;
                 host.run_batch_in_background(thread_id, handle, batch);
                 Ok(())
             })
@@ -469,7 +493,7 @@ impl Host {
         let handle = self.handle(id)?;
         let error = Mutex::new(None);
         handle.room.lock().await.append_assistant_note(text, &self.turn_sink(id, &handle, &error));
-        checkpoint_room(&handle, &self.store, id).await?;
+        self.checkpoint_room(&handle, id).await?;
         if let Some(error) = error.into_inner().unwrap() { return Err(error); }
         Ok(())
     }
@@ -488,22 +512,46 @@ impl Host {
     }
 
     /// The host's own data folder.
+    pub(crate) fn downloads_dir(&self) -> Option<PathBuf> { self.paths.downloads.clone() }
     pub(crate) fn data_dir(&self) -> &Path {
         &self.paths.data
     }
 
     pub(crate) fn room_event(&self, room: &str, event: RoomEvent) {
         if let Ok(handle) = self.handle(room) {
-            let mut seq = handle.recovery.lock().unwrap();
-            // Compaction emits before the final full snapshot is saved.
-            if let RoomEvent::Compacted { summary, upto, .. } = &event {
-                handle.checkpoint.lock().unwrap().snapshot.compaction = Some(apex_core::Compaction { summary: summary.clone(), upto: *upto });
-            }
-            *seq += 1;
-            self.emit_room_event(room, event, Some(&handle), Some(*seq));
+            self.room_event_for(room, &handle, event);
         } else {
             self.emit_room_event(room, event, None, None);
         }
+    }
+
+    /// Async control operations keep their original handle across replacement.
+    fn room_event_for(&self, room: &str, handle: &RoomHandle, event: RoomEvent) {
+        let mut seq = handle.recovery.lock().unwrap();
+        {
+            let mut checkpoint = handle.checkpoint.lock().unwrap();
+            if handle.deleted.load(Ordering::SeqCst) {
+                return;
+            }
+            // Context operations emit before the final full snapshot is saved.
+            match &event {
+                RoomEvent::Compacted { summary, upto, .. } => {
+                    checkpoint.snapshot.compaction = Some(apex_core::Compaction {
+                        summary: summary.clone(),
+                        upto: *upto,
+                    })
+                }
+                RoomEvent::CurationsChanged { curations } => {
+                    checkpoint.snapshot.curations = curations.clone()
+                }
+                _ => {}
+            }
+        }
+        if handle.deleted.load(Ordering::SeqCst) {
+            return;
+        }
+        *seq += 1;
+        self.emit_room_event(room, event, Some(handle), Some(*seq));
     }
 
     fn persist_and_emit(&self, id: &str, handle: &RoomHandle, event: RoomEvent) -> Result<(), String> {
@@ -524,6 +572,15 @@ impl Host {
             if let RoomEvent::ApprovalResolved { request, approved: true, .. } = &event {
                 plan_off = live.approvals.iter().any(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan");
             }
+            if matches!(event, RoomEvent::TurnStarted { .. } | RoomEvent::Delta { .. } | RoomEvent::Activity { .. } | RoomEvent::WorkStep { .. } | RoomEvent::Todo { .. } | RoomEvent::MessageAdded { .. } | RoomEvent::Usage { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::QuestionResolved { .. }) {
+                live.last_activity_ms = crate::personal::now();
+            }
+            if let RoomEvent::WorkStep { id, step } = &event {
+                let key = format!("{id}:{}", step.key);
+                if step.status == apex_core::work_steps::StepStatus::Running { live.running_commands.insert(key); } else { live.running_commands.remove(&key); }
+            }
+            if let RoomEvent::TurnStarted { id } = &event { let own = format!("{id}:"); live.running_commands.retain(|key| !key.starts_with(&own)); }
+            if matches!(event, RoomEvent::Idle | RoomEvent::Stopped) { live.running_commands.clear(); }
             match &event {
                 RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); live.next_steps = None; }
                 RoomEvent::QuestionRequested { id, request, questions } => {
@@ -629,6 +686,7 @@ impl Host {
     }
 
     fn require_idle(&self, id: &str) -> Result<(), String> {
+        self.require_not_trashed(id)?;
         if self.handle(id)?.runtime.busy() { Err("wait for the models to finish first".into()) } else { Ok(()) }
     }
 
@@ -665,7 +723,8 @@ impl Host {
 
     pub async fn list_tool_servers(&self, room: String, agent: String) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
         let key = format!("{room}:{agent}");
-        if let Some(names) = self.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned() { return Ok(names); }
+        let cached = self.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned();
+        if let Some(names) = cached { return Ok(self.computer_tool_menu(&room, &ParticipantId::new(&agent), names)); }
         let handle = self.handle(&room)?;
         let config = handle.room.lock().await.configs().into_iter().find(|p| p.id.as_str() == agent).ok_or("Unknown participant")?;
         let names = match config.backend {
@@ -674,7 +733,7 @@ impl Host {
             _ => Vec::new(),
         };
         if !names.is_empty() { self.tool_servers.lock().unwrap().insert(key, names.clone()); }
-        Ok(names)
+        Ok(self.computer_tool_menu(&room, &ParticipantId::new(&agent), names))
     }
 
     // ------------------------------------------------------------ terminals
@@ -800,6 +859,7 @@ impl Host {
                 };
                 if let Some(tool) = tool {
                     raw_profiles.push(ParticipantConfig {
+                        can_read_images: false,
                         id: ParticipantId::new(info.key.clone()),
                         display_name: info.label.clone(),
                         persona: String::new(),
@@ -927,6 +987,20 @@ impl Host {
     }
 
     /// Update catalog metadata for a chat room or promoted work room.
+    pub(crate) fn require_not_trashed(&self,id:&str)->Result<(),String> {
+        if self.store.chat_meta(id)?.is_some_and(|m|m.trashed_at.is_some()) {return Err("Restore this thread from Trash before starting work.".into())} Ok(())
+    }
+    /// Recoverable lifecycle transition, serialized against room replacement and
+    /// checkout actions. This never deletes room history or starts a turn.
+    pub fn room_set_trashed(&self,id:String,trashed:bool)->Result<crate::storage::ChatRoomMeta,String> {
+        let _lifecycle=self.room_lifecycle.lock().unwrap();
+        let handle=self.handle(&id).ok();
+        let _action=match &handle {Some(h)=>Some(h.checkout_action.try_write().map_err(|_|"Wait for the current room action to finish.")?),None=>None};
+        if self.store.room(&id)?.is_none() {return Err("Thread unavailable.".into())}
+        if handle.as_ref().is_some_and(|h|h.runtime.busy() || h.has_pending_human_waits()) {return Err("Stop work and resolve outstanding requests before moving this thread to Trash.".into())}
+        self.store.update_chat_meta(&id,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})
+    }
+
     pub fn chat_update_meta(
         &self,
         id: String,
@@ -943,10 +1017,12 @@ impl Host {
             .unwrap_or(0);
         self.store.update_chat_meta(&id, |meta| {
             if let Some(t) = title {
+                meta.title_managed=true;
                 let trimmed = t.trim();
                 meta.title = if trimmed.is_empty() { "New chat".to_string() } else { trimmed.to_string() };
             }
             if let Some(a) = archived {
+                meta.archive_managed=true;
                 meta.archived = a;
             }
             if let Some(m) = moved_to {
@@ -1050,7 +1126,7 @@ impl Host {
         } else {
             saved.as_ref().map(|s| s.mounts.clone()).unwrap_or_default()
         };
-        let room = match saved {
+        let mut room = match saved {
             Some(saved) => Room::restore(roster, saved.snapshot),
             None => Room::new(roster, options).with_kind(kind),
         };
@@ -1063,7 +1139,12 @@ impl Host {
             let retired = Arc::clone(&deleted);
             std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
-        self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
+        let journal = if kind.is_chat() { None } else { Some(crate::journal::path_for(&self.paths.data.join("attachments"), &id)?) };
+        if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
+            return Err(invalidate_journal(&mut room, journal.as_deref(), error));
+        }
+        let journal_warning = sync_journal(&mut room, journal.as_deref(), &snapshot);
+        let journal_hint = room.journal_path_handle();
         let stop = room.stop_handle();
         let plan = room.plan_handle();
         let answers = room.answers_handle();
@@ -1071,7 +1152,7 @@ impl Host {
         answers.store(true, Ordering::SeqCst);
         let approvals = room.approvals_handle();
         let checkpoint = Arc::new(Mutex::new(SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
-        let mut runtime = ConcurrentRoom::new(room);
+        let mut runtime = ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(crate::computer::TurnHook { host: Arc::downgrade(self), computer: Arc::clone(&self.computer), thread: id.clone(), work_room: !kind.is_chat(), ended: None }));
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
             let this = Arc::downgrade(self);
@@ -1107,7 +1188,10 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id.clone(), RoomHandle { checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, legacy, deleted, journal, journal_hint, stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+        if let Some(error) = journal_warning {
+            self.room_event(&id, RoomEvent::JournalWarning { error });
+        }
         Ok(snapshot)
     }
 
@@ -1190,7 +1274,7 @@ impl Host {
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
-        move |event| {
+        move |mut event| {
             // The desktop emits room-wide Idle only after the final snapshot
             // (including cursors) is saved by run_batch.
             if matches!(event, RoomEvent::Idle) { return; }
@@ -1200,7 +1284,8 @@ impl Host {
                     self.snapshots.note_command(id, seq, bot, command);
                 }
             }
-            if let RoomEvent::ToolServers { id: agent, servers } = &event {
+            if let RoomEvent::ToolServers { id: agent, servers } = &mut event {
+                *servers = self.computer_tool_menu(id, agent, std::mem::take(servers));
                 self.tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
             }
             let record = self.steps.observe(id, &event);
@@ -1230,6 +1315,7 @@ impl Host {
     /// messages: they would land in the old chat, never in the Work thread.
     fn refuse_moved_chat(&self, id: &str) -> Result<(), String> {
         let Some(meta) = self.store.chat_meta(id)? else { return Ok(()) };
+        if meta.trashed_at.is_some() {return Err("Restore this thread from Trash before starting work.".into())}
         if meta.promoting.is_some() { return Err("This chat is moving to a Work thread. Send once the move finishes.".into()); }
         if let Some(to) = meta.promoted_to {
             let name = self.store.chat_meta(&to)?.map(|meta| meta.title.trim().to_owned()).filter(|title| !title.is_empty()).unwrap_or(to);
@@ -1251,12 +1337,13 @@ impl Host {
             }
         }
         let requested = apex_core::server_request::parse_server_requests(text);
+        self.validate_computer_request(&requested)?;
         if !requested.is_empty() {
             let recipients = match &targets { Some(ids) => ids.clone(), None => handle.runtime.targets(text).await };
             let cache = self.tool_servers.lock().unwrap();
             let lists: Option<Vec<_>> = recipients.iter().map(|agent| cache.get(&format!("{id}:{}", agent.as_str()))).collect();
             if let Some(lists) = lists {
-                let known = lists.into_iter().flatten().cloned().collect::<Vec<_>>();
+                let known = recipients.iter().zip(lists).flat_map(|(agent, list)| self.computer_tool_menu(id, agent, list.clone())).collect::<Vec<_>>();
                 let unknown = apex_core::server_request::resolve(&requested, &known).unknown;
                 if !unknown.is_empty() { return Err(format!("No tool server called \"{}\" for the addressed models", unknown[0])); }
             }
@@ -1264,7 +1351,7 @@ impl Host {
         let error = Mutex::new(None);
         let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        checkpoint_room(handle, &self.store, id).await?;
+        self.checkpoint_room(handle, id).await?;
         Ok(batch)
     }
 
@@ -1280,7 +1367,7 @@ impl Host {
             if error.lock().unwrap().is_some() { room.interrupt_client_message(request_id); }
             else { room.finish_client_message(request_id); }
         }
-        checkpoint_room(handle, &self.store, id).await?;
+        self.checkpoint_room(handle, id).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
             if let Some(cwd) = handle.context.cwd.clone() {
@@ -1368,12 +1455,19 @@ impl Host {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn room_client_post(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<serde_json::Value, String> {
+        self.room_client_post_checked(id, text, targets, request_id, voice, background, hops, answers, capability, &|| Ok(())).await
+    }
+
+    /// Revalidate the caller's authority after waiting for the room and at acceptance.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn room_client_post_checked(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability, check: &(dyn Fn() -> Result<(), String> + Send + Sync)) -> Result<serde_json::Value, String> {
         if self.assistant_tasks.execution(&id).map_err(|error| error.to_string())?.is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
         if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
         let runner_gate = self.runner_gate(&id);
         let runner_guard = runner_gate.lock().await;
         let handle = self.handle(&id)?;
         let _action = handle.lock_checkout().await?;
+        check()?;
         // A resend of a message the chat already took still gets its record.
         let known = handle.checkpoint.lock().unwrap().snapshot.client_messages.contains_key(&request_id);
         if !known {
@@ -1386,7 +1480,7 @@ impl Host {
         }
         // Acceptance already committed this event. Publishing it must not do
         // a second fallible save and abandon an accepted batch before launch.
-        let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| self.commit_client_snapshot(&id, &handle, snapshot), &|event| {
+        let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| { check()?; self.commit_client_snapshot(&id, &handle, snapshot) }, &|event| {
             if let RoomEvent::MessageAdded { message } = &event { update_chat_message_meta(&self.store, &id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message); }
             self.room_event(&id, event);
         }).await
@@ -1433,6 +1527,11 @@ impl Host {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if let Some((existing_id, saved)) = self.store.imported_chat(&move_id)? {
             let meta = self.store.update_chat_meta(&existing_id, |meta| {
+                // A chat imported before this was recorded has a history but no activity time,
+                // so the list calls it new. Its newest message says when it was last used.
+                if meta.updated_at == 0 {
+                    meta.updated_at = saved.snapshot.transcript.iter().filter_map(|message| message.at).max().unwrap_or_else(now_millis);
+                }
                 if let Some(title) = &title { meta.title = title.clone(); }
                 meta.profiles.retain(|alias, _| saved.snapshot.participants.iter().any(|bot| bot.id.as_str() == alias));
                 for bot in &saved.snapshot.participants {
@@ -1472,6 +1571,9 @@ impl Host {
         snapshot.import_skipped = skipped.clone();
         snapshot.import_profiles = made_from;
         snapshot.transcript = entries;
+        // When this chat was last used, as its own history says. A phone's older chats carry no
+        // times, so the copy itself is the last moment it was touched.
+        let last_at = snapshot.transcript.iter().filter_map(|message| message.at).max();
         let mut origins = std::collections::HashSet::new();
         snapshot.transcript.retain(|message| message.origin.as_ref().is_none_or(|origin| origins.insert(origin.clone())));
         for (seq, message) in snapshot.transcript.iter_mut().enumerate() { message.seq = seq; }
@@ -1482,6 +1584,9 @@ impl Host {
         let meta = self.store.update_chat_meta(&id, |meta| {
             meta.title = title.unwrap_or_else(|| "New chat".into());
             meta.profiles = saved.snapshot.import_profiles.iter().map(|(id, profile)| (id.clone(), profile.clone())).collect();
+            // An imported chat has history, so the list should age it by that rather than call
+            // it new: its newest message, or the copy when the history carries no times.
+            meta.updated_at = meta.updated_at.max(last_at.unwrap_or_else(now_millis));
         })?;
         Ok(serde_json::json!({"id":id,"room":saved.snapshot,"skipped":skipped,"profiles":meta.profiles}))
     }
@@ -1707,7 +1812,18 @@ impl Host {
         Ok(())
     }
 
+    pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
+        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| apex_adapters::computer_backend_supported(&p.backend)))
+    }
+    pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
+    pub(crate) fn computer_participant_label(&self,thread:&str,id:&ParticipantId)->Option<String> {
+        if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
+        self.handle(thread).ok()?.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).map(|p|p.display_name.clone())
+    }
+    pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
+
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
+        self.computer.revoke(Some(&id),participant.as_ref().map(ParticipantId::as_str));
         // Runner: Stop during countdown also pauses
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         let _ = self.runner_service.lock().unwrap().pause_reason(&id, crate::runner::RunnerReason::Human, now_ms);
@@ -1718,9 +1834,13 @@ impl Host {
         if let Ok(handle) = self.handle(&id) {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             handle.runtime.stop(participant.as_ref());
+            // Compact/curate hold the transcript lock but do not reserve a
+            // normal turn slot. Their bubble's Stop must reach the shared flag.
+            if participant.is_none() || !handle.runtime.busy() {
+                handle.stop.store(true, Ordering::SeqCst);
+            }
             if let Some(participant) = participant { handle.approvals.reject_for(&participant); }
             else {
-                handle.stop.store(true, Ordering::SeqCst);
                 handle.approvals.reject_all();
             }
         }
@@ -1731,6 +1851,7 @@ impl Host {
     /// hears `plan_changed`. A turn already running keeps the mode it began
     /// with; the next one follows the switch.
     pub fn room_set_plan(&self, id: String, on: bool) -> Result<(), String> {
+        if on {self.computer.revoke(Some(&id),None);}
         let handle = self.handle(&id)?;
         if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
             return Err("Talk-only chat rooms do not use Plan mode.".into());
@@ -1773,6 +1894,76 @@ impl Host {
         }
     }
 
+    /// Alfred may answer a typed native request only with both a current
+    /// underlying grant and a distinct approval-delegation grant. It never
+    /// writes a new standing allowance on another agent's behalf.
+    pub(crate) fn room_pending_approvals(&self,id:&str)->Result<Vec<serde_json::Value>,String> {Ok(self.handle(id)?.live.lock().unwrap().approvals.clone())}
+    pub(crate) fn personal_room_approve(&self,assistant_id:&str,task_id:&str,operation:&crate::personal::OperationSpec)->Result<(),String> {
+        use crate::personal::permissions::{self,PermissionAudit};
+        let thread=operation.argv.first().ok_or("Thread unavailable.")?;
+        let request=operation.argv.get(1).ok_or("Approval request unavailable.")?;
+        let expected=operation.argv.get(2).ok_or("Approval binding unavailable.")?;
+        let handle=self.handle(thread)?;
+        // Preflight records a durable intent before delivery. If final saving
+        // fails after delivery, audit remains attempted rather than success.
+        let mut audit_hash=None;
+        self.change_assistant(assistant_id,|assistant| {
+            let room=self.personal_room_target(assistant,thread)?;
+            if room.project.host_id!=operation.host || room.project.cwd!=operation.cwd {return Err("The target project changed.".into())}
+            self.require_not_trashed(thread)?;
+            let task=assistant.tasks.iter().find(|t|t.id==task_id&&t.status==crate::personal::TaskStatus::Running).ok_or("Task stopped.")?;
+            if task.operation.as_ref().is_none_or(|o|o.hash()!=operation.hash()) {return Err("Approval operation changed.".into())}
+            permissions::validate_marker(assistant,task,task.decision.as_ref().and_then(|d|d.decided_by_event.as_deref()).unwrap_or_default())?;
+            let live=handle.live.lock().unwrap();
+            let pending=live.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
+            let actor=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
+            let profile=handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|p.id.as_str()==actor).cloned().ok_or("The requesting participant no longer belongs to this thread.")?;
+            if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
+            let underlying=permissions::delegated_operation(operation,pending)?;
+            if underlying.argv.get(2)!=Some(expected) {return Err("The underlying approval changed. Read it again.".into())}
+            let requested=permissions::explicit_request(assistant,task);
+            let full=permissions::full_access(assistant);
+            let mut grants=if full {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true,self.effective_personal_spent_today(assistant,crate::personal::now()))?} else {
+                let (auth,delegation)=assistant.permissions.authorize_delegated(&underlying,requested,false,false)?;
+                vec![auth.grant_id.unwrap_or_default(),delegation]
+            };
+            if !full && pending["action"]["risky"]==true && pending["action"]["kind"]!="spend" {
+                // An opaque risky command may spend or publish. Both explicit
+                // delegations are required instead of inferring intent from text.
+                for tool in ["room.delegateSpend","room.delegatePublish"] {
+                    let risky=crate::personal::OperationSpec{tool:tool.into(),..underlying.clone()};
+                    let (extra,delegation)=assistant.permissions.authorize_delegated(&risky,requested,false,false)?;
+                    grants.extend([extra.grant_id.unwrap_or_default(),delegation]);
+                }
+            }
+            let hash=underlying.hash();audit_hash=Some(hash.clone());
+            if assistant.permissions.audit.len()>=500 {assistant.permissions.audit.remove(0);}
+            assistant.permissions.audit.push(PermissionAudit{actor:assistant.id.clone(),thread:thread.clone(),request:request.clone(),operation_hash:hash,capability:permissions::capability(&underlying),grant_ids:grants,revision:assistant.permissions.revision,at:crate::personal::now(),result:"attempted".into()});
+            Ok(())
+        })?;
+        self.change_assistant(assistant_id,|assistant| {
+            let audit=assistant.permissions.audit.iter().rev().find(|a|Some(&a.operation_hash)==audit_hash.as_ref()).ok_or("Audit intent unavailable.")?;
+            if audit.revision!=assistant.permissions.revision {return Err("Approval authority was revoked before delivery.".into())}
+            let task=assistant.tasks.iter().find(|t|t.id==task_id&&t.status==crate::personal::TaskStatus::Running).ok_or("Task stopped.")?;
+            if assistant.paused || assistant.archived_at.is_some() {return Err("Assistant stopped.".into())}
+            permissions::validate_marker(assistant,task,task.decision.as_ref().and_then(|d|d.decided_by_event.as_deref()).unwrap_or_default())?;
+            let room=self.personal_room_target(assistant,thread)?;
+            if room.project.host_id!=operation.host||room.project.cwd!=operation.cwd {return Err("Target changed.".into())}
+            let live=handle.live.lock().unwrap();
+            let pending=live.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
+            let actor=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
+            let profile=handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|p.id.as_str()==actor).cloned().ok_or("The requesting participant left this thread.")?;
+            if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
+            let underlying=permissions::delegated_operation(operation,pending)?;
+            if underlying.argv.get(2)!=Some(expected) {return Err("The underlying approval changed.".into())}
+            if permissions::full_access(assistant) {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true,self.effective_personal_spent_today(assistant,crate::personal::now()))?;}
+            let result=handle.approvals.resolve(request,apex_core::Decision::Approve);
+            let audit=assistant.permissions.audit.iter_mut().rev().find(|a|Some(&a.operation_hash)==audit_hash.as_ref()).ok_or("Audit intent unavailable.")?;
+            audit.result=if result {"approved"} else {"request no longer waiting"}.into();
+            if !result {return Err("That request is no longer waiting for an answer.".into())} Ok(())
+        })
+    }
+
     /// Stop always allowing something, so its card shows again. Saved at once.
     pub fn room_forget_allowed(&self, id: String, rule: apex_core::AllowedRule) -> Result<(), String> {
         let rooms = self.rooms.lock().unwrap();
@@ -1797,6 +1988,9 @@ impl Host {
     }
 
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
+        self.room_add_participant_checked(id,participant,&||Ok(None)).await
+    }
+    pub(crate) async fn room_add_participant_checked(self: &Arc<Self>, id:String, participant:ParticipantConfig, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
         self.ensure_task_read_access(&id, &participant)?;
         let handle = self.handle(&id)?;
         if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
@@ -1810,6 +2004,7 @@ impl Host {
         self.read_plans(&id, std::slice::from_ref(&participant), &context);
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
             return Err(why);
@@ -1824,6 +2019,9 @@ impl Host {
     }
 
     pub async fn chat_add_participant(self: &Arc<Self>, id: String, bot: crate::chat_bots::ChatBotRequest) -> Result<(), String> {
+        self.chat_add_participant_checked(id,bot,&||Ok(None)).await
+    }
+    pub(crate) async fn chat_add_participant_checked(self: &Arc<Self>, id:String, bot:crate::chat_bots::ChatBotRequest, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
         let profile = bot.profile.clone();
         let participant = crate::chat_bots::resolve(&self.chat_saved_profiles()?, bot)?;
         if !self.rooms.lock().unwrap().contains_key(&id) {
@@ -1842,6 +2040,7 @@ impl Host {
         self.read_plans(&id, std::slice::from_ref(&participant), &context);
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
             return Err(why);
@@ -1897,6 +2096,7 @@ impl Host {
             if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
         }
         self.ensure_task_read_access(&id, &next)?;
+        if next.access != current.access { self.computer.revoke(Some(&id),Some(name.as_str())); }
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
@@ -1950,6 +2150,11 @@ impl Host {
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+        self.room_remove_participant_checked(id,participant,&||Ok(None)).await
+    }
+    pub(crate) async fn room_remove_participant_checked(&self, id:String, participant:ParticipantId, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
+        drop(check()?);
+        self.computer.revoke(Some(&id),Some(participant.as_str()));
         // Worker removal pauses runner
         self.invalidate_room_runner(&id)?;
         let handle = self.handle(&id)?;
@@ -1961,6 +2166,7 @@ impl Host {
         self.require_idle(&id)?;
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         room.remove_participant(&participant);
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
@@ -1968,6 +2174,9 @@ impl Host {
     }
 
     pub async fn chat_remove_participant(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
+        self.chat_remove_participant_checked(id,participant,&||Ok(None)).await
+    }
+    pub(crate) async fn chat_remove_participant_checked(self: &Arc<Self>, id:String, participant:ParticipantId, check: &(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
         if !self.rooms.lock().unwrap().contains_key(&id) {
             self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?;
         }
@@ -1980,6 +2189,7 @@ impl Host {
         self.require_idle(&id)?;
         let room = self.room(&id)?;
         let mut room = room.lock().await;
+        let _authority=check()?;
         self.require_idle(&id)?;
         let mut profiles: HashMap<_, _> = self.store.chat_meta(&id).ok().flatten().unwrap_or_default().profiles.into_iter().collect();
         profiles.extend(room.snapshot().import_profiles);
@@ -2127,7 +2337,78 @@ impl Host {
         self.save_room(&id).await
     }
 
+    /// Curate between turns with the same verified tool-free builder as talk-only rooms.
+    pub async fn room_curate(&self, id: String) -> Result<CurateReply, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        self.require_idle(&id)?;
+        let context = self.room_context(&id)?;
+        let result = {
+            let mut room = handle.room.lock().await;
+            self.require_idle(&id)?;
+            if room.kind().is_chat() {
+                return Err("Move to a Work thread to use /curate.".into());
+            }
+            let mut config = room
+                .summarizer()
+                .ok_or("add a participant before curating")?;
+            config.access = Access::Read;
+            apex_adapters::curator_profile_ok(&config, context.path.as_deref()).map_err(|error| {
+                let alternative = room.configs().into_iter().find(|candidate| {
+                    candidate.id != config.id
+                        && apex_adapters::curator_profile_ok(candidate, context.path.as_deref()).is_ok()
+                });
+                let next = alternative.map_or_else(
+                    || "Message another bot".to_owned(),
+                    |candidate| format!("Message @{}", apex_core::mention_for(&candidate)),
+                );
+                format!("{} can't pick without tools. {error} {next}, then run /curate again.", config.display_name)
+            })?;
+            let by = config.id.to_string();
+            let curator =
+                apex_adapters::participant_for_room(apex_core::RoomKind::Chat, config, &context);
+            let path = handle
+                .journal
+                .as_deref()
+                .ok_or("This thread has no journal path")?;
+            {
+                // Events reacquire this lock. Release it before awaiting the model.
+                let _checkpoint = handle.checkpoint.lock().unwrap();
+                if handle.deleted.load(Ordering::SeqCst) {
+                    return Err("This chat was deleted".into());
+                }
+                if let Err(error) = crate::journal::write(path, &room.snapshot()) {
+                    return Err(invalidate_journal(&mut room, Some(path), error));
+                }
+                room.set_journal_path(Some(path.display().to_string()));
+            }
+            room.curate(curator.as_ref(), &|event| {
+                self.room_event_for(&id, &handle, event)
+            })
+            .await
+            .map(|outcome| CurateReply { by, outcome })
+        };
+        combine_result(result, self.save_curation(&handle, &id).await)
+    }
+
+    pub async fn room_curate_undo(&self, id: String) -> Result<apex_core::CurationUndo, String> {
+        let handle = self.handle(&id)?;
+        let _action = handle.lock_checkout().await?;
+        self.require_idle(&id)?;
+        let outcome = {
+            let mut room = handle.room.lock().await;
+            self.require_idle(&id)?;
+            if room.kind().is_chat() {
+                return Err("Move to a Work thread to use /curate.".into());
+            }
+            room.undo_curation(&|event| self.room_event_for(&id, &handle, event))
+        };
+        self.save_curation(&handle, &id).await?;
+        Ok(outcome)
+    }
+
     pub fn room_close(&self, id: String) {
+        self.computer.revoke(Some(&id),None);
         // Closing a view detaches it. Active jobs and assistant children are host owned.
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let Ok(handle) = self.handle(&id) else { return; };
@@ -2446,6 +2727,7 @@ impl Host {
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
+        self.computer.revoke(Some(&id),None);
         self.invalidate_room_runner(&id)?;
         self.runner_service.lock().unwrap().remove(&id)?;
         let _lifecycle = self.room_lifecycle.lock().unwrap();
@@ -2471,14 +2753,19 @@ impl Host {
                 let _ = crate::bot_copies::remove_copy(&self.paths.data, &copy);
             }
         }
-        match handle {
+        let result = match handle {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
             None => self.store.delete_room(&id),
-        }
+        };
+        combine_result(result, crate::journal::remove(&self.paths.data.join("attachments"), &id))
     }
 
     /// Explicit deletion waits for a task's exact worker attempt before removing its saved room.
     pub async fn room_delete_owned(self: &Arc<Self>, id: String) -> Result<(), String> {
+        self.room_delete_owned_checked(id,&||Ok(None)).await
+    }
+    pub(crate) async fn room_delete_owned_checked(self:&Arc<Self>,id:String,check:&(dyn Fn()->Result<Option<std::sync::MutexGuard<'static,()>>,String> + Send + Sync))->Result<(),String> {
+        drop(check()?);
         if let Some(entry) = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())? {
             let task = self.assistant_tasks.get(&entry.task_id).map_err(|e|e.to_string())?.ok_or("Owning task not found")?;
             if !matches!(task.status, crate::assistant_tasks::TaskStatus::Done | crate::assistant_tasks::TaskStatus::Cancelled) {
@@ -2486,6 +2773,7 @@ impl Host {
             }
             self.assistant_changed(&entry.workspace_id);
         }
+        let _authority=check()?;
         self.room_delete(id)
     }
 
@@ -2499,7 +2787,7 @@ impl Host {
     /// Photos and files attached in the composer live with the app's data, one
     /// folder per thread, so they stay out of the workspace and its diff.
     /// Agents are allowed to read the `attachments` folder; see `new`.
-    fn attachment_dir(&self, room: &str) -> Result<PathBuf, String> {
+    pub(crate) fn attachment_dir(&self, room: &str) -> Result<PathBuf, String> {
         let room = export::safe_file_name(room)?;
         let dir = self.paths.data.join("attachments").join(room);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make the attachments folder: {e}"))?;
@@ -2809,10 +3097,15 @@ impl Host {
             // new copy, and once it is written none ever will.
             Ok(handle) => {
                 let _checkpoint = handle.checkpoint.lock().unwrap();
+                *handle.journal_hint.lock().unwrap() = None;
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
                 self.store.save_room(&id, &saved)?;
                 handle.deleted.store(true, Ordering::SeqCst);
             }
-            Err(_) => self.store.save_room(&id, &saved)?,
+            Err(_) => {
+                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
+                self.store.save_room(&id, &saved)?;
+            },
         }
         // Replacing a room is an explicit lifecycle action, unlike detaching a view.
         if let Some(handle) = self.rooms.lock().unwrap().remove(&id) {
@@ -2826,7 +3119,26 @@ impl Host {
     }
 
     async fn save_room(&self, id: &str) -> Result<(), String> {
-        checkpoint_room(&self.handle(id)?, &self.store, id).await
+        self.checkpoint_room(&self.handle(id)?, id).await
+    }
+
+    pub(crate) async fn checkpoint_room(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        // Deliver warnings after releasing the transcript/recovery/checkpoint locks.
+        if let Some(error) = checkpoint_room(handle, &self.store, id).await? {
+            self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
+        }
+        Ok(())
+    }
+
+    /// A replaced/deleted handle must never checkpoint the new room with the same ID.
+    async fn save_curation(&self, handle: &RoomHandle, id: &str) -> Result<(), String> {
+        let saved = self.checkpoint_room(handle, id).await;
+        let live = if handle.deleted.load(Ordering::SeqCst) {
+            Err("This chat was deleted or replaced while curating. Reopen the chat.".into())
+        } else {
+            Ok(())
+        };
+        combine_result(saved, live)
     }
 
     // ------------------------------------------------------------ quitting
@@ -2872,6 +3184,7 @@ impl Host {
         while self.chains.load(Ordering::SeqCst) > 0 && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        crate::personal_worker::browser::shutdown(&self.paths.data).await;
         self.shutdown();
     }
 }
@@ -2928,6 +3241,14 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
     Ok(())
 }
 
+/// Milliseconds since the Unix epoch, which the chat list sorts and ages by.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_core::Message) {
     if chat {
         let now = message.at.unwrap_or_else(|| {
@@ -2956,11 +3277,11 @@ fn update_chat_message_meta(store: &Store, id: &str, chat: bool, message: &apex_
     }
 }
 
-async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
-    let room = handle.room.lock().await;
+async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<Option<String>, String> {
+    let mut room = handle.room.lock().await;
     let _boundary = handle.recovery.lock().unwrap();
     let mut checkpoint = handle.checkpoint.lock().unwrap();
-    if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
+    if handle.deleted.load(Ordering::SeqCst) { return Ok(None); }
     let snapshot = room.snapshot();
     let len = snapshot.transcript.len();
     if len < checkpoint.snapshot.transcript.len() && !checkpoint.mounts.is_empty() {
@@ -2973,7 +3294,53 @@ async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result
         }
     }
     checkpoint.snapshot = snapshot;
-    store.save_room(id, &checkpoint)
+    if let Err(error) = store.save_room(id, &checkpoint) {
+        return Err(invalidate_journal(&mut room, handle.journal.as_deref(), error));
+    }
+    Ok(sync_journal(&mut room, handle.journal.as_deref(), &checkpoint.snapshot))
+}
+
+fn invalidate_journal(room: &mut Room, path: Option<&Path>, error: String) -> String {
+    room.set_journal_path(None);
+    if let Some(path) = path {
+        if let Err(removal) = crate::journal::invalidate(path) {
+            return format!(
+                "{error}; Journal text may still be readable in {}: {removal}",
+                path.display()
+            );
+        }
+    }
+    error
+}
+
+fn sync_journal(
+    room: &mut Room,
+    path: Option<&Path>,
+    snapshot: &RoomSnapshot,
+) -> Option<String> {
+    let Some(path) = path else {
+        room.set_journal_path(None);
+        return None;
+    };
+    match crate::journal::sync(path, snapshot) {
+        Ok(()) => {
+            room.set_journal_path(
+                apex_core::stands(&snapshot.curations).then(|| path.display().to_string()),
+            );
+            None
+        }
+        Err(crate::journal::SyncError::Gone(why)) => {
+            room.set_journal_path(None);
+            Some(format!("Journal unavailable: {why} Hidden text can't be read right now."))
+        }
+        Err(crate::journal::SyncError::Stale(why)) => {
+            room.set_journal_path(None);
+            Some(format!(
+                "Journal text may still be readable in {}: {why}",
+                path.display()
+            ))
+        }
+    }
 }
 
 fn delete_checkpoint(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
@@ -3601,7 +3968,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { legacy: None, checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+        let handle = RoomHandle { legacy: None, journal: None, journal_hint: Arc::default(), checkout_action: Arc::default(), recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { mounts: vec![], cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
@@ -4228,6 +4595,7 @@ mod host_tests {
 
     fn scripted(id: &str, lines: &[&str]) -> apex_core::ParticipantConfig {
         apex_core::ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
             persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None
@@ -4797,6 +5165,7 @@ done
         let config = saved.snapshot.participants[0].clone();
         assert_eq!(config.access, Access::Full, "the promoted bot keeps the access chosen on the move screen");
         let turn = || TurnRequest {
+            computer: None,
             effort_override: None,
             access: None,
             system: "You are Codex.".into(),
@@ -5083,5 +5452,112 @@ mod protected_host_ownership_tests {
         let (guard, unavailable) = admit_host_ownership(Some(Err(apex_provenance::HostOwnershipError::Unavailable("broker absent".into())))).unwrap();
         assert!(guard.is_none());
         assert!(unavailable.unwrap().contains("broker absent"));
+    }
+}
+
+/// Preserve both the primary operation error and its persistence/cleanup error.
+fn combine_result<T>(result: Result<T, String>, saved: Result<(), String>) -> Result<T, String> {
+    match (result, saved) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(a), Err(b)) => Err(format!("{a}; {b}")),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod assistant_permission_delivery_tests {
+    use super::*;
+    use crate::personal::{permissions::*, *};
+    #[tokio::test]
+    async fn full_access_delegates_only_current_typed_native_actions_without_extra_grants() {
+        for (kind,title,detail,risky,allowed) in [
+            ("command","Run command","true",false,true),
+            ("edit","Edit note.txt","new content",false,true),
+            ("spend","Reply cost","model reply",true,true),
+            ("spend","Reply cost","exhausted budget",true,false),
+            ("spend","Reply cost","delegated reservation",true,false),
+            ("spend","Reply cost","unknown cost",true,false),
+            ("spend","Reply cost","unknown cost accepted",true,true),
+            ("plan","Change access","enable full",false,false),
+            ("other","Unknown permission","grant computer",false,false),
+            ("edit","Edit ../outside","new content",false,false),
+            ("command","Run risky command","opaque payload",true,true),
+        ] {
+            let root=std::env::temp_dir().join(format!("apex-full-delegated-{}-{}-{kind}",std::process::id(),now_millis()));
+            let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+            let host=Host::new(HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());std::fs::write(root.join("data/host-id"),"h\n").unwrap();
+            let worker:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"worker","display_name":"Worker","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"m"}})).unwrap();
+            host.room_create("r".into(),vec![worker.clone()],RoomOptions::default(),Some(cwd.clone())).unwrap();
+            host.store.save_session(&serde_json::json!({"workspaces":[{"id":"w","path":cwd}],"panes":[{"kind":"chat","id":"r","title":"Room","workspaceId":"w"}]})).unwrap();
+            let handle=host.handle("r").unwrap();let (request,mut answer)=handle.approvals.open_for(ParticipantId::new("worker"));
+            let action:apex_core::ProposedAction=serde_json::from_value(serde_json::json!({"kind":kind,"title":title,"detail":detail,"risky":risky})).unwrap();
+            host.room_event("r",RoomEvent::ApprovalRequested{id:ParticipantId::new("worker"),request:request.clone(),action});
+            let base=OperationSpec{tool:"room.approve".into(),host:"h".into(),cwd:cwd.clone(),argv:vec!["r".into()],plan:None};
+            let pending=host.room_pending_approvals("r").unwrap()[0].clone();
+            let binding=delegated_operation(&base,&pending).map(|o|o.argv[2].clone()).unwrap_or_else(|_|"unsupported".into());
+            let operation=OperationSpec{argv:vec!["r".into(),request.clone(),binding],..base};
+            let mut profile=worker;profile.access=apex_core::Access::Full;
+            let mut assistant:PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":profile,"workspaceConfigVersion":4,"allowedFolders":[cwd],"projects":[{"project":{"hostId":"h","workspaceId":"w","cwd":cwd},"tools":"full"}],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+            match detail {
+                "exhausted budget" => assistant.budget.daily_limit_micros=Some(0),
+                "delegated reservation" => {assistant.budget.daily_limit_micros=Some(1_000_000);assistant.budget.unknown_cost_ok=true;},
+                "unknown cost"|"unknown cost accepted" => {assistant.budget.daily_limit_micros=Some(1_000_000);assistant.budget.unknown_cost_ok=detail=="unknown cost accepted";},
+                _ => {},
+            }
+            for cap in [Capability::CommandRun,Capability::FileEdit,Capability::Spend,Capability::ApprovalDelegate] {assistant.permissions.set(cap,Scope::AllProjects,GrantMode::Ask,false).unwrap();}
+            let mut task:PersonalTask=serde_json::from_value(serde_json::json!({"id":"pt-1","goal":"Approve","completionCriteria":[],"targetHost":"h","status":"running","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0,"decision":{"id":"pd-1","kind":"approve","paramsHash":operation.hash(),"prompt":"Approve","status":"approved","openedAt":0}})).unwrap();
+            task.decision.as_mut().unwrap().decided_by_event=marker(&assistant,&task,false,true).unwrap();
+            assistant.tasks.push(task);host.change_personal(|a|{a.push(assistant);Ok(())}).unwrap();
+            if detail=="delegated reservation" {
+                let current=host.personal_get("a").unwrap();
+                host.monitor_assign(crate::monitor_commands::Assignment{workspace_id:"w".into(),cwd:cwd.clone(),host_id:"h".into(),text:"Project work".into(),files:vec![],threads:vec![],profile:current.profile.unwrap()}).unwrap();
+                let source=host.personal_send("a","reserved-project-work","Research the assigned project.").unwrap();
+                host.change_assistant("a",|a|{a.events.iter_mut().find(|event|event.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
+                let receipt=host.prepare_personal_delegation(crate::assistant_delegation::DelegationInput {
+                    assistant_id:"a".into(),project:crate::personal_workspace::ProjectRef{host_id:"h".into(),workspace_id:"w".into(),cwd:cwd.clone()},source_event_id:source.event_id,delegation_id:"reserved-budget".into(),brief:"Research the assigned project".into(),
+                    destination:crate::assistant_tasks::TaskDestination{thread_id:Some("r".into()),workers:vec!["worker".into()],new_thread:false},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],expected_revision:host.personal_get("a").unwrap().revision,
+                }).unwrap();assert_eq!(receipt["standingTrust"],true);
+            }
+            let result=host.personal_room_approve("a","pt-1",&operation);
+            assert_eq!(result.is_ok(),allowed,"{kind} / {title}: {result:?}");
+            if allowed {assert_eq!(answer.await.unwrap(),apex_core::Decision::Approve);assert_eq!(host.personal_get("a").unwrap().permissions.audit[0].result,"approved");assert!(host.personal_room_approve("a","pt-1",&operation).is_err());}
+            else {assert!(matches!(answer.try_recv(),Ok(None)));}
+            drop(host);let _=std::fs::remove_dir_all(root);
+        }
+    }
+    #[tokio::test]
+    async fn delegated_native_approval_consumes_only_its_exact_current_request_and_audits_grants() {
+        let root=std::env::temp_dir().join(format!("apex-delegated-{}-{}",std::process::id(),now_millis()));
+        let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();
+        let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let host=Host::new(HostPaths{data:root.join("data"),downloads:None},tokio::runtime::Handle::current());
+        std::fs::write(root.join("data/host-id"),"h\n").unwrap();
+        let worker:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"worker","display_name":"Worker","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"m"}})).unwrap();
+        host.room_create("r".into(),vec![worker],RoomOptions::default(),Some(cwd.clone())).unwrap();
+        host.store.save_session(&serde_json::json!({"workspaces":[{"id":"w","path":cwd}],"panes":[{"kind":"chat","id":"r","title":"Room","workspaceId":"w"}]})).unwrap();
+        let handle=host.handle("r").unwrap();
+        let (request,answer)=handle.approvals.open_for(ParticipantId::new("worker"));
+        let action:apex_core::ProposedAction=serde_json::from_value(serde_json::json!({"kind":"command","title":"Run command","detail":"true","risky":false})).unwrap();
+        host.room_event("r",RoomEvent::ApprovalRequested{id:ParticipantId::new("worker"),request:request.clone(),action});
+        let pending=host.room_pending_approvals("r").unwrap()[0].clone();
+        let base=OperationSpec{tool:"room.approve".into(),host:"h".into(),cwd:cwd.clone(),argv:vec!["r".into()],plan:None};
+        let binding=delegated_operation(&base,&pending).unwrap().argv[2].clone();
+        let operation=OperationSpec{argv:vec!["r".into(),request.clone(),binding],..base};
+        let mut assistant:PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[cwd],"projects":[{"project":{"hostId":"h","workspaceId":"w","cwd":cwd},"tools":"full"}],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[{"id":"pe-1","requestId":"human","source":{"kind":"human","text":"Approve Room request"},"receivedAt":0,"state":"done"}],"tasks":[]})).unwrap();
+        assistant.permissions.set(Capability::ApprovalDelegate,Scope::AllProjects,GrantMode::Always,false).unwrap();
+        assistant.permissions.set(Capability::CommandRun,Scope::AllProjects,GrantMode::Always,true).unwrap();
+        let mut task:PersonalTask=serde_json::from_value(serde_json::json!({"id":"pt-1","goal":"Approve","completionCriteria":[],"targetHost":"h","status":"running","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0,"decision":{"id":"pd-1","kind":"approve","paramsHash":operation.hash(),"prompt":"Approve","status":"approved","openedAt":0}})).unwrap();
+        task.decision.as_mut().unwrap().decided_by_event=marker(&assistant,&task,true,false).unwrap();
+        assistant.tasks.push(task);host.change_personal(|a|{a.push(assistant);Ok(())}).unwrap();
+        host.personal_room_approve("a","pt-1",&operation).unwrap();
+        assert_eq!(answer.await.unwrap(),apex_core::Decision::Approve);
+        let saved=host.personal_get("a").unwrap();
+        assert_eq!(saved.permissions.audit.len(),1);
+        assert_eq!(saved.permissions.audit[0].result,"approved");
+        assert_eq!(saved.permissions.audit[0].grant_ids.len(),2);
+        assert!(host.personal_room_approve("a","pt-1",&operation).is_err(),"one-shot request cannot authorize a second execution");
+        host.change_assistant("a",|a|{a.permissions.set(Capability::CommandRun,Scope::AllProjects,GrantMode::Ask,false)}).unwrap();
+        assert!(host.personal_room_approve("a","pt-1",&operation).is_err(),"revoked authority cannot execute");
+        drop(host);let _=std::fs::remove_dir_all(root);
     }
 }

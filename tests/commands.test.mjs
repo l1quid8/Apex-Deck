@@ -15,6 +15,21 @@ test('known commands parse with their arguments', () => {
   assert.deepEqual(parseComposer('/DIFF'), { command: { name: 'diff' } });
 });
 
+test('/curate parses only an empty argument or undo, including queued edits and escapes', async () => {
+  const { parseQueueEdit } = await import('../src/commands.ts');
+  for (const text of ['/curate', '/CURATE  ']) {
+    assert.deepEqual(parseComposer(text), { command: { name: 'curate' } });
+  }
+  for (const text of ['/curate undo', '/curate UNDO', '/CURATE  UnDo ']) {
+    assert.deepEqual(parseComposer(text), { command: { name: 'curate_undo' } });
+    assert.deepEqual(parseQueueEdit(` ${text} `), { command: { name: 'curate_undo' } });
+  }
+  for (const text of ['/curate later', '/curate undo now']) {
+    assert.deepEqual(parseComposer(text), { command: { name: 'unknown', typed: text } });
+  }
+  assert.deepEqual(parseComposer('//curate'), { text: '//curate' });
+});
+
 test('removed pin command is rejected even with multiline arguments', () => {
   assert.deepEqual(parseComposer('/pin line one\nline two'), { command: { name: 'unknown', typed: '/pin' } });
 });

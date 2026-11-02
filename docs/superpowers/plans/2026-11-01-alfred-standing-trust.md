@@ -1,0 +1,10 @@
+# Approved Alfred trust change, 2026-11-01
+User: Full access alone is enough; no assistant approval cards. Ask mode should avoid noisy redundant approvals.
+- Authenticated saved v4 Full is master standing authority within existing target/project/folder/OS boundaries. Capability Ask and standing/class preferences apply in Ask mode, not Full.
+- Full preserves pause/cancel, operation/hash binding, live access downgrade, project Off/read, privacy and configured budget ceilings; exhausted/unavailable actions are refused rather than producing recurring override cards.
+- Computer/browser native helper trusts only a dedicated authenticated assistant Full stamp; never all room Full. App grants remain turn-local, TCC/protected-app/signature checks unchanged; downgrade retires turns.
+- Ask mode quiet reads/status and requested reversible native thread create/rename/archive/trash/restore/add/remove; current trusted Human event, checked target and requested parameters, no persistent grant or inferred quote authority.
+- Consequential Ask actions retain purposeful cards. Bulk permanent deletion is one native task with a bounded, explicit set of chat IDs: Full executes without cards, Ask approves the whole set once. The server snapshots names and IDs into the operation hash, validates the complete set before starting, deletes its authority anchor last, and journals completed/in-flight items for honest partial results and safe recovery. Matching titles never add targets.
+- Coding delegations inherit originating Full authority only for their execution; stored worker profiles remain unchanged and standing trust is distinct from a human approval. Recurring Full jobs recheck saved authority on every run and after restart.
+- UI labels explain Full and Ask, saved fine-grained settings preserved for Ask.
+- Tests RED/GREEN real host flows, source/Swift registry behavior, downgrade/revoke, broad suites/tsc, independent review, one signed-payload package, installed acceptance when UI available.

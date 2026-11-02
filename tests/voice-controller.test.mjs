@@ -763,3 +763,29 @@ test('latest mute intent survives delayed runtime, audio and connection readines
   await controller.end();
  }
 });
+
+test('End while the previous call closes cancels the replacement call',async()=>{
+ let release,entered;const closing=new Promise(resolve=>{entered=resolve;}),held=new Promise(resolve=>{release=resolve;});
+ const f=fixture({stop:()=>{entered();return held;}});
+ await f.c.start(f.scope);
+ const replacement=f.c.start({...f.scope,roomId:'replacement'});
+ await closing;
+ const ended=f.c.end('user ends replacement');
+ release();
+ await Promise.all([replacement,ended]);
+ assert.equal(f.c.getState().status,'off');
+ assert.equal(f.closed,1,'only the first call ever opened audio');
+});
+
+test('a newer call wins while an older one still waits for the previous call to close',async()=>{
+ let release,entered;const closing=new Promise(resolve=>{entered=resolve;}),held=new Promise(resolve=>{release=resolve;});
+ const f=fixture({stop:()=>{entered();return held;}});
+ await f.c.start(f.scope);
+ const older=f.c.start({...f.scope,roomId:'older'});
+ await closing;
+ const newer=f.c.start({...f.scope,roomId:'newer'});
+ release();
+ await Promise.all([older,newer]);
+ assert.equal(f.c.getState().scope.roomId,'newer');
+ await f.c.end();
+});

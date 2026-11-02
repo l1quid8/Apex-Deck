@@ -65,11 +65,19 @@ pub struct ChatMovedTo {
 #[serde(rename_all = "camelCase")]
 pub struct ChatRoomMeta {
     #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_managed: bool,
+    #[serde(default)]
+    pub archive_managed: bool,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub updated_at: u64,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,12 +132,20 @@ fn crash_here(_: PromoteCrash) -> Result<(), String> { Ok(()) }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatListEntry {
+    #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_explicit: bool,
+    #[serde(default)]
+    pub archive_explicit: bool,
     pub id: String,
     pub kind: apex_core::RoomKind,
     pub title: String,
     pub participants: Vec<apex_core::ParticipantConfig>,
     pub updated_at: u64,
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
     pub cwd: Option<String>,
     pub folder_name: Option<String>,
     pub promoted_from: Option<String>,
@@ -355,12 +371,17 @@ impl Store {
     }
 
     pub fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
-        let Some(mut room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
-        let authority=self.room_authorities()?;
+        let Some(room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
+        self.apply_room_authority(id, room, &self.room_authorities()?).map(Some)
+    }
+
+    /// Restore permission-bearing fields only from the protected manifest.
+    /// A catalog request shares one freshly read manifest across its rooms.
+    fn apply_room_authority(&self, id: &str, mut room: SavedRoom, authority: &serde_json::Map<String, serde_json::Value>) -> Result<SavedRoom, String> {
         // Linux keeps the manifest as a plain file beside the room, so it is no
         // more trusted than the room file itself. A room saved before the
         // manifest existed keeps its own settings there, as it did before.
-        if crate::authority_file::plain(&self.root)&&!authority.contains_key(id){return Ok(Some(room));}
+        if crate::authority_file::plain(&self.root)&&!authority.contains_key(id){return Ok(room);}
         let trusted:RoomAuthority=serde_json::from_value(authority.get(id).cloned().ok_or("This legacy room has no verified authority manifest. It requires explicit reauthorization; its original file was preserved.")?).map_err(|e|e.to_string())?;
         room.snapshot.kind=trusted.kind;
         room.cwd=trusted.cwd;
@@ -369,7 +390,7 @@ impl Store {
         room.snapshot.allowed=trusted.allowed;
         room.snapshot.plan=trusted.plan;
         room.mounts=trusted.mounts;
-        Ok(Some(room))
+        Ok(room)
     }
 
     pub(crate) fn room_ids(&self) -> Result<Vec<String>, String> {
@@ -996,12 +1017,13 @@ impl Store {
         let mut metas = self.chat_metas_held()?;
         let mut meta = metas.remove(id).unwrap_or_default();
         f(&mut meta);
+        meta.metadata_revision=meta.metadata_revision.checked_add(1).ok_or("Thread metadata revision exhausted.")?;
         metas.insert(id.into(), meta.clone());
         self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
         Ok(meta)
     }
 
-    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    /// Every authority-validated saved chat or Work room. Catalog metadata is optional.
     pub fn chat_list(&self) -> Result<Vec<ChatListEntry>, String> {
         let metas = self.chat_metas_held()?;
         let authorities = self.room_authorities()?;
@@ -1027,13 +1049,14 @@ impl Store {
         let mut out = Vec::new();
         for id in candidate_ids {
             let meta = metas.get(&id).cloned();
-            let saved = match self.room(&id) {
+            let saved = match self.read(&self.room_path(&id)) {
                 Ok(Some(saved)) => saved,
                 Ok(None) | Err(_) => continue,
             };
-            if !saved.snapshot.kind.is_chat() && meta.is_none() {
-                continue;
-            }
+            let saved = match self.apply_room_authority(&id, saved, &authorities) {
+                Ok(saved) => saved,
+                Err(_) => continue,
+            };
             let meta = meta.unwrap_or_default();
             let last_msg_at = saved
                 .snapshot
@@ -1043,6 +1066,7 @@ impl Store {
                 .max()
                 .unwrap_or(0);
             let updated_at = meta.updated_at.max(last_msg_at);
+            let title_explicit=meta.title_managed&&!meta.title.trim().is_empty();
             let title = if meta.title.trim().is_empty() {
                 "New chat".to_string()
             } else {
@@ -1069,12 +1093,16 @@ impl Store {
                 })
                 .collect();
             out.push(ChatListEntry {
+                metadata_revision: meta.metadata_revision,
+                title_explicit,
+                archive_explicit: meta.archive_managed,
                 id,
                 kind: saved.snapshot.kind,
                 title,
                 participants,
                 updated_at,
                 archived: meta.archived,
+                trashed_at: meta.trashed_at,
                 cwd: saved.cwd,
                 folder_name,
                 promoted_from: meta.promoted_from,
@@ -1318,6 +1346,76 @@ mod tests {
         assert!(write_new(&store.room_path("destination"), &different).unwrap_err().contains("already exists"));
         assert_eq!(std::fs::read(store.room_path("destination")).unwrap(), bytes);
         drop(host);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_list_includes_native_zero_bot_work_rooms_without_optional_metadata() {
+        let runtime=tokio::runtime::Runtime::new().unwrap();
+        let root=temp();
+        let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();
+        let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let host=crate::Host::new(crate::HostPaths{data:root.clone(),downloads:None},runtime.handle().clone());
+        let snapshot=host.room_create("native-work".into(),vec![],RoomOptions::default(),Some(cwd.clone())).unwrap();
+        assert_eq!(snapshot.kind,apex_core::RoomKind::Work);assert!(snapshot.participants.is_empty());
+        assert!(host.store().chat_meta("native-work").unwrap().is_none(),"normal native creation does not require catalog metadata");
+        let rows=host.store().chat_list().unwrap();
+        let row=rows.iter().find(|row|row.id=="native-work").expect("the native Work thread must be discoverable before naming it or adding bots");
+        assert_eq!(row.kind,apex_core::RoomKind::Work);assert_eq!(row.cwd.as_deref(),Some(cwd.as_str()));assert!(row.participants.is_empty());
+        assert!(!row.archived);assert!(row.trashed_at.is_none());assert!(!row.title_explicit);
+        host.chat_update_meta("native-work".into(),Some("Native work".into()),Some(true),None).unwrap();
+        host.room_set_trashed("native-work".into(),true).unwrap();
+        let row=host.store().chat_list().unwrap().into_iter().find(|row|row.id=="native-work").unwrap();
+        assert_eq!(row.title,"Native work");assert!(row.archived);assert!(row.trashed_at.is_some());
+        host.room_delete("native-work".into()).unwrap();
+        drop(host);drop(runtime);
+        // Native checkpoint workers may still be finishing in this temp fixture.
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn chat_list_reads_authority_once_for_many_rooms() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let saved = SavedRoom { cwd: None, mounts: vec![], snapshot: Room::new(vec![], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat).snapshot() };
+        for n in 0..131 { store.save_room(&format!("chat-{n}"), &saved).unwrap(); }
+
+        let (listed, reads) = crate::authority_file::tests::track_reads(|| store.chat_list().unwrap());
+        assert_eq!(listed.len(), 131);
+        assert_eq!(reads.len(), 1, "A catalog refresh must not reopen the protected ledger per room");
+        assert_eq!(reads[0], root.join("room-authority-v1.json"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_list_uses_fresh_protected_authority_and_rejects_forged_rooms() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut trusted = SavedRoom { cwd: Some("/trusted".into()), mounts: vec![], snapshot: Room::new(vec![], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat).snapshot() };
+        store.save_room("trusted", &trusted).unwrap();
+        let mut forged = trusted.clone();
+        forged.cwd = Some("/forged".into());
+        forged.snapshot.kind = apex_core::RoomKind::Work;
+        forged.snapshot.participants = vec![serde_json::from_value(serde_json::json!({"id":"attacker","display_name":"Forged","persona":"","access":"full","backend":{"kind":"agent","tool":"codex"}})).unwrap()];
+        std::fs::write(store.room_path("trusted"), serde_json::to_vec(&forged).unwrap()).unwrap();
+        std::fs::write(store.room_path("unverified"), serde_json::to_vec(&trusted).unwrap()).unwrap();
+        store.save_room("broken", &trusted).unwrap();
+        std::fs::write(store.room_path("broken"), b"not JSON").unwrap();
+
+        let rows = store.chat_list().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "trusted");
+        assert_eq!(rows[0].kind, apex_core::RoomKind::Chat);
+        assert_eq!(rows[0].cwd.as_deref(), Some("/trusted"));
+        assert!(rows[0].participants.is_empty());
+
+        // No cross-request cache: changed authority is used on the next list.
+        trusted.cwd = Some("/new-trusted".into());
+        store.save_room("trusted", &trusted).unwrap();
+        assert_eq!(store.chat_list().unwrap()[0].cwd.as_deref(), Some("/new-trusted"));
+        let manifest = root.join("room-authority-v1.json");
+        crate::authority_file::write(&manifest, b"not JSON").unwrap();
+        assert!(store.chat_list().is_err(), "A failed protected read must never fall back to editable room authority");
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -2,6 +2,9 @@
 //! drive it; neither owns any logic of its own.
 
 mod authority_file;
+mod computer;
+pub mod cursor_overlay;
+mod journal;
 #[cfg(feature="test-support")]
 pub mod test_support;
 pub mod agents;
@@ -21,6 +24,7 @@ pub mod assistant_git;
 pub mod assistant_isolation;
 pub mod assistant_tasks;
 pub mod assistant_delegation;
+mod assistant_watchdog;
 pub mod assistant_conversation;
 pub mod legacy_import;
 mod legacy_personal;

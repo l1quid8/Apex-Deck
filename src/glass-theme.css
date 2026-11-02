@@ -1,14 +1,31 @@
+/* Serif replies in the themes whose own reply face is sans. Same rules as Clay's
+   reading layout: reply text only, code and tables keep their own faces. */
+:root[data-deck-reply="serif"] {
+  --deck-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --deck-font-reading: "Iowan Old Style", Charter, "Source Serif 4", Georgia, serif;
+  --deck-reading-size: calc(13px + 3px * var(--deck-density, 1));
+}
+:root[data-deck-reply="serif"] .bubble.bot > :is(.md, .draft-text) {
+  font-family: var(--deck-font-reading);
+  font-size: var(--deck-reading-size);
+  line-height: 1.62;
+}
+:root[data-deck-reply="serif"] .bubble.bot :is(.md-code, .md-table) {
+  font-family: var(--deck-font-ui);
+  font-size: 13px;
+}
+
 /* Optional glass appearance. Classic has no matching root selector, so it
    continues to use the existing styles unchanged. */
 :root[data-deck-theme="glass"],
 :root[data-deck-theme="flat"] {
-  --deck-bg: #090d12;
-  --deck-panel: 13 19 26;
-  --deck-panel-raised: 22 31 41;
-  --deck-code: #060a0f;
+  --deck-bg: #000000;
+  --deck-panel: 16 16 16;
+  --deck-panel-raised: 24 24 24;
+  --deck-code: #101010;
   --deck-line: 255 255 255;
-  --deck-text: #e4eaf0;
-  --deck-muted: #b0bccb;
+  --deck-text: #f5f5f5;
+  --deck-muted: #aaaaaa;
   --deck-warning: #f59e0b;
   --deck-danger: #f87171;
   --deck-accent: var(--deck-custom-accent, oklch(.85 .13 var(--deck-hue, 172)));
@@ -18,7 +35,7 @@
   --bg: var(--deck-bg);
   --panel: rgb(var(--deck-panel));
   --panel-2: rgb(var(--deck-panel-raised));
-  --line: rgb(var(--deck-line) / .14);
+  --line: rgb(255 255 255 / .14);
   --text: var(--deck-text);
   --muted: var(--deck-muted);
   --accent: var(--deck-accent);
@@ -232,6 +249,11 @@
 :root[data-deck-theme="glass"] .composer-box {
   --box: rgb(var(--deck-panel-raised) / var(--deck-opacity, .44));
   border-color: var(--deck-edge);
+}
+/* The shared placeholder grey fails on Liquid's light surfaces. Plan and TL;DR
+   keep their own tints. */
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .composer:not(.tldr, .plan) .composer-box textarea::placeholder {
+  color: var(--deck-muted);
 }
 :root[data-deck-theme="glass"] :is(.md-code, .md-code pre, .approval-detail, .diff, .answer-command) {
   background: color-mix(in srgb, var(--deck-code) 88%, transparent);
@@ -546,3 +568,8 @@
 
 @media (prefers-reduced-motion: reduce) {
 }
+
+/* Panel edges: Strong. Clay has its own rule beside its tokens. */
+:root[data-deck-theme="classic"][data-deck-edges="strong"] { --line: #3f3f3f; }
+:root[data-deck-theme="glass"][data-deck-edges="strong"],
+:root[data-deck-theme="flat"][data-deck-edges="strong"] { --line: rgb(var(--deck-line) / .3); }

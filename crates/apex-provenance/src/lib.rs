@@ -45,6 +45,9 @@ pub const MAX_CHECKPOINT_CLAIMS: usize = 200_000;
 pub const ORPHAN_GRACE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const UNCLAIMED_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 pub const DOMAIN: &str = "apex-provenance-v1";
+// Appended changes since the last full snapshot. Past this size the broker
+// rewrites journal.json once and starts a fresh log.
+pub const LOG_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -94,8 +97,38 @@ pub struct Journal {
     entries: BTreeMap<String, Entry>,
     documents: BTreeMap<String, ProtectedDocument>,
     checkpoint: Option<Signed>,
+    // Log lines from any other generation predate this snapshot.
+    #[serde(rename = "logGeneration")]
+    log_generation: u64,
     #[serde(skip)]
     claims: BTreeMap<String, u64>,
+    #[serde(skip)]
+    changed: Changed,
+}
+#[derive(Debug, Clone, Default)]
+struct Changed {
+    // Touched keys with their value before this transaction, for rollback.
+    entries: BTreeMap<String, Option<Entry>>,
+    documents: BTreeMap<String, Option<ProtectedDocument>>,
+    // Compaction removes entries; only a full snapshot can record that.
+    rewrite: bool,
+}
+/// What the broker must persist for the mutations since the last commit.
+pub enum Change {
+    None,
+    Append(Vec<u8>),
+    Rewrite,
+}
+// One log line: absolute values for every key a transaction touched, so
+// replaying a line twice is harmless.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Delta {
+    g: u64,
+    #[serde(default)]
+    e: BTreeMap<String, Entry>,
+    #[serde(default)]
+    d: BTreeMap<String, ProtectedDocument>,
 }
 #[derive(Deserialize)]
 struct StoredJournal {
@@ -105,6 +138,8 @@ struct StoredJournal {
     documents: BTreeMap<String, ProtectedDocument>,
     #[serde(default)]
     checkpoint: Option<Signed>,
+    #[serde(default, rename = "logGeneration")]
+    log_generation: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProtectedDocument {
@@ -118,11 +153,19 @@ impl Journal {
             entries: BTreeMap::new(),
             documents: BTreeMap::new(),
             checkpoint: None,
+            log_generation: 0,
             claims: BTreeMap::new(),
+            changed: Changed::default(),
         }
     }
     pub fn open(bytes: &[u8], public_key: &[u8]) -> Result<Self, String> {
-        if bytes.len() > JOURNAL_BYTES {
+        Self::open_with_log(bytes, &[], public_key)
+    }
+    /// Replay newline-terminated log lines of this snapshot's generation. A
+    /// line without its newline, or one that does not parse, was never
+    /// acknowledged (the broker answers only after fsync), so it is skipped.
+    pub fn open_with_log(bytes: &[u8], log: &[u8], public_key: &[u8]) -> Result<Self, String> {
+        if bytes.len() > JOURNAL_BYTES || log.len() > LOG_BYTES {
             return Err("Protected journal exceeds size limit".into());
         }
         let stored: StoredJournal = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
@@ -131,10 +174,96 @@ impl Journal {
             entries: stored.entries,
             documents: stored.documents,
             checkpoint: stored.checkpoint,
+            log_generation: stored.log_generation,
             claims: BTreeMap::new(),
+            changed: Changed::default(),
         };
+        let complete = log.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        for line in log[..complete].split(|&b| b == b'\n') {
+            let Ok(delta) = serde_json::from_slice::<Delta>(line) else {
+                continue;
+            };
+            if delta.g != journal.log_generation {
+                continue;
+            }
+            journal.entries.extend(delta.e);
+            journal.documents.extend(delta.d);
+        }
         journal.validate(public_key)?;
         Ok(journal)
+    }
+    /// The smallest durable record of every mutation since the last commit.
+    pub fn change(&self) -> Result<Change, String> {
+        let changed = &self.changed;
+        if changed.rewrite {
+            return Ok(Change::Rewrite);
+        }
+        if changed.entries.is_empty() && changed.documents.is_empty() {
+            return Ok(Change::None);
+        }
+        let delta = Delta {
+            g: self.log_generation,
+            e: changed
+                .entries
+                .keys()
+                .filter_map(|k| self.entries.get(k).map(|e| (k.clone(), e.clone())))
+                .collect(),
+            d: changed
+                .documents
+                .keys()
+                .filter_map(|k| self.documents.get(k).map(|d| (k.clone(), d.clone())))
+                .collect(),
+        };
+        let mut line = serde_json::to_vec(&delta).map_err(|e| e.to_string())?;
+        line.push(b'\n');
+        Ok(Change::Append(line))
+    }
+    /// Full snapshot under the next generation, which retires every older log
+    /// line. Call adopt_generation only once these bytes are durable.
+    pub fn snapshot(&mut self) -> Result<(Vec<u8>, u64), String> {
+        let previous = self.log_generation;
+        let next = previous.checked_add(1).ok_or("Journal generation exhausted")?;
+        self.log_generation = next;
+        let bytes = serde_json::to_vec(self).map_err(|e| e.to_string());
+        self.log_generation = previous;
+        Ok((bytes?, next))
+    }
+    pub fn adopt_generation(&mut self, generation: u64) {
+        self.log_generation = generation;
+    }
+    pub fn compaction_due(&self, at: usize) -> bool {
+        self.entries.len() >= at
+    }
+    /// Call once the change is durable.
+    pub fn committed(&mut self) {
+        self.changed = Changed::default();
+    }
+    /// Undo an uncommitted transaction. Not possible after compaction; the
+    /// broker keeps a full copy for that rare case instead.
+    pub fn rollback(&mut self) -> Result<(), String> {
+        let changed = std::mem::take(&mut self.changed);
+        if changed.rewrite {
+            return Err("Compaction cannot be rolled back".into());
+        }
+        for (key, old) in changed.entries {
+            match old {
+                Some(entry) => self.entries.insert(key, entry),
+                None => self.entries.remove(&key),
+            };
+        }
+        for (key, old) in changed.documents {
+            match old {
+                Some(document) => self.documents.insert(key, document),
+                None => self.documents.remove(&key),
+            };
+        }
+        Ok(())
+    }
+    fn touch_entry(&mut self, key: &str) {
+        if !self.changed.entries.contains_key(key) {
+            let old = self.entries.get(key).cloned();
+            self.changed.entries.insert(key.to_string(), old);
+        }
     }
 
     fn checkpoint_payload(&self, public_key: &[u8]) -> Result<Option<CheckpointPayload>, String> {
@@ -244,6 +373,7 @@ impl Journal {
         for id in removed {
             self.entries.remove(&id);
         }
+        self.changed.rewrite = true;
         self.claims = payload.claims;
         self.checkpoint = Some(signed);
         Ok(())
@@ -289,8 +419,12 @@ impl Journal {
             revision: expected.checked_add(1).ok_or("Ledger revision exhausted")?,
             value,
         };
-        self.documents
-            .insert(document_key(uid, data_dir, name)?, document.clone());
+        let key = document_key(uid, data_dir, name)?;
+        if !self.changed.documents.contains_key(&key) {
+            let old = self.documents.get(&key).cloned();
+            self.changed.documents.insert(key.clone(), old);
+        }
+        self.documents.insert(key, document.clone());
         Ok(document)
     }
     pub fn finish(
@@ -314,6 +448,10 @@ impl Journal {
                 "Submission was archived after its execution window; outcome not recorded".into(),
             );
         }
+        if !self.entries.contains_key(key) {
+            return Err("Unknown submission".into());
+        }
+        self.touch_entry(key);
         let entry = self.entries.get_mut(key).ok_or("Unknown submission")?;
         if entry.receipt.uid != uid || entry.receipt.data_dir != data_dir || !entry.claimed {
             return Err("Submission was not claimed by this scope".into());
@@ -442,6 +580,7 @@ impl Journal {
             key: key.clone(),
             issuance_id: Some(B64.encode(token)),
         };
+        self.touch_entry(&key);
         self.entries.insert(
             key,
             Entry {
@@ -469,6 +608,9 @@ impl Journal {
         }
         if self.claims.contains_key(&receipt.key) {
             return Err("Submission already consumed; execution outcome may be uncertain. Do not retry automatically.".into());
+        }
+        if self.entries.contains_key(&receipt.key) {
+            self.touch_entry(&receipt.key);
         }
         let entry = self
             .entries
@@ -508,6 +650,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
         || !matches!(
             name,
             "personal-assistants.json"
+                | "computer-enabled.json"
                 | "assistant-tasks-v1.json"
                 | "assistant-conversations-v1.json"
                 | "room-authority-v1.json"
@@ -526,10 +669,12 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
 pub fn protected(name: &str) -> bool {
     matches!(
         name,
-        "assistant_message"
+        "computer_setup" | "computer_set_enabled" | "computer_set_action_labels"
+            | "assistant_message"
             | "assistant_task_action"
             | "personal_send"
             | "personal_decide"
+            | "personal_decide_always"
             | "room_post"
             | "room_post_to"
             | "room_turn"
@@ -543,6 +688,7 @@ pub fn protected(name: &str) -> bool {
             | "personal_project_delegate"
             | "personal_project_delegate_ui"
             | "personal_rule_add"
+            | "personal_permission_set"
             | "personal_rule_remove"
             | "personal_machine_link"
             | "personal_machine_unlink"
@@ -554,7 +700,10 @@ pub fn protected(name: &str) -> bool {
             | "personal_archive"
             | "personal_reply_cancel"
             | "personal_schedule_cancel"
+            // Mints the session for the person's browser surface: one receipt, not one per frame.
+            | "personal_browser_session"
             | "room_create"
+            | "room_set_trashed"
             | "room_import"
             | "room_fork"
             | "chat_promote"
@@ -597,10 +746,12 @@ fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, Stri
     }
     if let Some(key) = phone::phone_key(uid, data_dir, command) { return key; }
     let args = &command["args"];
+    // Atomic Always approvals retain their UI request ID across retries, just
+    // like one-shot decisions; the journal binds the entire grant to that ID.
     let id = if name.starts_with("room_")
         || !matches!(
             name,
-            "assistant_message" | "personal_send" | "personal_decide" | "assistant_task_action"
+            "assistant_message" | "personal_send" | "personal_decide" | "personal_decide_always" | "assistant_task_action"
         ) {
         json!(command["provenanceRequestId"]
             .as_str()
@@ -677,6 +828,152 @@ mod tests {
         let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
         journal.claim(501, "/data", &receipt, NONCE).unwrap();
         receipt
+    }
+
+    fn snapshot(journal: &mut Journal) -> Vec<u8> {
+        let (bytes, generation) = journal.snapshot().unwrap();
+        journal.adopt_generation(generation);
+        journal.committed();
+        bytes
+    }
+
+    #[test]
+    fn rollback_restores_every_touched_key() {
+        let mut journal = Journal::new();
+        let kept = claimed(&mut journal);
+        journal
+            .write_document(501, "/data", "devices.json", 0, json!({"version":1}), true)
+            .unwrap();
+        journal.committed();
+        let before = serde_json::to_value(&journal).unwrap();
+        journal
+            .finish(501, "/data", &kept.key, json!({"status":"succeeded"}), true)
+            .unwrap();
+        journal
+            .write_document(501, "/data", "devices.json", 1, json!({"version":2}), true)
+            .unwrap();
+        journal
+            .write_document(501, "/data", "room-runners-v1.json", 0, json!({}), true)
+            .unwrap();
+        let mut other = command("other");
+        other["args"]["requestId"] = json!("r9");
+        let fresh = journal.issue(501, "/data", other, true).unwrap();
+        journal.claim(501, "/data", &fresh, NONCE).unwrap();
+        journal.rollback().unwrap();
+        assert_eq!(serde_json::to_value(&journal).unwrap(), before);
+        assert!(matches!(journal.change().unwrap(), Change::None));
+    }
+
+    fn append(log: &mut Vec<u8>, journal: &mut Journal) {
+        match journal.change().unwrap() {
+            Change::Append(line) => log.extend(line),
+            Change::None => {}
+            Change::Rewrite => panic!("expected an appendable change"),
+        }
+        journal.committed();
+    }
+
+    #[test]
+    fn appended_changes_replay_onto_the_snapshot() {
+        let key = new_key().unwrap();
+        let public = key.public_key().as_ref().to_vec();
+        let mut journal = Journal::new();
+        let base = snapshot(&mut journal);
+        let mut log = Vec::new();
+        let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
+        append(&mut log, &mut journal);
+        journal.claim(501, "/data", &receipt, NONCE).unwrap();
+        append(&mut log, &mut journal);
+        journal
+            .finish(501, "/data", &receipt.key, json!({"status":"succeeded"}), true)
+            .unwrap();
+        journal
+            .write_document(501, "/data", "devices.json", 0, json!({"version":1}), true)
+            .unwrap();
+        append(&mut log, &mut journal);
+        assert_eq!(log.iter().filter(|&&b| b == b'\n').count(), 3);
+        // Reads are never recorded.
+        journal.read_document(501, "/data", "devices.json", true).unwrap();
+        assert!(matches!(journal.change().unwrap(), Change::None));
+
+        let restored = Journal::open_with_log(&base, &log, &public).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap(),
+            serde_json::to_value(&journal).unwrap()
+        );
+        // Each line holds absolute values, so replaying it twice changes nothing.
+        let doubled = [log.clone(), log.clone()].concat();
+        let again = Journal::open_with_log(&base, &doubled, &public).unwrap();
+        assert_eq!(
+            serde_json::to_value(&again).unwrap(),
+            serde_json::to_value(&journal).unwrap()
+        );
+        let mut again = again;
+        assert!(again
+            .claim(501, "/data", &receipt, NONCE)
+            .unwrap_err()
+            .contains("already consumed"));
+    }
+
+    #[test]
+    fn torn_log_tail_is_ignored() {
+        let key = new_key().unwrap();
+        let public = key.public_key().as_ref().to_vec();
+        let mut journal = Journal::new();
+        let base = snapshot(&mut journal);
+        let mut log = Vec::new();
+        let first = journal.issue(501, "/data", command("one"), true).unwrap();
+        append(&mut log, &mut journal);
+        let mut second = command("two");
+        second["args"]["requestId"] = json!("r2");
+        journal.issue(501, "/data", second, true).unwrap();
+        let Change::Append(line) = journal.change().unwrap() else { panic!() };
+        // Crash mid-write: half a line, no newline, never acknowledged.
+        log.extend(&line[..line.len() / 2]);
+        let restored = Journal::open_with_log(&base, &log, &public).unwrap();
+        assert_eq!(restored.entries.len(), 1);
+        assert!(restored.entries.contains_key(&first.key));
+        // A garbled but terminated line is skipped the same way.
+        log.extend(b"\n");
+        assert_eq!(Journal::open_with_log(&base, &log, &public).unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn a_new_snapshot_retires_older_log_lines() {
+        let key = new_key().unwrap();
+        let public = key.public_key().as_ref().to_vec();
+        let mut journal = Journal::new();
+        snapshot(&mut journal);
+        let mut log = Vec::new();
+        let receipt = claimed(&mut journal);
+        append(&mut log, &mut journal);
+        journal
+            .finish(501, "/data", &receipt.key, json!({"status":"succeeded"}), true)
+            .unwrap();
+        append(&mut log, &mut journal);
+        journal.compact(&key).unwrap();
+        assert!(matches!(journal.change().unwrap(), Change::Rewrite));
+        let base = snapshot(&mut journal);
+        // Crash after the snapshot but before the log was emptied: replaying
+        // the old lines would resurrect a folded entry beside its checkpoint.
+        let mut restored = Journal::open_with_log(&base, &log, &public).unwrap();
+        assert!(restored.entries.is_empty());
+        assert!(restored
+            .claim(501, "/data", &receipt, NONCE)
+            .unwrap_err()
+            .contains("already consumed"));
+    }
+
+    #[test]
+    fn journals_without_a_generation_still_open() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let receipt = claimed(&mut journal);
+        let mut old = serde_json::to_value(&journal).unwrap();
+        old.as_object_mut().unwrap().remove("logGeneration");
+        let restored = Journal::open(&serde_json::to_vec(&old).unwrap(), key.public_key().as_ref())
+            .unwrap();
+        assert!(restored.entries.contains_key(&receipt.key));
     }
 
     #[test]
@@ -1156,6 +1453,44 @@ mod tests {
         assert!(journal
             .issue(501, "/data", command("changed"), true)
             .is_err());
+    }
+
+    #[test]
+    fn atomic_always_approval_binds_request_scope_revision_and_decision() {
+        let mut journal=Journal::new();
+        let command=json!({"cmd":"personal_decide_always","args":{"assistantId":"alfred","requestId":"always-1","decisionId":"decision-1","paramsHash":"hash","expectedRevision":7,"capability":"commandRun","scope":{"kind":"project","host":"mac","cwd":"/project"}}});
+        assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+        let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+        assert_eq!(journal.issue(501,"/data",command.clone(),true).unwrap(),receipt);
+        for (field,value) in [("scope",json!({"kind":"allProjects"})),("expectedRevision",json!(8)),("decisionId",json!("decision-2")),("paramsHash",json!("other")),("assistantId",json!("another")),("capability",json!("fileRead"))] {
+            let mut changed=command.clone();changed["args"][field]=value;
+            assert!(journal.issue(501,"/data",changed,true).is_err(),"changed {field} under same request");
+        }
+        let mut missing=command.clone();missing["args"].as_object_mut().unwrap().remove("requestId");
+        assert!(journal.issue(501,"/data",missing,true).is_err());
+        journal.claim(501,"/data",&receipt,NONCE).unwrap();
+        assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+    }
+
+    #[test]
+    fn permission_trash_and_action_label_receipts_bind_exact_delivery_content() {
+        for (command,field,value) in [
+            (json!({"cmd":"personal_permission_set","provenanceRequestId":"permission-1","args":{"assistantId":"alfred","expectedRevision":7,"capability":"commandRun","scope":{"kind":"allProjects"},"mode":"always","delegate":false}}),"expectedRevision",json!(8)),
+            (json!({"cmd":"room_set_trashed","provenanceRequestId":"trash-1","args":{"id":"thread-1","trashed":true}}),"trashed",json!(false)),
+            (json!({"cmd":"computer_set_action_labels","provenanceRequestId":"labels-1","args":{"enabled":true}}),"enabled",json!(false)),
+        ] {
+            let mut journal=Journal::new();
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(receipt.command,command);
+            assert_eq!(journal.issue(501,"/data",command.clone(),true).unwrap(),receipt);
+            let mut changed=command.clone();changed["args"][field]=value;
+            assert!(journal.issue(501,"/data",changed,true).is_err());
+            let mut missing=command.clone();missing.as_object_mut().unwrap().remove("provenanceRequestId");
+            assert!(journal.issue(501,"/data",missing,true).is_err());
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+        }
     }
 
     fn task_action(action:&str, qualified:bool)->Value {

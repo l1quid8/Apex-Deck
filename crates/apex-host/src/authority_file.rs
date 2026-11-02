@@ -40,6 +40,7 @@ fn local_read(path: &Path) -> io::Result<Vec<u8>> {
 }
 #[cfg(test)]
 pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
+    tests::record_read(path);
     local_read(path)
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -142,11 +143,33 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    thread_local! {
+        static READS: std::cell::RefCell<Option<Vec<std::path::PathBuf>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(crate) fn record_read(path: &Path) {
+        READS.with(|reads| {
+            if let Some(reads) = reads.borrow_mut().as_mut() { reads.push(path.to_path_buf()); }
+        });
+    }
+
+    pub(crate) fn track_reads<T>(f: impl FnOnce() -> T) -> (T, Vec<std::path::PathBuf>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) { READS.with(|reads| { reads.borrow_mut().take(); }); }
+        }
+        READS.with(|reads| assert!(reads.borrow_mut().replace(vec![]).is_none()));
+        let _reset = Reset;
+        let result = f();
+        let reads = READS.with(|reads| reads.borrow_mut().take().unwrap());
+        (result, reads)
+    }
 
     #[test]
     fn fixture_updates_replace_protected_document_without_touching_legacy_file() {

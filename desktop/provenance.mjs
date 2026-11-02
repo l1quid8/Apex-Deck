@@ -10,14 +10,14 @@ import { isDeepStrictEqual } from 'node:util';
 export const ROOT='/Library/Application Support/Apex Deck Provenance';
 export const SOCKET=process.platform==='win32'?'\\\\.\\pipe\\ApexDeckProvenance-v1':'/var/run/dev.apexdeck.provenance.sock';
 const LIMIT=1024*1024;
-export const protectedCommands=new Set(['assistant_message','assistant_task_action','personal_send','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_project_delegate','personal_project_delegate_ui','personal_avatar_generate','personal_avatar_cancel','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','personal_archive','personal_reply_cancel','personal_schedule_cancel','room_create','room_import','room_fork','chat_promote','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_runner_start','room_runner_action','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply','devices_add','devices_set_tier','devices_set_threads','pair_approve']);
+export const protectedCommands=new Set(['computer_set_enabled','computer_set_action_labels','computer_setup','assistant_message','assistant_task_action','personal_send','personal_decide_always','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_project_delegate','personal_project_delegate_ui','personal_avatar_generate','personal_avatar_cancel','personal_permission_set','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','personal_archive','personal_reply_cancel','personal_schedule_cancel','personal_browser_session','room_set_trashed','room_create','room_import','room_fork','chat_promote','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_runner_start','room_runner_action','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply','devices_add','devices_set_tier','devices_set_threads','pair_approve']);
 
 // A remote host enforces its own grant boundary. Linux accepts its existing
 // local/SSH administration; a remote Mac still rejects unsigned grant changes.
 // Broker failure on this Mac never changes whether attestation is required.
 export function needsAttestation(cmd, remote = false) {
   if (typeof cmd !== 'string') return false;
-  if (remote && (cmd.startsWith('room_') || ['devices_add', 'devices_set_tier', 'devices_set_threads', 'pair_approve'].includes(cmd))) return false;
+  if (remote && (cmd.startsWith('room_') || ['devices_add', 'devices_set_tier', 'devices_set_threads', 'pair_approve', 'personal_browser_session'].includes(cmd))) return false;
   return protectedCommands.has(cmd);
 }
 
@@ -97,7 +97,7 @@ export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKe
   if(typeof uid!=='number')throw new Error('Protected provenance service unavailable. Submission was not sent.');
   const command={cmd:frame.cmd,args:frame.args??{}};
   if(frame.cmd==='assistant_task_action') command.provenanceRequestId=command.args.action==='revise_startup'?'task-action:revise_startup:content-v1':`task-action:${command.args.action}`;
-  else if(!['assistant_message','personal_send','personal_decide'].includes(frame.cmd)) command.provenanceRequestId=randomUUID();
+  else if(!['assistant_message','personal_send','personal_decide_always','personal_decide'].includes(frame.cmd)) command.provenanceRequestId=randomUUID();
   const key=rawKey??publicKey();
   const signed=await send({op:'issue',dataDir,command},{publicKey:key,platform});
   const payload=verifyEnvelope(signed,key),receipt=payload.receipt;

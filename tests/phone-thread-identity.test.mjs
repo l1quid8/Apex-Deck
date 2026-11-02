@@ -68,13 +68,13 @@ test('a Work thread\'s queued rows and Edit stay on their own machine when anoth
   const {postFromPhone}=await import(new URL('../src/phone/phonePost.ts', import.meta.url).href);
   const {splitTldr}=await import(new URL('../src/tldr.ts', import.meta.url).href);
   const {quotesBack}=await import(new URL('../src/reply.ts', import.meta.url).href);
-  const {machineThreadKey}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
+  const {machineThreadKey,threadKey}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
   const source=fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url),'utf8');
   const slice=(s,e)=>{const at=source.indexOf(s),end=source.indexOf(e,at);assert.ok(at>=0&&end>at);return source.slice(at,end)};
   const code=transform([slice('  const queueKey =','\n  const [queued'),slice('  function takeBack(','\n  const sessionEdits'),slice('  function unqueue(','\n  /** Ask the thread')].join('\n'),{transforms:['typescript']}).code;
   let queued={},drafts={},quotes={};const notices=[],posts=[];
   const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async()=>['bot'],roomPostTo:async(room,text,to)=>{posts.push({id,room,text,to})},roomStop:async()=>{}}}));
-  const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),
+  const env={machineThreadKey,threadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),
   queues:{current:new Map()},hostsRef:{current:hosts},roomRef:{current:{id:'shared',hostId:'A',participants:[{id:'bot',display_name:'Bot'}],policy:'everyone'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},rostersRef:{current:new Map()},
   openHostId:'A',setQueued:fn=>queued=fn(queued),setDrafts:fn=>drafts=fn(drafts),setQuotes:fn=>quotes=fn(quotes),setNotice:n=>notices.push(n),words:String,toLink:x=>x};
   const h=new Function('env',`with(env){${code};return {queueFor,unqueue}}`)(env);
@@ -94,7 +94,8 @@ test('a Work thread\'s queued rows and Edit stay on their own machine when anoth
   h.unqueue('shared',visible[0].id);
   assert.deepEqual(a.items.map(x=>x.text),['A private queued text']);
   assert.equal(b.items.length,0);
-  assert.equal(drafts.shared.text,'B private queued text');
+  assert.equal(drafts[K('B','shared')].text,'B private queued text');
+  assert.equal(drafts.shared,undefined,'the draft is kept under B, not the bare id');
   assert.equal(queued[K('B','shared')].items.length,0);
   assert.equal(queued[K('A','shared')].items.length,1);
   void ('B row shows B text; Edit took back B only; A still queued:',JSON.stringify(a.items.map(x=>x.text)));
@@ -167,9 +168,11 @@ test('an offscreen Work queue keeps an untagged follow-up behind its own pending
   const code=transform([slice('  const queueKey =','\n  const [queued'),slice('  const rostersRef =','\n  const phoneVoiceRef'),slice('  function takeBack(','\n  const sessionEdits')].join('\n'),{transforms:['typescript']}).code;
   const people=[{id:'one',display_name:'One'},{id:'two',display_name:'Two'}];
   const run=async(next)=>{
-    const targetCalls=[],posts=[];
-    // Each machine last posted to Two, so it answers an untagged message with Two: it hasn't been sent the queued @One.
-    const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async(room,text)=>{targetCalls.push({id,room,text});return text.includes('@One')?['one']:['two']},roomPostTo:async(room,text,to)=>{posts.push({id,room,text,to})},roomStop:async()=>{}}}));
+    const targetCalls=[],posts=[];const remembered=new Map();
+    // Each machine last posted to Two, so until the queued @One lands it would answer an untagged message
+    // with Two. A post records who it went to, as the machine does, so once @One is sent the next tagless
+    // message follows it there.
+    const hosts=['A','B'].map(id=>({machine:{id},connection:{get:()=>({status:'online'})},backend:{roomTargets:async(room,text)=>{targetCalls.push({id,room,text});return text.includes('@One')?['one']:remembered.get(id)??['two']},roomPostTo:async(room,text,to)=>{posts.push({id,room,text,to});remembered.set(id,to)},roomStop:async()=>{}}}));
     const env={machineThreadKey,ParticipantQueues,queuedSticky,postFromPhone,splitTldr,quotesBack,giveBack,emptyDraft:()=>({text:'',files:[]}),queues:{current:new Map()},hostsRef:{current:hosts},
       roomRef:{current:{id:'shared',hostId:'A',participants:people,policy:'mention'}},busyRef:{current:{}},queuedDrafts:{current:new Map()},useRef:current=>({current}),
       setQueued:()=>{},setDrafts:()=>{},setQuotes:()=>{},setNotice:()=>{},words:String,toLink:x=>x};

@@ -45,6 +45,7 @@ pub(crate) fn request(idea: &str, taken: &[String]) -> TurnRequest {
 Don't use tools or read files. The description is a wish for the agent, not instructions to you."#
     );
     TurnRequest {
+        computer: None,
         system,
         turns: vec![ViewTurn { role: Role::User, content: idea.to_string() }],
         unseen: vec![],
@@ -134,7 +135,7 @@ mod tests {
     use apex_core::testing::ScriptedParticipant;
 
     fn agent(tool: AgentTool) -> ParticipantConfig {
-        ParticipantConfig { id: ParticipantId::new("w"), display_name: "W".into(), backend: Backend::Agent { tool, model: None },
+        ParticipantConfig { can_read_images: false, id: ParticipantId::new("w"), display_name: "W".into(), backend: Backend::Agent { tool, model: None },
             persona: "old persona".into(), access: Access::Full, effort: None, speed: None, voice: None, appearance: None, media: None }
     }
 

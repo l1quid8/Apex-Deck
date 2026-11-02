@@ -7,7 +7,7 @@ import type { ChipParts } from "./botChip";
 import type { DashboardDestination, DashRow } from "./dashboardModel";
 import type { ServerChoice } from "./PreviewPane";
 import type { LandingTextureSettings } from "./settings";
-import type { AppearanceValues } from "./themes";
+import type { AppearanceValues, AppearanceSettings } from "./themes";
 import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./types";
 import type { VoiceSettings } from "./voice/types";
 import type { WorkspaceTaskRow } from "./workspaceTasks.ts";
@@ -96,7 +96,7 @@ export interface PopoutSnapshot {
   /** The focused chat thread at pop-out time, which Files and Details follow. */
   activeChatId?: string | null;
   /** The owner's current skin, so the pop-out wears the same look as Deck. */
-  appearance?: AppearanceValues;
+  appearance?: AppearanceValues | AppearanceSettings;
 }
 
 /** Which side of its neighbour a pane sat on. */
@@ -178,7 +178,7 @@ export interface PopoutUpdate {
   /** The outcome of a fork this pop-out asked for. */
   forkResult?: ForkResult;
   /** The owner's skin, resent whenever it changes so open pop-outs change with Deck. */
-  appearance?: AppearanceValues;
+  appearance?: AppearanceValues | AppearanceSettings;
 }
 
 export interface PaneTakeout {

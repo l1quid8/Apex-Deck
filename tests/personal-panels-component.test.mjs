@@ -66,7 +66,7 @@ function mount(props) {
   };
   const useEffect = (effect) => { cursor++; effect(); };
   const useRef = initial => { const i = cursor++; return states[i] ??= { current: initial }; };
-  const component = new Function('React', 'useState', 'useEffect', 'useRef', 'PersonalBrowser', 'ProjectMemoryPanel', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, useRef, () => null, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL);
+  const component = new Function('React', 'useState', 'useEffect', 'useRef', 'PersonalBrowser', 'ProjectMemoryPanel', 'AssistantPermissions', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, useRef, () => null, () => null, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL);
   return { render() { cursor = 0; return component({ onClose() {}, ...props }); } };
 }
 

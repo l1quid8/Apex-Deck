@@ -41,7 +41,7 @@ import { ThreadCard } from "../interactiveAnswers/ThreadCard.tsx";
 import { QuestionForm } from "../QuestionForm";
 import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
-import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "../tldr";
+import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
 import { appendToolToken } from "../composerMenu";
 import { chooseOutcome, pickerMatches, pickerRows, workInRows, type PickerRow } from "../destinations";
 import { buildNotice, dotState, helperNotice } from "../hostFacts";
@@ -69,6 +69,7 @@ import { irohConnect } from "../daemon/irohLink";
 import { remotePlugin, type Route } from "./remotePlugin";
 import { clearRemoteMode, defaultAddHow, PAIR_MACHINE_HINT, startAutomatic, whenAutomatic } from "./automatic";
 import { AddHowPicker } from "./AddHow";
+import { RemoteSsh } from "./RemoteSsh";
 import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
@@ -79,7 +80,8 @@ import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTick
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
-import type { ChatDeliveryStatus } from "../chatDelivery";
+import { carriedEntry } from "../threadState";
+import { leftBehindWords, type ChatDeliveryStatus } from "../chatDelivery";
 import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
 import { PickedText } from "./PickedText";
@@ -92,7 +94,7 @@ import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedPr
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
-import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
+import { identityFor, parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
 import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, takeScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
 import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
@@ -703,8 +705,6 @@ export function PhoneApp() {
   }, [chatView]);
   const sessionHost = (pane: AssistantVisiblePane) => { const workspace = workspaces.find((item) => item.id === pane.workspaceId); return pane.hostId ?? (workspace ? workspaceHost(workspace) : ""); };
   const openPane = pickOpenPane(panes, chatPlaces.panes, openId, openHost, sessionHost);
-  /** Where the open thread's draft, quotes and TL;DR are kept: a chat's names its machine too. */
-  const openKey = openPane ? threadKey(openPane, isChatSpace) : openId;
   const pendingWorkspace = workspaces.find((workspace) => workspace.id === pending?.workspaceId) ?? null;
   const viewingPending = pending !== null && openId === pending.id;
   const openWorkspace = viewingPending ? pendingWorkspace : workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? chatPlaces.workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? null;
@@ -714,6 +714,9 @@ export function PhoneApp() {
   const openWork = openPane && !openChat && openPane.hostId && !panes.some((pane) => pane.id === openPane.id) ? findRoom(chatView, openPane.hostId, openPane.id) : null;
   const hostOf = (workspace: Workspace | null) => links.find((link) => link.id === (workspace ? workspaceHost(workspace) : "")) ?? null;
   const openHostId = openPane?.hostId ?? (openWorkspace ? workspaceHost(openWorkspace) : "");
+  /** Where the open thread's draft, quotes and TL;DR are kept: its machine and its id, so a same-id thread
+   *  on another machine never shares them. */
+  const openKey = openPane ? threadKey(openPane, openHostId) : openId;
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
   const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
   const runnerBackend=phoneHost(openHostId)?.backend;
@@ -891,7 +894,7 @@ export function PhoneApp() {
     if (!openPane || !openPane.hostId || !isChatSpace(openPane.workspaceId)) return;
     const route = chatRoute(delivery.snapshot(), openPane.hostId, openPane.id);
     if (!route.moved) return;
-    const from = threadKey(openPane, isChatSpace);
+    const from = threadKey(openPane, openHostId);
     const to = JSON.stringify([route.hostId, route.room]);
     setDrafts((all) => all[from] && !all[to] ? { ...all, [to]: all[from] } : all);
     setOpenHost(route.hostId);
@@ -899,6 +902,16 @@ export function PhoneApp() {
     refreshChats(route.hostId).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPane?.id, openPane?.hostId, deliveryTick]);
+  // A Work thread's draft, quotes and TL;DR were saved under its bare id before those keys named the
+  // machine. Carry them over when it opens, before the first paint, so an upgrade loses no draft.
+  useLayoutEffect(() => {
+    if (!openPane || isChatSpace(openPane.workspaceId)) return;
+    const now = threadKey(openPane, openHostId);
+    setDrafts((all) => carriedEntry(all, now, openPane.id));
+    setQuotes((all) => carriedEntry(all, now, openPane.id));
+    if (tldrFor(now, openPane.id)) setTldrs((all) => ({ ...all, [now]: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openPane?.id, openPane?.hostId, openHostId]);
   async function startChat(hostId: string, profiles: string[]) {
     const host = phoneHost(hostId);
     if (!host) throw new Error("That machine isn't paired with this phone.");
@@ -964,8 +977,8 @@ export function PhoneApp() {
     await Promise.allSettled([refreshChats(row.hostId), refreshChats(toHostId)]);
     setChatSheet(null);
     if (chat) openChatRow({ hostId: chat.machine.id, id: chat.room });
-    const left = journal?.skipped ?? [];
-    setNotice(left.length ? `Moved to ${to.name}. ${left.map((item) => `${row.bots.find((bot) => bot.id === item.participant)?.name ?? item.participant} stayed behind: ${item.reason}`).join(" ")}` : `Moved to ${to.name}.`);
+    const left = journal ? leftBehindWords(journal, (botId) => row.bots.find((bot) => bot.id === botId)?.name) : [];
+    setNotice(left.length ? `Moved to ${to.name}. ${left.join(" ")}` : `Moved to ${to.name}.`);
   }
   /** A move to a Work thread, saved on the phone before it is sent and kept until the machine confirms,
    *  so a retry gets the same thread with the same access. Nothing is sent if it can't be saved. */
@@ -1072,9 +1085,10 @@ export function PhoneApp() {
     const key = `${queueKey(hostId, paneId)}\u0000${text}`;
     const sent = queuedDrafts.current.get(key);
     const back = sent?.draft ?? { text: splitTldr(text).text, files: [] };
+    const box = threadKey({ id: paneId }, hostId);
     queuedDrafts.current.delete(key);
-    setDrafts((all) => ({ ...all, [paneId]: giveBack(all[paneId] ?? emptyDraft(), back) }));
-    if (sent?.quotes.length) setQuotes((all) => ({ ...all, [paneId]: quotesBack(all[paneId] ?? [], sent.quotes) }));
+    setDrafts((all) => ({ ...all, [box]: giveBack(all[box] ?? emptyDraft(), back) }));
+    if (sent?.quotes.length) setQuotes((all) => ({ ...all, [box]: quotesBack(all[box] ?? [], sent.quotes) }));
   }
   /** A thread's queue, made the first time it is needed. A thread never changes machines once it has started. */
   function queueFor(paneId: string, hostId: string): ParticipantQueues {
@@ -1085,6 +1099,17 @@ export function PhoneApp() {
       const found = host();
       if (!found) throw new Error("This thread's machine isn't paired with this phone.");
       return found.backend;
+    };
+    /** A message that didn't go: give its draft back, and say where it is now. */
+    const unsentDraft = (text: string, to: string[], error: unknown): unknown => {
+      const sent = queuedDrafts.current.get(`${queueKey(hostId, paneId)}\u0000${text}`);
+      // The queue holds these bots after a failure, as on the desktop. When the message is in the box again,
+      // sending it again should just send, so let go of any bot with nothing else waiting once the queue has paused it.
+      if (sent) setTimeout(() => { for (const bot of to) if (!queue.items.some((item) => item.to.includes(bot))) queue.resume(bot); }, 0);
+      // Still in the box when Send is waiting on it; a message that had been queued goes back into it.
+      if (sent?.inBox) { sent.failed = true; return new Error(`${words(error)}. Your message is still in the box.`); }
+      if (sent) { takeBack(hostId, paneId, text); return new Error(`${words(error)}. Your message is back in the box.`); }
+      return error;
     };
     const queue: ParticipantQueues = new ParticipantQueues(
       async (text) => {
@@ -1102,22 +1127,17 @@ export function PhoneApp() {
         try { await postFromPhone(backend(), paneId, text, to, voice); }
         catch (error) {
           if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
-          const sent = queuedDrafts.current.get(key);
-          // The queue holds these bots after a failure, as on the desktop. When the message is in the box again,
-          // sending it again should just send, so let go of any bot with nothing else waiting once the queue has paused it.
-          if (sent) setTimeout(() => { for (const bot of to) if (!queue.items.some((item) => item.to.includes(bot))) queue.resume(bot); }, 0);
-          // Still in the box when Send is waiting on it; a message that had been queued goes back into it.
-          if (sent?.inBox) { sent.failed = true; throw new Error(`${words(error)}. Your message is still in the box.`); }
-          if (sent) { takeBack(hostId, paneId, text); throw new Error(`${words(error)}. Your message is back in the box.`); }
-          throw error;
+          throw unsentDraft(text, to, error);
         }
         queuedDrafts.current.delete(key);
       },
       (id) => backend().roomStop(paneId, id),
       (items) => setQueued((all) => ({ ...all, [queueKey(hostId, paneId)]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
-      (error) => setNotice(words(error)),
+      (error, unsent) => setNotice(words(unsent ? unsentDraft(unsent.text, unsent.to, error) : error)),
       () => { const found = host(); return queues.current.get(queueKey(hostId, paneId)) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
       false, // Phone restores the complete draft itself on dispatch failure.
+      // Asked again when a queued message is actually sent, so a rule changed while it waited still applies.
+      (text) => backend().roomTargets(paneId, text),
     );
     for (const id of busyRef.current[queueKey(hostId, paneId)] ?? []) queue.started(id);
     queues.current.set(queueKey(hostId, paneId), queue);
@@ -1187,7 +1207,7 @@ export function PhoneApp() {
     const sameShown = roomRef.current?.id === openPane.id && roomRef.current.hostId === openHostId;
     // Anything else on screen goes at once, so its form and buttons can't act while this one loads.
     if (roomRef.current && !sameShown) setRoom(null);
-    const key = threadKey(openPane, isChatSpace);
+    const key = threadKey(openPane, openHostId);
     // Offline keeps what is already on screen under the banner; it reloads when the machine is back.
     // Bots that were mid-reply are cut off: their turn shows as interrupted, not still going.
     if (!host || toLink(host.connection.get().status) !== "online") {
@@ -1285,6 +1305,7 @@ export function PhoneApp() {
         plans: { ...current.plans, [planKey(event.provider, event.model)]: mergePlan(current.plans[planKey(event.provider, event.model)], event.windows, event.partial) },
         credits: event.reset_credits ? { ...current.credits, [event.provider]: event.reset_credits } : current.credits,
       } : current);
+      if (event.type === "journal_warning") setNotice(event.error);
       if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
       setCuts((all) => { const now = all[key]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [key]: next }; });
       setRoom((current) => {
@@ -1360,7 +1381,9 @@ export function PhoneApp() {
     if (openChat) { sendChat(openChat); return; }
     if (!id || !openWorkspace || !openLink || sendingRef.current) return;
     if (readingRef.current > 0) { setNotice("Wait for the file to finish attaching."); return; }
-    const draft = draftFor(id);
+    // This thread's box, quotes and TL;DR, under its machine and id: a pending draft has neither yet.
+    const box = openKey ?? id;
+    const draft = draftFor(box);
     const gate = threadSend(links, openLink.id, draft.text, draft.files.length);
     if (!gate.enabled) { if (gate.reason) setNotice(gate.reason); return; }
     const host = phoneHost(openLink.id);
@@ -1390,9 +1413,12 @@ export function PhoneApp() {
         pane = made;
         participants = state.snapshot.participants.map(toPerson);
         transcriptLength = state.snapshot.transcript.length;
-        movedRef.current[pending.id] = made.id;
-        setDrafts((all) => { const next = { ...all, [made.id]: all[pending.id] ?? draft }; delete next[pending.id]; return next; });
-        if (tldrOf(pending.id)) { setTldr(made.id, true); setTldr(pending.id, false); }
+        // The new thread's box names its machine, as every Work thread's does. Files picked while this
+        // was still a draft go there, which is where the box now reads them from.
+        const madeBox = threadKey(made, host.machine.id);
+        movedRef.current[pending.id] = madeBox;
+        setDrafts((all) => { const next = { ...all, [madeBox]: all[pending.id] ?? draft }; delete next[pending.id]; return next; });
+        if (tldrOf(pending.id)) { setTldr(madeBox, true); setTldr(pending.id, false); }
         setPending(null);
         delete pendingRoomIds.current[pending.id];
         setPendingDraftPlans((all) => { const next = { ...all }; delete next[pending.id]; return next; });
@@ -1405,6 +1431,8 @@ export function PhoneApp() {
       }
       if (!pane) return;
       const sentPane = pane;
+      // The box key for the thread that actually gets this, which is a new thread when the draft started one.
+      const sentBox = threadKey(sentPane, host.machine.id);
       if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
       const parsed=parseComposer(draft.text.trim());
       if ('command' in parsed || runnerMode) {
@@ -1413,16 +1441,16 @@ export function PhoneApp() {
           const workers=await host.backend.roomTargets(sentPane.id,'arg' in command?command.arg:'');
           const result=await runnerCommand(host.backend,sentPane.id,command.name,command.arg,workers,runnerLimits,runnerConfig);
           setRunner(result.snapshot??null);if(result.confirmEnd){runnerClear.current=true;setRunnerEndRequest(v=>v+1);}if(result.show)setRunnerShowRequest(v=>v+1);if(result.message)setNotice(result.message);
-          setDraft(sentPane.id,{...draft,text:''});setRunnerMode(null);return;
+          setDraft(sentBox,{...draft,text:''});setRunnerMode(null);return;
         }
         throw Error('Use /goal or /loop controls here. Other slash commands are available on desktop. Start with // to send literal text.');
       }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
       // Quotes go under the text, led by the bot they're handed to, as on the desktop.
-      const sentQuotes = quotes[id] ?? [];
+      const sentQuotes = quotes[sentBox] ?? [];
       // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
-      const body = withTldr(withAttachments(outgoingText(postable(draft.text), sentQuotes, participants), paths), tldrOf(id));
+      const body = withTldr(withAttachments(outgoingText(postable(draft.text), sentQuotes, participants), paths), tldrOf(sentBox));
       // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
       // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
       // This resolves once the machine has it, or once it is queued; until then the box keeps it.
@@ -1436,10 +1464,10 @@ export function PhoneApp() {
       if (entry.failed) { queuedDrafts.current.delete(key); return; }
       // Clear only what was sent; anything typed, attached or quoted while it was sending stays.
       setDrafts((all) => {
-        const now = all[sentPane.id] ?? emptyDraft();
-        return { ...all, [sentPane.id]: { text: now.text === draft.text ? "" : now.text, files: now.files.filter((file) => !draft.files.includes(file)) } };
+        const now = all[sentBox] ?? emptyDraft();
+        return { ...all, [sentBox]: { text: now.text === draft.text ? "" : now.text, files: now.files.filter((file) => !draft.files.includes(file)) } };
       });
-      if (sentQuotes.length) setQuotes((all) => ({ ...all, [sentPane.id]: (all[sentPane.id] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
+      if (sentQuotes.length) setQuotes((all) => ({ ...all, [sentBox]: (all[sentBox] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
       setNotice("");
       // One save for the title and Recents, so the two can't overwrite each other.
       const title = transcriptLength === 0 || sentPane.title === "New thread" ? threadTitleFromMessage(draft.text) : "New thread";
@@ -1589,8 +1617,9 @@ export function PhoneApp() {
   }, [composerOpen, openId, openWorkspace?.id]);
 
   function startPicker() {
-    // This runs from the picker button, before the native picker can suspend the page.
-    pickerDraft.current = openId;
+    // This runs from the picker button, before the native picker can suspend the page. The picked
+    // files belong to the open thread's box, which names its machine.
+    pickerDraft.current = openKey ?? openId;
   }
 
   async function readAttachments(_kind: "camera" | "photos" | "files", selected: File[]) {
@@ -1915,7 +1944,11 @@ export function PhoneApp() {
       const line = failedLine(failed) ?? putBackLine(request.files);
       if (line) setNotice(line);
       // Your message goes back in the box, unsent.
-      if (kind === "revert" && request.chat) setDrafts((all) => ({ ...all, [paneId]: { ...(all[paneId] ?? emptyDraft()), text: splitTldr(message.text).text } }));
+      if (kind === "revert" && request.chat) {
+        // The box is kept under the thread's machine and id, like every other thread's.
+        const box = threadKey({ id: paneId }, host.machine.id);
+        setDrafts((all) => ({ ...all, [box]: { ...(all[box] ?? emptyDraft()), text: splitTldr(message.text).text } }));
+      }
       if (kind === "retry" && bot) { stuckRef.current = true; queueFor(paneId, host.machine.id).turn([bot], null); }
     } catch (error) {
       setNotice(`Could not ${kind}: ${words(error)}`);
@@ -2755,7 +2788,7 @@ function BackButton({ label, onClick, className }: { label: string; onClick(): v
   return <button type="button" className={`ph-back${className ? ` ${className}` : ""}`} aria-label={`Back to ${label}`} onClick={onClick}><ChevronLeft size={26} />{label}</button>;
 }
 
-function Sheet({ title, onClose, children, variant }: { title: string; onClose(): void; children: ReactNode; variant?: "location" }) {
+function Sheet({ title, tag, onClose, children, variant }: { title: string; tag?: ReactNode; onClose(): void; children: ReactNode; variant?: "location" }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
   return (
@@ -2763,7 +2796,7 @@ function Sheet({ title, onClose, children, variant }: { title: string; onClose()
       <div className={`ph-sheet${variant ? ` ph-sheet-${variant}` : ""}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
         <div className="ph-handle" />
         <div className={`ph-sheet-title${variant ? ` ph-sheet-title-${variant}` : ""}`}>
-          <h3>{title}</h3>
+          <h3>{title}{tag}</h3>
           <button type="button" className="ph-icon" aria-label="Close" onClick={onClose}><X size={20} /></button>
         </div>
         <div className={`ph-sheet-body${variant ? ` ph-sheet-body-${variant}` : ""}`}>{children}</div>
@@ -3585,7 +3618,7 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 }
 
 /** How a new machine is reached: its QR code, or an address and token typed in. */
-type AddHow = "qr" | "address";
+type AddHow = "qr" | "ssh" | "address";
 
 function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
@@ -3623,11 +3656,10 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
     const trimmed = link.trim();
     // A link already holds the slot. Camera and paste take it here, or leave the open sheet alone.
     if (!held && !reserve(trimmed)) return false;
-    const kind = over?.kind ?? form.kind;
     try {
       const preview = parsePairingLink(trimmed);
-      const name = (over ? "" : form.name.trim()) || preview.name;
-      const id = kind === "mac" ? "local" : form.id.trim();
+      const kind = over?.kind ?? identityFor(machines, preview).kind;
+      const { name, id } = over ? { name: preview.name, id: kind === "mac" ? "local" : form.id.trim() } : identityFor(machines, preview);
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
       withPairedMachine(machines, { id, name, kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
       onPair({ link: trimmed, kind, id, name });
@@ -3699,8 +3731,16 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
         );
       })}
       {missing.length > 0 && <p className="ph-intro">Your Mac's threads also use {missing.join(", ")}. Pair each one so those threads work here too.</p>}
-      {!adding && !editing && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setAdding(true); }}>Add a machine…</button>}
-      {adding && (
+      {!adding && !editing && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setHow(defaultAddHow(pairing)); setAdding(true); }}>Add a machine…</button>}
+      {adding && how === "ssh" && (
+        <div className="ph-group ph-padded ph-form">
+          <img className="ph-logo-wide" src="/branding/logo-horizontal.svg" alt="Apex Deck" width="160" height="40" />
+          <h3>Add a machine</h3>
+          <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
+          <RemoteSsh setup={null} onCancel={machines.length > 0 ? () => setAdding(false) : undefined} onDone={() => setAdding(false)} />
+        </div>
+      )}
+      {adding && how !== "ssh" && (
         <form className="ph-group ph-padded ph-form" onSubmit={(event) => {
           event.preventDefault();
           if (how === "qr") { pairWith(pasted); return; }
@@ -3711,19 +3751,19 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
         }}>
           <img className="ph-logo-wide" src="/branding/logo-horizontal.svg" alt="Apex Deck" width="160" height="40" />
           <h3>Add a machine</h3>
-          <div className="ph-segment" role="radiogroup" aria-label="Kind">
-            <button type="button" role="radio" aria-checked={form.kind === "mac"} disabled={hasMac} onClick={() => setForm({ ...form, kind: "mac", id: "" })}><Laptop size={16} />Mac</button>
-            <button type="button" role="radio" aria-checked={form.kind === "server"} onClick={() => setForm({ ...form, kind: "server", id: form.id || missing[0] || "" })}><Globe size={16} />Server</button>
-          </div>
           <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
-          <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={how === "qr" ? "From the code" : form.kind === "mac" ? "Tyler's MacBook" : "Apex-Terminal"} required={how === "address"} autoCapitalize="words" /></label>
-          {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
           {how === "qr" ? <>
-            <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>.</p>
+            <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>. The name comes from the code.</p>
             {scan && <ScanCodeButton scan={scan} reserve={reserve} adopt={adopt} giveBack={giveBack} onCode={(text) => pairWith(text, undefined, true)} onError={onError} auto={autoScan && !incoming} onAuto={onAutoScan} />}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
           </> : <>
+            <div className="ph-segment" role="radiogroup" aria-label="Kind">
+              <button type="button" role="radio" aria-checked={form.kind === "mac"} disabled={hasMac} onClick={() => setForm({ ...form, kind: "mac", id: "" })}><Laptop size={16} />Mac</button>
+              <button type="button" role="radio" aria-checked={form.kind === "server"} onClick={() => setForm({ ...form, kind: "server", id: form.id || missing[0] || "" })}><Globe size={16} />Server</button>
+            </div>
+            <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={form.kind === "mac" ? "Mac Studio" : "Apex-Terminal"} required autoCapitalize="words" /></label>
+            {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
             <label className="ph-label">Address<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder={form.kind === "mac" ? "ws://your-Mac's-address:7421" : "ws://server-address:7420"} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <label className="ph-label">Daemon token<input type="password" value={form.token} onChange={(event) => setForm({ ...form, token: event.target.value.trim() })} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} required /><small>Paste only the token. Spaces and line breaks are removed.</small></label>
             <button type="submit" className="primary ph-wide">Pair {form.kind === "mac" ? "Mac" : "server"}</button>
@@ -3731,7 +3771,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           {machines.length > 0 && <button type="button" className="ph-plain ph-wide" onClick={() => setAdding(false)}>Cancel</button>}
         </form>
       )}
-      <p className="ph-foot">{how === "qr" ? "Pairing keys stay in this phone's Keychain." : "The token works like a password. It stays on this phone."}</p>
+      <p className="ph-foot">{how === "address" ? "The token works like a password. It stays on this phone." : "Pairing keys stay in this phone's Keychain."}</p>
     </main>
   );
 }

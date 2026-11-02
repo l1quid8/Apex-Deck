@@ -167,3 +167,42 @@ test('a newer task tombstone snapshot updates at the same assistant revision wit
 test('an archive response without persisted archivedAt cannot report successful removal',async()=>{
  const f=fixture();f.routes.a.supports=cap=>cap==='assistant_archive_v1';await f.collection.refresh();await assert.rejects(f.collection.lane(ref('alpha')).archiveAssistant(1),/confirm|archiv/i);assert.ok(f.collection.snapshot().assistants.some(row=>row.ref.hostId==='alpha'));
 });
+
+test('typed and voice sends capture current view on their own host before awaiting a reply',async()=>{
+ const f=fixture();f.routes.a.supports=()=>true;
+ let focused='thread-a';const followed=['thread-z'];f.options.viewContext=(routeHostId)=>({hostId:routeHostId==='a'?'alpha':'mac',focusedThreadId:focused,openThreadIds:[focused],followedThreadIds:followed});
+ await f.collection.refresh();const lane=f.collection.lane(ref('alpha'));
+ const held=defer();f.handlers['a:personal_send']=async()=>{await held.promise;return {assistant:record('alpha','asst-1',2),eventId:'event-1'};};
+ const pending=lane.sendRequest('Ask Jigga to fix this','voice-request');focused='thread-b';followed.push('thread-late');held.resolve();await pending;
+ const sent=f.calls.find(([,cmd])=>cmd==='personal_send');assert.deepEqual(sent[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-a',openThreadIds:['thread-a'],followedThreadIds:['thread-z']});
+ await lane.send('What changed?');assert.deepEqual(f.calls.filter(([,cmd])=>cmd==='personal_send').at(-1)[2].viewContext,{hostId:'alpha',focusedThreadId:'thread-b',openThreadIds:['thread-b'],followedThreadIds:['thread-z','thread-late']});
+});
+
+test('pane context is omitted for old hosts and mismatched machine identities',async()=>{
+ const f=fixture();f.options.viewContext=()=>({hostId:'beta',focusedThreadId:'secret',openThreadIds:['secret']});await f.collection.refresh();
+ await f.collection.lane(ref('alpha')).send('Here');assert.equal(f.calls.at(-1)[2].viewContext,undefined);
+ f.routes.a.supports=()=>true;await f.collection.lane(ref('alpha')).send('Here');assert.equal(f.calls.at(-1)[2].viewContext,undefined);
+});
+
+test('current-thread label is local display data and must match a permitted project and current view',async()=>{
+ const f=fixture();f.routes.a.supports=()=>true;
+ f.lists.a[0].projects=[{project:{hostId:'alpha',workspaceId:'w',cwd:'/repo'},tools:'full'}];
+ f.options.viewContext=()=>({hostId:'alpha',focusedThreadId:'t',openThreadIds:['t']});
+ f.options.currentThread=()=>({id:'t',title:'Visible work',project:{hostId:'alpha',cwd:'/repo'}});
+ await f.collection.refresh();assert.equal(f.collection.lane(ref('alpha')).currentThread?.title,'Visible work');
+ await f.collection.lane(ref('alpha')).send('this');assert.equal(f.calls.at(-1)[2].viewContext.title,undefined);
+ f.options.currentThread=()=>({id:'t',title:'Other project',project:{hostId:'alpha',cwd:'/private'}});
+ assert.equal(f.collection.lane(ref('alpha')).currentThread,undefined);
+});
+
+test('Always approval reads exact host-derived choices and submits one atomic current-revision command',async()=>{
+ const f=fixture();f.routes.local.supports=cap=>cap==='assistant_approval_grants_v1';
+ const options={decisionId:'pd',paramsHash:'exact',permissionRevision:4,capability:'threadDelete',label:'Permanently delete threads',scopes:[{scope:{kind:'thread',host:'mac',cwd:'/p',thread:'t'},label:'This thread'}]};
+ f.handlers['local:personal_approval_options']=()=>options;
+ await f.collection.refresh();const lane=f.collection.lane(ref('mac'));const current=await lane.approvalOptions('pd','exact');
+ await lane.decideAlways(current,current.scopes[0].scope);
+ const grants=f.calls.filter(([,cmd])=>cmd==='personal_decide_always');assert.equal(grants.length,1);
+ assert.deepEqual({...grants[0][2],requestId:'normalized'}, {assistantId:'asst-1',requestId:'normalized',decisionId:'pd',paramsHash:'exact',expectedRevision:4,capability:'threadDelete',scope:options.scopes[0].scope});
+ assert.equal(f.calls.some(([,cmd])=>cmd==='personal_permission_set'||cmd==='personal_decide'),false,'never split grant and old-hash approval into two calls');
+ const old=fixture();await old.collection.refresh();assert.equal(old.collection.lane(ref('mac')).decideAlways,undefined);
+});

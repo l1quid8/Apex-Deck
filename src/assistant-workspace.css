@@ -240,3 +240,10 @@
   border-radius: 8px;
 }
 
+.assistant-workspace-context { flex: none; padding: 5px 16px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--line); }
+
+
+/* The name and float recovery are independent buttons in one quiet team row. */
+.assistant-team-group{display:flex;align-items:center;width:100%;height:42px;padding-right:6px;border-radius:6px;box-sizing:border-box}.assistant-team-group:is(.selected,:hover,:focus-within){background:var(--panel-2)}.assistant-team-group .assistant-team-row{flex:1;min-width:0;width:auto;height:40px;min-height:40px;background:transparent!important;border-color:transparent!important}.assistant-team-group .assistant-team-row:hover,.assistant-team-group .assistant-team-row[aria-current=page]{background:transparent!important;border-color:transparent!important}.assistant-team-popout{display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;min-height:28px;padding:6px;border:0;background:transparent;color:var(--muted);border-radius:6px}.assistant-team-popout svg{height:15px;width:15px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.assistant-team-popout:hover{color:var(--text);background:var(--hover)}
+
+.assistant-team-group .assistant-team-row{padding:6px 10px}.assistant-team-group .assistant-team-row>span:not(.identicon){line-height:14px}.assistant-team-group .assistant-team-row .assistant-team-subtitle{font-size:10px;line-height:12px;margin-top:2px}

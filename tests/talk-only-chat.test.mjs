@@ -6,7 +6,7 @@ test('talk-only menu excludes workspace actions and labels fork as a new chat', 
   for (const trigger of [null, {kind:'command', query:'', start:0, end:1}]) {
     const items = availableMenuItems(menuItems(trigger, [{id:'null',display_name:'Null'}]), {talkOnly:true});
     assert.equal(items.some(x => ['attach','attach-folder','tools','server'].includes(x.kind)), false);
-    assert.equal(items.some(x => x.kind === 'command' && ['plan','diff','image'].includes(x.key)), false);
+    assert.equal(items.some(x => x.kind === 'command' && ['plan','diff','image','curate','curate undo'].includes(x.key)), false);
     assert.equal(items.find(x => x.key === 'fork').detail, 'Copy into a new chat');
     for (const key of ['clear','compact','export']) assert.ok(items.some(x => x.key === key));
   }
@@ -14,11 +14,32 @@ test('talk-only menu excludes workspace actions and labels fork as a new chat', 
 test('Work menu retains attachment, tool and project commands', () => {
   const items = availableMenuItems(menuItems(null, []), {});
   for (const kind of ['attach','attach-folder','tools']) assert.ok(items.some(x => x.kind === kind));
-  for (const key of ['plan','diff','image']) assert.ok(items.some(x => x.key === key));
+  for (const key of ['plan','diff','image','curate','curate undo']) assert.ok(items.some(x => x.key === key));
   assert.equal(items.find(x => x.key === 'fork').detail, 'Copy this chat into a new thread');
 });
 
 import { chatThreadBackend } from '../src/chatThreadBackend.ts';
+
+test('curation obeys chat move, reconnect and history fences before reaching the host', async () => {
+  const calls = []; let blocked = 'Moved to Work', online = true, history = null;
+  const adapted = chatThreadBackend({
+    roomCurate:async id=>{calls.push(['curate',id]);},
+    roomCurateUndo:async id=>{calls.push(['undo',id]);},
+  }, {room:'r', online:()=>online, blocked:()=>blocked, historyBlocked:()=>history,
+    cached:()=>null, remember(){}, send(){}, profile(){}});
+  for (const method of ['roomCurate','roomCurateUndo']) {
+    await assert.rejects(()=>adapted[method]('r'), /Moved to Work/);
+    blocked = null; online = false;
+    await assert.rejects(()=>adapted[method]('r'), /reconnecting/);
+    online = true; history = 'History is on another machine';
+    await assert.rejects(()=>adapted[method]('r'), /History is on another machine/);
+    history = null; blocked = 'Moved to Work';
+  }
+  assert.deepEqual(calls, []);
+  blocked = null;
+  await adapted.roomCurate('r'); await adapted.roomCurateUndo('r');
+  assert.deepEqual(calls, [['curate','r'],['undo','r']]);
+});
 const bot = {id:'null',display_name:'Null',access:'read',effort:'high',backend:{kind:'agent',tool:'codex',model:'old',effort:'high'}};
 function routeFixture() {
   const calls=[], sent=[], snapshot={participants:[bot],transcript:[],options:{policy:'everyone',max_bot_hops:3}};

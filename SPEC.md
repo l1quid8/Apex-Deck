@@ -64,6 +64,7 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | Session resume for command-line tools (send only unseen messages) | next (the room already tracks unseen messages) |
 | Moderator policy: a cheap model picks who answers | later |
 | Shared summary when the transcript gets long | done (`/compact`, persisted summary) |
+| Shared lossless context curation in desktop Work threads | implemented (`/curate`, journal lookup, `/curate undo`); [real-app/provider acceptance pending](docs/reviews/2026-10-30-curate-lookups.md) |
 | Cancel a reply that is in flight | done (Stop cancels promptly; streamed partial text is retained) |
 | Rename group chats | done (header and sidebar; saved with the session) |
 | Hold your place while bots stream; "New since you looked"; a pill for an out-of-view approval card | done |

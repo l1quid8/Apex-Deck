@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { browserCaller } from "./browserTabs.ts";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import type { Backend, HostEntry } from "./backend";
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type AssistantLook } from "./assistantIdentity.ts";
@@ -9,12 +10,15 @@ import type { PersonalAssistantRecord, PersonalLane, PersonalSettings, Connector
 import { unsupported as unsupportedCommand } from "./threadMove.ts";
 import { createProjectMemoryClient, PROJECT_MEMORY_CAPABILITY } from "./projectMemory.ts";
 
+import type { PersonalViewContext } from "./assistantViewContext.ts";
 export type PersonalAssistantsOptions = {
   hosts: Pick<HostEntry, "id" | "name" | "remote">[];
   hostBackend: (routeHostId: string) => Backend;
   offlineHost: (routeHostId: string) => boolean;
   open?: boolean; device?: string; bridge?: boolean;
   onOpen?: (ref: AssistantRef | null) => void;
+  viewContext?: (routeHostId: string, hostId: string, owner: AssistantRef) => PersonalViewContext | undefined;
+  currentThread?: (routeHostId: string, hostId: string, owner: AssistantRef) => PersonalLane["currentThread"];
   storage?: Pick<Storage, "getItem" | "setItem">;
 };
 export type PersonalAssistantSummary = {
@@ -201,12 +205,23 @@ export class PersonalAssistantsCollection {
         if (!this.rows.get(key)?.assistant.projects?.some(binding => projectIdentityKey(binding.project) === identity)) throw new Error("This project is no longer assigned to this assistant. Refresh its projects before reading memory.");
       },
     });
+    const sendContext = () => {
+      if (route.supports?.("assistant_live_context_v1") !== true) return {};
+      const value = this.options.viewContext?.(row.routeHostId, row.ref.hostId,row.ref);
+      if (!value || value.hostId !== row.ref.hostId) return {};
+      return { viewContext: { hostId: value.hostId, focusedThreadId: value.focusedThreadId, openThreadIds: [...value.openThreadIds].slice(0, 64), ...(value.followedThreadIds?{followedThreadIds:[...value.followedThreadIds].slice(0,64)}:{}) } };
+    };
+    const view = this.options.viewContext?.(row.routeHostId,row.ref.hostId,row.ref);
+    const currentThread = this.options.currentThread?.(row.routeHostId,row.ref.hostId,row.ref);
+    const permittedThread = view?.hostId === row.ref.hostId && view.focusedThreadId === currentThread?.id && row.assistant.projects?.some(binding =>
+      binding.tools !== "off" && binding.project.hostId === currentThread?.project?.hostId && binding.project.cwd === currentThread.project.cwd);
     return {
       ref: { ...row.ref }, draftKey: key, attachmentKey: key,
+      currentThread: permittedThread && currentThread ? {...currentThread,project:currentThread.project && {...currentThread.project}} : undefined,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
-      send: text => after("personal_send", { requestId: request(), text }),
+      send: text => after("personal_send", { requestId: request(), text, ...sendContext() }),
       sendRequest: route.supports?.("assistant_voice_v1") !== true ? undefined : async (text, requestId) => {
-        const result = await afterResult("personal_send", { requestId, text });
+        const result = await afterResult("personal_send", { requestId, text, ...sendContext() });
         if (!result.eventId) throw new Error("The host did not return the reply identity.");
         return {eventId: result.eventId};
       },
@@ -223,15 +238,22 @@ export class PersonalAssistantsCollection {
       },
       saveAttachment: (name, bytes) => attachment(() => route.saveAttachment(need(), name, bytes)),
       pickFolder: async () => { need(); const path = await route.pickFolder(); if (!path) return null; return attachment(() => route.copyAttachment(need(), path)); },
+      approvalOptions: route.supports?.("assistant_approval_grants_v1") !== true ? undefined : async (decisionId,paramsHash) => {
+        const result=await call<import("./personalAssistant.ts").PersonalApprovalOptions>("personal_approval_options",{assistantId:need(),decisionId,paramsHash});need();
+        if(result.decisionId!==decisionId||result.paramsHash!==paramsHash)throw new Error("The host returned a different approval.");return result;
+      },
+      decideAlways: route.supports?.("assistant_approval_grants_v1") !== true ? undefined : (options,scope) => after("personal_decide_always",{requestId:request(),decisionId:options.decisionId,paramsHash:options.paramsHash,expectedRevision:options.permissionRevision,capability:options.capability,scope}),
       decide: (decisionId, paramsHash, approve) => after("personal_decide", { requestId: request(), decisionId, paramsHash, approve }),
       cancel: taskId => after("personal_cancel", { requestId: request(), taskId }),
       pause: paused => after("personal_pause", { requestId: request(), paused }),
+      newConversation: () => after("personal_conversation_new", {}),
       configure: settings => { this.legacySettings(settings); return after("personal_configure", { settings }); },
       configureWorkspace: route.supports?.("assistant_workspace_v4") !== true ? undefined : configuration => {
         if (route.supports?.("assistant_workspace_v4") !== true) throw new Error("This machine no longer supports workspace settings. Reconnect and refresh.");
         if (!Number.isSafeInteger(configuration.expectedRevision) || configuration.expectedRevision < 0) throw new Error("Workspace settings require the editor's saved revision.");
         return afterResult("personal_workspace_configure", { ...configuration }).then(result=>result.assistant);
       },
+      setPermission: route.supports?.("assistant_permissions_v1") === true ? (capability, scope, mode, delegate) => after("personal_permission_set", { expectedRevision: row.assistant.permissions?.revision ?? 0, capability, scope, mode, delegate }) : undefined,
       addRule: (text, cls, mode) => after("personal_rule_add", { text, class: cls, mode }),
       removeRule: ruleId => after("personal_rule_remove", { ruleId }),
       remember: text => after("personal_memory_add", { text, ...memoryRevision() }),
@@ -260,9 +282,10 @@ export class PersonalAssistantsCollection {
       connectors: () => call<ConnectorState[]>("personal_connectors"),
       saveKey: async (name, value) => { await call("api_key_save", { name, key: value }); },
       removeKey: async name => { await call("api_key_remove", { name }); },
-      browserView: () => call<BrowserView>("personal_browser_view"),
-      browserTakeOver: on => call<BrowserView>("personal_browser_take_over", { on }),
-      browserInput: (input: BrowserInput) => call<BrowserView>("personal_browser_input", { input }),
+      browserView: () => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_view"),
+      browserTakeOver: on => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_take_over", { on }),
+      browserInput: (input: BrowserInput) => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_input", { input }),
+      browserCall: call as NonNullable<PersonalLane["browserCall"]>,
     };
   };
   /** Legacy configure denies unknown fields. V4 runtime/projects require negotiated support and its separate API. */

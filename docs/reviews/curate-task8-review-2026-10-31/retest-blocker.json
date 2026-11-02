@@ -1,0 +1,27 @@
+{
+  "status": "blocked_before_model_call",
+  "qa_room": "pane-mvwsyria-0",
+  "baseline_messages": 54,
+  "baseline_active": [],
+  "requested_access": [
+    "read",
+    "ask"
+  ],
+  "access_before": "full",
+  "access_after": "full",
+  "attempted_command": "room_update_participant",
+  "error": "A protected provenance receipt from the installed Apex UI is required; local socket and CLI access do not establish human origin.",
+  "computer_use_errors": [
+    "cgWindowNotFound for /Library/Application Support/Apex Deck Provenance/TrustedUI/Apex Deck.app",
+    "timeoutReached for /Applications/Apex Deck.app"
+  ],
+  "model_calls_started": 0,
+  "server_context_length": 65536,
+  "server_configuration_changed": false,
+  "installation_performed": false,
+  "final_readback": {
+    "active": [],
+    "transcript_messages": 54,
+    "ds4_access": "full"
+  }
+}

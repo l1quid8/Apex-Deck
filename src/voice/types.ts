@@ -23,6 +23,7 @@ export type VoiceTurn = {
 };
 /** Saved for one agent in one chat. No voice means the agent's own, then the app default. */
 export type VoicePreferences = { voice?: string; aliases: string[] };
+export type CallEngine = "local" | "realtime" | "meta";
 export type VoiceSettings = {
   enabled: boolean;
   /** The voice for agents with none of their own (Settings). Unset is Michael. */
@@ -31,6 +32,14 @@ export type VoiceSettings = {
   /** How a running call shows on screen (callView.ts). */
   look: import("./callView.ts").CallLook;
   preferences: Record<string, VoicePreferences>;
+  /** Which speech engine a call uses. Local = Whisper+Kokoro, realtime = GPT-Live via OpenAI, meta = Meta Voice Transcribe + Kokoro TTS. */
+  engine: CallEngine;
+  /** Voice for the GPT-Live engine (OpenAI realtime voices). */
+  realtimeVoice?: string;
+  /** Model for the GPT-Live engine (settings.ts REALTIME_MODELS). */
+  realtimeModel?: string;
+  /** Model for the Meta engine (settings.ts META_MODELS). */
+  metaModel?: string;
 };
 export type VoiceState = {
   status:

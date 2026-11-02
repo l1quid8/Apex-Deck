@@ -21,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
@@ -93,6 +93,10 @@ pub(crate) struct AssistantRun {
     pub finished: AtomicBool,
     pub budget_pause: AtomicBool,
     pub manual_pause: AtomicBool,
+    pub watchdog_stop: AtomicBool,
+    /// When the result save began; zero until then.
+    pub saving_since: AtomicU64,
+    pub save_limit_ms: AtomicU64,
     pub error: Mutex<Option<String>>,
 }
 impl AssistantRun {
@@ -105,6 +109,9 @@ impl AssistantRun {
             finished: AtomicBool::new(false),
             budget_pause: AtomicBool::new(false),
             manual_pause: AtomicBool::new(false),
+            watchdog_stop: AtomicBool::new(false),
+            saving_since: AtomicU64::new(0),
+            save_limit_ms: AtomicU64::new(assistant_git::SAVE_LIMIT.as_millis() as u64),
             error: Mutex::new(None),
         }
     }
@@ -126,7 +133,7 @@ impl Host {
             let assistants = self.store().personal()?.unwrap_or_default().assistants;
             let assistant = assistants.iter().find(|a|a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("Assistant unavailable.")?;
             let event = assistant.events.iter().find(|e|e.id == lineage.source_event_id).ok_or("Source event unavailable.")?;
-            if !matches!(&event.source, crate::personal::EventSource::Human { text } if text == &input.original_request) { return Err("Delegation human request does not match its source.".into()); }
+            if !matches!(&event.source, crate::personal::EventSource::Human { text, .. } if text == &input.original_request) { return Err("Delegation human request does not match its source.".into()); }
             if !assistant.messages.iter().any(|m| m.role == "human" && m.event_id.as_deref() == Some(event.id.as_str()) && m.legacy.is_none() && m.text == input.original_request) { return Err("New delegation requires its verified human message.".into()); }
         }
         let workspace = input.owner.workspace_id.clone();
@@ -138,6 +145,10 @@ impl Host {
     // Caller owns verified lineage authority; monitor/destination eligibility
     // and proposal persistence remain one protected scope mutation.
     pub(crate) fn prepare_project_handoff(&self, input: crate::assistant_tasks::HandoffPreparation) -> Result<Value, String> {
+        self.prepare_project_handoff_authorized(input, None)
+    }
+
+    pub(crate) fn prepare_project_handoff_authorized(&self, input: crate::assistant_tasks::HandoffPreparation, authority: Option<crate::assistant_tasks::StandingHandoffAuthority>) -> Result<Value, String> {
         let response = self.change_monitors(|monitors| {
             let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("ApexAgent assignment is unavailable.")?;
             if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id {
@@ -161,7 +172,7 @@ impl Host {
             if workers.len() != destination.workers.len() { return Err("Handoff contains an unknown destination worker.".into()); }
             verify_task_workers(&workers)?;
             if let Some(lineage) = &input.lineage { self.validate_delegated_worker_profiles(lineage, &workers)?; }
-            let task = self.assistant_tasks.prepare_handoff(input.clone()).map_err(|e|e.to_string())?;
+            let task = self.assistant_tasks.prepare_handoff_authorized(input.clone(), authority).map_err(|e|e.to_string())?;
             Ok(json!({"task":task}))
         })?;
         Ok(response)
@@ -637,6 +648,7 @@ impl Host {
     fn ensure_delegated_start(&self, task: &AssistantTask) -> Result<(), String> {
         let current = self.assistant_tasks.get(&task.id).map_err(|e|e.to_string())?.ok_or("Task unavailable.")?;
         if current.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("The task is paused or cancelled.".into()); }
+        self.validate_standing_delegation(&current)?;
         if let Some(lineage) = &current.lineage {
             self.validate_delegated_task(lineage, true)?;
             self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&current)?)?;
@@ -839,7 +851,7 @@ impl Host {
             child_snapshot
                 .participants
                 .retain(|p| workers.contains(&p.id.to_string()));
-            enforce_read_only(input.mode, &mut child_snapshot.participants);
+            enforce_task_access(&task, &mut child_snapshot.participants);
             if child_snapshot.participants.is_empty() {
                 return Err("No selected worker is available in the saved thread.".into());
             }
@@ -889,7 +901,7 @@ impl Host {
             )
             .map_err(|e| e.to_string())?;
         if let Some(mut snapshot) = child_snapshot {
-            enforce_read_only(input.mode, &mut snapshot.participants);
+            enforce_task_access(&task, &mut snapshot.participants);
             verify_read_only_workers(input.mode, &snapshot.participants)?;
             self.room_create(
                 child_id.clone(),
@@ -899,7 +911,7 @@ impl Host {
             )?;
         }
         if let Some((mut profiles, options)) = new_room {
-            enforce_read_only(input.mode, &mut profiles);
+            enforce_task_access(&task, &mut profiles);
             verify_read_only_workers(input.mode, &profiles)?;
             self.room_create(child_id.clone(), profiles, options, Some(owner.cwd.clone()))?;
         }
@@ -974,7 +986,7 @@ impl Host {
             .acquire(Path::new(&owner.cwd).to_path_buf(), &mut stop)
             .await?;
         self.ensure_delegated_start(&task)?;
-        let selected_profiles = if parent.is_some() || profiles.is_empty() {
+        let mut selected_profiles = if parent.is_some() || profiles.is_empty() {
             let snapshot = parent
                 .as_ref()
                 .ok_or("Choose explicit worker profiles for a new execution chat.")?
@@ -991,6 +1003,7 @@ impl Host {
         } else {
             profiles
         };
+        enforce_task_access(&task, &mut selected_profiles);
         let prepared = match crate::assistant_isolation::prepare(
             &baseline,
             &task.id,
@@ -1054,6 +1067,7 @@ impl Host {
             let mut fork = brief_only_fork(&snapshot);
             fork.participants
                 .retain(|profile| workers.contains(&profile.id.to_string()));
+            enforce_task_access(&task, &mut fork.participants);
             if fork.participants.is_empty() {
                 return Err("No selected worker is available in the destination chat.".into());
             }
@@ -1132,7 +1146,11 @@ impl Host {
     pub(crate) fn redispatch_recovered_queued(self: &Arc<Self>) -> Result<(), String> {
         self.reconcile_delegation_results()?;
         for task in self.assistant_tasks.list(None).map_err(|e| e.to_string())? {
-            if task.status != TaskStatus::Queued || !task.attempts.is_empty() || self.ensure_delegated_start(&task).is_err() {
+            if task.status != TaskStatus::Queued || !task.attempts.is_empty() {
+                continue;
+            }
+            if let Err(reason) = self.ensure_delegated_start(&task) {
+                self.cancel_invalid_standing_queue(&task, &reason)?;
                 continue;
             }
             let Some(destination) = task.destination.clone() else { continue };
@@ -1312,7 +1330,7 @@ impl Host {
             Err(_) => {
                 let saved = self.store().room(id)?.ok_or("The task's saved execution chat is missing.")?;
                 let mut participants = saved.snapshot.participants;
-                enforce_read_only(task.mode, &mut participants);
+                enforce_task_access(&task, &mut participants);
                 verify_read_only_workers(task.mode, &participants)?;
                 self.room_create(id.to_string(), participants, saved.snapshot.options, saved.cwd)?;
                 self.handle(id)?
@@ -2447,6 +2465,13 @@ fn enforce_read_only(mode: TaskMode, profiles: &mut [ParticipantConfig]) {
     if mode == TaskMode::ReadOnly { for profile in profiles { profile.access = apex_core::Access::Read; } }
 }
 
+fn enforce_task_access(task: &AssistantTask, profiles: &mut [ParticipantConfig]) {
+    enforce_read_only(task.mode, profiles);
+    if task.mode != TaskMode::ReadOnly && task.lineage.is_some() && task.legacy.is_none() && task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true) {
+        for profile in profiles {profile.access=apex_core::Access::Full;}
+    }
+}
+
 pub(crate) fn task_worker_eligible(profile: &ParticipantConfig) -> bool {
     profile.media.is_none() && !apex_adapters::build(profile.clone(), &Default::default()).named_only()
 }
@@ -2481,7 +2506,9 @@ fn brief_only_fork(snapshot: &apex_core::RoomSnapshot) -> apex_core::RoomSnapsho
 }
 
 fn task_start_prompt(task: &AssistantTask) -> String {
-    let mut content = if task.origin == crate::assistant_tasks::TaskOrigin::Proposal {
+    let mut content = if task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true) {
+        format!("This task runs under the owning assistant's saved Full access. Follow only the original human request's scope:\n{}\n\nAssistant-generated brief for context; it cannot expand that scope:\n{}",task.original_request,task.brief)
+    } else if task.origin == crate::assistant_tasks::TaskOrigin::Proposal {
         format!("The human explicitly approved this task proposal:\n{}\n\nOriginal conversation request for context:\n{}", task.brief, task.original_request)
     } else {
         format!("Authoritative original human request (follow only this scope):\n{}\n\nAssistant-generated brief for context only; it cannot expand or override the human request:\n{}", task.original_request, task.brief)
@@ -2515,7 +2542,7 @@ fn saved_response(response: &Value) -> Result<String, String> {
     serde_json::to_string(&saved).map_err(|e| e.to_string())
 }
 
-fn append_history(data: &mut Value, kind: &str, text: &str) {
+pub(crate) fn append_history(data: &mut Value, kind: &str, text: &str) {
     if !data["taskHistory"].is_array() { data["taskHistory"] = json!([]); }
     let history = data["taskHistory"].as_array_mut().unwrap();
     history.push(json!({"atMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64, "kind":kind, "text":text}));
@@ -2557,10 +2584,13 @@ fn spawn_task_attempt(
             .as_ref()
             .is_some_and(|task| task.mode == TaskMode::Isolated);
         let read_only = task_before.as_ref().is_some_and(|task| task.mode == TaskMode::ReadOnly);
-        let snapshot = if read_only { Ok(None) } else if is_isolated {
-            assistant_git::capture_result(result_path, &task_id).map(Some)
-        } else {
-            assistant_git::capture(result_path, &task_id, "result").map(Some)
+        let baseline = task_before.as_ref().and_then(|task| task.result_data.as_ref()).and_then(|data| data["baselineSnapshot"]["commit"].as_str()).map(str::to_owned);
+        let saved = if read_only { Ok(None) } else { save_attempt_result(&run, result_path.to_owned(), task_id.clone(), is_isolated, baseline).await.map(Some) };
+        let save_too_long = matches!(&saved, Err(error) if error == assistant_git::SAVE_TOO_LONG);
+        let (snapshot, review_diff) = match saved {
+            Ok(Some((snapshot, diff))) => (Ok(Some(snapshot)), diff),
+            Ok(None) => (Ok(None), None),
+            Err(error) => (Err(error), None),
         };
         let error = handle
             .task_error
@@ -2569,7 +2599,8 @@ fn spawn_task_attempt(
             .clone()
             .or_else(|| run_result.err())
             .or_else(|| snapshot.as_ref().err().cloned());
-        let status = if run.manual_pause.load(Ordering::SeqCst) {
+        let watchdog_stop = run.watchdog_stop.load(Ordering::SeqCst);
+        let status = if run.manual_pause.load(Ordering::SeqCst) || watchdog_stop {
             TaskStatus::Interrupted
         } else if run.stop.load(Ordering::SeqCst) {
             TaskStatus::Cancelled
@@ -2602,12 +2633,9 @@ fn spawn_task_attempt(
             .and_then(|task| task.result_data)
             .unwrap_or_else(|| json!({}));
         if let Ok(Some(snapshot)) = snapshot {
-            if let Some(baseline) = result_data["baselineSnapshot"]["commit"]
-                .as_str()
-                .map(str::to_owned)
-            {
-                result_data["baselineCommit"] = json!(baseline);
-                match assistant_git::review_diff(result_path, &baseline, &snapshot.commit) {
+            if let Some(review_diff) = review_diff {
+                result_data["baselineCommit"] = result_data["baselineSnapshot"]["commit"].clone();
+                match review_diff {
                     Ok(diff) => {
                         result_data["diff"] = json!(diff);
                         result_data["reviewDiff"] = json!(diff);
@@ -2635,7 +2663,9 @@ fn spawn_task_attempt(
         let worker_result = handle.checkpoint.lock().unwrap().snapshot.transcript.iter().rev()
             .find(|message| matches!(message.speaker, apex_core::Speaker::Bot(_)))
             .map(|message| message.text.clone());
-        let result = if status == TaskStatus::Interrupted {
+        let result = if watchdog_stop && !run.manual_pause.load(Ordering::SeqCst) {
+            Some(crate::assistant_watchdog::RESTARTED_RESULT.into())
+        } else if status == TaskStatus::Interrupted {
             Some("Stopped safely for pause. This adapter cannot checkpoint; Resume then Retry starts a new attempt and retains the previous work.".into())
         } else if result_data["budgetPaused"] == true {
             let usage = host_for_task.assistant_tasks.get(&task_id).ok().flatten().and_then(|task| task.usage);
@@ -2656,15 +2686,35 @@ fn spawn_task_attempt(
         let _ = host_for_task
             .assistant_tasks
             .finish_attempt(&task_id, &run_id, outcome);
-        run.finished.store(true, Ordering::SeqCst);
-        run.done.notify_waiters();
+        // Before the waiters wake: a follow-up attempt registers its own run.
         host_for_task
             .assistant_runs
             .lock()
             .unwrap()
             .remove(&task_id);
+        run.finished.store(true, Ordering::SeqCst);
+        run.done.notify_waiters();
+        if save_too_long && status == TaskStatus::Failed {
+            if let Err(error) = host_for_task.tell_save_too_long(&task_id, &run_id) { eprintln!("Delegated work watchdog: {error}"); }
+        }
         host_for_task.assistant_changed(&owner.workspace_id);
     });
+}
+
+/// Snapshot plus review diff, under one time limit. This runs off the async
+/// threads because a slow save would otherwise stall every other room.
+async fn save_attempt_result(run: &Arc<AssistantRun>, path: PathBuf, task_id: String, isolated: bool, baseline: Option<String>) -> Result<(assistant_git::GitSnapshot, Option<Result<String, String>>), String> {
+    run.saving_since.store(crate::personal::now(), Ordering::SeqCst);
+    let limit = assistant_git::GitLimit::new(std::time::Duration::from_millis(run.save_limit_ms.load(Ordering::SeqCst)), Some(Arc::clone(&run.stop)));
+    tokio::task::spawn_blocking(move || assistant_git::within(limit, || {
+        let snapshot = if isolated { assistant_git::capture_result(&path, &task_id)? } else { assistant_git::capture(&path, &task_id, "result")? };
+        let diff = match baseline.map(|baseline| assistant_git::review_diff(&path, &baseline, &snapshot.commit)) {
+            // A stopped diff isn't a failed one: a paused job must stay paused.
+            Some(Err(error)) if error == assistant_git::SAVE_STOPPED || error == assistant_git::SAVE_TOO_LONG => return Err(error),
+            diff => diff,
+        };
+        Ok((snapshot, diff))
+    })).await.map_err(|error| error.to_string())?
 }
 
 fn same_checkout(a: &assistant_git::GitSnapshot, b: &assistant_git::GitSnapshot) -> bool {
@@ -3092,6 +3142,7 @@ mod tests {
 
     fn profile(id: &str, backend: Backend, access: Access) -> ParticipantConfig {
         ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new(id),
             display_name: id.into(),
             backend,
@@ -4577,4 +4628,368 @@ mod tests {
             .unwrap();
         assert_eq!(execution.task_id, task.id);
     }
+
+    /// A worker whose model endpoint accepts the call and then never answers.
+    fn hung_delegation(f: &Fixture, request: &str) -> (AssistantTask, String) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || { let mut held = Vec::new(); for stream in listener.incoming() { held.push(stream); } });
+        let worker = profile("hung", Backend::OpenAiCompatible {base_url:format!("http://127.0.0.1:{port}/v1"),model:"fixture".into(),api_key_env:None}, Access::Read);
+        let room = format!("hung-{request}");
+        f.host.room_create(room.clone(), vec![worker], RoomOptions::default(), Some(f.owner.cwd.clone())).unwrap();
+        std::fs::write(f.data.join("host-id"),"owner").unwrap();
+        let assistant = f.host.personal_create(crate::personal::CreateInput {
+            name:"Ada".into(),style:String::new(),folder:f.owner.cwd.clone(),
+            profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read),
+            workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None,
+        }).unwrap();
+        let project = crate::personal_workspace::ProjectRef {host_id:assistant.host_id.clone(),workspace_id:f.owner.workspace_id.clone(),cwd:f.root.canonicalize().unwrap().to_string_lossy().into_owned()};
+        f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
+        f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
+        let accepted=f.host.personal_send(&assistant.id,request,"Please inspect login").unwrap();
+        let current=f.host.personal_get(&assistant.id).unwrap();
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
+        let receipt=f.host.prepare_personal_delegation(input).unwrap();
+        let task=f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
+        let running=wait_for_attempt(f,&task.id,1);
+        (running,assistant.id)
+    }
+
+    /// The task once attempt `number` is live, without waiting for it to end.
+    fn wait_for_attempt(f: &Fixture, id: &str, number: usize) -> AssistantTask {
+        f.runtime.block_on(async {
+            for _ in 0..1_000 {
+                let task=f.host.assistant_tasks.get(id).unwrap().unwrap();
+                let live=task.status==TaskStatus::Running && task.attempts.len()==number && task.attempts.last().is_some_and(|a|a.finished_at_ms.is_none());
+                if live && task.execution_thread_id.as_deref().and_then(|room|f.host.handle(room).ok()).is_some_and(|h|h.runtime.busy()) && f.host.assistant_runs.lock().unwrap().contains_key(id) {return task}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("attempt {number} never started: {:?}",f.host.assistant_tasks.get(id).unwrap().unwrap().status);
+        })
+    }
+
+    const QUIET_MINUTES: u64 = 21 * 60_000;
+
+    fn watchdog_messages(f: &Fixture, assistant: &str) -> Vec<String> {
+        f.host.personal_get(assistant).unwrap().messages.iter().filter(|m|m.role=="assistant").map(|m|m.text.clone()).collect()
+    }
+
+    #[test]
+    fn stuck_delegated_job_gets_one_restart_then_tells_the_human_once() {
+        let f = fixture();
+        let (task,assistant)=hung_delegation(&f,"stuck");
+        f.host.watch_delegated_work(crate::personal::now(),0).unwrap();
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().attempts.len(),1,"a fresh job is left alone");
+
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        let restarted=wait_for_attempt(&f,&task.id,2);
+        assert_eq!(restarted.attempts[0].status,TaskStatus::Interrupted);
+        assert_eq!(restarted.attempts[0].result.as_deref(),Some(crate::assistant_watchdog::RESTARTED_RESULT));
+        let room=restarted.execution_thread_id.clone().unwrap();
+        assert!(room_texts(&f,&room).iter().any(|text|text.contains("watchdog")),"the worker is told why it restarted");
+        let said=watchdog_messages(&f,&assistant);
+        assert_eq!(said.iter().filter(|text|text.contains("Restarting a stuck job")).count(),1,"{said:?}");
+        assert!(!said.iter().any(|text|text.contains("needs your attention")),"{said:?}");
+
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        let after=f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        assert_eq!(after.attempts.len(),2,"only one restart");
+        assert_eq!(after.status,TaskStatus::Running,"telling the human does not throw away the attempt");
+        let said=watchdog_messages(&f,&assistant);
+        assert_eq!(said.iter().filter(|text|text.contains("Still stuck")).count(),1,"{said:?}");
+        let notices=f.host.personal_get(&assistant).unwrap().notices;
+        assert_eq!(notices.iter().filter(|n|n.urgent).count(),1);
+    }
+
+    #[test]
+    fn running_command_gets_the_longer_allowance() {
+        let f = fixture();
+        let (task,_)=hung_delegation(&f,"command");
+        let room=task.execution_thread_id.clone().unwrap();
+        let step=|status| apex_core::work_steps::WorkStep {key:"build".into(),parent:None,kind:apex_core::work_steps::StepKind::Command,label:"build".into(),folder:None,detail:String::new(),output:None,status,exit_code:None,duration_ms:None,output_cut:false};
+        f.host.room_event(&room,RoomEvent::WorkStep {id:ParticipantId::new("hung"),step:step(apex_core::work_steps::StepStatus::Running)});
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|!run.watchdog_stop.load(Ordering::SeqCst)));
+        f.host.room_event(&room,RoomEvent::WorkStep {id:ParticipantId::new("hung"),step:step(apex_core::work_steps::StepStatus::Done)});
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|run.watchdog_stop.load(Ordering::SeqCst)),"a finished command no longer earns the allowance");
+    }
+
+    #[test]
+    fn job_waiting_on_the_human_or_a_paused_assistant_is_not_stuck() {
+        let f = fixture();
+        let (task,assistant)=hung_delegation(&f,"waiting");
+        let room=task.execution_thread_id.clone().unwrap();
+        f.host.room_event(&room,RoomEvent::QuestionRequested {id:ParticipantId::new("hung"),request:"q".into(),questions:vec![]});
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|!run.watchdog_stop.load(Ordering::SeqCst)));
+        f.host.room_event(&room,RoomEvent::QuestionResolved {id:ParticipantId::new("hung"),request:"q".into(),end:apex_core::QuestionEnd::Answered,answers:vec![]});
+        f.host.personal_pause(&assistant,"pause-owner",true).unwrap();
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|!run.watchdog_stop.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn time_asleep_does_not_count_as_quiet() {
+        let f = fixture();
+        let (task,_)=hung_delegation(&f,"asleep");
+        let woke=crate::personal::now()+QUIET_MINUTES;
+        f.host.watch_delegated_work(woke,woke).unwrap();
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|!run.watchdog_stop.load(Ordering::SeqCst)),"just woke up: the worker had no chance to answer");
+        f.host.watch_delegated_work(woke+QUIET_MINUTES,woke).unwrap();
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|run.watchdog_stop.load(Ordering::SeqCst)),"quiet while awake still counts");
+    }
+
+    #[test]
+    fn another_workers_turn_keeps_a_running_commands_allowance() {
+        let f = fixture();
+        let (task,_)=hung_delegation(&f,"two-workers");
+        let room=task.execution_thread_id.clone().unwrap();
+        let step=apex_core::work_steps::WorkStep {key:"build".into(),parent:None,kind:apex_core::work_steps::StepKind::Command,label:"build".into(),folder:None,detail:String::new(),output:None,status:apex_core::work_steps::StepStatus::Running,exit_code:None,duration_ms:None,output_cut:false};
+        f.host.room_event(&room,RoomEvent::WorkStep {id:ParticipantId::new("hung"),step});
+        f.host.room_event(&room,RoomEvent::TurnStarted {id:ParticipantId::new("other")});
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|!run.watchdog_stop.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn an_attempt_that_fails_while_stopping_is_reported() {
+        let f = fixture();
+        let (task,assistant)=hung_delegation(&f,"failed-stop");
+        *f.host.assistant_runs.lock().unwrap().get(&task.id).unwrap().error.lock().unwrap()=Some("Diff failed".into());
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        f.runtime.block_on(async {
+            for _ in 0..1_000 {
+                let said=watchdog_messages(&f,&assistant);
+                if let Some(report)=said.iter().find(|text|text.contains("could not restart")) {
+                    assert!(report.contains("Diff failed"),"{report}");
+                    assert!(!said.iter().any(|text|text.contains("Restarting a stuck job")),"{said:?}");
+                    return
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("no report: {:?}",watchdog_messages(&f,&assistant));
+        });
+    }
+
+    #[test]
+    fn a_refused_restart_is_reported_instead_of_left_stopped() {
+        let f = fixture();
+        let (task,assistant)=hung_delegation(&f,"refused");
+        f.host.change_monitors(|monitors|{monitors.clear();Ok(())}).unwrap();
+        f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
+        f.runtime.block_on(async {
+            for _ in 0..1_000 {
+                if watchdog_messages(&f,&assistant).iter().any(|text|text.contains("could not restart")) {return}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("no report: {:?}",watchdog_messages(&f,&assistant));
+        });
+    }
+    fn controlled_delegation(f: &Fixture, request: &str, mode: TaskMode) -> (AssistantTask, String) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let repo = f.root.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    use std::io::{Read, Write};
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let mut data = Vec::new();
+                    let mut buffer = [0u8; 4096];
+                    let (end, length) = loop {
+                        let Ok(n) = stream.read(&mut buffer) else { return };
+                        if n == 0 { return }
+                        data.extend_from_slice(&buffer[..n]);
+                        if let Some(at) = data.windows(4).position(|s| s == b"\r\n\r\n") {
+                            let header = String::from_utf8_lossy(&data[..at]);
+                            let length = header.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").and_then(|s| s.trim().parse::<usize>().ok())).unwrap_or(0);
+                            break (at+4, length)
+                        }
+                    };
+                    while data.len() < end + length {
+                        let Ok(n) = stream.read(&mut buffer) else { return };
+                        if n == 0 { return }
+                        data.extend_from_slice(&buffer[..n]);
+                    }
+                    let models = data.starts_with(b"GET ");
+                    if !models {
+                        while !repo.join(".git/review-reply").exists() {
+                            if !repo.exists() { return }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                    let body = if models { r#"{"data":[]}"#.to_owned() } else { format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":{"content":"Finished the requested work"}}]})) };
+                    let content_type = if models { "application/json" } else { "text/event-stream" };
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        let worker = profile("hung", Backend::OpenAiCompatible {base_url:format!("http://127.0.0.1:{port}/v1"),model:"fixture".into(),api_key_env:None}, if mode == TaskMode::ReadOnly { Access::Read } else { Access::Edits });
+        let room = format!("hung-{request}");
+        f.host.room_create(room.clone(), vec![worker], RoomOptions::default(), Some(f.owner.cwd.clone())).unwrap();
+        std::fs::write(f.data.join("host-id"),"owner").unwrap();
+        let assistant = f.host.personal_create(crate::personal::CreateInput {
+            name:"Ada".into(),style:String::new(),folder:f.owner.cwd.clone(),
+            profile:profile("reasoner", Backend::OpenAiCompatible {base_url:"http://127.0.0.1:9/v1".into(),model:"fixture".into(),api_key_env:None}, Access::Read),
+            workspace_version:None,look:None,projects:None,avatar_draft_id:None,avatar_generation_id:None,avatar_asset_id:None,
+        }).unwrap();
+        let project = crate::personal_workspace::ProjectRef {host_id:assistant.host_id.clone(),workspace_id:f.owner.workspace_id.clone(),cwd:f.root.canonicalize().unwrap().to_string_lossy().into_owned()};
+        f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
+        f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
+        let accepted=f.host.personal_send(&assistant.id,request,"Please inspect login").unwrap();
+        let current=f.host.personal_get(&assistant.id).unwrap();
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread:false},mode:if mode == TaskMode::InPlace { TaskMode::Isolated } else { mode },review_criteria:vec![],expected_revision:current.revision};
+        let receipt=f.host.prepare_personal_delegation(input).unwrap();
+        let task=f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(mode),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
+        let running=wait_for_attempt(f,&task.id,1);
+        (running,assistant.id)
+    }
+
+
+    #[test]
+    fn watchdog_restart_keeps_an_in_place_job_and_its_edits() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "review-in-place", TaskMode::InPlace);
+        std::fs::write(f.root.join("tracked.txt"), "work before restart\n").unwrap();
+        f.host.watch_delegated_work(crate::personal::now() + QUIET_MINUTES, 0).unwrap();
+        let restarted = wait_for_attempt(&f, &task.id, 2);
+        assert_eq!(restarted.mode, TaskMode::InPlace);
+        assert_eq!(std::fs::read_to_string(f.root.join("tracked.txt")).unwrap(), "work before restart\n");
+        assert!(restarted.result_data.as_ref().unwrap()["watchdog"]["restarted"] == true);
+    }
+
+    /// Holds the real result save open with a hung Git filter. It gives up by
+    /// itself so a failing test can't leave it running.
+    fn hold_result_save(f: &Fixture, task: &AssistantTask) {
+        std::fs::write(f.root.join(".git/review-filter.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ ! -e .git/review-filter-release ] && [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat\n").unwrap();
+        assert!(Command::new("git").current_dir(&f.root).args(["config", "filter.watchdog-review.clean", "sh .git/review-filter.sh"]).status().unwrap().success());
+        std::fs::write(f.root.join(".gitattributes"), "tracked.txt filter=watchdog-review\n").unwrap();
+        std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
+        std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();
+        let handle = f.host.handle(task.execution_thread_id.as_deref().unwrap()).unwrap();
+        for _ in 0..1_000 {
+            if f.root.join(".git/review-filter-entered").exists() && !handle.runtime.busy() { return }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("did not enter the real result-capture boundary");
+    }
+
+    /// Deck only ends Git itself on Windows, so a filter outlives it there.
+    #[cfg(unix)]
+    fn filter_is_dead(f: &Fixture) -> bool {
+        let pid: i32 = std::fs::read_to_string(f.root.join(".git/review-filter-pid")).unwrap().trim().parse().unwrap();
+        unsafe { libc::kill(pid, 0) != 0 }
+    }
+
+    #[cfg(unix)]
+    fn act(f: &Fixture, id: &str, action: &str) -> Result<AssistantTask, String> {
+        let task = f.host.assistant_tasks.get(id).unwrap().unwrap();
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id,revision:task.revision,owner:task.owner,action:action.into(),mode:None,text:None,destination:None,new_worker_profiles:vec![],checks:None,spend_limit_micros:None}))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pausing_during_a_hung_review_diff_leaves_the_job_paused_not_failed() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "pause-diff", TaskMode::InPlace);
+        std::fs::write(f.root.join(".git/review-diff.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat \"$1\"\n").unwrap();
+        assert!(Command::new("git").current_dir(&f.root).args(["config", "diff.watchdog-review.textconv", "sh .git/review-diff.sh"]).status().unwrap().success());
+        std::fs::write(f.root.join(".gitattributes"), "tracked.txt diff=watchdog-review\n").unwrap();
+        std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
+        std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();
+        for _ in 0..1_000 {
+            if f.root.join(".git/review-filter-entered").exists() { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(f.root.join(".git/review-filter-entered").exists(), "did not enter the review diff");
+        act(&f, &task.id, "pause").unwrap();
+        for _ in 0..1_000 {
+            if !f.host.assistant_runs.lock().unwrap().contains_key(&task.id) { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Interrupted);
+        assert!(filter_is_dead(&f));
+    }
+
+    #[test]
+    fn a_save_inside_its_limit_is_left_alone_and_one_past_it_is_reported_once() {
+        let f = fixture();
+        let (task, assistant) = controlled_delegation(&f, "review-capture", TaskMode::InPlace);
+        hold_result_save(&f, &task);
+        let reports = |f: &Fixture| watchdog_messages(f, &assistant).iter().filter(|s| s.contains("stuck saving")).count();
+        let stopped = |f: &Fixture| f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run| run.watchdog_stop.load(Ordering::SeqCst));
+        f.host.watch_delegated_work(crate::personal::now() + 25 * 60_000, 0).unwrap();
+        assert_eq!(reports(&f), 0, "a long healthy save is not an alarm");
+        assert!(!stopped(&f), "stopping can't interrupt the save, and a restart would add a second writer");
+        f.host.watch_delegated_work(crate::personal::now() + 3 * 60 * 60_000, 0).unwrap();
+        f.host.watch_delegated_work(crate::personal::now() + 3 * 60 * 60_000 + 60_000, 0).unwrap();
+        assert_eq!(reports(&f), 1);
+        assert!(!stopped(&f), "stopping can't interrupt the save, and a restart would add a second writer");
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Running);
+        std::fs::write(f.root.join(".git/review-filter-release"), "release").unwrap();
+        assert_eq!(wait_for(&f, &task.id).status, TaskStatus::ReadyForReview);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_past_its_limit_fails_the_job_keeps_the_work_and_tells_the_human() {
+        let f = fixture();
+        let (task, assistant) = controlled_delegation(&f, "limit-save", TaskMode::InPlace);
+        f.host.assistant_runs.lock().unwrap().get(&task.id).unwrap().save_limit_ms.store(2_000, Ordering::SeqCst);
+        hold_result_save(&f, &task);
+        let failed = wait_for(&f, &task.id);
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(failed.result.as_deref(), Some(assistant_git::SAVE_TOO_LONG));
+        assert!(filter_is_dead(&f));
+        assert_eq!(std::fs::read_to_string(f.root.join("tracked.txt")).unwrap(), "completed edit\n");
+        let told = |f: &Fixture| watchdog_messages(f, &assistant).into_iter().filter(|s| s.contains("took too long")).count();
+        let pushed = |f: &Fixture| f.host.personal_get(&assistant).unwrap().notices.iter().filter(|n| n.urgent && n.text.contains("took too long")).count();
+        for _ in 0..1_000 {
+            if told(&f) > 0 && pushed(&f) > 0 { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        f.host.reconcile_delegation_results().unwrap();
+        assert_eq!(told(&f), 1);
+        assert_eq!(pushed(&f), 1);
+        assert!(!watchdog_messages(&f, &assistant).iter().any(|s| s.contains("needs your attention")), "one failure gets one result");
+        assert!(!f.host.assistant_runs.lock().unwrap().contains_key(&task.id), "the attempt must really end");
+        assert!(failed.result_data.as_ref().unwrap()["leaseHeld"] == true, "the work stays protected until the human decides");
+        let cancelled = act(&f, &task.id, "cancel").unwrap();
+        assert!(cancelled.result_data.as_ref().unwrap()["leaseHeld"] == false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_a_hung_save_ends_it_and_frees_the_checkout() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "cancel-save", TaskMode::InPlace);
+        hold_result_save(&f, &task);
+        let cancelled = act(&f, &task.id, "cancel").unwrap();
+        assert_eq!(cancelled.status, TaskStatus::Cancelled);
+        assert!(cancelled.result_data.as_ref().unwrap()["leaseHeld"] == false);
+        assert!(filter_is_dead(&f));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pausing_a_hung_save_ends_it_and_keeps_the_work() {
+        let f = fixture();
+        let (task, _) = controlled_delegation(&f, "pause-save", TaskMode::InPlace);
+        hold_result_save(&f, &task);
+        act(&f, &task.id, "pause").unwrap();
+        for _ in 0..1_000 {
+            if !f.host.assistant_runs.lock().unwrap().contains_key(&task.id) { break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Interrupted);
+        assert!(filter_is_dead(&f));
+        assert_eq!(std::fs::read_to_string(f.root.join("tracked.txt")).unwrap(), "completed edit\n");
+    }
+
 }

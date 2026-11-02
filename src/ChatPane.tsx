@@ -26,9 +26,10 @@ import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
+import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, Curation, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -73,7 +74,7 @@ import { DeckIcon } from "./DeckIcon";
 import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
-import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
+import { AGENT_LABEL, chipDescription, foldedFor, levelsShown, saveFolded, type ChipParts } from "./botChip";
 import { planOf, usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { HexColorPicker } from "./HexColorPicker";
@@ -115,7 +116,7 @@ import { ModelMetricPills } from "./ModelMetricPills";
 import { METRICS_CAPABILITY, metricsRequest } from "./modelMetrics.ts";
 import { botGroups, reasoningLevels } from "./phoneRules";
 import { AttachedImages, AttachedVideos } from "./AttachedImages";
-import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
+import { saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, recipientName } from "./recipients";
 import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
@@ -239,6 +240,7 @@ type Entry =
   | { kind: "message"; message: Message }
   | { kind: "notice"; notice: Notice }
   | { kind: "summary"; summary: Summary }
+  | { kind: "curation"; curation: Curation }
   | { kind: "low"; low: LowContext };
 
 function messagesOf(entries: Entry[]): Message[] {
@@ -248,6 +250,13 @@ function compactionOf(entries: Entry[]) {
   const summary = entries.filter((entry) => entry.kind === "summary").at(-1);
   return summary?.kind === "summary" ? { upto: summary.summary.upto, summary: summary.summary.summary } : null;
 }
+const noteTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** One line of a /curate note: its message numbers bold, the line bots see as code. */
+const noteLine = (line: string, key: number) => (
+  <p key={key}>
+    {line.split(/(^Messages? [^·]+(?= · )|\[#[^\]]+\])/).map((part, i) => i % 2 === 0 ? part : part.startsWith("[") ? <code key={i}>{part}</code> : <strong key={i}>{part}</strong>)}
+  </p>
+);
 
 export { slug };
 
@@ -344,6 +353,7 @@ interface Draft {
   keyEnv: string;
   /** A key typed into the form and not yet saved. Saved to the machine, never into the bot's settings. */
   apiKey?: string;
+  canReadImages?: boolean;
   command: string;
   persona: string;
   access: Access;
@@ -402,7 +412,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), voice: config.voice ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, canReadImages: config.can_read_images ?? false, effort: config.effort ?? "", speed: config.speed ?? ("" as const), voice: config.voice ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -434,7 +444,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.voice ? { voice: draft.voice } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, can_read_images: draft.canReadImages ?? false, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.voice ? { voice: draft.voice } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -915,9 +925,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const [sendingFirst, setSendingFirst] = useState(false);
   /** Where the room was last opened, to tell a move to another machine or folder. */
   const place = useRef<{ backend: Backend; cwd: string } | null>(null);
-  const preferenceKey = talkOnly ? JSON.stringify([backend.host?.id ?? "local", pane.id]) : pane.id;
-  const [tldr, setTldr] = useState(() => loadTldr(preferenceKey));
-  const [folded, setFolded] = useState(() => loadFolded(preferenceKey));
+  /** TL;DR and the folded panel belong to one thread on one machine: two machines can each have a
+   *  thread with the same id. A choice saved under the bare id, before keys named the machine, is
+   *  carried over the first time it is read. */
+  const preferenceKey = JSON.stringify([backend.host?.id ?? "local", pane.id]);
+  const [tldr, setTldr] = useState(() => tldrFor(preferenceKey, pane.id));
+  const [folded, setFolded] = useState(() => foldedFor(preferenceKey, pane.id));
   const toggleFolded = () => setFolded((on) => { saveFolded(preferenceKey, !on); return !on; });
   const toggleTldr = () => setTldr((on) => { saveTldr(preferenceKey, !on); return !on; });
   // The thread's Plan switch, as the host keeps it.
@@ -1186,6 +1199,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
           notify(`${nameOf(event.id)} had nothing to add.`);
           break;
+        case "journal_warning":
+          notify(event.error, "error");
+          break;
         case "failed":
           turnQueue.error(event.id);
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);
@@ -1213,6 +1229,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           // is stays unknown until its next turn says.
           forgetContext();
           setCompactions((n) => n + 1);
+          break;
+        case "curations_changed":
+          setEntries((list) => withCurationNotes(list, event.curations));
+          // Every model now sees a different chat, so how full each window is
+          // stays unknown until its next turn says.
+          forgetContext();
           break;
         case "stopped":
           setDrafts({});
@@ -1285,9 +1307,10 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         setUsed(saved.usage ?? {});
         setContextFill(savedContext(pane.id));
         contextLoaded.current = true;
-        const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
+        const transcript: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
-        if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
+        if (saved.compaction) transcript.splice(Math.min(saved.compaction.upto, transcript.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
+        const restored = withCurationNotes(transcript, saved.curations ?? []);
         const mounted = state.mounts?.at(-1);
         const mountNotice: Entry[] = mounted ? [{kind:"notice", notice:{key:noticeKey.current++, text:mounted.note ?? `Now working in ${mounted.to.split(/[\\/]/).filter(Boolean).at(-1)}.`, tone:"info", source:"mount"}}] : [];
         setEntries(old => [...restored, ...mountNotice, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load" && e.notice.source !== "mount")]);
@@ -1362,7 +1385,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     return () => clearInterval(timer);
   }, [running]);
 
-  /** Open a file, folder or web address a message links to. A local server opens in a Preview. */
+  /** Open a file, folder or web address a message links to. A local server opens in the Browser tab. */
   const openTarget = (target: string, reveal = false) => {
     if (talkOnly && !/^https?:\/\//i.test(target)) return;
     const address = /^https?:\/\//i.test(target) ? normalizeAddress(target) : null;
@@ -1593,20 +1616,44 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
       .catch((error) => notify(`Could not clear the chat: ${String(error)}`, "error"));
   };
 
-  /** Have a model summarize the chat. The models then see the summary in
-   *  place of the messages so far; the person still sees them all. */
-  const compactChat = () => {
+  const contextJob = (command: string, kind: TurnKind) => {
     setText("");
     setReplies([]);
     setBusy(true);
-    void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
+    void turnQueue.send(command, kind).catch(error => notify(String(error), "error"));
   };
+  /** Have a model summarize the chat. The models then see the summary in
+   *  place of the messages so far; the person still sees them all. */
+  const compactChat = () => contextJob("/compact", "compact");
+  /** Have a model pick old messages to hide from the models, or bring them back. */
+  const curateChat = () => contextJob("/curate", "curate");
+  const undoCuration = () => contextJob("/curate undo", "curate_undo");
 
   const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
   dispatch.current = async (message, to, kind, hops) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
+    } else if (kind === "curate" || kind === "curate_undo") {
+      try {
+        if (kind === "curate") {
+          const reply = await backend.roomCurate(pane.id);
+          const notice = curateNotice({ ...reply, by: namesRef.current.get(reply.by) ?? reply.by });
+          if (notice) notify(notice.text, notice.tone);
+        } else {
+          const notice = undoNotice(await backend.roomCurateUndo(pane.id));
+          notify(notice.text, notice.tone);
+        }
+      } catch (error) {
+        notify(failedNotice(message, error), "error");
+        // A failed final save can leave what bots see changed, so show what the host has.
+        const state = await backend.roomState?.(pane.id).catch(() => null);
+        if (state) setEntries((list) => withCurationNotes(list, state.snapshot.curations ?? []));
+      } finally {
+        setDrafts({});
+        setWorking({});
+        to.forEach(id => turnQueue.idle(id));
+      }
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
     else await backend.roomPostTo(pane.id, message, to);
   };
@@ -1630,6 +1677,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
+    true, // A failed send keeps its message here, so the thread shows it and can retry.
+    // Asked again when a queued message is actually sent, so a rule changed while it waited still applies.
+    (message) => current.current.roomTargets(pane.id, message),
   ));
   useEffect(() => {
     const store = backend.host?.connection;
@@ -1654,6 +1704,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     if(profileMode || talkOnly)return;
     registerVoiceThread(scopeKey({hostId:voiceHost,roomId:pane.id}),{
       candidates:voiceCandidates,settings:voiceConfig,save:s=>voiceLive.current.onVoiceSettings?.(s),focus:()=>voiceLive.current.onVoiceFocus?.(pane.id),
+      realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args as any),
+      metaSession: (args) => backend.call<{ token: string; model: string }>("voice_meta_session", args as any),
       bridge:id=>{
         let bridge=voiceBridges.current.get(id);if(bridge)return bridge;
         bridge=createThreadVoiceBridge({backend,scope:{hostId:voiceHost,roomId:pane.id,participantId:id},
@@ -2001,6 +2053,9 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     if (talkOnly && ['diff', 'plan', 'image'].includes(command.name)) {
       notify('Move to a Work thread to use files, tools or Plan.', 'info'); return;
     }
+    if (talkOnly && (command.name === 'curate' || command.name === 'curate_undo')) {
+      notify('Move to a Work thread to use /curate.', 'info'); return;
+    }
     if (chatReadOnly && !['fork', 'export'].includes(command.name)) return;
 
     switch (command.name) {
@@ -2023,6 +2078,10 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         return clearChat();
       case "compact":
         return compactChat();
+      case "curate":
+        return curateChat();
+      case "curate_undo":
+        return undoCuration();
       case "fork":
         setText(""); return void forkAt(command.title || `${pane.title} (fork)`, null);
       case "export":
@@ -2852,6 +2911,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     if (entry.kind === "message" && entry.message.speaker.kind === "bot") newestReply.set(entry.message.speaker.id, entry.message.seq);
   }
   const canCompact = !chatReadOnly && ready && !busy && participants.length > 0;
+  const compactedUpto = compactionOf(entries)?.upto ?? 0;
+  const jumpToMessage = (seq: number) => scroller.current?.querySelector<HTMLElement>(`[data-seq="${seq}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
 
   /** The quick menu's Resets row for `p`'s provider, when it has granted any. */
   const resetsFor = (p: ParticipantConfig | undefined) => {
@@ -3459,7 +3520,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         <summary className="pins-label">Pinned <span>({pins.length})</span></summary>
         <div className="pins-list">
         {pins.map((pin, index) => <div className="pin" key={pin}>
-          {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => scroller.current?.querySelector<HTMLElement>(`[data-seq="${pinSource(pin)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
+          {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => jumpToMessage(pinSource(pin)!)}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
           <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning || chatReadOnly} onClick={() => removePin(index)}>×</button>
         </div>)}
         </div>
@@ -3693,6 +3754,17 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
               </summary>
               <Markdown text={entry.summary.summary} onOpen={openTarget} pathExists={pathExists} />
             </details>
+          ) : entry.kind === "curation" ? (
+            <details key={`c${entry.curation.at}-${entry.curation.when}`} className="compacted">
+              <summary>{noteTitle(entry.curation, names.get(entry.curation.by) ?? entry.curation.by)}</summary>
+              <div className="md">
+                {noteLines(entry.curation, names.get(entry.curation.by) ?? entry.curation.by, isSealed(entry.curation, compactedUpto), noteTime).map(noteLine)}
+                <p className="curation-actions">
+                  <button type="button" className="ghost" onClick={() => jumpToMessage(entry.curation.hidden[0][0])}>Show in chat</button>
+                  {entry.curation.undone == null && !isSealed(entry.curation, compactedUpto) && <button type="button" className="ghost" onClick={undoCuration} disabled={!canCompact}>Undo</button>}
+                </p>
+              </div>
+            </details>
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="message-row human-row" data-seq={entry.message.seq}>
               {messageActions(entry.message)}
@@ -3761,6 +3833,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           const hidden = steps.length - shown.length;
           const config = configOf(id);
           const quiet = turn && !asks[id]?.length && config && isCommandLine(config.backend) ? quietLine(heard.current.get(id) ?? turn.startedAt, now) : null;
+          const curating = isCurating(steps);
           return (
             <div key={`d${id}`} className="bot-row">
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
@@ -3770,7 +3843,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                 </span>
                 {turn?.work.structured ? (
                   <WorkSteps turn={turn.work} live />
-                ) : steps.length > 0 && (
+                ) : steps.length > 0 && !curating && (
                   <ul className="steps" aria-label="Steps so far">
                     {hidden > 0 && <li className="step done">{hidden === 1 ? "1 earlier step" : `${hidden} earlier steps`}</li>}
                     {shown.map((step, i) => (
@@ -3804,7 +3877,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                     <i />
                     <i />
                   </span>
-                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
+                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (curating ? CURATE_WORKING : planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
                   {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
                   {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={chargeWarning([id]) ? `Stop ${names.get(id) ?? id}. ${chargeWarning([id])}` : `Stop ${names.get(id) ?? id}`} onClick={() => stopBots(id)}><StopSquare /> Stop</button>}
                 </div>
@@ -3825,6 +3898,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                     const parsed = parseQueueEdit(e.target.value);
                     if ("text" in parsed) turnQueue.edit(item.id, parsed.text);
                     else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
+                    else if (!talkOnly && parsed.command.name === "curate") turnQueue.edit(item.id, "/curate", "curate");
+                    else if (!talkOnly && parsed.command.name === "curate_undo") turnQueue.edit(item.id, "/curate undo", "curate_undo");
                     else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
                   }} />
               : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}

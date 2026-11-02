@@ -10,7 +10,7 @@ impl Host {
         if handle.room.lock().await.transcript().iter().any(|m|m.text==note){return Ok(());}
         let error=Mutex::new(None);
         handle.room.lock().await.append_assistant_note(note.to_string(),&self.turn_sink(room,handle,&error));
-        checkpoint_room(handle,&self.store,room).await?;
+        self.checkpoint_room(handle,room).await?;
         if let Some(error)=error.into_inner().unwrap(){return Err(error);}Ok(())
     }
 
@@ -139,7 +139,7 @@ impl Host {
                 run.await;
             }
         }
-        checkpoint_room(&handle, &self.store, room).await?;
+        self.checkpoint_room(&handle, room).await?;
         if let Some(error) = error.lock().unwrap().clone() { return Err(error); }
         let reply = { let current = handle.room.lock().await;
             current.transcript().iter().skip(before).rev().find(|m| matches!(&m.speaker, apex_core::Speaker::Bot(id) if id.as_str() == worker)).map(|m| (m.seq, m.text.clone()))

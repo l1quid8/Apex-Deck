@@ -22,6 +22,26 @@ pub enum VoiceRequest {
         #[serde(default)]
         reason: String,
     },
+    VoiceRealtimeSession {
+        room: String,
+        #[serde(default)]
+        participant: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        voice: Option<String>,
+        #[serde(default)]
+        instructions: Option<String>,
+        #[serde(default)]
+        tools: Option<Vec<serde_json::Value>>,
+    },
+    VoiceMetaSession {
+        room: String,
+        #[serde(default)]
+        participant: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
 }
 struct Active {
     channel: u32,

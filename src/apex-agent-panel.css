@@ -85,3 +85,5 @@
   .apex-agent-thinking { flex: 1 1 120px; min-width: 0; grid-template-columns: 1fr; }
   .apex-agent-thinking select { width: 100%; max-width: 100%; }
 }
+
+.personal-always-permission{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.personal-always-permission>section{flex-basis:100%;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}.personal-always-permission>section p{margin:0;max-width:58ch}.personal-always-permission>section label{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.personal-always-permission>small{color:var(--muted)}

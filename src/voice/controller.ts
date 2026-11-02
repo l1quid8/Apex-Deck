@@ -595,10 +595,15 @@ export function createVoiceController<R = VoiceRuntime>(
     });
   }
   async function start(scope: CallScope) {
-    await end("new call started");
+    // Ending the last call moves the epoch at once, so this start owns the epoch before its first
+    // wait: an End or newer start during that wait overtakes it.
+    const previous = end("new call started");
+    const myEpoch = epoch;
+    await previous;
+    if (myEpoch !== epoch) return;
     await stopSample();
+    if (myEpoch !== epoch) return;
     cleanup = Promise.resolve();
-    const myEpoch = ++epoch;
     set({ status: "warming", scope, startedAt: Date.now(), muted: false, error: undefined });
     try {
       const status = await deps.runtime.status();

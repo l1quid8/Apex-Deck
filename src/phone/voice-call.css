@@ -89,6 +89,8 @@
 .ph-nav-title-tap:active { opacity: 0.6; }
 /* The call sheet: plain rows, no boxed rows on the phone */
 .ph-call-sheet-status { color: var(--muted); margin: 0 0 4px; }
+.ph-call-engine-tag { display: inline-block; margin-left: 8px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--muted); vertical-align: 2px; }
+.ph-call-engine-tag[data-engine="realtime"] { border-color: var(--accent); color: var(--accent); }
 .ph-call-actions { display: flex; gap: 12px; margin: 4px 0 8px; }
 .ph-app .ph-call-actions button { flex: 1; min-height: 50px; border-radius: 14px; border: 0; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; font-size: 15px; background: var(--panel-2); color: var(--text); }
 .ph-app .ph-call-actions button.hang { background: #c4334a; color: #fff; }

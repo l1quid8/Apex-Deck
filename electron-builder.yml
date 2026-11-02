@@ -49,6 +49,9 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extraResources:
+    # The macOS computer-use helper app; Windows has no build of it.
+    - from: build/unified-computer-use/Unified Computer Use.app
+      to: Unified Computer Use.app
     - from: target/release/apex-daemon
       to: bin/apex-daemon
     - from: target/release/apex-provenance
@@ -63,7 +66,7 @@ dmg:
   # One fixed name, like the installer: each build overwrites the last one
   # instead of leaving release/ full of near-identical disk images. The version
   # and the stamped commit are in the bundle and in the .pkg manifest sidecar.
-  artifactName: Apex-Deck.${ext}
+  artifactName: Apex-Deck_${version}_${arch}.${ext}
 win:
   icon: build/icons/icon.ico
   target:
@@ -86,7 +89,7 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Apex Deck
-  # Same rule as the dmg: one fixed artifact name per build.
+  # One fixed artifact name per build, so release/ keeps a single installer.
   artifactName: Apex-Deck-Setup.${ext}
   # Stops the previous build's background service in .onInit, before any file is
   # copied. Windows locks a running program's image, so without this a second

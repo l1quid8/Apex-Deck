@@ -356,7 +356,7 @@ where
         "max_frame_bytes": if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME },
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
-        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"],
+        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"],
         // The exact build, so a UI can tell two builds of the same version apart.
         "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
     } });
@@ -470,6 +470,64 @@ where
                             }
                         }
                         let is_open = matches!(request, VoiceServerOpen { .. });
+                        let maybe_realtime = match &request {
+                            crate::voice::session::VoiceRequest::VoiceRealtimeSession { model, voice, instructions, tools, room: _, participant: _ } => Some((model.clone(), voice.clone(), instructions.clone(), tools.clone())),
+                            _ => None,
+                        };
+                        if let Some((model, voice_name, instructions, tools)) = maybe_realtime {
+                            // An assistant id must name one on this machine; it is no room id.
+                            let unknown = matches!(&request, crate::voice::session::VoiceRequest::VoiceRealtimeSession { room, .. }
+                                if room.strip_prefix("assistant:").is_some_and(|assistant| daemon.host.personal_get(assistant).is_err()));
+                            // Realtime session mint – never log key or secret.
+                            let api_key = crate::voice::realtime::lookup_key();
+                            let result = match api_key {
+                                _ if unknown => Err("This assistant isn't on this machine.".to_string()),
+                                None => Err("Missing OpenAI API key. Add OPENAI_API_KEY in Settings → Providers or environment.".to_string()),
+                                Some(key) => {
+                                    let args = crate::voice::realtime::MintArgs { model, voice: voice_name, instructions, tools };
+                                    match crate::voice::realtime::mint(&key, args, None).await {
+                                        Ok(session) => Ok(serde_json::to_value(session).unwrap()),
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            };
+                            let frame = match result {
+                                Ok(v) => json!({"id":id,"ok":v}).to_string(),
+                                Err(e) => refusal(json!(id), e),
+                            };
+                            if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                                return stop.into();
+                            }
+                            continue;
+                        }
+                        let maybe_meta = match &request {
+                            crate::voice::session::VoiceRequest::VoiceMetaSession { model, room: _, participant: _ } => Some(model.clone()),
+                            _ => None,
+                        };
+                        if let Some(model) = maybe_meta {
+                            let unknown = matches!(&request, crate::voice::session::VoiceRequest::VoiceMetaSession { room, .. }
+                                if room.strip_prefix("assistant:").is_some_and(|assistant| daemon.host.personal_get(assistant).is_err()));
+                            let api_key = crate::voice::meta::lookup_key();
+                            let result = match api_key {
+                                _ if unknown => Err("This assistant isn't on this machine.".to_string()),
+                                None => Err("Missing Meta API key. Add META_API_KEY in Settings → Providers or environment.".to_string()),
+                                Some(key) => {
+                                    let args = crate::voice::meta::MintArgs { model };
+                                    match crate::voice::meta::mint(&key, args).await {
+                                        Ok(session) => Ok(serde_json::to_value(session).unwrap()),
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            };
+                            let frame = match result {
+                                Ok(v) => json!({"id":id,"ok":v}).to_string(),
+                                Err(e) => refusal(json!(id), e),
+                            };
+                            if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                                return stop.into();
+                            }
+                            continue;
+                        }
                         let result = match request {
                             VoiceServerStatus {} => Ok(serde_json::to_value(daemon.voice.status()).unwrap()),
                             VoiceServerInstall {} => daemon.voice.install().map(|_| Value::Null),
@@ -509,6 +567,8 @@ where
                                 });
                                 continue;
                             }
+                            crate::voice::session::VoiceRequest::VoiceRealtimeSession { .. } => unreachable!("realtime handled above"),
+                            crate::voice::session::VoiceRequest::VoiceMetaSession { .. } => unreachable!("meta handled above"),
                         };
                         let frame = match result {
                             Ok(v) => json!({"id":id,"ok":v}).to_string(),
@@ -874,7 +934,7 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     }
     if value["cmd"]
         .as_str()
-        .is_some_and(|c| c.starts_with("voice_server_"))
+        .is_some_and(|c| c.starts_with("voice_server_") || c.starts_with("voice_realtime_") || c.starts_with("voice_meta_"))
     {
         return serde_json::from_value(value)
             .map(|r| (id, Request::Voice(r)))
@@ -1164,7 +1224,7 @@ mod tests {
 
     /// What a welcome lists; phone voice calls only where this daemon can run the helper.
     fn hello_capabilities() -> Value {
-        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"]);
+        let mut caps = json!(["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"]);
         if crate::voice::platform_support().is_ok() {
             caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
         }
@@ -2177,6 +2237,28 @@ mod tests {
         let frame = device.next().await.unwrap();
         assert_eq!(frame["seq"], json!(after), "{}", frame.to_string().chars().take(200).collect::<String>());
         assert!(!session.is_finished());
+    }
+
+    #[test]
+    fn voice_realtime_session_is_routed_to_voice_request() {
+        // Regression for "unknown variant voice_realtime_session" – the cmd
+        // must be parsed as Request::Voice, not Request::Host.
+        let frame = r#"{"id":1,"cmd":"voice_realtime_session","args":{"room":"r","model":"gpt-realtime"}}"#;
+        let (id, req) = read_request(frame).expect("should parse");
+        assert_eq!(id, 1);
+        assert!(matches!(req, Request::Voice(crate::voice::session::VoiceRequest::VoiceRealtimeSession { .. })), "expected VoiceRealtimeSession");
+
+        // voice_server_* still routes to Voice as before.
+        let frame2 = r#"{"id":2,"cmd":"voice_server_status","args":{}}"#;
+        let (id2, req2) = read_request(frame2).expect("should parse");
+        assert_eq!(id2, 2);
+        assert!(matches!(req2, Request::Voice(crate::voice::session::VoiceRequest::VoiceServerStatus { .. })));
+
+        // Meta session must also route to VoiceRequest::VoiceMetaSession
+        let frame3 = r#"{"id":3,"cmd":"voice_meta_session","args":{"room":"r","model":"muse-voice-transcribe-1.0"}}"#;
+        let (id3, req3) = read_request(frame3).expect("should parse");
+        assert_eq!(id3, 3);
+        assert!(matches!(req3, Request::Voice(crate::voice::session::VoiceRequest::VoiceMetaSession { .. })), "expected VoiceMetaSession");
     }
 
     #[test]

@@ -203,8 +203,9 @@ pub(crate) async fn run_with_policy(
 // Eight parts of one turn. A struct would be assembled at every call site and
 // taken apart again here, and the call sites read better as a flat list.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn run_with_images(
-    mut child: OwnedChild,
+    child: OwnedChild,
     prompt: &str,
     cwd: Option<String>,
     on_progress: ProgressSink<'_>,
@@ -212,6 +213,15 @@ pub(crate) async fn run_with_images(
     after_plan: Option<Access>,
     tools_disabled: bool,
     images: &[crate::attachments::Image],
+) -> std::io::Result<Finished> {
+    run_with_computer(child,prompt,cwd,on_progress,approver,after_plan,tools_disabled,images,false).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_with_computer(
+    mut child: OwnedChild, prompt: &str, cwd: Option<String>, on_progress: ProgressSink<'_>,
+    approver: &dyn Approver, after_plan: Option<Access>, tools_disabled: bool,
+    images: &[crate::attachments::Image], trusted_computer: bool,
 ) -> std::io::Result<Finished> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -278,9 +288,12 @@ pub(crate) async fn run_with_images(
                 // mode, Full included (probed 2026-10-06). The questions go
                 // out raw; the room cleans them for display, and the answers
                 // come back matched by position.
-                let reply = if tools_disabled && request["subtype"] == "can_use_tool" {
+                // A trusted computer call is the one exception to a tool-free turn.
+                let computer_call = trusted_computer && request["subtype"] == "can_use_tool"
+                    && request["tool_name"].as_str().and_then(crate::mcp::claude_tool).is_some_and(|(server, _)| server == crate::computer::SERVER);
+                let reply = if tools_disabled && !computer_call && request["subtype"] == "can_use_tool" {
                     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": message["request_id"], "response": { "behavior": "deny", "message": "This turn is configured without tools." } } })
-                } else if tools_disabled {
+                } else if tools_disabled && !computer_call {
                     json!({ "type": "control_response", "response": { "subtype": "error", "request_id": message["request_id"], "error": "This turn is configured without tools or control requests." } })
                 } else if request["subtype"] == "can_use_tool"
                     && request["tool_name"] == "AskUserQuestion"
@@ -314,6 +327,7 @@ pub(crate) async fn run_with_images(
                     let tool = request["tool_name"].as_str().unwrap_or("a tool");
                     let action = reader.claude_action(tool, &request["input"]);
                     let decision = match crate::mcp::claude_tool(tool) {
+                        Some(("apex-computer", _)) if trusted_computer => Decision::Approve,
                         Some((_, name)) if !crate::mcp::needs_approval(name) => Decision::Approve,
                         _ => {
                             on_progress(Progress::Activity(&format!(

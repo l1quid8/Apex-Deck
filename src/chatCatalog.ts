@@ -13,6 +13,11 @@ export interface ChatEntry {
   bots: ChatBot[];
   updatedAt: number;
   archived: boolean;
+  metadataRevision?: number;
+  titleExplicit?: boolean;
+  archiveExplicit?: boolean;
+  /** Recoverable host-owned Trash; absent means available. */
+  trashedAt?: number;
   /** A promoted Work thread's folder; null for a chat. */
   cwd: string | null;
   folderName: string | null;
@@ -57,6 +62,10 @@ function entry(hostId: string, raw: unknown): ChatEntry | null {
     bots,
     updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0,
     archived: raw.archived === true,
+    ...(typeof raw.metadataRevision==='number' && Number.isSafeInteger(raw.metadataRevision) && raw.metadataRevision>=0 ? {metadataRevision:raw.metadataRevision}:{}),
+    ...(typeof raw.titleExplicit==='boolean' ? {titleExplicit:raw.titleExplicit}:{}),
+    ...(typeof raw.archiveExplicit==='boolean' ? {archiveExplicit:raw.archiveExplicit}:{}),
+    ...(typeof raw.trashedAt === "number" && Number.isFinite(raw.trashedAt) && raw.trashedAt > 0 ? { trashedAt: raw.trashedAt } : {}),
     cwd: text(raw.cwd),
     folderName: text(raw.folderName),
     promotedFrom: text(raw.promotedFrom),
@@ -126,7 +135,7 @@ export function readCatalog(raw: string | null): ChatCatalog {
 
 /** Every chat that lives on its machine, newest first. A chat that moved is listed by the machine it moved to. */
 export function chatRows(catalog: ChatCatalog, archived: boolean): { rows: ChatEntry[]; archivedCount: number } {
-  const chats = Object.values(catalog.hosts).flatMap((host) => host.rooms).filter((row) => row.kind === "chat" && !row.movedTo);
+  const chats = Object.values(catalog.hosts).flatMap((host) => host.rooms).filter((row) => row.kind === "chat" && !row.movedTo && !row.trashedAt);
   return {
     rows: chats.filter((row) => archived || !row.archived).sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title)),
     archivedCount: chats.filter((row) => row.archived).length,
@@ -135,7 +144,7 @@ export function chatRows(catalog: ChatCatalog, archived: boolean): { rows: ChatE
 
 /** The Work threads made from chats on one machine, for its section under Projects. */
 export function promotedWork(catalog: ChatCatalog, hostId: string): ChatEntry[] {
-  return (catalog.hosts[hostId]?.rooms ?? []).filter((row) => row.kind === "work" && !row.archived).sort((a, b) => b.updatedAt - a.updatedAt);
+  return (catalog.hosts[hostId]?.rooms ?? []).filter((row) => row.kind === "work" && !row.archived && !row.trashedAt).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function findRoom(catalog: ChatCatalog, hostId: string, id: string): ChatEntry | null {

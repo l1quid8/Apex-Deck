@@ -1,0 +1,168 @@
+# Add a machine over SSH: design
+
+Status: design approved by the Human on the mockup `mockups/local-chat-jigga.html`
+(source `mockups/local-chat-jigga/main.tsx`). Null cleared the mockup. Part 1
+(phone screens) is on `feat/add-machine-screens`.
+
+## Goal
+
+From the iPhone, a person turns any Linux server they can SSH into into a
+paired Deck machine with one Connect button. SSH is used once, to set up. After
+that the phone uses the normal paired link, and chats never touch SSH.
+
+The desktop shares the setup code but keeps SSH as its live link
+(`ssh <host> apex-daemon --stdio --attach`, `src/ConnectionDialog.tsx`).
+
+## Screen
+
+Add a machine has two choices: **QR code | Remote SSH**. This replaces the
+Mac/Server selector, the `h-…` Id box and the Address/token fields
+(`src/phone/PhoneApp.tsx`, the "Add a machine" form).
+
+**QR code:** Scan, or "Or paste the pairing link". The name comes from the code,
+then a 6-digit match and Approve on the machine.
+
+A code names a machine and nothing else, so with the Mac/Server pick and Id gone
+the phone works the rest out (`identityFor`, `src/phone/pairing.ts`): the first
+machine is the phone's Mac (`local`), later ones are servers with the id
+`h-<first 12 of the endpoint>`, and a name already in use takes a number. A name
+never proves two entries are one machine, so an old address entry with the same
+name stays and the person removes it; only the same endpoint or id reuses an
+entry. Part 3 must add SSH machines through this same check. Known
+limit: a Linux machine paired first by QR is filed as the Mac, because the code
+doesn't carry the OS. Adding the OS to the code belongs with part 4. Threads the
+Mac files under a server id are not guessed at; Edit keeps its Id box for linking
+them. A phone build without pairing (the browser) keeps the address form.
+
+**Remote SSH:**
+
+- Label (optional). Becomes the machine's name everywhere.
+- IP or host. Strips `https://`. Parses `host:port` and `[addr]:port` for IPv6.
+  Refuses malformed values and ports outside 1-65535.
+- User, and Port (22).
+- Password (optional; also used for sudo).
+- Import private key from Files. The phone can't read `~/.ssh`, so the person
+  AirDrops the key to Files. A passphrase box appears only for encrypted keys.
+- After setup: **Forget sign-in** (default; wipes Deck's copy, the original file
+  is untouched) or Keep with Face ID.
+- No startup snippet, and no "Where is apex-daemon?" box.
+
+## Connect flow
+
+No prompts. One Connect button, then a list that runs by itself. It stops only
+for a real failure.
+
+1. Reached server.
+2. Server key checked, before any credentials are sent. First use trusts the
+   fingerprint. A changed key stops the flow.
+3. Signed in.
+4. Found OS and architecture.
+5. Installed, updated or already up to date. Downloads are checked against the
+   release checksums (`apex-daemon-linux-x86_64`, `-arm64`). An existing service
+   is updated in place.
+6. Bubblewrap installed, if sudo is available.
+7. Started Deck, set to start on boot.
+8. AI tools installed. Any that need signing in are marked.
+9. Paired and saved. This happens before Done, survives the sheet being
+   dismissed, and a retry reuses the same request.
+10. Signed out and sign-in wiped.
+
+The run must not belong to the `RemoteSsh` screen. Today leaving it, or pressing
+Done (enabled as soon as step 9 lands), cancels the run. In part 3 the run lives
+outside the screen, and dismissing only detaches the screen, so sign-out and the
+wipe in step 10 always finish.
+
+Cases:
+
+- **No password, or sudo refused:** user-only install, bubblewrap skipped.
+- **Updating while bots reply:** the new version installs but switches only when
+  idle. The machine shows "Updating Deck" and messages wait.
+- **Bots not ready:** they show "needs sign-in" (with a Sign in button) or "needs
+  bubblewrap (admin)". They never receive messages, and a notice appears under
+  the message.
+
+## What the machine must already do
+
+- A person must be able to act on the machine from a paired device. See "Who can
+  act on a Linux machine" below; this is not built yet.
+- The updater's guard in `scripts/vps_update_compat.py` hashes the admission
+  code. Any change to `call_with_client_capability`, `admit`, `is_room_admin` or
+  the Linux prefix of `call_from_device` makes machines running the installed
+  updater refuse the release. Change them together with the updater recipe.
+
+## Open decision: who can act on a Linux machine
+
+This is the Human's call and needs Null's review. It comes before the SSH work,
+because every machine that work adds lands here.
+
+**Today.** A plain release refuses Allow, answering a question, new Work threads
+and changing a bot's model, reasoning or Speed, from a Mac over SSH and from a
+paired phone. They need a receipt and Linux has no broker to give one. A bot below
+Full access in a Work thread therefore waits for an approval nobody can give.
+Chats avoid this with their own `chat_*` commands. Moving a chat works from a
+paired phone, into folders from `apex-daemon allow-root`, and fails from the Mac app.
+
+Apex-Terminal is the exception: its updater carries the 02f3a24 patch, so its Mac
+app can press Allow.
+
+**Why that patch stays out of releases.** It trusts everything that reaches the
+local socket. Null's review on 2026-10-30 rejected it: a bot's shell command runs
+as the same Linux user as the person, so one approved command could approve itself
+or raise its own access. The move-a-chat change `f0578c96` had the same hole. Both
+were reverted on `fix/platform-close-out` before merging.
+
+A smarter check on the socket won't fix this. Code running as that user can also
+read Deck's token and edit Deck's files, so checking which process called only
+slows it down.
+
+**Recommendation.** Make the paired device the identity, and keep restricted bots
+away from what makes a device. Setup already pairs the phone; pair the Mac the same
+way. On Linux, accept Allow, answers, plans and model, reasoning and Speed from a
+paired device, within its tier. The carried patch then goes away.
+
+A device key alone isn't enough. Null's review on 2026-10-30 found that a local
+caller can add a device and approve a pairing, and the same Linux user can edit the
+device registry. So a bot below Full could mint its own paired device. Before these
+actions are enabled, bots below Full must be unable to reach the local socket, the
+pairing grants, the device registry or Deck's data folder.
+
+Today that isolation doesn't exist for every bot: Claude bots below Full have no
+operating-system sandbox on Linux. That is the real work this decision depends on.
+
+The folder list only answers which folders a device may pick. It doesn't authorize
+raising a bot's access, so raising access needs its own rule.
+
+Changing this means changing the recipe on the server first: the updater's
+installed test `scripts/vps-update-allow-test.rs` asserts these phone calls are
+refused. `Host::device_folder_command` sits outside the hashed admission code.
+
+Claude bots below Full have no operating-system sandbox on Linux; their limit is
+Claude's own approval step. Any command the person approves runs as them, whatever
+this decision says.
+
+## Known unknowns
+
+1. **Headless pairing.** `apex-daemon pair` (`crates/apex-daemon/src/pair_cli.rs`)
+   prints the link, waits for a claim, and asks `Approve? [y/N]`. The phone can
+   answer over SSH, but it needs machine-readable output, and remote access must
+   be on.
+2. **User-only install after sign-out.** Whether a user-only service survives SSH
+   sign-out (lingering). Test with a throwaway user on Apex-Terminal once the
+   Human says yes; otherwise setup checks and reports it.
+
+## Evidence so far
+
+A throwaway "SSH Key Test" app on the iPhone 16 Pro, using the Human's ed25519
+key (OpenSSH format, with a passphrase), passed on the Human's report: key
+unlocked, server key matched, signed in, Linux x86_64 and the daemon path shown,
+signed out, and a wrong passphrase sent nothing. The test app has been removed.
+
+## Build order
+
+Each part goes on its own branch with Null's review.
+
+1. Phone screens.
+2. SSH sign-in, using the library that passed the key test.
+3. Silent setup.
+4. Machine-readable pair output.
+5. AI-tool sign-in, after the rest.

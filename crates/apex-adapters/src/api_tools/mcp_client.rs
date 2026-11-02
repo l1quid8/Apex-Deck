@@ -25,6 +25,7 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::oneshot;
 
 use crate::owned_process::{OwnedChild, Registry};
+use super::ToolImage;
 
 const PROTOCOL: &str = "2025-06-18";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
@@ -155,10 +156,11 @@ fn read_json(path: &Path) -> Option<Value> {
 pub(crate) struct CallResult {
     pub text: String,
     pub is_error: bool,
+    pub images: Vec<ToolImage>,
 }
 
-/// A tool result's content as text. Pictures and sounds are named, not
-/// sent on, since the model gets text back.
+/// The text projection of a tool result. Pictures and sounds keep their
+/// existing stubs; validated computer images travel separately.
 pub(crate) fn content_text(result: &Value) -> String {
     let mut parts = Vec::new();
     for item in result["content"].as_array().into_iter().flatten() {
@@ -186,6 +188,42 @@ pub(crate) fn content_text(result: &Value) -> String {
         }
     }
     parts.join("\n")
+}
+
+/// Collect only the configured computer server's raster input. Validate the
+/// encoded bound before decoding so an oversized payload cannot allocate a
+/// second unbounded buffer. Text keeps the existing stubs for all consumers.
+fn call_result(result: &Value, computer: bool) -> CallResult {
+    use base64::Engine;
+    const MAX_BYTES: usize = 5 * 1024 * 1024;
+    const MAX_ENCODED: usize = ((MAX_BYTES + 2) / 3) * 4;
+    let mut text = content_text(result);
+    let mut images = Vec::new();
+    if computer {
+        for item in result["content"].as_array().into_iter().flatten().filter(|item| item["type"] == "image") {
+            let mime = item["mimeType"].as_str().unwrap_or("");
+            let data = item["data"].as_str().unwrap_or("");
+            let note = if !matches!(mime, "image/png" | "image/jpeg" | "image/webp" | "image/gif") {
+                Some("[image omitted: unsupported raster MIME type]")
+            } else if data.len() > MAX_ENCODED {
+                Some("[image omitted: exceeds 5 MiB limit]")
+            } else {
+                match base64::engine::general_purpose::STANDARD.decode(data) {
+                    Ok(bytes) if bytes.len() > MAX_BYTES => Some("[image omitted: exceeds 5 MiB limit]"),
+                    Ok(bytes) if !bytes.is_empty() => {
+                        images.push(ToolImage { mime: mime.into(), data: data.into() });
+                        None
+                    },
+                    _ => Some("[image omitted: invalid base64 data]"),
+                }
+            };
+            if let Some(note) = note {
+                if !text.is_empty() { text.push('\n'); }
+                text.push_str(note);
+            }
+        }
+    }
+    CallResult { text, is_error: result["isError"] == true, images }
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
@@ -498,7 +536,7 @@ impl Connection {
 
     pub async fn call(&self, tool: &str, arguments: Value, timeout: Duration) -> Result<CallResult, String> {
         let result = self.request("tools/call", json!({"name": tool, "arguments": arguments}), timeout).await?;
-        Ok(CallResult { text: content_text(&result), is_error: result["isError"] == true })
+        Ok(call_result(&result, crate::mcp::is_computer_server(&self.spec.name)))
     }
 }
 
@@ -542,7 +580,10 @@ impl Pool {
         }
         let user = user_path.as_deref().and_then(read_json);
         let project = project_path.as_deref().and_then(read_json);
-        let lookup = |name: &str| std::env::var(name).ok();
+        // Resolve `${NAME}` from Deck's saved keys first (Keychain or file),
+        // then the environment, so a key saved in Settings reaches MCP servers
+        // exactly like it reaches HTTP backends.
+        let lookup = |name: &str| crate::keys::lookup(name);
         let servers = from_config(user.as_ref(), project.as_ref(), &cwds, &lookup);
         *known = Some((stamp, servers.clone()));
         servers
@@ -563,6 +604,16 @@ impl Pool {
     }
 }
 
+/// Test fixture at the configuration boundary: cache supplied servers without
+/// reading or changing the person's config contents or environment.
+#[cfg(test)]
+pub(crate) fn fixture_pool(servers: Vec<ServerSpec>) -> Pool {
+    let pool = Pool::default();
+    let stamp = Stamp { cwds: vec![], user: claude_config_path().as_deref().and_then(modified), project: None };
+    *pool.known.lock().unwrap() = Some((stamp, servers));
+    pool
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +631,31 @@ mod tests {
         assert_eq!(expand("${MISSING:-x}/${TOKEN}", &env), "x/t0k");
         assert_eq!(expand("${MISSING}", &env), "${MISSING}");
         assert_eq!(expand("no vars", &env), "no vars");
+    }
+
+    #[test]
+    fn a_saved_key_reaches_the_spawned_server_when_the_environment_lacks_it() {
+        // A key Deck saved (Keychain/file) must expand into a server's env
+        // even when the process environment has nothing, like HTTP backends.
+        let dir = std::env::temp_dir().join(format!("apx-mcp-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::keys::use_file(&dir);
+        crate::keys::save("APEX_MCP_TEST_KEY", "sk-saved").unwrap();
+
+        let config = json!({ "mcpServers": {
+            "key-server": { "command": "key-server", "args": ["serve"], "env": { "OPENAI_API_KEY": "${APEX_MCP_TEST_KEY}" } }
+        }});
+        let servers = from_config(Some(&config), None, &[], &|name: &str| crate::keys::lookup(name));
+        let server = servers.iter().find(|s| s.name == "key-server").expect("key-server is configured");
+        match &server.transport {
+            Transport::Stdio { env: envs, .. } => {
+                assert!(envs.contains(&("OPENAI_API_KEY".into(), "sk-saved".into())), "saved key reaches the server: {envs:?}");
+            }
+            other => panic!("expected stdio transport, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -620,6 +696,42 @@ mod tests {
     }
 
     #[test]
+    fn image_blocks_are_kept_with_the_text() {
+        let result = call_result(&json!({"content":[
+            {"type":"text","text":"snapshot 12"},
+            {"type":"image","mimeType":"image/png","data":"AQ=="}
+        ]}), true);
+        assert_eq!(result.text,"snapshot 12\n[image (image/png, 3 bytes) not shown]");
+        assert_eq!(result.images.len(),1);
+        assert_eq!(result.images[0].mime,"image/png");
+        assert_eq!(result.images[0].data,"AQ==");
+        assert!(!format!("{result:?}").contains("AQ=="),"image data must stay out of diagnostics");
+        let other = call_result(&json!({"content":[{"type":"image","mimeType":"image/png","data":"AQ=="}]}),false);
+        assert!(other.images.is_empty());
+    }
+
+    #[test]
+    fn oversized_image_is_dropped_with_a_note() {
+        use base64::Engine;
+        for size in [5 * 1024 * 1024, 5 * 1024 * 1024 + 1, 5 * 1024 * 1024 + 3] {
+            let data = base64::engine::general_purpose::STANDARD.encode(vec![0;size]);
+            let result = call_result(&json!({"content":[{"type":"image","mimeType":"image/png","data":data}]}),true);
+            if size == 5 * 1024 * 1024 { assert_eq!(result.images.len(),1); }
+            else { assert!(result.images.is_empty()); assert!(result.text.contains("5 MiB")); }
+        }
+    }
+
+    #[test]
+    fn invalid_mime_and_base64_are_dropped_with_safe_notes() {
+        for (mime,data) in [("image/svg+xml","AQ=="),("text/plain","AQ=="),("image/png","INVALID_SECRET"),("image/png","AB==")] {
+            let result = call_result(&json!({"content":[{"type":"image","mimeType":mime,"data":data}]}),true);
+            assert!(result.images.is_empty());
+            assert!(result.text.contains("image omitted"));
+            assert!(!result.text.contains("INVALID_SECRET"));
+        }
+    }
+
+    #[test]
     fn tool_results_become_text() {
         let result = json!({"content": [
             {"type": "text", "text": "hello"},
@@ -650,7 +762,7 @@ done
         let tools = connection.tools().await.unwrap();
         assert_eq!(tools[0]["name"], "get_weather");
         let result = connection.call("get_weather", json!({}), Duration::from_secs(10)).await.unwrap();
-        assert_eq!(result, CallResult { text: "sunny".into(), is_error: false });
+        assert_eq!(result, CallResult { text: "sunny".into(), is_error: false, images: Vec::new() });
         let again = pool.connect(&spec, None, None).await.unwrap();
         assert!(Arc::ptr_eq(&connection, &again), "a running server is reused");
     }
