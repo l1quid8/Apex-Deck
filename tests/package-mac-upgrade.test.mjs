@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {upgradeScripts,validateManifest,validateOutput} from '../scripts/package-mac-upgrade.mjs';
+
+// macOS-only: the signed .pkg upgrade. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the signed .pkg upgrade' };
 const manifest={id:'12345678-1234-1234-1234-123456789abc',version:'0.8.2',ui:'a'.repeat(40),daemon:'b'.repeat(40),broker:'c'.repeat(40)};
 function python(program){
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'apex-upgrade-test-'));
@@ -21,14 +25,14 @@ test('installer manifest rejects command syntax and malformed build identity bef
  assert.throws(()=>validateOutput('/tmp/Apex.pkg'),/release/);
  assert.throws(()=>validateOutput('/Users/tylercaldwell/Downloads/apex-deck/release/../bad.pkg'),/release/);
 });
-test('generated Installer scripts target only startup disk and call isolated Python with quoted script paths',()=>{
+test('generated Installer scripts target only startup disk and call isolated Python with quoted script paths', MAC_ONLY, ()=>{
  const scripts=upgradeScripts(manifest);
  for(const script of [scripts.preinstall,scripts.postinstall]){
   assert.match(script,/\$\{3:-\/\}/);assert.match(script,/\/usr\/bin\/python3 -I/);assert.doesNotMatch(script,/sudo|eval |kill|repin-provenance/);
   const result=spawnSync('/bin/bash',['-n'],{input:script,encoding:'utf8'});assert.equal(result.status,0,result.stderr);
  }
 });
-test('config pin update changes only the two hashes and leaves original keys and journal bytes untouched',()=>python(String.raw`
+test('config pin update changes only the two hashes and leaves original keys and journal bytes untouched', MAC_ONLY, ()=>python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  root=pathlib.Path(directory); config=root/'config.json'
  original={'uiCdhash':'old-ui','daemonCdhash':'old-daemon','future':{'boundary':'unchanged'}}
@@ -44,7 +48,7 @@ with tempfile.TemporaryDirectory() as directory:
  except RuntimeError: pass
  else: raise AssertionError('followed linked config')
 `));
-test('bundle validation permits contained framework links but rejects external and broken symlinks',()=>python(String.raw`
+test('bundle validation permits contained framework links but rejects external and broken symlinks', MAC_ONLY, ()=>python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  root=pathlib.Path(directory);app=root/'Apex Deck.app';app.mkdir();(app/'real').write_text('safe');(app/'internal').symlink_to('real');u.bundle_links(app)
  (root/'outside').write_text('outside');(app/'escape').symlink_to(root/'outside')
@@ -56,7 +60,7 @@ with tempfile.TemporaryDirectory() as directory:
  except FileNotFoundError:pass
  else:raise AssertionError('accepted a broken bundle link')
 `));
-test('failed transaction reverses app and broker swaps, restores config, and retains byte-identical authority',()=>python(String.raw`
+test('failed transaction reverses app and broker swaps, restores config, and retains byte-identical authority', MAC_ONLY, ()=>python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  base=pathlib.Path(directory);u.ROOT=base/'authority';u.UPGRADES=base/'upgrades';u.ROOT.mkdir();u.UPGRADES.mkdir()
  u.TRUSTED=u.ROOT/'TrustedUI/Apex Deck.app';u.TRUSTED.parent.mkdir();u.TRUSTED.mkdir();(u.TRUSTED/'old').write_text('trusted')
@@ -95,7 +99,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert (backup/'failed-previous-trusted.app').exists();assert not (u.UPGRADES/'install.lock').exists()
 `));
 
-test('broker readiness retries a stale socket, asynchronous waiting state, old PID, and a dead new PID',()=>python(String.raw`
+test('broker readiness retries a stale socket, asynchronous waiting state, old PID, and a dead new PID', MAC_ONLY, ()=>python(String.raw`
 responses=iter([
  'state = waiting\n',
  'state = running\npid = 111\n',
@@ -114,7 +118,7 @@ u.os.kill=live
 assert u.wait_for_broker(111,(1,10,100))==222
 assert len(calls)==4 and sleeps==[1,1,1] and probes==[(222,0),(222,0)]
 `));
-test('broker readiness refuses a stale socket even with a live replacement service and times out without blocking tests',()=>python(String.raw`
+test('broker readiness refuses a stale socket even with a live replacement service and times out without blocking tests', MAC_ONLY, ()=>python(String.raw`
 sleeps=[];probes=[]
 u.run=lambda *args,**kwargs:subprocess.CompletedProcess(args,0,'state = running\npid = 222\n','')
 u.broker_socket_identity=lambda:(1,10,100)
@@ -175,7 +179,7 @@ def fake_run(*args,required=True):
 u.run=fake_run
 `;
 
-test('another signed-in account’s background service stops for the install and starts again on the new copy',()=>python(accountsFixture+String.raw`
+test('another signed-in account’s background service stops for the install and starts again on the new copy', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 u.install()
 assert (u.TRUSTED/'version').read_text()=='new'
 # Both services are down before the broker is, and the other account's comes back
@@ -186,7 +190,7 @@ assert not loaded[501] and loaded[502]
 shutil.rmtree(directory)
 `));
 
-test('a rolled-back install starts the other account’s background service again on the old copy',()=>python(accountsFixture+String.raw`
+test('a rolled-back install starts the other account’s background service again on the old copy', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 fail.append('injected broker failure')
 try:u.install()
 except RuntimeError as error:assert 'injected' in str(error),error
@@ -197,7 +201,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('another account’s service that isn’t its own regular file is refused before anything stops',()=>python(accountsFixture+String.raw`
+test('another account’s service that isn’t its own regular file is refused before anything stops', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 other_agent.unlink();other_agent.symlink_to(agent)
 try:u.install()
 except RuntimeError as error:assert 'another account' in str(error),error
@@ -206,7 +210,7 @@ assert events==[] and loaded=={501:True,502:True},events
 shutil.rmtree(directory)
 `));
 
-test('a background service the update can’t stop says so instead of a vague “still running”',()=>python(accountsFixture+String.raw`
+test('a background service the update can’t stop says so instead of a vague “still running”', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 stray[0]=True
 try:u.install()
 except RuntimeError as error:assert "couldn't stop" in str(error) and 'nothing was installed' in str(error),error
@@ -216,7 +220,7 @@ assert ('start',502,str(other_agent),'old') in events,'the stopped services are 
 shutil.rmtree(directory)
 `));
 
-test('an account that signs out as the update starts is skipped, not a reason to refuse',()=>python(accountsFixture+String.raw`
+test('an account that signs out as the update starts is skipped, not a reason to refuse', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 real=u.run
 def signed_out(*args,required=True):
  if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
@@ -231,7 +235,7 @@ assert not any(e[:2]==('start',502) for e in events if isinstance(e,tuple)),'not
 shutil.rmtree(directory)
 `));
 
-test('another account’s service that won’t stop refuses the update by name',()=>python(accountsFixture+String.raw`
+test('another account’s service that won’t stop refuses the update by name', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 real=u.run
 def stuck(*args,required=True):
  if list(map(str,args[:3]))==['/bin/launchctl','bootout','gui/502/dev.apexdeck.daemon']:
@@ -247,7 +251,7 @@ assert ('start',501,str(agent),'old') in events,events
 shutil.rmtree(directory)
 `));
 
-test('a rollback that needs checking names the other accounts whose service stays off',()=>python(accountsFixture+String.raw`
+test('a rollback that needs checking names the other accounts whose service stays off', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 # pop() takes from the end: the install's broker start fails, then the rollback's.
 fail.extend(['rollback broker failure','injected broker failure'])
 notes=[]
@@ -260,7 +264,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0] and 'stays off' in notes[0
 shutil.rmtree(directory)
 `));
 
-test('a directory account that getpwall leaves out is still found by its running background service',()=>python(accountsFixture+String.raw`
+test('a directory account that getpwall leaves out is still found by its running background service', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 net=base/'net';(net/'Library/LaunchAgents').mkdir(parents=True);net_agent=net/'Library/LaunchAgents/dev.apexdeck.daemon.plist';net_agent.write_text('net agent')
 directory_user=types.SimpleNamespace(pw_uid=503,pw_dir=str(net),pw_name='net',pw_gecos='Network Person')
 u.pwd.getpwuid=lambda uid:directory_user if uid==503 else (_ for _ in ()).throw(KeyError(uid))
@@ -276,7 +280,7 @@ assert 503 in found and found[503][0]=='Network Person',found
 shutil.rmtree(directory)
 `));
 
-test('a background service run by an account nobody can look up refuses the update',()=>python(accountsFixture+String.raw`
+test('a background service run by an account nobody can look up refuses the update', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 u.pwd.getpwuid=lambda uid:(_ for _ in ()).throw(KeyError(uid))
 real=u.run
 u.run=lambda *args,required=True:subprocess.CompletedProcess(list(map(str,args)),0,'  777 /x/apex-daemon\n','') if str(args[0])=='/bin/ps' else real(*args,required=required)
@@ -287,7 +291,7 @@ assert events==[],events
 shutil.rmtree(directory)
 `));
 
-test('Deck opened in another account as the update starts says so',()=>python(accountsFixture+String.raw`
+test('Deck opened in another account as the update starts says so', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 u.app_running=lambda uid=None:uid is None
 try:u.install()
 except RuntimeError as error:assert 'in another account' in str(error) and 'opened again' not in str(error),error
@@ -296,7 +300,7 @@ assert (u.TRUSTED/'version').read_text()=='old'
 shutil.rmtree(directory)
 `));
 
-test('a rollback whose own service file vanished still starts the other account’s background service again',()=>python(accountsFixture+String.raw`
+test('a rollback whose own service file vanished still starts the other account’s background service again', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 # The requester's plist disappears while the update is staged, which stops the install.
 u.validate_bundle=lambda p:agent.unlink() if 'upgrade-' in str(p) else None
 try:u.install()
@@ -309,7 +313,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('an account whose background service won’t start again is named, with what brings it back',()=>python(accountsFixture+String.raw`
+test('an account whose background service won’t start again is named, with what brings it back', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 refuse_start.add(502)
 notes=[]
 u.install(notes)
@@ -319,7 +323,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0] and "didn't start again" i
 shutil.rmtree(directory)
 `));
 
-test('a clean rollback also names an account whose background service won’t start again',()=>python(accountsFixture+String.raw`
+test('a clean rollback also names an account whose background service won’t start again', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 refuse_start.add(502);fail.append('injected broker failure')
 notes=[]
 try:u.install(notes)
@@ -330,7 +334,7 @@ assert len(notes)==1 and '"Other Person"' in notes[0],notes
 shutil.rmtree(directory)
 `));
 
-test('broker startup may fold journal.log into journal.json after the stopped-writer snapshot',()=>python(accountsFixture+String.raw`
+test('broker startup may fold journal.log into journal.json after the stopped-writer snapshot', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 (u.ROOT/'journal.log').write_bytes(b'pending signed entries\n')
 def restart(pid,socket):
  (u.ROOT/'journal.json').write_bytes(b'folded snapshot')
@@ -346,7 +350,7 @@ assert (backup/'installation-verified.json').exists()
 shutil.rmtree(directory)
 `));
 
-for (const hadLog of [false,true]) test(`rollback restores the journal snapshot and ${hadLog ? 'original log' : 'absence of a log'} together`,()=>python(accountsFixture+String.raw`
+for (const hadLog of [false,true]) test(`rollback restores the journal snapshot and ${hadLog ? 'original log' : 'absence of a log'} together`, MAC_ONLY, ()=>python(accountsFixture+String.raw`
 had_log=${hadLog ? 'True' : 'False'}
 if had_log:(u.ROOT/'journal.log').write_bytes(b'original log\n')
 def restart(pid,socket):
@@ -364,7 +368,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('retry after a rolled-back install retains old evidence and uses a fresh backup and staging path',()=>python(accountsFixture+String.raw`
+test('retry after a rolled-back install retains old evidence and uses a fresh backup and staging path', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 fail.append('injected broker failure')
 try:u.install()
 except RuntimeError:pass
@@ -383,7 +387,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('a changed signing key still fails after broker startup and rolls back',()=>python(accountsFixture+String.raw`
+test('a changed signing key still fails after broker startup and rolls back', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 def restart(pid,socket):
  (u.ROOT/'private-key').write_bytes(b'changed key')
  return 222
@@ -397,7 +401,7 @@ assert not (u.UPGRADES/'install.lock').exists()
 shutil.rmtree(directory)
 `));
 
-test('an unresolved recovery lock blocks retry before creating another backup or stopping services',()=>python(accountsFixture+String.raw`
+test('an unresolved recovery lock blocks retry before creating another backup or stopping services', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 (u.UPGRADES/'install.lock').mkdir()
 (u.UPGRADES/'install.lock/recovery-needed.txt').write_text('inspect prior failure')
 try:u.install()
@@ -408,7 +412,7 @@ assert events==[]
 shutil.rmtree(directory)
 `));
 
-test('rollback never rewrites the journal or swaps apps if the replacement broker cannot be stopped',()=>python(accountsFixture+String.raw`
+test('rollback never rewrites the journal or swaps apps if the replacement broker cannot be stopped', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 def restart(pid,socket):
  (u.ROOT/'journal.json').write_bytes(b'live folded snapshot')
  (u.ROOT/'journal.log').write_bytes(b'live log')
@@ -440,7 +444,7 @@ test('the packaged app and daemon declare the same release version',()=>{
  assert.equal(version,app.version,'daemon workspace version must match the app to avoid Different builds');
 });
 
-test('upgrade refuses the protected nested computer helper even after the main app quits',()=>python(String.raw`
+test('upgrade refuses the protected nested computer helper even after the main app quits', MAC_ONLY, ()=>python(String.raw`
 helper=str(u.TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp')
 u.app_running=lambda uid=None:False
 u.os.geteuid=lambda:0
@@ -458,14 +462,14 @@ else: raise AssertionError('running helper was accepted')
 assert calls==[('/bin/ps','-axo','comm=')],calls
 `));
 
-test('helper upgrade guard ignores similarly named and development helper executables',()=>python(String.raw`
+test('helper upgrade guard ignores similarly named and development helper executables', MAC_ONLY, ()=>python(String.raw`
 helper=str(u.TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp')
 for command in ['/tmp/Unified Computer Use.app/Contents/MacOS/SpikeApp',helper+'Extra','/tmp/SpikeApp']:
  u.run=lambda *args,**kwargs:types.SimpleNamespace(returncode=0,stdout=command+'\n',stderr='')
  u.require_helper_stopped()
 `));
 
-test('helper upgrade guard fails closed when process inventory cannot be read',()=>python(String.raw`
+test('helper upgrade guard fails closed when process inventory cannot be read', MAC_ONLY, ()=>python(String.raw`
 u.run=lambda *args,**kwargs:types.SimpleNamespace(returncode=1,stdout='',stderr='sensitive error')
 try: u.require_helper_stopped()
 except RuntimeError as error:
@@ -473,7 +477,7 @@ except RuntimeError as error:
 else: raise AssertionError('unavailable process inventory was accepted')
 `));
 
-test('a helper that appears during staging refuses the swap and restores stopped services',()=>python(accountsFixture+String.raw`
+test('a helper that appears during staging refuses the swap and restores stopped services', MAC_ONLY, ()=>python(accountsFixture+String.raw`
 original=u.run
 checks=[]
 def run(*args,**kwargs):

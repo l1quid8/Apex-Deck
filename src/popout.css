@@ -18,6 +18,9 @@
   -webkit-app-region: drag;
   border-bottom: 1px solid var(--line);
 }
+html[data-platform="windows"] .popout-bar {
+  padding-left: 12px;
+}
 
 .popout-bar button,
 .popout-bar input {

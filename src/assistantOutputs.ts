@@ -10,6 +10,7 @@
 //     extension appear; anything else, source code included, is left alone.
 
 import { fromReply, newestFirst, readArtifacts, type Artifact, type ArtifactFile, type ArtifactKind } from './artifacts';
+import { splitPathName } from './paths';
 import type { DiffFile } from './types';
 
 /**
@@ -91,8 +92,7 @@ export function kindOfOutputPath(path: string): OutputKind | null {
 
 /** A path split for the row: its name, and the folder above it. */
 export function outputName(path: string): { name: string; folder: string } {
-  const cut = path.lastIndexOf('/');
-  return cut < 0 ? { name: path, folder: '' } : { name: path.slice(cut + 1), folder: path.slice(0, cut) };
+  return splitPathName(path);
 }
 
 const lastAt = (artifact: Artifact) => artifact.versions[artifact.versions.length - 1].at;

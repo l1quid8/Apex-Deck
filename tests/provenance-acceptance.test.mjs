@@ -4,6 +4,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+
+// macOS-only: the provenance acceptance harness. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the provenance acceptance harness' };
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 // Execute the harness's actual tamper check, including its JSON comparison.
@@ -13,7 +18,7 @@ const check = script.slice(script.indexOf('tamper_forged_json() {'), script.inde
 const empty = { workspaceId: 'acceptance', revision: 0, tasks: [], executions: [], routingThreads: [], namedOnlyWorkerIds: [] };
 
 function run({ firstLog = '', secondLog = '', answer = empty, rewrite = false } = {}) {
-  const work = mkdtempSync('/tmp/apex-tamper-check-');
+  const work = mkdtempSync(path.join(os.tmpdir(), 'apex-tamper-check-'));
   writeFileSync(path.join(work, 'reply.json'), JSON.stringify({ id: 1, ok: answer }));
   const effects = `
 start_daemon() {
@@ -41,15 +46,15 @@ skip_check() { printf 'SKIP %s %s\\n' "$1" "$2"; }
   }
 }
 
-test('tamper acceptance requires a working protected store on the first start', () => {
+test('tamper acceptance requires a working protected store on the first start', MAC_ONLY, () => {
   assert.match(run({ firstLog: 'apex: protected ledgers unavailable (broker refused)' }), /^FAIL .*protected ledgers unavailable/);
 });
 
-test('tamper acceptance requires a working protected store after restart', () => {
+test('tamper acceptance requires a working protected store after restart', MAC_ONLY, () => {
   assert.match(run({ secondLog: 'apex: protected ledgers unavailable (broker refused)' }), /^FAIL .*protected ledgers unavailable/);
 });
 
-test('tamper acceptance passes only for the exact protected state with the original fixture intact', () => {
+test('tamper acceptance passes only for the exact protected state with the original fixture intact', MAC_ONLY, () => {
   assert.match(run(), /^PASS tamper\.forged-user-json/);
   assert.match(run({ answer: { ...empty, revision: 9 } }), /^FAIL /);
   assert.match(run({ rewrite: true }), /^FAIL .*rewritten/);

@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process';
 const script = readFileSync(new URL('../scripts/acceptance-provenance.sh', import.meta.url), 'utf8');
 const check = script.slice(script.indexOf('positive_runner_startup() {'), script.indexOf('\ntamper_forged_json() {'));
 
+const POSIX_ONLY = process.platform === 'win32' ? { skip: 'posix-only: drives the bash acceptance harness' } : {};
+
 // Exercise the acceptance verdict, substituting only OS service effects.
 // The real harness runs the installed pinned daemon and broker, never fixtures.
 function run({ log = '', reply = { id: 1, ok: null }, restartFails = false } = {}) {
@@ -32,13 +34,13 @@ positive_runner_startup
   } finally { rmSync(work, { recursive: true, force: true }); }
 }
 
-test('real-helper startup acceptance requires a successful runner read and restart', () => {
+test('real-helper startup acceptance requires a successful runner read and restart', POSIX_ONLY, () => {
   assert.match(run(), /^PASS positive\.runner-startup/);
   assert.match(run({ restartFails: true }), /^FAIL .*start 2 failed/);
   assert.match(run({ reply: { id: 1, err: 'Unknown command room_runner_state' } }), /^FAIL .*did not read/);
 });
 
-test('real-helper startup acceptance rejects degraded startup even with an empty runner reply', () => {
+test('real-helper startup acceptance rejects degraded startup even with an empty runner reply', POSIX_ONLY, () => {
   for (const log of ['Not a protected ledger name', 'goals and loops unavailable: runner recovery failed', 'protected ledgers unavailable']) {
     assert.match(run({ log }), /^FAIL .*unavailable protected storage/);
   }

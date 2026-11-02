@@ -9,10 +9,11 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 
 /** `APEX_DAEMON_BIN`, else the copy bundled with the app, else the dev build. */
-export function daemonBinary({ packaged, resourcesPath, repo, env }) {
+export function daemonBinary({ packaged, resourcesPath, repo, env, platform = process.platform }) {
   if (env.APEX_DAEMON_BIN) return env.APEX_DAEMON_BIN;
-  if (packaged) return path.join(resourcesPath, 'bin', 'apex-daemon');
-  return path.join(repo, 'target', 'debug', 'apex-daemon');
+  const name = platform === 'win32' ? 'apex-daemon.exe' : 'apex-daemon';
+  if (packaged) return path.join(resourcesPath, 'bin', name);
+  return path.join(repo, 'target', 'debug', name);
 }
 
 const withDataDir = (args, dataDir) => (dataDir ? [...args, '--data-dir', dataDir] : args);
@@ -37,11 +38,22 @@ export const developmentHostDataDir = (dataDir) => `${dataDir}-checkout-host`;
 export const serveArgs = (dataDir, { remote = false } = {}) =>
   withDataDir(['serve', '--exit-on-stdin-close', ...(remote ? ['--remote'] : [])], dataDir);
 export const dataDirArgs = (dataDir) => withDataDir(['data-dir'], dataDir);
+export const endpointArgs = (dataDir) => withDataDir(['endpoint'], dataDir);
 
 /** The folder the daemon would use. */
 export function dataFolder(bin, dataDir) {
   return new Promise((resolve, reject) => {
-    execFile(bin, dataDirArgs(dataDir), (error, stdout, stderr) => {
+    execFile(bin, dataDirArgs(dataDir), { windowsHide: true }, (error, stdout, stderr) => {
+      if (error) reject(new Error(error.code === 'ENOENT' ? `There is no apex-daemon at ${bin}.` : (stderr.trim() || error.message)));
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+/** The connection address (`apex-daemon endpoint`): the UNIX socket path or Windows named pipe. */
+export function daemonEndpoint(bin, dataDir) {
+  return new Promise((resolve, reject) => {
+    execFile(bin, endpointArgs(dataDir), { windowsHide: true }, (error, stdout, stderr) => {
       if (error) reject(new Error(error.code === 'ENOENT' ? `There is no apex-daemon at ${bin}.` : (stderr.trim() || error.message)));
       else resolve(stdout.trim());
     });
@@ -78,11 +90,10 @@ export async function waitForSocket(socket, { wanted = true, timeout = 15_000 } 
  * app. Rejects with the daemon's own words when it won't start.
  */
 export async function localDaemon({ bin, dataDir, remote = false, log = () => {} }) {
-  const folder = await dataFolder(bin, dataDir);
-  const socket = path.join(folder, 'daemon.sock');
+  const socket = await daemonEndpoint(bin, dataDir);
   if (await answers(socket)) return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
 
-  const child = spawn(bin, serveArgs(dataDir, { remote }), { stdio: ['pipe', 'ignore', 'pipe'] });
+  const child = spawn(bin, serveArgs(dataDir, { remote }), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
   let stderr = '';
   let exited = null;
   child.stderr.setEncoding('utf8');

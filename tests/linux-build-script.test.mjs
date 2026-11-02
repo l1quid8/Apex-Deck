@@ -6,9 +6,13 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+// linux-only: scripts/linux-build.sh drives docker. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const LINUX_ONLY = process.platform === 'linux' ? {} : { skip: 'linux-only: scripts/linux-build.sh drives docker' };
+
 const script = fileURLToPath(new URL('../scripts/linux-build.sh', import.meta.url));
 
-test('a worktree build also mounts the main checkout .git so build.rs can read the commit', () => {
+test('a worktree build also mounts the main checkout .git so build.rs can read the commit', LINUX_ONLY, () => {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'deck-linux-build-')));
   try {
     const repo = join(base, 'repo'), linked = join(base, 'linked'), tools = join(base, 'tools'), log = join(base, 'docker-args');

@@ -1,10 +1,11 @@
 import type { AppSession, Pane, Workspace } from "./types";
 import { loadedPanes, paneSection, restoredLayouts } from "./closing.ts";
 import { sync, type LayoutNode } from "./layout.ts";
+import { pathBase, trimTrailingSlash } from "./paths.ts";
 
 export function workspaceHost(workspace: Workspace): string { return workspace.hostId ?? "local"; }
 export function workspaceFamily(workspace: Workspace): string {
-  return workspace.family ?? (workspace.path.replace(/\/+$/, "").split("/").pop() || workspace.name);
+  return workspace.family ?? ((trimTrailingSlash(workspace.path) && pathBase(workspace.path)) || workspace.name);
 }
 export function normalizeWorkspaces(value: unknown): Workspace[] {
   if (!Array.isArray(value)) return [];

@@ -3,6 +3,8 @@
 // for adding, closing and reordering them. No interface code, so it can be
 // tested on its own. Dashboard and Tasks are always there, first and second.
 
+import "./paths.ts";
+
 export type TabKind = "dashboard" | "tasks" | "details" | "artifacts" | "browser" | "assistantbrowser" | "files" | "worktrees" | "phone" | "terminal";
 export interface PanelTab { id: string; kind: TabKind; url?: string; usedAt: number }
 /** `full` fills the work area; it only means anything while `open`. */

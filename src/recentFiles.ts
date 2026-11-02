@@ -2,13 +2,15 @@
 // files on this Mac are kept (dropped or browsed), so any thread can attach
 // them again: a server thread copies them there with the message.
 
+import { pathBase } from "./paths.ts";
+
 export interface RecentFile { path: string; name: string; at: number }
 
 const LIMIT = 30;
 const KEY = "apex-deck.recent-files.v1";
 
 export function rememberFile(list: RecentFile[], path: string, at: number): RecentFile[] {
-  const name = path.replace(/\/+$/, "").split("/").pop() || path;
+  const name = pathBase(path);
   return [{ path, name, at }, ...list.filter((f) => f.path !== path)].slice(0, LIMIT);
 }
 

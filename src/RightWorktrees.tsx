@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend } from "./backend";
+import { pathBase, pathDir, trimTrailingSlash } from "./paths";
 import type { Worktree, WorktreeAdd, WorktreeList } from "./types";
 import { writeClipboard } from "./threadCopy";
 
@@ -82,9 +83,9 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
     finally { setBusy(""); }
   };
   const branchChanged = (branch: string) => {
-    const rootPath = (listing?.root ?? root ?? "").replaceAll("\\", "/");
-    const parent = rootPath.slice(0, Math.max(0, rootPath.lastIndexOf("/")));
-    const name = rootPath.slice(rootPath.lastIndexOf("/") + 1);
+    const rootPath = trimTrailingSlash(listing?.root ?? root ?? "").replaceAll("\\", "/");
+    const parent = pathDir(rootPath);
+    const name = pathBase(rootPath);
     setRequest((current) => ({ ...current, branch, folder: `${parent}/${name}-worktrees/${branch.replaceAll("/", "-")}` }));
   };
   if (!root) return <p className="muted right-panel-empty">This project has no folder.</p>;

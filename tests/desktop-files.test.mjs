@@ -3,15 +3,19 @@ import assert from 'node:assert/strict';
 import { appFile } from '../desktop/files.mjs';
 
 test('app:// serves files inside dist and nothing outside it', () => {
-  assert.equal(appFile('/d/dist', 'app://deck/'), '/d/dist/index.html');
-  assert.equal(appFile('/d/dist', 'app://deck/assets/index-abc.js'), '/d/dist/assets/index-abc.js');
-  assert.equal(appFile('/d/dist', 'app://deck/branding/mark%20one.svg?x=1#y'), '/d/dist/branding/mark one.svg');
+  // Windows resolves '/d/dist' onto the current drive and joins with '\', so the
+  // expected paths go through the same path module instead of being spelled out.
+  const root = '/d/dist';
+  const inRoot = (rel) => path.resolve(root, rel);
+  assert.equal(appFile(root, 'app://deck/'), inRoot('./index.html'));
+  assert.equal(appFile(root, 'app://deck/assets/index-abc.js'), inRoot('./assets/index-abc.js'));
+  assert.equal(appFile(root, 'app://deck/branding/mark%20one.svg?x=1#y'), inRoot('./branding/mark one.svg'));
   // The URL parser folds encoded dot segments, which keeps this one inside.
-  assert.equal(appFile('/d/dist', 'app://deck/assets/%2E%2E/%2E%2E/secret'), '/d/dist/secret');
-  assert.equal(appFile('/d/dist', 'app://deck/..%2Fsecret'), null);
-  assert.equal(appFile('/d/dist', 'app://deck/a%00b'), null);
-  assert.equal(appFile('/d/dist', 'app://other/index.html'), null);
-  assert.equal(appFile('/d/dist', 'app://deck/%E0%A4%A'), null);
+  assert.equal(appFile(root, 'app://deck/assets/%2E%2E/%2E%2E/secret'), inRoot('./secret'));
+  assert.equal(appFile(root, 'app://deck/..%2Fsecret'), null);
+  assert.equal(appFile(root, 'app://deck/a%00b'), null);
+  assert.equal(appFile(root, 'app://other/index.html'), null);
+  assert.equal(appFile(root, 'app://deck/%E0%A4%A'), null);
 });
 
 import fs from 'node:fs';
@@ -45,8 +49,11 @@ test('writeNew numbers the name before its extension and never overwrites', () =
 });
 
 test('startup folders are the existing folders named after the app', () => {
-  const isDir = (p) => ['/w/one', '/w/two', '/repo'].includes(p);
-  assert.deepEqual(startupFolders(['/bin/electron', '/repo', '/w/one', '--inspect', '/w/file.txt', '/w/two'], false, isDir), ['/w/one', '/w/two']);
-  assert.deepEqual(startupFolders(['/Applications/Apex Deck.app/Contents/MacOS/Apex Deck', '/w/one'], true, isDir), ['/w/one']);
+  // startupFolders resolves each argument, so the folder check and the expected
+  // list both have to see resolved paths on every platform.
+  const resolved = (p) => path.resolve(p);
+  const isDir = (p) => ['/w/one', '/w/two', '/repo'].map(resolved).includes(p);
+  assert.deepEqual(startupFolders(['/bin/electron', '/repo', '/w/one', '--inspect', '/w/file.txt', '/w/two'], false, isDir), ['/w/one', '/w/two'].map(resolved));
+  assert.deepEqual(startupFolders(['/Applications/Apex Deck.app/Contents/MacOS/Apex Deck', '/w/one'], true, isDir), ['/w/one'].map(resolved));
   assert.deepEqual(startupFolders(['/Applications/Apex Deck.app/Contents/MacOS/Apex Deck', '-psn_0_123'], true, isDir), []);
 });

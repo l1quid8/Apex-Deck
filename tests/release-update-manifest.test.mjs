@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { assetName, buildManifest, publishSteps, teamOf } from '../scripts/release-update-manifest.mjs';
 import { assetUrl, packageFor, parseManifest } from '../desktop/updater.mjs';
 
+// The printed publish steps are shell commands for the Mac that builds the release.
+const POSIX_ONLY = process.platform === 'win32' ? { skip: 'posix-only: shell publish steps with / paths' } : {};
+
 const facts = { version: '0.9.1', notes: 'Restart to update.', minimumSystemVersion: '13.0', archs: ['arm64'], name: assetName('0.9.1', 'arm64'), size: 1234, sha256: 'a'.repeat(64) };
 
 test('the feed a release writes is exactly what installed copies accept', () => {
@@ -21,7 +24,7 @@ test('an ad hoc build is never published as an update', () => {
   assert.throws(() => teamOf('Signature=adhoc\nTeamIdentifier=not set\n'), /ad hoc/);
 });
 
-test('publishing uploads to a draft and checks it before any Deck can see the feed', () => {
+test('publishing uploads to a draft and checks it before any Deck can see the feed', POSIX_ONLY, () => {
   const steps = publishSteps('0.9.1', '/r/v0.9.1-assets', 'Apex-Deck-0.9.1-arm64.pkg');
   assert.match(steps[0], /--draft/);
   assert.match(steps[1], /Apex-Deck-0\.9\.1-arm64\.pkg' '\/r\/v0\.9\.1-assets\/apex-deck-update\.json'/);

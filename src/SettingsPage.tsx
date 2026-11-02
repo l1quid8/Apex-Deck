@@ -7,6 +7,7 @@ import { CATALOG_SECTIONS, CATALOG_ENTRIES, groupSections, searchSettings as cat
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
+import { isWindows, showInFileManagerLabel } from "./paths";
 import { providerEnabled } from "./providers";
 import { CALL_VOICES, DEFAULT_META_MODEL, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, META_MODELS, REALTIME_MODELS, REALTIME_VOICES, defaultVoiceOf, readVoiceSettings, realtimeVoiceLabel } from "./voice/settings";
 import { VoiceSampleButton } from "./voice/VoiceSampleButton";
@@ -142,6 +143,8 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
       ids.delete('phones' as any);
     }
     if (!gatewayOwner(backend)) ids.delete('gateway');
+    // Calls (voice) aren't available on Windows yet.
+    if (isWindows) ids.delete('calls');
     return ids;
   }, [backend]);
 
@@ -390,7 +393,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
             {resolvedSection==='computer' && <ComputerSection backend={backend} highlightId={highlightId} />}
             {resolvedSection==='gateway' && <GatewaySection backend={backend} highlightId={highlightId} />}
             {resolvedSection==='models' && <ProvidersSection settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} highlightId={highlightId} />}
-            {resolvedSection==='calls' && <CallsSection settings={settings} onChange={onChange} backend={backend} highlightId={highlightId} />}
+            {resolvedSection==='calls' && visibleSections.has('calls') && <CallsSection settings={settings} onChange={onChange} backend={backend} highlightId={highlightId} />}
             {resolvedSection==='threads' && <ThreadsSection settings={settings} onChange={onChange} highlightId={highlightId} />}
             {resolvedSection==='terminal' && <TerminalSection settings={settings} onChange={onChange} highlightId={highlightId} />}
             {resolvedSection==='extensions' && <ExtensionsSection backend={backend} highlightId={highlightId} />}
@@ -429,7 +432,7 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
     </div>
     <div className="section-title">Looking for something else?</div>
     <div className="settings-card">
-      <Row label="Voice & call settings" note="All voice choices live in one place."><button className="link-btn" onClick={()=>onSection('calls')}>Open Calls</button></Row>
+      {!isWindows && <Row label="Voice & call settings" note="All voice choices live in one place."><button className="link-btn" onClick={()=>onSection('calls')}>Open Calls</button></Row>}
       <Row label="Saved work & storage" note="Locations, older records and maintenance."><button className="link-btn" onClick={()=>onSection('data')}>Open Data & storage</button></Row>
       <Row label="Appearance mode" note="Light, Dark or follow the system, plus theme and presets."><button className="link-btn" onClick={()=>onSection('appearance')}>Open Appearance</button></Row>
     </div>
@@ -483,7 +486,7 @@ function DataSection({ backend }: { backend: Backend; settings: AppSettings; onC
     <div className="settings-card" id="storage-location">
       <Row id="storage" label="Saved work location" note="Your chats, projects and local settings.">
         <span className="mono small" style={{maxWidth:380,overflow:'hidden',textOverflow:'ellipsis'}}>{folder || "…"}</span>
-        {!backend.demo && <button disabled={!folder} onClick={()=>backend.openTarget(folder,null,false).catch(()=>{})}>Show in Finder</button>}
+        {!backend.demo && <button disabled={!folder} onClick={()=>backend.openTarget(folder,null,false).catch(()=>{})}>{showInFileManagerLabel()}</button>}
       </Row>
       <Row id="older-records" label="Older records / Review import" note="Tasks, conversations, group chats and assistants saved before this machine kept them safely. Nothing changes until you import, and the originals stay put.">
         <button onClick={()=>setImporting(true)}>Review…</button>

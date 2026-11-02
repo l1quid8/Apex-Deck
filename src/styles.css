@@ -149,6 +149,9 @@ textarea {
   --tb-scale: 0.75;
   -webkit-app-region: drag;
 }
+html[data-platform="windows"] .titlebar {
+  padding-left: 16px;
+}
 .titlebar button,
 .titlebar a,
 .titlebar input,

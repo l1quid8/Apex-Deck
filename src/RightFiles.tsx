@@ -6,6 +6,7 @@ import { writeClipboard } from "./threadCopy";
 import { FilePreviewPanel } from "./FilePreview";
 import { createPortal } from "react-dom";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { pathBase, pathDir, pathParts, revealInFileManagerLabel } from "./paths";
 import { setUnsavedEdit } from "./unsavedEdits";
 
 const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`;
@@ -55,7 +56,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     if (!changedOnly) return;
     for (const path of marks.keys()) {
       if (!path.startsWith(`${root?.replace(/\/$/, "")}/`)) continue;
-      const rel = path.slice(root!.replace(/\/$/, "").length + 1).split("/");
+      const rel = pathParts(path.slice(root!.replace(/\/$/, "").length + 1));
       let parent = root!;
       for (const part of rel.slice(0, -1)) { parent = join(parent, part); if (tree.entries.get(parent)?.state !== "ready") load(parent); }
     }
@@ -88,7 +89,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     const observer = new ResizeObserver(([entry]) => setWide(entry.contentRect.width >= 720));
     observer.observe(el); return () => observer.disconnect();
   }, [root]);
-  useEffect(() => { onDirtyChange?.(previewDirty && previewPath ? previewPath.split("/").pop() ?? previewPath : null); }, [previewDirty, previewPath]);
+  useEffect(() => { onDirtyChange?.(previewDirty && previewPath ? pathBase(previewPath) : null); }, [previewDirty, previewPath]);
   useEffect(() => { if (context) { const close = () => setContext(null); window.addEventListener("click", close); return () => window.removeEventListener("click", close); } }, [context]);
   if (!root) return <p className="muted right-panel-empty">This project has no folder.</p>;
   const openFolder = (path: string) => { const wasOpen = tree.expanded.has(path); setTree((current) => toggle(current, path)); if (!wasOpen) load(path); };
@@ -98,7 +99,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   /** Runs `action` now, or after the user agrees to drop unsaved edits in the open preview. */
   const confirmLeave = (action: () => void) => {
     if (!previewDirty || !previewPath) { action(); return; }
-    setLeaveQuestion({ title: `Discard unsaved changes to ${previewPath.split("/").pop()}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: () => { setPreviewDirty(false); action(); } });
+    setLeaveQuestion({ title: `Discard unsaved changes to ${pathBase(previewPath)}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: () => { setPreviewDirty(false); action(); } });
   };
   const openPreviewNow = (path: string, changes = false, line: number | null = null) => { setPreviewPath(path); setPreviewView(changes ? "changes" : "file"); setSearchHighlightLine(line); };
   const openPreview = (path: string, changes = false, line: number | null = null) => {
@@ -106,7 +107,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   };
   const touchesPreview = (path: string) => !!previewPath && (previewPath === path || previewPath.startsWith(`${path}/`));
   const beginOperation = (kind: NonNullable<FileOperation>["kind"], path = root ?? "") => {
-    const name = kind === "rename" ? path.split(/[\\/]/).pop() ?? "" : "";
+    const name = kind === "rename" ? pathBase(path) : "";
     setOperation({ kind, path: kind === "rename" ? path : path || root || "", name }); setOperationError(""); setContext(null);
   };
   const submitOperation = async (event: React.FormEvent) => {
@@ -123,19 +124,19 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
       } else {
         const path = await backend.fileRename(root ?? "", operation.path, operation.name);
         if (previewPath === operation.path) { setPreviewDirty(false); setPreviewPath(path); }
-        const parent = operation.path.slice(0, operation.path.lastIndexOf("/")) || root!; load(parent);
+        const parent = pathDir(operation.path) || root!; load(parent);
       }
       setOperation(null); setOperationError("");
     } catch (error) { setOperationError(String(error)); }
   };
   const duplicateFile = async (path: string) => {
     if (!backend) return;
-    try { const copiedPath = await backend.fileDuplicate(root ?? "", path); const parent = copiedPath.slice(0, copiedPath.lastIndexOf("/")) || root!; load(parent); setCopied("File duplicated"); }
+    try { const copiedPath = await backend.fileDuplicate(root ?? "", path); const parent = pathDir(copiedPath) || root!; load(parent); setCopied("File duplicated"); }
     catch (error) { setOperationError(String(error)); }
   };
   const trashPath = async (path: string) => {
     if (!backend || !window.confirm(`Move ${relative(root, path)} to Trash?${previewDirty && touchesPreview(path) ? " Unsaved changes in the open file will be lost." : ""}`)) return;
-    try { await backend.fileTrash(root ?? "", path); if (touchesPreview(path)) { setPreviewDirty(false); setPreviewPath(null); } const parent = path.slice(0, path.lastIndexOf("/")) || root!; load(parent); setCopied("Moved to Trash"); }
+    try { await backend.fileTrash(root ?? "", path); if (touchesPreview(path)) { setPreviewDirty(false); setPreviewPath(null); } const parent = pathDir(path) || root!; load(parent); setCopied("Moved to Trash"); }
     catch (error) { setOperationError(String(error)); }
   };
   const showFind = (mode: FindMode = "name", folder: string | null = null) => { setFindOpen(true); setFindMode(mode); setSearchFolder(folder); setFindQuery(""); setNameResults(null); setTextResults(null); setSearchError(""); requestAnimationFrame(() => findInput.current?.focus()); };
@@ -153,7 +154,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   const contextActions = context ? [
     { label: "Open", action: () => openPreview(context.row.path), show: !context.row.folder },
     { label: "Open in default app", action: () => void backend?.openTarget(context.row.path, root, false), show: local },
-    { label: "Reveal in Finder", action: () => void backend?.openTarget(context.row.path, root, true), show: local },
+    { label: revealInFileManagerLabel(), action: () => void backend?.openTarget(context.row.path, root, true), show: local },
     { label: "Copy relative path", action: () => void copy(relative(root, context.row.path), "Path"), show: true },
     { label: "Copy full path", action: () => void copy(context.row.path, "Path"), show: true },
     { label: "Copy file name", action: () => void copy(context.row.name, "Name"), show: true },
@@ -161,8 +162,8 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     { label: "Show changes", action: () => openPreview(context.row.path, true), show: !!context.row.changed },
     { label: "Collapse inside", action: () => setTree((current) => ({ ...current, expanded: new Set([...current.expanded].filter((path) => !path.startsWith(`${context.row.path}/`))) })), show: context.row.folder },
     { label: "Find in folder…", action: () => showFind("text", context.row.path), show: context.row.folder },
-    { label: "New file…", action: () => beginOperation("create-file", context.row.folder ? context.row.path : context.row.path.slice(0, context.row.path.lastIndexOf("/")) || root!), show: true },
-    { label: "New folder…", action: () => beginOperation("create-folder", context.row.folder ? context.row.path : context.row.path.slice(0, context.row.path.lastIndexOf("/")) || root!), show: true },
+    { label: "New file…", action: () => beginOperation("create-file", context.row.folder ? context.row.path : pathDir(context.row.path) || root!), show: true },
+    { label: "New folder…", action: () => beginOperation("create-folder", context.row.folder ? context.row.path : pathDir(context.row.path) || root!), show: true },
     { label: "Rename…", action: () => beginOperation("rename", context.row.path), show: !context.row.truncated && context.row.path !== root },
     { label: "Duplicate", action: () => void duplicateFile(context.row.path), show: !context.row.folder },
     { label: "Move to Trash…", action: () => void trashPath(context.row.path), show: context.row.path !== root },
@@ -209,7 +210,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     <div className="right-files-body"><div className="right-files-browser" style={wide ? (previewPath ? { width: treeWidth } : undefined) : previewPath ? { height: `calc(100% - ${previewHeight + 9}px)`, flex: "0 0 auto" } : { flex: "1 1 auto" }}>
       {marks.size > 0 && <section className="right-files-changes"><button className="right-files-section-toggle" aria-expanded={changesOpen} onClick={() => setChangesOpen((value) => !value)}>Changed in this thread <span>{marks.size}</span><span>{changesOpen ? "▾" : "▸"}</span></button>{changesOpen && <ul>{(diff?.files ?? []).map((file) => { const path = file.path.startsWith("/") ? file.path : join(root, file.path); const mark = marks.get(path)!; return <li key={path}><button className={`right-files-change mark-${mark}`} onClick={() => openPreview(path, true)}><span>{mark}</span><span className={mark === "D" ? "right-files-deleted" : ""}>{relative(root, path)}</span><small>+{file.added} −{file.removed}</small></button></li>; })}</ul>}</section>}
       {findOpen ? <div className="right-files-find-results" aria-live="polite">
-        {findMode === "name" && nameResults?.map((path) => <button key={path} className="right-files-find-name" onClick={() => revealSearchResult(path)}><strong>{path.split("/").pop()}</strong><span className="muted">{path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "Project root"}</span></button>)}
+        {findMode === "name" && nameResults?.map((path) => <button key={path} className="right-files-find-name" onClick={() => revealSearchResult(path)}><strong>{pathBase(path)}</strong><span className="muted">{pathDir(path) || "Project root"}</span></button>)}
         {findMode === "name" && nameResults?.length === 0 && !searchLoading && !searchError && <p className="muted right-files-search-status">No matching files.</p>}
         {findMode === "text" && textResults && <TextSearchResults result={textResults} query={findQuery} onOpen={(path, line) => revealSearchResult(path, line)} />}
       </div> : <ul className="right-files" role="tree" aria-label="Files" onKeyDown={activateKey}>{rows.map(fileRow)}</ul>}
@@ -243,7 +244,7 @@ export function RightFilesTab({ root, backend, threadId, visible, onOpen, local 
     return () => { live = false; };
   }, [visible, showThread, showBackend]);
   if (!shown.backend) return <p className="muted right-panel-empty">This project machine is unavailable.</p>;
-  const folder = (path: string | null) => path?.split("/").filter(Boolean).pop() ?? "the old project";
+  const folder = (path: string | null) => (path ? pathParts(path).at(-1) : undefined) ?? "the old project";
   const switchNow = () => setSwitchQuestion({ title: `Discard unsaved changes to ${dirtyFile}?`, body: "Your edits to this file haven't been saved.", action: "Discard and switch", onConfirm: () => setDirtyFile(null) });
   return <>
     {held && <div className="right-files-held" role="status"><span>Still showing {folder(shown.root)} because {dirtyFile} has unsaved edits.</span><button onClick={switchNow}>Switch project</button></div>}

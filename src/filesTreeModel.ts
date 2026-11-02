@@ -1,3 +1,4 @@
+import { pathBase, pathParts } from "./paths.ts";
 import type { FolderListing, ThreadDiff } from "./types";
 
 export type ChangeMark = "M" | "A" | "D";
@@ -21,8 +22,8 @@ export function visibleRows(tree: FilesTree, opts: { changes: Map<string, Change
   const insideChanged = (path: string) => changedPaths.some((p) => p.startsWith(`${path.replace(/\/$/, "")}/`));
   const visit = (dir: string, depth: number) => {
     const entry = tree.entries.get(dir);
-    if (!entry || entry.state === "loading") { rows.push({ path: dir, name: dir.split("/").pop() || dir, depth, folder: true, changed: null, hasChangedInside: insideChanged(dir), loading: true }); return; }
-    if (entry.state === "error") { rows.push({ path: dir, name: dir.split("/").pop() || dir, depth, folder: true, changed: null, hasChangedInside: false, error: entry.message }); return; }
+    if (!entry || entry.state === "loading") { rows.push({ path: dir, name: pathBase(dir), depth, folder: true, changed: null, hasChangedInside: insideChanged(dir), loading: true }); return; }
+    if (entry.state === "error") { rows.push({ path: dir, name: pathBase(dir), depth, folder: true, changed: null, hasChangedInside: false, error: entry.message }); return; }
     const listing = entry.listing;
     const names = [...listing.folders.map((name) => ({ name, folder: true })), ...listing.files.map((name) => ({ name, folder: false }))];
     for (const item of names) {
@@ -36,7 +37,7 @@ export function visibleRows(tree: FilesTree, opts: { changes: Map<string, Change
     if (listing.truncated) rows.push({ path: dir, name: "More files not shown.", depth, folder: false, changed: null, hasChangedInside: false, truncated: true });
   };
   visit(tree.root, 0);
-  if (opts.changedOnly) for (const [path, mark] of opts.changes) if (mark === "D" && !tree.entries.has(path)) rows.push({ path, name: relative(tree.root, path).split("/").pop() || path, depth: 0, folder: false, changed: mark, hasChangedInside: false });
+  if (opts.changedOnly) for (const [path, mark] of opts.changes) if (mark === "D" && !tree.entries.has(path)) rows.push({ path, name: pathBase(relative(tree.root, path)) || path, depth: 0, folder: false, changed: mark, hasChangedInside: false });
   return rows;
 }
 export function toggle(tree: FilesTree, path: string): FilesTree {
@@ -48,7 +49,7 @@ export function collapseAll(tree: FilesTree): FilesTree { return { ...tree, expa
 export function revealPath(tree: FilesTree, path: string): { tree: FilesTree; needs: string[] } {
   const normalized = path.replace(/\\/g, "/");
   const rel = relative(tree.root, normalized);
-  const parts = rel.split("/").filter(Boolean), expanded = new Set(tree.expanded), entries = new Map(tree.entries), needs: string[] = [];
+  const parts = pathParts(rel), expanded = new Set(tree.expanded), entries = new Map(tree.entries), needs: string[] = [];
   let cursor = tree.root;
   for (const part of parts.slice(0, -1)) { cursor = join(cursor, part); expanded.add(cursor); const entry = entries.get(cursor); if (!entry) { entries.set(cursor, { state: "loading" }); needs.push(cursor); } else if (entry.state === "loading") needs.push(cursor); }
   return { tree: { ...tree, expanded, entries, selected: normalized }, needs };
