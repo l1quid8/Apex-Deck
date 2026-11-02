@@ -1704,6 +1704,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     registerVoiceThread(scopeKey({hostId:voiceHost,roomId:pane.id}),{
       candidates:voiceCandidates,settings:voiceConfig,save:s=>voiceLive.current.onVoiceSettings?.(s),focus:()=>voiceLive.current.onVoiceFocus?.(pane.id),
       realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args as any),
+      metaSession: (args) => backend.call<{ token: string; model: string }>("voice_meta_session", args as any),
       bridge:id=>{
         let bridge=voiceBridges.current.get(id);if(bridge)return bridge;
         bridge=createThreadVoiceBridge({backend,scope:{hostId:voiceHost,roomId:pane.id,participantId:id},

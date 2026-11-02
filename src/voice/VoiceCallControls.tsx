@@ -253,12 +253,14 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
   };
   const look = readCallLook(settings.look);
   // The running call's engine, not the saved one: Settings can change mid-call.
-  const live = callEngine() === "realtime";
-  const engineLabel = CALL_ENGINES.find((e) => e.id === (live ? "realtime" : "local"))?.label;
+  const liveEngine = callEngine();
+  const live = liveEngine === "realtime";
+  const liveIsMeta = liveEngine === "meta";
+  const engineLabel = CALL_ENGINES.find((e) => e.id === liveEngine)?.label;
   const here = candidates.filter((c) => c.hostId === scope.hostId && c.roomId === scope.roomId);
   return (
     <>
-      <div className="voice-pop-head">Call settings <span className="voice-engine-tag" data-engine={live ? "realtime" : "local"}>{engineLabel}</span></div>
+      <div className="voice-pop-head">Call settings <span className="voice-engine-tag" data-engine={liveEngine}>{engineLabel}</span></div>
       {here.length > 1 && (
         <div className="voice-set-row">
           <span>Talking to</span>
@@ -305,6 +307,9 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
             </button>
           </span>
         </label>
+      )}
+      {liveIsMeta && (
+        <p className="voice-pop-note">Meta Voice Transcribe · {state.semantic ? "Smart Turn is on" : "endpointing"} · Kokoro TTS</p>
       )}
       {!live && (
         <label className="voice-set-row col">

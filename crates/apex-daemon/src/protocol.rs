@@ -500,6 +500,34 @@ where
                             }
                             continue;
                         }
+                        let maybe_meta = match &request {
+                            crate::voice::session::VoiceRequest::VoiceMetaSession { model, room: _, participant: _ } => Some(model.clone()),
+                            _ => None,
+                        };
+                        if let Some(model) = maybe_meta {
+                            let unknown = matches!(&request, crate::voice::session::VoiceRequest::VoiceMetaSession { room, .. }
+                                if room.strip_prefix("assistant:").is_some_and(|assistant| daemon.host.personal_get(assistant).is_err()));
+                            let api_key = crate::voice::meta::lookup_key();
+                            let result = match api_key {
+                                _ if unknown => Err("This assistant isn't on this machine.".to_string()),
+                                None => Err("Missing Meta API key. Add META_API_KEY in Settings → Providers or environment.".to_string()),
+                                Some(key) => {
+                                    let args = crate::voice::meta::MintArgs { model };
+                                    match crate::voice::meta::mint(&key, args).await {
+                                        Ok(session) => Ok(serde_json::to_value(session).unwrap()),
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            };
+                            let frame = match result {
+                                Ok(v) => json!({"id":id,"ok":v}).to_string(),
+                                Err(e) => refusal(json!(id), e),
+                            };
+                            if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                                return stop.into();
+                            }
+                            continue;
+                        }
                         let result = match request {
                             VoiceServerStatus {} => Ok(serde_json::to_value(daemon.voice.status()).unwrap()),
                             VoiceServerInstall {} => daemon.voice.install().map(|_| Value::Null),
@@ -540,6 +568,7 @@ where
                                 continue;
                             }
                             crate::voice::session::VoiceRequest::VoiceRealtimeSession { .. } => unreachable!("realtime handled above"),
+                            crate::voice::session::VoiceRequest::VoiceMetaSession { .. } => unreachable!("meta handled above"),
                         };
                         let frame = match result {
                             Ok(v) => json!({"id":id,"ok":v}).to_string(),
@@ -905,7 +934,7 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     }
     if value["cmd"]
         .as_str()
-        .is_some_and(|c| c.starts_with("voice_server_") || c.starts_with("voice_realtime_"))
+        .is_some_and(|c| c.starts_with("voice_server_") || c.starts_with("voice_realtime_") || c.starts_with("voice_meta_"))
     {
         return serde_json::from_value(value)
             .map(|r| (id, Request::Voice(r)))
@@ -2224,6 +2253,12 @@ mod tests {
         let (id2, req2) = read_request(frame2).expect("should parse");
         assert_eq!(id2, 2);
         assert!(matches!(req2, Request::Voice(crate::voice::session::VoiceRequest::VoiceServerStatus { .. })));
+
+        // Meta session must also route to VoiceRequest::VoiceMetaSession
+        let frame3 = r#"{"id":3,"cmd":"voice_meta_session","args":{"room":"r","model":"muse-voice-transcribe-1.0"}}"#;
+        let (id3, req3) = read_request(frame3).expect("should parse");
+        assert_eq!(id3, 3);
+        assert!(matches!(req3, Request::Voice(crate::voice::session::VoiceRequest::VoiceMetaSession { .. })), "expected VoiceMetaSession");
     }
 
     #[test]

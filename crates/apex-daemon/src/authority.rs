@@ -300,8 +300,8 @@ pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
         VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
         VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
         // An assistant is no room: its calls need what its other commands need.
-        VoiceRealtimeSession { room, .. } if room.starts_with("assistant:") => full(Scope::Global),
-        VoiceServerWarm { room } | VoiceServerOpen { room } | VoiceRealtimeSession { room, .. } => chat(thread(room)),
+        VoiceRealtimeSession { room, .. } | VoiceMetaSession { room, .. } if room.starts_with("assistant:") => full(Scope::Global),
+        VoiceServerWarm { room } | VoiceServerOpen { room } | VoiceRealtimeSession { room, .. } | VoiceMetaSession { room, .. } => chat(thread(room)),
     }
 }
 

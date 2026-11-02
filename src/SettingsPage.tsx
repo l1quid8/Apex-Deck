@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
-import { CALL_VOICES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, defaultVoiceOf, readVoiceSettings, realtimeVoiceLabel } from "./voice/settings";
+import { CALL_VOICES, DEFAULT_META_MODEL, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, META_MODELS, REALTIME_MODELS, REALTIME_VOICES, defaultVoiceOf, readVoiceSettings, realtimeVoiceLabel } from "./voice/settings";
 import { VoiceSampleButton } from "./voice/VoiceSampleButton";
 import { CALL_LOOKS, voiceLabel } from "./voice/callView";
 import { FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
@@ -662,29 +662,36 @@ function TerminalSection({ settings, onChange, highlightId }: { settings: AppSet
 function CallsSection({ settings, onChange, backend, highlightId }: { settings: AppSettings; onChange: (s:AppSettings)=>void; backend: Backend; highlightId: string | null }) {
   const voice=readVoiceSettings(settings.voice);
   const [keyState,setKeyState]=useState<KeyState|null>(null);
+  const [metaKeyState,setMetaKeyState]=useState<KeyState|null>(null);
   const [draft,setDraft]=useState("");
+  const [draftKey,setDraftKey]=useState<"OPENAI_API_KEY"|"META_API_KEY">("OPENAI_API_KEY");
   const [editing,setEditing]=useState(false);
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
-  const refreshKey=useCallback(()=>{ backend.apiKeyStatus(["OPENAI_API_KEY"]).then(list=>setKeyState(list[0]), ()=>setKeyState(null)); },[backend]);
-  useEffect(()=>{ refreshKey(); },[refreshKey]);
+  const refreshKeys=useCallback(()=>{
+    backend.apiKeyStatus(["OPENAI_API_KEY"]).then(list=>setKeyState(list[0]), ()=>setKeyState(null));
+    backend.apiKeyStatus(["META_API_KEY"]).then(list=>setMetaKeyState(list[0]), ()=>setMetaKeyState(null));
+  },[backend]);
+  useEffect(()=>{ refreshKeys(); },[refreshKeys]);
   const canRealtime=keyState==="saved" || keyState==="environment";
-  const setEngine=(engine:"local"|"realtime")=>onChange({ ...settings, voice: { ...voice, engine } });
+  const canMeta=metaKeyState==="saved" || metaKeyState==="environment";
+  const setEngine=(engine:"local"|"realtime"|"meta")=>onChange({ ...settings, voice: { ...voice, engine } });
   const setRealtimeVoice=(v:string)=>onChange({ ...settings, voice: { ...voice, realtimeVoice: v } });
   const saveKey=async()=>{
     const v=draft.trim(); if(!v||busy) return;
     setBusy(true); setErr("");
-    try{ await backend.apiKeySave("OPENAI_API_KEY",v); setDraft(""); setEditing(false); refreshKey(); } catch(e){ setErr(e instanceof Error ? e.message : String(e)); } finally{ setBusy(false); }
+    try{ await backend.apiKeySave(draftKey,v); setDraft(""); setEditing(false); refreshKeys(); } catch(e){ setErr(e instanceof Error ? e.message : String(e)); } finally{ setBusy(false); }
   };
-  const removeKey=async()=>{
+  const removeKey=async(keyName:"OPENAI_API_KEY"|"META_API_KEY")=>{
     setBusy(true); setErr("");
-    try{ await backend.apiKeyRemove("OPENAI_API_KEY"); refreshKey(); } catch(e){ setErr(e instanceof Error ? e.message : String(e)); } finally{ setBusy(false); }
+    try{ await backend.apiKeyRemove(keyName); refreshKeys(); } catch(e){ setErr(e instanceof Error ? e.message : String(e)); } finally{ setBusy(false); }
   };
   return <div className="settings-card">
-    <Row id="engine" label="Call engine" note={canRealtime ? "Local uses Whisper+Kokoro on this Mac. GPT-Live uses OpenAI Realtime with delegation to Deck agents in the active thread." : "Add an OpenAI API key to enable GPT-Live."} highlight={highlightId==='engine'}>
+    <Row id="engine" label="Call engine" note={"Local uses Whisper+Kokoro on this Mac. GPT-Live uses OpenAI Realtime. Meta Voice uses Meta transcription + Kokoro TTS."} highlight={highlightId==='engine'}>
       <span className="voice-seg" role="group" aria-label="Call engine">
-        <button type="button" aria-pressed={voice.engine!=="realtime"} onClick={()=>setEngine("local")}>Local</button>
+        <button type="button" aria-pressed={voice.engine==="local"} onClick={()=>setEngine("local")}>Local</button>
         <button type="button" aria-pressed={voice.engine==="realtime"} disabled={!canRealtime} title={!canRealtime ? "Add an OpenAI key first" : undefined} onClick={()=>setEngine("realtime")}>GPT-Live</button>
+        <button type="button" aria-pressed={voice.engine==="meta"} disabled={!canMeta} title={!canMeta ? "Add a Meta API key first" : undefined} onClick={()=>setEngine("meta")}>Meta Voice</button>
       </span>
     </Row>
     {voice.engine==="realtime" && <Row id="live-voice" label="GPT-Live voice" note="Voice GPT-Live speaks with (OpenAI realtime voices)." highlight={highlightId==='live-voice'}>
@@ -697,14 +704,25 @@ function CallsSection({ settings, onChange, backend, highlightId }: { settings: 
         {REALTIME_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
       </select>
     </Row>}
-    <Row id="api-key-call" label="OpenAI API key" note={err || (keyState ? KEY_STATE_LABEL[keyState] + (keyState==="environment" ? " – remove from shell to replace here." : "") + (keyState!=="missing" ? " Key never shown; only a short-lived token reaches the call." : " Needed for GPT-Live. Realtime requires API key auth; ChatGPT login alone is not enough.") : "Checking…")} highlight={highlightId==='api-key' || highlightId==='key-1'}>
+    {voice.engine==="meta" && <Row label="Meta model" note="Meta Voice Transcribe model. Applies next call.">
+      <select aria-label="Meta model" value={voice.metaModel ?? DEFAULT_META_MODEL} onChange={e=>onChange({ ...settings, voice: { ...voice, metaModel: e.target.value } })}>
+        {META_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+      </select>
+    </Row>}
+    <Row id="api-key-call" label="OpenAI API key" note={err && draftKey==="OPENAI_API_KEY" ? err : (keyState ? KEY_STATE_LABEL[keyState] + (keyState==="environment" ? " – remove from shell to replace here." : "") + (keyState!=="missing" ? " Key never shown; only a short-lived token reaches the call." : " Needed for GPT-Live.") : "Checking…")} highlight={highlightId==='api-key' || highlightId==='key-1'}>
       {!editing && <>
-        <button className="ghost" disabled={busy} onClick={()=>{ setErr(""); setEditing(true); }}>{keyState==="saved" || keyState==="environment" ? "Replace" : "Add key"}</button>
-        {keyState==="saved" && <button className="ghost" disabled={busy} onClick={removeKey}>Remove</button>}
+        <button className="ghost" disabled={busy} onClick={()=>{ setErr(""); setDraftKey("OPENAI_API_KEY"); setEditing(true); }}>{keyState==="saved" || keyState==="environment" ? "Replace" : "Add key"}</button>
+        {keyState==="saved" && <button className="ghost" disabled={busy} onClick={()=>removeKey("OPENAI_API_KEY")}>Remove</button>}
       </>}
     </Row>
-    {editing && <Row label="New key" note="Enter saves. Deck never shows it again.">
-      <input type="password" aria-label="OPENAI_API_KEY value" autoComplete="off" spellCheck={false} disabled={busy} value={draft} autoFocus onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); saveKey(); } else if(e.key==="Escape"){ setDraft(""); setEditing(false); } }} />
+    <Row id="api-key-meta" label="Meta API key" note={err && draftKey==="META_API_KEY" ? err : (metaKeyState ? KEY_STATE_LABEL[metaKeyState] + (metaKeyState==="environment" ? " – remove from shell to replace here." : "") + (metaKeyState!=="missing" ? " Key for Meta Voice Transcribe. Stored in daemon." : " Needed for Meta Voice. Get at dev.meta.ai.") : "Checking…")} highlight={highlightId==='api-key-meta'}>
+      {!editing && <>
+        <button className="ghost" disabled={busy} onClick={()=>{ setErr(""); setDraftKey("META_API_KEY"); setEditing(true); }}>{metaKeyState==="saved" || metaKeyState==="environment" ? "Replace" : "Add key"}</button>
+        {metaKeyState==="saved" && <button className="ghost" disabled={busy} onClick={()=>removeKey("META_API_KEY")}>Remove</button>}
+      </>}
+    </Row>
+    {editing && <Row label={draftKey==="META_API_KEY" ? "New Meta key" : "New OpenAI key"} note="Enter saves. Deck never shows it again.">
+      <input type="password" aria-label={`${draftKey} value`} autoComplete="off" spellCheck={false} disabled={busy} value={draft} autoFocus onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); saveKey(); } else if(e.key==="Escape"){ setDraft(""); setEditing(false); } }} />
       <button disabled={!draft.trim()||busy} onClick={saveKey}>{busy ? "Saving…" : "Save"}</button>
       <button className="ghost" disabled={busy} onClick={()=>{ setDraft(""); setEditing(false); }}>Cancel</button>
     </Row>}

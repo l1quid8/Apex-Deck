@@ -14,12 +14,20 @@ export const readRealtimeModel = (raw: unknown): string | undefined =>
   REALTIME_MODELS.some((m) => m.id === raw) ? (raw as string) : undefined;
 /** "verse" → "Verse": GPT-Live voices have no accent tag like the local ones. */
 export const realtimeVoiceLabel = (id: string) => id ? id[0].toUpperCase() + id.slice(1) : id;
+export const META_MODELS = [
+  { id: "muse-voice-transcribe-1.0", label: "Muse Voice Transcribe" },
+] as const;
+export const DEFAULT_META_MODEL = META_MODELS[0].id;
+export const readMetaModel = (raw: unknown): string | undefined =>
+  META_MODELS.some((m) => m.id === raw) || (typeof raw === "string" && raw.trim().length > 0) ? (raw as string) : undefined;
+
 export const CALL_ENGINES: { id: CallEngine; label: string }[] = [
   { id: "local", label: "Local" },
   { id: "realtime", label: "GPT-Live" },
+  { id: "meta", label: "Meta Voice" },
 ];
 export const readCallEngine = (raw: unknown): CallEngine =>
-  raw === "realtime" ? "realtime" : "local";
+  raw === "realtime" ? "realtime" : raw === "meta" ? "meta" : "local";
 export const readRealtimeVoice = (raw: unknown): string | undefined =>
   typeof raw === "string" && /^[a-z]{2,20}$/.test(raw.trim().toLowerCase()) ? raw.trim().toLowerCase() : undefined;
 export const DEFAULT_VOICE = "am_michael";
@@ -71,6 +79,7 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
   const defaultVoice = readVoiceId(r.defaultVoice);
   const realtimeVoice = readRealtimeVoice(r.realtimeVoice);
   const realtimeModel = readRealtimeModel(r.realtimeModel);
+  const metaModel = readMetaModel(r.metaModel);
   return {
     enabled: r.enabled === true,
     ...(defaultVoice ? { defaultVoice } : {}),
@@ -83,6 +92,7 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
     engine: readCallEngine(r.engine),
     ...(realtimeVoice ? { realtimeVoice } : {}),
     ...(realtimeModel ? { realtimeModel } : {}),
+    ...(metaModel ? { metaModel } : {}),
   };
 }
 export function preferenceFor(
