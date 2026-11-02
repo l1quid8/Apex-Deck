@@ -453,17 +453,16 @@ fn dollars(micros: u64) -> String {
 }
 
 /// Why this reply needs the human's OK to spend, if it does.
-fn spend_hold(assistant: &PersonalAssistant, profile: &ParticipantConfig, event: &PersonalEvent, now: u64) -> Option<String> {
+fn spend_hold(assistant: &PersonalAssistant, profile: &ParticipantConfig, event: &PersonalEvent, spent: u64) -> Option<String> {
     if let Some(prompt) = crate::personal::permissions::reply_spend_hold(assistant,event) { return Some(prompt); }
     let limit = assistant.budget.daily_limit_micros?;
     let full=crate::personal::permissions::full_access(assistant);
     if !full && event.spend_approved && (assistant.permissions.revision==0 || crate::personal::permissions::model_spend_approved(assistant,&crate::personal::permissions::reply_spend_operation(assistant,event))) {
         return None;
     }
-    let spent = assistant.spent_today(now);
     if spent >= limit {
-        if full {return Some(format!("Today's spending is {} of your {} daily limit. Change the budget before continuing.",dollars(spent),dollars(limit)))}
-        return Some(format!("Today's spending is {} of your {} daily limit. Reply anyway?", dollars(spent), dollars(limit)));
+        if full {return Some(format!("Today's spending and delegated reservations use {} of your {} daily limit. Change the budget before continuing.",dollars(spent),dollars(limit)))}
+        return Some(format!("Today's spending and delegated reservations use {} of your {} daily limit. Reply anyway?", dollars(spent), dollars(limit)));
     }
     let host = endpoint(profile);
     let unknown = match assistant.costs.iter().rev().find(|c| c.endpoint == host) {
@@ -541,6 +540,11 @@ impl Host {
                         }
                     }
                     Err(error) => eprintln!("Personal assistant clock: {error}"),
+                }
+                // A reply/helper completion wakes this loop after recording
+                // its cost, so a held standing delegation can revalidate and run.
+                if let Err(error)=host.redispatch_recovered_queued() {
+                    eprintln!("Personal assistant delegated work: {error}");
                 }
                 let busy: HashSet<String> = held.values().flatten().cloned().collect();
                 let heavy = busy.iter().filter(|key| heavy_key(key)).count();
@@ -714,7 +718,7 @@ impl Host {
         if let Some(why) = endpoint_refusal(&snapshot, &profile) {
             return self.refuse_event(&snapshot.id, &event.id, why);
         }
-        if let Some(prompt) = spend_hold(&snapshot, &profile, event, at) {
+        if let Some(prompt) = spend_hold(&snapshot, &profile, event, self.effective_personal_spent_today(&snapshot,at)) {
             return self.change_assistant(&snapshot.id, |assistant| { hold_for_spend(assistant, &event.id, prompt, at); Ok(()) });
         }
         if matches!(self.personal_computer_reach(&snapshot, &profile, false), computer::Reach::Tools(_))
@@ -802,7 +806,7 @@ impl Host {
                 if let Some(saved)=a.events.iter_mut().find(|e|e.id==event_id) {saved.state=EventState::Failed;saved.error=Some(why);}
                 return Ok(false)
             }
-            if let Some(prompt)=spend_hold(a,profile,&event,now()) {hold_for_spend(a,event_id,prompt,now());return Ok(false)}
+            if let Some(prompt)=spend_hold(a,profile,&event,self.effective_personal_spent_today(a,now())) {hold_for_spend(a,event_id,prompt,now());return Ok(false)}
             if a.archived_at.is_some(){return Ok(false)}
             let operation=crate::personal::permissions::reply_spend_operation(a,&event);
             for task in a.tasks.iter_mut().filter(|t|t.operation.as_ref()==Some(&operation)&&t.status==TaskStatus::Done&&t.receipts.is_empty()) {
@@ -831,7 +835,7 @@ impl Host {
         if let Some(why) = endpoint_refusal(&snapshot, &profile) {
             return self.refuse_event(&snapshot.id, &event.id, why);
         }
-        if let Some(prompt)=spend_hold(&snapshot,&profile,event,now()) {
+        if let Some(prompt)=spend_hold(&snapshot,&profile,event,self.effective_personal_spent_today(&snapshot,now())) {
             return self.change_assistant(&snapshot.id,|a|{hold_for_spend(a,&event.id,prompt,now());Ok(())});
         }
         let question = snapshot.events.iter().find(|e| e.id == parent).and_then(|e| match &e.source { EventSource::Human { text, .. } => Some(text.clone()), _ => None }).unwrap_or_default();
@@ -925,7 +929,7 @@ impl Host {
                 delegation_id: format!("{event_id}:{index}"), brief: proposed.brief.clone(), destination: proposed.destination.clone(),
                 mode: proposed.mode, review_criteria: proposed.review_criteria.clone(), expected_revision: current.revision,
             };
-            delegation_notes.push(match self.prepare_personal_delegation(input) {
+            delegation_notes.push(match self.prepare_personal_delegation_with_reply_cost(input,cost.micros.unwrap_or(0)) {
                 Ok(receipt) if receipt["standingTrust"]==true => {
                     dispatch_delegations=true;
                     format!("Queued project task {} under your Full access.",receipt["taskId"].as_str().unwrap_or("unknown"))
@@ -1000,7 +1004,14 @@ impl Host {
     }
 
     async fn personal_run_stoppable(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, task_id: &str, local: &str, stop: &tokio::sync::Notify) -> Result<(), String> {
-        let claimed = self.change_assistant(assistant_id, |assistant| Ok(claim_run(assistant, tools, task_id, local, now())))?;
+        let claimed = self.change_assistant(assistant_id, |assistant| {
+            let at=now();
+            if assistant.tasks.iter().any(|task|task.id==task_id&&task.kind==TaskKind::Helper&&task.status==TaskStatus::Queued)
+                && assistant.budget.daily_limit_micros.is_some_and(|limit|self.effective_personal_spent_today(assistant,at)>=limit) {
+                block_standing_task(assistant,task_id,"Today's daily limit is spent or reserved by delegated work. Change the budget before running this helper.",at);return Ok(None);
+            }
+            Ok(claim_run(assistant, tools, task_id, local, at))
+        })?;
         let operation = match claimed {
             None => return Ok(()),
             Some(Claimed::Helper(profile, assignment)) => return self.personal_helper(tools, assistant_id, task_id, profile, assignment, stop).await,
@@ -1054,7 +1065,7 @@ impl Host {
             }
             if a.paused||a.archived_at.is_some() {if let Some(saved)=a.task_mut(task_id){saved.status=TaskStatus::Queued;}return Ok(false)}
             if let Some(why)=endpoint_refusal(a,&profile) {fail::<()>(a,task_id,&why,now());return Ok(false)}
-            if a.budget.daily_limit_micros.is_some_and(|limit|a.spent_today(now())>=limit) {if let Some(saved)=a.task_mut(task_id){saved.status=TaskStatus::Blocked;saved.last_update=Some("Over today's spending limit. Change the budget before running this helper.".into());}return Ok(false)}
+            if a.budget.daily_limit_micros.is_some_and(|limit|self.effective_personal_spent_today(a,now())>=limit) {if let Some(saved)=a.task_mut(task_id){saved.status=TaskStatus::Blocked;saved.last_update=Some("Over today's spending limit, including delegated reservations. Change the budget before running this helper.".into());}return Ok(false)}
             Ok(true)
         })?;
         if !admitted {return Ok(())}
@@ -1247,6 +1258,10 @@ fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &s
     // A human "run it again" is an `Uncertain` decision opened after the last attempt.
     let rerun_approved = decision.kind == DecisionKind::Uncertain && task.receipts.last().is_some_and(|r| decision.opened_at >= r.started_at);
     if uncertain && !idempotent && !rerun_approved {
+        if crate::personal::permissions::full_access(assistant) {
+            let why=format!("The service restarted while `{}` was running, so its outcome is unknown. It was not run again because that could repeat its effects. Check the result before requesting any further action.",shown(&operation));
+            block_standing_task(assistant,task_id,&why,at);return None;
+        }
         let decision = open_decision(assistant, DecisionKind::Uncertain, &operation, at);
         let prompt = format!("The service restarted while `{}` was running, so I can't tell whether it happened. Running it again could do it twice. Run it again?", shown(&operation));
         let task = assistant.task_mut(task_id)?;

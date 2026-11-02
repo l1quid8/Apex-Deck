@@ -1906,7 +1906,7 @@ impl Host {
             if underlying.argv.get(2)!=Some(expected) {return Err("The underlying approval changed. Read it again.".into())}
             let requested=permissions::explicit_request(assistant,task);
             let full=permissions::full_access(assistant);
-            let mut grants=if full {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true)?} else {
+            let mut grants=if full {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true,self.effective_personal_spent_today(assistant,crate::personal::now()))?} else {
                 let (auth,delegation)=assistant.permissions.authorize_delegated(&underlying,requested,false,false)?;
                 vec![auth.grant_id.unwrap_or_default(),delegation]
             };
@@ -1939,7 +1939,7 @@ impl Host {
             if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
             let underlying=permissions::delegated_operation(operation,pending)?;
             if underlying.argv.get(2)!=Some(expected) {return Err("The underlying approval changed.".into())}
-            if permissions::full_access(assistant) {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true)?;}
+            if permissions::full_access(assistant) {permissions::full_delegated_authority(assistant,&underlying,pending["action"]["risky"]==true,self.effective_personal_spent_today(assistant,crate::personal::now()))?;}
             let result=handle.approvals.resolve(request,apex_core::Decision::Approve);
             let audit=assistant.permissions.audit.iter_mut().rev().find(|a|Some(&a.operation_hash)==audit_hash.as_ref()).ok_or("Audit intent unavailable.")?;
             audit.result=if result {"approved"} else {"request no longer waiting"}.into();
@@ -5453,6 +5453,7 @@ mod assistant_permission_delivery_tests {
             ("edit","Edit note.txt","new content",false,true),
             ("spend","Reply cost","model reply",true,true),
             ("spend","Reply cost","exhausted budget",true,false),
+            ("spend","Reply cost","delegated reservation",true,false),
             ("spend","Reply cost","unknown cost",true,false),
             ("spend","Reply cost","unknown cost accepted",true,true),
             ("plan","Change access","enable full",false,false),
@@ -5477,6 +5478,7 @@ mod assistant_permission_delivery_tests {
             let mut assistant:PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":profile,"workspaceConfigVersion":4,"allowedFolders":[cwd],"projects":[{"project":{"hostId":"h","workspaceId":"w","cwd":cwd},"tools":"full"}],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
             match detail {
                 "exhausted budget" => assistant.budget.daily_limit_micros=Some(0),
+                "delegated reservation" => {assistant.budget.daily_limit_micros=Some(1_000_000);assistant.budget.unknown_cost_ok=true;},
                 "unknown cost"|"unknown cost accepted" => {assistant.budget.daily_limit_micros=Some(1_000_000);assistant.budget.unknown_cost_ok=detail=="unknown cost accepted";},
                 _ => {},
             }
@@ -5484,6 +5486,16 @@ mod assistant_permission_delivery_tests {
             let mut task:PersonalTask=serde_json::from_value(serde_json::json!({"id":"pt-1","goal":"Approve","completionCriteria":[],"targetHost":"h","status":"running","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0,"decision":{"id":"pd-1","kind":"approve","paramsHash":operation.hash(),"prompt":"Approve","status":"approved","openedAt":0}})).unwrap();
             task.decision.as_mut().unwrap().decided_by_event=marker(&assistant,&task,false,true).unwrap();
             assistant.tasks.push(task);host.change_personal(|a|{a.push(assistant);Ok(())}).unwrap();
+            if detail=="delegated reservation" {
+                let current=host.personal_get("a").unwrap();
+                host.monitor_assign(crate::monitor_commands::Assignment{workspace_id:"w".into(),cwd:cwd.clone(),host_id:"h".into(),text:"Project work".into(),files:vec![],threads:vec![],profile:current.profile.unwrap()}).unwrap();
+                let source=host.personal_send("a","reserved-project-work","Research the assigned project.").unwrap();
+                host.change_assistant("a",|a|{a.events.iter_mut().find(|event|event.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
+                let receipt=host.prepare_personal_delegation(crate::assistant_delegation::DelegationInput {
+                    assistant_id:"a".into(),project:crate::personal_workspace::ProjectRef{host_id:"h".into(),workspace_id:"w".into(),cwd:cwd.clone()},source_event_id:source.event_id,delegation_id:"reserved-budget".into(),brief:"Research the assigned project".into(),
+                    destination:crate::assistant_tasks::TaskDestination{thread_id:Some("r".into()),workers:vec!["worker".into()],new_thread:false},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],expected_revision:host.personal_get("a").unwrap().revision,
+                }).unwrap();assert_eq!(receipt["standingTrust"],true);
+            }
             let result=host.personal_room_approve("a","pt-1",&operation);
             assert_eq!(result.is_ok(),allowed,"{kind} / {title}: {result:?}");
             if allowed {assert_eq!(answer.await.unwrap(),apex_core::Decision::Approve);assert_eq!(host.personal_get("a").unwrap().permissions.audit[0].result,"approved");assert!(host.personal_room_approve("a","pt-1",&operation).is_err());}

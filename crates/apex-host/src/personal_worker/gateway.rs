@@ -263,6 +263,24 @@ mod tests {
     }
 
     #[test]
+    fn full_existing_read_connectors_bypass_legacy_preferences_and_retain_privacy_ceiling() {
+        use crate::personal::permissions::{capability,marker,validate_marker,GrantMode,Scope};
+        for tool in ["github.get","gmail.search","gmail.read","drive.search","drive.read"] {
+            let mut assistant:PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","workspaceConfigVersion":4,"profile":{"id":"worker","display_name":"Worker","backend":{"kind":"open_ai_compatible","base_url":"http://localhost","model":"m"},"access":"full"},"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+            let operation=OperationSpec{tool:tool.into(),host:"h".into(),cwd:String::new(),argv:vec!["read-target".into()],plan:None};
+            let task:PersonalTask=serde_json::from_value(serde_json::json!({"id":"pt-1","goal":"Read connected evidence","completionCriteria":[],"targetHost":"h","status":"queued","operation":operation,"fromEvent":"pe-1","maxAttempts":1,"createdAt":0,"updatedAt":0})).unwrap();
+            assistant.modes.read=ActionMode::HandOff;
+            assistant.permissions.set(capability(&operation),Scope::AllProjects,GrantMode::Ask,false).unwrap();
+            assert_eq!(gate(&assistant,&task,None),Gate::Run(ActionMode::Auto),"{tool}: saved Full must cover existing read adapters");
+            let authority=marker(&assistant,&task,false,true).unwrap().unwrap();validate_marker(&assistant,&task,&authority).unwrap();
+            assistant.privacy.local_only=true;assert!(matches!(gate(&assistant,&task,None),Gate::Refuse(_)),"{tool}: local-only must still hold");
+            assert!(validate_marker(&assistant,&task,&authority).is_err());
+            assistant.privacy.local_only=false;assistant.profile.as_mut().unwrap().access=apex_core::Access::Ask;
+            assert_ne!(gate(&assistant,&task,None),Gate::Run(ActionMode::Auto));assert!(validate_marker(&assistant,&task,&authority).is_err());
+        }
+    }
+
+    #[test]
     fn personal_workspace_profile_and_project_access_remain_ceilings_after_approval() {
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"asst-1","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
         assistant.workspace_config_version=Some(4);

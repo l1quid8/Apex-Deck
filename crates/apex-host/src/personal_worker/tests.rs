@@ -342,6 +342,107 @@ async fn full_access_scheduled_tasks_recheck_authority_and_schedule_cancellation
 }
 
 #[tokio::test]
+async fn full_access_uncertain_command_blocks_without_replay_or_card_while_ask_keeps_one_decision() {
+    for full in [true,false] {
+        let mut f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);
+        if full {f.full_access();}else{f.host.change_assistant(&f.id,|a|{a.workspace_config_version=Some(4);a.profile.as_mut().unwrap().access=apex_core::Access::Ask;Ok(())}).unwrap();}
+        let fake=Fake::new(false);
+        fake.say(r#"{"reply":"On it.","task":{"argv":["sh","-c","printf x >> uncertain-effect"]}}"#);
+        f.host.personal_send(&f.id,"unknown-effect","Make the requested change.").unwrap();
+        assert!(f.host.personal_step(&fake.tools()).await.unwrap());
+        if !full {f.decide("approve-original",true);assert!(f.host.personal_step(&fake.tools()).await.unwrap());}
+        assert_eq!(f.task().status,TaskStatus::Queued);
+        // The command really changes a file, then the service loses the result
+        // before it can commit a receipt. A replay would append a second x.
+        let mut crashing=fake.tools();crashing.execute=Arc::new(|operation,mark|Box::pin(async move {
+            run_command(operation,mark).await?;
+            std::future::pending::<Result<ToolRun,String>>().await
+        }));
+        f.step_and_crash(&crashing).await;
+        let effect=std::path::Path::new(&project.cwd).join("uncertain-effect");
+        assert_eq!(std::fs::read_to_string(&effect).unwrap(),"x");
+        assert_eq!(f.task().receipts[0].phase,OpPhase::Attempted);
+        f.restart();
+        let mut tools=fake.tools();tools.execute=Arc::new(|operation,mark|Box::pin(run_command(operation,mark)));
+        f.drain(&tools).await;
+        let task=f.task();assert_eq!(task.receipts.len(),1);assert_eq!(task.receipts[0].phase,OpPhase::Uncertain);
+        if full {
+            assert_eq!(task.status,TaskStatus::Blocked);
+            assert!(task.last_update.as_deref().is_some_and(|reason|reason.contains("unknown")));
+            assert!(!f.get().messages.iter().any(|message|message.kind=="approval"));
+        }else{
+            assert_eq!(task.status,TaskStatus::NeedsYou);
+            assert_eq!(task.decision.as_ref().unwrap().kind,DecisionKind::Uncertain);
+            assert_eq!(task.decision.as_ref().unwrap().status,DecisionStatus::Open);
+            assert_eq!(f.lines("system","approval"),2,"Ask keeps the original and one uncertainty decision");
+        }
+        f.restart();f.drain(&tools).await;
+        assert_eq!(std::fs::read_to_string(effect).unwrap(),"x","an unknown non-idempotent effect must not replay");
+        assert_eq!(f.task().receipts.len(),1);
+    }
+}
+
+#[tokio::test]
+async fn full_delegated_budget_reservations_block_reply_helper_and_final_provider_admission() {
+    for phase in ["reply","helper","final"] {
+        let f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);f.full_access();
+        f.host.change_assistant(&f.id,|a|{a.budget.daily_limit_micros=Some(50_000);a.budget.unknown_cost_ok=true;Ok(())}).unwrap();
+        let fake=Fake::new(true);
+        if phase=="helper" {
+            fake.say(r#"{"reply":"Researching.","helpers":[{"assignment":"Inspect the project"}]}"#);
+            f.host.personal_send(&f.id,"helper-source","Research the requested change.").unwrap();
+            assert!(f.host.personal_step(&fake.tools()).await.unwrap());assert_eq!(f.task().status,TaskStatus::Queued);
+        }
+        let profile=f.get().profile.unwrap();
+        f.host.monitor_assign(crate::monitor_commands::Assignment{workspace_id:project.workspace_id.clone(),cwd:project.cwd.clone(),host_id:project.host_id.clone(),text:"Handle project work".into(),files:vec![],threads:vec![],profile:profile.clone()}).unwrap();
+        let source=f.host.personal_send(&f.id,"delegation-source","Perform the requested project work.").unwrap();
+        f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|event|event.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
+        let receipt=f.host.prepare_personal_delegation(crate::assistant_delegation::DelegationInput {
+            assistant_id:f.id.clone(),project,source_event_id:source.event_id,delegation_id:"budget-reservation".into(),brief:"Perform the requested project work".into(),
+            destination:crate::assistant_tasks::TaskDestination{thread_id:Some(THREAD.into()),workers:vec!["jigga".into()],new_thread:false},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],expected_revision:f.get().revision,
+        }).unwrap();
+        assert_eq!(receipt["standingTrust"],true);
+        let before=f.get();let calls=fake.reason_calls.load(Ordering::SeqCst);
+        if phase=="final" {
+            let event=f.host.personal_send(&f.id,"final-source","One more question.").unwrap();
+            f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|saved|saved.id==event.event_id).unwrap().state=EventState::Processing;Ok(())}).unwrap();
+            assert!(!f.host.personal_model_event_admission(&f.id,&event.event_id,&profile).unwrap(),"the final admission must include delegated reservations");
+        }else{
+            if phase=="reply" {f.host.personal_send(&f.id,"reply-source","One more question.").unwrap();}
+            f.drain(&fake.tools()).await;
+        }
+        let after=f.get();assert_eq!(fake.reason_calls.load(Ordering::SeqCst),calls,"{phase}: provider ran with an already-reserved daily budget");
+        if phase=="helper" {assert_eq!(f.task().status,TaskStatus::Blocked);}
+        else {assert!(after.events.iter().any(|event|event.state==EventState::Failed&&event.error.as_deref().is_some_and(|reason|reason.contains("daily limit"))),"{phase}: no budget refusal");}
+        assert_eq!(after.budget,before.budget);assert_eq!(after.costs,before.costs,"reservation accounting must not invent model costs");
+        assert!(!after.messages.iter().any(|message|message.kind=="approval"),"{phase}: Full budget refusal must not create another approval");
+    }
+}
+
+#[tokio::test]
+async fn full_paid_reply_reserves_only_the_budget_remaining_after_its_actual_cost() {
+    for (reported,remaining,spent) in [(Some(5_000),45_000,5_000),(None,50_000,0)] {
+    let f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);f.full_access();
+    f.host.change_assistant(&f.id,|a|{a.budget.daily_limit_micros=Some(50_000);a.budget.unknown_cost_ok=true;Ok(())}).unwrap();
+    let mut worker=f.host.store().room(THREAD).unwrap().unwrap().snapshot.participants[0].clone();
+    worker.backend=apex_core::Backend::Scripted{lines:vec!["Project inspection completed.".into()]};
+    f.host.room_update_participant(THREAD.into(),worker).await.unwrap();
+    f.host.monitor_assign(crate::monitor_commands::Assignment{workspace_id:project.workspace_id.clone(),cwd:project.cwd.clone(),host_id:project.host_id.clone(),text:"Handle project work".into(),files:vec![],threads:vec![],profile:f.get().profile.unwrap()}).unwrap();
+    let reply=serde_json::json!({"reply":"Delegating the inspection.","delegations":[{"project":project,"brief":"Inspect the requested project","destination":{"threadId":THREAD,"workers":["jigga"],"newThread":false},"mode":"read_only"}]}).to_string();
+    let fake=Fake::new(true);let mut tools=fake.tools();
+    tools.reason=Arc::new(move |_,_,_|{let text=reply.clone();Box::pin(async move {Ok(ReasonOut{text,cost_micros:reported,..Default::default()})})});
+    f.host.personal_send(&f.id,"paid-delegation","Inspect the project using the selected worker.").unwrap();
+    assert!(f.host.personal_step(&tools).await.unwrap());
+    let tasks=f.host.assistant_tasks.list(None).unwrap();assert_eq!(tasks.len(),1);
+    assert_eq!(tasks[0].result_data.as_ref().unwrap()["spendLimitMicros"],remaining,"the current actual reply cost must be reserved before queuing its delegation");
+    assert_ne!(tasks[0].status,crate::assistant_tasks::TaskStatus::Cancelled);
+    let assistant=f.get();assert_eq!(assistant.spent_today(now()),spent);assert_eq!(assistant.costs.len(),1);
+    assert_eq!(assistant.budget.daily_limit_micros,Some(50_000));
+    assert!(!assistant.messages.iter().any(|message|message.kind=="approval"));
+    }
+}
+
+#[tokio::test]
 async fn a_browser_tab_names_the_assistant_holding_it() {
     let fixture = Fixture::new();
     let profile = apex_core::ParticipantId::new("profile");
@@ -2392,6 +2493,13 @@ async fn native_management_always_preserves_grant_project_runtime_and_standing_r
         }).unwrap();
         let fake=Fake::new(true);fake.say(&room_reply(rooms::RENAME,&[THREAD,"Finished"]));
         f.host.personal_send(&f.id,"request","Rename Checkout fix to Finished").unwrap();f.drain(&fake.tools()).await;
+        if ceiling=="profileAsk" {
+            // Current Ask treats this exact reversible native request as its
+            // one-action authority; the other explicit ceilings still hold.
+            assert_eq!(f.task().status,TaskStatus::Done);
+            assert_eq!(f.host.store().chat_meta(THREAD).unwrap().unwrap().title,"Finished");
+            assert_eq!(f.lines("system","approval"),0);continue;
+        }
         assert!(f.get().tasks.iter().all(|t|t.status==TaskStatus::NeedsYou),"{ceiling} must never execute");
         assert!(f.host.store().chat_meta(THREAD).unwrap().is_none_or(|m|m.title!="Finished"),"{ceiling}");
     }

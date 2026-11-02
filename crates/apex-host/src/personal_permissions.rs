@@ -53,7 +53,7 @@ pub fn full_access(assistant:&super::PersonalAssistant)->bool {
 }
 /// Only adapters with native validation participate in standing trust.
 pub(crate) fn full_access_operation(assistant:&super::PersonalAssistant,op:&OperationSpec)->bool {
-    full_access(assistant) && (crate::personal_worker::rooms::known(&op.tool)
+    full_access(assistant) && (crate::personal_worker::rooms::known(&op.tool) || crate::personal_worker::connectors::known(&op.tool)
         || matches!(op.tool.as_str(),crate::personal_worker::COMMAND_TOOL|"browser.open"|"computer.reply"|"model.reply"|"model.helper"|"model.summary"))
 }
 /// A direct reversible native request can supply exact one-request authority.
@@ -84,7 +84,7 @@ fn full_policy_hash(assistant:&super::PersonalAssistant)->String {
 }
 /// Authorize a typed native approval under the assistant's standing trust.
 /// Unsupported approvals cannot be upgraded into wider agent privileges.
-pub(crate) fn full_delegated_authority(assistant:&super::PersonalAssistant,op:&OperationSpec,may_spend:bool)->Result<Vec<String>,String> {
+pub(crate) fn full_delegated_authority(assistant:&super::PersonalAssistant,op:&OperationSpec,may_spend:bool,spent_or_reserved:u64)->Result<Vec<String>,String> {
     if !full_access(assistant) || assistant.paused || assistant.archived_at.is_some() {return Err("Full access is no longer active.".into())}
     if !matches!(op.tool.as_str(),"room.delegateEdit"|"room.delegateCommand"|"room.delegateSpend") {return Err("This approval has no supported typed adapter.".into())}
     let binding=assistant.projects.iter().find(|binding|binding.project.host_id==op.host&&binding.project.cwd==op.cwd).ok_or("That approval's project is not assigned.")?;
@@ -93,7 +93,7 @@ pub(crate) fn full_delegated_authority(assistant:&super::PersonalAssistant,op:&O
     if !assistant.allowed_folders.iter().filter_map(|folder|crate::personal_worker::gateway::resolved(std::path::Path::new(folder))).any(|folder|cwd.starts_with(folder)) {return Err("The approval is outside the existing folder grants.".into())}
     if may_spend || op.tool=="room.delegateSpend" {
         if let Some(limit)=assistant.budget.daily_limit_micros {
-            if assistant.spent_today(super::now())>=limit {return Err("Today's daily limit is exhausted. Change the budget before continuing.".into())}
+            if spent_or_reserved>=limit {return Err("Today's daily limit is spent or reserved by delegated work. Change the budget before continuing.".into())}
             if !assistant.budget.unknown_cost_ok {return Err("This native approval does not report a bounded cost. Allow unknown cost in Settings before continuing.".into())}
         }
     }
