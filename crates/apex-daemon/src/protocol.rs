@@ -630,16 +630,26 @@ where
                                 Some(device) => {
                                     let need = authority::command_needs(&command);
                                     let effect = authority::access_effect(&command);
-                                    // Design: Raises rule applies only on Confined+trusted hosts
-                                    // with current-epoch device. Epoch already enforced in remote.rs.
-                                    // On non-trusted hosts (macOS, early Linux), chat can Allow/answer.
-                                    let raises_blocked = matches!(effect, authority::AccessEffect::Raises)
-                                        && device.tier != crate::devices::Tier::Full
-                                        && crate::trust_host::is_trusted(&daemon.data);
-                                    if raises_blocked {
-                                        Err("would raise access and needs full".into())
-                                    } else {
-                                        authority::check(&device, &need).map(|()| Some(need))
+                                    // Design: Raises only works on Confined+trusted hosts, Full all-threads, current epoch, old_level match, folder match
+                                    // The last two checks are done under room lock in host.rs; here we enforce Full all-threads + trusted+epoch
+                                    if matches!(effect, authority::AccessEffect::Raises) {
+                                        if device.tier != crate::devices::Tier::Full || !device.threads.is_all() {
+                                            return Err("would raise access and needs full on all threads".into());
+                                        }
+                                        if crate::trust_host::is_trusted(&daemon.data) {
+                                            match (crate::trust_host::epoch(&daemon.data), &device.confined_epoch) {
+                                                (Some(current), Some(dev_epoch)) if current == *dev_epoch => {},
+                                                _ => {
+                                                    return Err("this device was paired before trust and must pair again".into());
+                                                }
+                                            }
+                                        } else {
+                                            return Err("raising access needs a trusted host".into());
+                                        }
+                                    }
+                                    match authority::check(&device, &need) {
+                                        Ok(()) => Ok(Some(need)),
+                                        Err(e) => Err(e),
                                     }
                                 }
                             },

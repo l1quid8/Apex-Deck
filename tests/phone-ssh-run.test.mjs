@@ -32,6 +32,16 @@ function server(over = {}) {
     if (command.includes("show -p ControlGroup")) return { stdout: `switched=${over.switched ?? "now"}\n` };
     if (command.includes("remote on")) return { stdout: "remote=on\n" };
     if (command.includes("claude-login")) return { stdout: answers.tools };
+    if (command.includes("dev.apexdeck.app") && command.includes("ls -d")) {
+      // fresh server override: if over.fresh true, return __nodata__
+      if (over.fresh) return { stdout: "__nodata__\n" };
+      // existing server: return folder path
+      return { stdout: "/home/demo/.local/share/dev.apexdeck.app\n" };
+    }
+    if (command.includes("host-trust.json")) {
+      if (over.hasTrust) return { stdout: JSON.stringify({ trusted: true, trusted_at_ms: Date.now(), epoch: "abc", boot_id: "boot" }) };
+      return { stdout: "__notrust__\n" };
+    }
     return {};
   };
   const session = {
@@ -82,7 +92,13 @@ const request = (over = {}) => ({ label: "VPS", host: "203.0.113.1", port: 22, u
 
 async function run(box, dependency, ask = request()) {
   const events = [];
-  const started = runSetup(ask, dependency, (event) => events.push(event));
+  const started = runSetup(ask, dependency, (event) => {
+    events.push(event);
+    if (event.kind === "trust") {
+      // auto-decline trust in tests to avoid hang, unless test overrides
+      started.decideTrust(false);
+    }
+  });
   await started.done;
   return { events, ask, failed: events.find((event) => event.kind === "failed"), done: events.find((event) => event.kind === "done"), steps: events.filter((event) => event.kind === "step").map((event) => event.id) };
 }

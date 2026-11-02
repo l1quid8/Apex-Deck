@@ -199,6 +199,15 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
       throw new StepFailure("install", "Couldn't check for Deck", "The release list couldn't be reached from the server.");
     }
 
+    // Check for data folder before Deck starts, per Task 4
+    let hadDataFolder = false;
+    try {
+      const dataCheck = await ssh.exec("ls -d ~/.local/share/dev.apexdeck.app $XDG_DATA_HOME/dev.apexdeck.app $HOME/.local/share/dev.apexdeck.app 2>/dev/null || echo __nodata__", { timeoutS: 10 });
+      hadDataFolder = !dataCheck.stdout.includes("__nodata__") && dataCheck.stdout.trim() !== "";
+    } catch (e) {
+      if (cancelled) throw stopFailure();
+    }
+
     let bwrap = Boolean(probe.bwrap);
     if (!bwrap && root.ok) {
       const result = await asRoot(INSTALL_BWRAP);
@@ -246,42 +255,64 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     if (remote.code !== 0) throw new StepFailure("start", "Couldn't start Deck", tail(remote) || "Deck didn't answer on the server.");
 
     // ---- Task 10: Trust this machine? ----
-    // After Deck started and before pairing, check if host-trust exists.
-    // If not, pause and ask user. Offer only when no data folder found (fresh server).
-    try {
-      const trustCheck = await ssh.exec("cat ~/.local/share/apex-deck/host-trust.json 2>/dev/null || cat $HOME/.local/share/apex-deck/host-trust.json 2>/dev/null || echo __notrust__", { timeoutS: 10 });
-      const isFresh = trustCheck.stdout.includes("__notrust__") || trustCheck.stdout.trim() === "";
-      if (isFresh) {
-        const freshTrustMessage = "Trust this machine? Your phone can press Allow here only if you trust what has run on this account. Deck can't check that. Pick Trust for a new server, or one you know.";
-        emit({ kind: "trust", fresh: true, message: freshTrustMessage });
-        const shouldTrust = await new Promise<boolean>((resolve) => {
-          trustDecision = { resolve };
-        });
-        trustDecision = null;
-        if (shouldTrust) {
-          // Run trust-host --no-reboot over the signed-in SSH session, so person's own credentials and tap carry decision.
-          const trustCmd = `${PROBE_BIN} >/dev/null 2>&1 && apex-daemon trust-host --no-reboot 2>&1 || $HOME/.local/bin/apex-daemon trust-host --no-reboot 2>&1 || /usr/local/bin/apex-daemon trust-host --no-reboot 2>&1`;
-          const trustResult = await ssh.exec(trustCmd, { timeoutS: 30 });
-          if (trustResult.code === 0) {
-            step("trust", "Trusted this machine — new epoch, old devices must pair again");
+    // hadDataFolder already checked before Deck start
+
+    // (Deck start already happened above, remote check below)
+    // For trust, read correct path dev.apexdeck.app, not apex-deck
+    if (!hadDataFolder) {
+      // Fresh server: no data folder before, offer trust
+      try {
+        const trustCheck = await ssh.exec("cat ~/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || cat $HOME/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || cat $XDG_DATA_HOME/dev.apexdeck.app/host-trust.json 2>/dev/null || echo __notrust__", { timeoutS: 10 });
+        const isNotTrusted = trustCheck.stdout.includes("__notrust__") || trustCheck.stdout.trim() === "";
+        if (isNotTrusted) {
+          const freshTrustMessage = "Trust this machine? Your phone can press Allow here only if you trust what has run on this account. Deck can't check that. Pick Trust for a new server, or one you know.";
+          emit({ kind: "trust", fresh: true, message: freshTrustMessage });
+          const shouldTrust = await new Promise<boolean>((resolve) => {
+            trustDecision = { resolve };
+          });
+          trustDecision = null;
+          stopIfCancelled();
+          if (shouldTrust) {
+            const trustCmd = `${PROBE_BIN} >/dev/null 2>&1 && apex-daemon trust-host --no-reboot 2>&1 || $HOME/.local/bin/apex-daemon trust-host --no-reboot 2>&1 || /usr/local/bin/apex-daemon trust-host --no-reboot 2>&1`;
+            const trustResult = await ssh.exec(trustCmd, { timeoutS: 30 });
+            stopIfCancelled();
+            if (trustResult.code === 0) {
+              step("trust", "Trusted this machine — new epoch, old devices must pair again");
+            } else {
+              step("trust", `Not trusted yet — ${trustResult.stdout.trim() || trustResult.stderr.trim() || "trust-host failed"}, pairing without epoch`);
+            }
           } else {
-            // If trust fails, continue as not trusted (pair without epoch) but inform
-            step("trust", `Not trusted yet — ${trustResult.stdout.trim() || trustResult.stderr.trim() || "trust-host failed"}, pairing without epoch`);
+            step("trust", "Not trusted yet — paired device can't act until you run apex-daemon trust-host on the server");
           }
         } else {
-          step("trust", "Not trusted yet — paired device can't act until you run apex-daemon trust-host on the server");
-        }
-      } else {
-        // Existing data folder: show row "Not trusted yet" logic is handled elsewhere; here we just note trusted exists
-        try {
-          const parsed = JSON.parse(trustCheck.stdout);
-          if (parsed.trusted) {
-            step("trust", `Host trusted on ${new Date(parsed.trusted_at_ms || Date.now()).toLocaleDateString()}`);
+          try {
+            const parsed = JSON.parse(trustCheck.stdout);
+            if (parsed.trusted) {
+              step("trust", `Host trusted on ${new Date(parsed.trusted_at_ms || Date.now()).toLocaleDateString()}`);
+            }
+          } catch {
+            if (cancelled) throw stopFailure();
           }
-        } catch {}
+        }
+      } catch (e) {
+        if (cancelled) throw stopFailure();
+        // Trust check failure non-fatal unless cancelled
       }
-    } catch {
-      // Trust check failure is non-fatal, continue
+    } else {
+      // Existing data folder: check if already trusted and log, but don't offer again (avoid voiding devices)
+      try {
+        const trustCheck = await ssh.exec("cat ~/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || cat $HOME/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || echo __notrust__", { timeoutS: 10 });
+        if (!trustCheck.stdout.includes("__notrust__") && trustCheck.stdout.trim() !== "") {
+          try {
+            const parsed = JSON.parse(trustCheck.stdout);
+            if (parsed.trusted) {
+              step("trust", `Host trusted on ${new Date(parsed.trusted_at_ms || Date.now()).toLocaleDateString()}`);
+            }
+          } catch {}
+        }
+      } catch (e) {
+        if (cancelled) throw stopFailure();
+      }
     }
 
     const tools = report((await ssh.exec(AI_TOOLS, { timeoutS: 500 })).stdout);

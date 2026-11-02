@@ -63,21 +63,7 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
     onConfirm: () => void turn(false),
   });
   const setTier = (device: PairedDevice, tier: Tier) => {
-    const needsFaceId = tier === "full" && device.tier !== "full";
-    if (needsFaceId) {
-      // Face ID step: phone's own guard against holding unlocked phone. Per spec, does not prove to daemon.
-      setAsking({
-        title: "Face ID required",
-        body: "Raising access to Full lets this device press Allow and run as you. Confirm with Face ID (or device passcode) to continue.",
-        action: "Confirm with Face ID",
-        cancel: "Cancel",
-        onConfirm: () => {
-          setAsking(null);
-          devicesCall.setTier(device.endpointId, tier).then(loadDevices, fail);
-        },
-      });
-      return;
-    }
+    // Real Face ID is on phone's own level-raise flow per Task 7, not a plain confirm on Mac
     devicesCall.setTier(device.endpointId, tier).then(loadDevices, fail);
   };
   const revoke = (device: PairedDevice) => setAsking({

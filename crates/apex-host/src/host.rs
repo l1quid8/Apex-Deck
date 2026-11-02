@@ -2608,6 +2608,30 @@ impl Host {
     }
     pub fn folder_withdraw(&self, path: String) -> Result<serde_json::Value, String> {
         crate::folder_trust::withdraw(&self.paths.data, Path::new(&path))?;
+        // Stop Full bots in overlapping folder per Task 6
+        let target = PathBuf::from(&path);
+        let room_ids: Vec<String> = {
+            let rooms = self.rooms.lock().unwrap();
+            let mut ids = Vec::new();
+            for (id, handle) in rooms.iter() {
+                if let Some(cwd) = handle.context.cwd.as_ref() {
+                    let cwd_path = PathBuf::from(cwd);
+                    if cwd_path.starts_with(&target) || target.starts_with(&cwd_path) {
+                        let has_full = handle.checkpoint.lock().unwrap().snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full);
+                        if has_full {
+                            ids.push(id.clone());
+                        }
+                    }
+                }
+            }
+            ids
+        };
+        for id in room_ids {
+            if let Some(handle) = self.rooms.lock().unwrap().get(&id).cloned() {
+                handle.runtime.stop(None);
+                handle.approvals.reject_all();
+            }
+        }
         Ok(serde_json::json!({ "withdrawn": path }))
     }
     pub fn trust_status(&self) -> Result<serde_json::Value, String> {
@@ -3123,10 +3147,19 @@ impl Host {
 
     /// Switch a chat to a registered checkout of its own repository, retaining history.
     pub fn room_mount(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
-        // Full gate for mount operation itself
+        // Full gate for mount: only Full bots are gated per Task 6
         let target_for_gate = PathBuf::from(&cwd);
-        if let Err(why) = crate::folder_trust::check_full_allowed(&self.paths.data, &target_for_gate) {
-            return Err(why);
+        let has_full = {
+            if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
+                handle.checkpoint.lock().unwrap().snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)
+            } else {
+                self.store.room(&id).ok().flatten().map(|s| s.snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)).unwrap_or(false)
+            }
+        };
+        if has_full {
+            if let Err(why) = crate::folder_trust::check_full_allowed(&self.paths.data, &target_for_gate) {
+                return Err(why);
+            }
         }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {

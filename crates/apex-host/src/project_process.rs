@@ -29,10 +29,26 @@ pub fn mark_tainted_if_lower(data: &Path, folder: &Path, access: apex_core::Acce
     }
 }
 
+fn inherited_git_envs() -> Vec<String> {
+    std::env::vars().filter_map(|(k,_)| if k.starts_with("GIT_") { Some(k) } else { None }).collect()
+}
+
 /// Build a `git` command that is isolated enough to not run project code outside jail.
+/// Sets GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL=/dev/null, GIT_ATTR_NOSYSTEM, removes GIT_ vars,
+/// and adds -c core.fsmonitor=false, -c core.hooksPath=/dev/null etc.
+/// This prevents planted `core.fsmonitor`, `diff.external`, `filter.*.clean`, `.git/hooks/*` from running outside jail.
 pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    cmd.env("GIT_ATTR_NOSYSTEM", "1");
+    cmd.env("HOME", std::env::temp_dir());
+    cmd.env("XDG_CONFIG_HOME", std::env::temp_dir());
+    for key in inherited_git_envs() {
+        cmd.env_remove(key);
+    }
+    cmd.env_remove("GIT_CONFIG_PARAMETERS");
     cmd
 }
 
@@ -40,13 +56,21 @@ pub fn git_command() -> Command {
 pub fn command_in(program: &str, folder: &Path) -> Command {
     let mut cmd = Command::new(program);
     cmd.current_dir(folder);
+    for key in inherited_git_envs() {
+        cmd.env_remove(key);
+    }
+    cmd.env_remove("GIT_CONFIG_PARAMETERS");
     cmd
 }
 
-/// Async version for runner/checks
+/// Async version for runner/checks - also isolated
 pub fn tokio_command_in(program: &str, folder: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(program);
     cmd.current_dir(folder);
+    for key in inherited_git_envs() {
+        cmd.env_remove(key);
+    }
+    cmd.env_remove("GIT_CONFIG_PARAMETERS");
     cmd
 }
 
@@ -149,5 +173,31 @@ mod tests {
         assert!(folder_trust::is_tainted(data, &proj));
         assert!(ensure_allowed_for_access(data, &proj, apex_core::Access::Full).is_err());
         assert!(ensure_allowed_for_access(data, &proj, apex_core::Access::Read).is_ok());
+    }
+
+    #[test]
+    fn git_command_does_not_run_fsmonitor_hook_filter() {
+        // Planted files test per Task 8 Lower-writable design
+        let t = tmp();
+        let repo = t.0.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        // init repo with isolated git
+        let mut init = std::process::Command::new("git");
+        init.arg("-C").arg(&repo).arg("init").env("GIT_CONFIG_NOSYSTEM","1").env("GIT_CONFIG_GLOBAL","/dev/null").output().unwrap();
+        let marker = t.0.join("evil-ran");
+        let evil_script = t.0.join("evil.sh");
+        std::fs::write(&evil_script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let mut p = std::fs::metadata(&evil_script).unwrap().permissions(); p.set_mode(0o755); std::fs::set_permissions(&evil_script, p).unwrap(); }
+        let mut cfg = std::process::Command::new("git");
+        cfg.arg("-C").arg(&repo).args(["config", "core.fsmonitor", evil_script.to_string_lossy().as_ref()]).env("GIT_CONFIG_NOSYSTEM","1").env("GIT_CONFIG_GLOBAL","/dev/null").output().unwrap();
+        let hooks_dir = repo.join(".git/hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook = hooks_dir.join("post-checkout");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let mut p = std::fs::metadata(&hook).unwrap().permissions(); p.set_mode(0o755); std::fs::set_permissions(&hook, p).unwrap(); }
+        let mut cmd = git_command();
+        cmd.arg("-C").arg(&repo).args(["--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "filter.evil.clean=cat", "status", "--porcelain"]);
+        let out = cmd.output().expect("git status");
+        assert!(!marker.exists(), "planted fsmonitor/hook ran: {}", String::from_utf8_lossy(&out.stderr));
     }
 }
