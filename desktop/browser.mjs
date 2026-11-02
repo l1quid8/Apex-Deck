@@ -2,10 +2,11 @@
 // its place in the window. Pages share one saved profile, so sign-ins last,
 // and get no preload and no Node: they can't reach the Deck window or its bridge.
 
-import { session as sessions, shell, WebContentsView } from 'electron';
+import { BrowserWindow, dialog, session as sessions, shell, systemPreferences, WebContentsView } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { deckKey } from './browser-keys.mjs';
+import { decideMedia, kindWords, mediaKinds } from './browserPermissions.mjs';
 import { safeName } from './files.mjs';
 
 export const PARTITION = 'persist:deck-browser';
@@ -39,13 +40,45 @@ function freeName(dir, name) {
 
 /** The saved profile every window's pages share, set up the first time it's asked for. */
 let shared = null;
-function sharedProfile(downloads) {
+/** A native sheet: a docked page is drawn over the Deck window, so nothing in the window could cover it. */
+async function askSite(origin, kinds) {
+  const options = {
+    type: 'question',
+    message: `${origin} wants to use your ${kindWords(kinds)}.`,
+    buttons: ['Allow', 'Deny'],
+    defaultId: 1,
+    cancelId: 1,
+    checkboxLabel: 'Remember for this site',
+  };
+  const parent = BrowserWindow.getFocusedWindow();
+  const { response, checkboxChecked } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+  return { allowed: response === 0, remember: checkboxChecked };
+}
+
+const systemMedia = async (kind) => process.platform !== 'darwin' || systemPreferences.askForMediaAccess(kind);
+
+const originOf = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
+  }
+};
+
+function sharedProfile(downloads, memory) {
   if (shared) return shared;
   shared = sessions.fromPartition(PARTITION);
-  // Clipboard writes (a page's Copy button) and fullscreen video; nothing else.
+  // Clipboard writes (a page's Copy button) and fullscreen video go through; a
+  // microphone or camera is asked per site; nothing else.
   const allowed = new Set(['clipboard-sanitized-write', 'fullscreen']);
-  shared.setPermissionRequestHandler((_contents, permission, done) => done(allowed.has(permission)));
-  shared.setPermissionCheckHandler((_contents, permission) => allowed.has(permission));
+  shared.setPermissionRequestHandler((_contents, permission, done, details) => {
+    if (permission !== 'media') return done(allowed.has(permission));
+    decideMedia({ origin: originOf(details.requestingUrl), kinds: mediaKinds(details.mediaTypes), memory, ask: askSite, system: systemMedia }).then(done, () => done(false));
+  });
+  shared.setPermissionCheckHandler((_contents, permission, origin, details) => {
+    if (permission !== 'media') return allowed.has(permission);
+    return mediaKinds([details.mediaType]).some((kind) => memory.get(originOf(origin), kind) === true);
+  });
   shared.on('will-download', (_event, item) => item.setSavePath(freeName(downloads(), item.getFilename())));
   return shared;
 }
@@ -61,8 +94,8 @@ export async function flushProfile() {
  * The docked pages of `win`. `send(channel, ...args)` reaches the Deck window:
  * `browser:state` (pane, state) and `browser:shortcut` (a key press the deck owns).
  */
-export function dockedBrowser({ win, send, downloads }) {
-  sharedProfile(downloads);
+export function dockedBrowser({ win, send, downloads, memory }) {
+  sharedProfile(downloads, memory);
 
   /** pane id → { view, shown } */
   const panes = new Map();

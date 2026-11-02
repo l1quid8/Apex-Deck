@@ -412,10 +412,24 @@ function Advanced({ title, defaultOpen, id, children }: { title: string; default
   return <details className="settings-advanced" id={id} open={defaultOpen}><summary>{title}</summary><div className="advanced-body">{children}</div></details>;
 }
 
+/** Sites the docked browser remembers an answer for; removing one asks again next time. */
+function SitePermissions() {
+  const browser = window.apexDeck?.browser;
+  const [rows, setRows] = useState<{ origin: string; kind: string; allowed: boolean }[]>([]);
+  useEffect(() => { void browser?.sitePermissions().then(setRows).catch(() => {}); }, [browser]);
+  if (!rows.length) return null;
+  return <div className="settings-card">
+    {rows.map((row) => <Row key={`${row.origin} ${row.kind}`} id={`site-${row.origin}-${row.kind}`} label={row.origin} note={`${row.kind === "camera" ? "Camera" : "Microphone"}: ${row.allowed ? "allowed" : "denied"}`}>
+      <button type="button" onClick={() => void browser?.forgetSitePermission(row.origin, row.kind).then(() => setRows((all) => all.filter((other) => other !== row)))}>Remove</button>
+    </Row>)}
+  </div>;
+}
+
 function General({ settings, onChange, backend: _backend, updates: _updates, onRestartToUpdate: _onRestart, onSection }: { settings: AppSettings; onChange: (s: AppSettings)=>void; backend: Backend; updates: UpdateStatus | null; onRestartToUpdate?: ()=>void; onSection: (s: SettingsSection)=>void }) {
   void _backend; void _updates; void _onRestart;
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
   return <>
+    <SitePermissions />
     <div className="settings-card">
       <Row id="artifacts" label="New artifacts" note="When a bot writes a file, the artifacts pane can show.">
         <select aria-label="New artifacts" value={autoOpen ? "open" : "notify"} onChange={(e)=>{ const on=e.target.value==='open'; setArtifactAutoOpen(on); setAutoOpen(on); }}>
