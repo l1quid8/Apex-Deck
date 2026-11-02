@@ -634,22 +634,25 @@ where
                                     // The last two checks are done under room lock in host.rs; here we enforce Full all-threads + trusted+epoch
                                     if matches!(effect, authority::AccessEffect::Raises) {
                                         if device.tier != crate::devices::Tier::Full || !device.threads.is_all() {
-                                            return Err("would raise access and needs full on all threads".into());
-                                        }
-                                        if crate::trust_host::is_trusted(&daemon.data) {
+                                            Err("would raise access and needs full on all threads".into())
+                                        } else if crate::trust_host::is_trusted(&daemon.data) {
                                             match (crate::trust_host::epoch(&daemon.data), &device.confined_epoch) {
-                                                (Some(current), Some(dev_epoch)) if current == *dev_epoch => {},
-                                                _ => {
-                                                    return Err("this device was paired before trust and must pair again".into());
-                                                }
+                                                (Some(current), Some(dev_epoch)) if current == *dev_epoch => {
+                                                    match authority::check(&device, &need) {
+                                                        Ok(()) => Ok(Some(need)),
+                                                        Err(e) => Err(e),
+                                                    }
+                                                },
+                                                _ => Err("this device was paired before trust and must pair again".into()),
                                             }
                                         } else {
-                                            return Err("raising access needs a trusted host".into());
+                                            Err("raising access needs a trusted host".into())
                                         }
-                                    }
-                                    match authority::check(&device, &need) {
-                                        Ok(()) => Ok(Some(need)),
-                                        Err(e) => Err(e),
+                                    } else {
+                                        match authority::check(&device, &need) {
+                                            Ok(()) => Ok(Some(need)),
+                                            Err(e) => Err(e),
+                                        }
                                     }
                                 }
                             },

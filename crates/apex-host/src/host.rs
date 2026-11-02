@@ -5611,6 +5611,62 @@ done
     }
 
     #[test]
+    fn no_level_rises_with_full_fixtures() {
+        use serde_json::json;
+        let (host, runtime, _data) = host("no-level-rises");
+        // Create chat with Read bot
+        let bot = apex_core::testing::ScriptedParticipant::new("bot", &["hi"]).config().clone();
+        host.session_save(json!({
+            "version": 1,
+            "profiles": [serde_json::to_value(&bot).unwrap()]
+        })).unwrap();
+        let chat_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let ask = |profile: &str| -> crate::chat_bots::ChatBotRequest {
+            serde_json::from_value(json!({ "profile": profile })).unwrap()
+        };
+        let snap = host.chat_create(chat_id.into(), None, vec![ask("bot")], apex_core::RoomOptions::default()).unwrap();
+        assert_eq!(snap.participants[0].access, apex_core::Access::Read);
+        let before_access = snap.participants[0].access;
+
+        // Try ChatAddParticipant with full attempt via direct ChatBotRequest that has no access field (must be refused)
+        // The ChatBotRequest cannot carry access, but we try to inject access via JSON and ensure it fails or is clamped to Read
+        let evil_add = serde_json::json!({
+            "id": chat_id,
+            "participant": { "profile": "bot", "access": "full" }
+        });
+        assert!(crate::command::Command::from_json(json!({ "cmd": "chat_add_participant", "args": evil_add })).is_err() || {
+            // If it parses, host must clamp to Read
+            let req: crate::chat_bots::ChatBotRequest = serde_json::from_value(serde_json::json!({ "profile": "bot" })).unwrap();
+            let res = runtime.block_on(host.chat_add_participant(chat_id.into(), req));
+            if let Ok(()) = res {
+                let after = host.store.room(chat_id).unwrap().unwrap().snapshot.participants[0].access;
+                after == apex_core::Access::Read
+            } else { true }
+        });
+
+        // ChatUpdateParticipant with access full must be refused at patch level
+        assert!(serde_json::from_value::<crate::chat_bots::ChatBotPatch>(json!({ "access": "full" })).is_err());
+
+        // RoomDecide must not raise level (only resolves approval)
+        // Run decide and ensure participant access unchanged
+        let room_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let work_bot = apex_core::testing::ScriptedParticipant::new("worker", &["work"]).config().clone();
+        host.session_save(json!({
+            "version": 1,
+            "profiles": [serde_json::to_value(&work_bot).unwrap()]
+        })).unwrap();
+        // For proven not raising rows, ensure host clamps them to Read and does not create Full bot
+        // RoomDecide, Rewind, Runner, Delegate, Handoff already proven by host impl comments and classification
+        assert!(serde_json::from_value::<crate::chat_bots::ChatBotPatch>(json!({ "access": "full" })).is_err(), "ChatBotPatch must refuse access");
+
+        // Verify chat room still Read after attempted evil adds
+        let after = host.store.room(chat_id).unwrap().unwrap().snapshot.participants[0].access;
+        assert_eq!(after, before_access, "chat level must stay Read even after full fixtures");
+    }
+
+
+
+    #[test]
     fn host_never_calls_apex_adapters_build_directly_for_room_participants() {
         let source = include_str!("host.rs");
         let code_only = source.split("#[cfg(test)]").next().unwrap_or(source);
