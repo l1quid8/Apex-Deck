@@ -78,7 +78,7 @@ pub struct Counters {
 }
 
 /// What kind of action something is. The assistant's rule for the class
-/// decides whether it runs, asks or is handed to the human.
+/// decides whether it runs, asks or is handed to the user.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolClass {
@@ -95,11 +95,11 @@ pub enum ToolClass {
 pub enum ActionMode {
     /// Do it without asking.
     Auto,
-    /// Do it only when the human's own message asked for it.
+    /// Do it only when the user's own message asked for it.
     OnRequest,
     /// Ask first, every time.
     Ask,
-    /// Prepare it and hand it to the human; nothing runs.
+    /// Prepare it and hand it to the user; nothing runs.
     HandOff,
 }
 
@@ -201,7 +201,7 @@ pub struct Fact {
     pub id: String,
     pub text: String,
     pub kind: FactKind,
-    /// The human said it outright. Otherwise the assistant inferred it.
+    /// The user said it outright. Otherwise the assistant inferred it.
     pub explicit: bool,
     /// 0–100.
     pub confidence: u8,
@@ -236,13 +236,13 @@ pub struct FactSource {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ScheduleStatus {
-    /// Waiting for the human to confirm it.
+    /// Waiting for the user to confirm it.
     Proposed,
     Active,
     Cancelled,
 }
 
-/// A set-time job the human confirmed. Each firing makes one task.
+/// A set-time job the user confirmed. Each firing makes one task.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Schedule {
@@ -258,18 +258,18 @@ pub struct Schedule {
     pub next_at: Option<u64>,
     pub status: ScheduleStatus,
     pub created_at: u64,
-    /// What the human confirmed: the operation every firing runs.
+    /// What the user confirmed: the operation every firing runs.
     pub params_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_task_id: Option<String>,
     #[serde(default)]
     pub runs: u32,
-    /// The human's confirmation, bound to `params_hash`.
+    /// The user's confirmation, bound to `params_hash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<PendingDecision>,
 }
 
-/// Something the assistant brings to the human's attention.
+/// Something the assistant brings to the user's attention.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Notice {
@@ -461,9 +461,9 @@ pub struct PersonalViewContext {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum EventSource {
-    /// Text the human typed in a client. The only source that can start a task.
+    /// Text the user typed in a client. The only source that can start a task.
     Human { text: String, #[serde(default, rename = "viewContext", skip_serializing_if = "Option::is_none")] view_context: Option<PersonalViewContext> },
-    /// The human's answer to one decision, bound to the operation it approves.
+    /// The user's answer to one decision, bound to the operation it approves.
     Decision { decision_id: String, params_hash: String, approve: bool },
     Cancel { task_id: String },
     /// Pause or resume the assistant. Applied as soon as it's saved: while
@@ -481,7 +481,7 @@ pub enum EventSource {
 pub enum EventState {
     Received,
     Processing,
-    /// Waiting for the human to OK its cost before the model is called.
+    /// Waiting for the user to OK its cost before the model is called.
     Held,
     Done,
     Failed,
@@ -500,7 +500,7 @@ pub struct PersonalEvent {
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The human OK'd this reply's cost (over the budget, or unknown).
+    /// The user OK'd this reply's cost (over the budget, or unknown).
     #[serde(default)]
     pub spend_approved: bool,
     /// This reply was given computer tools, so running it again could repeat
@@ -512,14 +512,14 @@ pub struct PersonalEvent {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskStatus {
-    /// Waiting for the human: an approval or a question (`wait` says which).
+    /// Waiting for the user: an approval or a question (`wait` says which).
     NeedsYou,
     /// Approved and ready for the worker.
     Queued,
     Running,
     /// Approved, but waiting for a time, another task or a machine (`wait` says which).
     Waiting,
-    /// Can't go on without a change only the human can make.
+    /// Can't go on without a change only the user can make.
     Blocked,
     Done,
     Failed,
@@ -625,7 +625,7 @@ pub enum DecisionKind {
     Approve,
     /// A non-repeatable operation may or may not have happened. Run it again?
     Uncertain,
-    /// The human does this step themselves; approving means "I did it".
+    /// The user does this step themselves; approving means "I did it".
     HandOff,
     /// Go ahead although the cost is unknown or over the budget?
     Spend,
@@ -723,7 +723,7 @@ pub struct PersonalTask {
     pub decision: Option<PendingDecision>,
     #[serde(default)]
     pub receipts: Vec<OperationReceipt>,
-    /// The human event that started it.
+    /// The user event that started it.
     pub from_event: String,
     pub max_attempts: u32,
     pub created_at: u64,
@@ -1192,7 +1192,7 @@ impl crate::Host {
         }).and_then(|(event_id, duplicate)| Ok(Accepted { event_id, duplicate, assistant: self.personal_get(id)? }))
     }
 
-    /// Save the human's message and its event, then answer at once. The
+    /// Save the user's message and its event, then answer at once. The
     /// worker replies later.
     pub(crate) fn personal_send(&self, id: &str, request_id: &str, text: &str) -> Result<Accepted, String> {
         self.personal_send_with_context(id, request_id, text, None)

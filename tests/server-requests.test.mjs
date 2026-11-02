@@ -15,7 +15,7 @@ test('quoted code selections cannot request tool servers', () => {
  const quoted = '> Guard with !curating';
  assert.equal(findTrigger(quoted, quoted.length), null);
 });
-test('quoted backticks do not hide tool requests in the human prose that follows', () => {
+test('quoted backticks do not hide tool requests in the user prose that follows', () => {
  const text = '> Use `!curating\r\n  >> !missing\r\n\r\nUse !github';
  assert.deepEqual(parseServerRequests(text), [{name:'github',start:39,end:46}]);
  assert.equal(findTrigger(text, text.length)?.query, 'github');

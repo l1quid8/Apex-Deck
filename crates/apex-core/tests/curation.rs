@@ -171,7 +171,7 @@ fn digest_shows_whole_humans_and_both_ends_of_long_bot_messages() {
         &snap.participants,
         DIGEST_CHARS,
     );
-    assert!(d.contains("#3 [Human] line one line two"));
+    assert!(d.contains("#3 [User] line one line two"));
     assert!(d.contains("start of it"));
     assert!(d.contains("open question at the end"));
     assert!(!d.contains(&"buried middle".repeat(30)));
@@ -391,8 +391,8 @@ fn keeping_a_batch_advances_and_wraps_the_scan() {
     let (z, _) = curate(&mut r, &b);
     assert!(matches!(a,Ok(CurateOutcome::Nothing{unchecked}) if unchecked>0));
     let requests = b.requests();
-    assert!(requests[0].turns[0].content.contains("#0 [Human]"));
-    assert!(!requests[1].turns[0].content.contains("#0 [Human]"));
+    assert!(requests[0].turns[0].content.contains("#0 [User]"));
+    assert!(!requests[1].turns[0].content.contains("#0 [User]"));
     assert!(z.is_ok());
 }
 #[test]
@@ -417,12 +417,12 @@ fn scan_wraps_after_the_end_and_resets_on_clear_and_rewind() {
     curate(&mut r, &b).0.unwrap();
     assert!(b.requests().last().unwrap().turns[0]
         .content
-        .contains("#0 [Human]"));
+        .contains("#0 [User]"));
     r.rewind(30);
     curate(&mut r, &b).0.unwrap();
     assert!(b.requests().last().unwrap().turns[0]
         .content
-        .contains("#0 [Human]"));
+        .contains("#0 [User]"));
     r.clear();
     assert!(r.snapshot().curations.is_empty());
 }
@@ -509,7 +509,7 @@ fn undo_resets_the_scan_for_restored_messages() {
     curate(&mut r, &b).0.unwrap();
     r.undo_curation(&|_| {});
     curate(&mut r, &b).0.unwrap();
-    assert!(b.requests()[1].turns[0].content.contains("#0 [Human]"));
+    assert!(b.requests()[1].turns[0].content.contains("#0 [User]"));
 }
 fn decoded_messages(journal: &str) -> Vec<String> {
     let mut messages = vec![];

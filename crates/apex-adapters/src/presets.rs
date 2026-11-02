@@ -466,13 +466,13 @@ mod tests {
 
     #[test]
     fn agy_reads_the_chat_from_stdin_as_a_message() {
-        let line = agy_stdin_line("[Human]: hi \"there\"\nsecond line");
+        let line = agy_stdin_line("[User]: hi \"there\"\nsecond line");
         assert!(line.ends_with('\n'));
         assert_eq!(line.matches('\n').count(), 1, "one NDJSON line");
         let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!(value["event"], "user");
         assert_eq!(value["message"]["role"], "user");
-        assert_eq!(value["message"]["content"], "[Human]: hi \"there\"\nsecond line");
+        assert_eq!(value["message"]["content"], "[User]: hi \"there\"\nsecond line");
     }
 
     #[test]

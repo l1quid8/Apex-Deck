@@ -80,7 +80,7 @@ impl Host {
     }
 
     /// On the other machine: run one operation for a remote assistant, if
-    /// the human allowed that assistant here and it's in the allowed folder.
+    /// the user allowed that assistant here and it's in the allowed folder.
     pub async fn personal_execute_local(&self, assistant_id: &str, assistant_host_id: &str, operation: OperationSpec) -> Result<ToolRun, String> {
         let local = self.local_host_id()?;
         if operation.host != local { return Err("That operation is for a different machine.".into()); }

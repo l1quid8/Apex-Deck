@@ -211,7 +211,7 @@ export async function connectRealtime(
   const pendingSubmissions = new Map<string, PendingSubmission>();
 
   // Only an app-created response for a committed, transcribed microphone item
-  // may act as the human. Model tool arguments never supply human-authored text.
+  // may act as the user. Model tool arguments never supply human-authored text.
   type InputTurn = { itemId: string; committed: boolean; transcript?: string; token?: string; responseId?: string; consumed: boolean };
   const inputs = new Map<string, InputTurn>();
   const seenInputs = new Set<string>();

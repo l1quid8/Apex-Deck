@@ -431,6 +431,14 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
   return <>
     <SitePermissions />
     <div className="settings-card">
+      <Row id="user-name" label="Name" note="Optional. Your bots see this in every thread on this machine.">
+        <input aria-label="Name" maxLength={60} value={settings.userName} onChange={e=>onChange({ ...settings, userName: e.target.value })} />
+      </Row>
+      <Row id="user-nickname" label="What agents should call you" note={'Optional. Used in plans and group chats. Left empty, they use your name, or "the user".'}>
+        <input aria-label="What agents should call you" maxLength={60} value={settings.userNickname} onChange={e=>onChange({ ...settings, userNickname: e.target.value })} />
+      </Row>
+    </div>
+    <div className="settings-card">
       <Row id="artifacts" label="New artifacts" note="When a bot writes a file, the artifacts pane can show.">
         <select aria-label="New artifacts" value={autoOpen ? "open" : "notify"} onChange={(e)=>{ const on=e.target.value==='open'; setArtifactAutoOpen(on); setAutoOpen(on); }}>
           <option value="open">Open the pane</option>

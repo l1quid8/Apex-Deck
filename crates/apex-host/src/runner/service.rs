@@ -334,7 +334,7 @@ impl RunnerService {
     }
 
     /// Yield without a manual pause. Busy room reservations keep automation out
-    /// until the human's accepted chain finishes.
+    /// until the user's accepted chain finishes.
     pub fn yield_to_human(&self, room: &str) -> Result<bool, String> {
         if !self.is_available() { return Ok(false); }
         let Some(mut s) = self.store.load(room)? else { return Ok(false); };

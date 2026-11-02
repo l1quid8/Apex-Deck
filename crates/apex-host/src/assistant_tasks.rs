@@ -102,8 +102,8 @@ pub struct TaskUsage {
 /// Shown on a task whose approval or question was open when the service restarted.
 pub const RESTART_WAIT_NOTE: &str = "The service restarted while this waited for you. Choose Retry to run the step again.";
 
-/// Whether a task with a spend limit must stop for the human: the reported
-/// cost reached the limit, or some turn's cost is unknown and the human hasn't
+/// Whether a task with a spend limit must stop for the user: the reported
+/// cost reached the limit, or some turn's cost is unknown and the user hasn't
 /// accepted unknown cost for this task yet.
 pub fn budget_hit(result_data: Option<&serde_json::Value>, usage: Option<&TaskUsage>) -> bool {
     let Some(limit) = result_data.and_then(|data| data["spendLimitMicros"].as_u64()) else { return false };
@@ -1943,7 +1943,7 @@ mod tests {
         drop(store);
         let reopened = AssistantTasks::open(ledger(&path)).unwrap();
         let restored = reopened.get(&task.id).unwrap().unwrap();
-        assert_eq!(restored.status, TaskStatus::NeedsYou, "a step waiting for the human is not given up as interrupted");
+        assert_eq!(restored.status, TaskStatus::NeedsYou, "a step waiting for the user is not given up as interrupted");
         assert!(restored.attempts[0].finished_at_ms.is_some(), "the dead attempt is closed");
         let data = restored.result_data.clone().unwrap();
         assert_eq!(data["diff"], "+kept", "review data survives the restart");
