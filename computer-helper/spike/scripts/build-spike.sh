@@ -16,6 +16,8 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Helpers" "$bundle/Contents/R
 cp Resources/Info.plist "$bundle/Contents/Info.plist"
 cp ../engine/vendor/LICENSE-agent-desktop "$bundle/Contents/Resources/LICENSE-agent-desktop"
 cp ../engine/PROVENANCE.md "$bundle/Contents/Resources/agent-desktop-PROVENANCE.md"
+cp ../../branding/macos/Assets.xcassets/ApexDeckMenuBar.imageset/ApexDeckMenuBar@1x.png "$bundle/Contents/Resources/MenuBarTemplate.png"
+cp ../../branding/macos/Assets.xcassets/ApexDeckMenuBar.imageset/ApexDeckMenuBar@2x.png "$bundle/Contents/Resources/MenuBarTemplate@2x.png"
 git rev-parse HEAD > "$bundle/Contents/Resources/source-commit.txt"
 cp .build/release/SpikeApp "$bundle/Contents/MacOS/SpikeApp"
 cp .build/release/SpikeMCP "$bundle/Contents/Helpers/SpikeMCP"
