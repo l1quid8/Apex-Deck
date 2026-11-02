@@ -36,6 +36,7 @@ pub mod stdio;
 pub mod websocket;
 
 pub mod voice;
+pub mod trust_host;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;

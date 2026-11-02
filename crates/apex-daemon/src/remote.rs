@@ -124,6 +124,15 @@ pub async fn serve(daemon: Arc<Daemon>, connection: Connection) {
     let id = connection.remote_id().to_string();
     // Hear of revokes before the check, so one in between isn't missed.
     let mut revokes = daemon.devices.subscribe();
+    // Confined epoch: if host is trusted, only devices carrying current epoch may act.
+    if let Some(device) = daemon.devices.get(&id) {
+        if let Some(current_epoch) = crate::trust_host::epoch(&daemon.data) {
+            if device.confined_epoch.as_deref() != Some(current_epoch.as_str()) {
+                connection.close(close::NOT_PAIRED.into(), b"this device was paired before trust and must pair again");
+                return;
+            }
+        }
+    }
     if daemon.devices.get(&id).is_none() {
         connection.close(close::NOT_PAIRED.into(), b"this device isn't paired with this machine");
         return;

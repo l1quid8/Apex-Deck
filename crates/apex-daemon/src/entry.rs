@@ -55,6 +55,10 @@ pub fn run() {
         Action::AllowRoot(action) => exit(promote_cli::run(cli.data_dir, action)),
         Action::Pair(options) => exit(pair_cli::run(cli.data_dir, options)),
         Action::Remote(action) => exit(pair_cli::run_remote(cli.data_dir, action)),
+        Action::TrustHost { no_reboot } => exit({
+            let data = crate::paths::host_paths(cli.data_dir).map(|p| p.data);
+            data.and_then(|d| crate::trust_host::run(&d, no_reboot))
+        }),
     }
 }
 
