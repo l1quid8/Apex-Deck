@@ -96,39 +96,97 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('utterance1', got, f"first fragment lost, got {got}")
             self.assertIn('utterance2', got, f"second fragment lost, got {got}")
 
-    async def test_playback_without_progress_is_recoverable(self):
-        """R1: if client never sends playbackProgress, TTS should still flow via stallRecover, not close with 1011."""
+    async def _session(self, ws):
+        await ws.send(json.dumps({'type':'auth','token':self.token}))
+        await ws.send(json.dumps({'type':'start','callId':'c','generation':0,'voice':'am_michael','silenceMs':100}))
+        self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(),2))['type'],'ready')
+
+    async def _speak_frames(self, ws, frames, seq=0):
+        from voice_sidecar.protocol import encode_audio
+        for pcm in frames:
+            seq+=1
+            await ws.send(encode_audio(0, seq, pcm))
+            await asyncio.sleep(0.005)
+        events=[]
+        with contextlib.suppress(asyncio.TimeoutError):
+            while True:
+                raw=await asyncio.wait_for(ws.recv(),0.8)
+                if not isinstance(raw, bytes):
+                    events.append(json.loads(raw))
+        return events
+
+    async def test_playback_waits_for_a_stalled_device_and_loses_nothing(self):
+        """R1: a paused or stalled player holds speech back; nothing beyond the five-second buffer is sent, the call stays up, and all of it arrives once playback moves."""
         from websockets.asyncio.client import connect
         async with connect(self.url, origin='app://deck') as ws:
-            await ws.send(json.dumps({'type':'auth','token':self.token}))
-            await ws.send(json.dumps({'type':'start','callId':'c','generation':0,'voice':'am_michael'}))
-            self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(),2))['type'],'ready')
+            await self._session(ws)
             for i in range(12):
                 await ws.send(json.dumps({'type':'speak','callId':'c','generation':0,'requestId':'r','segmentId':i+1,'text':f'Sentence {i}.'}))
             audio_bytes = 0
             async def pump():
                 nonlocal audio_bytes
-                try:
-                    async for m in ws:
-                        if isinstance(m, bytes):
-                            audio_bytes+=len(m)-12
-                except (asyncio.CancelledError, Exception):
-                    return
+                async for m in ws:
+                    if isinstance(m, bytes):
+                        audio_bytes+=len(m)-12
             p = asyncio.create_task(pump())
-            # Never send playbackProgress, but send playbackComplete occasionally to mimic original repro
-            for _ in range(5):
-                await asyncio.sleep(1)
-                with contextlib.suppress(Exception):
-                    await ws.send(json.dumps({'type':'playbackComplete','callId':'c','generation':0}))
-                if ws.close_code:
-                    break
+            await asyncio.sleep(4.5)
+            self.assertIsNone(ws.close_code, "call ended during a stall")
+            self.assertLessEqual(audio_bytes, 240000, "sent more than the player can hold")
+            for _ in range(8):
+                await ws.send(json.dumps({'type':'playbackProgress','callId':'c','generation':0,'bytes':48000}))
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.3)
             p.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError):
                 await p
-            # All 12 sentences = 12 * 48000 = 576000 bytes = 12 sec
-            # With recovery, should deliver close to 12 sec, not 5 sec, and not close with 1011
-            self.assertNotEqual(ws.close_code, 1011, "call ended with overload 1011")
-            self.assertGreaterEqual(audio_bytes, 48000*10, f"only {audio_bytes/48000:.1f}s delivered, expected >=10s")
+            self.assertEqual(audio_bytes, 576000)
+
+    async def test_speech_too_short_to_transcribe_is_reported(self):
+        """A start of speech that never completes must not leave the client waiting: a paused reply resumes on this event."""
+        from websockets.asyncio.client import connect
+        async with connect(self.url, origin='app://deck') as ws:
+            await self._session(ws)
+            self.Fake.instance.probs = [0.9]*4 + [0]*8
+            events = await self._speak_frames(ws, [b'\1\0'*512]*12)
+            self.assertEqual([e['type'] for e in events], ['speechStart','transcriptRejected'])
+            self.assertEqual(events[1]['reason'], 'tooShort')
+
+    async def test_short_loud_word_survives_a_silent_tail(self):
+        """The energy check reads the speech, not the quiet frame that ended it."""
+        from websockets.asyncio.client import connect
+        async with connect(self.url, origin='app://deck') as ws:
+            await self._session(ws)
+            self.Fake.instance.stt_delay = 0
+            self.Fake.instance.transcribe = lambda pcm, hints: {'text':'Cancel', 'no_speech':[0.1], 'logprob':[-0.2], 'ratio':[1.0]}
+            self.Fake.instance.probs = [0.9]*7 + [0]*6
+            events = await self._speak_frames(ws, [b'\0\x20'*512]*7 + [b'\0\0'*512]*6)
+            self.assertEqual([e.get('text') for e in events if e['type']=='transcript'], ['Cancel'], events)
+
+    async def test_answering_the_agents_question_is_not_echo(self):
+        """Quiet playback: repeating a word the agent said is an answer, not the speakers."""
+        from websockets.asyncio.client import connect
+        async with connect(self.url, origin='app://deck') as ws:
+            await self._session(ws)
+            await ws.send(json.dumps({'type':'speak','callId':'c','generation':0,'requestId':'r','segmentId':1,'text':'Say yes or say cancel.'}))
+            while not isinstance(await asyncio.wait_for(ws.recv(),2), bytes): pass
+            await ws.send(json.dumps({'type':'playbackProgress','callId':'c','generation':0,'bytes':48000}))
+            await asyncio.sleep(0.05)
+            self.Fake.instance.stt_delay = 0
+            self.Fake.instance.transcribe = lambda pcm, hints: {'text':'Yes.', 'no_speech':[0.1], 'logprob':[-0.2], 'ratio':[1.0]}
+            self.Fake.instance.probs = [0.9]*12 + [0]*6
+            events = await self._speak_frames(ws, [b'\0\x20'*512]*18)
+            self.assertEqual([e.get('text') for e in events if e['type']=='transcript'], ['Yes.'], events)
+
+    async def test_frame_logging_is_sampled(self):
+        """Per-frame audio lines would flood the log; about one a second is enough."""
+        from websockets.asyncio.client import connect
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            async with connect(self.url, origin='app://deck') as ws:
+                await self._session(ws)
+                await self._speak_frames(ws, [b'\1\0'*512]*62)
+        chunks = [l for l in err.getvalue().splitlines() if '"audioChunk"' in l]
+        self.assertEqual(len(chunks), 2)
 
     async def test_transcript_rejected_event_and_echo(self):
         """New events: transcriptRejected and echo detection."""

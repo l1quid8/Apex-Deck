@@ -1,5 +1,6 @@
 import { readCallLook } from "./callView.ts";
 import type { CallEngine, VoicePreferences, VoiceSettings } from "./types.ts";
+export const DEFAULT_SILENCE_MS = 700;
 export const REALTIME_VOICES = [
   "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar",
 ] as const;
@@ -85,8 +86,10 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
     ...(defaultVoice ? { defaultVoice } : {}),
     silenceMs:
       typeof r.silenceMs === "number" && Number.isFinite(r.silenceMs)
-        ? Math.min(2000, Math.max(100, Math.round(r.silenceMs)))
-        : 100,
+        ? r.silenceMs === 100
+          ? DEFAULT_SILENCE_MS // The old default split sentences at ordinary pauses.
+          : Math.min(2000, Math.max(300, Math.round(r.silenceMs)))
+        : DEFAULT_SILENCE_MS,
     look: readCallLook(r.look),
     preferences,
     engine: readCallEngine(r.engine),

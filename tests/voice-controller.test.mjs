@@ -123,7 +123,7 @@ test("call default off, transcript once, matching reply, interruption, end", asy
   await new Promise((r) => setTimeout(r, 0));
   // Talking over the agent only cancels once the new words are a message.
   assert.equal(f.stopped.length, 0);
-  f.event({ ...t, generation: 1, utteranceId: "u2", text: "Never mind that" });
+  f.event({ ...t, generation: 0, utteranceId: "u2", text: "Never mind that" });
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(f.stopped.length, 1);
   assert.equal(f.posted.length, 2);
@@ -193,9 +193,9 @@ test("repeated interruption drops old transcript waiting on cleanup", async () =
   await new Promise((r) => setTimeout(r, 0));
   event("speechStart", 0);
   await new Promise((r) => setTimeout(r, 0));
-  event("transcript", 1, { utteranceId: "u1", text: "stale second" });
+  event("transcript", 0, { utteranceId: "u1", text: "stale second" });
   event("speechStart", 1);
-  event("transcript", 2, { utteranceId: "u2", text: "replacement third" });
+  event("transcript", 1, { utteranceId: "u2", text: "replacement third" });
   await new Promise((r) => setTimeout(r, 0));
   release();
   await new Promise((r) => setTimeout(r, 0));
@@ -434,7 +434,7 @@ test("switching agents mid-call keeps the previous agent working", async () => {
     await new Promise((r) => setImmediate(r));
     if (how === "spoken") {
       event({ type: "speechStart", generation: 0 });
-      event({ type: "transcript", generation: 1, utteranceId: "u1", text: "Call Jigga, what's next?" });
+      event({ type: "transcript", generation: 0, utteranceId: "u1", text: "Call Jigga, what's next?" });
     } else {
       await f.c.switchAgent({ hostId: "h", roomId: "r", participantId: "b" });
     }
@@ -788,4 +788,68 @@ test('a newer call wins while an older one still waits for the previous call to 
  await Promise.all([older,newer]);
  assert.equal(f.c.getState().scope.roomId,'newer');
  await f.c.end();
+});
+
+const replying = async () => {
+  const held = [];
+  const f = fixture();
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  const ev = (e) => f.event({ callId: start.callId, generation: 0, ...e });
+  ev({ type: "ready", voices: ["am_michael"] });
+  ev({ type: "transcript", utteranceId: "first", text: "Explain the build" });
+  await new Promise((r) => setTimeout(r, 0));
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "text", text: "The build passed today. " });
+  f.playing();
+  return { f, ev, held };
+};
+
+test("speech over a reply pauses it without cancelling, and a rejection resumes it", async () => {
+  const { f, ev } = await replying();
+  const cancels = () => f.sent.filter((m) => m.type === "cancel").length;
+  const before = cancels();
+  ev({ type: "speechStart" });
+  assert.equal(f.c.getState().status, "hearing");
+  assert.equal(cancels(), before, "noise must not end the reply");
+  assert.deepEqual(f.stopped, []);
+  ev({ type: "transcriptRejected", reason: "echo" });
+  assert.equal(f.c.getState().status, "speaking");
+  ev({ type: "transcriptRejected", reason: "tooShort" });
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "text", text: "Still heard after the noise. " });
+  assert.equal(f.sent.filter((m) => m.type === "speak").length, 2, "the reply keeps flowing");
+  await f.c.end();
+});
+
+test("a real transcript over a reply cancels it and sends the new words", async () => {
+  const { f, ev } = await replying();
+  const before = f.sent.filter((m) => m.type === "cancel").length;
+  ev({ type: "speechStart" });
+  ev({ type: "transcript", utteranceId: "second", text: "Stop and do this instead" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(f.sent.filter((m) => m.type === "cancel").length, before + 1);
+  assert.equal(f.posted.at(-1).text, "Stop and do this instead");
+  await f.c.end();
+});
+
+test("a failed reply speaks the failure and leaves the call up", async () => {
+  const { f } = await replying();
+  f.drained();
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "failed", text: "model at capacity" });
+  assert.equal(f.sent.filter((m) => m.type === "speak").at(-1).text, "That reply failed. The details are in the thread.");
+  assert.notEqual(f.c.getState().status, "error");
+  assert.notEqual(f.c.getState().status, "off");
+  await f.c.end();
+});
+
+test("a long reply keeps speaking after the text ends, until its last segment drains", async () => {
+  const { f } = await replying();
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "text", text: "A second sentence follows here. " });
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "done" });
+  const spoken = f.sent.filter((m) => m.type === "speak").length;
+  assert.ok(spoken >= 2);
+  for (let i = 0; i < spoken - 1; i++) f.drained();
+  assert.equal(f.c.getState().status, "speaking");
+  f.drained();
+  assert.equal(f.c.getState().status, "listening");
+  await f.c.end();
 });

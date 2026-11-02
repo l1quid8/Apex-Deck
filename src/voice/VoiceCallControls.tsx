@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Avatar } from "../Avatar";
 import { popoverTop } from "../floating.ts";
 import { CALL_LOOKS, callClock, callLine, pickNote, pickRows, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
+import { subscribePlaybackLevel } from "./playbackLevel.ts";
 import { callEngine, voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
 import { CALL_ENGINES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, chatVoice, preferenceFor, readRealtimeModel, readRealtimeVoice, realtimeVoiceLabel, voiceFor, withChatPreference } from "./settings.ts";
 import type { VoiceCandidate, VoiceSettings } from "./types.ts";
@@ -92,8 +93,17 @@ const Icon = {
 };
 
 function Wave({ mode }: { mode: WaveMode }) {
+  const box = useRef<HTMLSpanElement>(null);
+  // GPT-Live plays through its own stream, so only the other engines have a measured level.
+  const metered = mode === "bot" && callEngine() !== "realtime";
+  useEffect(() => {
+    if (!metered) return;
+    return subscribePlaybackLevel((level) => box.current?.style.setProperty("--level", String(Math.min(1, level * 4))));
+  }, [metered]);
+  if (mode === "mic" || mode === "you" || mode === "muted")
+    return <span className="voice-wave" data-mode={mode} aria-hidden="true">{mode === "muted" ? Icon.micOff : Icon.mic}</span>;
   return (
-    <span className="voice-wave" data-mode={mode} aria-hidden="true">
+    <span ref={box} className="voice-wave" data-mode={mode} data-metered={metered || undefined} aria-hidden="true">
       <i />
       <i />
       <i />
@@ -314,7 +324,7 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
       {!live && (
         <label className="voice-set-row col">
           <span>Pause before reply <b>{settings.silenceMs} ms</b></span>
-          <input type="range" min="100" max="2000" step="50" value={settings.silenceMs}
+          <input type="range" min="300" max="2000" step="50" value={settings.silenceMs}
             onChange={(e) => saveSettings({ silenceMs: e.target.valueAsNumber })} />
         </label>
       )}

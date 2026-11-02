@@ -1,5 +1,7 @@
 export interface VoiceAudio {
   mute(value: boolean): void;
+  /** Pauses playback where it is; `flush` also lets go. */
+  hold?(value: boolean): void;
   play(pcm: Int16Array, generation: number): void;
   segmentEnd(id: number, generation: number): void;
   flush(generation: number): void;
@@ -137,6 +139,10 @@ export async function openVoiceAudio(
       echoCancellation:
         stream.getAudioTracks()[0].getSettings().echoCancellation === true,
       mute: (value) => { note("mute", { muted: value }); input.port.postMessage({ muted: value }); },
+      hold: (value) => {
+        note("playbackHold", { held: value });
+        output.port.postMessage({ type: "hold", held: value });
+      },
       play: (pcm, generation) => {
         note("ttsQueued", { bytes: pcm.byteLength, generation });
         output.port.postMessage({ type: "audio", pcm, generation }, [pcm.buffer]);

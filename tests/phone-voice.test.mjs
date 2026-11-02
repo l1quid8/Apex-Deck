@@ -174,7 +174,7 @@ test("offscreen approval marks attention without navigating; opening clears it",
   assert.equal(f.voice.view().attention, false);
   await f.voice.controller.end("test", { keepWork: true });
 });
-test("failed voice post ends its call with the error", async () => {
+test("a failed voice post keeps the call up and says so", async () => {
   const f = fixture();
   await f.voice.controller.start(f.voice.candidates("h", "r")[0]);
   f.event({ type: "ready", voices: ["am_michael"] });
@@ -189,8 +189,7 @@ test("failed voice post ends its call with the error", async () => {
     Error("post failed"),
   );
   await tick();
-  assert.equal(f.voice.controller.getState().status, "error");
-  assert.match(f.voice.controller.getState().error, /post failed/);
+  assert.equal(f.voice.controller.getState().status, "listening");
   assert.equal(f.stopped.length, 0);
 });
 test("the Mac's saved voices carry over; a settings load failure keeps phone settings", async () => {
@@ -205,8 +204,8 @@ test("the Mac's saved voices carry over; a settings load failure keeps phone set
   await f.voice.controller.start(f.scope);
   assert.equal(f.sent.find((m) => m.type === "start").voice, "bf_emma");
   await f.voice.controller.end();
-  f.voice.save({ ...f.voice.settingsFor("h"), silenceMs: 200 }, "h");
-  assert.equal(f.voice.settingsFor("h").silenceMs, 200);
+  f.voice.save({ ...f.voice.settingsFor("h"), silenceMs: 400 }, "h");
+  assert.equal(f.voice.settingsFor("h").silenceMs, 400);
   assert.equal(f.voice.settingsFor("h").look, "capsule");
   const g = fixture();
   g.host.backend.settingsLoad = async () => {

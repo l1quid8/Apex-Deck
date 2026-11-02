@@ -57,3 +57,23 @@ test('ended microphone track reacquires input and close releases replacement', a
     assert.equal(streams[1].getTracks()[0].stopped,true);
   } finally { if(old)Object.defineProperty(globalThis,'navigator',old);else delete globalThis.navigator; delete globalThis.AudioContext;delete globalThis.AudioWorkletNode; }
 });
+test('playback worklet holds its place and a flush lets go', () => {
+  let Processor;
+  const messages=[];
+  vm.runInNewContext(readFileSync(new URL('../src/voice/playback-worklet.js',import.meta.url),'utf8'), {
+    AudioWorkletProcessor: class {port={postMessage:m=>messages.push(m)};},
+    registerProcessor:(_n,p)=>Processor=p, sampleRate:24000,
+  });
+  const p=new Processor();
+  const tick=()=>{const out=new Float32Array(128);p.process([],[[out]]);return out;};
+  p.port.onmessage({data:{type:'audio',pcm:new Int16Array(256).fill(16384),generation:0}});
+  assert.ok(tick()[0]>0);
+  p.port.onmessage({data:{type:'hold',held:true}});
+  assert.equal(tick()[0],0);
+  assert.equal(p.offset,128,'a held reply keeps its place');
+  p.port.onmessage({data:{type:'hold',held:false}});
+  assert.ok(tick()[0]>0);
+  p.port.onmessage({data:{type:'hold',held:true}});
+  p.port.onmessage({data:{type:'flush',generation:1}});
+  assert.equal(p.held,false);
+});

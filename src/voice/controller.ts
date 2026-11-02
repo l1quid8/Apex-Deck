@@ -12,6 +12,7 @@ import type { VoiceAudio } from "./audio.ts";
 import type { LocalVoiceClient } from "./localClient.ts";
 import { resolveCallCommand } from "./routing.ts";
 import { SpeechText } from "./speechText.ts";
+import { AGENT_FAILED_SPEECH, createCallFlow } from "./callFlow.ts";
 export interface VoiceDependencies<R = VoiceRuntime> {
   runtime: {
     status(): Promise<{
@@ -74,6 +75,7 @@ export function createVoiceController<R = VoiceRuntime>(
   let cleanup: Promise<unknown> = Promise.resolve();
   const utterances = new Set<string>();
   let pendingSwitchText = "";
+  let submitting = 0;
   let playbackRequest = "";
   const submittedAt = new Map<string, number>();
   const seenTiming = new Set<string>();
@@ -104,12 +106,20 @@ export function createVoiceController<R = VoiceRuntime>(
   const stopAudio = (resetInput = false) => {
     generation++;
     audio?.flush(generation);
+    flow.flushed();
     control({ type: "cancel", resetInput });
   };
   const note = (event: string, detail: Record<string, unknown> = {}) =>
     console.warn(
-      "[voice event] " + JSON.stringify({ callId, event, ...detail }),
+      "[voice event] " + JSON.stringify({ ts: new Date().toISOString(), callId, event, ...detail }),
     );
+  const flow = createCallFlow({
+    publish: (status) => {
+      if (!["off", "setup", "error"].includes(state.status) && !state.reconnecting) set({ status });
+    },
+    hold: (value) => audio?.hold?.(value),
+    log: note,
+  });
   let reconnecting = false;
   function error(e: Error) {
     if (state.status === "off" || state.status === "error") return;
@@ -123,8 +133,10 @@ export function createVoiceController<R = VoiceRuntime>(
       .finally(() => set({ status: "error", scope, error: e.message }));
   }
   function detach() {
-    active?.unlisten();
+    if (!active) return;
+    active.unlisten();
     active = undefined;
+    flow.turnEnd();
   }
   // A reply you talked over. It is only cancelled once your next words turn
   // out to be a new message for the same agent; switching agents or ending
@@ -165,6 +177,7 @@ export function createVoiceController<R = VoiceRuntime>(
     // Ending a call only stops the audio. The agent keeps working and its
     // reply still lands in the thread.
     release();
+    flow.reset();
     const stopping = cleanup;
     set({
       status: "off",
@@ -195,6 +208,7 @@ export function createVoiceController<R = VoiceRuntime>(
     client = undefined;
     generation++;
     audio?.flush(generation);
+    flow.flushed();
     set({ status: "warming", reconnecting: true });
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -212,7 +226,7 @@ export function createVoiceController<R = VoiceRuntime>(
           }
           client = connected;
           sendStart(scope);
-          set({ reconnecting: false });
+          set({ status: flow.status, reconnecting: false });
           note("helper reconnected", { attempt });
           return;
         } catch (e) {
@@ -232,7 +246,7 @@ export function createVoiceController<R = VoiceRuntime>(
       }
     } finally {
       reconnecting = false;
-      if (state.reconnecting) set({ reconnecting: false });
+      if (state.reconnecting) set({ status: flow.status, reconnecting: false });
     }
   }
   function connectHelper(runtime: R) {
@@ -260,6 +274,7 @@ export function createVoiceController<R = VoiceRuntime>(
   function say(text: string, requestId: string) {
     sinceSubmit("first-speech-submit", requestId);
     if (!client || !state.scope) return;
+    flow.spoken();
     control({
       type: "speak",
       text,
@@ -284,15 +299,18 @@ export function createVoiceController<R = VoiceRuntime>(
         a.id,
       );
       deps.focus(a.scope);
-      set({ status: "needs-attention" });
+      flow.attention(true);
     } else if (e.type === "failed") {
+      // A failed reply is that reply's problem; the call stays up and says so.
       a.failed = true;
-      error(Error(e.text ?? "Agent call failed"));
+      note("agentFailed", { reason: e.text ?? "Agent call failed" });
+      say(AGENT_FAILED_SPEECH, a.id);
+      detach();
     } else if (e.type === "done" || e.type === "canceled") {
       if (e.type === "done" && !a.failed)
         for (const part of a.speech.push("", true)) say(part, a.id);
       detach();
-      set({ status: "listening" });
+      if (!state.candidates?.length) flow.attention(false);
     }
   }
   async function submit(text: string, utteranceId: string, route = true) {
@@ -321,7 +339,8 @@ export function createVoiceController<R = VoiceRuntime>(
       if (["cancel", "never mind", "nevermind", "no"].includes(answer)) {
         pendingSwitchText = "";
         stopAudio(true);
-        set({ status: "listening", candidates: undefined, threadQuery: undefined, error: undefined });
+        set({ candidates: undefined, threadQuery: undefined, error: undefined });
+        flow.attention(false);
         return;
       }
       const matching = choices.filter((c) =>
@@ -331,7 +350,7 @@ export function createVoiceController<R = VoiceRuntime>(
       if (pick.length === 1 && deps.candidates().some((c) => same(c, pick[0]))) {
         parsed = { kind: "switch", candidate: pick[0], text: "" };
       } else {
-        set({ status: "needs-attention" });
+        flow.attention(true);
         say("Say a thread name from the list, or say cancel.", crypto.randomUUID());
         return;
       }
@@ -343,11 +362,11 @@ export function createVoiceController<R = VoiceRuntime>(
     if (parsed.kind === "unknown") {
       pendingSwitchText = "";
       set({
-        status: "needs-attention",
         candidates: undefined,
         threadQuery: undefined,
         error: "No matching agent. Choose a recipient.",
       });
+      flow.attention(true);
       return;
     }
     if (parsed.kind === "ambiguous") {
@@ -358,11 +377,11 @@ export function createVoiceController<R = VoiceRuntime>(
         ? single ? `Did you mean “${titles[0]}”?` : "Which thread did you mean?"
         : "Choose which agent to call.";
       set({
-        status: "needs-attention",
         candidates: parsed.candidates,
         threadQuery: parsed.threadQuery,
         error: question,
       });
+      flow.attention(true);
       if (parsed.threadQuery !== undefined) {
         const options = !single ? titles.slice(0, 3).join(", ") + ". " : "";
         const instructions = !single && titles.length === 1
@@ -409,18 +428,23 @@ export function createVoiceController<R = VoiceRuntime>(
       speech: new SpeechText(),
       failed: false,
     };
-    set({ status: "waiting", error: undefined });
+    set({ error: undefined });
+    flow.turnStart();
     try {
       await bridge.submit(turn);
     } catch (e) {
-      if (currentEpoch === epoch && active?.id === id)
-        error(e instanceof Error ? e : Error(String(e)));
+      if (currentEpoch === epoch && active?.id === id) {
+        note("agentFailed", { reason: e instanceof Error ? e.message : String(e) });
+        say(AGENT_FAILED_SPEECH, id);
+        detach();
+      }
     }
   }
   async function switchAgent(scope: CallScope) {
     if (!callId) return start(scope);
     if (state.candidates?.some((c) => same(c, scope)) && !deps.candidates().some((c) => same(c, scope))) {
-      set({ status: "needs-attention", error: "That thread is no longer available. Choose another thread." });
+      set({ error: "That thread is no longer available. Choose another thread." });
+      flow.attention(true);
       return;
     }
     const pending = state.candidates?.some((c) => same(c, scope)) ? pendingSwitchText : "";
@@ -432,11 +456,11 @@ export function createVoiceController<R = VoiceRuntime>(
     if (!callId) return;
     set({
       scope,
-      status: "listening",
       candidates: undefined,
       threadQuery: undefined,
       error: undefined,
     });
+    flow.attention(false);
     deps.focus(scope);
     if (pending) {
       await submit(pending, crypto.randomUUID(), false);
@@ -466,7 +490,7 @@ export function createVoiceController<R = VoiceRuntime>(
       const muted = state.muted || !valid;
       audio?.mute(muted);
       set({
-        status: valid ? "listening" : "needs-attention",
+        status: valid ? flow.status : "needs-attention",
         voices,
         semantic: e.semantic === true,
         muted,
@@ -474,15 +498,26 @@ export function createVoiceController<R = VoiceRuntime>(
           ? undefined
           : "Choose an installed voice, then unmute the microphone.",
       });
+      if (!valid) flow.attention(true);
     } else if (e.type === "speechStart" && !state.muted) {
-      stopAudio();
-      interrupt();
-      set({ status: "hearing" });
+      // Noise can sound like speech, so this only pauses the reply. The transcript decides.
+      flow.speechStart();
+    } else if (e.type === "transcriptRejected") {
+      flow.speechRejected((e as HelperEvent & { reason?: string }).reason ?? "rejected");
+    } else if (e.type === "speechDropped") {
+      note("speechDropped", { requestId: e.requestId });
+      flow.dropped();
     } else if (e.type === "transcript" && !state.muted) {
       const id = (e as HelperEvent & { utteranceId: string }).utteranceId;
       if (!id || utterances.has(id)) return;
       utterances.add(id);
-      void submit(e.text ?? "", id).catch((err) => error(Error(String(err))));
+      // Newer words also replace a message still waiting to go out.
+      if (flow.speechConfirmed() || submitting) stopAudio();
+      interrupt();
+      submitting++;
+      void submit(e.text ?? "", id)
+        .catch((err) => error(Error(String(err))))
+        .finally(() => submitting--);
     } else if (e.type === "audioEnd" && e.segmentId !== undefined)
       audio?.segmentEnd(e.segmentId, generation);
     else if (e.type === "error")
@@ -586,6 +621,7 @@ export function createVoiceController<R = VoiceRuntime>(
   function preview(voice: string) {
     if (!callId || !state.voices.includes(voice)) return;
     stopAudio();
+    flow.spoken();
     control({
       type: "speak",
       requestId: "preview",
@@ -630,12 +666,12 @@ export function createVoiceController<R = VoiceRuntime>(
         },
         (id) => {
           control({ type: "playbackComplete", segmentId: id });
-          if (callId && !active) set({ status: state.candidates?.length ? "needs-attention" : "listening" });
+          if (callId) flow.drained();
         },
         () => {
           if (callId) {
             if (playbackRequest) sinceSubmit("playback-start", playbackRequest);
-            set({ status: state.candidates?.length ? "needs-attention" : "speaking" });
+            flow.playing();
           }
         },
         error,
@@ -677,6 +713,7 @@ export function createVoiceController<R = VoiceRuntime>(
     end,
     switchAgent,
     mute(value: boolean) {
+      if (value) flow.speechRejected("muted");
       set({ muted: value });
       // Muting only stops the mic; the agent keeps working and speaking.
       audio?.mute(value);

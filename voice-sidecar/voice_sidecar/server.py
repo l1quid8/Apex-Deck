@@ -82,12 +82,10 @@ async def run(args):
    if owner is not None:await ws.close(1008,'Call already active');return
    owner=ws
    if origin=='apex-daemon':await ws.send(json.dumps({'type':'authenticated','protocolVersion':1}))
-   sequence=0;last_input=-1;pending=set();chunks=[];speech_queue=asyncio.Queue(maxsize=512);last_cancel_reset=None
+   sequence=0;last_input=-1;speech_peak=0;pending=set();chunks=[];speech_queue=asyncio.Queue(maxsize=512);last_cancel_reset=None
    recent_agent=deque(maxlen=10)
    recent_agent_full=deque(maxlen=5)
    last_agent_concat=''
-   # Playback stall tracking
-   stall_since=None
    async def send(event):
     nonlocal sequence
     if event['type']=='audio':
@@ -103,12 +101,8 @@ async def run(args):
        window.wake.clear()
       except asyncio.TimeoutError:
        pass
+      # A held reply or stalled device: keep waiting, a cancel frees this window. Sending anyway overflows the player.
       waited+=1.0
-      if waited>=3.0:
-       # Recoverable: client never consumed (e.g. Meta path missing onConsumed). Reset to allow progress and log.
-       _voice_log('playbackStallRecover', pipe.call_id if 'pipe' in locals() else '', pipe.generation if 'pipe' in locals() else None, pendingBefore=window.pending, waitedSec=round(waited,1))
-       window.reset()
-       break
      if event['generation']!=pipe.generation:
       # Generation moved after we waited, don't send stale audio but credit already accounted? We haven't reserved yet.
       # Reserve now only if gen still valid
@@ -123,7 +117,6 @@ async def run(args):
       return
      sequence+=1
      await ws.send(encode_audio(event['generation'],sequence,event['pcm']))
-     _voice_log('ttsChunkSent', event.get('callId',''), event.get('generation'), bytes=len(event['pcm']), sequence=sequence)
     else:
      await ws.send(json.dumps(event))
    async def synth(t,v):
@@ -170,7 +163,7 @@ async def run(args):
     duration=len(pcm)/32000 if pcm else 0
     return {'text':text, 'no_speech':no_speech, 'logprob':logprob, 'ratio':ratio, 'durationSec':duration}
 
-   async def transcript(tasks,gen,call,over_agent=False, voiced_frames=0, avg_rms=0, last_cancel_reset_local=None):
+   async def transcript(tasks,gen,call,over_agent=False, voiced_frames=0, peak_rms=0, last_cancel_reset_local=None):
     t=time.monotonic()
     # Gather all chunk results
     results=await asyncio.gather(*tasks, return_exceptions=True)
@@ -206,13 +199,13 @@ async def run(args):
     avg_no_speech=sum(all_no_speech)/len(all_no_speech) if all_no_speech else 0.0
     avg_logprob=sum(all_logprob)/len(all_logprob) if all_logprob else 0.0
     max_ratio=max(all_ratio) if all_ratio else 0.0
-    _voice_log('sttResult', call, gen, wordCount=word_count, charLen=char_len, durationSec=round(total_dur,2), avgNoSpeechProb=round(avg_no_speech,3), avgLogprob=round(avg_logprob,3), maxCompRatio=round(max_ratio,2), overAgent=over_agent, voicedFrames=voiced_frames, avgRms=avg_rms)
+    _voice_log('sttResult', call, gen, wordCount=word_count, charLen=char_len, durationSec=round(total_dur,2), avgNoSpeechProb=round(avg_no_speech,3), avgLogprob=round(avg_logprob,3), maxCompRatio=round(max_ratio,2), overAgent=over_agent, voicedFrames=voiced_frames, avgRms=peak_rms)
 
     # Filtering pipeline
     reason=None
     if not text or not words:
      reason='empty'
-    elif _is_echo(text, recent_agent_full):
+    elif over_agent and _is_echo(text, recent_agent_full):
      reason='echo'
     elif made_up(text, hints, all_ratio, all_no_speech, all_logprob):
      reason='madeUp'
@@ -224,15 +217,15 @@ async def run(args):
        reason='stockOverAgent'
       elif any(p>0.3 for p in all_no_speech) or any(p<-0.7 for p in all_logprob):
        reason='stockLowConf'
-      elif avg_rms<5 and voiced_frames<8:
+      elif peak_rms<5 and voiced_frames<8:
        reason='stockLowEnergy'
      if reason is None and word_count<=2:
       # Very short utterance requires minimum voiced duration; allow real short thanks in quiet room if confident
       if voiced_frames<6:
        # But keep if it's a plausible short thank you with decent energy and no low-conf metrics
-       if not (normalized in ('thank you','thanks') and avg_rms>=5 and not all_no_speech and not all_logprob):
+       if not (normalized in ('thank you','thanks') and peak_rms>=5 and not all_no_speech and not all_logprob):
         reason='tooShortLowEnergy'
-      elif avg_rms<5 and voiced_frames<10 and word_count==1:
+      elif peak_rms<5 and voiced_frames<10 and word_count==1:
        reason='tooShortLowEnergy'
       elif any(p>0.5 for p in all_no_speech) or any(p<-1.0 for p in all_logprob):
        reason='tooShortLowConf'
@@ -263,6 +256,7 @@ async def run(args):
      # For barge-in preservation we allow gen==pipe.generation-1 regardless of last_cancel_reset if over_agent was true
      if not (over_agent and gen==pipe.generation-1):
       _voice_log('transcriptRejected', call, gen, reason='staleGeneration', wordCount=word_count, currentGen=pipe.generation)
+      await send(dict(type='transcriptRejected', callId=call, generation=pipe.generation, reason='staleGeneration'))
       return
     # Passed
     uid=secrets.token_hex(12)
@@ -288,8 +282,9 @@ async def run(args):
      last_input=seq
      rms_val=_rms(pcm)
      prob=await asyncio.to_thread(engines.probability,pcm)
-     _voice_log('audioChunk', pipe.call_id, pipe.generation, seq=seq, rms=rms_val, prob=round(prob,3), pendingAudio=len(endpoint.audio), creditsPending=credits.pending, agentAudible=credits.pending>0)
+     if seq%31==0:_voice_log('audioChunk', pipe.call_id, pipe.generation, seq=seq, rms=rms_val, prob=round(prob,3), pendingAudio=len(endpoint.audio), creditsPending=credits.pending, agentAudible=credits.pending>0)
      events=endpoint.push(pcm,prob,credits.pending>0)
+     if prob>=.35:speech_peak=max(speech_peak,rms_val)
      if 'candidate' in events:
       complete=await loop.run_in_executor(pool,engines.complete,b''.join(endpoint.audio))
       _voice_log('vadCandidate', pipe.call_id, pipe.generation, complete=complete, quietFrames=endpoint.quiet, voicedFrames=endpoint.voiced)
@@ -301,6 +296,10 @@ async def run(args):
        if credits.pending>0:
         _voice_log('bargeIn', pipe.call_id, pipe.generation, overAgent=True)
        await send(dict(type='speechStart',callId=pipe.call_id,generation=gen))
+      elif event=='discarded':
+       speech_peak=0
+       _voice_log('transcriptRejected', pipe.call_id, pipe.generation, reason='tooShort', voicedFrames=endpoint.voiced)
+       await send(dict(type='transcriptRejected',callId=pipe.call_id,generation=pipe.generation,reason='tooShort'))
       elif event=='partial-ready':
        if len(chunks)>=8:
         _voice_log('sttChunkOverflow', pipe.call_id, pipe.generation, chunks=len(chunks))
@@ -308,10 +307,6 @@ async def run(args):
         try:
          oldest=chunks.pop(0)
          oldest.cancel()
-        except Exception:
-         pass
-        try:
-         await send(dict(type='transcriptRejected', callId=pipe.call_id, generation=pipe.generation, reason='utteranceTooLong'))
         except Exception:
          pass
         # Continue, don't raise
@@ -328,23 +323,15 @@ async def run(args):
          pending.discard(oldest_pending)
         except Exception:
          pass
-        # Also emit rejected
-        try:
-         await send(dict(type='transcriptRejected', callId=pipe.call_id, generation=pipe.generation, reason='processingOverloaded'))
-        except Exception:
-         pass
         # Continue processing current complete instead of raising
        pcm_full=endpoint.take()
        voiced=endpoint.voiced
-       # Compute avg RMS for this utterance (simple: use last audio rms history? approximate as current rms)
-       # We keep voiced frames count for filtering
        _voice_log('vadEnd', pipe.call_id, pipe.generation, voicedFrames=voiced, totalBytes=len(pcm_full), durationSec=round(len(pcm_full)/32000,2))
-       # For accurate avg_rms we would need to track, use last rms as proxy
        chunks.append(asyncio.create_task(transcribe_chunk(pcm_full)))
        # Capture locals for transcript closure
        cur_last_cancel=last_cancel_reset
        cur_voiced=voiced
-       cur_rms=rms_val
+       cur_rms=speech_peak;speech_peak=0
        cur_over=endpoint.over_agent
        task=asyncio.create_task(transcript(list(chunks),gen,pipe.call_id,cur_over, cur_voiced, cur_rms, cur_last_cancel));chunks.clear();pending.add(task);task.add_done_callback(pending.discard)
     else:
@@ -401,7 +388,6 @@ async def run(args):
        elif kind=='playbackProgress':
         b=msg.get('bytes')
         credits.consumed(b) if isinstance(b,int) else None
-        _voice_log('playbackProgress', pipe.call_id, pipe.generation, bytes=b, pending=credits.pending)
        elif kind=='playbackComplete':
         _voice_log('playbackComplete', pipe.call_id, pipe.generation)
        elif kind=='end':

@@ -9,9 +9,12 @@ class VoicePlayback extends AudioWorkletProcessor {
     this.tail = 0;
     this.levelSamples = 0;
     this.levelSum = 0;
+    this.held = false;
     this.port.onmessage = (e) => {
       const m = e.data;
-      if (m.type === "flush") {
+      if (m.type === "hold") this.held = m.held;
+      else if (m.type === "flush") {
+        this.held = false;
         this.queue = [];
         this.current = null;
         this.offset = 0;
@@ -37,6 +40,10 @@ class VoicePlayback extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const out = outputs[0][0];
     for (let i = 0; i < out.length; i++) {
+      if (this.held) {
+        out[i] = 0;
+        continue;
+      }
       while (!this.current && this.queue.length) {
         const item = this.queue.shift();
         if (item.end !== undefined)

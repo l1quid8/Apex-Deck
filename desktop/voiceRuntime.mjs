@@ -405,7 +405,7 @@ export class VoiceRuntimeManager {
         for (const line of lines) {
           try {
             const m = JSON.parse(line);
-            if (m.type === "sessionError" || m.type === "speechDropped")
+            if (m.type === "sessionError" || m.type === "speechDropped" || m.type === "voiceLog")
               this.log(JSON.stringify(m));
           } catch {}
         }

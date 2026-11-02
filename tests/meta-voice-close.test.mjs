@@ -472,3 +472,19 @@ test("Meta mic send queue remains bounded and resumes after congestion", async (
   assert.equal(c.getState().status,'listening');
   await c.end();
 });
+
+test("noise over a Meta call does not cancel anything, and an empty final resumes", async () => {
+  const { c, socket, submitted, helpers } = await call();
+  const emit = (e) => socket().onmessage({ data: JSON.stringify(e) });
+  const cancels = () => helpers.at(-1).sent.filter((m) => m.type === "cancel").length;
+  const before = cancels();
+  emit({ type: "speechStart", turnId: 9 });
+  assert.equal(c.getState().status, "hearing");
+  emit({ type: "speechEnd", turnId: 9 });
+  assert.equal(c.getState().status, "hearing", "nothing is known yet, so no working dots");
+  emit({ type: "speechComplete", turnId: 9, transcript: "" });
+  await tick();
+  assert.equal(c.getState().status, "listening");
+  assert.equal(cancels(), before);
+  assert.equal(submitted.length, 0);
+});
