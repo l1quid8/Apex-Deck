@@ -12,6 +12,7 @@ struct WindowInfo {
   let minimized: Bool
   let focused: Bool
   let frame: CGRect?
+  let layer: Int?
 }
 
 enum BackgroundSupport {
@@ -43,7 +44,8 @@ enum BackgroundSupport {
       let minimized = isMinimized(w)
       let focused = same(w, focusedWindow)
       let fr = rect(w)
-      return WindowInfo(element: w, windowNumber: num, title: title, minimized: minimized, focused: focused, frame: fr)
+      let layer = num.flatMap { windowLayer(CGWindowID($0)) }
+      return WindowInfo(element: w, windowNumber: num, title: title, minimized: minimized, focused: focused, frame: fr, layer: layer)
     }
   }
 
@@ -54,6 +56,17 @@ enum BackgroundSupport {
     if let f = infos.first(where: { $0.focused }) { return f }
     return infos.first
   }
+
+  /// The engine only lists normal windows, so a floating one can't be read and must not
+  /// blind the bot to the rest of the app. An unknown layer keeps its turn.
+  static func readableWindow(infos: [WindowInfo]) -> WindowInfo? {
+    bestWindow(infos: infos.filter { ($0.layer ?? 0) == 0 }) ?? bestWindow(infos: infos)
+  }
+}
+
+func windowLayer(_ number: CGWindowID) -> Int? {
+  let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]]
+  return info?.first?[kCGWindowLayer as String] as? Int
 }
 
 /// Bounds and layers need no Screen Recording permission. Only normal windows count,

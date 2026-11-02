@@ -253,9 +253,13 @@ final class Accessibility {
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 2
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
     let focused = element(root, kAXFocusedWindowAttribute)
-    let focus = element(root, kAXFocusedUIElementAttribute)
-    let best = focused ?? BackgroundSupport.bestWindow(infos: BackgroundSupport.windowInfos(root: root, focusedWindow: nil))?.element
+    var focus = element(root, kAXFocusedUIElementAttribute)
+    let normalFocus = focused.flatMap(windowNumber).flatMap(windowLayer).map { $0 == 0 } ?? (focused != nil)
+    let best = normalFocus ? focused
+      : BackgroundSupport.readableWindow(infos: BackgroundSupport.windowInfos(root: root, focusedWindow: focused))?.element ?? focused
     guard let window = best else { throw Refusal("app_has_no_window") }
+    // Keys and text would land in the window the bot isn't reading, so its focus doesn't count.
+    if let focused = focused, !same(focused, window) { focus = nil }
     var tree = Tree(targetPID: app.processIdentifier)
     tree.walk(window)
     // A foreign surface can host another app's sheet, so reading stays refused.

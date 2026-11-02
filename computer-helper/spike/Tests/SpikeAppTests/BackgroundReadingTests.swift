@@ -18,6 +18,35 @@ final class BackgroundReadingTests: XCTestCase {
     XCTAssertTrue(Server.tools.contains { ($0["name"] as? String) == "read_screen" })
   }
 
+  private func window(layer: Int?, focused: Bool = false, minimized: Bool = false, number: UInt32) -> WindowInfo {
+    WindowInfo(element: AXUIElementCreateApplication(1), windowNumber: number, title: nil, minimized: minimized,
+      focused: focused, frame: nil, layer: layer)
+  }
+
+  func testFocusedFloatingWindowFallsBackToTheNormalWindow() {
+    let chosen = BackgroundSupport.readableWindow(infos: [
+      window(layer: 3, focused: true, number: 1), window(layer: 0, number: 2),
+    ])
+    XCTAssertEqual(chosen?.windowNumber, 2)
+  }
+
+  func testUnfocusedFloatingWindowNeverBeatsTheNormalWindow() {
+    let chosen = BackgroundSupport.readableWindow(infos: [window(layer: 3, number: 1), window(layer: 0, number: 2)])
+    XCTAssertEqual(chosen?.windowNumber, 2)
+  }
+
+  func testOnlyFloatingWindowsStillGiveAnAnswer() {
+    let chosen = BackgroundSupport.readableWindow(infos: [window(layer: 3, focused: true, number: 1)])
+    XCTAssertEqual(chosen?.windowNumber, 1, "the engine then reports the real failure")
+  }
+
+  func testUnknownLayerStaysReadable() {
+    let chosen = BackgroundSupport.readableWindow(infos: [
+      window(layer: nil, focused: true, number: 1), window(layer: 0, number: 2),
+    ])
+    XCTAssertEqual(chosen?.windowNumber, 1)
+  }
+
   func testToolsPromiseBackgroundAndNoneAskForTheForeground() {
     let tools = Server.tools
     let byName = Dictionary(uniqueKeysWithValues: tools.map { (($0["name"] as? String) ?? "", $0) })
