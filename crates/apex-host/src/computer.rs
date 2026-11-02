@@ -12,6 +12,15 @@ use std::time::Duration;
 const POLICY_DEADLINE: Duration = Duration::from_secs(2);
 const HELPER_ID: &str = "dev.apexdeck.unified-computer-use";
 
+/// This stamp is derived from a saved assistant, rather than a model's tool
+/// arguments or the similarly named access mode of an ordinary Work room.
+fn assistant_full_access(assistant: &crate::personal::PersonalAssistant, thread: &str, participant: &ParticipantId, access: Access, personal_turn: bool) -> bool {
+    personal_turn && access == Access::Full
+        && crate::personal_worker::computer_thread_assistant(thread) == Some(assistant.id.as_str())
+        && assistant.profile.as_ref().is_some_and(|profile| &profile.id == participant)
+        && crate::personal::permissions::full_access(assistant)
+}
+
 fn instance_id() -> String {
     use ring::rand::{SecureRandom, SystemRandom};
     let mut random = [0u8; 16];
@@ -401,13 +410,17 @@ impl TurnHook {
                 SystemRandom::new().fill(&mut random).map_err(|_| TurnStartFailure::Session)?;
                 let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
                 let control = !matches!(access, Access::Read);
-                let access = match access {
+                let access_name = match access {
                     Access::Read => "read",
                     Access::Ask => "ask",
                     Access::Edits => "edits",
                     Access::Full => "full",
                 };
-                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
+                let assistant_full = self.host.upgrade().and_then(|host| {
+                    let assistant = crate::personal_worker::computer_thread_assistant(&self.thread)?;
+                    host.personal_get(assistant).ok()
+                }).is_some_and(|assistant| assistant_full_access(&assistant, &self.thread, id, access, self.ended.is_some()));
+                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
                 if !self.computer.ready(&self.thread, generation) { return Err(TurnStartFailure::AuthorityChanged); }
                 let shutdown = duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?;
                 let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?).map_err(|_| TurnStartFailure::Session)?;
@@ -759,6 +772,22 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trusted_full_stamp_requires_the_saved_assistant_owner_and_current_profile() {
+        let mut assistant: crate::personal::PersonalAssistant = serde_json::from_value(json!({"id":"a","name":"A","style":"","hostId":"h","profile":{"id":"p","display_name":"P","backend":{"kind":"agent","tool":"claude_code"},"access":"full"},"workspaceConfigVersion":4,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        assert!(assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, true));
+        assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, false), "an ordinary room never receives the stamp, even if its ID resembles the assistant namespace");
+        assert!(!assistant_full_access(&assistant, "work-room", &ParticipantId::new("p"), Access::Full, true));
+        assert!(!assistant_full_access(&assistant, "assistant:other", &ParticipantId::new("p"), Access::Full, true));
+        assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("other"), Access::Full, true));
+        assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Read, true));
+        assistant.profile.as_mut().unwrap().access = Access::Ask;
+        assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, true), "an old caller cannot retain Full after a saved downgrade");
+        assistant.profile.as_mut().unwrap().access = Access::Full;
+        assistant.workspace_config_version = None;
+        assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, true));
+    }
+
     #[tokio::test]
     async fn legacy_turn_hook_keeps_its_option_contract_and_clears_unavailable_tools() {
         let data = std::env::temp_dir().join(format!("apex-computer-disabled-{}", std::process::id()));

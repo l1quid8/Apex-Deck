@@ -12,6 +12,8 @@ final class TurnRegistry {
     let participant: String
     let token: String
     let access: String
+    /// Set only on the signed daemon registration, never by a tool connection.
+    let assistantFullAccess: Bool
     let control: Int32
     let grantScope: String
     var grants = [String: AppIdentity]()
@@ -39,13 +41,15 @@ final class TurnRegistry {
     let (thread, participant, token) = try Self.fields(args)
     guard args["enabled"] as? Bool == true, let access = args["effectiveAccess"] as? String, ["read", "ask", "edits", "full"].contains(access) else { throw Refusal("computer_use_disabled_or_access_denied") }
     guard let grantScope = args["grantScope"] as? String, (1...128).contains(grantScope.utf8.count) else { throw Refusal("turn_binding_invalid") }
+    let assistantFullAccess = args["assistantFullAccess"] as? Bool == true
+    guard !assistantFullAccess || (access == "full" && thread.hasPrefix("assistant:") && thread.count > "assistant:".count) else { throw Refusal("assistant_full_access_binding_invalid") }
     lock.lock(); defer { lock.unlock() }
     guard !globallyStopped else { throw Refusal("computer_use_stopped") }
     guard turns[token] == nil, !retired.contains(token) else { throw Refusal("turn_already_registered") }
     // A newer turn supersedes every predecessor for the same owner.
     let obsolete = turns.values.filter { $0.thread == thread && $0.participant == participant }.map { $0.token }
     for old in obsolete { turns.removeValue(forKey: old); retired.insert(old); latches.removeValue(forKey: old)?.forEach { $0.value?.stop() } }
-    turns[token] = Turn(thread: thread, participant: participant, token: token, access: access, control: control, grantScope: grantScope)
+    turns[token] = Turn(thread: thread, participant: participant, token: token, access: access, assistantFullAccess: assistantFullAccess, control: control, grantScope: grantScope)
     if threadGrants[thread]?.scope != grantScope { threadGrants[thread] = ThreadGrants(scope: grantScope) }
     return token
   }
@@ -89,6 +93,22 @@ final class TurnRegistry {
     if forThread, threadGrants[turn.thread]?.scope == turn.grantScope {
       threadGrants[turn.thread]?.apps[identity.bundle] = ThreadGrant(identity: identity, control: turn.access != "read")
     }
+  }
+  /// Native consent is requested only when this turn has no saved authority.
+  func authorizeApp(_ identity: AppIdentity, token: String, consent: () throws -> AppGrantDecision) throws {
+    lock.lock()
+    guard let turn = turns[token], !turn.stopped else { lock.unlock(); throw Refusal("turn_unregistered_or_ended") }
+    let full = turn.assistantFullAccess
+    lock.unlock()
+    if full {
+      // Full authorizes this turn only. Downgrading or ending the turn cannot
+      // leave a remembered app grant in another turn or another conversation.
+      try grant(identity, token: token)
+      return
+    }
+    let answer = try consent()
+    guard answer != .denied else { throw Refusal("app_grant_denied") }
+    try grant(identity, token: token, forThread: answer == .thread)
   }
   func identity(_ bundle: String, token: String) throws -> AppIdentity {
     lock.lock(); defer { lock.unlock() }

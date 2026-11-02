@@ -317,21 +317,21 @@ final class Server {
   }
   /// Waits for the person's answer and records it. Throws unless they allowed it.
   func ask(_ identity: AppIdentity, name: String, detail: String, token: String, state: ClientSession, request: String) throws {
-    let control = try turns.canControl(token)
-    let owner = try turns.requester(token)
-    let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(name).\n\n\(detail)")
-    DispatchQueue.main.async { prompt.show() }
-    defer { DispatchQueue.main.async { prompt.dismiss() } }
-    let deadline = ProcessInfo.processInfo.systemUptime + 120
-    while prompt.decision() == nil {
+    try turns.authorizeApp(identity, token: token) {
+      let control = try turns.canControl(token)
+      let owner = try turns.requester(token)
+      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(name).\n\n\(detail)")
+      DispatchQueue.main.async { prompt.show() }
+      defer { DispatchQueue.main.async { prompt.dismiss() } }
+      let deadline = ProcessInfo.processInfo.systemUptime + 120
+      while prompt.decision() == nil {
+        try turns.check(token); try state.latch.check(request)
+        guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("app_grant_deadline") }
+        Thread.sleep(forTimeInterval: 0.02)
+      }
       try turns.check(token); try state.latch.check(request)
-      guard ProcessInfo.processInfo.systemUptime < deadline else { throw Refusal("app_grant_deadline") }
-      Thread.sleep(forTimeInterval: 0.02)
+      return prompt.decision() ?? .denied
     }
-    let decision = prompt.decision()
-    try turns.check(token)
-    guard decision != .denied else { throw Refusal("app_grant_denied") }
-    try turns.grant(identity, token: token, forThread: decision == .thread)
   }
   func observe(id: String, epoch: UInt64? = nil) throws -> Snapshot {
     try checkProofHost()

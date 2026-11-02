@@ -39,8 +39,8 @@ final class ServerPrivacyTests: XCTestCase {
     let done = expectation(description: "reader closed")
     Thread.detachNewThread { server.read(client); done.fulfill() }
     Wire.send(["jsonrpc": "2.0", "id": 1, "method": "unified/register-turn", "params": [
-      "threadId": "thread", "participantId": "agent", "turnToken": String(repeating: "a", count: 64),
-      "enabled": true, "effectiveAccess": "full"]], fd: sender)
+      "threadId": "assistant:a", "participantId": "agent", "turnToken": String(repeating: "a", count: 64),
+      "enabled": true, "effectiveAccess": "full", "assistantFullAccess": true, "grantScope": "scope"]], fd: sender)
     let bytes = try XCTUnwrap(Wire.firstLine(fd: sender, limit: 65536, timeout: 2))
     XCTAssertTrue(String(decoding: bytes, as: UTF8.self).contains("authenticated_daemon_required"))
     Wire.send(["jsonrpc": "2.0", "id": 2, "method": "tools/list"], fd: sender)

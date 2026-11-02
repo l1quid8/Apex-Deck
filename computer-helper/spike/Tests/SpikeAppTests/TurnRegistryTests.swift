@@ -4,6 +4,46 @@ import SpikeCore
 @testable import SpikeApp
 
 final class TurnRegistryTests: XCTestCase {
+  func testTrustedAssistantFullSkipsNativeConsentWithoutGrantingTheNextTurn() throws {
+    let registry = TurnRegistry()
+    let app = AppIdentity(bundle: "com.example.app", path: "/Applications/Example.app", executable: "/x", signature: Data([1]))
+    func args(_ token: Character, _ access: String = "full", _ full: Bool = false, _ thread: String = "assistant:a", _ scope: String = "s") -> [String: Any] {
+      ["threadId": thread, "participantId": "p", "turnToken": String(repeating: token, count: 64), "effectiveAccess": access, "enabled": true, "grantScope": scope, "assistantFullAccess": full]
+    }
+    let full = try registry.register(args("a", "full", true), control: -1)
+    var asked = 0
+    for identity in [app, BrowserBroker.identity] {
+      try registry.authorizeApp(identity, token: full) { asked += 1; return .denied }
+      XCTAssertEqual(try registry.identity(identity.bundle, token: full), identity)
+    }
+    XCTAssertEqual(asked, 0, "saved assistant Full must reach both native apps and browser without another consent card")
+    let latch = Latch(); latch.setTap(true)
+    _ = try registry.bind(args("a"), latch: latch)
+    let downgraded = try registry.register(args("b", "ask", false, "assistant:a", "revoked"), control: -1)
+    _ = try registry.bind(args("b", "full", true))
+    XCTAssertThrowsError(try registry.check(full))
+    XCTAssertThrowsError(try latch.check("pending"))
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: downgraded), "automatic Full grants end with their turn")
+    XCTAssertThrowsError(try registry.authorizeApp(app, token: downgraded) { asked += 1; return .denied })
+    XCTAssertEqual(asked, 1, "Ask restores native consent; a bind request cannot forge the saved Full stamp")
+    let room = try registry.register(args("c", "full", false, "work-thread"), control: -1)
+    XCTAssertThrowsError(try registry.authorizeApp(BrowserBroker.identity, token: room) { asked += 1; return .denied })
+    XCTAssertEqual(asked, 2, "room Full does not imply assistant Full trust")
+    XCTAssertThrowsError(try registry.register(args("d", "full", true, "work-thread"), control: -1))
+    XCTAssertThrowsError(try registry.register(args("e", "read", true), control: -1))
+  }
+
+  func testNativeConsentRechecksTurnAfterTheHumanAnswers() throws {
+    let registry = TurnRegistry()
+    let token = String(repeating: "a", count: 64)
+    _ = try registry.register(["threadId":"assistant:a", "participantId":"p", "turnToken":token, "effectiveAccess":"ask", "enabled":true, "grantScope":"s"], control: -1)
+    XCTAssertThrowsError(try registry.authorizeApp(BrowserBroker.identity, token: token) {
+      registry.end(token)
+      return .thread
+    })
+    XCTAssertThrowsError(try registry.identity(BrowserBroker.resource, token: token))
+  }
+
   func testTurnReplacementStopAndReplayAreTerminalAndReadCannotControl() throws {
     let registry = TurnRegistry()
     XCTAssertFalse(registry.isStopped)
