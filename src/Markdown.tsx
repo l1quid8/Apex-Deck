@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { parseBlocks, parseInline, pathLike, type Block, type Inline } from "./markdownText";
 import { RichText } from "./RichText";
+import { copyText } from "./copyText";
 
 interface Props {
   text: string;
@@ -133,14 +134,10 @@ function BlockView({ block, index, inline, codeAction, codeBelow, fence }: { blo
 
 function CodeBlock({ language, text, action, below }: { language: string; text: string; action?: ReactNode; below?: ReactNode }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard
-      ?.writeText(text)
-      .then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      })
-      .catch(() => {});
+  const copy = async () => {
+    if (!await copyText(text)) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
   return (
     <div className="md-code">

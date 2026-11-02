@@ -9,6 +9,7 @@ import { ChipStylePicker } from "./ChipStylePicker";
 import type { AppSettings } from "./settings";
 import { parseSkin, skinPrompt, type SkinFile } from "./themes";
 import type { AppearanceStudioState } from "./useAppearanceDraft";
+import { deckClipboard } from "./copyText";
 
 const FILE_LIMIT = 32_000;
 
@@ -78,8 +79,8 @@ function Share({ studio, settings }: { studio: AppearanceStudioState; settings: 
   };
   const copyPrompt = async () => {
     try {
-      if (!navigator.clipboard?.writeText || !prompt) throw new Error("Clipboard access is unavailable.");
-      await navigator.clipboard.writeText(prompt);
+      if (!prompt) throw new Error("Clipboard access is unavailable.");
+      await deckClipboard.writeText(prompt);
       setNotice({ text: "AI prompt copied." });
     } catch (error) {
       setNotice({ text: `Could not copy: ${error instanceof Error ? error.message : String(error)}`, error: true });

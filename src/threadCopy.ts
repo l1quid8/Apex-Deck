@@ -21,14 +21,3 @@ export function lastReply(transcript: Message[]): string {
 export function folderCopyText(path: string, ssh?: string): string {
   return path && ssh ? `${ssh}:${path}` : path;
 }
-
-/** True only when the clipboard took the text. Checks pass a stub; nothing here reaches for the real one. */
-export async function writeClipboard(text: string, clipboard?: { writeText(text: string): Promise<void> }): Promise<boolean> {
-  if (!clipboard) return false;
-  try {
-    await clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}

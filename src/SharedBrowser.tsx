@@ -3,6 +3,7 @@ import { sameServer } from "./previewAddress";
 import { normalise } from "./RightBrowser";
 import { browserCaller, buttonName, chosenTab, dialogChoices, finishClipboard, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName, type BrowserTab, type PageEvent } from "./browserTabs";
 import "./shared-browser.css";
+import { deckClipboard } from "./copyText";
 
 const MAC = navigator.platform.toLowerCase().includes("mac");
 /** The tab last shown on each machine, for coming back to it. */
@@ -125,7 +126,7 @@ export function SharedBrowser({ call, hostName, hostId = hostName, visible, thre
 
   const input = useRef<ReturnType<typeof inputQueue<BrowserTab & { copied?: string; cut?: string }>> | null>(null);
   input.current ??= inputQueue(async (deliver, events) => {
-    const answer = await finishClipboard(await deliver(events), deliver, navigator.clipboard && ((text) => navigator.clipboard.writeText(text)));
+    const answer = await finishClipboard(await deliver(events), deliver, deckClipboard.writeText);
     setTabs((list) => list.map((item) => item.id === answer.id ? answer : item));
   }, () => setProblem(""), fail);
   const send = useCallback((...events: PageEvent[]) => {

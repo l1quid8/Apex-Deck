@@ -105,6 +105,7 @@ import { createAnswerStore, discardAnswerSettingsAfter, flushAnswerStores, retai
 import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.ts";
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
+import { copyText, plainCopy } from "./copyText";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHold, type TurnKind } from "./turnQueue";
 import { queueSync } from "./phoneQueue";
 import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
@@ -1793,16 +1794,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const [copied, setCopied] = useState<number | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(copiedTimer.current), []);
-  /** Put a message's markdown on the clipboard. */
-  const copyMessage = (message: Message) => {
-    if (!navigator.clipboard) return notify("Could not copy: the clipboard isn't available here.", "error");
-    navigator.clipboard.writeText(message.text)
-      .then(() => {
-        setCopied(message.seq);
-        clearTimeout(copiedTimer.current);
-        copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
-      })
-      .catch((error) => notify(`Could not copy: ${String(error)}`, "error"));
+  /** Put a message on the clipboard as it reads on screen. */
+  const copyMessage = async (message: Message) => {
+    if (!await copyText(plainCopy(message.text))) return notify("Could not copy. Select the text and copy it by hand.", "error");
+    setCopied(message.seq);
+    clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
   };
   /** The message whose action controls are expanded, by seq. */
   const [messageMenu, setMessageMenu] = useState<number | null>(null);
@@ -1945,7 +1942,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   /** Directional disclosure for message actions; the row wraps in a narrow pane. */
   const messageActions = (message: Message) => {
     const quote = () => { const next = quoteFor(message, (id) => names.get(id) ?? id); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
-    const copy = () => copyMessage(message);
+    const copy = () => void copyMessage(message);
     const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
     const goBackKind: GoBack | null = message.speaker.kind === "bot" ? "retry" : message.speaker.kind === "human" ? "revert" : null;
     const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { BACKDROP_PATTERNS, BUILTIN_SKINS, CLAY_ACCENT_PRESETS, MAX_GLOWS, MIN_GLOWS, accentHex, backdropLayers, backgroundPatch, colorAppearance, glowColorList, parseSkin, shuffledGlowColors, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
 import type { LandingTextureSettings } from "./settings";
+import { deckClipboard } from "./copyText";
 
 const FILE_LIMIT = 32_000;
 const SLIDERS: { key: "glow" | "blur" | "opacity" | "radius" | "backdrop"; label: string; help: string; min: number; max: number; suffix: string }[] = [
@@ -209,8 +210,7 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
   };
   const copyText = async (text: string, success: string) => {
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable. Check your browser permissions.");
-      await navigator.clipboard.writeText(text);
+      await deckClipboard.writeText(text);
       setNotice({ text: success });
     } catch (error) {
       setNotice({ text: `Could not copy: ${error instanceof Error ? error.message : String(error)}`, error: true });
