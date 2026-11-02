@@ -16,7 +16,7 @@ enum StatusBarIcon {
   static func apply(_ image: NSImage?, to button: NSButton) {
     button.toolTip = name
     button.setAccessibilityLabel(name)
-    // AppKit is order sensitive: other orders leave the image overlapping, or
+    // AppKit is order sensitive: some other orders leave the image overlapping, or
     // a stray 1x1 image behind.
     if let image = image {
       button.image = image
