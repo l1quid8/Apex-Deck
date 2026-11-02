@@ -832,7 +832,7 @@ mod tests {
             ("folder_accept", Some((Full, "global")), json!({ "path": "/tmp/p", "who": "user" })),
             ("folder_withdraw", Some((Full, "global")), json!({ "path": "/tmp/p" })),
             ("trust_status", Some((Full, "global")), json!({})),
-            ("trust_run", Some((Full, "global")), json!({ "no_reboot": true })),
+            ("trust_run", Some((Full, "global")), json!({ "noReboot": true })),
         ]
     }
 
