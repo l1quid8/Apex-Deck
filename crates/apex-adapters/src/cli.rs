@@ -278,6 +278,16 @@ impl CliParticipant {
             })?;
             return self.start_jailed(program, args, env, &bwrap, hook);
         }
+        // Full gate: even unjailed Full bots are refused in tainted folders
+        if matches!(self.config.access, apex_core::Access::Full) {
+            if let Some(cwd) = &self.cwd {
+                if let Some(data_dir) = &self.data_dir {
+                    if let Err(why) = crate::linux_jail::check_full_allowed(data_dir, cwd) {
+                        return Err(ParticipantError::Failed(why));
+                    }
+                }
+            }
+        }
         let mut command = if let Some(isolation) = &self.isolation {
             isolation.command(program, args, self.path.as_deref())?
         } else {

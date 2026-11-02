@@ -114,7 +114,7 @@ fn isolated_git(
     input: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    let mut command = Command::new("git");
+    let mut command = crate::project_process::git_command();
     for key in inherited_git_vars(std::env::vars().map(|(key, _)| key)) {
         command.env_remove(key);
     }
@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn repos_git_folder_is_never_written() {
         let (cwd, snaps) = folder("git");
-        assert!(Command::new("git").arg("-C").arg(&cwd).args(["init", "-q"]).status().unwrap().success());
+        assert!(crate::project_process::git_command().arg("-C").arg(&cwd).args(["init", "-q"]).status().unwrap().success());
         std::fs::write(cwd.join("a.txt"), "x").unwrap();
         let before = std::fs::read_dir(cwd.join(".git/objects")).unwrap().count();
         snaps.take("t", &cwd, 0, Kind::Open, None).unwrap();
@@ -999,7 +999,7 @@ mod tests {
         let dir = snaps.root.join(folder_key(&cwd));
         let store = dir.join("store.git");
         std::fs::create_dir_all(&store).unwrap();
-        assert!(Command::new("git").args(["init", "--bare", "-q"]).arg(&store).status().unwrap().success());
+        assert!(crate::project_process::git_command().args(["init", "--bare", "-q"]).arg(&store).status().unwrap().success());
         let store_hooks = store.join("hooks");
         std::fs::create_dir_all(&store_hooks).unwrap();
         std::fs::copy(&script, store_hooks.join("pre-commit")).unwrap();

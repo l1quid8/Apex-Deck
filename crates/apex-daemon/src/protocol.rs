@@ -629,7 +629,18 @@ where
                                 None => return Ended::Revoked,
                                 Some(device) => {
                                     let need = authority::command_needs(&command);
-                                    authority::check(&device, &need).map(|()| Some(need))
+                                    let effect = authority::access_effect(&command);
+                                    // Design: Raises rule applies only on Confined+trusted hosts
+                                    // with current-epoch device. Epoch already enforced in remote.rs.
+                                    // On non-trusted hosts (macOS, early Linux), chat can Allow/answer.
+                                    let raises_blocked = matches!(effect, authority::AccessEffect::Raises)
+                                        && device.tier != crate::devices::Tier::Full
+                                        && crate::trust_host::is_trusted(&daemon.data);
+                                    if raises_blocked {
+                                        Err("would raise access and needs full".into())
+                                    } else {
+                                        authority::check(&device, &need).map(|()| Some(need))
+                                    }
                                 }
                             },
                         };

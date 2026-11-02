@@ -16,7 +16,7 @@ pub struct DiffFile { pub path: String, pub added: usize, pub removed: usize, pu
 
 
 fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::project_process::git_command();
     command.arg("-C").arg(cwd).args(["-c", "core.quotePath=false"]).args(args);
     if let Some(path) = crate::agents::login_path() { command.env("PATH", path); }
     if let Some(index) = index { command.env("GIT_INDEX_FILE", index); }
@@ -222,12 +222,12 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
         for args in [&["init", "-q"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
-            assert!(Command::new("git").arg("-C").arg(&dir).args(args).status().unwrap().success());
+            assert!(crate::project_process::git_command().arg("-C").arg(&dir).args(args).status().unwrap().success());
         }
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
         std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
-        Command::new("git").arg("-C").arg(&dir).args(["add", "-A"]).status().unwrap();
-        Command::new("git").arg("-C").arg(&dir).args(["commit", "-qm", "init"]).status().unwrap();
+        crate::project_process::git_command().arg("-C").arg(&dir).args(["add", "-A"]).status().unwrap();
+        crate::project_process::git_command().arg("-C").arg(&dir).args(["commit", "-qm", "init"]).status().unwrap();
         dir
     }
 
@@ -287,8 +287,8 @@ mod tests {
     fn diff_since_start_includes_new_files_attributes_them_and_leaves_git_alone() {
         let dir = repo();
         std::fs::write(dir.join("staged.txt"), "s\n").unwrap();
-        Command::new("git").arg("-C").arg(&dir).args(["add", "staged.txt"]).status().unwrap();
-        let status_before = Command::new("git").arg("-C").arg(&dir).args(["status", "--porcelain"]).output().unwrap().stdout;
+        crate::project_process::git_command().arg("-C").arg(&dir).args(["add", "staged.txt"]).status().unwrap();
+        let status_before = crate::project_process::git_command().arg("-C").arg(&dir).args(["status", "--porcelain"]).output().unwrap().stdout;
 
         let start = snapshot(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "two\n").unwrap();
@@ -307,7 +307,7 @@ mod tests {
         // The person's staging area and status are untouched (apart from the files we wrote).
         std::fs::remove_file(dir.join("new file.txt")).unwrap();
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-        let status_after = Command::new("git").arg("-C").arg(&dir).args(["status", "--porcelain"]).output().unwrap().stdout;
+        let status_after = crate::project_process::git_command().arg("-C").arg(&dir).args(["status", "--porcelain"]).output().unwrap().stdout;
         assert_eq!(String::from_utf8_lossy(&status_before), String::from_utf8_lossy(&status_after).replace("?? target/\n", ""));
         std::fs::remove_dir_all(dir).unwrap();
     }

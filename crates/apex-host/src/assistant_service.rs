@@ -3170,7 +3170,7 @@ mod tests {
             vec!["config", "user.name", "Test"],
             vec!["config", "user.email", "test@example.invalid"],
         ] {
-            assert!(Command::new("git")
+            assert!(crate::project_process::git_command()
                 .current_dir(&root)
                 .args(args)
                 .status()
@@ -3178,13 +3178,13 @@ mod tests {
                 .success());
         }
         std::fs::write(root.join("tracked.txt"), "baseline\n").unwrap();
-        assert!(Command::new("git")
+        assert!(crate::project_process::git_command()
             .current_dir(&root)
             .args(["add", "tracked.txt"])
             .status()
             .unwrap()
             .success());
-        assert!(Command::new("git")
+        assert!(crate::project_process::git_command()
             .current_dir(&root)
             .args(["commit", "-qm", "baseline"])
             .status()
@@ -4035,7 +4035,7 @@ mod tests {
         assert!(Path::new(execution_path).join(".git").exists());
         let task = set_isolated_result(&f, &task, "tracked.txt", "worker task one\n");
         std::fs::write(f.root.join("human-staged.txt"), "human work\n").unwrap();
-        let git_add = Command::new("git")
+        let git_add = crate::project_process::git_command()
             .current_dir(&f.root)
             .args(["add", "human-staged.txt"])
             .status()
@@ -4868,7 +4868,7 @@ mod tests {
     /// itself so a failing test can't leave it running.
     fn hold_result_save(f: &Fixture, task: &AssistantTask) {
         std::fs::write(f.root.join(".git/review-filter.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ ! -e .git/review-filter-release ] && [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat\n").unwrap();
-        assert!(Command::new("git").current_dir(&f.root).args(["config", "filter.watchdog-review.clean", "sh .git/review-filter.sh"]).status().unwrap().success());
+        assert!(crate::project_process::git_command().current_dir(&f.root).args(["config", "filter.watchdog-review.clean", "sh .git/review-filter.sh"]).status().unwrap().success());
         std::fs::write(f.root.join(".gitattributes"), "tracked.txt filter=watchdog-review\n").unwrap();
         std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
         std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();
@@ -4899,7 +4899,7 @@ mod tests {
         let f = fixture();
         let (task, _) = controlled_delegation(&f, "pause-diff", TaskMode::InPlace);
         std::fs::write(f.root.join(".git/review-diff.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat \"$1\"\n").unwrap();
-        assert!(Command::new("git").current_dir(&f.root).args(["config", "diff.watchdog-review.textconv", "sh .git/review-diff.sh"]).status().unwrap().success());
+        assert!(crate::project_process::git_command().current_dir(&f.root).args(["config", "diff.watchdog-review.textconv", "sh .git/review-diff.sh"]).status().unwrap().success());
         std::fs::write(f.root.join(".gitattributes"), "tracked.txt diff=watchdog-review\n").unwrap();
         std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
         std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();

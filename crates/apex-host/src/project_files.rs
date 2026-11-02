@@ -357,11 +357,10 @@ pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
 }
 
 fn is_git_repo(root: &Path) -> bool {
-    Command::new("git")
+    crate::project_process::git_command()
         .arg("-C")
         .arg(root)
         .args(["rev-parse", "--is-inside-work-tree"])
-        .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -369,11 +368,10 @@ fn is_git_repo(root: &Path) -> bool {
 }
 
 fn git(root: &Path, args: &[&std::ffi::OsStr]) -> Result<std::process::Output, String> {
-    Command::new("git")
+    crate::project_process::git_command()
         .arg("-C")
         .arg(root)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|error| format!("Could not run Git: {error}"))
 }
@@ -619,11 +617,10 @@ fn search_git(
             relative.as_os_str().to_owned()
         });
     }
-    let mut child = Command::new("git")
+    let mut child = crate::project_process::git_command()
         .arg("-C")
         .arg(root)
         .args(&args)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -988,14 +985,14 @@ mod tests {
         fs::write(temp.0.join("tracked.txt"), "Needle here\n").unwrap();
         fs::write(temp.0.join(".gitignore"), "ignored.txt\n").unwrap();
         fs::write(temp.0.join("ignored.txt"), "Needle hidden\n").unwrap();
-        let status = Command::new("git")
+        let status = crate::project_process::git_command()
             .arg("-C")
             .arg(&temp.0)
             .args(["init", "-q"])
             .status()
             .unwrap();
         assert!(status.success());
-        Command::new("git")
+        crate::project_process::git_command()
             .arg("-C")
             .arg(&temp.0)
             .args(["add", ".gitignore", "tracked.txt"])

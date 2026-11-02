@@ -241,8 +241,20 @@ pub fn build_spec(
     read_only_extra: &[PathBuf],
 ) -> Result<JailSpec, JailError> {
     let mounts = paths::Mounts::current()?;
+
+    // Task 8: Full gate and taint record — same file as apex-host/folder_trust.rs
+    // Mark tainted before jail starts, sync to disk for crash safety.
+    // Full launches refused if tainted and not accepted.
+    if matches!(access, apex_core::Access::Full) {
+        if let Err(why) = check_full_allowed(data_dir, cwd) {
+            return Err(JailError::Login(why));
+        }
+    }
+
     let writable = matches!(access, apex_core::Access::Ask | apex_core::Access::Edits);
     if writable {
+        // Taint before any check that could fail, per spec: on disk before jail starts.
+        let _ = mark_tainted(data_dir, cwd);
         let guard = paths::Guard {
             home: home.to_path_buf(),
             protected: paths::standard_protected(home, data_dir),
@@ -319,6 +331,62 @@ pub fn build_spec(
 
 fn folder_name(name: &str) -> String {
     name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(*c, '-' | '_')).collect()
+}
+
+// ---- Task 8 taint / Full-gate: same JSON file as apex-host/folder_trust.rs ----
+// Minimal duplication to avoid cross-crate dependency for adapters.
+const TRUST_FILE: &str = "folder-trust.json";
+const TAINT_REFUSAL: &str = "This folder has bots with lower access writing to it. A Full bot here can run code they wrote, now or later, as you.";
+
+fn trust_path(data_dir: &Path) -> PathBuf { data_dir.join(TRUST_FILE) }
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct AcceptedRec { path: PathBuf, #[serde(default)] who: Option<String>, #[serde(default)] when_ms: u64 }
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
+struct TrustStore { #[serde(default)] tainted: Vec<PathBuf>, #[serde(default)] accepted: Vec<AcceptedRec> }
+
+fn load_store(data_dir: &Path) -> TrustStore {
+    let p = trust_path(data_dir);
+    std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+fn save_store(data_dir: &Path, store: &TrustStore) -> std::io::Result<()> {
+    let p = trust_path(data_dir);
+    if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); }
+    let text = serde_json::to_string_pretty(store).unwrap_or_default();
+    let tmp = p.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, format!("{text}\n"))?;
+    std::fs::rename(&tmp, &p)?;
+    #[cfg(unix)]
+    {
+        if let Some(parent) = p.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) { let _ = dir.sync_all(); }
+        }
+    }
+    Ok(())
+}
+fn canonical_or_original(p: &Path) -> PathBuf { std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()) }
+fn overlaps(a: &Path, b: &Path) -> bool {
+    let ca = canonical_or_original(a);
+    let cb = canonical_or_original(b);
+    ca == cb || ca.starts_with(&cb) || cb.starts_with(&ca)
+}
+pub fn mark_tainted(data_dir: &Path, folder: &Path) -> Result<(), String> {
+    let resolved = canonical_or_original(folder);
+    let mut store = load_store(data_dir);
+    if store.tainted.iter().any(|t| t == &resolved) { return Ok(()); }
+    store.tainted.push(resolved);
+    // dedup
+    let mut seen = std::collections::HashSet::new();
+    store.tainted.retain(|p| seen.insert(p.clone()));
+    save_store(data_dir, &store).map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub fn check_full_allowed(data_dir: &Path, folder: &Path) -> Result<(), String> {
+    let store = load_store(data_dir);
+    let tainted = store.tainted.iter().any(|t| overlaps(t, folder));
+    if !tainted { return Ok(()); }
+    let accepted = store.accepted.iter().any(|a| overlaps(&a.path, folder));
+    if accepted { Ok(()) } else { Err(TAINT_REFUSAL.into()) }
 }
 
 #[cfg(test)]

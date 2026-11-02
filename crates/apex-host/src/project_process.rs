@@ -22,7 +22,6 @@ pub fn mark_tainted_if_lower(data: &Path, folder: &Path, access: apex_core::Acce
     if matches!(access, apex_core::Access::Full) {
         return Ok(());
     }
-    // Any writable launch below Full taints.
     if matches!(access, apex_core::Access::Edits | apex_core::Access::Ask) {
         folder_trust::mark_tainted(data, folder)
     } else {
@@ -31,13 +30,9 @@ pub fn mark_tainted_if_lower(data: &Path, folder: &Path, access: apex_core::Acce
 }
 
 /// Build a `git` command that is isolated enough to not run project code outside jail.
-/// Full isolation (GIT_CONFIG_NOSYSTEM etc.) is Task 9; for Task 8 we go through this wrapper
-/// and enforce that call sites don't bypass it.
 pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    // Minimal hardening already required by Task 8: don't run hooks via -c flag in critical paths
-    // Full harness added in Task 9.
     cmd
 }
 
@@ -82,54 +77,66 @@ mod tests {
 
     #[test]
     fn source_scan_no_raw_git_spawn_outside_wrapper() {
-        // Task 8 demands that every project-folder spawn goes through project_process()
-        // This test scans host src for raw Command::new("git") or tokio equivalent
-        // outside this file and folder_trust. It fails if a raw spawn is found.
+        // Strict: every file that spawns git or project code must go through project_process wrapper.
+        // Catches: Command::new("git"), Command::new("sh"), Command::new("cmd"),
+        // tokio::process::Command::new("git/sh/cmd") and raw project spawns like
+        // Command::new(&check.argv[0]) used for runner checks.
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-        let allowed_files = [
-            "project_process.rs",
-            "assistant_git.rs", // it also wraps git securely with external_path; allow but should move later
-            "bot_copies.rs",
-            "git_changes.rs",
-            "checkpoints.rs",
-        ];
-        // For this early task, we allow existing files but record they must migrate.
-        // The test passes by checking that bot_copies.rs no longer has raw "Command::new(\"git\")" outside wrapper after Task 8.
-        // So we assert it DOES contain project_process::git_command after migration, and we flag raw spawns.
-        let mut raw_spawns = Vec::new();
+        let exempt = ["project_process.rs", "folder_trust.rs"];
+        let mut raw_git = Vec::new();
+        let mut raw_sh = Vec::new();
+        let mut raw_check = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&root) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name == "project_process.rs" { continue; }
-                // For this implementation step, only flag runner/checks.rs which must use wrapper
-                if name == "runner" { continue; }
+                if exempt.contains(&name) { continue; }
+                if name == "personal" { continue; }
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.contains("Command::new(\"git\")") && !content.contains("project_process") {
-                        // Allow legacy files until migrated
-                        if !allowed_files.contains(&name) {
-                            raw_spawns.push(name.to_string());
+                    if content.contains("Command::new(\"git\")") {
+                        raw_git.push(name.to_string());
+                    }
+                    // Direct sh/cmd spawn that runs project code outside wrapper
+                    // Exempt git_changes.rs Windows junction helper (cmd mklink /J) — not project code
+                    if name != "git_changes.rs" && (content.contains("Command::new(\"sh\")") || content.contains("Command::new(\"cmd\")")) {
+                        raw_sh.push(name.to_string());
+                    }
+                    // tokio::process::Command::new(&check.argv[0]) pattern for runner checks
+                    if content.contains("tokio::process::Command::new(&check.argv") {
+                        raw_check.push(name.to_string());
+                    }
+                }
+            }
+        }
+        // Check subdirs too (runner/checks.rs lives in runner/)
+        let subdirs = ["runner", "assistant_delegation", "personal_worker"];
+        for sub in subdirs {
+            let sub_root = root.join(sub);
+            if let Ok(entries) = std::fs::read_dir(&sub_root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+                    let name = format!("{}/{}", sub, path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if content.contains("Command::new(\"git\")") {
+                            raw_git.push(name.clone());
+                        }
+                        if content.contains("tokio::process::Command::new(&check.argv") {
+                            raw_check.push(name.clone());
+                        }
+                        // Also check for generic tokio::process::Command::new that still has current_dir on project
+                        // but bypasses project_process: look for pattern in checks.rs
+                        if name.contains("checks.rs") && content.contains("tokio::process::Command::new(") && !content.contains("project_process::tokio_command_in") {
+                            raw_check.push(name.clone());
                         }
                     }
                 }
             }
         }
-        // Runner dir
-        let runner_root = root.join("runner");
-        if let Ok(entries) = std::fs::read_dir(&runner_root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.contains("Command::new") && path.file_name().and_then(|n| n.to_str()) == Some("checks.rs") {
-                        // checks.rs now must use project_process
-                        // For now allow, Task 8 will migrate
-                    }
-                }
-            }
-        }
-        assert!(raw_spawns.is_empty(), "raw Command::new(\"git\") found outside project_process in: {raw_spawns:?} — migrate to project_process::git_command()");
+        assert!(raw_git.is_empty(), "raw Command::new(\"git\") still present in: {raw_git:?} - migrate to project_process::git_command()");
+        assert!(raw_sh.is_empty(), "raw Command::new(\"sh\"/\"cmd\") still present in: {raw_sh:?} - migrate to project_process::tokio_command_in");
+        assert!(raw_check.is_empty(), "raw runner check spawn still present in: {raw_check:?} - migrate to project_process");
     }
 
     #[test]
@@ -138,12 +145,9 @@ mod tests {
         let data = &t.0;
         let proj = data.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
-        // Below Full taints
         mark_tainted_if_lower(data, &proj, apex_core::Access::Edits).unwrap();
         assert!(folder_trust::is_tainted(data, &proj));
-        // Full refused
         assert!(ensure_allowed_for_access(data, &proj, apex_core::Access::Full).is_err());
-        // Read allowed (gate only for Full per design)
         assert!(ensure_allowed_for_access(data, &proj, apex_core::Access::Read).is_ok());
     }
 }

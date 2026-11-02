@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 218);
+        assert_eq!(names.len(), 220);
         for name in [
             "room_curate",
             "room_curate_undo",

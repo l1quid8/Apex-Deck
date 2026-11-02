@@ -390,7 +390,7 @@ fn add_git_source(
 
 /// Runs one fixed git subcommand with bounded retained output and a hard timeout.
 fn run_git(root: &Path, args: &[&str], cap: usize) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::project_process::git_command();
     command
         .arg("-c")
         .arg("core.fsmonitor=false")

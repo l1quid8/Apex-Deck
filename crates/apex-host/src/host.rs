@@ -3055,6 +3055,11 @@ impl Host {
 
     /// Switch a chat to a registered checkout of its own repository, retaining history.
     pub fn room_mount(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
+        // Full gate for mount operation itself
+        let target_for_gate = PathBuf::from(&cwd);
+        if let Err(why) = crate::folder_trust::check_full_allowed(&self.paths.data, &target_for_gate) {
+            return Err(why);
+        }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
             return Err("An assistant worker chat cannot mount another worktree.".into());
@@ -3068,7 +3073,7 @@ impl Host {
         let target = PathBuf::from(&cwd).canonicalize().map_err(|_| "That worktree folder is missing.")?;
         if !target.is_dir() { return Err("That worktree folder is missing.".into()); }
         let common = |path: &Path| -> Result<PathBuf, String> {
-            let out = std::process::Command::new("git").arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(|e| e.to_string())?;
+            let out = crate::project_process::git_command().arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(|e| e.to_string())?;
             if !out.status.success() { return Err("Choose a worktree of this chat's repository.".into()); }
             PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize().map_err(|e| e.to_string())
         };
@@ -3827,12 +3832,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         let cwd = path.join("checkout");
         std::fs::create_dir_all(&cwd).unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
         std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
 
         let data = path.join("data");
         // Create an unfolded copy for a thread that is NOT in store ("deleted-thread")
@@ -3880,12 +3885,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         let cwd = path.join("checkout");
         std::fs::create_dir_all(&cwd).unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
         std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
 
         let data = path.join("data");
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -4161,7 +4166,7 @@ mod host_tests {
     fn mount_repo(data: &Path) -> (PathBuf, PathBuf) {
         let repo = data.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| { assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
+        let git = |args: &[&str]| { assert!(crate::project_process::git_command().arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
         git(&["init", "-b", "main"]);
         git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"]);
         let tree = data.join("tree");

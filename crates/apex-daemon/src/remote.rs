@@ -800,4 +800,37 @@ mod tests {
         }
         assert!(again.is_some());
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pre_epoch_device_refused_on_trusted_host() {
+        // Task 10: epoch check. A device paired before trust (no epoch) must be refused.
+        let data = crate::devices::tests::folder();
+        // Pre-trust: create daemon first, add old device, then trust host
+        let (daemon, server) = daemon(&data.0).await;
+        let pre_key = SecretKey::generate();
+        let pre_id = pre_key.public().to_string();
+        daemon.devices.add(&pre_id, "OldPhone", Tier::Full, Threads::ALL, false).unwrap();
+        let pre_dev = daemon.devices.get(&pre_id).unwrap();
+        assert!(pre_dev.confined_epoch.is_none(), "before trust, device has no epoch");
+        // Now trust host
+        let epoch = crate::trust_host::run_no_reboot(&data.0, true).unwrap();
+        assert!(crate::trust_host::is_trusted(&data.0));
+        assert_eq!(crate::trust_host::epoch(&data.0).unwrap(), epoch);
+        // Old device still in memory without epoch, should be refused
+        let pre_phone = bind(pre_key, None, 0).await.unwrap();
+        let pre_conn = pre_phone.connect(local_addr(&server), super::ALPN).await.unwrap();
+        let closed = super::pair_phone::closed_with(&pre_conn).await;
+        assert_eq!(closed.0, close::NOT_PAIRED, "pre-epoch device should be refused: {closed:?}");
+        assert!(closed.1.contains("paired before trust"), "{closed:?}");
+
+        // Device with current epoch should succeed (added after trust)
+        let cur_key = SecretKey::generate();
+        let cur_id = cur_key.public().to_string();
+        daemon.devices.add(&cur_id, "NewPhone", Tier::Full, Threads::ALL, false).unwrap();
+        let cur_dev = daemon.devices.get(&cur_id).unwrap();
+        assert_eq!(cur_dev.confined_epoch.as_deref(), Some(epoch.as_str()));
+        let mut cur_phone = Phone::dial(cur_key, &server).await;
+        let hello = cur_phone.call(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1 } })).await.unwrap();
+        assert_eq!(hello["ok"]["host_id"], "host-1");
+    }
 }
