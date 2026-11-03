@@ -341,7 +341,7 @@ export interface NextStep { label: string; prompt: string }
 export type QuestionEnd = "answered" | "skipped" | "dropped";
 
 export type PlanStepState = "open" | "active" | "done" | "skipped" | "cancelled";
-export type PlanRunState = "waiting" | "revising" | "running" | "stopped" | "done";
+export type PlanRunState = "waiting" | "revising" | "running" | "stopped" | "done" | "expired";
 export interface PlanRunStep { id: string; text: string; state: PlanStepState; off_plan: boolean }
 export interface PlanRun {
   request: string;
@@ -351,6 +351,7 @@ export interface PlanRun {
   state: PlanRunState;
   steps: PlanRunStep[];
   reporting: boolean;
+  started_seq: number;
 }
 
 export type RoomEvent = { recovery_seq?: number } & (
@@ -382,6 +383,8 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "plan_changed"; on: boolean }
   /** A plan run was created or changed. Holds the whole run. */
   | { type: "plan_run"; run: PlanRun }
+  /** Plan runs were removed by `/clear` or a rewind. Holds the whole list. */
+  | { type: "plan_runs_reset"; runs: PlanRun[] }
   /** The thread's whole "Always allow" list, after it changed. */
   | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */

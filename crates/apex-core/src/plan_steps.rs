@@ -30,6 +30,8 @@ pub enum PlanRunState {
     Running,
     Stopped,
     Done,
+    /// Its card went away unanswered: a stop, a failed bot or a restart.
+    Expired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +55,10 @@ pub struct PlanRun {
     pub steps: Vec<PlanRunStep>,
     /// True once a to-do tag has matched a known step.
     pub reporting: bool,
+    /// How long the transcript was when the card appeared. Rewinding to here
+    /// or earlier removes the run.
+    #[serde(default)]
+    pub started_seq: usize,
 }
 
 /// The step id in a leading `[S<n>]` tag, if any.
@@ -73,7 +79,7 @@ impl PlanRun {
             .into_iter()
             .map(|s| PlanRunStep { id: s.id, text: s.text, state: PlanStepState::Open, off_plan: false })
             .collect();
-        PlanRun { request, by, detail, version, state: PlanRunState::Waiting, steps, reporting: false }
+        PlanRun { request, by, detail, version, state: PlanRunState::Waiting, steps, reporting: false, started_seq: 0 }
     }
 
     /// Mark skips (Open steps only) and start running. Returns the instruction
@@ -113,6 +119,13 @@ impl PlanRun {
             out.push_str(&format!("\nDo NOT do these steps: {}", skipped.join("\n")));
         }
         Some(out)
+    }
+
+    /// The card went away unanswered. Only a Waiting run is affected.
+    pub fn expire(&mut self) {
+        if self.state == PlanRunState::Waiting {
+            self.state = PlanRunState::Expired;
+        }
     }
 
     pub fn apply_todos(&mut self, items: &[TodoItem]) {
@@ -398,6 +411,19 @@ mod tests {
         assert_eq!(r.state, PlanRunState::Running);
         r.turn_ended();
         assert_eq!(r.state, PlanRunState::Done);
+    }
+    #[test]
+    fn expire_only_acts_on_a_waiting_run() {
+        let mut r = run(THREE);
+        r.expire();
+        assert_eq!(r.state, PlanRunState::Expired);
+        assert!(serde_json::to_string(&r).unwrap().contains("\"state\":\"expired\""));
+        r.turn_ended();
+        assert_eq!(r.state, PlanRunState::Expired);
+        let mut r = run(THREE);
+        r.approve(&[]);
+        r.expire();
+        assert_eq!(r.state, PlanRunState::Running);
     }
     #[test]
     fn plan_run_serializes_snake_case() {

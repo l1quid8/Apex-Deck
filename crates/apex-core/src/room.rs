@@ -113,6 +113,8 @@ pub enum RoomEvent {
     PlanChanged { on: bool },
     /// A plan run was created or changed. It is the whole run.
     PlanRun { run: crate::PlanRun },
+    /// Plan runs were removed by `/clear` or a rewind. It is the whole list.
+    PlanRunsReset { runs: Vec<crate::PlanRun> },
     /// The thread's "Always allow" list changed. It is the whole list.
     AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
@@ -502,6 +504,19 @@ pub struct RoomSnapshot {
 }
 
 impl RoomSnapshot {
+    /// No card or turn survives a restart: settle the saved plan runs and
+    /// return the ones that changed.
+    pub fn settle_plan_runs(&mut self) -> Vec<crate::PlanRun> {
+        let mut changed = Vec::new();
+        for run in &mut self.plan_runs {
+            let before = run.state;
+            run.expire();
+            run.turn_ended();
+            if run.state != before { changed.push(run.clone()); }
+        }
+        changed
+    }
+
     /// Imported IDs are tombstones, never executable claims from another host.
     pub fn remember_history_ids(&mut self) {
         for message in &self.transcript {
@@ -801,6 +816,7 @@ impl Room {
         self.pins = self.pins.iter().map(|pin| response_pin_parts(pin).map_or_else(|| pin.clone(), |(_, text)| text.to_string())).collect();
         self.transcript.clear();
         self.checklists.lock().unwrap().clear();
+        self.plan_runs.lock().unwrap().clear();
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
@@ -823,6 +839,7 @@ impl Room {
             record.reply_seqs.retain(|seq| *seq < upto);
         }
         self.checklists.lock().unwrap().retain(|_, list| list.seq < upto);
+        self.plan_runs.lock().unwrap().retain(|run| run.started_seq < upto);
         for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
         self.last_targets.clear();
         if self.compaction.as_ref().is_some_and(|c| c.upto > upto) { self.compaction = None; }
