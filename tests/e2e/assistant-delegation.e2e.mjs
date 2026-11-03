@@ -555,3 +555,25 @@ cat >/dev/null
     }
   });
 }
+
+// Round 1 native acceptance stays behind the host capability. Browser coverage
+// lives in tests/assistant-conversation-browser.test.mjs and does not stand in
+// for crash recovery, a held Stop, or a new-thread replay.
+test('round 1 conversational handoff native acceptance waits for assistant_conversation_handoff_v1', { timeout: 60_000 }, async t => {
+  if (!fs.existsSync(bin)) {
+    t.skip(`apex-daemon is not built at ${bin}; native Round 1 acceptance was not run`);
+    return;
+  }
+  const data = fs.mkdtempSync('/tmp/ade-handoff-round1-');
+  const daemon = await serve(data);
+  const client = new DaemonClient(async () => socketLink(path.join(data, 'daemon.sock')));
+  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  const welcome = await client.start();
+  const capabilities = welcome.capabilities ?? [];
+  if (!capabilities.includes('assistant_conversation_handoff_v1')) {
+    const assistant = capabilities.filter(capability => capability.startsWith('assistant'));
+    t.skip(`hello does not advertise assistant_conversation_handoff_v1 (assistant capabilities: ${assistant.join(', ') || 'none'}); crash recovery, held Stop, paused answers, and new-thread replay were not run`);
+    return;
+  }
+  assert.fail('assistant_conversation_handoff_v1 is advertised, but the native Round 1 scenarios are not wired in this fixture yet');
+});
