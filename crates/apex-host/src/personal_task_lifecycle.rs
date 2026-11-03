@@ -135,7 +135,7 @@ impl Host {
             Ok(delegated_tasks.iter().map(|task| task.owner.workspace_id.clone()).collect::<std::collections::BTreeSet<_>>())
         })?;
         for workspace in affected { self.assistant_changed(&workspace); }
-        Ok(json!({"assistant": self.personal_get(assistant_id)?}))
+        Ok(json!({"assistant": crate::personal::PersonalAssistantView::from(&self.personal_get(assistant_id)?)}))
     }
 
     pub(crate) async fn personal_task_lifecycle(self: &Arc<Self>, input: LifecycleInput) -> Result<Value, String> {
@@ -193,7 +193,7 @@ impl Host {
                         }
                         let stop = if task.status.settled() { vec![] } else {
                             record.counters.event += 1;
-                            let event = PersonalEvent { id: format!("pe-{}",record.counters.event), request_id: format!("lifecycle-delete:{}:{}",target.task_id,record.revision), source:EventSource::Cancel {task_id:target.task_id.clone()}, received_at:crate::personal::now(), state:EventState::Processing, attempts:0,error:None,spend_approved:false,computer_started:false };
+                            let event = PersonalEvent { id: format!("pe-{}",record.counters.event), request_id: format!("lifecycle-delete:{}:{}",target.task_id,record.revision), source:EventSource::Cancel {task_id:target.task_id.clone()}, received_at:crate::personal::now(), state:EventState::Processing, attempts:0,error:None,spend_approved:false,computer_started:false, saved_reply: None };
                             record.events.push(event.clone());
                             let stop = crate::personal_worker::apply_control(record, &event);
                             if record.events.iter().find(|saved|saved.id == event.id).is_some_and(|saved|saved.state == EventState::Failed) { return Err("Cancellation failed. The task was not deleted.".into()); }
@@ -224,6 +224,6 @@ impl Host {
                 _ => return Err("Unknown task source.".into()),
             }
         }
-        Ok(json!({"assistant":self.personal_get(&assistant.id)?}))
+        Ok(json!({"assistant":crate::personal::PersonalAssistantView::from(&self.personal_get(&assistant.id)?)}))
     }
 }

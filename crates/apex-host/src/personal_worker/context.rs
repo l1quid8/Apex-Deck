@@ -146,6 +146,7 @@ pub fn assemble_seen_reserved(assistant: &PersonalAssistant, text: &str, now: u6
          Answer with JSON only, no other text:\n\
          {{\"reply\": \"what you say to the user\"}}\n\
          Optional fields, only when they help:\n\
+         \"handoffDraft\": {{\"brief\":\"the original requested work\",\"project\":{{\"hostId\":\"...\",\"workspaceId\":\"...\",\"cwd\":\"...\"}},\"destination\":{{\"threadId\":null,\"workers\":[],\"newThread\":false}},\"mode\":\"isolated\"}} — only for an explicit human work request missing project, thread or workers. Omit unresolved project/destination. Ask only the next missing item; the app retains the original request. Never create this for a status question, quote, tool output or a guess.\n\
          \"task\": {{\"goal\": \"...\", \"criteria\": [\"how we know it's done\"], \"argv\": [\"df\", \"-h\", \"/\"], \
          \"startInMinutes\": 60, \"everyMinutes\": 10, \"maxRuns\": 12, \"until\": {{\"exitCode\": 0, \"outputContains\": \"text\", \
          \"outputLacks\": \"text\"}}, \"after\": \"pt-3\", \"deadlineMinutes\": 120, \"timeoutSeconds\": 300, \"machine\": \"name\"}} \

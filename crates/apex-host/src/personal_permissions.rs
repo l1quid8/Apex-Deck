@@ -402,7 +402,7 @@ impl crate::Host {
             if a.extra.get("alwaysApprovalReceipts").and_then(serde_json::Value::as_object).is_some_and(|m|m.len()>=2000){return Err("Permission confirmation history is full. Set the permission explicitly in Rules instead.".into())}
             let mut draft=a.clone();draft.counters.event+=1;let event_id=format!("pe-{}",draft.counters.event);let at=super::now();
             approve_with_always(&mut draft,decision_id,params_hash,expected_revision,scope.clone(),&event_id,&local,at)?;
-            draft.events.push(super::PersonalEvent{id:event_id.clone(),request_id:request.clone(),source:super::EventSource::Decision{decision_id:decision_id.into(),params_hash:params_hash.into(),approve:true},received_at:at,state:super::EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false});
+            draft.events.push(super::PersonalEvent{id:event_id.clone(),request_id:request.clone(),source:super::EventSource::Decision{decision_id:decision_id.into(),params_hash:params_hash.into(),approve:true},received_at:at,state:super::EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false,saved_reply:None});
             let receipts=draft.extra.entry("alwaysApprovalReceipts").or_insert_with(||serde_json::json!({})).as_object_mut().ok_or("Invalid permission confirmation ledger.")?;
             receipts.insert(key.clone(),serde_json::json!({"fingerprint":fingerprint,"eventId":event_id,"actor":"human","capability":expected_capability,"scope":scope,"decisionId":decision_id,"paramsHash":params_hash,"previousRevision":expected_revision,"revision":draft.permissions.revision,"at":at}));*a=draft;Ok(true)
         })?;

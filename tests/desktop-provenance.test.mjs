@@ -206,3 +206,20 @@ test('permanent project task deletion requires exact UI attestation',()=>{
 test('human todo edits require protected UI attestation',()=>{
   assert.equal(mod.needsAttestation('personal_todo'),true);
 });
+
+test('handoff selections and controls attest one stable request and reject changed signed bindings',async()=>{
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  for(const cmd of ['personal_handoff_select','personal_handoff_control']){
+    const frame={id:91,cmd,args:{assistantId:'a',requestId:'handoff-1',taskId:'task-1',expectedTaskRevision:7,action:'stop'}};
+    const issued=[];
+    const options={dataDir:'/data',uid:501,publicKey:raw,issue:async r=>{issued.push(r.command);return response(r.command);}};
+    const first=await mod.attestFrame(frame,options),second=await mod.attestFrame(frame,options);
+    assert.equal(first.cmd,'provenance_execute');
+    assert.deepEqual(issued[0],issued[1],'retry uses same signed request identity');
+    assert.equal(issued[0].provenanceRequestId,undefined);
+    assert.deepEqual(first,second);
+    await assert.rejects(mod.attestFrame(frame,{...options,issue:async r=>response({...r.command,args:{...r.command.args,assistantId:'other'}})}),/does not match/);
+  }
+});

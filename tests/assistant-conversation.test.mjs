@@ -95,3 +95,14 @@ test('multiline command output stays in Tasks while a short plain result stays i
     assert.equal(message.text,want);
   }
 });
+
+test('delegated milestones project once with saved attribution and keep cleared sources out',()=>{
+ const human={id:'human',role:'human',kind:'chat',text:'Please inspect.',at:1,eventId:'source'};
+ const job={id:'job',lineage:{sourceEventId:'source'},workerNames:{worker:'Alex'},conversationEvents:[{id:'run:1',taskId:'job',runId:'run',workerId:'worker',atMs:2,kind:'milestone',text:'Started working'},{id:'run:1',taskId:'job',runId:'run',workerId:'worker',atMs:2,kind:'milestone',text:'Started working'}]};
+ const shown=assistantConversationMessages([human],[],0,[job]);
+ assert.equal(shown.length,2);
+ assert.equal(shown[1].text,'Alex: Started working');
+ assert.equal(shown[1].role,'system','lifecycle is not an invented worker quote');
+ assert.equal(assistantConversationMessages([human],[],3,[job]).length,1);
+ assert.equal(assistantConversationMessages([],[],0,[job]).length,0);
+});

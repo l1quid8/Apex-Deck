@@ -40,7 +40,12 @@ fn hhmm(text: &str) -> bool {
 /// What a settings command answers: the assistant as it is now.
 #[derive(Serialize)]
 pub struct Changed {
+    #[serde(serialize_with="serialize_assistant_view")]
     pub assistant: PersonalAssistant,
+}
+
+fn serialize_assistant_view<S: serde::Serializer>(assistant: &PersonalAssistant, serializer: S) -> Result<S::Ok,S::Error> {
+    crate::personal::PersonalAssistantView::from(assistant).serialize(serializer)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -128,7 +133,12 @@ impl crate::Host {
     }
 
     pub fn personal_conversation_new(&self, id: &str) -> Result<Changed, String> {
-        self.changed(id, |assistant| { assistant.conversation_from = now(); Ok(()) })
+        self.changed(id, |assistant| {
+            assistant.conversation_from = now();
+            // New-conversation clears unresolved routing drafts without deleting task history.
+            assistant.pending_handoffs.clear();
+            Ok(())
+        })
             .inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 

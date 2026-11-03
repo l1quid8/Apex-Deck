@@ -69,7 +69,7 @@ impl Host {
             apply(record,&input,now())
         })?;
         self.personal_wake.notify_one();
-        Ok(json!({"assistant":self.personal_get(&input.assistant_id)?}))
+        Ok(json!({"assistant":crate::personal::PersonalAssistantView::from(&self.personal_get(&input.assistant_id)?)}))
     }
 }
 

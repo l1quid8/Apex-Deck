@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, withoutLaneMentions } from '../src/apexAgentModel.ts';
-import { TaskViewContext, personalTaskGroup, personalTaskKey } from '../src/apexAgentTaskView.ts';
+import { TaskViewContext, personalTaskGroup, personalTaskKey, projectTaskKey } from '../src/apexAgentTaskView.ts';
 import { messageStateKey, retryMessageText } from '../src/apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from '../src/apexAgentQuote.ts';
 import { assistantDisplayName } from '../src/assistantName.ts';
@@ -42,6 +42,9 @@ const PersonalCallStub = (props) => ({ type: PersonalCallStub, props, children: 
 const ApexAgentMessageActionsStub = (props) => ({ type: ApexAgentMessageActionsStub, props, children: [] });
 const ApexAgentReplyQuoteStub = (props) => ({ type: ApexAgentReplyQuoteStub, props, children: [] });
 const ApexAgentComposerToolsStub = (props) => ({ type: ApexAgentComposerToolsStub, props, children: [] });
+const HandoffPillStub = () => null;
+const HandoffDraftStub = () => null;
+const HandoffQuestionStub = () => null;
 const VoiceCallBarStub = () => null;
 const VoiceCallControlsStub = () => null;
 const VoiceCallCapsuleStub = () => null;
@@ -66,7 +69,7 @@ function harness(props, { effects = false, voice = {} } = {}) {
     const settings = readVoiceSettings(input.settings);
     return { settings, candidates: [], slot: { live: false, look: settings.look }, hint: undefined, who: () => undefined, ...voice };
   };
-  const bindings = { useComposerHistory: historyHookFor(hooks), assistantHistoryTexts, PersonalTaskTiming: () => null, assistantConversationMessages, PersonalAlwaysPermission: () => null, taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
+  const bindings = { HandoffPillView: HandoffPillStub, HandoffDraftView: HandoffDraftStub, HandoffTaskQuestion: HandoffQuestionStub, HandoffControlConfirmationView: () => null, projectTaskKey, useComposerHistory: historyHookFor(hooks), assistantHistoryTexts, PersonalTaskTiming: () => null, assistantConversationMessages, PersonalAlwaysPermission: () => null, taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
   const component = new Function(...Object.keys(bindings), `${compiled}\nreturn ApexAgentAll;`)(...Object.values(bindings));
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
@@ -1165,4 +1168,32 @@ test('attachment ownership takes priority over a different mentioned project dur
   input.props.onKeyDown(historyEvent(historyInput(input.props.value)));
   input = find(h.render(), n => n.type === 'textarea');
   assert.equal(input.props.value, 'Message mobile');
+});
+
+
+test('real conversation handoff Stop and Retry use captured host task revisions', async () => {
+ const {lane}=personalLane();const controls=[];lane.handoffControl=async input=>{controls.push(input);return {taskId:input.taskId,outcome:'stopped'}};
+ const task={id:'delegated-1',workspaceId:'mobile',owner:{hostId:'vps',workspaceId:'mobile'},lineage:{assistant:{hostId:'vps',assistantId:'asst-1'}},revision:8,status:'running',workers:['worker'],attempts:[],resultData:{},conversationProgress:{taskId:'delegated-1',runId:'run-1',participantId:'worker',latestActivity:'Ran harmless check'}};
+ const h=harness({workspaces:projects,monitors:[],personal:lane,embedded:true,delegatedTasks:[task]});
+ const pill=find(h.render(),node=>node.type===HandoffPillStub);assert.ok(pill);
+ assert.equal(pill.props.progress,task.conversationProgress);
+ pill.props.onStop(task.id,task.revision);await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(controls,[{taskId:'delegated-1',expectedTaskRevision:8,action:'stop'}]);
+ pill.props.onRetry(task.id,task.revision);await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(controls[1],{taskId:'delegated-1',expectedTaskRevision:8,action:'retry'});
+});
+
+test('older personal hosts keep existing conversation without unsupported handoff pills', () => {
+ const {lane}=personalLane();const h=harness({workspaces:projects,monitors:[],personal:lane,embedded:true,delegatedTasks:[{id:'old-task',revision:1,status:'running',workers:['worker'],attempts:[],resultData:{},owner:{hostId:'vps',workspaceId:'mobile'}}]});
+ assert.equal(find(h.render(),node=>node.type===HandoffPillStub),null);
+});
+
+test('real conversation passes lane and project disconnection into its handoff pill',()=>{
+ const {lane}=personalLane([],[],{handoffControl:async()=>{throw new Error('offline command must not run')}});
+ const task={id:'offline-task',workspaceId:'mobile',owner:{hostId:'vps',workspaceId:'mobile'},lineage:{assistant:{hostId:'vps',assistantId:'asst-1'}},revision:8,status:'running',workers:['worker'],attempts:[],resultData:{}};
+ for(const props of [{personal:{...lane,offline:true}},{personal:lane,offlineWorkspaceIds:['mobile']}]){
+   const h=harness({workspaces:projects,monitors:[],embedded:true,delegatedTasks:[task],...props});
+   const pill=find(h.render(),n=>n.type===HandoffPillStub);
+   assert.ok(pill);assert.equal(pill.props.offline,true);
+ }
 });

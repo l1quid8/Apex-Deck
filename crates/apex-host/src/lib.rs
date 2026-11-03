@@ -43,6 +43,8 @@ pub mod project_memory;
 mod memory_lifecycle;
 pub mod project_memory_service;
 pub mod personal_worker;
+pub mod personal_handoff;
+pub mod assistant_handoff_reply;
 mod personal_task_lifecycle;
 mod personal_todos;
 mod personal_archive;

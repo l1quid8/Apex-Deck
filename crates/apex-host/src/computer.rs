@@ -288,7 +288,7 @@ async fn rpc(
             .map_err(|_| "Unified Computer Use control read failed")?;
         let message: Value = serde_json::from_slice(&line)
             .map_err(|_| "Unified Computer Use returned invalid control data")?;
-        if message["id"] != 1 || !message["error"].is_null() {
+        if message["id"] != 1 || !message["error"].is_null() || message["result"]["isError"] == true {
             return Err("Unified Computer Use refused this control request");
         }
         Ok(message["result"].clone())
@@ -797,6 +797,32 @@ mod tests {
         assert!(hook.start(&id, &mut request, Access::Ask).await.is_none());
         assert!(request.computer.is_none());
         assert!(hook.start_diagnosed(&id, &mut request, Access::Ask).await.unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn control_refusal_is_error_without_exposing_helper_content() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (client, helper) = tokio::net::UnixStream::pair().unwrap();
+        let peer = tokio::spawn(async move {
+            let mut helper = tokio::io::BufReader::new(helper);
+            for result in [
+                json!({"isError":true,"content":[{"type":"text","text":"private-helper-content"}]}),
+                json!({"isError":false,"cursorOverlayEnabled":true}),
+            ] {
+                let mut line = String::new();
+                helper.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                helper.get_mut().write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":request["id"],"result":result})).as_bytes()).await.unwrap();
+            }
+        });
+        let mut client = tokio::io::BufReader::new(client);
+        let error = rpc(&mut client, "unified/set-cursor-overlay", json!({})).await.unwrap_err();
+        assert!(error.contains("refused"));
+        assert!(!error.contains("private-helper-content"));
+        let applied = rpc(&mut client, "unified/set-cursor-overlay", json!({})).await.unwrap();
+        assert_eq!(applied["cursorOverlayEnabled"], true);
+        peer.await.unwrap();
     }
 
     #[cfg(unix)]

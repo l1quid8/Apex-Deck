@@ -163,11 +163,39 @@ pub fn load(data_dir: &Path) -> CursorOverlayPrefs {
     serde_json::from_slice::<CursorOverlayPrefs>(&bytes).unwrap_or_default()
 }
 
+// Cursor appearance and PNG assets are ordinary local files, not approval
+// ledgers. Publish a complete replacement at the same path load/the helper read.
+fn write_local_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let parent = path.parent().ok_or_else(|| std::io::Error::other("Cursor file has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let temp = path.with_extension(format!("{}-{}.pending", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp)?;
+    let result = (|| -> std::io::Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)?;
+        crate::storage::sync_directory(parent)
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temp); }
+    result
+}
+
 pub fn save(data_dir: &Path, prefs: &CursorOverlayPrefs) -> Result<(), String> {
     prefs.validate()?;
     let path = prefs_path(data_dir);
     let bytes = serde_json::to_vec_pretty(prefs).map_err(|e| e.to_string())?;
-    crate::authority_file::write(&path, &bytes).map_err(|e| format!("Could not save cursor prefs: {e}"))
+    write_local_file(&path, &bytes).map_err(|e| format!("Could not save cursor prefs: {e}"))
 }
 
 /// Validate and persist a custom PNG:
@@ -205,7 +233,7 @@ pub fn validate_and_store_image(data_dir: &Path, png_bytes: &[u8]) -> Result<Cus
     let hash = hasher.finish();
     let filename = format!("cursor-{hash:x}.png");
     let dest = dir.join(filename);
-    crate::authority_file::write(&dest, png_bytes).map_err(|e| format!("Could not save cursor image: {e}"))?;
+    write_local_file(&dest, png_bytes).map_err(|e| format!("Could not save cursor image: {e}"))?;
     let abs = dest.canonicalize().unwrap_or(dest);
     Ok(CustomImagePrefs { path: abs.to_string_lossy().to_string(), hotspot_x: 0.0, hotspot_y: 0.0 })
 }
@@ -224,6 +252,50 @@ pub fn reset(data_dir: &Path) -> Result<CursorOverlayPrefs, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!("apex-cursor-{}-{id}", std::process::id())))
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn saved_preferences_survive_reload_and_reset() {
+        let dir = TestDir::new();
+        let prefs = CursorOverlayPrefs { preset: CursorPreset::RingOnly, size: 2.5, labels_enabled: true, ..Default::default() };
+        save(&dir.0, &prefs).unwrap();
+        assert_eq!(load(&dir.0), prefs);
+        assert!(prefs_path(&dir.0).is_file(), "preferences belong beside the other ordinary settings");
+        reset(&dir.0).unwrap();
+        assert_eq!(load(&dir.0), CursorOverlayPrefs::default());
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(prefs_path(&dir.0)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn stored_png_is_readable_at_returned_path_and_removed_on_reset() {
+        use image::ImageEncoder;
+        let dir = TestDir::new();
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png).write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+        let img = validate_and_store_image(&dir.0, &png).unwrap();
+        assert_eq!(std::fs::read(&img.path).unwrap(), png);
+        assert_eq!(validate_and_store_image(&dir.0, &png).unwrap(), img);
+        assert_eq!(std::fs::read_dir(image_dir(&dir.0)).unwrap().count(), 1);
+        reset(&dir.0).unwrap();
+        assert!(!Path::new(&img.path).exists());
+    }
+
     #[test]
     fn default_validates() { CursorOverlayPrefs::default().validate().unwrap(); }
     #[test]

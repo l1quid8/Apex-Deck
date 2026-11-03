@@ -4,6 +4,8 @@ import { PersonalAlwaysPermission } from './PersonalApprovalActions';
 import { PersonalTaskTiming } from './PersonalTaskTiming';
 import { assistantConversationMessages, type AssistantConversationMessage } from './assistantConversation';
 import { taskMessageDeleted } from './assistantTaskVisibility';
+import { HandoffPillView, HandoffDraftView, HandoffTaskQuestion, HandoffControlConfirmationView } from './AssistantHandoff';
+import './assistant-handoff.css';
 import type { AssistantTask } from './assistantTaskModel';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
@@ -133,7 +135,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   // Projects plus the personal assistant: a reply goes to whichever is named, or the last one discussed.
   const lanes = [...watched.map((workspace) => ({ id: workspace.id, name: workspace.name })), ...(assistant ? [{ id: PERSONAL, name: personal!.name }] : [])];
   const laneNames: Record<string, string> = assistant ? { ...names, [PERSONAL]: personalTag } : names;
-  const personalEntries = useMemo(() => assistantConversationMessages((assistant?.messages ?? []).filter(m=>!taskMessageDeleted(m,assistant?.tasks??[],delegatedTasks,assistant?.purgedDelegatedTaskIds??[])), assistant?.tasks ?? [], Math.max(clearedAt, assistant?.conversationFrom ?? 0)).map((item) => ({
+  const personalEntries = useMemo(() => assistantConversationMessages((assistant?.messages ?? []).filter(m=>!taskMessageDeleted(m,assistant?.tasks??[],delegatedTasks,assistant?.purgedDelegatedTaskIds??[])), assistant?.tasks ?? [], Math.max(clearedAt, assistant?.conversationFrom ?? 0), delegatedTasks.filter(job => job.lineage?.assistant.assistantId === assistant?.id && job.lineage?.assistant.hostId === assistant?.hostId)).map((item) => ({
     workspaceId: PERSONAL, project: personalTag, personal: item,
     message: { id: item.id, role: item.role === 'human' ? 'human' : 'assistant', text: item.text, at: item.at, evidence: [] as MonitorEvidence[], reactions: item.reactions },
   })), [assistant, personalTag, delegatedTasks, clearedAt]);
@@ -320,6 +322,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
+  const handoffTasks = personal?.handoffControl ? delegatedTasks.filter(task => !task.resultData?.archivedAtMs && task.lineage?.assistant.assistantId === assistant?.id && task.lineage?.assistant.hostId === assistant?.hostId) : [];
+  const handoffMessageIds = new Map(handoffTasks.flatMap(task => {
+    const announcement = assistant?.messages.filter(message => message.role === 'assistant' && message.kind === 'chat' && message.eventId === task.lineage?.sourceEventId).at(-1);
+    return announcement ? [[task.id, announcement.id] as const] : [];
+  }));
+  const handoffPill = (task: AssistantTask, sentence?: string) => <HandoffPillView offline={!!personal?.offline || offlineWorkspaceIds.includes(task.workspaceId)} task={task} sentence={sentence} progress={task.conversationProgress} events={task.conversationEvents} threadLabel={workspaces.find(w => w.id === task.workspaceId)?.name ?? task.workspaceId} onOpen={taskId => onOpenProjectTask?.(projectTaskKey(task.owner.hostId, task.owner.workspaceId, taskId))} onStop={(taskId, expectedTaskRevision) => void run(async () => { await personal!.handoffControl!({taskId, expectedTaskRevision, action:'stop'}); })} onRetry={(taskId, expectedTaskRevision) => void run(async () => { await personal!.handoffControl!({taskId, expectedTaskRevision, action:'retry'}); })} />;
+
   const runCommand = (command: Command, lane: string) => {
     if(embedded&&command.name==='plan'){setPlanOn(!planOn);return;}
     if (command.name === 'clear') {
@@ -705,10 +714,11 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           }
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
+          const attachedHandoffs = item.role === 'assistant' ? handoffTasks.filter(task => handoffMessageIds.get(task.id) === item.id) : [];
           const plannedJob = item.role === 'assistant' && item.kind === 'update' && item.taskId ? delegatedTasks.find((job) => job.id === item.taskId) : undefined;
           const personalBody = <>
             <small className="apex-agent-message-meta">{embedded&&item.role==='assistant'&&assistantAvatar}{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{embedded&&item.role==='assistant'&&<time>{clock(item.at)}</time>}</small>
-            {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
+            {attachedHandoffs.length ? attachedHandoffs.map((job, index) => <span key={job.id}>{handoffPill(job, index === 0 ? message.text : '')}<HandoffTaskQuestion task={job} lane={personal!} /></span>) : item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
             {item.taskProblem && task && <button type="button" className="apex-agent-task-link plain dot-link" onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Review task</button>}
             {item.kind === 'delegation_failed' && onDelegateTask && <button type="button" className="assistant-chat-action" onClick={onDelegateTask}>Delegate a task</button>}
             {plannedJob && <button type="button" className="assistant-chat-action" onClick={() => onOpenProjectTask?.(projectTaskKey(plannedJob.owner.hostId, plannedJob.owner.workspaceId, plannedJob.id))}>{plannedJob.status === 'proposed' ? 'Review plan' : 'Open task'}</button>}
@@ -735,6 +745,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={projectBubble}>{projectBody}</div>{projectActions}</article>
           : <article className={projectBubble} key={`${workspaceId}:${message.id}`}>{projectBody}</article>;
       })}
+      {/* A missing announcement is shown as a task brief, never an invented execution claim. */}
+      {handoffTasks.filter(task => !handoffMessageIds.has(task.id)).map(dt => <article className="assistant-chat-message assistant apex-agent-personal apex-agent-handoff" key={`handoff:${dt.id}`}>{handoffPill(dt, dt.brief)}<HandoffTaskQuestion task={dt} lane={personal!} /></article>)}
+      {personal?.handoffControl && personal.assistant?.handoffControlConfirmations?.map(pending => <HandoffControlConfirmationView key={`${pending.eventId}:${pending.binding.runId}`} pending={pending} lane={personal} />)}
+      {personal?.handoffSelect && personal.assistant?.pendingHandoffs?.map(draft => <HandoffDraftView key={draft.id} draft={draft} lane={personal} />)}
       {embedded && visibleSchedules.map((schedule) => {
         const decision = schedule.decision!;
         const off = busy || personal!.offline;

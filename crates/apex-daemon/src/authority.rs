@@ -60,7 +60,7 @@ pub fn command_needs(command: &Command) -> Need {
         // so even reading it needs a device allowed every thread at Full tier.
         ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
         | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalTodo { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
-        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalProjectProposeUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
+        | PersonalHandoffOptions { .. } | PersonalHandoffQuestion { .. } | PersonalHandoffSelect { .. } | PersonalHandoffControl { .. } | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalProjectProposeUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
         | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
@@ -397,6 +397,12 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         PersonalPause { .. } => None,
         PersonalConversationNew { .. } => None,
         PersonalScheduleCancel { .. } => None,
+        // Routing uses saved, authorized worker profiles. Controls act on existing
+        // authority; neither payload can set or raise an access level.
+        PersonalHandoffOptions { .. } => None,
+        PersonalHandoffQuestion { .. } => None,
+        PersonalHandoffSelect { .. } => None,
+        PersonalHandoffControl { .. } => None,
         PersonalAvatarOptions { .. } => None,
         PersonalAvatarGenerate { .. } => None,
         PersonalAvatarStatus { .. } => None,
@@ -649,6 +655,10 @@ mod tests {
             ("personal_avatar_asset", Some((Full, "global")), json!({"assistantId":"a","assetId":"x","sha256":"hash"})),
             ("personal_create", Some((Full, "global")), json!({ "name": "A", "folder": "/tmp/a", "profile": participant })),
             ("personal_send", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r1", "text": "hi" })),
+            ("personal_handoff_options", Some((Full, "global")), json!({"assistantId":"asst-1","draftId":"d1"})),
+            ("personal_handoff_question", Some((Full, "global")), json!({"assistantId":"asst-1","taskId":"t1"})),
+            ("personal_handoff_select", Some((Full, "global")), json!({"assistantId":"asst-1","requestId":"r1","draftId":"d1","expectedDraftRevision":1,"slot":"workers","selection":{"workers":{"worker_ids":["null"]}}})),
+            ("personal_handoff_control", Some((Full, "global")), json!({"assistantId":"asst-1","requestId":"r1","taskId":"t1","expectedTaskRevision":1,"action":"stop"})),
             ("personal_permission_set", Some((Full, "global")), json!({"assistantId":"asst-1","expectedRevision":0,"capability":"threadCreate","scope":{"kind":"allProjects"},"mode":"always","delegate":false})),
             ("room_set_trashed", Some((Full, "thread")), json!({"id":"mine","trashed":true})),
             ("personal_react", Some((Full, "global")), json!({ "assistantId": "asst-1", "messageId": "m1", "emoji": "👍", "enabled": true })),
@@ -1036,6 +1046,10 @@ mod tests {
             ("personal_project_delegate", AccessEffect::None, "creates personal task proposal, does not set bot access"),
             ("personal_project_delegate_ui", AccessEffect::None, "UI variant, same as delegate"),
             ("personal_project_propose_ui", AccessEffect::None, "quick entry forces a proposal for separate approval"),
+            ("personal_handoff_options", AccessEffect::None, "reads already authorized routing choices; no profile or access mutation"),
+            ("personal_handoff_question", AccessEffect::None, "reads an existing worker question; no profile or access mutation"),
+            ("personal_handoff_select", AccessEffect::None, "chooses authorized worker ids; admission rechecks saved profiles and human source, no caller-supplied access"),
+            ("personal_handoff_control", AccessEffect::None, "stops, answers a bound question or retries existing authorized work; cannot set access levels"),
             ("personal_todo", AccessEffect::None, "durable to-do item, never an executable operation"),
             ("project_task_lifecycle", AccessEffect::None, "only purges settled task records"),
             ("monitor_connect", AccessEffect::None, "connects a coordinator without scheduling checks or creating a bot"),

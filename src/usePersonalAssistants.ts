@@ -220,6 +220,17 @@ export class PersonalAssistantsCollection {
       currentThread: permittedThread && currentThread ? {...currentThread,project:currentThread.project && {...currentThread.project}} : undefined,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
       send: text => after("personal_send", { requestId: request(), text, ...sendContext() }),
+      handoffSelect: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : async (draft, selection) => {
+        const result = await call<import('./personalAssistant').HandoffSelectReceipt>("personal_handoff_select", {assistantId: need(), requestId: request(), draftId: draft.id, expectedDraftRevision: draft.revision, slot: draft.missing, selection});
+        need(); await this.refresh(); return result;
+      },
+      handoffOptions: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : draftId => call("personal_handoff_options", {assistantId: need(), draftId}),
+      handoffQuestion: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : taskId => call("personal_handoff_question", {assistantId: need(), taskId}),
+      handoffControl: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : async input => {
+        const result = await call<import('./personalAssistant').HandoffControlReceipt>("personal_handoff_control", {assistantId: need(), requestId: request(), ...input});
+        if (result.taskId !== input.taskId) throw new Error("The host returned a control for a different task.");
+        need(); await this.refresh(); return result;
+      },
       sendRequest: route.supports?.("assistant_voice_v1") !== true ? undefined : async (text, requestId) => {
         const result = await afterResult("personal_send", { requestId, text, ...sendContext() });
         if (!result.eventId) throw new Error("The host did not return the reply identity.");

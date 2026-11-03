@@ -126,6 +126,8 @@ pub(crate) struct RoomHandle {
 }
 
 impl RoomHandle {
+    #[cfg(test)]
+    pub(crate) fn test_approvals(&self) -> Arc<apex_core::ApprovalDesk> {self.approvals.clone()}
     async fn lock_checkout(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, String> {
         let guard = self.checkout_action.read().await;
         if self.deleted.load(Ordering::SeqCst) { return Err("The chat folder changed. Reopen the chat.".into()); }
@@ -465,6 +467,7 @@ impl Host {
         // Degraded startup retains empty, write-closed ledgers. Reconciliation
         // reads protected state and must wait for an admitted host restart.
         if protected_ledgers_available {
+            host.reconcile_personal_handoff_announcements()?;
             host.redispatch_recovered_queued()?;
             // Runner recovery: unfinished runners become paused with reason recovery, no auto-replay
             let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
@@ -638,7 +641,7 @@ impl Host {
                 _ => {}
             }
         }
-        if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event); }
+        if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event, recovery_seq.unwrap_or(0)); }
         let plan_changes = handle.map(|handle| track_plan_runs(handle, &event, plan_off)).unwrap_or_default();
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
         if let Some(handle) = handle { self.publish_plan_runs(room, handle, plan_changes); }
@@ -680,12 +683,38 @@ impl Host {
         self.emit(HostEvent::AssistantTasksChanged { workspace_id: workspace_id.into(), revision: self.assistant_tasks.snapshot_revision() });
     }
 
-    fn observe_assistant_event(&self, room: &str, handle: &RoomHandle, event: &RoomEvent) {
+    /// Only host-observed actions are advertised; handlers recheck admission.
+    pub(crate) fn task_conversation_view(&self, task: &crate::assistant_tasks::AssistantTask) -> serde_json::Value {
+        use crate::assistant_tasks::{TaskStatus as S, DesiredState};
+        let active = self.assistant_runs.lock().unwrap().get(&task.id)
+            .is_some_and(|run| !run.finished.load(Ordering::SeqCst));
+        let unsettled = task.attempts.last().is_some_and(|a| a.finished_at_ms.is_none());
+        let hazardous = task.result_data.as_ref().is_some_and(|d| d["applyJournal"].is_string() || d["integrationPlan"].is_object() || d["leaseHeld"]==true);
+        let mut actions=vec!["open"];
+        if matches!(task.status,S::Proposed|S::Queued|S::Running|S::NeedsYou)
+            && task.control.desired_state != DesiredState::Cancelled { actions.insert(0,"stop"); }
+        if !active && !unsettled && !hazardous && task.status==S::Cancelled && task.control.desired_state==DesiredState::Cancelled {
+            actions.insert(0,"retry");
+        }
+        let profiles=task.result_data.as_ref().and_then(|d|d["workerProfiles"].as_array()).cloned().unwrap_or_default();
+        let room=task.execution_thread_id.as_deref().or_else(||task.destination.as_ref().and_then(|d|d.thread_id.as_deref())).and_then(|id|self.store().room(id).ok().flatten());
+        let names=task.workers.iter().map(|id| {
+            let name=profiles.iter().find(|p|p["id"].as_str()==Some(id)).and_then(|p|p["display_name"].as_str()).map(str::to_owned)
+                .or_else(||room.as_ref().and_then(|r|r.snapshot.participants.iter().find(|p|p.id.as_str()==id).map(|p|p.display_name.clone())))
+                .unwrap_or_else(||id.clone());
+            (id.clone(),name)
+        }).collect::<std::collections::BTreeMap<_,_>>();
+        let mut view=serde_json::to_value(task).unwrap_or(serde_json::Value::Null);
+        if let Some(object)=view.as_object_mut() { object.insert("availableHandoffActions".into(),serde_json::json!(actions)); object.insert("workerNames".into(),serde_json::json!(names)); }
+        view
+    }
+
+    fn observe_assistant_event(&self, room: &str, handle: &RoomHandle, event: &RoomEvent, sequence: u64) {
         let Some(entry) = self.assistant_tasks.execution(room).ok().flatten() else { return; };
         let Some(run_id) = handle.task_run_id.lock().unwrap().clone() else { return; };
         let Some(task) = self.assistant_tasks.get(&entry.task_id).ok().flatten() else { return; };
         if task.attempts.last().is_none_or(|a| a.run_id != run_id) { return; }
-        let mut changed = false;
+        let mut changed = self.assistant_tasks.observe_conversation_event(&entry.task_id, &run_id, event, sequence, crate::personal::now()).unwrap_or(false);
         match event {
             RoomEvent::Failed { error, .. } => {
                 *handle.task_error.lock().unwrap() = Some(error.clone());
@@ -6416,7 +6445,7 @@ mod assistant_permission_delivery_tests {
                 host.change_assistant("a",|a|{a.events.iter_mut().find(|event|event.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
                 let receipt=host.prepare_personal_delegation(crate::assistant_delegation::DelegationInput {
                     assistant_id:"a".into(),project:crate::personal_workspace::ProjectRef{host_id:"h".into(),workspace_id:"w".into(),cwd:cwd.clone()},source_event_id:source.event_id,delegation_id:"reserved-budget".into(),brief:"Research the assigned project".into(),
-                    destination:crate::assistant_tasks::TaskDestination{thread_id:Some("r".into()),workers:vec!["worker".into()],new_thread:false},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],expected_revision:host.personal_get("a").unwrap().revision,
+                    destination:crate::assistant_tasks::TaskDestination{thread_id:Some("r".into()),workers:vec!["worker".into()],new_thread: false, new_thread_title: None},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],expected_revision:host.personal_get("a").unwrap().revision,
                 }).unwrap();assert_eq!(receipt["standingTrust"],true);
             }
             let result=host.personal_room_approve("a","pt-1",&operation);
