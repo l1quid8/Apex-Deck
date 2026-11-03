@@ -2903,3 +2903,35 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let _ = std::fs::remove_dir_all(&dir2);
     let _ = std::fs::remove_dir_all(&log_dir);
 }
+
+/// A plan-card skip must survive the real trip to Claude: the wrappers around
+/// the approver, the ExitPlanMode answer and the model reading it. Skipped
+/// steps are only asked of the model, so a rare model refusal can fail this.
+#[tokio::test]
+#[ignore = "requires Claude sign-in and uses a model turn"]
+async fn live_claude_plan_skip_note_keeps_the_step_out() {
+    struct Skip;
+    #[async_trait::async_trait]
+    impl Approver for Skip {
+        async fn decide(&self, _: ProposedAction) -> Decision { Decision::Approve }
+        async fn decide_plan(&self, _: ProposedAction) -> apex_core::PlanAnswer {
+            apex_core::PlanAnswer {
+                decision: Decision::Approve,
+                note: Some("Keep a to-do list with one item per step below. Steps: [S1] Create a.txt\nDo NOT do these steps: Create b.txt".into()),
+            }
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("apex-plan-skip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
+    let mut config = config("planner", Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: Some("haiku".into()) });
+    config.access = Access::Edits;
+    let context = BuildContext { cwd: Some(dir.clone()), ..BuildContext::default() };
+    let bot = CliParticipant::new(config).with_context(&context).with_timeout(Duration::from_secs(150));
+    let turn = planning("Create two small files here, one plan step each: 1. a.txt 2. b.txt");
+    bot.respond_with_approvals(turn, &|_| {}, &Skip).await.expect("the turn finishes");
+    let (a, b) = (dir.join("a.txt").exists(), dir.join("b.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(a, "the kept step was done");
+    assert!(!b, "the skipped step was left out");
+}
