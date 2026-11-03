@@ -21,9 +21,11 @@ mod types;
 mod view;
 mod write_gate;
 pub mod work_steps;
+pub mod plan_steps;
+pub use plan_steps::{plan_steps, PlanRun, PlanRunState, PlanRunStep, PlanStep, PlanStepState};
 
 pub use concurrent::{copy_turn_line, read_only_line, ConcurrentRoom, CopyProvider, TurnBatch, TurnStartHook, TurnLifecycleHook};
-pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
+pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, PlanAnswer, ProposedAction};
 pub use mention::{mention_clash, mention_for, mentioned_words, mentions_handle, names, parse_mentions, MentionTarget};
 pub use participant::{
     ComputerTurn, DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,

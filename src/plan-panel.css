@@ -1,0 +1,46 @@
+/* The Plan tab and its chat chip. Colours come only from theme variables. */
+.plan-run-chip { display: flex; align-items: center; gap: 12px; width: min(460px, 100%); box-sizing: border-box; margin: 8px 0; padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--radius, 12px); background: var(--panel); color: var(--text); text-align: left; cursor: pointer; }
+.plan-run-chip:hover:not(:disabled) { border-color: var(--accent); }
+.plan-run-chip-icon { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--panel-2); color: var(--text); }
+.plan-run-chip-text { flex: 1; min-width: 0; }
+.plan-run-chip-text b { display: block; overflow: hidden; color: var(--text); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.plan-run-chip-text small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.plan-run-meter { display: block; height: 4px; margin: 7px 0; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
+.plan-run-meter i { display: block; height: 100%; background: var(--accent); }
+
+.plan-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--panel); color: var(--text); }
+.plan-panel-head { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--line); }
+.plan-panel-head strong { flex: 1; min-width: 0; font-size: 14px; }
+.plan-panel-tag { flex: none; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+button.plan-panel-tool { display: inline-grid; place-items: center; box-sizing: border-box; min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 13px; }
+button.plan-panel-tool:hover:not(:disabled), button.plan-panel-tool[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+.plan-panel-scroll { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; line-height: 1.55; }
+.plan-panel-title { margin: 0 0 8px; font-size: 1.4em; line-height: 1.2; }
+.plan-panel-status { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; }
+.plan-panel-steps { margin: 0; padding: 0; list-style: none; }
+.plan-panel-steps li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; padding-bottom: 14px; }
+.plan-panel-steps b { font-weight: 600; overflow-wrap: anywhere; }
+.plan-panel-steps small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.plan-panel-steps label { display: block; cursor: pointer; }
+.plan-panel-steps input { margin: 0 4px 0 0; accent-color: var(--accent); }
+.plan-panel-mark { display: grid; place-items: center; box-sizing: border-box; width: 22px; height: 22px; border: 1.5px solid var(--muted); border-radius: 50%; background: var(--panel); color: var(--muted); font-size: 12px; }
+.plan-panel-steps li[data-state="done"] .plan-panel-mark { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+.plan-panel-steps li[data-state="active"] .plan-panel-mark { border-color: var(--accent); color: var(--text); }
+.plan-panel-steps li:is([data-state="skipped"], [data-state="cancelled"]) b { color: var(--muted); font-weight: 400; }
+.plan-panel-full { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.plan-panel-full summary { color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.plan-panel-source { margin: 0; color: var(--text); font: 12.5px/1.6 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan-panel-others { margin: 0 0 12px; padding: 0 0 10px; border-bottom: 1px solid var(--line); list-style: none; }
+.plan-panel-others button { width: 100%; padding: 5px 0; border: 0; background: transparent; color: var(--text); font-size: 12.5px; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
+.plan-panel-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.plan-panel-foot:empty { display: none; }
+.plan-panel-note { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: 12px; }
+.plan-panel-line { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px; }
+button.plan-panel-go { padding: 6px 12px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.plan-panel-plain { padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); }
+button.plan-panel-go:disabled, button.plan-panel-plain:disabled { border-color: var(--line); background: transparent; color: var(--muted); cursor: not-allowed; }
+.plan-panel :is(button, input, summary):focus-visible, .plan-run-chip:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+/* A narrow work area keeps the chat on top and the plan below it, never over it. */
+.body.plan-stacked > .canvas { margin-bottom: 46vh; }
+.body.plan-stacked > .thread-details.plan-stacked { position: absolute; right: var(--deck-gap, 0px); bottom: var(--deck-gap, 0px); height: calc(46vh - var(--deck-gap, 0px)); z-index: 2; box-sizing: border-box; margin: 0; border-left: 0; border-top: 1px solid var(--line); }

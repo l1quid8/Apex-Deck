@@ -151,7 +151,7 @@ export interface Backend {
   /** Answer an action a bot proposed, named by the `request` from its event.
    *  `always` saves a rule with the thread, so the same thing isn't asked again
    *  until it is removed in thread details. */
-  roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
+  roomDecide(id: string, request: string, approve: boolean, always?: boolean, skip?: string[]): Promise<void>;
   /** Answer a bot's question, named by the `request` from its event: one list of picks (or one typed answer) per question. `null` skips. */
   roomAnswer(id: string, request: string, answers: string[][] | null): Promise<void>;
   /** Turn the thread's Plan switch on or off. Every client hears `plan_changed`. */
@@ -843,7 +843,7 @@ function demoBackend(): Backend {
       void runChain(id, [...new Set(participants)], true, hops ?? room.options.max_bot_hops);
     },
     roomStop: async (id, participant) => stopPreview(id, participant),
-    roomDecide: async (_id, request, approve, always = false) => {
+    roomDecide: async (_id, request, approve, always = false, _skip) => {
       const answer = asks.get(request);
       if (!answer) throw new Error("that request is no longer waiting for an answer");
       asks.delete(request);

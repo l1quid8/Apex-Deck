@@ -28,7 +28,7 @@ import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, Curation, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, Curation, NextStep, PlanRun, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -100,6 +100,8 @@ import { turnFilesFor } from "./turnChanges";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
+import { PlanChip } from "./PlanChip";
+import { frontRun, planShowsChip, upsertRun } from "./planRunModel";
 import { PreparingCard } from "./interactiveAnswers/AnswerCard.tsx";
 import { createAnswerStore, discardAnswerSettingsAfter, flushAnswerStores, retainAnswerStore } from "./interactiveAnswers/answerStore.ts";
 import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.ts";
@@ -141,7 +143,17 @@ import type {
 } from "./types";
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from "./speed";
 
+/** What the Plan tab needs from a thread. */
+export interface PlanFeed {
+  runs: PlanRun[];
+  decide: (request: string, approve: boolean, skip: string[]) => Promise<void>;
+  stop: (who: string) => Promise<void>;
+}
+
 interface Props {
+  /** Feeds the Plan tab. Left out where there is no tab, which keeps the approval card. */
+  onPlanRuns?: (id: string, feed: PlanFeed) => void;
+  onOpenPlan?: (paneId: string, request: string) => void;
   talkOnly?: boolean;
   chatDraft?: string;
   onChatDraft?: (text: string) => void;
@@ -587,7 +599,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -675,6 +687,16 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
   const roomCards = openCards(pane.id, approvalState);
   const asks = useMemo(() => cardsByBot(roomCards), [roomCards]);
+  const [planRuns, setPlanRuns] = useState<PlanRun[]>([]);
+  const planTab = !talkOnly && !!onPlanRuns && backend.supports?.("plan_run_v1") === true;
+  useEffect(() => {
+    onPlanRuns?.(pane.id, {
+      runs: planTab ? planRuns : [],
+      decide: (request, approve, skip) => current.current.roomDecide(pane.id, request, approve, false, skip),
+      stop: (who) => current.current.roomStop(pane.id, who),
+    });
+  }, [planRuns, planTab, onPlanRuns, pane.id]);
+  const planChipRun = planTab ? frontRun(planRuns) : null;
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
   /** Files written this turn, by path, with who wrote them; see collectWritten. */
@@ -1173,6 +1195,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         case "plan_changed":
           setPlanOn(event.on);
           break;
+        case "plan_run":
+          setPlanRuns((runs) => upsertRun(runs, event.run));
+          break;
+        case "plan_runs_reset":
+          setPlanRuns(event.runs);
+          break;
         case "usage":
           if (recoveredState?.recovery_seq == null) { void durableRecovery.refresh(); break; }
           setUsed((u) => {
@@ -1302,6 +1330,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         const before = shownForm.current;
         restoreRoomQuestions(pane.id, state);
         setPlanOn(Boolean(state.plan ?? saved.plan));
+        setPlanRuns(saved.plan_runs ?? []);
         if (before.kind === "question" && !(state.questions ?? []).some((q) => q.request === before.ask.request)) {
           flashForm(`${nameOf(before.ask.id)}'s question was dropped when Deck restarted`);
         }
@@ -3888,7 +3917,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                     <Markdown text={partial} onOpen={openTarget} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={names.get(id) ?? id} /> : undefined)} />
                   </div>
                 )}
-                {(asks[id] ?? []).map((ask) => (
+                {(asks[id] ?? []).filter((ask) => !planShowsChip(ask.action, ask.request, planRuns, planTab)).map((ask) => (
                   <ApprovalCard
                     hostName={backend.host?.name ?? "This Mac"} disabled={!ready}
                     key={ask.request}
@@ -3916,6 +3945,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           );
         })}
         {accessNotes.map((note) => <div key={note.key} className="access-note muted" role="status">{note.text}</div>)}
+        {transcriptMounted.current && planChipRun && <PlanChip key={planChipRun.request} run={planChipRun} onOpen={() => onOpenPlan?.(pane.id, planChipRun.request)} />}
         {queued.map((item) => {
           const who = item.to.map((id) => names.get(id) ?? id).join(", ");
           const steerable = !item.failed && item.kind === "message" && item.to.some((id) => working[id]);

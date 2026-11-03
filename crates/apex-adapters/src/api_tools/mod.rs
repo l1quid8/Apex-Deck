@@ -631,10 +631,13 @@ impl<'a> Turn<'a> {
                 }
                 (self.progress)(Progress::Activity("Waiting for you: start the work?"));
                 let action = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: plan, expires_at: None, risky: false };
-                if self.approver.decide(action).await.approved() {
+                let answer = self.approver.decide_plan(action).await;
+                if answer.decision.approved() {
                     self.plan = false;
                     self.access = self.own;
-                    (step, Ok(Done::text("The person approved the plan. Plan mode is off; carry the plan out now.")))
+                    let mut text = "The person approved the plan. Plan mode is off; carry the plan out now.".to_string();
+                    if let Some(note) = answer.note { text.push_str("\n\n"); text.push_str(&note); }
+                    (step, Ok(Done::text(text)))
                 } else {
                     (step, Ok(Done::text("The person wants to keep planning. Change nothing; ask what to adjust, or refine the plan.")))
                 }
@@ -1302,6 +1305,25 @@ done
 
         let mut read_only = Turn::new(&tools, Access::Read, true, Access::Read, &yes, &quiet);
         assert!(read_only.run(&call("exit_plan_mode", json!({"plan": "x"}))).await.text.contains("read-only"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn api_plan_approval_text_includes_the_note() {
+        struct Noted;
+        #[async_trait::async_trait]
+        impl Approver for Noted {
+            async fn decide(&self, _: ProposedAction) -> Decision { Decision::Approve }
+            async fn decide_plan(&self, _: ProposedAction) -> apex_core::PlanAnswer {
+                apex_core::PlanAnswer { decision: Decision::Approve, note: Some("Do NOT do step 2".into()) }
+            }
+        }
+        let dir = scratch("plannote");
+        let tools = toolbox(&dir);
+        let quiet = |_: Progress<'_>| {};
+        let mut turn = Turn::new(&tools, Access::Read, true, Access::Edits, &Noted, &quiet);
+        let out = turn.run(&call("exit_plan_mode", json!({"plan": "1. A\n2. B"}))).await.text;
+        assert!(out.contains("approved") && out.ends_with("Do NOT do step 2"), "{out}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
