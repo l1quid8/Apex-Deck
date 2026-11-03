@@ -35,7 +35,12 @@ const options = { policy: 'mention', max_bot_hops: 0 };
 const worker = (id, script) => ({ id, display_name: id, access: 'edits', backend: { kind: 'cli', program: 'sh', args: ['-c', script] } });
 
 test('two assistant owners coordinate three canonical isolated projects with reviewed memory and independent controls across restart', { timeout: 90_000 }, async t => {
-  const f = await workspaceFixture(t, 'adw-work');
+  const f = await workspaceFixture(t, 'adw-work', { replyForPrompt: prompt => {
+    // Consolidation must answer from the saved worker outcome, not echo the
+    // delegation brief. Ordinary request turns retain the fixture's reply.
+    const result = prompt.match(/Project \d+ reviewed observation/);
+    return result?.[0];
+  } });
   // This scenario exercises explicit human approvals; saved Full queues directly.
   const assistantProfile = { ...f.profile, access: 'ask' };
   fs.writeFileSync(path.join(f.tools, 'claude'), `#!/bin/sh
@@ -169,10 +174,10 @@ cat >/dev/null
     const assistant = await eventually('attributable once-only result', async () => { const a = await readAssistant(p.host); return a.messages.filter(belongsToAttempt).length === expectedResults ? a : false; });
     const resultMessages = assistant.messages.filter(belongsToAttempt);
     assert.equal(resultMessages.length, expectedResults, 'each finished attempt delivers once to original assistant/event');
-    assert.ok(resultMessages.every(message => message.text.includes(`TASK_${p.index}`)), 'the owner receives its own project brief');
+    assert.ok(resultMessages.some(message => message.text.includes(`Project ${p.index} reviewed observation`)), 'the owner receives the saved worker outcome');
     // Task and event IDs are host-local. Unique briefs detect foreign content
     // even when the other daemon has the same local task/event identifiers.
-    assert.equal(assistant.messages.some(message => message.kind === 'result' && projects.filter(other => other.host !== p.host).some(other => message.text.includes(`TASK_${other.index}`))), false);
+    assert.equal(assistant.messages.some(message => message.kind === 'result' && projects.filter(other => other.host !== p.host).some(other => message.text.includes(`Project ${other.index} reviewed observation`))), false);
   }
 });
 
@@ -556,24 +561,81 @@ cat >/dev/null
   });
 }
 
-// Round 1 native acceptance stays behind the host capability. Browser coverage
-// lives in tests/assistant-conversation-browser.test.mjs and does not stand in
-// for crash recovery, a held Stop, or a new-thread replay.
-test('round 1 conversational handoff native acceptance waits for assistant_conversation_handoff_v1', { timeout: 60_000 }, async t => {
-  if (!fs.existsSync(bin)) {
-    t.skip(`apex-daemon is not built at ${bin}; native Round 1 acceptance was not run`);
-    return;
+// Uses the real daemon and disposable CLI/model endpoints. Crash boundary
+// coverage lives in host regressions; this verifies the actual IPC/control path.
+test('round 1 conversational handoff new thread, paused answers, Stop and cold replay', { timeout: 90_000 }, async t => {
+  if (!fs.existsSync(bin)) { t.skip(`fixture daemon missing at ${bin}`); return; }
+  const f=await workspaceFixture(t,'ade-round1');
+  const h=await f.host('host');
+  const cwd=f.project('project');
+  const marker=path.join(f.root,'continued');
+  const runLog=path.join(f.root,'runs');
+  const startupProof=path.join(f.root,'announcement-checked');
+  const personalFile=path.join(h.data,'saved-chats-v1','personal-assistants.json.protected-fixture');
+  const proofScript=path.join(f.root,'verify-announcement.cjs');
+  fs.writeFileSync(proofScript,`const fs=require('node:fs');const d=JSON.parse(fs.readFileSync(${JSON.stringify(personalFile)},'utf8'));if(!d.assistants.some(a=>a.messages.some(m=>m.role==='assistant'&&m.text.includes('Handing this to Hyke'))))process.exit(31);`);
+  fs.writeFileSync(path.join(f.tools,'claude'),`#!/bin/sh
+case "$*" in
+ *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;;
+ *--version*) echo '0.0.0 (Claude Code fixture)'; exit 0;;
+esac
+IFS= read -r prompt
+'${process.execPath}' '${proofScript}' || exit 31
+printf 'saved before start\\n' >> '${startupProof}'
+echo run >> '${runLog}'
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"control_request","request_id":"keep-going","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"header":"Continue","question":"Should I keep going?","options":[{"label":"Keep going"},{"label":"Stop here"}],"multiSelect":false}]}}}'
+IFS= read -r answer
+case "$answer" in *'Keep going'*) echo continued >> '${marker}';; *) exit 32;; esac
+while :; do sleep 0.05; done
+`,{mode:0o755});
+  const project={hostId:h.hostId,workspaceId:'project',cwd};
+  let calls=0;
+  const reasoner=http.createServer(async(req,res)=>{
+    for await (const chunk of req) {void chunk;}
+    if(req.method!=='POST'){res.end('{"data":[{"id":"fixture-text","object":"model"}]}');return;}
+    calls++;
+    const reply=calls===1?{reply:"Handing this to Hyke. I'll keep an eye on it.",delegations:[{project,brief:'Inspect the project and ask before continuing.',destination:{threadId:null,workers:['Hyke'],newThread:true,newThreadTitle:'Round one'},mode:'read_only',reviewCriteria:[]}]}:{reply:'Hyke is waiting for your answer.'};
+    res.setHeader('Content-Type','text/event-stream');
+    res.end(`data: ${JSON.stringify({choices:[{delta:{content:JSON.stringify(reply)}}],usage:{prompt_tokens:1,completion_tokens:1}})}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise(r=>reasoner.listen(0,'127.0.0.1',r));
+  t.after(()=>new Promise(r=>reasoner.close(r)));
+  const profile={...f.profile,backend:{...f.profile.backend,base_url:`http://127.0.0.1:${reasoner.address().port}/v1`}};
+  const hyke={id:'Hyke',display_name:'Hyke',access:'ask',backend:{kind:'agent',tool:'claude_code',model:null}};
+  await h.client.call('session_save',{session:{version:1,profiles:[profile,hyke],workspaces:[{id:'project',hostId:h.hostId,path:cwd}]}});
+  let assistant=await h.client.call('personal_create',{name:'Alfred',folder:f.root,profile,workspaceVersion:4});
+  assistant=await configure(h,assistant.id,{projects:[{project,tools:'full'}],profile});
+  const source=await h.client.call('personal_send',{assistantId:assistant.id,requestId:'round1-source',text:'Please inspect the project with Hyke in a new thread named Round one.'});
+  const monitor=await until('auto monitor',()=>h.client.call('monitor_get',{workspaceId:'project'}));
+  const owner={workspaceId:'project',cwd,hostId:monitor.hostId,conversationId:monitor.conversationId};
+  const read=async()=> (await h.client.call('assistant_tasks_list',{owner})).tasks.find(job=>job.lineage?.sourceEventId===source.eventId);
+  const waiting=await until('real worker waiting',async()=>{const job=await read();return job?.status==='needs_you'&&job.resultData?.pendingQuestions?.length?job:null;});
+  assert.deepEqual(waiting.workers,['Hyke']);
+  assert.ok(fs.existsSync(startupProof),'worker saw durable announcement before starting');
+  assert.equal(fs.readFileSync(runLog,'utf8'),'run\n');
+  assert.ok(waiting.announcementGate.releasedAtMs);
+  const publicAssistant=await readAssistant(h);
+  assert.ok(!JSON.stringify(publicAssistant).includes('savedReply'),'IPC omits the private prepared reply');
+  for(const [i,text] of ['No, wait for me','What did step 12 do?','hmm'].entries()){
+    await h.client.call('personal_send',{assistantId:assistant.id,requestId:`unclear-${i}`,text});
+    await until('unclear message settled',async()=>{const a=await readAssistant(h);return a.events.some(e=>e.requestId===`unclear-${i}`&&e.state==='done');});
+    assert.equal((await read()).status,'needs_you',text);
+    assert.equal(fs.existsSync(marker),false,text);
   }
-  const data = fs.mkdtempSync('/tmp/ade-handoff-round1-');
-  const daemon = await serve(data);
-  const client = new DaemonClient(async () => socketLink(path.join(data, 'daemon.sock')));
-  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
-  const welcome = await client.start();
-  const capabilities = welcome.capabilities ?? [];
-  if (!capabilities.includes('assistant_conversation_handoff_v1')) {
-    const assistant = capabilities.filter(capability => capability.startsWith('assistant'));
-    t.skip(`hello does not advertise assistant_conversation_handoff_v1 (assistant capabilities: ${assistant.join(', ') || 'none'}); crash recovery, held Stop, paused answers, and new-thread replay were not run`);
-    return;
-  }
-  assert.fail('assistant_conversation_handoff_v1 is advertised, but the native Round 1 scenarios are not wired in this fixture yet');
+  await h.client.call('personal_send',{assistantId:assistant.id,requestId:'plain-yes',text:'keep going'});
+  await until('explicit yes reaches worker',()=>fs.existsSync(marker));
+  const current=await read();
+  const stopped=await h.client.call('personal_handoff_control',{assistantId:assistant.id,requestId:'stop-worker',taskId:current.id,expectedTaskRevision:current.revision,action:'stop'});
+  assert.ok(['stopping','stopped'].includes(stopped.outcome));
+  const settled=await until('worker stop settles',async()=>{const job=await read();return job.status==='cancelled'&&job.attempts.at(-1).finishedAtMs?job:null;});
+  assert.equal(settled.attempts.length,1);
+  await h.client.call('personal_pause',{assistantId:assistant.id,requestId:'pause-before-restart',paused:true});
+  await h.stop(); await h.start();
+  const restored=await read();
+  assert.equal(restored.status,'cancelled');assert.equal(restored.id,settled.id);
+  assert.equal(restored.executionThreadId,settled.executionThreadId);assert.equal(restored.attempts.length,1);
+  assert.equal(fs.readFileSync(runLog,'utf8'),'run\n','cold relaunch never reruns the worker');
+  const replay=await h.client.call('personal_send',{assistantId:assistant.id,requestId:'round1-source',text:'Please inspect the project with Hyke in a new thread named Round one.'});
+  assert.equal(replay.eventId,source.eventId);
 });

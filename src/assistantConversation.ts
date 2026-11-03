@@ -1,3 +1,4 @@
+import type { AssistantTask } from './assistantTaskModel';
 import type { PersonalMessage, PersonalReceipt, PersonalTask } from './personalAssistant';
 
 export type AssistantConversationMessage = PersonalMessage & { taskProblem?: boolean };
@@ -25,7 +26,7 @@ function verifiedOutcome(task: PersonalTask, receipt: PersonalReceipt): string {
 }
 
 /** One conversational result or decision per task. The original ledger stays in Tasks. */
-export function assistantConversationMessages(messages: readonly PersonalMessage[], tasks: readonly PersonalTask[], visibleFrom = 0): AssistantConversationMessage[] {
+export function assistantConversationMessages(messages: readonly PersonalMessage[], tasks: readonly PersonalTask[], visibleFrom = 0, delegatedTasks: readonly AssistantTask[] = []): AssistantConversationMessage[] {
   const byId = new Map(tasks.filter(task => task.deletedAt == null).map(task => [task.id, task]));
   const visibleEvents = new Set(messages.filter(message => message.at > visibleFrom && message.eventId).map(message => message.eventId));
   const executionLines = new Map<string, PersonalMessage[]>();
@@ -68,6 +69,19 @@ export function assistantConversationMessages(messages: readonly PersonalMessage
     const result = [...lines].reverse().find(line => line.kind === 'result') ?? origin;
     const message: AssistantConversationMessage = { ...result, role: 'assistant', kind: 'update', text, at: Math.max(result.at, task.updatedAt), ...(problem ? { taskProblem: true } : {}) };
     if (latest) projected.set(result.id, message); else added.push(message);
+  }
+  const eventIds = new Set(messages.map(m => m.id));
+  for (const job of delegatedTasks) {
+    const source = job.lineage?.sourceEventId;
+    if (!source || !visibleEvents.has(source) || job.resultData?.deletedAtMs != null) continue;
+    for (const event of job.conversationEvents ?? []) {
+      if (event.taskId !== job.id || event.atMs <= visibleFrom || !['milestone', 'question', 'watchdog'].includes(event.kind)) continue;
+      const id = `handoff:${job.id}:${event.id}`;
+      if (eventIds.has(id)) continue;
+      eventIds.add(id);
+      const name = event.workerId ? job.workerNames?.[event.workerId] || event.workerId : 'Worker';
+      added.push({id, role:'system',kind:'update',text:`${name}: ${event.text}`,at:event.atMs,taskId:job.id,eventId:source});
+    }
   }
   return [...messages.flatMap(message => {
     if (!message.taskId || !executionLines.get(message.taskId)?.includes(message)) return [message];

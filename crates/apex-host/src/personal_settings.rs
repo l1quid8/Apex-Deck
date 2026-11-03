@@ -40,7 +40,12 @@ fn hhmm(text: &str) -> bool {
 /// What a settings command answers: the assistant as it is now.
 #[derive(Serialize)]
 pub struct Changed {
+    #[serde(serialize_with="serialize_assistant_view")]
     pub assistant: PersonalAssistant,
+}
+
+fn serialize_assistant_view<S: serde::Serializer>(assistant: &PersonalAssistant, serializer: S) -> Result<S::Ok,S::Error> {
+    crate::personal::PersonalAssistantView::from(assistant).serialize(serializer)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

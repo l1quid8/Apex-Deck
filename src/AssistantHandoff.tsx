@@ -7,27 +7,36 @@
  */
 import { forwardRef, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { AssistantTask } from './assistantTaskModel';
+import type { PersonalLane, PendingHandoff, HandoffOptions, HandoffSelection, HandoffQuestion, PendingControlConfirmation } from './personalAssistant';
 import { deriveHandoffPill, deriveHandoffPopover, classifyPlainHandoffReply, preserveTypedAgentOrder, type TaskConversationProgress, type TaskConversationEvent } from './assistantHandoffModel';
 
 export function HandoffPillView({
   task,
   progress,
+  events = [],
   threadLabel,
+  sentence,
+  offline = false,
   onStop,
   onRetry,
   onOpen,
 }: {
   task: AssistantTask;
   progress?: TaskConversationProgress;
+  events?: TaskConversationEvent[];
   threadLabel?: string;
+  sentence?: string;
+  offline?: boolean;
   onStop?: (taskId: string, revision: number) => void;
   onRetry?: (taskId: string, revision: number) => void;
   onOpen?: (taskId: string) => void;
 }) {
-  const pill = deriveHandoffPill(task, progress, threadLabel);
+  const pill = deriveHandoffPill(task, progress, threadLabel, offline);
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const closeDetails = () => { setOpen(false); triggerRef.current?.focus(); };
 
   // Close on outside / Esc
   useEffect(() => {
@@ -35,20 +44,23 @@ export function HandoffPillView({
     const onDown = (e: MouseEvent) => {
       if (popRef.current && !popRef.current.contains(e.target as Node) && anchorRef.current && !anchorRef.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); } };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeDetails(); }
+    };
     document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+    document.addEventListener('keydown', onKey, true);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey, true); };
   }, [open]);
 
-  const showStop = pill.availableActions.includes('stop');
+  const showStop = !!onStop && pill.availableActions.includes('stop');
 
   return (
     <span className="assistant-handoff-line">
-      <span className="assistant-handoff-sentence">{pill.sentence}</span>{' '}
+      {(sentence ?? pill.sentence) && <span className="assistant-handoff-sentence">{sentence ?? pill.sentence}</span>}{' '}
       <span className="assistant-handoff-pill-wrap" ref={anchorRef}>
         <button
           type="button"
+          ref={triggerRef}
           className="assistant-handoff-pill"
           aria-label={`Progress: ${pill.label}. Click to see details.`}
           aria-expanded={open}
@@ -73,9 +85,10 @@ export function HandoffPillView({
           ref={popRef}
           task={task}
           progress={progress}
-          events={[]}
-          onClose={() => setOpen(false)}
-          onRetry={() => { onRetry?.(pill.taskId, pill.revision); setOpen(false); }}
+          events={events}
+          offline={offline}
+          onClose={closeDetails}
+          onRetry={onRetry ? () => { onRetry(pill.taskId, pill.revision); closeDetails(); } : undefined}
           onOpenTask={() => onOpen?.(pill.taskId)}
         />
       )}
@@ -87,16 +100,18 @@ type PopoverProps = {
   task: AssistantTask;
   progress?: TaskConversationProgress;
   events: TaskConversationEvent[];
+  offline?: boolean;
   onClose: () => void;
-  onRetry: () => void;
+  onRetry?: () => void;
   onOpenTask: () => void;
 };
 
 const HandoffPopoverImpl = forwardRef<HTMLDivElement, PopoverProps>(function HandoffPopoverImpl(
-  { task, progress, events, onClose, onRetry, onOpenTask },
+  { task, progress, events, offline = false, onClose, onRetry, onOpenTask },
   ref
 ) {
   const model = deriveHandoffPopover(task, progress, events);
+  const pill = deriveHandoffPill(task, progress, undefined, offline);
   const [selectedIndex, setSelectedIndex] = useState(model.currentIndex);
 
   // Keep selected in bounds when task updates
@@ -107,7 +122,7 @@ const HandoffPopoverImpl = forwardRef<HTMLDivElement, PopoverProps>(function Han
   return (
     <div className="assistant-handoff-popover" role="dialog" aria-label={`Progress for ${task.brief.slice(0, 60)}`} ref={ref}>
       <div className="assistant-handoff-popover-head">
-        <strong>{model.steps.length ? `${model.steps.filter(s => s.state === 'done').length} of ${model.steps.length} done` : 'Working'}</strong>
+        <strong>{model.steps.length ? `${offline ? 'Last reported: ' : ''}${model.steps.filter(s => s.state === 'done').length} of ${model.steps.length} done` : pill.label}</strong>
         <button type="button" className="assistant-handoff-close" aria-label="Close details" onClick={onClose}>✕</button>
       </div>
 
@@ -118,7 +133,7 @@ const HandoffPopoverImpl = forwardRef<HTMLDivElement, PopoverProps>(function Han
               key={step.index}
               type="button"
               className={`assistant-handoff-cell ${step.state}${selectedIndex === step.index ? ' is-selected' : ''}`}
-              aria-label={`Step ${step.index}${step.state === 'done' ? ' done' : step.state === 'active' ? ' active' : ''}`}
+              aria-label={`Step ${step.index}${step.state === 'done' ? ' done' : step.state === 'active' ? ' active' : step.state === 'cancelled' ? ' cancelled' : ''}`}
               onClick={() => setSelectedIndex(step.index)}
             />
           ))}
@@ -127,14 +142,14 @@ const HandoffPopoverImpl = forwardRef<HTMLDivElement, PopoverProps>(function Han
 
       {selectedStep && (
         <div className="assistant-handoff-step-detail">
-          <div className="assistant-handoff-step-title">Step {selectedStep.index}{selectedStep.state === 'done' ? ' · done' : selectedStep.state === 'active' ? ' · running' : ' · queued'}</div>
+          <div className="assistant-handoff-step-title">Step {selectedStep.index}{selectedStep.state === 'done' ? ' · done' : selectedStep.state === 'active' ? ' · running' : selectedStep.state === 'cancelled' ? ' · cancelled' : ' · queued'}</div>
           {selectedStep.text && <div className="assistant-handoff-step-text">{selectedStep.text}</div>}
           {!selectedStep.text && <div className="assistant-handoff-step-text">No output recorded for this step.</div>}
         </div>
       )}
 
       <div className="assistant-handoff-actions">
-        {model.canRetry && <button type="button" className="primary" onClick={onRetry}>Try again</button>}
+        {model.canRetry && !offline && onRetry && <button type="button" className="primary" onClick={onRetry}>Try again</button>}
         <button type="button" onClick={onOpenTask}>Open task</button>
         <button type="button" onClick={onClose}>Close</button>
       </div>
@@ -151,6 +166,7 @@ const HandoffPopover = HandoffPopoverImpl;
 // ---------------------------------------------------------------------------
 export function AgentClarification({
   allAgents,
+  agentNames = {},
   typedOrder,
   onOrderChange,
   onStart,
@@ -159,6 +175,7 @@ export function AgentClarification({
   isFirstQuestion,
 }: {
   allAgents: string[];
+  agentNames?: Record<string, string>;
   typedOrder: string[]; // ordered distinct
   onOrderChange: (ordered: string[]) => void;
   onStart: (ordered: string[]) => void;
@@ -169,8 +186,8 @@ export function AgentClarification({
   const [filter, setFilter] = useState('');
   const [highlight, setHighlight] = useState(0);
 
-  const filtered = allAgents.filter(a => a.toLowerCase().includes(filter.toLowerCase()));
-  const preview = typedOrder.length ? `${typedOrder.join(' + ')} · ${typedOrder[0]} leads` : '';
+  const filtered = allAgents.filter(a => (agentNames[a] ?? a).toLowerCase().includes(filter.toLowerCase()));
+  const preview = typedOrder.length ? `${typedOrder.map(id => agentNames[id] ?? id).join(' + ')} · ${agentNames[typedOrder[0]] ?? typedOrder[0]} leads` : '';
 
   const toggle = (id: string) => {
     const exists = typedOrder.includes(id);
@@ -205,7 +222,7 @@ export function AgentClarification({
             <li key={agent} role="option" aria-selected={checked} className={highlight === idx ? 'is-highlighted' : ''}>
               <label>
                 <input type="checkbox" checked={checked} onChange={() => toggle(agent)} />
-                <span>{agent}</span>
+                <span>{agentNames[agent] ?? agent}</span>
                 {isLead && <em className="assistant-handoff-lead">· leads</em>}
                 {checked && !isLead && typedOrder.indexOf(agent) > 0 && <em className="assistant-handoff-order">· #{typedOrder.indexOf(agent) + 1}</em>}
               </label>
@@ -247,10 +264,7 @@ export function PausedQuestion({
   const submit = () => {
     const t = draft.trim();
     if (!t) return;
-    const kind = classifyPlainHandoffReply(t);
-    if (kind === 'continue') { onContinue(questionId, taskRev); setDraft(''); return; }
-    if (kind === 'stop') { onStop(questionId, taskRev); setDraft(''); return; }
-    // Anything else stays visible, worker stays waiting, conversational answer
+    // Only the authenticated host may classify a free-text control.
     onAsk(t);
     setDraft('');
   };
@@ -273,3 +287,70 @@ export function PausedQuestion({
 
 // Utility for typed agent order preservation used by conversation parser
 export { preserveTypedAgentOrder, classifyPlainHandoffReply };
+
+
+export function HandoffDraftView({draft, lane}: {draft: PendingHandoff; lane: PersonalLane}) {
+  const [options, setOptions] = useState<HandoffOptions | null>(null);
+  const [workers, setWorkers] = useState<string[]>([]);
+  const [title, setTitle] = useState('');
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let current = true; setOptions(null); setProblem(''); setWorkers(draft.destination?.workers ?? []);
+    lane.handoffOptions?.(draft.id).then(value => { if (current) setOptions(value); }).catch(error => { if (current) setProblem(String(error)); });
+    return () => { current = false; };
+  }, [draft.id, draft.revision, lane.ref?.hostId, lane.ref?.assistantId]);
+  const select = async (selection: HandoffSelection) => {
+    if (busy || !lane.handoffSelect) return; setBusy(true); setProblem('');
+    try { await lane.handoffSelect(draft, selection); } catch (error) { setProblem(error instanceof Error ? error.message : String(error)); } finally { setBusy(false); }
+  };
+  return <section className="assistant-handoff-clarify" aria-label="Finish choosing where to hand off your request" aria-busy={busy}>
+    <p>{draft.originalRequest}</p>
+    {problem && <p role="alert">{problem}</p>}
+    {!options ? <p>Loading saved choices…</p> : <fieldset disabled={busy || lane.offline}>
+      {draft.missing === 'project' && <><legend>Which project?</legend>{options.projects.map(choice => <button key={choice.project.workspaceId} type="button" onClick={() => void select({project:{project:choice.project}})}>{choice.label}</button>)}</>}
+      {draft.missing === 'thread' && <><button type="button" onClick={() => void select('back')}>Back</button><legend>Existing thread or a new thread?</legend>{options.threads.map(choice => <button key={choice.id} type="button" onClick={() => void select({thread:{thread_id:choice.id}})}>{choice.title}</button>)}<label>New thread title<input value={title} onChange={event => setTitle(event.target.value)} /></label><button type="button" disabled={!title.trim()} onClick={() => void select({newThread:{title:title.trim()}})}>Use a new thread</button></>}
+      {draft.missing === 'workers' && <AgentClarification allAgents={options.workers.map(w => w.id)} agentNames={Object.fromEntries(options.workers.map(w => [w.id,w.name]))} typedOrder={workers} onOrderChange={setWorkers} onStart={ids => void select({workers:{worker_ids:ids}})} onBack={() => void select("back")} />}
+    </fieldset>}
+  </section>;
+}
+
+export function HandoffTaskQuestion({task, lane}: {task: AssistantTask; lane: PersonalLane}) {
+  const [question, setQuestion] = useState<HandoffQuestion | null>(null);
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let current = true; setQuestion(null);
+    if (task.status === 'needs_you' || task.resultData?.pendingQuestions?.length) lane.handoffQuestion?.(task.id).then(value => { if(current) setQuestion(value); }).catch(error => { if(current) setProblem(String(error)); });
+    return () => {current = false;};
+  }, [task.id, task.revision, lane.ref?.hostId, lane.ref?.assistantId]);
+  if (!question) return problem ? <p role="alert">{problem}</p> : null;
+  const control = async (action: 'continue' | 'stop') => {
+    if (busy || !lane.handoffControl) return; setBusy(true); setProblem('');
+    try { await lane.handoffControl({taskId:task.id,expectedTaskRevision:task.revision,action,questionId:question.questionId,expectedQuestionRevision:question.questionRevision}); } catch(error) {setProblem(error instanceof Error ? error.message : String(error));} finally {setBusy(false);}
+  };
+  return <fieldset disabled={busy || lane.offline}>
+    {problem && <p role="alert">{problem}</p>}
+    {question.canContinue ? <PausedQuestion workerName={question.workerName} questionText={question.text} questionId={question.questionId} taskRev={task.revision} onContinue={() => void control('continue')} onStop={() => void control('stop')} onAsk={text => void lane.send(text).catch(error => setProblem(String(error)))} /> : <p>Waiting for you · {question.workerName}: {question.text}</p>}
+  </fieldset>;
+}
+
+
+export function HandoffControlConfirmationView({pending, lane}: {pending: PendingControlConfirmation; lane: PersonalLane}) {
+  const [dismissed, setDismissed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState('');
+  if (dismissed) return null;
+  const confirm = async () => {
+    if (busy || !lane.handoffControl) return; setBusy(true); setProblem('');
+    try {
+      await lane.handoffControl({taskId:pending.binding.taskId,expectedTaskRevision:pending.expectedTaskRevision,action:pending.action,confirmation:pending.binding,...(pending.binding.questionId ? {questionId:pending.binding.questionId,expectedQuestionRevision:pending.binding.questionRevision}: {})});
+      setDismissed(true);
+    } catch(error) {setProblem(error instanceof Error ? error.message : String(error));} finally {setBusy(false);}
+  };
+  return <section className="assistant-handoff-paused" aria-label="Confirm task control">
+    <p>{pending.label}</p>{problem && <p role="alert">{problem}</p>}
+    <button type="button" disabled={busy || lane.offline} onClick={() => void confirm()}>Confirm</button>
+    <button type="button" disabled={busy} onClick={() => setDismissed(true)}>Leave it waiting</button>
+  </section>;
+}

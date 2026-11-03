@@ -3,6 +3,9 @@
 //! This document is independent of `session.json`: task transitions are
 //! small, serialized updates and cannot be overwritten by a stale UI session.
 
+mod conversation_progress;
+pub use conversation_progress::{TaskConversationProgress, TaskConversationEvent};
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +28,8 @@ pub struct TaskDestination {
     pub workers: Vec<String>,
     #[serde(default)]
     pub new_thread: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_thread_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +224,10 @@ pub struct AssistantTask {
     /// Reference-only gate for conversational handoff announcement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub announcement_gate: Option<AnnouncementGate>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub conversation_progress: Option<TaskConversationProgress>,
+    #[serde(default, skip_serializing_if="Vec::is_empty")]
+    pub conversation_events: Vec<TaskConversationEvent>,
     /// Set only on a task imported from pre-provenance data. Never verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy: Option<crate::legacy_import::LegacyMarker>,
@@ -587,8 +596,21 @@ impl AssistantTasks {
     /// Standing authority and the queued task are committed together; a crash
     /// cannot leave an apparent human approval or an intermediate proposal.
     pub(crate) fn prepare_handoff_authorized(&self, input: HandoffPreparation, authority: Option<StandingHandoffAuthority>) -> Result<AssistantTask, TaskError> {
+        self.prepare_handoff_authorized_gated(input, authority, None, vec![])
+    }
+
+    /// The first durable task record already carries its announcement barrier
+    /// and selected worker profiles. There is no redispatch-visible ungated save.
+    pub(crate) fn prepare_handoff_authorized_gated(&self, input: HandoffPreparation, authority: Option<StandingHandoffAuthority>, gate: Option<AnnouncementGate>, worker_profiles: Vec<apex_core::ParticipantConfig>) -> Result<AssistantTask, TaskError> {
         let mut document = self.inner.document.lock().unwrap();
-        if let Some(task) = handoff_receipt(&document, &input)? { return Ok(task); }
+        if let Some(task) = handoff_receipt(&document, &input)? {
+            if let Some(expected) = &gate {
+                if task.announcement_gate.as_ref().is_none_or(|saved| !same_announcement_source(saved, expected)) {
+                    return Err(TaskError::new(TaskErrorKind::RequestIdConflict, "Announcement source does not match the saved task."));
+                }
+            }
+            return Ok(task);
+        }
         if document.requests.contains_key(&input.request_id) {
             return Err(TaskError::new(TaskErrorKind::RequestIdConflict, "Request ID already belongs to a human request."));
         }
@@ -604,6 +626,8 @@ impl AssistantTasks {
         task.review_criteria = input.review_criteria.clone();
         task.result_data = Some(serde_json::json!({"batchId":input.batch_id,"requestId":input.request_id,"monitorRevision":input.revision,"mode":input.mode,"checks":[],"taskHistory":[{"kind":"request","text":input.original_request}]}));
         task.lineage = input.lineage.clone();
+        task.announcement_gate = gate;
+        if !worker_profiles.is_empty() { task.result_data.as_mut().unwrap()["workerProfiles"] = serde_json::json!(worker_profiles); }
         if let Some(context) = &input.context { task.result_data.as_mut().unwrap()["delegationContext"] = context.clone(); }
         if let Some(authority) = authority {
             let data = task.result_data.as_mut().unwrap();
@@ -821,6 +845,7 @@ impl AssistantTasks {
         let run_id = format!("run-{:020}", document.next_run_id);
         let task = document.tasks.get_mut(task_id).unwrap();
         task.status = TaskStatus::Running;
+        task.conversation_progress = None;
         task.result = None;
         if let Some(data) = task.result_data.as_mut() { data["budgetPaused"] = serde_json::json!(false); data["restartedWhileWaiting"] = serde_json::json!(false); }
         task.updated_at_ms = now_ms();
@@ -1176,6 +1201,7 @@ impl AssistantTasks {
                 (outcome.status == TaskStatus::ReadyForReview).then_some(revision);
             if outcome.usage.is_some() { attempt.usage = outcome.usage; }
         }
+        conversation_progress::append_result(task, run_id);
         let result = task.clone();
         save_mutation(&self.inner, &mut document, before)?;
         Ok(result)
@@ -1256,17 +1282,19 @@ impl AssistantTasks {
         save_mutation(&self.inner, &mut document, before)
     }
 
+    #[cfg(test)]
     pub fn set_announcement_gate(&self, task_id: &str, gate: AnnouncementGate) -> Result<AssistantTask, TaskError> {
         let mut document = self.inner.document.lock().unwrap();
         let before = document.clone();
         let task = document.tasks.get_mut(task_id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
         if task.announcement_gate.is_some() {
             // idempotent if same announcement id
-            if task.announcement_gate.as_ref().unwrap().announcement_id == gate.announcement_id {
+            if same_announcement_source(task.announcement_gate.as_ref().unwrap(), &gate) {
                 return Ok(task.clone());
             }
             return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Task already has an announcement gate."));
         }
+        if !task.attempts.is_empty() { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "An announcement gate cannot be installed after execution starts.")); }
         task.announcement_gate = Some(gate);
         task.revision += 1;
         task.updated_at_ms = now_ms();
@@ -1275,6 +1303,7 @@ impl AssistantTasks {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn release_announcement_gate(&self, task_id: &str, released_at_ms: u64) -> Result<AssistantTask, TaskError> {
         let mut document = self.inner.document.lock().unwrap();
         let before = document.clone();
@@ -1291,21 +1320,33 @@ impl AssistantTasks {
         Ok(result)
     }
 
-    pub fn update_announcement_gate_message(&self, task_id: &str, message_id: &str) -> Result<AssistantTask, TaskError> {
-        let mut document = self.inner.document.lock().unwrap();
-        let before = document.clone();
-        let task = document.tasks.get_mut(task_id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
-        if let Some(gate) = task.announcement_gate.as_mut() {
-            if gate.message_id.is_none() {
-                gate.message_id = Some(message_id.to_owned());
-                task.revision += 1;
-                task.updated_at_ms = now_ms();
-            }
+    /// Caller holds the personal lock and has verified the permanent publication
+    /// receipt. Bind its exact message and release in one task-ledger save.
+    pub(crate) fn release_matching_announcement_gate(&self, task_id: &str, expected: &AnnouncementGate, message_id: &str, at: u64) -> Result<AssistantTask, TaskError> {
+        let mut document=self.inner.document.lock().unwrap();let before=document.clone();
+        let task=document.tasks.get_mut(task_id).ok_or_else(||TaskError::new(TaskErrorKind::NotFound,"Task not found."))?;
+        let gate=task.announcement_gate.as_ref().ok_or_else(||TaskError::new(TaskErrorKind::InvalidTransition,"Announcement gate is missing."))?;
+        if !same_announcement_source(gate,expected) || gate.message_id.as_deref().is_some_and(|saved| saved!=message_id) || message_id.is_empty() {
+            return Err(TaskError::new(TaskErrorKind::RequestIdConflict,"Publication does not match the announcement source."));
         }
-        let result = task.clone();
-        save_mutation(&self.inner, &mut document, before)?;
-        Ok(result)
+        if task.control.desired_state!=DesiredState::Running || !matches!(task.status,TaskStatus::Queued|TaskStatus::Proposed) { return Ok(task.clone()); }
+        let gate=task.announcement_gate.as_mut().unwrap();
+        if gate.released_at_ms.is_none() {gate.message_id=Some(message_id.into());gate.released_at_ms=Some(at);task.revision+=1;task.updated_at_ms=at;}
+        let out=task.clone();save_mutation(&self.inner,&mut document,before)?;Ok(out)
     }
+
+    /// Reply Stop and release share the personal-to-task lock order. Cancel all
+    /// unstarted children, including a release saved just before a crash.
+    pub(crate) fn cancel_unstarted_announcements(&self, assistant_id: &str, event_id: &str) -> Result<usize, TaskError> {
+        let mut document=self.inner.document.lock().unwrap();let before=document.clone();let mut count=0;
+        for task in document.tasks.values_mut().filter(|task| task.announcement_gate.as_ref().is_some_and(|g|g.assistant_id==assistant_id && g.source_event_id==event_id)) {
+            if !task.attempts.is_empty() || matches!(task.status,TaskStatus::Cancelled|TaskStatus::Done|TaskStatus::Failed) {continue;}
+            task.status=TaskStatus::Cancelled;task.control.desired_state=DesiredState::Cancelled;task.control.control_revision+=1;task.revision+=1;task.updated_at_ms=now_ms();task.result=Some("Reply stopped by you before project work started.".into());count+=1;
+        }
+        save_mutation(&self.inner,&mut document,before)?;Ok(count)
+    }
+
+
 
     pub fn execution(&self, thread_id: &str) -> Result<Option<ExecutionEntry>, TaskError> {
         Ok(self
@@ -1457,10 +1498,16 @@ fn make_task(
         created_at_ms: now,
         updated_at_ms: now,
         announcement_gate: None,
+        conversation_progress: None,
+        conversation_events: Vec::new(),
         legacy: None,
     };
     document.tasks.insert(id, task.clone());
     task
+}
+
+fn same_announcement_source(a:&AnnouncementGate,b:&AnnouncementGate)->bool {
+    a.announcement_id==b.announcement_id && a.assistant_id==b.assistant_id && a.source_event_id==b.source_event_id
 }
 
 fn handoff_receipt(document: &Document, input: &HandoffPreparation) -> Result<Option<AssistantTask>, TaskError> {
@@ -1816,7 +1863,7 @@ mod tests {
         TaskDestination {
             thread_id: Some("child".into()),
             workers: vec!["null".into()],
-            new_thread: false,
+            new_thread: false, new_thread_title: None,
         }
     }
     fn request(id: &str, text: &str) -> HumanRequest {
@@ -2570,6 +2617,19 @@ mod tests {
         };
         store.set_announcement_gate(&task.id, gate).unwrap();
         assert!(store.begin_attempt(&task.id, store.get(&task.id).unwrap().unwrap().revision, &owner()).is_err(), "task with unreleased gate must not begin");
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn announcement_gate_identity_cannot_change_on_retry() {
+        let path=folder();let store=AssistantTasks::open(ledger(&path)).unwrap();
+        let prep=HandoffPreparation {request_id:"gate-identity".into(),batch_id:"batch".into(),owner:owner(),revision:1,original_request:"Do it".into(),brief:"brief".into(),destination:destination(),mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None};
+        let gate=AnnouncementGate {announcement_id:"same-announcement".into(),assistant_id:"owner".into(),source_event_id:"source".into(),message_id:None,released_at_ms:None};
+        let task=store.prepare_handoff_authorized_gated(prep.clone(),None,Some(gate.clone()),vec![]).unwrap();
+        drop(store);let reopened=AssistantTasks::open(ledger(&path)).unwrap();
+        assert_eq!(reopened.get(&task.id).unwrap().unwrap().announcement_gate,Some(gate.clone()),"the very first durable task record includes its barrier");
+        let mut changed=gate;changed.source_event_id="different-source".into();
+        assert!(reopened.prepare_handoff_authorized_gated(prep,None,Some(changed),vec![]).is_err(),"same announcement id must not authorize a different source event");
         std::fs::remove_dir_all(path).unwrap();
     }
 

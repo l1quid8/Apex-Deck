@@ -25,6 +25,7 @@ export interface TaskConversationProgress {
   runId?: string;
   participantId?: string;
   observedAtMs?: number;
+  workerStarted?: boolean;
   /** Optional reported todo list from worker */
   todos?: { text: string; status: 'open' | 'running' | 'done' | 'cancelled'; atMs?: number }[];
   latestActivity?: string; // e.g. "ran tools/step.sh 21"
@@ -81,7 +82,7 @@ function deriveProgressLabel(progress?: TaskConversationProgress): { label: stri
 }
 
 function toPillState(task: AssistantTask): HandoffPillState {
-  if (task.desiredState === 'paused' && task.status === 'running') return 'stopping';
+  if ((task.desiredState === 'paused' || task.desiredState === 'cancelled') && (task.status === 'running' || task.status === 'needs_you') && task.attempts?.at(-1)?.finishedAtMs == null) return 'stopping';
   const s = task.status;
   if (s === 'proposed') return 'needs_ok';
   if (s === 'queued') return 'waiting_to_start';
@@ -90,26 +91,35 @@ function toPillState(task: AssistantTask): HandoffPillState {
   if (s === 'ready_for_review') return 'ready_for_review';
   if (s === 'done') return 'done';
   if (s === 'cancelled') return 'stopped';
-  if (s === 'failed' || s === 'interrupted') return 'couldnt_start';
+  if (s === 'failed' || s === 'interrupted') return task.attempts?.length ? 'failed' : 'couldnt_start';
   // offline/detached handled via owner checks elsewhere -> map to failed for now
   return s as HandoffPillState;
 }
 
-export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversationProgress, threadLabel?: string): HandoffPill {
+function currentProgress(task: AssistantTask, progress?: TaskConversationProgress): TaskConversationProgress | undefined {
+  if (!progress || progress.taskId !== task.id) return undefined;
+  const run = task.attempts?.at(-1)?.runId;
+  if (run && progress.runId !== run) return undefined;
+  return progress;
+}
+
+export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversationProgress, threadLabel?: string, offline = false): HandoffPill {
+  const displayWorker = (id: string) => task.workerNames?.[id] || workerDisplay(id);
   const workers = task.workers?.length ? task.workers : (task.destination?.workers ?? []);
   const distinct = [...new Set(workers)];
   const lead = distinct[0] ?? null;
-  const leadName = lead ? workerDisplay(lead) : 'Worker';
+  const leadName = lead ? displayWorker(lead) : 'Worker';
   const teamPreview = distinct.length === 0
     ? ''
     : distinct.length === 1
-      ? `${workerDisplay(distinct[0])}`
-      : `${distinct.map(workerDisplay).join(' + ')} · ${workerDisplay(distinct[0])} leads`;
+      ? `${displayWorker(distinct[0])}`
+      : `${distinct.map(displayWorker).join(' + ')} · ${displayWorker(distinct[0])} leads`;
 
   const sentence = `Handing this to ${teamPreview || leadName}${threadLabel ? ` in ${threadLabel}` : ''}, I'll tell you when it's done.`;
-  const state = toPillState(task);
+  progress = currentProgress(task, progress);
+  const state = offline ? 'offline' : toPillState(task);
   const prog = deriveProgressLabel(progress);
-  const firstWorker = distinct[0] ?? 'Hyke';
+  const firstWorker = distinct.length ? distinct.map(displayWorker).join(' + ') : 'Worker';
 
   // Contract from browser tests:
   // running -> "Hyke · step 20/40"
@@ -117,7 +127,9 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
   // no_total -> "Hyke · working · ran tools/step.sh 21"
   // status overrides: "needs your OK", "Hyke · needs you", "Hyke · couldn't start", "Hyke · queued", "Hyke · stopping"
   let label = '';
-  if (state === 'needs_ok') {
+  if (state === 'offline') {
+    label = `${firstWorker} · disconnected`;
+  } else if (state === 'needs_ok') {
     label = 'needs your OK';
   } else if (state === 'waiting_to_start') {
     label = `${firstWorker} · queued`;
@@ -129,15 +141,19 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
     label = `${firstWorker} · stopped`;
   } else if (state === 'couldnt_start') {
     label = `${firstWorker} · couldn't start`;
+  } else if (state === 'failed') {
+    label = `${firstWorker} · couldn't finish`;
   } else if (state === 'ready_for_review') {
     label = `${firstWorker} · ready for review`;
   } else if (state === 'done') {
     label = `${firstWorker} · done`;
+  } else if (state === 'running' && (!progress || progress.workerStarted === false)) {
+    label = `${distinct.map(displayWorker).join(' + ') || 'Worker'} · waiting to start`;
   } else {
     // running default
     if (prog.total != null && prog.done != null) {
       if (distinct.length > 1) {
-        label = `${distinct.map(workerDisplay).join(' + ')} · ${prog.done}/${prog.total}`;
+        label = `${distinct.map(displayWorker).join(' + ')} · ${prog.done}/${prog.total}`;
       } else {
         label = `${firstWorker} · step ${prog.done}/${prog.total}`;
       }
@@ -163,7 +179,7 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
       doneCount: prog.done,
       latestActivity: prog.activity,
       stopA11yLabel: `Stop ${teamPreview || leadName}`,
-      availableActions: state === 'waiting_to_start' || state === 'running' || state === 'needs_you' || state === 'stopping' ? ['stop', 'open'] : ['open'],
+      availableActions: task.availableHandoffActions ?? (state === 'stopping' ? ['open'] : ['stop', 'open']),
       threadLabel,
     };
   }
@@ -182,7 +198,7 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
       doneCount: prog.done,
       latestActivity: prog.activity,
       stopA11yLabel: `Stop ${teamPreview || leadName}`,
-      availableActions: ['retry', 'open'],
+      availableActions: task.availableHandoffActions ?? (state === 'stopped' && !task.attempts?.some(a => a.finishedAtMs == null) ? ['retry', 'open'] : ['open']),
       threadLabel,
     };
   }
@@ -200,7 +216,7 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
     doneCount: prog.done,
     latestActivity: prog.activity,
     stopA11yLabel: `Stop ${teamPreview || leadName}`,
-    availableActions: ['open'],
+    availableActions: offline ? ['open'] : task.availableHandoffActions ?? ['open'],
     threadLabel,
   };
 }
@@ -208,7 +224,7 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
 export interface HandoffPopoverModel {
   taskId: string;
   revision: number;
-  steps: { index: number; state: 'done' | 'active' | 'future' | 'stall'; atMs?: number; text?: string }[];
+  steps: { index: number; state: 'done' | 'active' | 'future' | 'stall' | 'cancelled'; atMs?: number; text?: string }[];
   currentIndex: number; // 1-based
   artifactTail?: string[]; // last few lines of progress.txt
   canHandover: boolean; // false in Round 1
@@ -216,24 +232,25 @@ export interface HandoffPopoverModel {
 }
 
 export function deriveHandoffPopover(task: AssistantTask, progress: TaskConversationProgress | undefined, events: TaskConversationEvent[]): HandoffPopoverModel {
+  progress = currentProgress(task, progress);
   const todos = progress?.todos ?? [];
   const total = todos.length || 0;
-  const done = todos.filter(t => t.status === 'done').length;
-  const current = done + 1;
+  const active = todos.findIndex(t => t.status === 'running');
+  const pending = todos.findIndex(t => t.status === 'open');
+  const current = active >= 0 ? active + 1 : pending >= 0 ? pending + 1 : Math.max(1, todos.length);
   const steps = total
     ? todos.map((t, i) => ({
         index: i + 1,
-        state: (t.status === 'done' ? 'done' : i + 1 === current ? 'active' : 'future') as HandoffPopoverModel['steps'][number]['state'],
+        state: (t.status === 'done' ? 'done' : t.status === 'cancelled' ? 'cancelled' : t.status === 'running' ? 'active' : 'future') as HandoffPopoverModel['steps'][number]['state'],
         text: t.text,
         atMs: t.atMs,
       }))
     : [];
 
-  // If no todos, synthesize view-only list from events for inspection only
-  const viewSteps = steps.length ? steps : events
-    .filter(e => e.kind === 'milestone')
-    .slice(0, 40)
-    .map((e, i) => ({ index: i + 1, state: 'done' as const, text: e.text, atMs: e.atMs }));
+  // A milestone is an event, not a completed step or a reported total.
+  // Unknown totals stay unknown even when lifecycle history is available.
+  void events;
+  const viewSteps = steps;
 
   return {
     taskId: task.id,
@@ -242,7 +259,7 @@ export function deriveHandoffPopover(task: AssistantTask, progress: TaskConversa
     currentIndex: Math.min(current, total || viewSteps.length || 1),
     artifactTail: undefined, // wired by host file read when available
     canHandover: false, // Round 1: only Try again
-    canRetry: task.status === 'cancelled' || task.status === 'failed' || task.status === 'interrupted',
+    canRetry: (task.availableHandoffActions?.includes('retry') ?? true) && task.status === 'cancelled' && !task.attempts?.some(a => a.finishedAtMs == null),
   };
 }
 

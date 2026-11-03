@@ -42,11 +42,13 @@ const scenarios = {
   needs_ok: { task: task({ status: 'proposed', attempts: [] }), progress: undefined },
   needs_you: { task: task({ status: 'needs_you' }), progress },
   failed: { task: task({ status: 'failed', attempts: [{ number: 1, runId: 'run-1', status: 'failed', startedAtMs: 1, finishedAtMs: 2, reviewRevision: null, usage: null }] }), progress },
+  stopped: { task: task({ status:'cancelled', desiredState:'cancelled', availableHandoffActions:['retry','open'], attempts:[{number:1,runId:'run-1',status:'cancelled',startedAtMs:1,finishedAtMs:2,reviewRevision:null,usage:null}] }), progress },
   queued: { task: task({ status: 'queued', attempts: [] }), progress: undefined },
   stopping: { task: task({ status: 'running', desiredState: 'paused' }), progress },
-  stopped: { task: task({ status: 'cancelled' }), progress },
   done: { task: task({ status: 'done' }), progress },
   no_total: { task: task(), progress: { taskId: 'at-409', runId: 'run-1', latestActivity: 'ran tools/step.sh 21' } },
+  stopped_no_total: { task: task({ status: 'cancelled', desiredState: 'cancelled', attempts: [{ number: 1, runId: 'run-1', status: 'cancelled', startedAtMs: 1, finishedAtMs: 2 }] }), progress: undefined },
+  cancelled_step: { task: task(), progress: { ...progress, todos: [{ text: 'Skipped at the worker’s request', status: 'cancelled' }] } },
 };
 
 function record(type, args) {
@@ -169,6 +171,7 @@ window.runHandoffChecks = async () => {
   const cells = [...document.querySelectorAll('.assistant-handoff-cell')];
   check('forty cells', cells.length === 40, String(cells.length));
   cells[34].click();
+  cells[34].focus();
   await settle();
   check('future step stays queued', /Step 35 · queued/.test(q('.assistant-handoff-step-title')?.textContent || '') && !/lines|done/.test(q('.assistant-handoff-step-title')?.textContent || '') && !/lines/.test(q('.assistant-handoff-step-text')?.textContent || ''), `${q('.assistant-handoff-step-title')?.textContent} / ${q('.assistant-handoff-step-text')?.textContent}`);
   check('inspect does not stop', calls().length === 0, calls().join('|'));
@@ -176,6 +179,7 @@ window.runHandoffChecks = async () => {
   await settle();
   check('escape closes', !q('.assistant-handoff-popover'));
   check('escape does not stop', calls().length === 0);
+  check('escape restores pill focus', document.activeElement === pill());
   pill().click();
   await settle();
   document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
@@ -206,11 +210,14 @@ window.runHandoffChecks = async () => {
   check('needs you can stop', !!stop());
 
   await use('failed');
-  check('could not start', text('.assistant-handoff-pill') === "Hyke · couldn't start ▾", text('.assistant-handoff-pill'));
+  check('could not finish', text('.assistant-handoff-pill') === "Hyke · couldn't finish ▾", text('.assistant-handoff-pill'));
   check('failed has no live stop', !stop());
   pill().click();
   await settle();
-  check('try again after failure', [...document.querySelectorAll('.assistant-handoff-popover button')].some(button => button.textContent === 'Try again'));
+  check('failure cannot bypass settled Stop', ![...document.querySelectorAll('.assistant-handoff-popover button')].some(button => button.textContent === 'Try again'));
+  await use('stopped');
+  pill().click(); await settle();
+  check('try again only after settled Stop', !!q('.assistant-handoff-popover button.primary'));
   q('.assistant-handoff-popover button.primary').click();
   check('retry uses current revision', calls().includes('retry:["at-409",7]'), calls().join('|'));
 
@@ -230,7 +237,14 @@ window.runHandoffChecks = async () => {
   pill().click();
   await settle();
   check('no invented tape', !q('.assistant-handoff-cell'));
-  check('working without a count', q('.assistant-handoff-popover-head strong')?.textContent === 'Working');
+  check('working without a count', q('.assistant-handoff-popover-head strong')?.textContent === 'Hyke · working · ran tools/step.sh 21');
+
+  await use('stopped_no_total');
+  pill().click(); await settle();
+  check('stopped details never claim working', q('.assistant-handoff-popover-head strong')?.textContent === 'Hyke · stopped');
+  await use('cancelled_step');
+  pill().click(); await settle();
+  check('cancelled step stays cancelled', text('.assistant-handoff-step-title') === 'Step 1 · cancelled');
 
   window.setOffline(true);
   await settle();
@@ -312,9 +326,9 @@ window.runHandoffChecks = async () => {
   await settle();
   check('shift enter stays in the draft', calls().length === 0 && paused.value === 'keep going');
   await send('keep going');
-  check('clear yes continues', calls().join('|') === 'continue:["q-keep",7]', calls().join('|'));
+  check('typed continue is sent to the authenticated host', calls().join('|') === 'ask:["keep going"]', calls().join('|'));
   await send('cancel that');
-  check('clear stop stops', calls().join('|') === 'pause-stop:["q-keep",7]', calls().join('|'));
+  check('typed stop is sent to the authenticated host', calls().join('|') === 'ask:["cancel that"]', calls().join('|'));
   window.calls = [];
   [...document.querySelectorAll('.assistant-handoff-paused-actions button')].find(button => button.textContent === 'Keep going').click();
   [...document.querySelectorAll('.assistant-handoff-paused-actions button')].find(button => button.textContent === 'Stop here').click();

@@ -206,3 +206,16 @@ test('Always approval reads exact host-derived choices and submits one atomic cu
  assert.equal(f.calls.some(([,cmd])=>cmd==='personal_permission_set'||cmd==='personal_decide'),false,'never split grant and old-hash approval into two calls');
  const old=fixture();await old.collection.refresh();assert.equal(old.collection.lane(ref('mac')).decideAlways,undefined);
 });
+
+test('handoff commands require capability and retain the authenticated assistant route', async () => {
+ const f=fixture(); await f.collection.refresh();
+ assert.equal(f.collection.lane(ref('alpha')).handoffControl,undefined);
+ f.routes.a.supports=cap=>cap==='assistant_conversation_handoff_v1';
+ f.handlers['a:personal_handoff_control']=args=>({taskId:args.taskId,controlRevision:3,runId:'run-1',outcome:'stopped'});
+ const lane=f.collection.lane(ref('alpha')); f.collection.select(ref('beta'));
+ const receipt=await lane.handoffControl({taskId:'task-a',expectedTaskRevision:4,action:'stop'});
+ assert.equal(receipt.outcome,'stopped');
+ const call=f.calls.find(([,cmd])=>cmd==='personal_handoff_control');
+ assert.equal(call[0],'a');assert.equal(call[2].assistantId,'asst-1');assert.equal(call[2].expectedTaskRevision,4);
+ assert.equal(f.collection.snapshot().selected.hostId,'beta');
+});

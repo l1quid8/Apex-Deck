@@ -135,7 +135,7 @@ impl Host {
             Ok(delegated_tasks.iter().map(|task| task.owner.workspace_id.clone()).collect::<std::collections::BTreeSet<_>>())
         })?;
         for workspace in affected { self.assistant_changed(&workspace); }
-        Ok(json!({"assistant": self.personal_get(assistant_id)?}))
+        Ok(json!({"assistant": crate::personal::PersonalAssistantView::from(&self.personal_get(assistant_id)?)}))
     }
 
     pub(crate) async fn personal_task_lifecycle(self: &Arc<Self>, input: LifecycleInput) -> Result<Value, String> {
@@ -224,6 +224,6 @@ impl Host {
                 _ => return Err("Unknown task source.".into()),
             }
         }
-        Ok(json!({"assistant":self.personal_get(&assistant.id)?}))
+        Ok(json!({"assistant":crate::personal::PersonalAssistantView::from(&self.personal_get(&assistant.id)?)}))
     }
 }

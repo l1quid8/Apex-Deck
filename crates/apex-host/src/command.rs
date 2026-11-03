@@ -75,6 +75,8 @@ pub enum Command {
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
     PersonalConversationNew { assistant_id: String },
     PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
+    PersonalHandoffOptions { assistant_id: String, draft_id: String },
+    PersonalHandoffQuestion { assistant_id: String, task_id: String },
     PersonalHandoffSelect { #[serde(flatten)] input: crate::personal_handoff::HandoffSelectInput },
     PersonalHandoffControl { #[serde(flatten)] input: crate::personal_handoff::HandoffControlInput },
     PersonalAvatarOptions { owner: crate::assistant_avatar::Owner },
@@ -494,8 +496,10 @@ impl Host {
             PersonalConversationNew { assistant_id } => reply(self.personal_conversation_new(&assistant_id)?),
             PersonalPause { assistant_id, request_id, paused } => { let accepted = self.personal_pause(&assistant_id, &request_id, paused)?; if !paused { self.redispatch_recovered_queued()?; } reply(accepted) },
             PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
+            PersonalHandoffOptions { assistant_id, draft_id } => reply(self.personal_handoff_options_impl(&assistant_id,&draft_id)?),
+            PersonalHandoffQuestion { assistant_id, task_id } => reply(self.personal_handoff_question_impl(&assistant_id,&task_id)?),
             PersonalHandoffSelect { input } => reply(self.personal_handoff_select_impl(input)?),
-            PersonalHandoffControl { input } => reply(self.personal_handoff_control_impl(input)?),
+            PersonalHandoffControl { input } => reply(self.personal_handoff_control_impl(input).await?),
             ProjectMemoryList { input } => reply(self.project_memory_list(input)?),
             ProjectMemorySave { input } => reply(self.project_memory_save(input)?),
             ProjectMemoryForget { input } => reply(self.project_memory_forget(input)?),
@@ -977,8 +981,12 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 226);
+        assert_eq!(names.len(), 230);
         for name in [
+            "personal_handoff_select",
+            "personal_handoff_control",
+            "personal_handoff_options",
+            "personal_handoff_question",
             "room_refresh_plans",
             "room_apply_access",
             "room_curate",

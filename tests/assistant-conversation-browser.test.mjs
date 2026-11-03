@@ -31,13 +31,13 @@ test('round 1 handoff replies, pills, and popover stay literal', () => {
   }
   assert.deepEqual(preserveTypedAgentOrder('Muck and Hyke', agents), ['Muck', 'Hyke']);
 
-  const running = deriveHandoffPill(handoffTask(), { taskId: 'at-409', todos: listedSteps }, 'Watchdog QA');
+  const running = deriveHandoffPill(handoffTask(), { taskId: 'at-409', runId:'run-1', todos: listedSteps }, 'Watchdog QA');
   assert.equal(running.label, 'Hyke · step 20/40');
   assert.equal(running.stopA11yLabel, 'Stop Hyke');
   assert.deepEqual(running.availableActions, ['stop', 'open']);
   assert.equal(running.sentence, "Handing this to Hyke in Watchdog QA, I'll tell you when it's done.");
 
-  const team = deriveHandoffPill(handoffTask({ workers: ['Muck', 'Null'] }), { taskId: 'at-409', todos: listedSteps }, 'Watchdog QA');
+  const team = deriveHandoffPill(handoffTask({ workers: ['Muck', 'Null'] }), { taskId: 'at-409', runId:'run-1', todos: listedSteps }, 'Watchdog QA');
   assert.equal(team.label, 'Muck + Null · 20/40');
   assert.equal(team.teamPreview, 'Muck + Null · Muck leads');
   assert.equal(team.leadWorkerId, 'Muck');
@@ -45,21 +45,21 @@ test('round 1 handoff replies, pills, and popover stay literal', () => {
   assert.equal(deriveHandoffPill(handoffTask({ status: 'proposed', attempts: [] })).label, 'needs your OK');
   assert.deepEqual(deriveHandoffPill(handoffTask({ status: 'proposed', attempts: [] })).availableActions, ['open']);
   assert.equal(deriveHandoffPill(handoffTask({ status: 'needs_you' })).label, 'Hyke · needs you');
-  assert.equal(deriveHandoffPill(handoffTask({ status: 'failed' })).label, "Hyke · couldn't start");
-  assert.deepEqual(deriveHandoffPill(handoffTask({ status: 'failed' })).availableActions, ['retry', 'open']);
+  assert.equal(deriveHandoffPill(handoffTask({ status: 'failed' })).label, "Hyke · couldn't finish");
+  assert.deepEqual(deriveHandoffPill(handoffTask({ status: 'failed' })).availableActions, ['open']);
   assert.equal(deriveHandoffPill(handoffTask({ status: 'queued', attempts: [] })).label, 'Hyke · queued');
   assert.equal(deriveHandoffPill(handoffTask({ desiredState: 'paused' })).label, 'Hyke · stopping');
-  const noTotal = deriveHandoffPill(handoffTask(), { taskId: 'at-409', latestActivity: 'ran tools/step.sh 21' });
+  const noTotal = deriveHandoffPill(handoffTask(), { taskId: 'at-409', runId:'run-1', latestActivity: 'ran tools/step.sh 21' });
   assert.match(noTotal.label, /^Hyke · working · ran tools\/step\.sh 21$/);
   assert.equal(noTotal.totalCount, undefined);
   assert.doesNotMatch(noTotal.label, /40/);
 
-  const popover = deriveHandoffPopover(handoffTask(), { taskId: 'at-409', todos: listedSteps }, []);
+  const popover = deriveHandoffPopover(handoffTask(), { taskId: 'at-409', runId:'run-1', todos: listedSteps }, []);
   assert.equal(popover.canHandover, false);
   assert.equal(popover.canRetry, false);
   assert.equal(popover.steps[34].state, 'future');
   assert.equal(popover.steps[34].text, 'step 35');
-  assert.equal(deriveHandoffPopover(handoffTask({ status: 'cancelled' }), { taskId: 'at-409', todos: listedSteps }, []).canRetry, true);
+  assert.equal(deriveHandoffPopover(handoffTask({ status: 'cancelled', attempts: [{runId:'run-1',finishedAtMs:2}] }), { taskId: 'at-409', runId:'run-1', todos: listedSteps }, []).canRetry, true);
   assert.equal(deriveHandoffPopover(handoffTask(), undefined, []).steps.length, 0);
 });
 

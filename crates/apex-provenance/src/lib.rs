@@ -669,6 +669,8 @@ pub fn protected(name: &str) -> bool {
             | "personal_workspace_configure"
             | "personal_avatar_generate"
             | "personal_avatar_cancel"
+            | "personal_handoff_select"
+            | "personal_handoff_control"
             | "personal_project_delegate"
             | "personal_project_delegate_ui"
             | "personal_project_propose_ui"
@@ -738,7 +740,7 @@ fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, Stri
     let id = if name.starts_with("room_")
         || !matches!(
             name,
-            "assistant_message" | "personal_send" | "personal_decide" | "personal_decide_always" | "assistant_task_action"
+            "assistant_message" | "personal_send" | "personal_decide" | "personal_decide_always" | "assistant_task_action" | "personal_handoff_select" | "personal_handoff_control"
         ) {
         json!(command["provenanceRequestId"]
             .as_str()
@@ -1440,6 +1442,23 @@ mod tests {
         assert!(journal
             .issue(501, "/data", command("changed"), true)
             .is_err());
+    }
+
+    #[test]
+    fn handoff_controls_bind_request_and_exact_scope() {
+        for name in ["personal_handoff_select","personal_handoff_control"] {
+            let mut journal=Journal::new();
+            let command=json!({"cmd":name,"args":{"assistantId":"a","requestId":"handoff-1","taskId":"t","expectedTaskRevision":7,"action":"stop"}});
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(journal.issue(501,"/data",command.clone(),true).unwrap(),receipt);
+            for (field,value) in [("assistantId",json!("other")),("taskId",json!("t2")),("expectedTaskRevision",json!(8)),("action",json!("continue"))] {
+                let mut changed=command.clone();changed["args"][field]=value;
+                assert!(journal.issue(501,"/data",changed,true).is_err());
+            }
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+        }
     }
 
     #[test]

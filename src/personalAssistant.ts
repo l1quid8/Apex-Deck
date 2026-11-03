@@ -59,6 +59,21 @@ export type PersonalSettings = {
   contextBudgetChars: number;
   utcOffsetMinutes?: number;
 };
+export type HandoffProjectRef = { hostId: string; workspaceId: string; cwd: string };
+export type PendingHandoff = {
+  id: string; revision: number; sourceEventId: string; originalRequest: string; brief: string;
+  project?: HandoffProjectRef; destination?: import('./assistantTaskModel').AssistantTaskDestination;
+  missing: 'project' | 'thread' | 'workers'; assistantId: string; hostId: string;
+};
+export type HandoffSelection = "back" | { project: { project: HandoffProjectRef } } | { thread: { thread_id: string } } | { newThread: { title: string } } | { workers: { worker_ids: string[] } };
+export type HandoffSelectReceipt = { draft?: PendingHandoff | null; taskId?: string | null; taskRevision?: number | null; duplicate: boolean };
+export type HandoffOptions = { projects: { project: HandoffProjectRef; label: string }[]; threads: { id: string; title: string }[]; workers: { id: string; name: string }[] };
+export type ControlConfirmation = {assistantId:string;taskId:string;runId:string;questionId:string;questionRevision:number;controlRevision:number};
+export type PendingControlConfirmation = {eventId:string;action:"stop"|"continue";expectedTaskRevision:number;binding:ControlConfirmation;label:string};
+export type HandoffControlInput = { taskId: string; expectedTaskRevision: number; action: 'stop' | 'continue' | 'retry'; confirmation?: ControlConfirmation; questionId?: string; expectedQuestionRevision?: number };
+export type HandoffControlReceipt = { taskId: string; controlRevision: number; runId?: string | null; outcome: 'stopping' | 'stopped' | 'continued' | 'needs_you' | 'failed' | 'retried' | 'already_settled'; observedProgress?: string };
+export type HandoffQuestion = { questionId: string; questionRevision: number; runId: string; workerName: string; text: string; canContinue: boolean };
+
 export type PersonalAssistantRecord = PersonalSettings & {
   legacy?: PersonalLegacyMarker;
   archivedAt?: number;
@@ -70,6 +85,8 @@ export type PersonalAssistantRecord = PersonalSettings & {
   /** Missing on older hosts; assignments do not create machine/folder grants. */
   projects?: AssistantProjectBinding[];
   messages: PersonalMessage[]; tasks: PersonalTask[];
+  pendingHandoffs?: PendingHandoff[];
+  handoffControlConfirmations?: PendingControlConfirmation[];
   taskManagerTodos?: PersonalTodo[];
   purgedDelegatedTaskIds?: string[];
   taskLifecycleSnapshotRevision?: number;
@@ -104,6 +121,10 @@ export type PersonalLane = {
   problem?: string;
   setUp?: () => Promise<void>;
   send(text: string): Promise<void>;
+  handoffSelect?(draft: PendingHandoff, selection: HandoffSelection): Promise<HandoffSelectReceipt>;
+  handoffOptions?(draftId: string): Promise<HandoffOptions>;
+  handoffQuestion?(taskId: string): Promise<HandoffQuestion | null>;
+  handoffControl?(input: HandoffControlInput): Promise<HandoffControlReceipt>;
   sendRequest?(text: string, requestId: string): Promise<{eventId: string}>;
   cancelReply?(eventId: string): Promise<void>;
   archiveAssistant?(expectedRevision: number): Promise<void>;

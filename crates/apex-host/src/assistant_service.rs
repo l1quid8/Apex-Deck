@@ -149,6 +149,10 @@ impl Host {
     }
 
     pub(crate) fn prepare_project_handoff_authorized(&self, input: crate::assistant_tasks::HandoffPreparation, authority: Option<crate::assistant_tasks::StandingHandoffAuthority>) -> Result<Value, String> {
+        self.prepare_project_handoff_authorized_gated(input, authority, None)
+    }
+
+    pub(crate) fn prepare_project_handoff_authorized_gated(&self, input: crate::assistant_tasks::HandoffPreparation, authority: Option<crate::assistant_tasks::StandingHandoffAuthority>, gate: Option<crate::assistant_tasks::AnnouncementGate>) -> Result<Value, String> {
         let response = self.change_monitors(|monitors| {
             let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("ApexAgent assignment is unavailable.")?;
             if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id {
@@ -156,23 +160,22 @@ impl Host {
             }
             // Lost-reply recovery survives ordinary monitor revision changes, but
             // cannot move an existing receipt to a replacement owner.
-            if let Some(task) = self.assistant_tasks.prepared_handoff(&input).map_err(|e|e.to_string())? { return Ok(json!({"task":task})); }
-            if monitor.revision != input.revision { return Err("Handoff monitor revision is stale. Refresh the plan.".into()); }
+            if self.assistant_tasks.prepared_handoff(&input).map_err(|e|e.to_string())?.is_some() {
+                let task = self.assistant_tasks.prepare_handoff_authorized_gated(input.clone(), authority, gate, vec![]).map_err(|e|e.to_string())?;
+                return Ok(json!({"task":task}));
+            }
+            // A frozen private source record retains the preparation revision
+            // through recovery. Current owner, policy and profiles still apply.
+            if gate.is_none() && monitor.revision != input.revision { return Err("Handoff monitor revision is stale. Refresh the plan.".into()); }
             if input.request_id.trim().is_empty() || input.request_id.len() > 200 || input.batch_id.trim().is_empty() || input.batch_id.len() > 200 || input.original_request.trim().is_empty() || input.original_request.len() > 16_000 || input.brief.trim().is_empty() || input.brief.len() > 16_000 || input.review_criteria.len() > 20 || input.review_criteria.iter().any(|s| s.trim().is_empty() || s.len() > 2000) || !matches!(input.mode, TaskMode::Isolated | TaskMode::ReadOnly) {
                 return Err("Invalid handoff preparation scope.".into());
             }
             let destination = &input.destination;
-            if destination.new_thread || destination.workers.is_empty() || destination.workers.len() > 10 || destination.workers.iter().collect::<std::collections::HashSet<_>>().len() != destination.workers.len() {
-                return Err("Choose an available saved chat and eligible workers.".into());
-            }
-            let id = destination.thread_id.as_deref().filter(|id| !id.trim().is_empty()).ok_or("Handoff requires a saved destination chat.")?;
-            let saved = self.store().room(id)?.ok_or("Handoff destination chat is unavailable.")?;
-            if !saved.cwd.as_deref().is_some_and(|cwd| same_project_folder(cwd, &input.owner.cwd)) { return Err("Handoff destination is outside the assigned project.".into()); }
-            let workers: Vec<_> = saved.snapshot.participants.iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).cloned().collect();
-            if workers.len() != destination.workers.len() { return Err("Handoff contains an unknown destination worker.".into()); }
+            let workers = self.selected_handoff_profiles(destination, &input.owner)?;
             verify_task_workers(&workers)?;
             if let Some(lineage) = &input.lineage { self.validate_delegated_worker_profiles(lineage, &workers)?; }
-            let task = self.assistant_tasks.prepare_handoff_authorized(input.clone(), authority).map_err(|e|e.to_string())?;
+            let new_profiles = if destination.new_thread { workers } else { vec![] };
+            let task = self.assistant_tasks.prepare_handoff_authorized_gated(input.clone(), authority, gate, new_profiles).map_err(|e|e.to_string())?;
             Ok(json!({"task":task}))
         })?;
         Ok(response)
@@ -537,6 +540,7 @@ impl Host {
                     thread_id: (!new_thread).then_some(thread_id.clone()),
                     workers: workers.clone(),
                     new_thread,
+                    new_thread_title: None,
                 };
                 let mut task = self
                     .assistant_tasks
@@ -647,9 +651,13 @@ impl Host {
 
     fn ensure_delegated_start(&self, task: &AssistantTask) -> Result<(), String> {
         let current = self.assistant_tasks.get(&task.id).map_err(|e|e.to_string())?.ok_or("Task unavailable.")?;
+        if current.announcement_gate.as_ref().is_some_and(|gate| gate.released_at_ms.is_none()) {
+            return Err("Waiting for the saved handoff announcement before execution setup.".into());
+        }
         if current.control.desired_state != crate::assistant_tasks::DesiredState::Running { return Err("The task is paused or cancelled.".into()); }
         self.validate_standing_delegation(&current)?;
         if let Some(lineage) = &current.lineage {
+            self.validate_delegated_source(&current)?;
             self.validate_delegated_task(lineage, true)?;
             self.validate_delegated_worker_profiles(lineage, &self.delegated_worker_profiles(&current)?)?;
         }
@@ -1532,7 +1540,8 @@ impl Host {
             let pane = match saved {
                 Some(saved) if !entry.is_tombstoned() => {
                     let execution_path = task.result_data.as_ref().and_then(|data|data["executionPath"].as_str()).unwrap_or(&task.owner.cwd);
-                    json!({"id":entry.thread_id,"workspaceId":owner.workspace_id,"kind":"chat","title":format!("Assistant task {}",task.id),"participants":saved.snapshot.participants,"options":saved.snapshot.options,"started":true,"assistantTaskId":task.id,"hostId":task.owner.host_id,"executionPath":execution_path})
+                    let title = task.destination.as_ref().and_then(|destination| destination.new_thread_title.clone()).unwrap_or_else(|| format!("Assistant task {}",task.id));
+                    json!({"id":entry.thread_id,"workspaceId":owner.workspace_id,"kind":"chat","title":title,"participants":saved.snapshot.participants,"options":saved.snapshot.options,"started":true,"assistantTaskId":task.id,"hostId":task.owner.host_id,"executionPath":execution_path})
                 }
                 _ => Value::Null,
             };
@@ -1571,7 +1580,7 @@ impl Host {
         let project = std::path::Path::new(&owner.cwd).canonicalize().ok().map(|cwd| crate::personal_workspace::ProjectRef {
             host_id:self.local_host_id().unwrap_or_else(|_|owner.host_id.clone()), workspace_id:owner.workspace_id.clone(), cwd:cwd.to_string_lossy().into_owned(),
         });
-        Ok(json!({"project":project,"workspaceId":owner.workspace_id,"revision":self.assistant_tasks.snapshot_revision(),"tasks":tasks,"executions":executions,"routingThreads":routing_threads,"namedOnlyWorkerIds":named_only_workers}))
+        Ok(json!({"project":project,"workspaceId":owner.workspace_id,"revision":self.assistant_tasks.snapshot_revision(),"tasks":tasks.iter().map(|task|self.task_conversation_view(task)).collect::<Vec<_>>(),"executions":executions,"routingThreads":routing_threads,"namedOnlyWorkerIds":named_only_workers}))
     }
 
     async fn wait_for_run_to_settle(&self, task_id: &str) -> Result<(), String> {
@@ -2324,13 +2333,21 @@ impl Host {
                 if destination.workers.is_empty() {
                     return Err("Select at least one worker before approving this task.".into());
                 }
-                if destination.new_thread {
-                    verify_task_workers(&input.new_worker_profiles)?;
-                    if let Some(lineage) = &task.lineage { self.validate_delegated_worker_profiles(lineage, &input.new_worker_profiles)?; }
-                }
+                let selected_new_profiles = if destination.new_thread {
+                    let profiles = if task.lineage.is_some() {
+                        if task.destination.as_ref() != Some(&destination) { return Err("Approve the saved delegation destination and ordered team.".into()); }
+                        let saved = self.selected_handoff_profiles(&destination, &task.owner)?;
+                        if task.result_data.as_ref().is_none_or(|data| data["workerProfiles"] != json!(&saved)) {
+                            return Err("Saved worker configuration changed. Reconfirm a new handoff before starting.".into());
+                        }
+                        saved
+                    } else { input.new_worker_profiles.clone() };
+                    verify_task_workers(&profiles)?;
+                    if let Some(lineage) = &task.lineage { self.validate_delegated_worker_profiles(lineage, &profiles)?; }
+                    profiles
+                } else { vec![] };
                 if destination.new_thread
-                    && input
-                        .new_worker_profiles
+                    && selected_new_profiles
                         .iter()
                         .map(|p| p.id.to_string())
                         .collect::<std::collections::HashSet<_>>()
@@ -2399,7 +2416,7 @@ impl Host {
                 data["executionPath"] = json!(input.owner.cwd);
                 data["leaseHeld"] = json!(false);
                 data["mode"] = json!(mode);
-                let worker_profiles = if destination.new_thread { input.new_worker_profiles.clone() } else { vec![] };
+                let worker_profiles = selected_new_profiles;
                 data["workerProfiles"] =
                     serde_json::to_value(&worker_profiles).map_err(|e| e.to_string())?;
                 if input.action == "clarify" {
@@ -2934,7 +2951,7 @@ mod tests {
             request_id:"concurrent-approval".into(),batch_id:"batch".into(),owner:f.owner.clone(),
             revision:f.host.monitor_get(&f.owner.workspace_id).unwrap().unwrap().revision,
             original_request:"Inspect login".into(),brief:"Inspect login".into(),
-            destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},
+            destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread: false, new_thread_title: None},
             mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None,
         }).unwrap();
         let task_id=task.id.clone();
@@ -2974,7 +2991,7 @@ mod tests {
         f.host.session_save(json!({"version":1,"workspaces":[{"id":project.workspace_id,"hostId":project.host_id,"path":project.cwd}]})).unwrap();
         f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
         let current=f.host.personal_get(&assistant.id).unwrap();
-        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:String::new(),delegation_id:"ui-delegation".into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:String::new(),delegation_id:"ui-delegation".into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread: false, new_thread_title: None},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
         let command=crate::command::Command::PersonalProjectDelegateUi {input:input.clone()};
         assert!(command.requires_provenance());
         assert!(apex_provenance::protected("personal_project_delegate_ui"));
@@ -3013,7 +3030,7 @@ mod tests {
         f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
         let accepted=f.host.personal_send(&assistant.id,"delegate-source","Please inspect login").unwrap();
         let current=f.host.personal_get(&assistant.id).unwrap();
-        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:"delegation".into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:"delegation".into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread: false, new_thread_title: None},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
         let mut beta=current.clone();
         beta.id="asst-beta".into();
         let mut beta_input=input.clone();
@@ -3050,7 +3067,14 @@ mod tests {
         f.host.reconcile_delegation_results().unwrap();
         let delivered=f.host.personal_get(&assistant.id).unwrap();
         assert_eq!(delivered.delegated_result_receipts.len(),1);
-        assert_eq!(delivered.messages.iter().filter(|m|m.kind=="result").count(),1);
+        assert_eq!(delivered.events.iter().filter(|e|matches!(&e.source,crate::personal::EventSource::Internal{what} if what.starts_with("delegated-report:"))).count(),1);
+        let mut tools=crate::personal_worker::WorkerTools::real();
+        tools.reason=Arc::new(|_,_,_|Box::pin(async {Err("summary provider unavailable".into())}));
+        for _ in 0..8 {if !f.runtime.block_on(f.host.personal_step(&tools)).unwrap() {break;}}
+        let delivered=f.host.personal_get(&assistant.id).unwrap();
+        let results=delivered.messages.iter().filter(|m|m.kind=="result").collect::<Vec<_>>();
+        assert_eq!(results.len(),1,"saved result is projected once, even when synthesis fails");
+        assert!(results[0].text.contains("ready for your review"));
         f.host.change_assistant(&assistant.id,|a|{a.messages.clear();Ok(())}).unwrap();
         f.host.reconcile_delegation_results().unwrap();
         assert!(f.host.personal_get(&assistant.id).unwrap().messages.is_empty());
@@ -3075,7 +3099,7 @@ mod tests {
     #[test]
     fn dismiss_cancels_a_proposal_without_dispatch_and_refuses_started_work() {
         let f = fixture();
-        let input = crate::assistant_tasks::HandoffPreparation { request_id:"dismiss-child".into(), batch_id:"dismiss-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Help me finish unfinished work".into(), brief:"Finish work".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None };
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"dismiss-child".into(), batch_id:"dismiss-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Help me finish unfinished work".into(), brief:"Finish work".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread: false, new_thread_title: None }, mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None };
         f.runtime.block_on(f.host.assistant_handoff_prepare(input)).unwrap();
         let task = f.host.assistant_tasks.list(None).unwrap().pop().unwrap();
         let dismiss = |revision| AssistantActionInput { task_id:task.id.clone(), revision, owner:f.owner.clone(), action:"dismiss".into(), mode:None, text:None, destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None };
@@ -3091,7 +3115,7 @@ mod tests {
     #[test]
     fn handoff_prepare_checks_scope_revision_and_routing_without_dispatch() {
         let f = fixture();
-        let input = crate::assistant_tasks::HandoffPreparation { request_id:"cross-child".into(), batch_id:"cross-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Ask Null to fix login and Jigga to test billing".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec!["Login works".into()], lineage:None, context:None };
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"cross-child".into(), batch_id:"cross-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Ask Null to fix login and Jigga to test billing".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread: false, new_thread_title: None }, mode:TaskMode::Isolated, review_criteria:vec!["Login works".into()], lineage:None, context:None };
         let receipt = f.runtime.block_on(f.host.assistant_handoff_prepare(input.clone())).unwrap();
         assert_eq!(receipt["task"]["status"], "proposed");
         assert!(receipt["task"]["executionThreadId"].is_null());
@@ -3126,7 +3150,7 @@ mod tests {
     #[test]
     fn handoff_saved_destination_uses_host_worker_not_client_same_id_profile() {
         let f = fixture();
-        let input = crate::assistant_tasks::HandoffPreparation { request_id:"worker-child".into(), batch_id:"worker-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Fix login".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None };
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"worker-child".into(), batch_id:"worker-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Fix login".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread: false, new_thread_title: None }, mode:TaskMode::Isolated, review_criteria:vec![], lineage:None, context:None };
         let receipt = f.runtime.block_on(f.host.assistant_handoff_prepare(input)).unwrap();
         let task: AssistantTask = serde_json::from_value(receipt["task"].clone()).unwrap();
         let local_wrong = profile("null", Backend::Scripted { lines:vec!["Wrong client profile executed".into()] }, Access::Edits);
@@ -3392,7 +3416,7 @@ mod tests {
     #[test]
     fn task_list_sends_review_diffs_only_when_asked() {
         let f = fixture();
-        let task = f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {request_id:"big-diff".into(),batch_id:"batch".into(),owner:f.owner.clone(),revision:f.host.monitor_get("workspace").unwrap().unwrap().revision,original_request:"Fix login".into(),brief:"Fix login".into(),destination:TaskDestination{thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None}).unwrap();
+        let task = f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {request_id:"big-diff".into(),batch_id:"batch".into(),owner:f.owner.clone(),revision:f.host.monitor_get("workspace").unwrap().unwrap().revision,original_request:"Fix login".into(),brief:"Fix login".into(),destination:TaskDestination{thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread: false, new_thread_title: None},mode:TaskMode::ReadOnly,review_criteria:vec![],lineage:None,context:None}).unwrap();
         let mut data = task.result_data.clone().unwrap_or_else(|| json!({}));
         let diff = "+x\n".repeat(1 << 20);
         data["diff"] = json!(diff); data["reviewDiff"] = json!(diff); data["checks"] = json!(["ok"]);
@@ -3462,7 +3486,7 @@ mod tests {
         let mut action = AssistantActionInput {
             task_id: task.id.clone(), revision: task.revision, owner: f.owner.clone(), action:"clarify".into(),
             text: Some("Review the open chats only; leave archived chats untouched.".into()),
-            destination: Some(TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false}),
+            destination: Some(TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread: false, new_thread_title: None}),
             new_worker_profiles:vec![], mode:Some(TaskMode::ReadOnly), checks:Some(vec![vec!["npm".into(),"test".into()]]), spend_limit_micros:None,
         };
         assert!(f.runtime.block_on(f.host.assistant_task_action(action.clone())).unwrap_err().contains("Read-only"));
@@ -3531,7 +3555,7 @@ mod tests {
     #[test]
     fn revise_startup_preflights_same_task_then_requires_new_approval() {
         let f=fixture();
-        let task=f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {request_id:"revised-startup".into(),batch_id:"batch".into(),owner:f.owner.clone(),revision:f.host.monitor_get("workspace").unwrap().unwrap().revision,original_request:"Fix login".into(),brief:"Fix login".into(),destination:TaskDestination{thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false},mode:TaskMode::Isolated,review_criteria:vec!["Tests pass".into()],lineage:None,context:None}).unwrap();
+        let task=f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {request_id:"revised-startup".into(),batch_id:"batch".into(),owner:f.owner.clone(),revision:f.host.monitor_get("workspace").unwrap().unwrap().revision,original_request:"Fix login".into(),brief:"Fix login".into(),destination:TaskDestination{thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread: false, new_thread_title: None},mode:TaskMode::Isolated,review_criteria:vec!["Tests pass".into()],lineage:None,context:None}).unwrap();
         let task=f.host.assistant_tasks.set_destination(&task.id,task.revision,&f.owner,task.destination.clone().unwrap(),task.brief.clone()).unwrap();
         let task=f.host.assistant_tasks.transition(&task.id,task.revision,&f.owner,TaskStatus::NeedsYou,Some("Could not start".into())).unwrap();
         let mut data=task.result_data.clone().unwrap();data["startup"]=json!({"message":"Unsupported original worker"});
@@ -3540,14 +3564,14 @@ mod tests {
         assert!(f.runtime.block_on(f.host.assistant_task_action(action(task.revision-1,TaskMode::Isolated))).is_err());
         assert!(f.runtime.block_on(f.host.assistant_task_action(action(task.revision,TaskMode::ReadOnly))).is_err(),"scope must never silently downgrade");
         f.host.room_create("unsupported-revision".into(),vec![profile("codex",Backend::Agent{tool:apex_core::AgentTool::Codex,model:None},Access::Edits)],RoomOptions::default(),Some(f.owner.cwd.clone())).unwrap();
-        let mut unsupported=action(task.revision,TaskMode::Isolated);unsupported.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread:false});
+        let mut unsupported=action(task.revision,TaskMode::Isolated);unsupported.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread: false, new_thread_title: None});
         assert!(f.runtime.block_on(f.host.assistant_task_action(unsupported)).unwrap_err().contains("trust"));
         assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().revision,task.revision,"failed preflight cannot change the plan");
         let revised=f.runtime.block_on(f.host.assistant_task_action(action(task.revision,TaskMode::Isolated))).expect("supported worker should preflight");
         assert_eq!(revised.id,task.id);assert_eq!(revised.original_request,task.original_request);assert_eq!(revised.mode,TaskMode::Isolated);assert_eq!(revised.status,TaskStatus::Proposed);assert!(revised.attempts.is_empty());
         assert_eq!(revised.result_data.as_ref().unwrap()["humanApproved"],false);assert!(revised.result_data.as_ref().unwrap()["startupPreflight"].is_object());
         assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
-        let mut altered=action(revised.revision,TaskMode::Isolated);altered.action="approve".into();altered.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread:false});
+        let mut altered=action(revised.revision,TaskMode::Isolated);altered.action="approve".into();altered.destination=Some(TaskDestination{thread_id:Some("unsupported-revision".into()),workers:vec!["codex".into()],new_thread: false, new_thread_title: None});
         assert!(f.runtime.block_on(f.host.assistant_task_action(altered)).is_err(),"approval may not replace preflighted worker");
         let mut approve=action(revised.revision,TaskMode::Isolated);approve.action="approve".into();
         f.runtime.block_on(f.host.assistant_task_action(approve)).unwrap();
@@ -3724,7 +3748,7 @@ mod tests {
                 destination: Some(TaskDestination {
                     thread_id: Some("parent".into()),
                     workers: vec!["null".into()],
-                    new_thread: false,
+                    new_thread: false, new_thread_title: None,
                 }),
                 new_worker_profiles: vec![],
                 checks: None,
@@ -3954,7 +3978,7 @@ mod tests {
         let destination = TaskDestination {
             thread_id: Some("parent".into()),
             workers: vec!["null".into()],
-            new_thread: false,
+            new_thread: false, new_thread_title: None,
         };
         let queued = f
             .host
@@ -4168,7 +4192,7 @@ mod tests {
         request.destination = Some(TaskDestination {
             thread_id: None,
             workers: vec!["codex".into()],
-            new_thread: true,
+            new_thread: true, new_thread_title: None,
         });
         request.new_worker_profiles = vec![codex];
         let reason = |_: ParticipantConfig, _: apex_core::TurnRequest| {
@@ -4270,7 +4294,7 @@ mod tests {
                 destination: Some(TaskDestination {
                     thread_id: None,
                     workers: vec!["codex".into()],
-                    new_thread: true,
+                    new_thread: true, new_thread_title: None,
                 }),
                 new_worker_profiles: vec![],
                 checks: None,
@@ -4309,7 +4333,7 @@ mod tests {
                 destination: Some(TaskDestination {
                     thread_id: None,
                     workers: vec!["null".into()],
-                    new_thread: true,
+                    new_thread: true, new_thread_title: None,
                 }),
                 new_worker_profiles: vec![worker],
                 checks: None,
@@ -4603,7 +4627,7 @@ mod tests {
         request.destination = Some(TaskDestination {
             thread_id: None,
             workers: vec!["null".into()],
-            new_thread: true,
+            new_thread: true, new_thread_title: None,
         });
         request.new_worker_profiles = vec![profile(
             "null",
@@ -4655,7 +4679,7 @@ mod tests {
         f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
         let accepted=f.host.personal_send(&assistant.id,request,"Please inspect login").unwrap();
         let current=f.host.personal_get(&assistant.id).unwrap();
-        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread:false},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread: false, new_thread_title: None},mode:TaskMode::ReadOnly,review_criteria:vec![],expected_revision:current.revision};
         let receipt=f.host.prepare_personal_delegation(input).unwrap();
         let task=f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
         (task,assistant.id)
@@ -4694,7 +4718,7 @@ mod tests {
         let room=restarted.execution_thread_id.clone().unwrap();
         assert!(room_texts(&f,&room).iter().any(|text|text.contains("watchdog")),"the worker is told why it restarted");
         let said=watchdog_messages(&f,&assistant);
-        assert_eq!(said.iter().filter(|text|text.contains("Restarting a stuck job")).count(),1,"{said:?}");
+        assert_eq!(said.iter().filter(|text|text.contains("went quiet, so I restarted")).count(),1,"{said:?}");
         assert!(!said.iter().any(|text|text.contains("needs your attention")),"{said:?}");
 
         f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
@@ -4888,7 +4912,7 @@ mod tests {
         f.host.change_assistant(&assistant.id, |a| {a.projects=vec![crate::personal_workspace::AssistantProjectBinding {project:project.clone(),tools:crate::personal_workspace::ProjectTools::Ask}];Ok(())}).unwrap();
         let accepted=f.host.personal_send(&assistant.id,request,"Please inspect login").unwrap();
         let current=f.host.personal_get(&assistant.id).unwrap();
-        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread:false},mode:if mode == TaskMode::InPlace { TaskMode::Isolated } else { mode },review_criteria:vec![],expected_revision:current.revision};
+        let input=crate::assistant_delegation::DelegationInput {assistant_id:assistant.id.clone(),project,source_event_id:accepted.event_id,delegation_id:request.into(),brief:"Inspect login".into(),destination:TaskDestination {thread_id:Some(room),workers:vec!["hung".into()],new_thread: false, new_thread_title: None},mode:if mode == TaskMode::InPlace { TaskMode::Isolated } else { mode },review_criteria:vec![],expected_revision:current.revision};
         let receipt=f.host.prepare_personal_delegation(input).unwrap();
         let task=f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap();
         f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(mode),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();

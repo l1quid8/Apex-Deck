@@ -19,17 +19,19 @@ export async function eventually(label, read, timeout = 20_000) {
 
 // Register cleanup before the first asynchronous startup operation. Every store,
 // executable, checkout, model endpoint and socket belongs to this disposable root.
-export async function workspaceFixture(t, prefix) {
+export async function workspaceFixture(t, prefix, { replyForPrompt } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(`/tmp/${prefix}-`));
   const hosts = [], clients = new Set();
   const server = http.createServer(async (request, response) => {
-    for await (const _ of request) { /* consume fixture prompt */ }
+    const chunks = [];
+    for await (const chunk of request) { if (replyForPrompt) chunks.push(chunk); }
     if (request.method !== 'POST') {
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify({ data: [{ id: 'fixture-text', object: 'model' }] }));
     } else {
       response.setHeader('Content-Type', 'text/event-stream');
-      response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ reply: 'Recorded your project request.' }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`);
+      const reply = replyForPrompt?.(Buffer.concat(chunks).toString('utf8')) ?? 'Recorded your project request.';
+      response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ reply }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`);
     }
   });
   t.after(async () => {

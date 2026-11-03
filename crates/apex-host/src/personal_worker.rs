@@ -214,6 +214,8 @@ pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result
 struct ModelReply {
     reply: String,
     #[serde(default)]
+    handoff_draft: Option<crate::personal_handoff::HandoffDraftProposal>,
+    #[serde(default)]
     delegations: Vec<ProposedDelegation>,
     #[serde(default)]
     task: Option<ProposedTask>,
@@ -236,7 +238,7 @@ impl ModelReply {
     }
 
     fn plain(text: &str) -> Self {
-        ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![], bad_delegations: 0 }
+        ModelReply { reply: text.trim().to_owned(), handoff_draft: None, delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![], bad_delegations: 0 }
     }
 }
 
@@ -311,6 +313,11 @@ struct ProposedFact {
     replaces: Option<String>,
     #[serde(default)]
     expires_in_days: Option<f64>,
+}
+
+fn reply_stopped(assistant:&PersonalAssistant,event_id:&str)->bool {
+    let stop=format!("reply-stop:{event_id}");
+    assistant.events.iter().any(|event|matches!(&event.source,EventSource::Internal {what} if what==&stop))
 }
 
 /// The outermost JSON object in the model's text, or the text as a plain reply.
@@ -537,6 +544,7 @@ impl Host {
             return Ok(());
         }
         self.personal_recover()?;
+        self.reconcile_personal_handoff_announcements()?;
         self.use_assistant_browser();
         let owner = Arc::downgrade(self);
         let wake = self.personal_wake.clone();
@@ -566,7 +574,7 @@ impl Host {
                 }
                 // A reply/helper completion wakes this loop after recording
                 // its cost, so a held standing delegation can revalidate and run.
-                if let Err(error)=host.redispatch_recovered_queued() {
+                if let Err(error)=host.reconcile_personal_handoff_announcements().and_then(|()|host.redispatch_recovered_queued()) {
                     eprintln!("Personal assistant delegated work: {error}");
                 }
                 let busy: HashSet<String> = held.values().flatten().cloned().collect();
@@ -671,7 +679,16 @@ impl Host {
                 if assistant.archived_at.is_some(){continue;}
                 let id = assistant.id.clone();
                 let mut events = Vec::new();
-                for event in assistant.events.iter_mut().filter(|e| e.state == EventState::Received) {
+                let mut order=assistant.events.iter().enumerate().filter(|(_,e)|e.state==EventState::Received).map(|(i,_)|i).collect::<Vec<_>>();
+                // Controls remain first. Within reply work, consume completed
+                // durable responses before admitting another provider call.
+                order.sort_by_key(|i| {
+                    let e=&assistant.events[*i];
+                    if !matches!(e.source,EventSource::Human{..}|EventSource::Internal{..}) {0}
+                    else if e.saved_reply.is_some() {1} else {2}
+                });
+                for index in order {
+                    let event=&mut assistant.events[index];
                     let model = matches!(event.source, EventSource::Human { .. } | EventSource::Internal { .. });
                     let key = if model { format!("reply:{id}") } else { format!("event:{id}:{}", event.id) };
                     if out.len() + events.len() >= max || (model && heavy >= room) || taken.contains(&key) { continue; }
@@ -714,7 +731,10 @@ impl Host {
 
     async fn personal_event(self: &Arc<Self>, tools: &WorkerTools, snapshot: PersonalAssistant, event: PersonalEvent) -> Result<(), String> {
         match &event.source {
-            EventSource::Human { text, .. } => self.personal_answer(tools, snapshot, &event, text.clone()).await,
+            EventSource::Human { text, .. } => {
+                if self.personal_handoff_human_reply(&snapshot, &event, text).await? { return Ok(()); }
+                self.personal_answer(tools, snapshot, &event, text.clone()).await
+            },
             EventSource::Internal { what } => self.personal_internal(tools, snapshot, &event, what.clone()).await,
             _ => {
                 let stop = self.change_assistant(&snapshot.id, |assistant| Ok(apply_control(assistant, &event)))?;
@@ -821,7 +841,14 @@ impl Host {
         match answer {
             Ok(out) => {
                 let cost = cost_entry("reply", &out, bytes, endpoint(&profile), now());
-                let reply = computer::settle_reply(parse_reply(&out.text), &out, crate::personal::permissions::full_access(&snapshot));
+                let mut reply = computer::settle_reply(parse_reply(&out.text), &out, crate::personal::permissions::full_access(&snapshot));
+                if let Some(proposed)=reply.task.as_ref() {
+                    if let Some(tool)=proposed.tool.as_deref() {
+                        if let Some(prompt)=self.propose_model_handoff_control(&snapshot.id,&event.id,tool,&proposed.argv)? {
+                            reply.task=None; reply.reply=prompt;
+                        }
+                    }
+                }
                 self.commit_reply(tools, &snapshot.id, &event.id, &text, reply, cost, seen, out.computer_used)
             }
             Err(error) => self.finish_event(&snapshot.id, &event.id, Err(error)),
@@ -849,6 +876,7 @@ impl Host {
 
     /// Work the host gave itself. Today: pull helpers' reports into one answer.
     async fn personal_internal(&self, tools: &WorkerTools, snapshot: PersonalAssistant, event: &PersonalEvent, what: String) -> Result<(), String> {
+        if let Some(report)=what.strip_prefix("delegated-report:") { return self.personal_delegation_report(tools,snapshot,event,report).await; }
         let (source, reported) = if let Some(parent) = what.strip_prefix("consolidate:") {
             (parent.to_owned(), false)
         } else if let Some(task) = what.strip_prefix("report:") {
@@ -949,406 +977,202 @@ impl Host {
         name.unwrap_or_else(|| std::path::Path::new(&project.cwd).file_name().map_or_else(|| project.cwd.clone(), |name| name.to_string_lossy().into_owned()))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn commit_reply(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, reply: ModelReply, cost: CostEntry, seen: context::Seen, screen: bool) -> Result<(), String> {
-        let local = self.local_host_id()?;
-        let initial = self.personal_get(assistant_id)?;
-        if !initial.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) { return Ok(()); }
-        let mut reply = reply;
-        let bulk_error = reply.task.as_mut().and_then(|task| self.personal_normalize_bulk_delete(&initial, task).err());
-        let room = reply.task.as_ref().filter(|t| t.tool.as_deref().is_some_and(rooms::known))
-            .map(|t| match &bulk_error { Some(why) => Err(why.clone()), None => self.personal_room_target(&initial, t.argv.first().map(String::as_str).unwrap_or_default()) });
-        let standing_full=crate::personal::permissions::full_access(&initial);
-        let native_request = if standing_full {None} else {room.as_ref().and_then(|r| r.as_ref().ok()).and_then(|target|
-            reply.task.as_ref().and_then(|task| self.personal_management_request(&initial, target, event_id, asked, task)))};
-        let routine_request = if standing_full {None} else {room.as_ref().and_then(|r| r.as_ref().ok()).and_then(|target|
-            reply.task.as_ref().and_then(|task| self.personal_routine_request(&initial, target, event_id, asked, task)))};
+    /// Capture identity without connecting a project. The saved preparation
+    /// reserves a stable owner for a coordinator that does not exist yet.
+    fn capture_personal_handoff(&self,a:&PersonalAssistant,event_id:&str,project:&crate::personal_workspace::ProjectRef,outside:bool)->Result<(crate::assistant_tasks::TaskOwner,u64,bool),String> {
+        if outside || a.archived_at.is_some() || project.host_id!=a.host_id {return Err("This reply cannot authorize new project work.".into());}
+        let event=a.events.iter().find(|e|e.id==event_id).ok_or("Original request unavailable.")?;
+        let EventSource::Human {text,..}=&event.source else {return Err("Only a human request may delegate work.".into());};
+        if !crate::assistant_delegation::human_requests_work(text) || !a.messages.iter().any(|m|m.role=="human" && m.event_id.as_deref()==Some(event_id) && m.legacy.is_none() && m.text==*text) {return Err("Only an explicit verified human request may delegate work.".into());}
+        let binding=a.projects.iter().find(|b|b.project==*project && b.tools!=crate::personal_workspace::ProjectTools::Off).ok_or("That project is not authorized.")?;
+        if self.validate_project_binding(a,binding.clone())?.project!=*project {return Err("Project identity changed.".into());}
+        let standing=crate::personal::permissions::full_access(a) && binding.tools==crate::personal_workspace::ProjectTools::Full;
+        let (owner,revision)=match self.monitor_get(&project.workspace_id)? {
+            Some(monitor)=>(crate::assistant_tasks::TaskOwner {workspace_id:monitor.workspace_id,cwd:monitor.cwd,host_id:monitor.host_id,conversation_id:monitor.conversation_id},monitor.revision),
+            None=>(crate::assistant_tasks::TaskOwner {workspace_id:project.workspace_id.clone(),cwd:project.cwd.clone(),host_id:project.host_id.clone(),conversation_id:format!("apex-agent-{}-{event_id}",project.workspace_id)},1),
+        };
+        Ok((owner,revision,standing))
+    }
 
-        // Build frozen delegation manifest with stable IDs and preserved coordinator revision.
-        let mut frozen: Vec<crate::personal::FrozenDelegation> = Vec::new();
-        for (index, proposed) in reply.delegations.iter().take(3).enumerate() {
-            let delegation_id = format!("{event_id}:{index}");
-            let reference = crate::personal_workspace::AssistantRef { host_id: initial.host_id.clone(), assistant_id: assistant_id.to_owned() };
-            let request_id = crate::assistant_delegation::delegation_request_id(&reference, &delegation_id);
-            let announcement_id = format!("ann-{}:{}", event_id, index);
-            // Preserve coordinator owner/revision
-            let (owner, revision) = match self.project_coordinator(&proposed.project) {
-                Ok(mon) => (crate::assistant_tasks::TaskOwner { workspace_id: mon.workspace_id, cwd: mon.cwd, host_id: mon.host_id, conversation_id: mon.conversation_id }, mon.revision),
-                Err(_) => (crate::assistant_tasks::TaskOwner { workspace_id: proposed.project.workspace_id.clone(), cwd: proposed.project.cwd.clone(), host_id: proposed.project.host_id.clone(), conversation_id: "unknown".into() }, initial.revision),
+    #[allow(clippy::too_many_arguments)]
+    fn commit_reply(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, mut reply: ModelReply, cost: CostEntry, seen: context::Seen, screen: bool) -> Result<(), String> {
+        let initial=self.personal_get(assistant_id)?;
+        if !initial.events.iter().any(|e|e.id==event_id && e.state==EventState::Processing) {return Ok(());}
+        if seen.any() && (!reply.delegations.is_empty()||reply.handoff_draft.is_some())
+            && self.save_unrouted_human_handoff(assistant_id,event_id).is_ok() {
+            // A fresh human request remains actionable after outside reports,
+            // but none of this prompt's model-selected work is authorization.
+            reply.reply="Choose the project for your request, then the thread and workers to confirm the handoff.".into();
+            reply.delegations.clear();reply.handoff_draft=None;reply.bad_delegations=0;
+            reply.task=None;reply.schedule=None;reply.helpers.clear();reply.remember.clear();reply.forget.clear();
+        }
+        if let Some(draft)=reply.handoff_draft.as_ref() {
+            if let Err(error)=self.save_personal_handoff_draft(assistant_id,event_id,draft,seen.any()) {
+                reply.reply=format!("{}\nI couldn't save that handoff: {error}",reply.reply.trim());
+            }
+        }
+        // Normalize once before saving; recovery consumes exactly this payload.
+        let bulk_error=reply.task.as_mut().and_then(|task|self.personal_normalize_bulk_delete(&initial,task).err());
+        let mut frozen=Vec::new();
+        for (index,proposed) in reply.delegations.iter().take(3).enumerate() {
+            let delegation_id=format!("{event_id}:{index}");
+            let reference=crate::personal_workspace::AssistantRef {host_id:initial.host_id.clone(),assistant_id:assistant_id.into()};
+            let (owner,revision,standing_allowed)=match self.capture_personal_handoff(&initial,event_id,&proposed.project,seen.any()) {
+                Ok(captured)=>captured,
+                Err(_)=>{reply.bad_delegations+=1;continue;}
             };
             frozen.push(crate::personal::FrozenDelegation {
-                delegation_id,
-                request_id,
-                brief: proposed.brief.clone(),
-                destination: proposed.destination.clone(),
-                mode: proposed.mode,
-                review_criteria: proposed.review_criteria.clone(),
-                project: proposed.project.clone(),
-                announcement_id,
-                owner,
-                revision,
+                request_id:crate::assistant_delegation::delegation_request_id(&reference,&delegation_id),delegation_id,
+                brief:proposed.brief.clone(),destination:proposed.destination.clone(),mode:proposed.mode,
+                review_criteria:proposed.review_criteria.clone(),project:proposed.project.clone(),
+                announcement_id:format!("ann-{event_id}:{index}"),
+                owner,revision,standing_allowed,
             });
         }
-
-        let normalized_reply = if reply.reply.trim().is_empty() { "…".to_owned() } else { reply.reply.trim().to_owned() };
-        let helpers_for_save: Vec<String> = reply.helpers.iter().map(|h| h.assignment.trim().chars().take(2_000).collect::<String>()).filter(|a| !a.is_empty()).take(MAX_HELPERS).collect();
-        let remember_json: Vec<serde_json::Value> = reply.remember.iter().map(|f| serde_json::to_value(f).unwrap_or_default()).collect();
-        let prepared = crate::personal::PreparedPersonalReply {
-            reply: normalized_reply.clone(),
-            cost: cost.clone(),
-            remember: remember_json,
-            forget: reply.forget.clone(),
-            helpers: helpers_for_save.clone(),
-            delegations: frozen.clone(),
-            proposed_task: reply.task.as_ref().map(|t| serde_json::to_value(t).unwrap_or_default()),
-            proposed_schedule: reply.schedule.as_ref().map(|s| serde_json::to_value(s).unwrap_or_default()),
-            screen,
-            outside: seen.any(),
-            delegated_request_ids: frozen.iter().map(|f| f.request_id.clone()).collect(),
+        let mut text=reply.reply.trim().to_owned();
+        if reply.bad_delegations>0 {text=if frozen.is_empty() {"I couldn't start that job. Deck turned down the project details I sent, so nothing is running.".into()} else {format!("{text}\nI couldn't prepare one of the requested jobs; the other jobs are ready.")};}
+        let prepared=crate::personal::PreparedPersonalReply {
+            reply:text,cost,remember:reply.remember.iter().map(|f|serde_json::to_value(f).unwrap()).collect(),forget:reply.forget,
+            helpers:reply.helpers.iter().map(|h|h.assignment.trim().chars().take(2_000).collect::<String>()).filter(|s|!s.is_empty()).take(MAX_HELPERS).collect(),
+            proposed_task:reply.task.map(|t|{let mut saved=serde_json::to_value(t).unwrap();if let Some(error)=bulk_error {saved["preparationError"]=serde_json::json!(error);}saved}),proposed_schedule:reply.schedule.map(|t|serde_json::to_value(t).unwrap()),
+            delegated_request_ids:frozen.iter().map(|f|f.request_id.clone()).collect(),delegations:frozen,screen,outside:seen.any(),
         };
-
-        // 1. Durably save the normalized finished reply and frozen manifest before any child admission.
-        let saved = self.change_assistant(assistant_id, |assistant| {
-            let Some(event) = assistant.events.iter_mut().find(|e| e.id == event_id && e.state == EventState::Processing) else { return Ok(false) };
-            // Stop between saves must win: if source is marked Failed via cancel, don't save.
-            if event.state != EventState::Processing { return Ok(false) }
-            event.saved_reply = Some(prepared.clone());
+        let saved=self.change_assistant(assistant_id,|a| {
+            if reply_stopped(a,event_id) {return Ok(false);}
+            let Some(event)=a.events.iter_mut().find(|e|e.id==event_id && e.state==EventState::Processing) else {return Ok(false)};
+            // A retry cannot replace the recovery truth after a partial admission.
+            if event.saved_reply.is_none() {event.saved_reply=Some(prepared.clone());}
             Ok(true)
         })?;
-        if !saved { return Ok(()); }
+        if !saved {return Ok(());}
+        let a=self.personal_get(assistant_id)?;
+        let saved=a.events.iter().find(|e|e.id==event_id).and_then(|e|e.saved_reply.clone()).ok_or("Saved reply is unavailable.")?;
+        self.recover_saved_reply(tools,assistant_id,event_id,asked,saved,seen)
+    }
 
-        // 2. Admit frozen descriptors idempotently with pending gates referencing saved source.
-        let mut admitted: Vec<(crate::personal::FrozenDelegation, String, bool)> = Vec::new(); // (frozen, task_id, standingTrust)
-        let mut failed_notes: Vec<(String, String, Option<String>)> = Vec::new();
-        for frozen_one in &frozen {
-            // Check source still active before admission
-            let cur = self.personal_get(assistant_id)?;
-            if !cur.events.iter().any(|e| e.id == event_id && e.state == EventState::Processing) {
-                // Stop landed between saves: do not admit remaining
-                break;
-            }
-            // Build input reusing preserved owner/revision identity (revision participates in payload equality)
-            let input = crate::assistant_delegation::DelegationInput {
-                assistant_id: assistant_id.into(),
-                project: frozen_one.project.clone(),
-                source_event_id: event_id.into(),
-                delegation_id: frozen_one.delegation_id.clone(),
-                brief: frozen_one.brief.clone(),
-                destination: frozen_one.destination.clone(),
-                mode: frozen_one.mode,
-                review_criteria: frozen_one.review_criteria.clone(),
-                expected_revision: cur.revision,
+    /// Both ordinary completion and restart enter this path. Admission is atomic
+    /// with its gate; publication and every personal effect share one save.
+    fn recover_saved_reply(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, prepared: crate::personal::PreparedPersonalReply, _seen: context::Seen) -> Result<(), String> {
+        let initial=self.personal_get(assistant_id)?;
+        let Some(event)=initial.events.iter().find(|e|e.id==event_id) else {return Ok(())};
+        if reply_stopped(&initial,event_id) || event.state==EventState::Failed {self.reconcile_personal_handoff_announcements()?;return Ok(());}
+        if event.state==EventState::Done {self.reconcile_personal_handoff_announcements()?;return Ok(());}
+        if !matches!(event.state,EventState::Received|EventState::Processing) {return Ok(());}
+        let mut admitted=Vec::new();let mut failures=Vec::new();
+        for frozen in &prepared.delegations {
+            let current=self.personal_get(assistant_id)?;
+            if reply_stopped(&current,event_id) || !current.events.iter().any(|e|e.id==event_id && matches!(e.state,EventState::Received|EventState::Processing)) {break;}
+            let input=crate::assistant_delegation::DelegationInput {
+                assistant_id:assistant_id.into(),project:frozen.project.clone(),source_event_id:event_id.into(),delegation_id:frozen.delegation_id.clone(),
+                brief:frozen.brief.clone(),destination:frozen.destination.clone(),mode:frozen.mode,review_criteria:frozen.review_criteria.clone(),expected_revision:current.revision,
             };
-            let dummy = ProposedDelegation { project: frozen_one.project.clone(), brief: frozen_one.brief.clone(), destination: frozen_one.destination.clone(), mode: frozen_one.mode, review_criteria: frozen_one.review_criteria.clone() };
-            let (worker, place) = (self.delegation_worker(&dummy), self.delegation_project(&frozen_one.project));
-            match self.prepare_personal_delegation_with_reply_cost(input, cost.micros.unwrap_or(0)) {
-                Ok(receipt) => {
-                    let task_id = receipt["taskId"].as_str().unwrap_or_default().to_string();
-                    let standing = receipt["standingTrust"] == true;
-                    // Install pending gate ref-only
-                    let gate = crate::assistant_tasks::AnnouncementGate {
-                        announcement_id: frozen_one.announcement_id.clone(),
-                        assistant_id: assistant_id.to_owned(),
-                        source_event_id: event_id.to_owned(),
-                        message_id: None,
-                        released_at_ms: None,
-                    };
-                    // idempotent set
-                    if let Err(e) = self.assistant_tasks.set_announcement_gate(&task_id, gate) {
-                        // If already has same gate, ignore; otherwise record failure
-                        if !e.to_string().contains("already has an announcement gate") {
-                            failed_notes.push(("delegation_failed".into(), format!("I couldn't start that job: {e} Nothing is running."), None));
-                            continue;
-                        }
-                    }
-                    admitted.push((frozen_one.clone(), task_id.clone(), standing));
-                    if standing {
-                        failed_notes.push(("update".into(), format!("The job for {worker} is queued in {place}."), Some(task_id)));
-                    } else {
-                        failed_notes.push(("update".into(), format!("The plan for {worker} is ready in {place}. Nothing starts until you approve it."), Some(task_id)));
-                    }
-                },
-                Err(error) => {
-                    failed_notes.push(("delegation_failed".into(), format!("I couldn't start that job: {error} Nothing is running."), None));
+            match self.prepare_personal_delegation_with_preparation(input,Some(prepared.cost.micros.unwrap_or(0)),frozen.owner.clone(),frozen.revision) {
+                Ok(receipt)=> {
+                    let task_id=receipt["taskId"].as_str().filter(|s|!s.is_empty()).ok_or("Delegation receipt is missing its task.")?.to_owned();
+                    admitted.push((frozen.clone(),task_id,receipt["standingTrust"]==true));
                 }
+                Err(error)=>failures.push(format!("I couldn't start the job in {}: {error}",self.delegation_project(&frozen.project))),
             }
         }
-        if reply.bad_delegations > 0 {
-            failed_notes.push(("delegation_failed".into(), "I couldn't start that job. Deck turned down the project details I sent, so nothing is running.".to_owned(), None));
-        }
-
-        // Capture delegation info for publish step (move ownership)
-        let admitted_for_publish = admitted.clone();
-        let notes_for_publish = failed_notes.clone();
-        let local_clone = local.clone();
-        let asked_clone = asked.to_owned();
-        let reply_task = reply.task.clone();
-        let reply_schedule = reply.schedule.clone();
-        let reply_remember = reply.remember.clone();
-        let reply_forget = reply.forget.clone();
-        let reply_helpers = reply.helpers.into_iter().map(|h| h.assignment.trim().chars().take(2_000).collect::<String>()).filter(|a| !a.is_empty()).take(MAX_HELPERS).collect::<Vec<_>>();
-        let seen_clone = seen;
-        let outside_flag = seen_clone.any();
-        let tools_clone = tools.clone();
-
-        // 3. Publish saved sentence, permanent announcement receipts, personal effects/cost and source completed transition in one change_assistant save.
-        let mut dispatch_delegations = false;
-        let published_message_id: Option<String> = self.change_assistant(assistant_id, |assistant| {
-            let at = now();
-            let Some(event) = assistant.events.iter_mut().find(|e| e.id == event_id) else { return Ok(None) };
-            // Stop must win: if event already moved to Failed/Done without saved_reply? But we have saved_reply, check still Processing.
-            if event.state != EventState::Processing {
-                return Ok(None);
+        // These values are derived from the saved normalized payload, using the
+        // same management/provenance checks on normal completion and restart.
+        let mut proposed_task:Option<ProposedTask>=prepared.proposed_task.clone().map(serde_json::from_value).transpose().map_err(|e|format!("Invalid saved task: {e}"))?;
+        let recovered_control=if let Some(task)=&proposed_task {self.is_task_owned_handoff_control(assistant_id,task.tool.as_deref().unwrap_or(""),&task.argv)?} else {false};
+        if recovered_control {proposed_task=None;}
+        let proposed_schedule:Option<ProposedSchedule>=prepared.proposed_schedule.clone().map(serde_json::from_value).transpose().map_err(|e|format!("Invalid saved schedule: {e}"))?;
+        let facts:Vec<ProposedFact>=prepared.remember.iter().cloned().map(serde_json::from_value).collect::<Result<_,_>>().map_err(|e|format!("Invalid saved memory: {e}"))?;
+        let current=self.personal_get(assistant_id)?;
+        let bulk_error=prepared.proposed_task.as_ref().and_then(|task|task["preparationError"].as_str()).map(str::to_owned);
+        let room=proposed_task.as_ref().filter(|task|task.tool.as_deref().is_some_and(rooms::known)).map(|task|match &bulk_error {Some(error)=>Err(error.clone()),None=>self.personal_room_target(&current,task.argv.first().map(String::as_str).unwrap_or_default())});
+        let full=crate::personal::permissions::full_access(&current);
+        let native=if full {None} else {room.as_ref().and_then(|r|r.as_ref().ok()).and_then(|target|proposed_task.as_ref().and_then(|task|self.personal_management_request(&current,target,event_id,asked,task)))};
+        let routine=if full {None} else {room.as_ref().and_then(|r|r.as_ref().ok()).and_then(|target|proposed_task.as_ref().and_then(|task|self.personal_routine_request(&current,target,event_id,asked,task)))};
+        let local=self.local_host_id()?;
+        self.change_assistant(assistant_id,|a| {
+            if reply_stopped(a,event_id) || a.archived_at.is_some() {return Ok(());}
+            let Some(event)=a.events.iter_mut().find(|e|e.id==event_id) else {return Ok(())};
+            if !matches!(event.state,EventState::Received|EventState::Processing) || event.saved_reply.as_ref()!=Some(&prepared) {return Ok(());}
+            event.state=EventState::Done;event.error=None;
+            let at=now();
+            if recovered_control {a.post("system","update","The worker is still waiting. Use its explicit Stop or Continue control.".into(),None,Some(event_id.into()),at);}
+            if prepared.cost.purpose!="handoff" {a.add_cost(prepared.cost.clone());}
+            let text=if failures.is_empty() {prepared.reply.clone()} else if admitted.is_empty() {failures.join("\n")} else {format!("{}\n{}",prepared.reply,failures.join("\n"))};
+            // The publication referenced by gates always has a real message id.
+            let text=if text.trim().is_empty() {"The project work is ready.".into()} else {text};
+            if prepared.screen {a.post_outside(OutsideSource::Screen,text,Some(event_id.into()),at);} else {let kind=if text=="I couldn't start that job. Deck turned down the project details I sent, so nothing is running." || !failures.is_empty() {"delegation_failed"} else {"chat"};let task_id=if admitted.len()==1 {Some(admitted[0].1.clone())} else {None};a.post("assistant",kind,text,task_id,Some(event_id.into()),at);}
+            let message_id=a.messages.last().unwrap().id.clone();
+            for (frozen,task_id,_) in &admitted {
+                a.announcement_receipts.insert(frozen.announcement_id.clone(),crate::personal::AnnouncementReceipt {task_id:task_id.clone(),message_id:message_id.clone()});
             }
-            // Ensure saved_reply still present
-            if event.saved_reply.is_none() { return Ok(None); }
-            let saved_reply = event.saved_reply.clone().unwrap();
-            // Complete source
-            event.state = EventState::Done;
-            event.error = None;
-            assistant.add_cost(saved_reply.cost.clone());
-            // Post reply text
-            let text = saved_reply.reply.clone();
-            let msg_id = if saved_reply.screen { 
-                assistant.post_outside(OutsideSource::Screen, text, Some(event_id.to_owned()), at);
-                assistant.messages.last().map(|m| m.id.clone()).unwrap_or_default()
-            } else {
-                assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at);
-                assistant.messages.last().map(|m| m.id.clone()).unwrap_or_default()
-            };
-            // Delegation notes
-            for (kind, note, task_id) in notes_for_publish.iter() {
-                assistant.post("assistant", kind, note.clone(), task_id.clone(), Some(event_id.to_owned()), at);
+            if prepared.outside && !facts.is_empty() {a.post("system","update","I didn't save that to memory, because outside content is in this conversation. Add it in Memory, or say it again in a new conversation.".into(),None,Some(event_id.into()),at);}
+            let forget=if ["forget","delete","remove","erase"].iter().any(|word|asked.to_lowercase().contains(word)) {prepared.forget.as_slice()} else {&[]};
+            apply_memory(a,if prepared.outside {&[]} else {&facts},forget,event_id,at);
+            if let Some(task)=proposed_task {propose_task(a,tools,&local,event_id,asked,task,room,native,routine,prepared.outside,at);}
+            if let Some(schedule)=proposed_schedule {propose_schedule(a,event_id,schedule,at);}
+            for assignment in &prepared.helpers {
+                let id=a.next_task_id();a.tasks.push(PersonalTask {deleted_at:None,id,goal:format!("Helper: {}",assignment.chars().take(120).collect::<String>()),completion_criteria:vec!["a written report".into()],target_host:a.host_id.clone(),status:TaskStatus::Queued,operation:None,decision:None,receipts:vec![],from_event:event_id.into(),max_attempts:2,created_at:at,updated_at:at,last_update:Some("Waiting to start.".into()),class:ToolClass::Read,kind:TaskKind::Helper,wait:None,runs_done:0,parent:Some(event_id.into()),schedule_id:None,assignment:Some(assignment.clone())});
             }
-            // Memory
-            if outside_flag && !reply_remember.is_empty() {
-                assistant.post("system", "update", "I didn't save that to memory, because outside content is in this conversation. Add it in Memory, or say it again in a new conversation.".into(), None, Some(event_id.to_owned()), at);
-            }
-            let asked_to_forget = ["forget", "delete", "remove", "erase"].iter().any(|w| asked_clone.to_lowercase().contains(w));
-            let remember: &[ProposedFact] = if outside_flag { &[] } else { &reply_remember };
-            let forget: &[String] = if asked_to_forget { &reply_forget } else { &[] };
-            apply_memory(assistant, remember, forget, event_id, at);
-            if let Some(proposed) = reply_task.clone() {
-                propose_task(assistant, &tools_clone, &local_clone, event_id, &asked_clone, proposed, room.clone(), native_request.clone(), routine_request.clone(), outside_flag, at);
-            }
-            if let Some(proposed) = reply_schedule.clone() {
-                propose_schedule(assistant, event_id, proposed, at);
-            }
-            if !reply_helpers.is_empty() {
-                let count = reply_helpers.len();
-                for assignment in reply_helpers.iter() {
-                    let task_id = assistant.next_task_id();
-                    assistant.tasks.push(PersonalTask {
-                        deleted_at: None,
-                        id: task_id, goal: format!("Helper: {}", assignment.chars().take(120).collect::<String>()),
-                        completion_criteria: vec!["a written report".into()], target_host: assistant.host_id.clone(),
-                        status: TaskStatus::Queued, operation: None, decision: None, receipts: vec![],
-                        from_event: event_id.to_owned(), max_attempts: 2, created_at: at, updated_at: at,
-                        last_update: Some("Waiting to start.".into()), class: ToolClass::Read, kind: TaskKind::Helper,
-                        wait: None, runs_done: 0, parent: Some(event_id.to_owned()), schedule_id: None, assignment: Some(assignment.clone()),
-                    });
-                }
-                let them = if count == 1 { "a helper" } else { "helpers" };
-                assistant.post("system", "update", format!("Sent {them} to look into this ({count}). Their reports will come back here, and I'll pull them together."), None, Some(event_id.to_owned()), at);
-            }
-            // Permanent announcement receipts
-            for (frozen_one, task_id, _) in admitted_for_publish.iter() {
-                assistant.announcement_receipts.insert(frozen_one.announcement_id.clone(), crate::personal::AnnouncementReceipt { task_id: task_id.clone(), message_id: msg_id.clone() });
-            }
-            Ok(Some(msg_id))
+            if !prepared.helpers.is_empty() {let them=if prepared.helpers.len()==1 {"a helper"} else {"helpers"};a.post("system","update",format!("Sent {them} to look into this ({}). Their reports will come back here, and I'll pull them together.",prepared.helpers.len()),None,Some(event_id.into()),at);}
+            Ok(())
         })?;
-
-        let Some(msg_id) = published_message_id else {
-            // Publication was aborted due to stop; keep children blocked (not released) and skip dispatch.
-            return Ok(());
-        };
-
-        // Update gate message_id reference
-        for (_frozen_one, task_id, _) in &admitted {
-            let _ = self.assistant_tasks.update_announcement_gate_message(task_id, &msg_id);
-        }
-
-        // 4. Release only matching successfully admitted tasks afterward.
-        for (_, task_id, standing) in &admitted {
-            // Check source and durable reply-stop control while holding personal lock through task-ledger gate release
-            let should_release = self.change_personal(|assistants| {
-                let assistant = assistants.iter().find(|a| a.id == assistant_id).ok_or("assistant missing".to_string())?;
-                // If source event is not Done or has Failed, don't release
-                if let Some(ev) = assistant.events.iter().find(|e| e.id == event_id) {
-                    if ev.state != crate::personal::EventState::Done { return Ok(false) }
-                } else { return Ok(false) }
-                // Check for reply-stop control - if there is a control that says stop, don't release. For now, we don't have explicit control storage, so allow.
-                Ok(true)
-            })?;
-            if should_release {
-                let _ = self.assistant_tasks.release_announcement_gate(task_id, now());
-                if *standing { dispatch_delegations = true; }
-            }
-        }
-
-        if dispatch_delegations { self.redispatch_recovered_queued()?; }
+        self.reconcile_personal_handoff_announcements()?;
+        self.redispatch_recovered_queued()?;
         Ok(())
     }
 
-    fn recover_saved_reply(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, prepared: crate::personal::PreparedPersonalReply, seen: context::Seen) -> Result<(), String> {
-        // Reuse frozen descriptors to complete missing admissions and publication idempotently.
-        let initial = self.personal_get(assistant_id)?;
-        // If already Done, just ensure gates released
-        let event = initial.events.iter().find(|e| e.id == event_id).cloned();
-        if event.as_ref().is_some_and(|e| e.state == crate::personal::EventState::Done) {
-            // Ensure all admitted children are released if they were published
-            for frozen_one in &prepared.delegations {
-                if let Ok(Some(task)) = self.assistant_tasks.get(&initial.events.iter().find(|ev| ev.id == event_id).map(|_| "").unwrap_or_default().to_string()) {
-                    // dummy - we need task id from receipt
+    /// Reconcile only durable publications. This runs before dispatch at worker
+    /// startup and on every worker pass, including publication/release crashes.
+    pub fn reconcile_personal_handoff_announcements(&self)->Result<(),String> {
+        let tasks=self.assistant_tasks.list(None).map_err(|e|e.to_string())?;
+        self.change_personal(|assistants| {
+            for snapshot in tasks {
+                let Some(gate)=snapshot.announcement_gate.as_ref() else {continue};
+                let Some(a)=assistants.iter().find(|a|a.id==gate.assistant_id) else {continue};
+                let event=a.events.iter().find(|e|e.id==gate.source_event_id);
+                if reply_stopped(a,&gate.source_event_id) || event.is_some_and(|e|e.state==EventState::Failed) || a.archived_at.is_some() {
+                    self.assistant_tasks.cancel_unstarted_announcements(&a.id,&gate.source_event_id).map_err(|e|e.to_string())?;continue;
                 }
-                // Find task id via handoff receipt
-                let reference = crate::personal_workspace::AssistantRef { host_id: initial.host_id.clone(), assistant_id: assistant_id.to_owned() };
-                let request_id = crate::assistant_delegation::delegation_request_id(&reference, &frozen_one.delegation_id);
-                if let Ok(Some((_, task))) = self.assistant_tasks.handoff_for_request(&request_id) {
-                    let _ = self.assistant_tasks.release_announcement_gate(&task.id, now());
-                }
+                if !event.is_some_and(|e|e.state==EventState::Done) {continue;}
+                let Some(receipt)=a.announcement_receipts.get(&gate.announcement_id).filter(|r|r.task_id==snapshot.id) else {continue};
+                // Keep the personal lock through task release. A reply Stop
+                // saved first therefore always wins, including Done sources.
+                self.assistant_tasks.release_matching_announcement_gate(&snapshot.id,gate,&receipt.message_id,now()).map_err(|e|e.to_string())?;
             }
-            return Ok(());
-        }
-        // Admission phase - idempotent
-        let mut admitted: Vec<(crate::personal::FrozenDelegation, String, bool)> = Vec::new();
-        for frozen_one in &prepared.delegations {
-            let cur = self.personal_get(assistant_id)?;
-            // If event no longer Processing/Received, abort
-            if !cur.events.iter().any(|e| e.id == event_id && matches!(e.state, crate::personal::EventState::Processing | crate::personal::EventState::Received | crate::personal::EventState::Done)) {
-                break;
-            }
-            let input = crate::assistant_delegation::DelegationInput {
-                assistant_id: assistant_id.into(),
-                project: frozen_one.project.clone(),
-                source_event_id: event_id.into(),
-                delegation_id: frozen_one.delegation_id.clone(),
-                brief: frozen_one.brief.clone(),
-                destination: frozen_one.destination.clone(),
-                mode: frozen_one.mode,
-                review_criteria: frozen_one.review_criteria.clone(),
-                expected_revision: cur.revision,
-            };
-            match self.prepare_personal_delegation_with_reply_cost(input, prepared.cost.micros.unwrap_or(0)) {
-                Ok(receipt) => {
-                    let task_id = receipt["taskId"].as_str().unwrap_or_default().to_string();
-                    let standing = receipt["standingTrust"] == true;
-                    let gate = crate::assistant_tasks::AnnouncementGate {
-                        announcement_id: frozen_one.announcement_id.clone(),
-                        assistant_id: assistant_id.to_owned(),
-                        source_event_id: event_id.to_owned(),
-                        message_id: None,
-                        released_at_ms: None,
-                    };
-                    let _ = self.assistant_tasks.set_announcement_gate(&task_id, gate);
-                    admitted.push((frozen_one.clone(), task_id, standing));
-                },
-                Err(_) => { continue; }
-            }
-        }
-        // Publication phase - if not yet Done, publish
-        let local = self.local_host_id().unwrap_or_default();
-        let prepared_clone = prepared.clone();
-        let admitted_for_publish = admitted.clone();
-        let asked_owned = asked.to_owned();
-        let tools_clone = tools.clone();
-        let outside_flag = prepared.outside || seen.any();
-        // Build proposed task/schedule from saved JSON if any
-        let saved_task: Option<ProposedTask> = prepared.proposed_task.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok());
-        let saved_schedule: Option<ProposedSchedule> = prepared.proposed_schedule.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok());
-        // Remember/forget from saved
-        let remember_vals = prepared.remember.clone();
-        let forget_vals = prepared.forget.clone();
-        // We need to reconstruct ProposedFact from JSON values - store as Value and parse later? For recovery we apply memory from JSON if possible, but we have original remember as Values.
-        // For simplicity, we will parse remember JSON into ProposedFact via serde if feasible; otherwise skip memory re-application if already done.
-        let published = self.change_assistant(assistant_id, |assistant| {
-            let at = now();
-            let Some(event) = assistant.events.iter_mut().find(|e| e.id == event_id) else { return Ok(false) };
-            if event.state == crate::personal::EventState::Done {
-                return Ok(true); // already published
-            }
-            if event.state != crate::personal::EventState::Processing && event.state != crate::personal::EventState::Received {
-                return Ok(false);
-            }
-            // Apply cost and reply
-            event.state = crate::personal::EventState::Done;
-            event.error = None;
-            assistant.add_cost(prepared_clone.cost.clone());
-            let text = prepared_clone.reply.clone();
-            let msg_id = if prepared_clone.screen {
-                assistant.post_outside(OutsideSource::Screen, text, Some(event_id.to_owned()), at);
-                assistant.messages.last().map(|m| m.id.clone()).unwrap_or_default()
-            } else {
-                assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at);
-                assistant.messages.last().map(|m| m.id.clone()).unwrap_or_default()
-            };
-            // Delegation notes
-            for (frozen_one, task_id, standing) in admitted_for_publish.iter() {
-                let dummy = ProposedDelegation { project: frozen_one.project.clone(), brief: frozen_one.brief.clone(), destination: frozen_one.destination.clone(), mode: frozen_one.mode, review_criteria: frozen_one.review_criteria.clone() };
-                let worker = crate::personal_workspace::ProjectRef { host_id: frozen_one.project.host_id.clone(), workspace_id: frozen_one.project.workspace_id.clone(), cwd: frozen_one.project.cwd.clone() };
-                // Use simple note similar to commit path
-                let note = if *standing { format!("The job for {} is queued.", frozen_one.project.workspace_id) } else { format!("The plan for {} is ready.", frozen_one.project.workspace_id) };
-                assistant.post("assistant", "update", note, Some(task_id.clone()), Some(event_id.to_owned()), at);
-                assistant.announcement_receipts.insert(frozen_one.announcement_id.clone(), crate::personal::AnnouncementReceipt { task_id: task_id.clone(), message_id: msg_id.clone() });
-            }
-            // Helpers
-            if !prepared_clone.helpers.is_empty() {
-                let count = prepared_clone.helpers.len();
-                for assignment in prepared_clone.helpers.iter() {
-                    let task_id = assistant.next_task_id();
-                    assistant.tasks.push(PersonalTask {
-                        deleted_at: None,
-                        id: task_id, goal: format!("Helper: {}", assignment.chars().take(120).collect::<String>()),
-                        completion_criteria: vec!["a written report".into()], target_host: assistant.host_id.clone(),
-                        status: TaskStatus::Queued, operation: None, decision: None, receipts: vec![],
-                        from_event: event_id.to_owned(), max_attempts: 2, created_at: at, updated_at: at,
-                        last_update: Some("Waiting to start.".into()), class: ToolClass::Read, kind: TaskKind::Helper,
-                        wait: None, runs_done: 0, parent: Some(event_id.to_owned()), schedule_id: None, assignment: Some(assignment.clone()),
-                    });
-                }
-                let them = if count == 1 { "a helper" } else { "helpers" };
-                assistant.post("system", "update", format!("Sent {them} to look into this ({count}). Their reports will come back here, and I'll pull them together."), None, Some(event_id.to_owned()), at);
-            }
-            // Memory from saved - only if not already applied (idempotent check via fact text? For simplicity we apply via raw values)
-            // We need to reconstruct ProposedFact from stored JSON; we stored them as Values but original struct is private. We'll attempt to apply via direct fact insertion if needed.
-            // For this minimal recovery, we skip detailed memory reconstruction if facts already contain them; instead we attempt to deserialize to our local ProposedFact.
-            let proposed_facts: Vec<ProposedFact> = remember_vals.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect();
-            if !proposed_facts.is_empty() || !forget_vals.is_empty() {
-                let asked_to_forget = ["forget", "delete", "remove", "erase"].iter().any(|w| asked_owned.to_lowercase().contains(w));
-                let remember_slice: &[ProposedFact] = if outside_flag { &[] } else { &proposed_facts };
-                let forget_slice: &[String] = if asked_to_forget { &forget_vals } else { &[] };
-                apply_memory(assistant, remember_slice, forget_slice, event_id, at);
-            }
-            if let Some(proposed) = saved_task {
-                // Re-derive room/management requests from current assistant state
-                let initial = assistant.clone();
-                let bulk_error: Option<String> = None;
-                let room: Option<Result<rooms::Target, String>> = None; // Simplified: we don't have original room target; skip management checks for recovery minimal
-                let standing_full = crate::personal::permissions::full_access(&initial);
-                propose_task(assistant, &tools_clone, &local, event_id, &asked_owned, proposed, None, None, None, outside_flag, at);
-            }
-            if let Some(proposed) = saved_schedule {
-                propose_schedule(assistant, event_id, proposed, at);
-            }
-            Ok(true)
-        })?;
+            Ok(())
+        })
+    }
 
-        // Release gates
-        for (_, task_id, standing) in &admitted {
-            let should = self.change_personal(|assistants| {
-                let assistant = assistants.iter().find(|a| a.id == assistant_id).ok_or("missing".to_string())?;
-                if let Some(ev) = assistant.events.iter().find(|e| e.id == event_id) {
-                    if ev.state != crate::personal::EventState::Done { return Ok(false) }
-                } else { return Ok(false) }
-                Ok(true)
-            })?;
-            if should {
-                let _ = self.assistant_tasks.release_announcement_gate(task_id, now());
-                if *standing { let _ = self.redispatch_recovered_queued(); }
-            }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_resolved_personal_handoff(self:&Arc<Self>,assistant_id:&str,event_id:&str,brief:String,project:crate::personal_workspace::ProjectRef,destination:crate::assistant_tasks::TaskDestination,mode:crate::assistant_tasks::TaskMode,reply_text:String)->Result<String,String> {
+        let a=self.personal_get(assistant_id)?;
+        let reference=crate::personal_workspace::AssistantRef {host_id:a.host_id.clone(),assistant_id:assistant_id.into()};
+        let delegation_id=format!("{event_id}:0");let request_id=crate::assistant_delegation::delegation_request_id(&reference,&delegation_id);
+        if let Some((saved,task))=self.assistant_tasks.handoff_for_request(&request_id).map_err(|e|e.to_string())? {
+            if saved.brief!=brief || saved.destination!=destination || saved.mode!=mode || saved.lineage.as_ref().is_none_or(|lineage|lineage.project!=project || lineage.source_event_id!=event_id || lineage.assistant!=reference) {return Err("This handoff already has a different destination or brief.".into());}
+            return Ok(task.id);
         }
-        // If event had zero children, ensure cost etc is still recorded (already done above)
-        Ok(())
+        let event=a.events.iter().find(|e|e.id==event_id).ok_or("Original request unavailable.")?;
+        let EventSource::Human {text,..}=&event.source else {return Err("A handoff requires its original human request.".into())};
+        if !a.messages.iter().any(|m|m.role=="human" && m.event_id.as_deref()==Some(event_id) && m.legacy.is_none() && m.text==*text) || reply_stopped(&a,event_id) {return Err("Original human request is no longer authorized.".into());}
+        let asked=text.clone();
+        if let Some(saved)=event.saved_reply.as_ref().filter(|saved|!saved.delegations.is_empty()) {
+            let frozen=saved.delegations.first().unwrap();
+            if frozen.project!=project || frozen.brief!=brief || frozen.destination!=destination || frozen.mode!=mode {return Err("This handoff already has a different saved preparation.".into());}
+            self.recover_saved_reply(&WorkerTools::real(),assistant_id,event_id,&asked,saved.clone(),context::Seen {screen:false,report:false})?;
+            return self.assistant_tasks.handoff_for_request(&request_id).map_err(|e|e.to_string())?.map(|(_,task)|task.id).ok_or("The saved handoff could not be admitted.".into());
+        }
+        let (owner,revision,standing_allowed)=self.capture_personal_handoff(&a,event_id,&project,false)?;
+        let prepared=crate::personal::PreparedPersonalReply {reply:reply_text,cost:CostEntry {at:now(),purpose:"handoff".into(),kind:"text".into(),source:crate::personal::CostSource::Reported,micros:Some(0),input_tokens:None,output_tokens:None,bytes_out:0,endpoint:String::new()},remember:vec![],forget:vec![],helpers:vec![],proposed_task:None,proposed_schedule:None,screen:false,outside:false,delegated_request_ids:vec![request_id.clone()],delegations:vec![crate::personal::FrozenDelegation {delegation_id,request_id:request_id.clone(),brief,destination,mode,review_criteria:vec![],project,announcement_id:format!("ann-{event_id}:0"),owner,revision,standing_allowed}]};
+        self.change_assistant(assistant_id,|a| {
+            if reply_stopped(a,event_id) {return Err("Reply stopped by you.".into());}
+            let e=a.events.iter_mut().find(|e|e.id==event_id).ok_or("Original request unavailable.")?;
+            if let Some(saved)=e.saved_reply.as_ref().filter(|s|!s.delegations.is_empty()) {if saved!=&prepared {return Err("This handoff already has a saved preparation.".into());}}
+            else {if e.state!=EventState::Done {return Err("The original reply has not settled yet.".into());}e.saved_reply=Some(prepared.clone());e.state=EventState::Processing;}
+            Ok(())
+        })?;
+        let saved=self.personal_get(assistant_id)?.events.into_iter().find(|e|e.id==event_id).and_then(|e|e.saved_reply).ok_or("Saved handoff unavailable.")?;
+        self.recover_saved_reply(&WorkerTools::real(),assistant_id,event_id,&asked,saved,context::Seen {screen:false,report:false})?;
+        self.assistant_tasks.handoff_for_request(&request_id).map_err(|e|e.to_string())?.map(|(_,task)|task.id).ok_or("The handoff could not be admitted; its failure is saved in the conversation.".into())
     }
 
     /// The gateway: everything is re-checked in one locked read right before
@@ -2508,6 +2332,7 @@ pub(crate) mod browser;
 pub(crate) mod computer;
 pub(crate) mod connectors;
 mod context;
+pub(crate) mod delegation_reports;
 pub(crate) mod gateway;
 pub(crate) mod machine;
 pub(crate) mod notify;

@@ -513,6 +513,9 @@ pub struct FrozenDelegation {
     pub announcement_id: String,
     pub owner: crate::assistant_tasks::TaskOwner,
     pub revision: u64,
+    /// Recovery may tighten this saved admission ceiling, never raise it.
+    #[serde(default)]
+    pub standing_allowed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -909,7 +912,12 @@ impl PersonalAssistant {
 
     /// Settled events beyond the limit are dropped oldest first. Pending ones never are.
     fn prune_events(&mut self) {
-        let referenced: std::collections::BTreeSet<_> = self.tasks.iter().map(|task|task.from_event.clone()).collect();
+        let mut referenced: std::collections::BTreeSet<_> = self.tasks.iter().map(|task|task.from_event.clone()).collect();
+        // The task ledger can still contain an unreleased gate after source
+        // publication. Keep its source/control proof until explicit purge.
+        referenced.extend(self.events.iter().filter(|event|event.saved_reply.as_ref().is_some_and(|saved|!saved.delegations.is_empty())).map(|event|event.id.clone()));
+        let stops:Vec<_>=self.events.iter().filter_map(|event|match &event.source {EventSource::Internal {what}=>what.strip_prefix("reply-stop:").filter(|source|referenced.contains(*source)).map(|_|event.id.clone()),_=>None}).collect();
+        referenced.extend(stops);
         let settled = self.events.iter().filter(|e| !referenced.contains(&e.id) && matches!(e.state, EventState::Done | EventState::Failed)).count();
         let mut extra = settled.saturating_sub(MAX_SETTLED_EVENTS);
         self.events.retain(|e| {
@@ -929,8 +937,11 @@ impl PersonalAssistant {
         let mut interrupted = Vec::new();
         for event in &mut self.events {
             if event.state == EventState::Processing {
-                event.state = if event.computer_started { EventState::Failed } else { EventState::Received };
-                if event.computer_started {
+                // A finished private reply is recovery truth even when its
+                // computer turn performed side effects. Publish it, never rerun.
+                let uncertain=event.computer_started && event.saved_reply.is_none();
+                event.state = if uncertain { EventState::Failed } else { EventState::Received };
+                if uncertain {
                     event.error = Some(crate::personal_worker::COMPUTER_INTERRUPTED.into());
                     interrupted.push(event.id.clone());
                 }
@@ -1465,7 +1476,7 @@ pub(crate) mod tests {
         let task = host.assistant_tasks.prepare_handoff(HandoffPreparation {
             request_id: "large-deleted-diff".into(), batch_id: "batch".into(), owner: owner.clone(), revision: 1,
             original_request: "Inspect changes".into(), brief: "Inspect changes".into(),
-            destination: TaskDestination { thread_id: Some("parent".into()), workers: vec!["worker".into()], new_thread: false },
+            destination: TaskDestination { thread_id: Some("parent".into()), workers: vec!["worker".into()], new_thread: false, new_thread_title: None },
             mode: TaskMode::ReadOnly, review_criteria: vec![], lineage: Some(lineage.clone()), context: None,
         }).unwrap();
         let task = host.assistant_tasks.transition(&task.id, task.revision, &owner, TaskStatus::Cancelled, None).unwrap();
@@ -1569,6 +1580,8 @@ pub(crate) mod tests {
         let view = PersonalAssistantView::from(&assistant);
         let view_json = serde_json::to_value(&view).unwrap();
         assert!(view_json["events"][0].get("savedReply").is_none() && view_json["events"][0].get("saved_reply").is_none(), "personal list/get/mutation responses must omit prepared payload");
+        let changed_json=serde_json::to_value(crate::personal_settings::Changed {assistant:assistant.clone()}).unwrap();
+        assert!(changed_json["assistant"]["events"][0].get("savedReply").is_none(),"mutation responses must use the private outbound view too");
         // Also ensure serialized view string does not contain reply text as private envelope marker? The text itself is okay as public sentence but saved_reply container must not appear.
         let view_str = serde_json::to_string(&view_json).unwrap();
         assert!(!view_str.contains("savedReply"), "outbound view must not contain savedReply field");

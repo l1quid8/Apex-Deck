@@ -66,6 +66,31 @@ fn bounded_identifier(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+/// Conservative shared boundary for model-proposed work and routing drafts.
+/// A question phrased as an action request ("Can you fix ...?") can authorize
+/// work; requests for explanation/status and quoted instructions cannot.
+pub(crate) fn human_requests_work(text: &str) -> bool {
+    let normalized = text.trim().to_lowercase();
+    if !crate::assistant_conversation::direct_imperative(text)
+        && !["research ","perform ","inspect ","delegate "].iter().any(|prefix|normalized.starts_with(prefix)) { return false; }
+    let mut action = normalized.as_str();
+    loop {
+        let next = ["please ", "can you ", "i need you to ", "help me ", "help "]
+            .into_iter().find_map(|prefix| action.strip_prefix(prefix));
+        match next { Some(next) => action = next.trim_start(), None => break }
+    }
+    if action.is_empty() || action.starts_with(['"', '\'', '`', '“', '‘', '>']) { return false; }
+    if ["tell me ", "explain ", "summarize ", "describe ", "what ", "why ", "how ",
+        "is ", "are ", "did ", "does ", "do you ", "have you ", "if ", "suppose ",
+        "imagine ", "don't ", "do not ", "never ", "wait ", "stop", "cancel", "update me "]
+        .iter().any(|prefix| action.starts_with(prefix)) { return false; }
+    ["clean up ", "check ", "do ", "handle ", "take ", "work ", "fix ", "review ",
+        "build ", "implement ", "run ", "investigate ", "make ", "ask ", "assign ", "send ",
+        "inspect ", "research ", "perform ", "create ", "finish ", "repair ", "edit ", "change ", "update ",
+        "add ", "remove ", "delete ", "write ", "design ", "test ", "delegate "]
+        .iter().any(|prefix|action.starts_with(prefix))
+}
+
 fn standing_policy_hash(assistant: &PersonalAssistant) -> String {
     format!("{:x}",Sha256::digest(serde_json::to_vec(&(
         assistant.workspace_config_version,&assistant.profile,&assistant.projects,
@@ -128,6 +153,31 @@ fn check_standing_delegation(host: &crate::host::Host, assistant: &PersonalAssis
     Ok(())
 }
 
+fn check_handoff_source(assistant:&PersonalAssistant, task:&crate::assistant_tasks::AssistantTask) -> Result<(),String> {
+    let Some(lineage)=&task.lineage else {return Ok(())};
+    let stopped=format!("reply-stop:{}",lineage.source_event_id);
+    if assistant.events.iter().any(|event|matches!(&event.source,EventSource::Internal {what} if what==&stopped)) {
+        return Err("The originating assistant reply was stopped.".into());
+    }
+    let source=assistant.events.iter().find(|event|event.id==lineage.source_event_id);
+    if source.is_some_and(|event|event.state==crate::personal::EventState::Failed) {
+        return Err("The originating assistant reply stopped or failed.".into());
+    }
+    if let Some(gate)=&task.announcement_gate {
+        let source=source.ok_or("The saved handoff source is unavailable.")?;
+        let receipt=assistant.announcement_receipts.get(&gate.announcement_id).ok_or("The handoff announcement is not published.")?;
+        if source.state!=crate::personal::EventState::Done
+            || gate.assistant_id!=assistant.id || gate.source_event_id!=source.id
+            || gate.released_at_ms.is_none() || receipt.task_id!=task.id
+            || gate.message_id.as_deref()!=Some(receipt.message_id.as_str())
+            || !matches!(&source.source,EventSource::Human {text,..} if text==&task.original_request)
+            || !source.saved_reply.as_ref().is_some_and(|reply|reply.delegations.iter().any(|saved| saved.announcement_id==gate.announcement_id && saved.delegation_id==lineage.delegation_id)) {
+            return Err("The task no longer matches its published handoff source.".into());
+        }
+    }
+    Ok(())
+}
+
 /// Validate a delegation and turn it into a handoff preparation.
 ///
 /// `event` is the assistant's own record of the user plan this work came from.
@@ -141,6 +191,10 @@ pub fn plan_delegation(
     owner: TaskOwner,
     monitor_revision: u64,
 ) -> Result<DelegationPlan, String> {
+    plan_delegation_internal(assistant,input,event,owner,monitor_revision,false)
+}
+
+fn plan_delegation_internal(assistant:&PersonalAssistant,input:&DelegationInput,event:&PersonalEvent,owner:TaskOwner,monitor_revision:u64,explicit_ui:bool) -> Result<DelegationPlan,String> {
     if assistant.archived_at.is_some(){return Err("This assistant is archived. Restore it before proposing work.".into());}
     if !bounded_identifier(&input.delegation_id) {
         return Err("A delegation needs an ID of up to 200 characters.".into());
@@ -189,6 +243,7 @@ pub fn plan_delegation(
     let EventSource::Human { text, .. } = &event.source else {
         return Err("Only a human conversation event may propose work.".into());
     };
+    if !explicit_ui && !human_requests_work(text) { return Err("Only an explicit human action request may delegate new work.".into()); }
     if !assistant.messages.iter().any(|m| m.role == "human" && m.event_id.as_deref() == Some(event.id.as_str()) && m.legacy.is_none() && m.text == *text) {
         return Err("Only a verified human conversation message may propose new project work.".into());
     }
@@ -224,6 +279,43 @@ pub fn plan_delegation(
 }
 
 impl crate::host::Host {
+    pub(crate) fn saved_handoff_profiles(&self) -> Result<Vec<apex_core::ParticipantConfig>, String> {
+        Ok(self.session()?.and_then(|session| session.profiles).unwrap_or_default().into_iter()
+            .filter_map(|value| serde_json::from_value::<apex_core::ParticipantConfig>(value).ok())
+            .filter(crate::assistant_service::task_worker_eligible).collect())
+    }
+
+    /// Resolve only host-saved workers, in the user's selected order. Profile
+    /// library order must never silently choose another lead.
+    pub(crate) fn selected_handoff_profiles(&self, destination: &TaskDestination, owner: &TaskOwner) -> Result<Vec<apex_core::ParticipantConfig>, String> {
+        if destination.workers.is_empty() || destination.workers.len() > 10
+            || destination.workers.iter().any(|id| !bounded_identifier(id))
+            || destination.workers.iter().collect::<std::collections::HashSet<_>>().len() != destination.workers.len() {
+            return Err("Choose between 1 and 10 distinct saved workers.".into());
+        }
+        let available = if destination.new_thread {
+            if destination.thread_id.is_some() { return Err("A new thread cannot also select an existing chat.".into()); }
+            if destination.new_thread_title.as_ref().is_some_and(|title| title.trim().is_empty() || title.len() > 200 || title.chars().any(char::is_control)) {
+                return Err("Give the new thread a title of up to 200 characters.".into());
+            }
+            self.saved_handoff_profiles()?
+        } else {
+            if destination.new_thread_title.is_some() { return Err("A saved destination cannot have a new-thread title.".into()); }
+            let id = destination.thread_id.as_deref().filter(|id| bounded_identifier(id)).ok_or("Choose a saved project chat.")?;
+            let room = self.store().room(id)?.ok_or("The destination chat is unavailable.")?;
+            if !room.cwd.as_deref().is_some_and(|cwd| same_project_path(cwd, &owner.cwd)) {
+                return Err("Handoff destination is outside the assigned project.".into());
+            }
+            room.snapshot.participants
+        };
+        destination.workers.iter().map(|id| {
+            let mut matches = available.iter().filter(|profile| profile.id.to_string() == *id);
+            let selected = matches.next().cloned().ok_or_else(|| format!("Saved worker `{id}` is unavailable."))?;
+            if matches.next().is_some() { return Err(format!("Saved worker `{id}` is ambiguous.")); }
+            Ok(selected)
+        }).collect()
+    }
+
     /// Admission includes outstanding delegated reservations and settled worker
     /// usage without copying it into the assistant's own provider-cost ledger.
     pub(crate) fn effective_personal_spent_today(&self, assistant: &PersonalAssistant, at: u64) -> u64 {
@@ -260,14 +352,15 @@ impl crate::host::Host {
         })
     }
     pub(crate) fn delegated_worker_profiles(&self, task: &crate::assistant_tasks::AssistantTask) -> Result<Vec<apex_core::ParticipantConfig>, String> {
+        if task.attempts.is_empty() && task.destination.as_ref().is_some_and(|destination| destination.new_thread) {
+            return self.selected_handoff_profiles(task.destination.as_ref().unwrap(), &task.owner);
+        }
         let id = task.execution_thread_id.as_deref().or_else(|| task.destination.as_ref().and_then(|d|d.thread_id.as_deref())).ok_or("Delegated worker destination is unavailable.")?;
         let profiles = match self.handle(id) {
             Ok(handle) => handle.checkpoint.lock().unwrap().snapshot.participants.clone(),
             Err(_) => self.store().room(id)?.ok_or("Delegated worker destination is unavailable.")?.snapshot.participants,
         };
-        let selected: Vec<_> = profiles.into_iter().filter(|p|task.workers.contains(&p.id.to_string())).collect();
-        if selected.len() != task.workers.len() { return Err("A delegated worker is no longer available.".into()); }
-        Ok(selected)
+        task.workers.iter().map(|id| profiles.iter().find(|profile|profile.id.to_string()==*id).cloned().ok_or_else(||"A delegated worker is no longer available.".to_owned())).collect()
     }
 
     pub(crate) fn validate_delegated_worker_profiles(&self, lineage: &AssistantLineage, profiles: &[apex_core::ParticipantConfig]) -> Result<(), String> {
@@ -277,6 +370,14 @@ impl crate::host::Host {
             if let Some(reason) = crate::personal_worker::endpoint_refusal(assistant, profile) { return Err(reason); }
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_delegated_source(&self, task:&crate::assistant_tasks::AssistantTask) -> Result<(),String> {
+        let Some(lineage)=&task.lineage else {return Ok(())};
+        self.change_personal(|assistants| {
+            let assistant=assistants.iter().find(|assistant|assistant.id==lineage.assistant.assistant_id && assistant.host_id==lineage.assistant.host_id).ok_or("The owning assistant is unavailable.")?;
+            check_handoff_source(assistant,task)
+        })
     }
 
     pub(crate) fn validate_delegated_task(&self, lineage: &AssistantLineage, require_running: bool) -> Result<(), String> {
@@ -300,6 +401,7 @@ impl crate::host::Host {
                 let assistant = assistants.iter().find(|a| a.id == lineage.assistant.assistant_id && a.host_id == lineage.assistant.host_id).ok_or("The owning assistant is unavailable.")?;
                 if assistant.archived_at.is_some(){return Err("The owning assistant is archived.".into());}
                 if assistant.paused { return Err("The owning assistant is paused.".into()); }
+                check_handoff_source(assistant,task)?;
                 if assistant.workspace_config_version.is_some() && assistant.profile.as_ref().is_some_and(|p| p.access == apex_core::Access::Read) && task.mode != TaskMode::ReadOnly { return Err("This assistant now has read-only Project tools access.".into()); }
                 if !assistant.projects.iter().any(|b|b.project == lineage.project && b.tools != ProjectTools::Off) { return Err("Project tools are disabled for this assistant.".into()); }
                 for profile in &profiles {
@@ -325,10 +427,14 @@ impl crate::host::Host {
                 for attempt in task.attempts.iter().filter(|a| a.finished_at_ms.is_some()) {
                     let receipt = serde_json::to_string(&(&lineage.project, &task.id, &attempt.run_id)).map_err(|e| e.to_string())?;
                     if !assistant.delegated_result_receipts.insert(receipt.clone()) { continue; }
-                    let label = if attempt.status == crate::assistant_tasks::TaskStatus::Interrupted && attempt.result.as_deref() == Some(crate::assistant_watchdog::RESTARTED_RESULT) { crate::assistant_watchdog::RESTARTED_LABEL } else { match attempt.status { crate::assistant_tasks::TaskStatus::Done => "Result available", crate::assistant_tasks::TaskStatus::ReadyForReview => "Result ready for your review", crate::assistant_tasks::TaskStatus::Cancelled => "Task cancelled", _ => "Task needs your attention" } };
-                    let brief: String = task.brief.chars().take(140).collect();
-                    let text = if attempt.result.as_deref() == Some(crate::assistant_git::SAVE_TOO_LONG) { crate::assistant_watchdog::save_too_long_text(&brief) } else { format!("{label}: {brief}") };
-                    assistant.post("assistant", "result", text, Some(task.id.clone()), Some(lineage.source_event_id.clone()), crate::personal::now());
+                    if attempt.status==crate::assistant_tasks::TaskStatus::ReadyForReview {
+                        crate::personal_worker::delegation_reports::queue(assistant, &task, attempt, crate::personal::now());
+                    } else {
+                        // Interventions and failures are timely factual updates;
+                        // final findings alone use optional model synthesis.
+                        let text=crate::personal_worker::delegation_reports::factual(&task,attempt);
+                        crate::personal_worker::delegation_reports::post(assistant,text,task.id.clone(),lineage.source_event_id.clone(),crate::personal::now());
+                    }
                     assistant.revision += 1;
                 }
             }
@@ -380,13 +486,13 @@ impl crate::host::Host {
             draft.post("human", "chat", input.brief.clone(), None, Some(event_id.clone()), event.received_at);
             draft.events.push(event.clone());
             let mut checked = input.clone(); checked.source_event_id=event_id.clone();
-            plan_delegation(&draft, &checked, &event, owner.clone(), monitor.revision)?;
+            plan_delegation_internal(&draft, &checked, &event, owner.clone(), monitor.revision, true)?;
             *current = draft;
             Ok(event_id)
         })?;
         input.source_event_id=event_id;
         input.expected_revision=self.personal_get(&input.assistant_id)?.revision;
-        let receipt=self.prepare_personal_delegation_internal(input,None,force_proposal)?;
+        let receipt=self.prepare_personal_delegation_scoped(input,None,force_proposal,None,true)?;
         if !force_proposal && receipt["standingTrust"]==true {self.redispatch_recovered_queued()?;}
         Ok(receipt)
     }
@@ -402,17 +508,27 @@ impl crate::host::Host {
     }
 
     pub(crate) fn prepare_personal_delegation(&self, input: DelegationInput) -> Result<Value, String> {
-        self.prepare_personal_delegation_internal(input,None,false)
+        self.prepare_personal_delegation_internal(input,None,false,None)
     }
 
     /// A model reply's actual cost is recorded once with the completed reply.
     /// Reserve after that pending debit without inserting a duplicate cost or
     /// changing the user's saved daily limit before the reply is committed.
     pub(crate) fn prepare_personal_delegation_with_reply_cost(&self, input: DelegationInput, pending_actual_micros: u64) -> Result<Value, String> {
-        self.prepare_personal_delegation_internal(input,Some(pending_actual_micros),false)
+        self.prepare_personal_delegation_internal(input,Some(pending_actual_micros),false,None)
     }
 
-    fn prepare_personal_delegation_internal(&self, input: DelegationInput, returned_reply_cost: Option<u64>, force_proposal: bool) -> Result<Value, String> {
+    /// Recovery must use the private source record's captured coordinator
+    /// identity, including a crash before the first project child was saved.
+    pub(crate) fn prepare_personal_delegation_with_preparation(&self, input: DelegationInput, pending_cost: Option<u64>, owner: TaskOwner, revision: u64) -> Result<Value, String> {
+        self.prepare_personal_delegation_internal(input,pending_cost,false,Some((owner,revision)))
+    }
+
+    fn prepare_personal_delegation_internal(&self, input: DelegationInput, returned_reply_cost: Option<u64>, force_proposal: bool, preparation: Option<(TaskOwner,u64)>) -> Result<Value, String> {
+        self.prepare_personal_delegation_scoped(input,returned_reply_cost,force_proposal,preparation,false)
+    }
+
+    fn prepare_personal_delegation_scoped(&self, input: DelegationInput, returned_reply_cost: Option<u64>, force_proposal: bool, preparation: Option<(TaskOwner,u64)>, explicit_ui: bool) -> Result<Value, String> {
         let assistants = self.store().personal()?.unwrap_or_default().assistants;
         let assistant = assistants
             .iter()
@@ -427,20 +543,57 @@ impl crate::host::Host {
             if saved.lineage.as_ref() != Some(&lineage) || saved.brief != input.brief || saved.destination != input.destination || saved.mode != input.mode || saved.review_criteria != input.review_criteria {
                 return Err("Delegation ID already belongs to a different proposal.".into());
             }
+            if preparation.as_ref().is_some_and(|(owner,revision)| owner != &saved.owner || *revision != saved.revision) {
+                return Err("Delegation retry cannot replace its captured preparation owner or revision.".into());
+            }
             if force_proposal && task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true) {
                 return Err("This delegation ID already belongs to executable standing-authority work. Use a new proposal ID.".into());
             }
             return Ok(json!({"taskId":task.id,"project":lineage.project,"lineage":lineage,"status":task.status,"receiptId":saved.request_id,"standingTrust":task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true)}));
         }
         let event = assistant.events.iter().find(|e| e.id == input.source_event_id).ok_or("That source event is not owned by this assistant.")?;
-        let monitor = self.project_coordinator(&input.project)?;
-        let owner = TaskOwner { workspace_id:monitor.workspace_id.clone(), cwd:monitor.cwd.clone(), host_id:monitor.host_id.clone(), conversation_id:monitor.conversation_id.clone() };
-        let mut plan = plan_delegation(assistant, &input, event, owner, monitor.revision)?;
-        let destination = input.destination.thread_id.as_deref().ok_or("Choose a saved project chat.")?;
-        let room = self.store().room(destination)?.ok_or("The destination chat is unavailable.")?;
-        let profiles:Vec<_>=room.snapshot.participants.iter().filter(|profile|input.destination.workers.contains(&profile.id.to_string())).cloned().collect();
+        let frozen = event.saved_reply.as_ref().and_then(|reply| reply.delegations.iter().find(|saved| saved.delegation_id == input.delegation_id));
+        if let Some(saved) = frozen {
+            if saved.request_id != delegation_request_id(&reference, &input.delegation_id)
+                || saved.project != input.project || saved.brief != input.brief || saved.destination != input.destination
+                || saved.mode != input.mode || saved.review_criteria != input.review_criteria
+                || preparation.as_ref().is_some_and(|(owner,revision)| owner != &saved.owner || *revision != saved.revision) {
+                return Err("Delegation no longer matches its saved preparation.".into());
+            }
+        } else if preparation.is_some() {
+            return Err("The frozen delegation preparation is unavailable.".into());
+        }
+        let force_proposal = force_proposal || frozen.is_some_and(|saved| !saved.standing_allowed);
+        // Validate the original human authorization before connecting anything.
+        // A frozen new coordinator reserves its identity in the private source
+        // record; no project metadata exists before that durable save.
+        let preflight_owner = frozen.map(|saved|saved.owner.clone()).unwrap_or(TaskOwner {
+            workspace_id:input.project.workspace_id.clone(),cwd:input.project.cwd.clone(),host_id:input.project.host_id.clone(),conversation_id:"pending".into(),
+        });
+        plan_delegation_internal(assistant,&input,event,preflight_owner,frozen.map(|saved|saved.revision).unwrap_or(1),explicit_ui)?;
+        let monitor = if let Some(existing)=self.monitor_get(&input.project.workspace_id)? { existing }
+        else if let Some(saved)=frozen {
+            if saved.owner.conversation_id!=format!("apex-agent-{}-{}",input.project.workspace_id,input.source_event_id) || saved.revision!=1 {
+                return Err("The saved project coordinator is unavailable. Reconfirm the handoff.".into());
+            }
+            self.change_monitors(|monitors| {
+                if let Some(existing)=monitors.iter().find(|monitor|monitor.workspace_id==input.project.workspace_id) {return Ok(existing.clone());}
+                let monitor=crate::monitor::ProjectMonitor::connected(saved.owner.workspace_id.clone(),saved.owner.conversation_id.clone(),saved.owner.cwd.clone(),saved.owner.host_id.clone(),crate::personal::now());
+                monitors.push(monitor.clone());
+                Ok(monitor)
+            })?
+        } else { self.project_coordinator(&input.project)? };
+        let live_owner = TaskOwner { workspace_id:monitor.workspace_id.clone(), cwd:monitor.cwd.clone(), host_id:monitor.host_id.clone(), conversation_id:monitor.conversation_id.clone() };
+        let (owner,revision) = frozen.map(|saved|(saved.owner.clone(),saved.revision)).unwrap_or((live_owner.clone(),monitor.revision));
+        if owner != live_owner { return Err("The saved project coordinator was replaced. Reconfirm the handoff.".into()); }
+        let mut plan = plan_delegation_internal(assistant, &input, event, owner, revision, explicit_ui)?;
+        let gate = frozen.map(|saved| crate::assistant_tasks::AnnouncementGate {
+            announcement_id:saved.announcement_id.clone(), assistant_id:assistant.id.clone(),
+            source_event_id:event.id.clone(), message_id:None, released_at_ms:None,
+        });
+        let profiles = self.selected_handoff_profiles(&input.destination, &plan.owner)?;
         let mut contexts = Vec::new();
-        for profile in room.snapshot.participants.iter().filter(|p| input.destination.workers.contains(&p.id.to_string())).take(1) {
+        for profile in profiles.iter().take(1) {
             let mut context = self.assemble_delegation_context(&reference, &input.project, &input.brief, profile)?;
             // A shared worker prompt contains only project evidence, not private assistant facts.
             context.notes.retain(|note| note.scope != "assistant");
@@ -451,7 +604,7 @@ impl crate::host::Host {
             let current = assistants.iter().find(|a| a.id == input.assistant_id && a.host_id == reference.host_id).ok_or("Assistant is unavailable.")?;
             let source = current.events.iter().find(|e| e.id == input.source_event_id).ok_or("Source event is no longer available.")?;
             // Hold the personal pause/configuration lock through proposal save.
-            plan_delegation(current, &input, source, plan.owner.clone(), plan.preparation.revision)?;
+            plan_delegation_internal(current, &input, source, plan.owner.clone(), plan.preparation.revision, explicit_ui)?;
             // A concurrent normal delegation may have saved this receipt while context loaded.
             // Recheck while holding the shared admission lock before proposal-only preparation.
             if force_proposal && self.assistant_tasks.handoff_for_request(&plan.preparation.request_id).map_err(|e|e.to_string())?.is_some_and(|(_, task)|task.result_data.as_ref().is_some_and(|data|data["standingTrust"]==true)) {
@@ -462,7 +615,7 @@ impl crate::host::Host {
             if let Some(authority)=authority.as_mut() {
                 authority.remaining_budget_micros=authority.remaining_budget_micros.map(|remaining|remaining.saturating_sub(returned_reply_cost.unwrap_or(0)));
             }
-            self.prepare_project_handoff_authorized(plan.preparation.clone(),authority)
+            self.prepare_project_handoff_authorized_gated(plan.preparation.clone(),authority,gate.clone())
         })?;
         let task: crate::assistant_tasks::AssistantTask = serde_json::from_value(response["task"].clone()).map_err(|e|e.to_string())?;
         // A retry with the same delegation ID returns the original proposal, so
@@ -492,7 +645,7 @@ mod tests {
         })).unwrap();
         assistant.events.push(serde_json::from_value(json!({"id":"e","requestId":"human-request","source":{"kind":"human","text":"Please fix login"},"receivedAt":1,"state":"done"})).unwrap());
         assistant.post("human", "chat", "Please fix login".into(), None, Some("e".into()), 1);
-        let input = DelegationInput { assistant_id:"a".into(), project:ProjectRef {host_id:"h".into(),workspace_id:"w".into(),cwd:"/repo".into()},source_event_id:"e".into(), delegation_id:"d".into(),brief:"Fix login".into(),destination:TaskDestination {thread_id:Some("chat".into()),workers:vec!["coder".into()],new_thread:false},mode:TaskMode::Isolated,review_criteria:vec![],expected_revision:4 };
+        let input = DelegationInput { assistant_id:"a".into(), project:ProjectRef {host_id:"h".into(),workspace_id:"w".into(),cwd:"/repo".into()},source_event_id:"e".into(), delegation_id:"d".into(),brief:"Fix login".into(),destination:TaskDestination {thread_id:Some("chat".into()),workers:vec!["coder".into()],new_thread: false, new_thread_title: None},mode:TaskMode::Isolated,review_criteria:vec![],expected_revision:4 };
         let owner = TaskOwner {workspace_id:"w".into(),cwd:"/repo".into(),host_id:"h".into(),conversation_id:"monitor".into()};
         (assistant,input,owner)
     }
@@ -500,6 +653,15 @@ mod tests {
     fn archived_assistant_cannot_prepare_a_new_project_task() {
         let (mut assistant,input,owner)=fixture();assistant.archived_at=Some(10);
         assert!(plan_delegation(&assistant,&input,&assistant.events[0],owner,9).is_err());
+    }
+    #[test]
+    fn model_delegation_cannot_turn_a_status_question_into_work() {
+        for text in ["What is the worker doing?", "Please explain the previous result", "Can you tell me whether the build passed?", "Please give me a status update", "Please update me on progress", "Please show me the current status", "\"Please fix login\"", "If I asked you to fix login, what would happen?"] {
+            let (mut assistant,input,owner)=fixture();
+            assistant.events[0].source=EventSource::Human {text:text.into(),view_context:None};
+            assistant.messages[0].text=text.into();
+            assert!(plan_delegation(&assistant,&input,&assistant.events[0],owner,9).is_err(), "{text}");
+        }
     }
     #[test]
     fn a_human_event_without_verified_personal_message_cannot_delegate() {
