@@ -46,6 +46,8 @@ import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from 
 import { withAttachments } from "../attachments";
 import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
 import { appendToolToken } from "../composerMenu";
+import { threadHistoryTexts } from "../composerHistory";
+import { useComposerHistory } from "../useComposerHistory";
 import { chooseOutcome, pickerMatches, pickerRows, workInRows, type PickerRow } from "../destinations";
 import { buildNotice, dotState, helperNotice } from "../hostFacts";
 import type { HostConnection } from "../hostConnections";
@@ -3106,6 +3108,11 @@ function ThreadView(props: {
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerHistory = useComposerHistory(
+    JSON.stringify([props.link.id, props.paneId]), props.draft.text,
+    value => props.onDraft(typeof value === "function" ? value(props.draft.text) : value),
+    () => threadHistoryTexts(props.messages),
+  );
   // The keyboard is up while the box has focus; the bot bar folds away until it goes down.
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
@@ -3171,7 +3178,7 @@ function ThreadView(props: {
   };
   const tag = (id: string) => {
     const text = tagFromBar(props.draft.text, props.participants.find((p) => p.id === id), props.participants);
-    props.onDraft(text);
+    composerHistory.setText(text);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
   };
   const everyone = props.participants.length > 1 && props.toIds !== null && props.participants.every((p) => props.toIds!.includes(p.id));
@@ -3180,7 +3187,7 @@ function ThreadView(props: {
   const picking = caret !== null && !paused && props.participants.length > 0 ? mentionPicks(props.draft.text, caret, props.participants) : null;
   const choose = (handle: string) => {
     const next = pickMention(props.draft.text, caret ?? props.draft.text.length, picking?.trigger ?? null, handle);
-    props.onDraft(next.text);
+    composerHistory.setText(next.text);
     setCaret(next.caret);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(next.caret, next.caret); });
   };
@@ -3582,7 +3589,11 @@ function ThreadView(props: {
           <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
               placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
-              onChange={(event) => { props.onDraft(event.target.value); setCaret(event.target.selectionStart); }}
+              onChange={(event) => { composerHistory.setText(event.target.value); setCaret(event.target.selectionStart); }}
+              onKeyDown={(event) => {
+                if (picking && picking.picks.length > 0) return;
+                composerHistory.onKeyDown(event);
+              }}
               onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
               onFocus={(event) => { setCaret(event.currentTarget.selectionStart); setTyping(true); }}
               onBlur={() => { setCaret(null); setTyping(false); }} />
