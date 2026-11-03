@@ -215,6 +215,7 @@ export interface RoomSnapshot {
   compaction?: Compaction | null;
   /** Visibility changes leave every original transcript message intact. */
   curations?: Curation[];
+  plan_runs?: PlanRun[];
   /** What the person chose "Always allow" for. */
   allowed?: AllowedRule[];
   /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */

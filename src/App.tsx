@@ -22,7 +22,9 @@ import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from ".
 import type { ArtifactsHost } from "./ArtifactsPanel";
 import type { DetailsHost } from "./ThreadDetails";
 import { ThreadName } from "./ThreadName";
-import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
+import { ChatPane, type PlanFeed, type ThreadMenuRequest } from "./ChatPane";
+import { PlanTab } from "./PlanPanel";
+import { planStacks } from "./planRunModel";
 import { ModOverlays, ModStatuses, OPEN_SETTINGS_EVENT } from "./ModView";
 import { modHost } from "./mods/host";
 import { startHub } from "./hub";
@@ -440,6 +442,18 @@ export function App() {
   const menuSeq = useRef(0);
   const [railOpen, setRailOpen] = useState(true);
   const [panel, setPanel] = useState<RightPanelState>(loadPanel);
+  /** Plan runs by chat pane; the Plan tab shows the focused pane's. */
+  const [planFeeds, setPlanFeeds] = useState<Record<string, PlanFeed>>({});
+  const onPlanRuns = useCallback((id: string, feed: PlanFeed) => setPlanFeeds((all) => ({ ...all, [id]: feed })), []);
+  const openPlan = useCallback(() => setPanel((p) => openTab(p, "plan", Date.now())), []);
+  /** Runs that have already opened the tab, so closing it leaves just the chip. */
+  const openedPlans = useRef(new Set<string>());
+  useEffect(() => {
+    const fresh = (focusedPane ? planFeeds[focusedPane]?.runs ?? [] : []).filter((run) => run.state === "waiting" && !openedPlans.current.has(`${run.request}:${run.version}`));
+    if (!fresh.length) return;
+    fresh.forEach((run) => openedPlans.current.add(`${run.request}:${run.version}`));
+    openPlan();
+  }, [focusedPane, planFeeds, openPlan]);
   useEffect(() => savePanel(withPoppedTabs(panel, poppedTabs)), [panel, poppedTabs]);
   const detailsOpen = panel.open;
   const setDetailsOpen = (open: boolean) => setPanel((p) => open ? { ...p, open } : closePanel(p));
@@ -473,7 +487,10 @@ export function App() {
   const detailsWidth = sidebarWidths.details ?? SIDEBAR_DEFAULT.details;
   // Full screen fills the work area, so it never floats over the canvas as an overlay.
   // Assistant views reflow below the Threads pane minimum. Keep their controls visible beside a docked panel.
-  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth, mainView.kind === "assistant" ? 400 : 560);
+  const planInFront = panel.tabs.find((t) => t.id === panel.active)?.kind === "plan";
+  // The Plan tab never floats over the chat; only Expand may cover it.
+  const planStacked = detailsOpen && planInFront && !sidePanelFull && availableWidth > 0 && planStacks(availableWidth, detailsWidth);
+  const overlayDetails = !sidePanelFull && !planStacked && detailsOverlay(availableWidth, detailsWidth, mainView.kind === "assistant" ? 400 : 560);
   /** Runs `action` now, or after the user agrees to drop unsaved edits in the Files tab. */
   const guardUnsavedEdits = (action: () => void) => {
     const file = unsavedEditName();
@@ -2811,7 +2828,7 @@ export function App() {
       {newChatOpen && <NewChatDialog chats={chats} onClose={() => setNewChatOpen(false)} onStarted={(row) => { setNewChatOpen(false); setMainView({kind:"workspace"}); setCreatingAssistant(false); setOpenChat({ hostId: row.hostId, room: row.id }); }} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       {appearanceStudio.pending.length > 0 && settingsOpen !== "appearance" && <AppearanceDraftBar studio={appearanceStudio} settings={settings} systemDark={systemDark} onResume={resumeAppearance} />}
-      <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}`} ref={bodyRef}>
+      <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}${planStacked && !chatShown ? " plan-stacked" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
             backend={backend}
@@ -2979,7 +2996,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane onPlanRuns={onPlanRuns} onOpenPlan={openPlan} voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
@@ -3075,7 +3092,7 @@ export function App() {
 
         {detailsOpen && !chatShown && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close side panel overlay" onClick={closeDetails} />}
-          {!sidePanelFull && <SidebarHandle
+          {!sidePanelFull && !planStacked && <SidebarHandle
             which="details"
             width={sidebarWidths.details}
             measure={() => asideRef.current?.getBoundingClientRect().width ?? detailsWidth}
@@ -3084,7 +3101,7 @@ export function App() {
             className={overlayDetails ? "overlay" : ""}
             style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
           />}
-          <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}`} style={sidePanelFull ? undefined : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
+          <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}${planStacked ? " plan-stacked" : ""}`} style={sidePanelFull ? undefined : planStacked ? { width: `calc(${availableWidth}px - 2 * var(--deck-gap, 0px))` } : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
             <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} onPopout={(tabId) => popOutTab(tabId)} onPopoutDragOut={(tabId, x, y) => popOutTab(tabId, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 })} taskAttention={{ count: workspaceTaskRows.filter(row => row.group === 'waiting').length, details: workspaceTaskRows.filter(row => row.group === 'waiting').map(row => `${row.assistantName} · ${row.projectName}: ${row.title}`).join("\n") }} bodies={{
               dashboard: (_tab, visible) => <RightDashboard rows={dashboardRows} onOpen={openDashboard} visible={visible && detailsOpen} />,
               tasks: () => <WorkspaceTasks profiles={profiles} delegationTargets={workspaceDelegationTargets} onCreateWorkerThread={createTaskWorkerThread} rows={workspaceTaskRows} problems={workspaceTaskProblems} personalSources={workspacePersonalSources} backendForRow={row => { try { return hostBackend(row.routeHostId); } catch { return null; } }} renderDetail={row => {
@@ -3112,6 +3129,9 @@ export function App() {
                 return <SharedBrowser key={browserKey} call={(cmd, args) => browserRoute.call(cmd, args)} hostId={browserKey} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
                   thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} onStopAll={() => { void browserRoute.call("computer_stop").catch(() => {}); }} />;
               },
+              plan: () => { const feed = focusedPane ? planFeeds[focusedPane] : undefined; return feed?.runs.length
+                ? <PlanTab key={focusedPane} runs={feed.runs} onDecide={feed.decide} onStop={feed.stop} onClose={closeDetails} expanded={sidePanelFull} onExpand={() => setSidePanelFull(!sidePanelFull)} />
+                : <p className="muted right-panel-empty">No plan in this thread yet.</p>; },
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
               terminal: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);

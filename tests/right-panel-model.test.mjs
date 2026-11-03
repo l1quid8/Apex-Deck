@@ -189,3 +189,9 @@ test('terminal is a single-instance right sidebar tool that survives saves', () 
   const restored = parsePanel(JSON.stringify(openTab(openTab(defaultPanel(), 'files', 1), 'terminal', 2)));
   assert.ok(restored.tabs.some((t) => t.kind === 'terminal'), 'terminal survives parsing alongside other tools');
 });
+
+test('the Plan tab is a real tool that survives a reload', () => {
+  const s = openTab(defaultPanel(), 'plan', 7);
+  assert.equal(s.active, 'plan');
+  assert.equal(parsePanel(JSON.stringify(s)).active, 'plan');
+});
