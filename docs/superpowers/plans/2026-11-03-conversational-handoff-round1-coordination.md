@@ -59,10 +59,10 @@ Each owner returns: exact commit ids or scoped diff, owned files, public interfa
 
 ## Execution status
 
-- Coordination branch and file ownership established; TypeScript baseline passes.
-- Group-agent implementation dispatch accompanies this coordination document.
-- No Round 1 product implementation or integrated/native acceptance is claimed by this coordination commit.
-- Jigga's integration review is pending the actual implementation and verification package.
+- The initial coordination commit established the branch, ownership and passing TypeScript baseline. It did not claim feature implementation.
+- Round 1 implementation slices and integration corrections are recorded in the [integration review package](../reviews/2026-11-03-assistant-handoff-round1-integration.md), including exact commits, verification and retained acceptance limits.
+- Host admission/recovery, routing/control, new-thread/watchdog, progress and real client wiring are integrated. Round 2 handover, notes and composer modes remain excluded.
+- Jigga's implementation review and installed-app acceptance remain pending; neither plan approval nor isolated fixture success replaces them. No release merge or installer is authorized.
 
 Ruling: shared Rust edits are serialized while independent UI/modules/tests proceed in parallel — the approved tasks overlap in their storage/execution files, so unrestricted parallel edits would create integration races.
 
