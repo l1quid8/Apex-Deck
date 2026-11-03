@@ -108,9 +108,9 @@
 
 **Files:** Modify `crates/apex-adapters/src/cli.rs`, `claude_session.rs`, `codex_server.rs`, `api_tools/shell.rs`, `api_tools/mcp_client.rs`, `phone_env.rs`, `codex_hook.rs`
 
-- [ ] Failing test: each launch point below Full on Linux yields a jailed command, and refuses when the state is Fails. `APEX_DECK_PHONE_SOCKET` is absent. Codex's hook uses the loopback port and a per-launch token.
-- [ ] Implement, list every tool bots reach through `apex-daemon`, and move each to the channel or refuse it.
-- [ ] Commit.
+- [x] Failing test: each launch point below Full on Linux yields a jailed command, and refuses when the state is Fails. `APEX_DECK_PHONE_SOCKET` is absent. Codex's hook uses the loopback port and a per-launch token.
+- [x] Implement, list every tool bots reach through `apex-daemon`, and move each to the channel or refuse it.
+- [x] Commit (`447d8ac5`).
 
 ### Task 7: Changing a level, MCP links
 
@@ -124,18 +124,18 @@
 
 **Files:** Create `crates/apex-host/src/folder_trust.rs`, `crates/apex-host/src/project_process.rs`. Modify `project_check.rs`, `runner/checks.rs`, `bot_copies.rs`, `git_changes.rs`, the desktop and phone card.
 
-- [ ] Failing tests: the design's Lower-writable and Alternate paths lists, and a source-scanning test that fails on a raw project spawn.
-- [ ] Implement. The taint record is synced to disk before the jail starts.
-- [ ] Commit.
+- [x] Failing tests: the design's Lower-writable and Alternate paths lists, and a source-scanning test that fails on a raw project spawn.
+- [x] Implement. The taint record is synced to disk before the jail starts.
+- [x] Commit (`3975b88d`).
 
 ### Task 9: Snapshot isolation
 
 **Files:** Modify `crates/apex-host/src/checkpoints.rs`, the Revert path and wording.
 
-- [ ] Failing tests: the design's Snapshots list, on the real `checkpoints.rs` calls.
-- [ ] Implement isolated Git, the once-per-run rebuild under a lock, `info/attributes` and `raw`. A failed rebuild runs no Git.
-- [ ] Run in Docker on Git 2.25 and 2.43, on macOS, and in Windows CI.
-- [ ] Commit, then send step 2 to Null.
+- [x] Failing tests: the design's Snapshots list, on the real `checkpoints.rs` calls.
+- [x] Implement isolated Git, the once-per-run rebuild under a lock, `info/attributes` and `raw`. A failed rebuild runs no Git.
+- [ ] Run in Docker on Git 2.25 and 2.43, on macOS, and in Windows CI. (macOS covered by the host suite; Docker/Windows CI still owed.)
+- [x] Commit (`0e0c6fc9`); step 2 sent to Null: pending review.
 
 ## Step 3: trust and devices
 
@@ -143,17 +143,17 @@
 
 **Files:** Create `crates/apex-daemon/src/trust_host.rs`. Modify `devices.rs`, `crates/apex-daemon/src/cli.rs`, `src/phone/sshRun.ts`, `src/phone/RemoteSsh.tsx`, Settings on Mac and phone.
 
-- [ ] Failing tests: the design's Host trust list.
-- [ ] Implement, then commit.
+- [x] Failing tests: the design's Host trust list.
+- [x] Implement, then commit (`7624f150`, UI `6a97ab4f`).
 
 ### Task 11: `access_effect` and device rules
 
 **Files:** Modify `crates/apex-daemon/src/authority.rs`, `call_from_device`, `Command`, phone settings screens.
 
-- [ ] Read each "must be proven" row and record the answer with a test.
-- [ ] Failing test: a limited device runs every command with `"access":"full"` fixtures and no level rises.
-- [ ] Implement `access_effect` with no wildcard arm, the five daemon checks under the room lock, and the phone's Face ID step.
-- [ ] Commit, then send step 3 to Null.
+- [x] Read each "must be proven" row and record the answer with a test.
+- [x] Failing test: a limited device runs every command with `"access":"full"` fixtures and no level rises.
+- [x] Implement `access_effect` with no wildcard arm, the five daemon checks under the room lock, and the phone's Face ID step.
+- [x] Commit (`02258231`); step 3 sent to Null: pending review.
 
 ## Step 4 and 5: proof and release
 
@@ -165,3 +165,15 @@
 
 - [ ] Change the recipe's expected hashes and `vps-update-allow-test.rs`. The Human runs one command with their key. `prepare_source` and `git apply --check` pass before merge.
 - [ ] Ask the Human for the go on the pre-release.
+
+---
+## Status (Ds4 review, 2026-11)
+
+Merge commits `f8ecb06b` and `32ed6a7e` were reviewed: conflict resolutions are deliberate, no conflict markers remain, and all jail/trust files survive both parents intact. `npx tsc --noEmit` passes; `cargo check` passes (warnings only). Rust suites pass under `TMPDIR=/tmp` (macOS sun_path fix): apex-adapters linux_jail 89/89, apex-daemon full, apex-host 1005/1006 (the one failure, `ordinary_read_chat_dispatch_does_not_wait_for_task_integration`, is a pre-existing main-side 2s-timeout test that passes alone under parallel load — flaky, not a jail/merge regression).
+
+Held items before merge:
+- Task 5 Docker probe suite (arm64/x86_64) — needs Docker.
+- Task 9 Docker (Git 2.25/2.43) and Windows CI — needs infra.
+- Task 12 real runs: providers in Docker, Ubuntu 24.04 VM + AppArmor, X11 desktop, native iPhone checks (Stop, trust reset, Face ID, Files picker, QR tab) — needs infra/human.
+- Task 13 recipe hashes + `vps-update-allow-test.rs` + `prepare_source`/`git apply --check`, Human runs one command with their key, then go for pre-release.
+- Null review of steps 2 and 3 (Task 9/11 step-sends) pending.
