@@ -121,9 +121,10 @@ impl PlanRun {
         Some(out)
     }
 
-    /// The card went away unanswered. Only a Waiting run is affected.
+    /// The card went away unanswered, or the bot ended its turn without a
+    /// revised card. Only a Waiting or Revising run is affected.
     pub fn expire(&mut self) {
-        if self.state == PlanRunState::Waiting {
+        if matches!(self.state, PlanRunState::Waiting | PlanRunState::Revising) {
             self.state = PlanRunState::Expired;
         }
     }
@@ -424,6 +425,13 @@ mod tests {
         r.approve(&[]);
         r.expire();
         assert_eq!(r.state, PlanRunState::Running);
+    }
+    #[test]
+    fn expire_settles_a_revising_run() {
+        let mut r = run(THREE);
+        r.state = PlanRunState::Revising;
+        r.expire();
+        assert_eq!(r.state, PlanRunState::Expired);
     }
     #[test]
     fn plan_run_serializes_snake_case() {

@@ -623,9 +623,9 @@ impl Host {
             }
         }
         if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event); }
-        let plan_changes = handle.map(|handle| track_plan_runs(handle, &event, plan_off)).unwrap_or_default();
+        let (plan_changes, plan_save) = handle.map(|handle| track_plan_runs(handle, &event, plan_off)).unwrap_or_default();
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
-        if let Some(handle) = handle { self.publish_plan_runs(room, handle, plan_changes); }
+        if let Some(handle) = handle { self.publish_plan_runs(room, handle, plan_changes, plan_save); }
         // The caller may hold this room's event lock, so the switch is set
         // and announced here directly rather than through `room_set_plan`.
         if let (true, Some(handle)) = (plan_off, handle) {
@@ -637,10 +637,11 @@ impl Host {
     }
 
     /// Save the room's plan runs and announce the ones that changed. Unnumbered,
-    /// like `PlanChanged`: the caller may hold this room's event lock.
-    fn publish_plan_runs(&self, room: &str, handle: &RoomHandle, changed: Vec<apex_core::PlanRun>) {
+    /// like `PlanChanged`: the caller may hold this room's event lock. `save`
+    /// is false for changes a restart does not need to keep.
+    fn publish_plan_runs(&self, room: &str, handle: &RoomHandle, changed: Vec<apex_core::PlanRun>, save: bool) {
         if changed.is_empty() { return; }
-        {
+        if save {
             let mut checkpoint = handle.checkpoint.lock().unwrap();
             checkpoint.snapshot.plan_runs = handle.plan_runs.lock().unwrap().clone();
             if handle.deleted.load(Ordering::SeqCst) { return; }
@@ -2012,7 +2013,7 @@ impl Host {
         }
         runs[at] = run.clone();
         drop(runs);
-        self.publish_plan_runs(&id, &handle, vec![run]);
+        self.publish_plan_runs(&id, &handle, vec![run], true);
         Ok(())
     }
 
@@ -3352,7 +3353,9 @@ fn evict_plan_runs(runs: &mut Vec<apex_core::PlanRun>) {
 /// `plan_approved` says `event` is the yes to a plan card. `room_decide`
 /// moves the run first, so a run still Waiting at a yes was approved another
 /// way, and one still Waiting at a no lost its card: a stop or a tool giving up.
-fn track_plan_runs(handle: &RoomHandle, event: &RoomEvent, plan_approved: bool) -> Vec<apex_core::PlanRun> {
+/// The second value says whether the change must be saved: every run state
+/// change is, a to-do change only when a step a restart must keep moved.
+fn track_plan_runs(handle: &RoomHandle, event: &RoomEvent, plan_approved: bool) -> (Vec<apex_core::PlanRun>, bool) {
     use apex_core::{PlanRun, PlanRunState};
     // The checkpoint lock comes before the runs lock.
     let transcript = match event {
@@ -3361,6 +3364,7 @@ fn track_plan_runs(handle: &RoomHandle, event: &RoomEvent, plan_approved: bool) 
     };
     let mut runs = handle.plan_runs.lock().unwrap();
     let mut changed = Vec::new();
+    let mut save = true;
     match event {
         RoomEvent::ApprovalRequested { id, request, action } if action.kind == apex_core::ActionKind::Plan => {
             let version = runs.iter().rev().find(|r| r.by == *id).map_or(0, |r| r.version) + 1;
@@ -3386,12 +3390,18 @@ fn track_plan_runs(handle: &RoomHandle, event: &RoomEvent, plan_approved: bool) 
             if let Some(run) = runs.iter_mut().rev().find(|r| r.by == *id).filter(|r| matches!(r.state, PlanRunState::Running | PlanRunState::Stopped)) {
                 let before = run.clone();
                 run.apply_todos(items);
-                if *run != before { changed.push(run.clone()); }
+                if *run != before {
+                    // Open and Active look the same after a restart (the run is Stopped).
+                    let kept = |s: &apex_core::PlanRunStep| (if s.state == apex_core::PlanStepState::Active { apex_core::PlanStepState::Open } else { s.state }, s.off_plan);
+                    save = run.state != before.state || run.reporting != before.reporting
+                        || run.steps.iter().map(kept).ne(before.steps.iter().map(kept));
+                    changed.push(run.clone());
+                }
             }
         }
         RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => {
             // These events also clear the bot's live cards.
-            for run in runs.iter_mut().filter(|r| r.by == *id && r.state == PlanRunState::Waiting) {
+            for run in runs.iter_mut().filter(|r| r.by == *id && matches!(r.state, PlanRunState::Waiting | PlanRunState::Revising)) {
                 run.expire();
                 changed.push(run.clone());
             }
@@ -3402,7 +3412,7 @@ fn track_plan_runs(handle: &RoomHandle, event: &RoomEvent, plan_approved: bool) 
         }
         // Every turn is over, and with it every live card.
         RoomEvent::Idle => {
-            for run in runs.iter_mut().filter(|r| matches!(r.state, PlanRunState::Waiting | PlanRunState::Running)) {
+            for run in runs.iter_mut().filter(|r| matches!(r.state, PlanRunState::Waiting | PlanRunState::Revising | PlanRunState::Running)) {
                 run.expire();
                 run.turn_ended();
                 changed.push(run.clone());
@@ -3410,14 +3420,14 @@ fn track_plan_runs(handle: &RoomHandle, event: &RoomEvent, plan_approved: bool) 
         }
         // Live cards are gone; running turns report their own end.
         RoomEvent::Stopped => {
-            for run in runs.iter_mut().filter(|r| r.state == PlanRunState::Waiting) {
+            for run in runs.iter_mut().filter(|r| matches!(r.state, PlanRunState::Waiting | PlanRunState::Revising)) {
                 run.expire();
                 changed.push(run.clone());
             }
         }
         _ => {}
     }
-    changed
+    (changed, save)
 }
 
 /// One shared checkpoint for all running chains. Completed messages are saved
@@ -4838,6 +4848,9 @@ mod host_tests {
             serde_json::from_value(host.room_state("r".into()).unwrap()["snapshot"]["plan_runs"].clone()).unwrap()
         }
         fn saved(host: &Arc<Host>) -> Vec<PlanRun> { host.store.room("r").unwrap().unwrap().snapshot.plan_runs }
+        fn run_events(seen: &Arc<Mutex<Vec<HostEvent>>>) -> usize {
+            seen.lock().unwrap().iter().filter(|e| matches!(e, HostEvent::Room { event: RoomEvent::PlanRun { .. }, .. })).count()
+        }
         fn skip(ids: &[&str]) -> Option<Vec<String>> { Some(ids.iter().map(|s| s.to_string()).collect()) }
 
         #[test]
@@ -4880,6 +4893,64 @@ mod host_tests {
             let (_next, _a) = plan_card(&host, "jigga");
             let list = runs(&host);
             assert_eq!((list[1].version, list[1].state), (2, PlanRunState::Waiting));
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_revising_run_expires_when_the_turn_ends_without_a_new_card() {
+            let (host, _runtime, data) = room("plan-run-revise-end");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request, false, None, None).unwrap();
+            host.room_event("r", RoomEvent::ParticipantIdle { id: ParticipantId::new("jigga") });
+            assert_eq!(runs(&host)[0].state, PlanRunState::Expired);
+            assert_eq!(saved(&host)[0].state, PlanRunState::Expired);
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_revising_run_is_settled_on_reopen() {
+            let (host, _runtime, data) = room("plan-run-revise-reopen");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request, false, None, None).unwrap();
+            host.rooms.lock().unwrap().remove("r");
+            assert_eq!(runs(&host)[0].state, PlanRunState::Expired);
+            assert_eq!(saved(&host)[0].state, PlanRunState::Expired);
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_new_card_after_keep_planning_is_still_version_2_waiting_and_v1_settles_at_turn_end() {
+            let (host, _runtime, data) = room("plan-run-revise-v2");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request, false, None, None).unwrap();
+            let (_next, _a) = plan_card(&host, "jigga");
+            assert_eq!(runs(&host)[1].state, PlanRunState::Waiting);
+            host.room_event("r", RoomEvent::ParticipantIdle { id: ParticipantId::new("jigga") });
+            assert_eq!(runs(&host)[0].state, PlanRunState::Expired);
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn in_progress_ticks_are_announced_but_only_kept_ticks_are_saved() {
+            let (host, _runtime, data) = room("plan-run-save-only-real");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.room_decide("r".into(), request, true, None, None).unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&seen);
+            host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+            todo(&host, "jigga", "[S1] A", TodoStatus::Pending);
+            assert_eq!(run_events(&seen), 1, "the first tagged item marks the run as reporting");
+            todo(&host, "jigga", "[S1] A", TodoStatus::InProgress);
+            assert_eq!(runs(&host)[0].steps[0].state, PlanStepState::Active);
+            assert_eq!(run_events(&seen), 2);
+            assert_eq!(saved(&host)[0].steps[0].state, PlanStepState::Open, "a restart settles it; no write");
+            todo(&host, "jigga", "[S1] A", TodoStatus::InProgress);
+            assert_eq!(run_events(&seen), 2, "an identical list announces nothing");
+            todo(&host, "jigga", "[S1] A", TodoStatus::Completed);
+            assert_eq!(run_events(&seen), 3);
+            assert_eq!(saved(&host)[0].steps[0].state, PlanStepState::Done);
+            todo(&host, "jigga", "[S1] A", TodoStatus::Completed);
+            assert_eq!(run_events(&seen), 3);
             let _ = std::fs::remove_dir_all(data);
         }
 
