@@ -2658,25 +2658,6 @@ mod tests {
     }
 
     #[test]
-    fn task_record_contains_no_saved_reply_payload() {
-        let path = folder();
-        let store = AssistantTasks::open(ledger(&path)).unwrap();
-        let task = store.submit_human_request(request("no-payload", "Do it"), "brief".into(), Some(destination())).unwrap();
-        // Ensure serialized task record itself does not contain personal saved reply payload
-        let stored = store.get(&task.id).unwrap().unwrap();
-        let json = serde_json::to_value(&stored).unwrap();
-        let serialized = serde_json::to_string(&json).unwrap();
-        assert!(!serialized.contains("saved_reply") && !serialized.to_lowercase().contains("savedreply") && !serialized.contains("prepared"), "task ledger must not contain personal saved reply payload");
-        assert!(stored.announcement_gate.is_none(), "new tasks without gate retain legacy semantics");
-        // Also ensure on-disk ledger doesn't contain saved payload
-        if let Ok(data) = std::fs::read(ledger(&path)) {
-            let s = String::from_utf8_lossy(&data);
-            assert!(!s.contains("saved_reply") && !s.to_lowercase().contains("savedreply"), "on-disk task ledger must not leak saved reply");
-        }
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
     fn restart_new_thread_preserves_preparation_revision() {
         let path = folder();
         let store = AssistantTasks::open(ledger(&path)).unwrap();

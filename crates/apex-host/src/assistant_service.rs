@@ -4657,7 +4657,19 @@ mod tests {
     fn hung_delegation(f: &Fixture, request: &str) -> (AssistantTask, String) {
         let (task,assistant)=hung_plan(f,request);
         f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {task_id:task.id.clone(),revision:task.revision,owner:task.owner.clone(),action:"approve".into(),mode:Some(TaskMode::ReadOnly),text:None,destination:task.destination.clone(),new_worker_profiles:vec![],checks:None,spend_limit_micros:None})).unwrap();
-        (wait_for_attempt(f,&task.id,1),assistant)
+        let task=wait_for_attempt(f,&task.id,1);
+        let room=task.execution_thread_id.as_ref().unwrap();
+        f.runtime.block_on(async {
+            for _ in 0..1_000 {
+                // A pending attempt is busy before TurnStarted clears this
+                // worker's old commands. Inject events only after its real turn.
+                let state=f.host.room_state(room.clone()).unwrap();
+                if state["active"].as_array().unwrap().iter().any(|id|id.as_str()==Some("hung")) {return}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("hung worker never started its turn: {room}");
+        });
+        (task,assistant)
     }
 
     /// The same job as a plan still waiting for approval.
@@ -4779,9 +4791,11 @@ mod tests {
         let room=task.execution_thread_id.clone().unwrap();
         let step=|status| apex_core::work_steps::WorkStep {key:"build".into(),parent:None,kind:apex_core::work_steps::StepKind::Command,label:"build".into(),folder:None,detail:String::new(),output:None,status,exit_code:None,duration_ms:None,output_cut:false};
         f.host.room_event(&room,RoomEvent::WorkStep {id:ParticipantId::new("hung"),step:step(apex_core::work_steps::StepStatus::Running)});
+        assert!(f.host.handle(&room).unwrap().worker_activity().1,"the active worker's command is running");
         f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
         assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|!run.watchdog_stop.load(Ordering::SeqCst)));
         f.host.room_event(&room,RoomEvent::WorkStep {id:ParticipantId::new("hung"),step:step(apex_core::work_steps::StepStatus::Done)});
+        assert!(!f.host.handle(&room).unwrap().worker_activity().1,"the finished command releases its allowance");
         f.host.watch_delegated_work(crate::personal::now()+QUIET_MINUTES,0).unwrap();
         assert!(f.host.assistant_runs.lock().unwrap().get(&task.id).is_some_and(|run|run.watchdog_stop.load(Ordering::SeqCst)),"a finished command no longer earns the allowance");
     }

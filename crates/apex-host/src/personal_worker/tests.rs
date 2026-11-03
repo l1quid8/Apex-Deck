@@ -2808,6 +2808,58 @@ fn saved_reply_fixture(reply: &str) -> crate::personal::PreparedPersonalReply {
 }
 
 #[tokio::test]
+async fn task_record_contains_no_saved_reply_payload() {
+    const PRIVATE: &str = "PRIVATE_REPLY_ENVELOPE_7f26c5b4";
+    let f = Fixture::new();
+    let project = f.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let accepted = f.host.personal_send(&f.id, "private-handoff", "Please inspect the project").unwrap();
+    f.host.change_assistant(&f.id, |assistant| {
+        assistant.events.iter_mut().find(|event| event.id == accepted.event_id).unwrap().state = EventState::Processing;
+        Ok(())
+    }).unwrap();
+    let reply = parse_reply(&serde_json::json!({
+        "reply": format!("Handing over the inspection. {PRIVATE}"),
+        "remember": [{"text": format!("Private memory {PRIVATE}"), "explicit": true}],
+        "helpers": [{"assignment": format!("Private helper {PRIVATE}")}],
+        "delegations": [{
+            "project": project,
+            "brief": "Inspect the requested project",
+            "destination": {"threadId": THREAD, "workers": ["jigga"], "newThread": false},
+            "mode": "read_only"
+        }]
+    }).to_string());
+    f.host.commit_reply(
+        &Fake::new(true).tools(), &f.id, &accepted.event_id, "Please inspect the project",
+        reply, saved_reply_fixture("unused").cost, context::Seen {screen: false, report: false}, false,
+    ).unwrap();
+
+    let assistant = f.get();
+    let event = assistant.events.iter().find(|event| event.id == accepted.event_id).unwrap();
+    assert_eq!(event.state, EventState::Done);
+    let prepared = event.saved_reply.as_ref().expect("the real completion was saved privately");
+    assert!(prepared.reply.contains(PRIVATE));
+    assert!(prepared.helpers.iter().any(|assignment| assignment.contains(PRIVATE)));
+    assert!(prepared.remember.iter().any(|fact| fact["text"].as_str().is_some_and(|text| text.contains(PRIVATE))));
+    let personal_disk = std::fs::read_to_string(crate::authority_file::fixture_path(
+        &f.root.join("data/saved-chats-v1/personal-assistants.json"),
+    )).unwrap();
+    assert!(personal_disk.contains(PRIVATE), "the private marker must actually be durable");
+
+    let tasks = f.host.assistant_tasks.list(None).unwrap();
+    assert_eq!(tasks.len(), 1, "the completion must admit a real handoff");
+    assert_eq!(tasks[0].brief, "Inspect the requested project");
+    assert!(tasks[0].announcement_gate.as_ref().unwrap().released_at_ms.is_some());
+    let task_disk = std::fs::read_to_string(crate::authority_file::fixture_path(
+        &f.root.join("data/assistant-tasks-v1.json"),
+    )).unwrap();
+    assert!(task_disk.contains(&tasks[0].id), "inspect the actual persisted child, not an empty file");
+    for private in [PRIVATE, "PRIVATE_COST_SENTINEL", "savedReply", "saved_reply"] {
+        assert!(!task_disk.contains(private), "the task ledger leaked {private}");
+        assert!(!serde_json::to_string(&tasks[0]).unwrap().contains(private), "the project task leaked {private}");
+    }
+}
+
+#[tokio::test]
 async fn restart_before_announcement_does_not_rerun_model() {
     let mut f = Fixture::new();
     let fake = Fake::new(true);
