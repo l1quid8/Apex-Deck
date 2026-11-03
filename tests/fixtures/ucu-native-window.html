@@ -11,6 +11,7 @@
 <label>Native input <input id="input" autocomplete="off"></label>
 <button id="increment" type="button">Native increment</button>
 <button id="reset" type="button">Native reset</button>
+<button id="middle" type="button">Native caret in middle</button>
 <button id="select" type="button">Native select prefix</button>
 <output id="count" role="status">Native count: 0.</output>
 <output id="value" role="status">Native value: empty.</output>
@@ -25,6 +26,7 @@
   document.getElementById('reset').onclick = () => {
     clicks = 0; count.textContent = 'Native count: 0.'; input.value = ''; showValue();
   };
+  document.getElementById('middle').onclick = () => { input.value = 'hello world'; input.focus(); input.setSelectionRange(6, 6); showValue(); };
   document.getElementById('select').onclick = () => { input.focus(); input.setSelectionRange(0, 6); };
 </script>
 </html>

@@ -216,6 +216,19 @@ final class EngineSession {
       selection: selectedRange(field).map { NSRange(location: $0.location, length: $0.length) },
       gate: { try self.checkContinuation(s, id: id, latch: latch) },
       insert: { write(kAXSelectedTextAttribute, $0) }, replace: { write(kAXValueAttribute, $0) },
+      restoreSelection: { expected in
+        if let live = selectedRange(field), live.location == expected.location, live.length == expected.length { return true }
+        var range = CFRange(location: expected.location, length: expected.length)
+        guard let rangeValue = AXValueCreate(.cfRange, &range) else { return false }
+        AXUIElementSetMessagingTimeout(field, 1)
+        guard AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, rangeValue) == .success else { return false }
+        let deadline = ProcessInfo.processInfo.systemUptime + TypeLadder.patiently
+        repeat {
+          if let live = selectedRange(field), live.location == expected.location, live.length == expected.length { return true }
+          Thread.sleep(forTimeInterval: 0.01)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        return false
+      },
       settled: { expected, wait in
         let deadline = ProcessInfo.processInfo.systemUptime + wait
         var live = string(field, kAXValueAttribute)

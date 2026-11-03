@@ -77,6 +77,12 @@ final class NativeWindowLiveTests: XCTestCase {
     reading = try action("type_text", text: "verified", reading: reading)
     XCTAssertTrue(reading.contains("Native value: verified typing."), "typing replaces only the selected prefix")
     XCTAssertTrue(reading.contains("delivery=delivered_verified"))
+    reading = try action("click", label: "Native caret in middle", reading: reading)
+    reading = try action("type_text", text: "big ", reading: reading)
+    XCTAssertTrue(reading.contains("Native value: hello big world."))
+    reading = try action("type_text", text: "NEXT", reading: reading)
+    XCTAssertTrue(reading.contains("Native value: hello big NEXTworld."), "a second type continues after the inserted text, before the suffix")
+    XCTAssertTrue(reading.contains("delivery=delivered_verified"))
     XCTAssertEqual(frontPID(), front)
     print("NATIVE_WINDOW_ACCEPTANCE: 20 reads, 20 counted clicks, targeted typing, append and selection replacement; exact window checked after every tool; foreground PID", front)
   }
