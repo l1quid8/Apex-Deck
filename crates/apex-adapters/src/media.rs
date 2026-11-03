@@ -635,7 +635,7 @@ mod tests {
         let (said, images) = latest_ask(&request);
         assert_eq!(said, "a fox in snow");
         assert_eq!(images, [PathBuf::from("/a/fox.png")]);
-        let from_view = turn(vec![], vec![ViewTurn { role: Role::User, content: "[Human]: first\n\n[Human]: a red bike".into() }]);
+        let from_view = turn(vec![], vec![ViewTurn { role: Role::User, content: "[User]: first\n\n[User]: a red bike".into() }]);
         assert_eq!(latest_ask(&from_view).0, "a red bike");
     }
 

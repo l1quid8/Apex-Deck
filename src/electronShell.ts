@@ -19,6 +19,7 @@ import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
+  clipboard?: { writeText(text: string): Promise<void> };
   voice?: {
     status(): Promise<{supported:boolean;installed:boolean;installing:boolean;downloadBytes:number;requiredDiskBytes:number}>;
     install(): Promise<unknown>; cancelInstall():Promise<void>;
@@ -73,6 +74,9 @@ export interface DeckBridge {
     onMenu(cb: (action: string) => void): () => void;
   };
   browser: BrowserApi & {
+    /** What the person chose to remember for sites in the docked browser. */
+    sitePermissions(): Promise<{ origin: string; kind: "microphone" | "camera"; allowed: boolean }[]>;
+    forgetSitePermission(origin: string, kind: string): Promise<void>;
     /** Key presses in a docked page that the deck owns (desktop/browser-keys.mjs). */
     onShortcut(cb: (press: KeyboardEventInit) => void): () => void;
   };

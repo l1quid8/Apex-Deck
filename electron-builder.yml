@@ -48,7 +48,8 @@ mac:
   icon: build/icons/icon.icns
   category: public.app-category.developer-tools
   extendInfo:
-    NSMicrophoneUsageDescription: "Apex Deck uses your microphone only during voice calls you start."
+    NSMicrophoneUsageDescription: "Apex Deck uses your microphone during voice calls you start and for sites you allow in its browser."
+    NSCameraUsageDescription: "Apex Deck uses your camera only for sites you allow in its browser."
   target: dmg
   # A bare electron-builder run signs ad hoc; scripts/package-mac.mjs passes
   # the Developer ID identity instead when the keychain has one.

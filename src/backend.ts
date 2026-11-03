@@ -135,6 +135,10 @@ export interface Backend {
   worktreePrune(path: string): Promise<void>;
   roomPost(id: string, text: string, interactiveAnswers?: boolean): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
+  /** Read this thread's bots' plans again; the answer arrives as `plan_usage` events. */
+  roomRefreshPlans(id: string): Promise<void>;
+  /** Stop a working bot and run it again under the access just saved. */
+  roomApplyAccess(id: string, participant: string): Promise<void>;
   roomPostTo(id: string, text: string, targets: string[], interactiveAnswers?: boolean, voice?: { client_turn_id: string; max_bot_hops: 0 }): Promise<void>;
   /** Run participants on the transcript as it is, one after another, without
    *  posting anything. `hops` caps the rounds of bots answering bots that may
@@ -147,7 +151,7 @@ export interface Backend {
   /** Answer an action a bot proposed, named by the `request` from its event.
    *  `always` saves a rule with the thread, so the same thing isn't asked again
    *  until it is removed in thread details. */
-  roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
+  roomDecide(id: string, request: string, approve: boolean, always?: boolean, skip?: string[]): Promise<void>;
   /** Answer a bot's question, named by the `request` from its event: one list of picks (or one typed answer) per question. `null` skips. */
   roomAnswer(id: string, request: string, answers: string[][] | null): Promise<void>;
   /** Turn the thread's Plan switch on or off. Every client hears `plan_changed`. */
@@ -825,6 +829,8 @@ function demoBackend(): Backend {
     worktreeForget: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreePrune: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     roomTargets: async (id, text) => targetsFor(id, text),
+    roomRefreshPlans: async () => {},
+    roomApplyAccess: async () => {},
     roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),
     roomPostTo: async (id, text, targets) => {
       if (!rooms.has(id) || targets.some(target => !rooms.get(id)!.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
@@ -837,7 +843,7 @@ function demoBackend(): Backend {
       void runChain(id, [...new Set(participants)], true, hops ?? room.options.max_bot_hops);
     },
     roomStop: async (id, participant) => stopPreview(id, participant),
-    roomDecide: async (_id, request, approve, always = false) => {
+    roomDecide: async (_id, request, approve, always = false, _skip) => {
       const answer = asks.get(request);
       if (!answer) throw new Error("that request is no longer waiting for an answer");
       asks.delete(request);

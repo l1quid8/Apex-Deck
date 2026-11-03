@@ -54,7 +54,7 @@ impl Fixture {
                         if std::fs::read(data.join("snapshots/threads/r.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()).is_some_and(|thread| thread["checkpoints"].as_array().is_some_and(|points| points.iter().any(|point| point["kind"] == "open"))) { break; }
                         tokio::task::yield_now().await;
                     }
-                }).await.expect("opening snapshot finishes before the human edit");
+                }).await.expect("opening snapshot finishes before the user edit");
             }
         });
         Self { host, runtime, data }
@@ -94,7 +94,7 @@ fn assert_work_revert(command: &str) {
         f.idle().await;
         let plan = f.host.room_revert_plan("r".into(), 0, None).await.unwrap();
         assert!(plan.available);
-        assert!(plan.files.iter().any(|file| file.path == "file.txt" && !file.conflict), "Revert must preserve the human's pre-send edit: {plan:?}");
+        assert!(plan.files.iter().any(|file| file.path == "file.txt" && !file.conflict), "Revert must preserve the user's pre-send edit: {plan:?}");
         assert!(f.host.room_revert("r".into(), 0, None, false, vec!["file.txt".into()]).await.unwrap().is_empty());
         assert_eq!(std::fs::read_to_string(file).unwrap(), "human edit");
         assert!(f.host.store().room("r").unwrap().unwrap().snapshot.client_messages.is_empty(), "ordinary Work sends do not enter chat delivery tracking");

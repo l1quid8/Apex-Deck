@@ -111,6 +111,10 @@ pub enum RoomEvent {
     },
     /// The thread's Plan switch was turned on or off.
     PlanChanged { on: bool },
+    /// A plan run was created or changed. It is the whole run.
+    PlanRun { run: crate::PlanRun },
+    /// Plan runs were removed by `/clear` or a rewind. It is the whole list.
+    PlanRunsReset { runs: Vec<crate::PlanRun> },
     /// The thread's "Always allow" list changed. It is the whole list.
     AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
@@ -161,9 +165,11 @@ pub enum RoomEvent {
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
     CurationsChanged { curations: Vec<Curation> },
-    /// The human pressed stop.
+    /// A bot's access was changed while it was working.
+    AccessChanged { id: ParticipantId, access: crate::Access },
+    /// The user pressed stop.
     Stopped,
-    /// The room finished handling the human message.
+    /// The room finished handling the user message.
     Idle,
     /// This participant has released its turn slot.
     ParticipantIdle { id: ParticipantId },
@@ -228,9 +234,9 @@ pub(crate) struct RoomApprover<'a> {
     pub(crate) on_event: EventSink<'a>,
 }
 
-#[async_trait]
-impl Approver for RoomApprover<'_> {
-    async fn decide(&self, action: ProposedAction) -> Decision {
+impl RoomApprover<'_> {
+    /// Ask, and say which card it was (none when a saved rule answered).
+    async fn decide_tracked(&self, action: ProposedAction) -> (Option<String>, Decision) {
         // Starting the work after a plan, and paying for a picture or
         // video, are asked every time.
         let once = action.kind.asked_every_time();
@@ -239,11 +245,12 @@ impl Approver for RoomApprover<'_> {
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
             // A plain yes: the thread's saved rule answered, so no tool is
             // told to remember anything, and removing the rule takes it back.
-            return Decision::Approve;
+            return (None, Decision::Approve);
         }
         let remembered = action.clone();
         let (request, answer) = self.desk.open_for(self.id.clone());
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
+        let remembered_request = request.clone();
         let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = match answer.await.unwrap_or(Decision::Reject) {
@@ -255,7 +262,21 @@ impl Approver for RoomApprover<'_> {
         if decision == Decision::ApproveAlways && self.desk.allow_always(self.id, &remembered) {
             (self.on_event)(RoomEvent::AllowedChanged { allowed: self.desk.allowed() });
         }
-        decision
+        (Some(remembered_request), decision)
+    }
+}
+
+#[async_trait]
+impl Approver for RoomApprover<'_> {
+    async fn decide(&self, action: ProposedAction) -> Decision {
+        self.decide_tracked(action).await.1
+    }
+
+    async fn decide_plan(&self, action: ProposedAction) -> crate::PlanAnswer {
+        let (request, decision) = self.decide_tracked(action).await;
+        // Taken whatever the answer, so a refused plan leaves nothing behind.
+        let note = request.and_then(|r| self.desk.take_plan_note(&r));
+        crate::PlanAnswer { decision, note: if decision.approved() { note } else { None } }
     }
 
     async fn ask(&self, questions: Vec<crate::Question>) -> crate::Answer {
@@ -493,9 +514,26 @@ pub struct RoomSnapshot {
     pub plan: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub checklists: HashMap<ParticipantId, Checklist>,
+    /// Approved and waiting plans, newest last, at most 20. A fork starts
+    /// without them.
+    #[serde(default)]
+    pub plan_runs: Vec<crate::PlanRun>,
 }
 
 impl RoomSnapshot {
+    /// No card or turn survives a restart: settle the saved plan runs and
+    /// return the ones that changed.
+    pub fn settle_plan_runs(&mut self) -> Vec<crate::PlanRun> {
+        let mut changed = Vec::new();
+        for run in &mut self.plan_runs {
+            let before = run.state;
+            run.expire();
+            run.turn_ended();
+            if run.state != before { changed.push(run.clone()); }
+        }
+        changed
+    }
+
     /// Imported IDs are tombstones, never executable claims from another host.
     pub fn remember_history_ids(&mut self) {
         for message in &self.transcript {
@@ -533,6 +571,7 @@ impl RoomSnapshot {
             usage: HashMap::new(),
             plan: self.plan,
             checklists: self.checklists.iter().filter(|(_, list)| list.seq < upto).map(|(id, list)| (id.clone(), list.clone())).collect(),
+            plan_runs: Vec::new(),
         }
     }
 }
@@ -566,6 +605,7 @@ pub struct Room {
     /// The Plan switch. Shared with the host, which flips it while a turn
     /// may hold the room.
     plan: Arc<AtomicBool>,
+    plan_runs: Arc<Mutex<Vec<crate::PlanRun>>>,
     /// Whether bots are told they may end a reply with an interactive answer
     /// card. Always on: every thread starts with it.
     answers: Arc<AtomicBool>,
@@ -614,6 +654,7 @@ impl Room {
             usage: self.usage.clone(),
             plan: self.plan.load(Ordering::SeqCst),
             checklists: self.checklists.lock().unwrap().clone(),
+            plan_runs: self.plan_runs.lock().unwrap().clone(),
         }
     }
 
@@ -646,6 +687,7 @@ impl Room {
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(plan)),
+            plan_runs: Arc::new(Mutex::new(snapshot.plan_runs)),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(desk),
@@ -677,6 +719,7 @@ impl Room {
             options,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(false)),
+            plan_runs: Arc::default(),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(ApprovalDesk::default()),
@@ -795,6 +838,7 @@ impl Room {
         self.pins = self.pins.iter().map(|pin| response_pin_parts(pin).map_or_else(|| pin.clone(), |(_, text)| text.to_string())).collect();
         self.transcript.clear();
         self.checklists.lock().unwrap().clear();
+        self.plan_runs.lock().unwrap().clear();
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
@@ -817,6 +861,7 @@ impl Room {
             record.reply_seqs.retain(|seq| *seq < upto);
         }
         self.checklists.lock().unwrap().retain(|_, list| list.seq < upto);
+        self.plan_runs.lock().unwrap().retain(|run| run.started_seq < upto);
         for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
         self.last_targets.clear();
         if self.compaction.as_ref().is_some_and(|c| c.upto > upto) { self.compaction = None; }
@@ -1089,6 +1134,11 @@ impl Room {
     /// between turns and discards replies that arrive after it is set.
     pub fn stop_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.stop)
+    }
+
+    /// The plan runs, for the host to change without the room's lock.
+    pub fn plan_runs_handle(&self) -> Arc<Mutex<Vec<crate::PlanRun>>> {
+        Arc::clone(&self.plan_runs)
     }
 
     /// The Plan switch, for the host to flip without the room's lock.
@@ -1487,7 +1537,7 @@ impl Room {
 
     /// Add a human message and let the room answer it.
     ///
-    /// The human's message is answered by the participants it @mentions, or
+    /// The user's message is answered by the participants it @mentions, or
     /// by the room's turn policy if it mentions nobody. If a reply @mentions
     /// another participant, that participant answers next, up to
     /// `max_bot_hops` rounds (`None` keeps going until no reply addresses
@@ -1640,6 +1690,54 @@ mod approver_tests {
             futures::join!(approver.decide(start.clone()), async { desk.resolve("ask-2", Decision::Approve) })
         });
         assert!(asked, "a saved rule never answers it");
+    }
+
+    #[test]
+    fn room_approver_returns_the_desk_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A\n2. B".into(), expires_at: None, risky: false };
+        let (answer, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide_plan(start.clone()), async {
+                desk.set_plan_note("ask-1", "Skip step 2".into());
+                desk.resolve("ask-1", Decision::Approve)
+            })
+        });
+        assert_eq!(answer, crate::PlanAnswer { decision: Decision::Approve, note: Some("Skip step 2".into()) });
+        assert_eq!(desk.take_plan_note("ask-1"), None, "taken once");
+    }
+
+    #[test]
+    fn a_rejected_plan_has_no_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A".into(), expires_at: None, risky: false };
+        let (answer, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide_plan(start.clone()), async {
+                desk.set_plan_note("ask-1", "stale".into());
+                desk.resolve("ask-1", Decision::Reject)
+            })
+        });
+        assert_eq!(answer, crate::PlanAnswer { decision: Decision::Reject, note: None });
+        assert_eq!(desk.take_plan_note("ask-1"), None, "nothing left behind");
+    }
+
+    #[test]
+    fn a_withdrawn_plan_card_leaves_no_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let (request, _rx) = desk.open_for(id.clone());
+        desk.set_plan_note(&request, "x".into());
+        assert!(desk.withdraw(&request));
+        assert_eq!(desk.take_plan_note(&request), None);
+        let (request, _rx2) = desk.open_for(id.clone());
+        desk.set_plan_note(&request, "y".into());
+        desk.reject_for(&id);
+        assert_eq!(desk.take_plan_note(&request), None);
     }
 
     #[test]

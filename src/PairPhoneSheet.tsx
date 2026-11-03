@@ -7,6 +7,7 @@ import {
   PAIR_DEFAULT_TIER, RENEW_FOR_MS, canApprove, copyLink, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession, qrSvgPath, revokedWarning,
   spacedCode, timerText, type PairState,
 } from "./pairing";
+import { deckClipboard } from "./copyText";
 
 // Phones → Pair phone: a big QR the phone scans, and a Copy link button.
 // The link text itself is never shown, so nobody copies a cut-off one. Codes
@@ -98,7 +99,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
 
   const copy = async () => {
     if (!invite) return;
-    if (await copyLink(invite.link, navigator.clipboard)) {
+    if (await copyLink(invite.link, deckClipboard)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }

@@ -255,3 +255,12 @@ test('Reply and edge settings reach every theme', () => {
   assert.match(css, /\[data-deck-reply="sans"\]/);
   assert.match(css, /\[data-deck-edges="strong"\]/);
 });
+
+test("plan cards can beat the amber approval colors in every skin", () => {
+  const glassCss = readFileSync(new URL("../src/glass-theme.css", import.meta.url), "utf8");
+  // :is() takes its strongest member's specificity, so one compound member
+  // would make every listed part outrank the plan palette rules.
+  for (const [list] of glassCss.matchAll(/\.approval :is\([^)]*\)/g)) {
+    assert.doesNotMatch(list, /\.approval-head strong/);
+  }
+});

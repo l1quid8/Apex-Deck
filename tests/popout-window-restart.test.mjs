@@ -33,7 +33,7 @@ test('native external windows reopen after process exit with fresh snapshots and
         const owner={win:new BrowserWindow({show:false}),role:'deck'};
         const windows=new Map([[owner.win.id,owner]]);
         const api=runInNewContext(${JSON.stringify(production + '\n({windows:popoutWindows,snapshots:popoutSnapshots,store:popoutLayout});')},{
-          app,BrowserWindow,screen,dialog,fs,path,crypto,process,dockedBrowser,gate,windows,
+          app,BrowserWindow,screen,dialog,fs,path,crypto,process,dockedBrowser,sites:()=>({}),gate,windows,
           PopoutLayoutStore,fitPopoutBounds,trackPopoutWindow,assistantFloatBounds,movedAssistantFloatBounds,
           here:${JSON.stringify(desktop)},smoke:true,devUrl:${JSON.stringify(pathToFileURL(blank).href)},
           UI_ORIGINS:new Set(['file://']),originOf:()=> 'file://',openExternally:()=>{},

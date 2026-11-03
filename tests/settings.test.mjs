@@ -9,7 +9,7 @@ test("no settings file gives the defaults", () => {
 });
 
 test("saved values are kept", () => {
-  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, codeRunButtons: false, botChips: { tool: false, effort: true, usage: false } };
+  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", userName: "Tyler", userNickname: "Ty", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, codeRunButtons: false, botChips: { tool: false, effort: true, usage: false } };
   assert.deepEqual(readSettings(saved), saved);
 });
 

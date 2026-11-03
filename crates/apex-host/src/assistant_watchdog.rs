@@ -1,6 +1,6 @@
-//! Watches every delegated job so the human doesn't have to. A job with no
+//! Watches every delegated job so the user doesn't have to. A job with no
 //! worker activity gets one restart in its own chat; if it goes quiet again
-//! the human is told. This costs no model call: it only reads room activity.
+//! the user is told. This costs no model call: it only reads room activity.
 //!
 //! A restart goes through the ordinary "continue" action, so paused
 //! assistants, spending limits and project access all still apply.
@@ -133,7 +133,7 @@ impl crate::host::Host {
             tokio::time::timeout(std::time::Duration::from_secs(SETTLE_SECONDS), notified).await.map_err(|_| "The worker did not stop.".to_string())?;
         }
         let latest = self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("The task is gone.")?;
-        // The human may have stepped in while the worker was stopping.
+        // The user may have stepped in while the worker was stopping.
         if latest.control.desired_state != DesiredState::Running || latest.status == TaskStatus::Running { return Ok(()) }
         if latest.status != TaskStatus::Interrupted { return Err(run.error.lock().unwrap().clone().unwrap_or_else(|| "The stopped attempt could not be continued.".into())) }
         self.assistant_task_action(AssistantActionInput { task_id: latest.id, revision: latest.revision, owner: latest.owner, action: "continue".into(), mode: None, text: Some(NUDGE.into()), destination: None, new_worker_profiles: vec![], checks: None, spend_limit_micros: None }).await.map(|_| ())
@@ -141,7 +141,7 @@ impl crate::host::Host {
 
     /// The attempt is left running: it has already had its restart, or is past
     /// the point a restart can help, and a slow worker that comes back keeps its
-    /// work. Cancelling is the human's call.
+    /// work. Cancelling is the user's call.
     fn tell_stuck(&self, task: &AssistantTask, run_id: &str, saving: bool, quiet_ms: u64, at: u64) -> Result<(), String> {
         let brief: String = task.brief.chars().take(140).collect();
         let minutes = quiet_ms / MINUTE_MS;
@@ -160,7 +160,7 @@ impl crate::host::Host {
         Ok(())
     }
 
-    /// The save was ended, so the job has failed and needs the human's decision.
+    /// The save was ended, so the job has failed and needs the user's decision.
     /// Its ordinary receipt carries the words, so this only adds the phone push.
     pub(crate) fn tell_save_too_long(&self, task_id: &str, run_id: &str) -> Result<(), String> {
         let task = self.assistant_tasks.get(task_id).map_err(|e| e.to_string())?.ok_or("The task is gone.")?;
@@ -172,7 +172,7 @@ impl crate::host::Host {
         })
     }
 
-    /// A notice alone can be swallowed when the human is on screen, so the
+    /// A notice alone can be swallowed when the user is on screen, so the
     /// conversation carries the words and the notice carries the phone push.
     fn tell_human(&self, task: &AssistantTask, fingerprint: &str, text: String, at: u64) -> Result<(), String> {
         let lineage = task.lineage.as_ref().ok_or("This job has no owning assistant.")?;

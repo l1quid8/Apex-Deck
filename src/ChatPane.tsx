@@ -1,3 +1,5 @@
+import { useComposerHistory } from "./useComposerHistory";
+import { threadHistoryTexts } from "./composerHistory";
 import { RunnerWork } from "./runner/RunnerWork.tsx";
 import { useRunner } from './runner/useRunner.ts';
 import { runnerCommand, runnerAction } from './runner/client.ts';
@@ -28,7 +30,7 @@ import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, Curation, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, Curation, NextStep, PlanRun, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -100,12 +102,16 @@ import { turnFilesFor } from "./turnChanges";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
+import { PlanChip } from "./PlanChip";
+import { frontRun, planShowsChip, upsertRun } from "./planRunModel";
 import { PreparingCard } from "./interactiveAnswers/AnswerCard.tsx";
 import { createAnswerStore, discardAnswerSettingsAfter, flushAnswerStores, retainAnswerStore } from "./interactiveAnswers/answerStore.ts";
 import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.ts";
 import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
-import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
+import { copyText, plainCopy } from "./copyText";
+import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHold, type TurnKind } from "./turnQueue";
+import { queueSync } from "./phoneQueue";
 import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
 import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
@@ -139,7 +145,17 @@ import type {
 } from "./types";
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from "./speed";
 
+/** What the Plan tab needs from a thread. */
+export interface PlanFeed {
+  runs: PlanRun[];
+  decide: (request: string, approve: boolean, skip: string[]) => Promise<void>;
+  stop: (who: string) => Promise<void>;
+}
+
 interface Props {
+  /** Feeds the Plan tab. Left out where there is no tab, which keeps the approval card. */
+  onPlanRuns?: (id: string, feed: PlanFeed) => void;
+  onOpenPlan?: (paneId: string, request: string) => void;
   talkOnly?: boolean;
   chatDraft?: string;
   onChatDraft?: (text: string) => void;
@@ -458,6 +474,9 @@ interface TurnProgress {
 
 /** How long Copy reads "Copied". */
 const COPIED_MS = 1500;
+const PLAN_REFRESH_MS = 60_000;
+/** Said beside a paused queued message, so Resume is never a mystery. */
+const HOLD_REASON: Record<Exclude<QueueHold, "connection">, string> = { stopped: "you stopped this bot", failed: "its last reply failed" };
 
 function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   if (phase === "tool") return "Working";
@@ -582,7 +601,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -670,6 +689,16 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
   const roomCards = openCards(pane.id, approvalState);
   const asks = useMemo(() => cardsByBot(roomCards), [roomCards]);
+  const [planRuns, setPlanRuns] = useState<PlanRun[]>([]);
+  const planTab = !talkOnly && !!onPlanRuns && backend.supports?.("plan_run_v1") === true;
+  useEffect(() => {
+    onPlanRuns?.(pane.id, {
+      runs: planTab ? planRuns : [],
+      decide: (request, approve, skip) => current.current.roomDecide(pane.id, request, approve, false, skip),
+      stop: (who) => current.current.roomStop(pane.id, who),
+    });
+  }, [planRuns, planTab, onPlanRuns, pane.id]);
+  const planChipRun = planTab ? frontRun(planRuns) : null;
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
   /** Files written this turn, by path, with who wrote them; see collectWritten. */
@@ -726,9 +755,15 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   };
   const [quickSettings, setQuickSettings] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [pendingSettings, setPendingSettings] = useState<Record<string, boolean>>({});
+  /** Access changed while a bot works: what it was, until the reply ends or it is applied. */
+  const [accessFrom, setAccessFrom] = useState<Record<string, Access>>({});
+  /** "Access changed to Read at 3:04 PM" lines for this sitting. */
+  const [accessNotes, setAccessNotes] = useState<{ key: number; text: string }[]>([]);
   const closeQuickSettings = () => setQuickSettings(null);
   const [busy, setBusy] = useState(false);
-  const [text, setText] = useState(talkOnly ? chatDraft : "");
+  const [text, writeText] = useState(talkOnly ? chatDraft : "");
+  const composerHistory = useComposerHistory(JSON.stringify([backend.host?.id, pane.id]), text, writeText, () => threadHistoryTexts(messagesOf(entries)));
+  const setText = composerHistory.setText;
   const chatCallbacks = useRef({onChatDraft, onChatParticipants});
   chatCallbacks.current = {onChatDraft, onChatParticipants};
   useEffect(() => { if (talkOnly) chatCallbacks.current.onChatDraft?.(text); }, [text, talkOnly]);
@@ -736,7 +771,6 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const [caret, setCaret] = useState(0);
   const composerMenu = useRef<ComposerMenuHandle>(null);
   const [queued, setQueued] = useState<ParticipantMessage[]>([]);
-  const [queuePaused, setQueuePaused] = useState(false);
   const [editor, setEditor] = useState<string | null>(null);
   const [replies, setReplies] = useState<ReplyQuote[]>([]);
   /** Whether the quote's Send to ▾ menu is open. */
@@ -1110,6 +1144,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         case "participant_idle":
           setAnswered(({ [event.id]: _said, ...rest }) => rest);
           setPendingSettings(({ [event.id]: _applied, ...rest }) => rest);
+          setAccessFrom(({ [event.id]: _settled, ...rest }) => rest);
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
           reportApprovals();
@@ -1158,8 +1193,17 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         case "allowed_changed":
           setAllowed(event.allowed);
           break;
+        case "access_changed":
+          setAccessNotes((notes) => [...notes, { key: Date.now(), text: `${nameOf(event.id)}: Access changed to ${accessLabel(event.access)} at ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` }]);
+          break;
         case "plan_changed":
           setPlanOn(event.on);
+          break;
+        case "plan_run":
+          setPlanRuns((runs) => upsertRun(runs, event.run));
+          break;
+        case "plan_runs_reset":
+          setPlanRuns(event.runs);
           break;
         case "usage":
           if (recoveredState?.recovery_seq == null) { void durableRecovery.refresh(); break; }
@@ -1290,12 +1334,14 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
         const before = shownForm.current;
         restoreRoomQuestions(pane.id, state);
         setPlanOn(Boolean(state.plan ?? saved.plan));
+        setPlanRuns(saved.plan_runs ?? []);
         if (before.kind === "question" && !(state.questions ?? []).some((q) => q.request === before.ask.request)) {
           flashForm(`${nameOf(before.ask.id)}'s question was dropped when Deck restarted`);
         }
         reportApprovals();
         setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], work: emptyTurnSteps, phase: "thinking" as const }])));
-        turnQueue.state = {}; state.active.forEach(id => turnQueue.started(id));
+        // A bot that finished while this pane was away sent no event it could hear, so this releases its queue too.
+        queueSync(turnQueue, state.active);
         setBusy(state.active.length > 0 || turnQueue.active);
         setDrafts(Object.fromEntries(state.active.map(id => [id, ""])));
         setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
@@ -1673,7 +1719,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     },
     id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
-    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
+    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
     true, // A failed send keeps its message here, so the thread shows it and can retry.
@@ -1686,6 +1732,16 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     const changed = () => turnQueue.availabilityChanged();
     changed(); return store.subscribe(changed);
   }, [backend, turnQueue]);
+  // Coming back to a thread, and every minute it keeps working, reads the plan again.
+  // The host shares reads, so several panes asking cost one; a finished turn it reads by itself.
+  useEffect(() => {
+    if (!watching) return;
+    const refresh = () => void backend.roomRefreshPlans(pane.id).catch(() => {});
+    refresh();
+    if (!busy) return;
+    const timer = setInterval(refresh, PLAN_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [watching, busy, backend, pane.id]);
   const voiceHost=backend.host?.id??'local';
   const voiceConfig=readVoiceSettings(voiceSettings);
   const voiceCandidates=profileMode || talkOnly?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,agentVoice:p.voice,roomTitle:pane.title,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
@@ -1704,6 +1760,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
     registerVoiceThread(scopeKey({hostId:voiceHost,roomId:pane.id}),{
       candidates:voiceCandidates,settings:voiceConfig,save:s=>voiceLive.current.onVoiceSettings?.(s),focus:()=>voiceLive.current.onVoiceFocus?.(pane.id),
       realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args as any),
+      metaSession: (args) => backend.call<{ token: string; model: string }>("voice_meta_session", args as any),
       bridge:id=>{
         let bridge=voiceBridges.current.get(id);if(bridge)return bridge;
         bridge=createThreadVoiceBridge({backend,scope:{hostId:voiceHost,roomId:pane.id,participantId:id},
@@ -1789,16 +1846,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   const [copied, setCopied] = useState<number | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(copiedTimer.current), []);
-  /** Put a message's markdown on the clipboard. */
-  const copyMessage = (message: Message) => {
-    if (!navigator.clipboard) return notify("Could not copy: the clipboard isn't available here.", "error");
-    navigator.clipboard.writeText(message.text)
-      .then(() => {
-        setCopied(message.seq);
-        clearTimeout(copiedTimer.current);
-        copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
-      })
-      .catch((error) => notify(`Could not copy: ${String(error)}`, "error"));
+  /** Put a message on the clipboard as it reads on screen. */
+  const copyMessage = async (message: Message) => {
+    if (!await copyText(plainCopy(message.text))) return notify("Could not copy. Select the text and copy it by hand.", "error");
+    setCopied(message.seq);
+    clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
   };
   /** The message whose action controls are expanded, by seq. */
   const [messageMenu, setMessageMenu] = useState<number | null>(null);
@@ -1941,7 +1994,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
   /** Directional disclosure for message actions; the row wraps in a narrow pane. */
   const messageActions = (message: Message) => {
     const quote = () => { const next = quoteFor(message, (id) => names.get(id) ?? id); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
-    const copy = () => copyMessage(message);
+    const copy = () => void copyMessage(message);
     const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
     const goBackKind: GoBack | null = message.speaker.kind === "bot" ? "retry" : message.speaker.kind === "human" ? "revert" : null;
     const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";
@@ -3668,13 +3721,25 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
       {!profileMode && legacy && <div className="legacy-room-marker"><LegacyBadge scope="room" /></div>}
       {!profileMode && !talkOnly && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} accessChange={(() => {
+        const from = accessFrom[quickSettings.id], bot = participants.find(p => p.id === quickSettings.id);
+        return from && bot && from !== bot.access ? { from, to: bot.access } : undefined;
+      })()} onApplyAccess={() => {
+        const id = quickSettings.id;
+        setAccessFrom(({ [id]: _applied, ...rest }) => rest);
+        setPendingSettings(({ [id]: _applied, ...rest }) => rest);
+        void backend.roomApplyAccess(pane.id, id).catch((error) => notify(`Could not apply access now: ${String(error)}`, "error"));
+      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+        const before = participants.find(p => p.id === config.id)?.access;
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
         if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
-        if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
+        if (turnQueue.state[config.id] === "working") {
+          setPendingSettings(all => ({ ...all, [config.id]: true }));
+          if (before && before !== actual.access) setAccessFrom(all => ({ ...all, [config.id]: all[config.id] ?? before }));
+        }
       }} /> }
       {!profileMode && !talkOnly && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
       {profileMode && !adding && participants.length > 0 && <div className="chat-bar"><div className="chips">{addButton}</div></div>}
@@ -3856,7 +3921,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                     <Markdown text={partial} onOpen={openTarget} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={names.get(id) ?? id} /> : undefined)} />
                   </div>
                 )}
-                {(asks[id] ?? []).map((ask) => (
+                {(asks[id] ?? []).filter((ask) => !planShowsChip(ask.action, ask.request, planRuns, planTab)).map((ask) => (
                   <ApprovalCard
                     hostName={backend.host?.name ?? "This Mac"} disabled={!ready}
                     key={ask.request}
@@ -3883,9 +3948,12 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
             </div>
           );
         })}
+        {accessNotes.map((note) => <div key={note.key} className="access-note muted" role="status">{note.text}</div>)}
+        {transcriptMounted.current && planChipRun && <PlanChip key={planChipRun.request} run={planChipRun} onOpen={() => onOpenPlan?.(pane.id, planChipRun.request)} />}
         {queued.map((item) => {
           const who = item.to.map((id) => names.get(id) ?? id).join(", ");
           const steerable = !item.failed && item.kind === "message" && item.to.some((id) => working[id]);
+          const hold = item.failed ? null : turnQueue.holdOf(item);
           return <div key={`q${item.id}`} className="queued-inline">
             {editingQueued === item.id
               ? <textarea className="q-edit" aria-label={`Edit queued message ${item.id}`} autoFocus rows={2} defaultValue={item.text}
@@ -3902,8 +3970,8 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
                   }} />
               : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}
             <div className="q-meta">
-              <span className="q-for">{item.failed ? "Send unconfirmed for" : queuePaused ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span></span>
-              {queuePaused && !item.failed && <><i className="q-sep" /><button type="button" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume</button></>}
+              <span className="q-for">{item.failed ? "Send unconfirmed for" : hold === "connection" ? "Waiting for the connection for" : hold ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span>{hold && hold !== "connection" && <span className="q-why"> · {HOLD_REASON[hold]}</span>}</span>
+              {hold && <><i className="q-sep" /><button type="button" onClick={() => turnQueue.resume()}>Resume</button></>}
               {steerable && <><i className="q-sep" /><button type="button" title={`Send to ${who} now, mid-turn (⌘↵)`} onClick={() => askToSteer(item)}>Steer <SteerArrow /></button></>}
               <i className="q-sep" />
               {item.failed && <button type="button" title="The host may already have received this message. Check the chat before retrying." onClick={() => turnQueue.retry(item.id)}>Retry send</button>}
@@ -4056,6 +4124,7 @@ export function ChatPane({ talkOnly = false, chatDraft = "", onChatDraft, onChat
           onKeyDown={(e) => {
             if (composerMenu.current?.key(e)) return;
             if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && formKeys(e.key)) { e.preventDefault(); return; }
+            if (composerHistory.onKeyDown(e)) return;
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); toggleTldr(); return; }
             // Esc stops every bot and keeps your draft, like Claude Code and Codex.
             if (e.key === "Escape" && busy) { e.preventDefault(); stopBots(); return; }

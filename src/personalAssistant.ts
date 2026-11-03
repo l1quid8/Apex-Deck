@@ -9,7 +9,7 @@ import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity
 import type { ProjectMemoryApi } from "./projectMemory.ts";
 
 export type PersonalLegacyMarker = { sourceSha256: string; importedAtMs: number; originalId?: string; originalStatus?: string; verified: false };
-export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[]; legacy?: PersonalLegacyMarker };
+export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice" | "delegation_failed"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[]; legacy?: PersonalLegacyMarker };
 export type ToolClass = "read" | "write" | "send" | "spend";
 /** Dot's four rule choices: do it without asking, only when I say so, ask first, hand it to me. */
 export type ActionMode = "auto" | "onRequest" | "ask" | "handOff";
@@ -19,6 +19,7 @@ export type StopCondition = { exitCode?: number; outputContains?: string; output
 /** When and how often an approved operation runs. Part of what an approval covers. */
 export type RunPlan = { startAt?: number; everyMs?: number; maxRuns?: number; until?: StopCondition; timeoutMs?: number; deadlineAt?: number; after?: string };
 export type TaskWait = { kind: "timer"; at: number } | { kind: "dependency"; taskId: string } | { kind: "machine"; hostId: string };
+export type PersonalTodo = { id: string; text: string; status: 'open' | 'done'; createdAt: number; updatedAt: number; dueAt?: number; remindAt?: number };
 export type PersonalTask = {
   deletedAt?: number;
   id: string; goal: string; completionCriteria: string[]; targetHost: string;
@@ -35,7 +36,7 @@ export type PersonalTask = {
 };
 export type Fact = {
   id: string; text: string; kind: "preference" | "fact" | "decision" | "commitment";
-  /** The human said it outright, rather than the assistant inferring it. */
+  /** The user said it outright, rather than the assistant inferring it. */
   explicit: boolean; confidence: number;
   source: { messageId?: string; taskId?: string }; createdAt: number;
   expiresAt?: number; supersededBy?: string; deletedAt?: number;
@@ -69,6 +70,7 @@ export type PersonalAssistantRecord = PersonalSettings & {
   /** Missing on older hosts; assignments do not create machine/folder grants. */
   projects?: AssistantProjectBinding[];
   messages: PersonalMessage[]; tasks: PersonalTask[];
+  taskManagerTodos?: PersonalTodo[];
   purgedDelegatedTaskIds?: string[];
   taskLifecycleSnapshotRevision?: number;
   deletedDelegatedTasks?: import("./assistantTaskModel.ts").AssistantTask[];

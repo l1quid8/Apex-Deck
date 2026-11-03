@@ -124,8 +124,8 @@
 
 **Files:** Create `crates/apex-host/src/folder_trust.rs`, `crates/apex-host/src/project_process.rs`. Modify `project_check.rs`, `runner/checks.rs`, `bot_copies.rs`, `git_changes.rs`, the desktop and phone card.
 
-- [x] Failing tests: the design's Lower-writable and Alternate paths lists, and a source-scanning test that fails on a raw project spawn.
-- [x] Implement. The taint record is synced to disk before the jail starts.
+- [ ] Complete the design's Lower-writable and Alternate paths regression tests. Existing source scans do not prove confinement; see Null's 2026-11-03 review.
+- [ ] Complete implementation. The current project-process wrappers do not jail tainted operations, and folder acceptance can authorize a parent of the accepted folder.
 - [x] Commit (`3975b88d`).
 
 ### Task 9: Snapshot isolation
@@ -143,16 +143,16 @@
 
 **Files:** Create `crates/apex-daemon/src/trust_host.rs`. Modify `devices.rs`, `crates/apex-daemon/src/cli.rs`, `src/phone/sshRun.ts`, `src/phone/RemoteSsh.tsx`, Settings on Mac and phone.
 
-- [x] Failing tests: the design's Host trust list.
-- [x] Implement, then commit (`7624f150`, UI `6a97ab4f`).
+- [ ] Complete the design's Host trust regression tests, including shutdown, existing device sessions, and unchanged-boot refusal.
+- [ ] Complete implementation. Partial work committed (`7624f150`, UI `6a97ab4f`); Null's review found shutdown and reboot-gate defects.
 
 ### Task 11: `access_effect` and device rules
 
 **Files:** Modify `crates/apex-daemon/src/authority.rs`, `call_from_device`, `Command`, phone settings screens.
 
-- [x] Read each "must be proven" row and record the answer with a test.
-- [x] Failing test: a limited device runs every command with `"access":"full"` fixtures and no level rises.
-- [x] Implement `access_effect` with no wildcard arm, the five daemon checks under the room lock, and the phone's Face ID step.
+- [ ] Complete behavioral proof for every "must be proven" row; classification assertions alone do not exercise real device mutations.
+- [ ] Complete the real-device-route whole-class regression: a limited device runs every command with `"access":"full"` fixtures and no level rises.
+- [ ] Complete the five atomic daemon checks and native phone Face ID guard. The exhaustive classification exists, but the required old-level/folder bindings and phone guard are incomplete.
 - [x] Commit (`02258231`); step 3 sent to Null: pending review.
 
 ## Step 4 and 5: proof and release
@@ -167,7 +167,7 @@
 - [ ] Ask the Human for the go on the pre-release.
 
 ---
-## Status (Ds4 review, 2026-11)
+## Earlier status (Ds4 review, 2026-11; superseded by Null review below)
 
 Merge commits `f8ecb06b` and `32ed6a7e` were reviewed: conflict resolutions are deliberate, no conflict markers remain, and all jail/trust files survive both parents intact. `npx tsc --noEmit` passes; `cargo check` passes (warnings only). Rust suites pass under `TMPDIR=/tmp` (macOS sun_path fix): apex-adapters linux_jail 89/89, apex-daemon full, apex-host 1005/1006 (the one failure, `ordinary_read_chat_dispatch_does_not_wait_for_task_integration`, is a pre-existing main-side 2s-timeout test that passes alone under parallel load — flaky, not a jail/merge regression).
 
@@ -177,3 +177,25 @@ Held items before merge:
 - Task 12 real runs: providers in Docker, Ubuntu 24.04 VM + AppArmor, X11 desktop, native iPhone checks (Stop, trust reset, Face ID, Files picker, QR tab) — needs infra/human.
 - Task 13 recipe hashes + `vps-update-allow-test.rs` + `prepare_source`/`git apply --check`, Human runs one command with their key, then go for pre-release.
 - Null review of steps 2 and 3 (Task 9/11 step-sends) pending.
+
+## Re-sync and merge hold (Null, 2026-11-03)
+
+The interrupted re-sync integrates main `646722ba` into feature `db69c6f2`.
+The two textual conflicts are resolved, and eight new main commands are
+explicitly classified in `access_effect`. TypeScript and the daemon remote
+compile check pass. The full frontend run had 3,343 passes, 1 popout subprocess
+timeout, and 3 skips; the isolated popout rerun passed.
+Fresh Rust library suites (`TMPDIR=/tmp`, remote feature, two test threads)
+passed: adapters 474, core 97, daemon 243, host 1,064; 18 tests ignored in
+total. These results do not cover Linux kernel or installed-app acceptance.
+
+**Do not merge into main or release this candidate yet.** The user's merge
+authorization remains recorded, but the implementation is not ready: Null's
+fresh review found unconfined project operations, ineffective daemon shutdown
+and existing-session revocation, a bypassed reboot wait, overbroad folder
+acceptance, incomplete access-raise admission, and an unused non-biometric
+Face ID helper. Tasks 8, 10, and 11 are reopened accordingly.
+
+See [the concrete findings and required regressions](../../reviews/linux-jail/2026-11-03-null-merge-review.md).
+The shared checkout and unrelated branches are preserved. No production
+build or release is established by this re-sync.

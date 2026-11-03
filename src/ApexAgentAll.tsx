@@ -1,3 +1,5 @@
+import { useComposerHistory } from "./useComposerHistory";
+import { assistantHistoryTexts } from "./composerHistory";
 import { PersonalAlwaysPermission } from './PersonalApprovalActions';
 import { PersonalTaskTiming } from './PersonalTaskTiming';
 import { assistantConversationMessages, type AssistantConversationMessage } from './assistantConversation';
@@ -20,7 +22,7 @@ import './assistant-tasks.css';
 import './apex-agent-dock.css';
 import type { ToolServer, Workspace } from './types';
 import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, withoutLaneMentions, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
-import { TaskViewContext, personalTaskGroup, personalTaskKey, type TaskGroup, type TaskSummary } from './apexAgentTaskView.ts';
+import { TaskViewContext, personalTaskGroup, personalTaskKey, projectTaskKey, type TaskGroup, type TaskSummary } from './apexAgentTaskView.ts';
 import type { PersonalLane, PersonalMessage, PersonalTask } from './personalAssistant.ts';
 import { PersonalPanels, type PanelName } from './PersonalPanels.tsx';
 import './personal-panels.css';
@@ -65,11 +67,13 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled, voiceBackend, voiceSettings, onVoiceSettings, voiceHeader, onOpenBrowser, onVoiceFocus, onOpenProjectTask, delegatedTasks=[] }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, personalLaneId = 'personal', onNavigatePanel, embedded = false, assistantAvatar, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand, landingTexture, focusTask = null, onFocusHandled, voiceBackend, voiceSettings, onVoiceSettings, voiceHeader, onOpenBrowser, onVoiceFocus, onOpenProjectTask, onDelegateTask, delegatedTasks=[] }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
   delegatedTasks?: AssistantTask[];
   onVoiceFocus?: () => void;
   onOpenProjectTask?: (key: string) => boolean;
+  /** Opens the Delegate a task form, for a job Alfred couldn't start. */
+  onDelegateTask?: () => void;
   voiceBackend?: Backend;
   voiceSettings?: VoiceSettings;
   onVoiceSettings?: (settings: VoiceSettings) => void;
@@ -147,7 +151,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     .filter((item) => inView(item.workspaceId));
   const shownTasks = taskNodes ? (filterWorkspaceId ? taskNodes.filter((item) => item.workspaceId === filterWorkspaceId) : taskNodes).map((item) => item.node) : tasks;
   const filterName = filterWorkspaceId ? names[filterWorkspaceId] ?? 'Project' : '';
-  const [text, setText] = useAssistantComposerDraftState(draftKey, 'text', '');
+  const [text, writeText] = useAssistantComposerDraftState(draftKey, 'text', '');
   const [replyQuotes, setReplyQuotes] = useAssistantComposerDraftState<(MessageQuote & { laneId: string })[]>(draftKey, 'replyQuotes', []);
   /** A second Reply stacks instead of replacing; exact duplicates are ignored. The first quote fixes the lane. */
   const addReplyQuote = (quote: MessageQuote & { laneId: string }) => {
@@ -229,6 +233,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     unmatched = unmatched.replace(pattern, ' '); return true;
   });
   const globalReply = !filterWorkspaceId && !replyQuotes.length && !attachmentLane && !!onOverview && (mentionsAll(text) || /\b(everywhere|all (?:my |the )?(?:projects|threads)|across (?:my |the )?projects|overall)\b/i.test(prose) || namedProjects.length > 1 || (!mentioned && !namedProjects.length && (fallbackLane === '*' || !fallbackLane)));
+  // Aggregate transcripts contain unrelated projects; recall only the composer's lane.
+  const historyLane = globalReply ? '*' : attachmentLane ?? replyQuotes[0]?.laneId ?? target;
+  const composerHistory = useComposerHistory(JSON.stringify([draftKey, assistant?.hostId, assistant?.id, filterWorkspaceId, focus, attachmentLane, replyQuotes[0]?.laneId]), text, writeText, () => assistantHistoryTexts(entries, historyLane), assistantComposerDraftFor(draftKey));
+  const setText = composerHistory.setText;
   const bottom = useRef<HTMLDivElement | null>(null);
   const isPinnedToBottom = useRef(true);
   // `busy` only updates on the next render; this blocks a second Enter pressed before then.
@@ -697,10 +705,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           }
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
+          const plannedJob = item.role === 'assistant' && item.kind === 'update' && item.taskId ? delegatedTasks.find((job) => job.id === item.taskId) : undefined;
           const personalBody = <>
             <small className="apex-agent-message-meta">{embedded&&item.role==='assistant'&&assistantAvatar}{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.legacy && <LegacyBadge />}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{embedded&&item.role==='assistant'&&<time>{clock(item.at)}</time>}</small>
             {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
             {item.taskProblem && task && <button type="button" className="apex-agent-task-link plain dot-link" onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Review task</button>}
+            {item.kind === 'delegation_failed' && onDelegateTask && <button type="button" className="assistant-chat-action" onClick={onDelegateTask}>Delegate a task</button>}
+            {plannedJob && <button type="button" className="assistant-chat-action" onClick={() => onOpenProjectTask?.(projectTaskKey(plannedJob.owner.hostId, plannedJob.owner.workspaceId, plannedJob.id))}>{plannedJob.status === 'proposed' ? 'Review plan' : 'Open task'}</button>}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
             addReplyQuote({ messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL });
@@ -795,7 +806,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           }}
           onCommand={(command) => runCommand(command, attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL)} />
         <div className="composer-field"><textarea onPaste={event=>{const files=Array.from(event.clipboardData.files);if(files.length){event.preventDefault();composerTools.current?.attachFiles(files);}}} ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label={`Message ${conversationName}`} placeholder={voice.hint ?? (firstRun ? `Give ${personal!.name} its first brief` : selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…')}
-          onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if((event.metaKey||event.ctrlKey)&&event.shiftKey&&event.key.toLowerCase()==='t'){event.preventDefault();setTldr(!tldr);return;} if (event.key === 'Escape' && pendingReply && personal?.cancelReply) {event.preventDefault();void run(()=>personal!.cancelReply!(pendingReply.id));return;} if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /></div>
+          onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if (composerHistory.onKeyDown(event)) { if (!text && !draftFallback) setDraftFallback(historyLane); return; } if((event.metaKey||event.ctrlKey)&&event.shiftKey&&event.key.toLowerCase()==='t'){event.preventDefault();setTldr(!tldr);return;} if (event.key === 'Escape' && pendingReply && personal?.cancelReply) {event.preventDefault();void run(()=>personal!.cancelReply!(pendingReply.id));return;} if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /></div>
         <ComposerModeControls planOn={planOn} onPlan={()=>setPlanOn(false)} tldr={tldr} onTldr={()=>{setTldr(!tldr);composerInput.current?.focus();}}/>
         {embedded&&round.mic&&!(voice.slot.live && voice.slot.look === 'capsule')&&<VoiceCallControls settings={voice.settings} candidates={voice.candidates} who={voice.who} disabled={!!personal?.offline}/>}
         {embedded&&round.send&&<button type="submit" className="round-send" aria-label="Send" disabled={busy||attachmentState.pending||attachmentState.hasErrors||(!text.trim()&&!attachmentState.paths.length)}>↑</button>}

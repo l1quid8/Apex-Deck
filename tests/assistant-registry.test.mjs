@@ -68,5 +68,5 @@ test('phone hides children on monitor removal and reassignment even when stale h
   assert.deepEqual(assistantPaneForOwner(state, 'worker-b', owner('monitor-b')), pane('worker-b'));
   state = reduceAssistantSnapshot(state, owner('monitor-a'), snapshot(9, [execution('worker-old')]));
   assert.deepEqual(mergeAssistantPanes(savedHuman, currentAssistantRegistry(state, { project: owner('monitor-b') })), [human, pane('worker-b')]);
-  assert.deepEqual(savedHuman, [human], 'synthetic children never enter the human session pane array');
+  assert.deepEqual(savedHuman, [human], 'synthetic children never enter the user session pane array');
 });

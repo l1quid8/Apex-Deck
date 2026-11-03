@@ -6,7 +6,7 @@ export const TLDR_LINE = "[TL;DR mode: answer in 2–4 sentences. Lead with the 
 
 export const withTldr = (message: string, on: boolean) => (on && message ? `${message}\n\n${TLDR_LINE}` : message);
 
-/** The message as the human wrote it, and whether it was sent in TL;DR mode. */
+/** The message as the user wrote it, and whether it was sent in TL;DR mode. */
 export function splitTldr(text: string): { text: string; tldr: boolean } {
   const at = text.lastIndexOf(TLDR_LINE);
   if (at < 0) return { text, tldr: false };

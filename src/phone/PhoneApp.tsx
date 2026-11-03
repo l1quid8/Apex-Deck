@@ -12,7 +12,7 @@ import { VoiceCall, PhoneCallBar, PhoneCallCapsule, PhoneCallStrip, usePhoneCall
 import { composerButton, type CallLook } from '../voice/callView.ts';
 import { Capacitor } from "@capacitor/core";
 import { App } from "@capacitor/app";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { botChangeGate, botSendGate } from "../phoneBots";
 import { AppearanceSettings } from "../AppearanceSettings";
@@ -23,8 +23,11 @@ import { Avatar } from "../Avatar";
 import { ApexAgentSources } from "../ApexAgentSources";
 import { assistantDisplayName } from "../assistantName.ts";
 import { ApexAgentAll } from "../ApexAgentAll";
-import { usePersonalAssistant, type PersonalLane } from "../personalAssistant";
+import type { PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
+import { usePersonalAssistants } from "../usePersonalAssistants.ts";
+import { PhoneTasks } from "./PhoneTasks";
+import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phoneTaskFullAccess, phonePersonalTaskSources } from "./taskFeed.ts";
 import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState, type AssistantVisiblePane } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { SPEED_OPTIONS, speedHint } from "../speed";
@@ -43,6 +46,8 @@ import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from 
 import { withAttachments } from "../attachments";
 import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
 import { appendToolToken } from "../composerMenu";
+import { threadHistoryTexts } from "../composerHistory";
+import { useComposerHistory } from "../useComposerHistory";
 import { chooseOutcome, pickerMatches, pickerRows, workInRows, type PickerRow } from "../destinations";
 import { buildNotice, dotState, helperNotice } from "../hostFacts";
 import type { HostConnection } from "../hostConnections";
@@ -104,7 +109,8 @@ import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../room
 import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
 import type { ProjectMonitor } from "../apexAgentModel";
-import { folderCopyText, writeClipboard } from "../threadCopy";
+import { folderCopyText } from "../threadCopy";
+import { copyText } from "../copyText";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
 import { planKey, planOf } from "../plans";
@@ -125,7 +131,7 @@ const FOLDS_KEY = "apex-deck.phone.folds.v1";
 const CREW_KEY = "apex-deck.phone.crew.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
-type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
+type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
 type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
@@ -785,12 +791,18 @@ export function PhoneApp() {
 
   const assistantWorkspace = workspaces.find((workspace) => workspace.id === assistantWorkspaceId) ?? null;
   // One collection discovers all paired machines; notifications select their exact durable owner.
-  const personal = usePersonalAssistant({
+  const personalCollection = usePersonalAssistants({
     hosts: hosts.map((host) => ({ id: host.machine.id, name: host.machine.name, remote: true })),
     hostBackend: (id) => { const host = phoneHost(id); if (!host) throw new Error("That machine isn't paired with this phone."); return host.backend; },
     offlineHost: (id) => linkOf(id)?.status !== "online",
-    open: tab === "agents" || personalOpen, device: "phone", onOpen: () => setPersonalOpen(true),
+    open: tab === "agents" || tab === "tasks" || personalOpen, device: "phone", onOpen: () => setPersonalOpen(true),
   });
+  const personal = personalCollection.pendingLane() ?? (personalCollection.selected ? personalCollection.lane(personalCollection.selected) : personalCollection.emptyLane());
+  const taskRows = collectPhoneTasks({ assistants: personalCollection.assistants, registry: assistantRegistry, projects: assistantProjects, hosts, problems: assistantRegistryErrors });
+  const phoneTaskSources = phonePersonalTaskSources(personalCollection.assistants, hosts);
+  const taskAttention = phoneTasksNeedAttention(taskRows);
+  const taskHosts = useCallback(() => hostsRef.current, []);
+  const taskBackend = (row: import('../workspaceTasks.ts').WorkspaceTaskRow) => phoneTaskBackend(row, taskHosts);
   const assistantWorkspaceHost = assistantWorkspace ? phoneHost(workspaceHost(assistantWorkspace)) : null;
 
   useEffect(() => {
@@ -799,10 +811,13 @@ export function PhoneApp() {
     const eligible = assistantProjects.filter((project) => project.allowed && project.link?.status === "online");
     const refresh = async (project: typeof assistantProjects[number]) => {
       const host = hosts.find((item) => item.machine.id === workspaceHost(project.workspace));
-      if (!host || !project.allowed || project.link?.status !== "online") return;
+      if (!host || !project.allowed || !phoneTaskFullAccess(host) || project.link?.status !== "online") return;
       const version = (versions.get(project.workspace.id) ?? 0) + 1;
       versions.set(project.workspace.id, version);
       try {
+        const connection = host.connection.get().status;
+        const authenticatedHostId = connection.kind === "connected" ? connection.hostId : undefined;
+        if (!authenticatedHostId) throw new Error("Reconnect to verify the project machine.");
         const monitor = await host.backend.call<ProjectMonitor | null>("monitor_get", { workspaceId: project.workspace.id });
         if (!live || versions.get(project.workspace.id) !== version) return;
         if (monitor && (monitor.workspaceId !== project.workspace.id || monitor.cwd !== project.workspace.path || monitor.hostId !== host.machine.id))
@@ -821,7 +836,9 @@ export function PhoneApp() {
           ? all : { ...all, [project.workspace.id]: owner });
         const snapshot = await host.backend.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner });
         if (!live || versions.get(project.workspace.id) !== version) return;
-        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot));
+        const identity = host.connection.get().status;
+        if (!phoneTaskFullAccess(host) || identity.kind !== "connected" || !identity.hostId || identity.hostId !== authenticatedHostId) throw new Error("The project machine changed during task refresh.");
+        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot, Date.now(), identity.hostId));
         setAssistantRegistryErrors((all) => { const { [project.workspace.id]: _old, ...rest } = all; return rest; });
       } catch (error) {
         if (live && versions.get(project.workspace.id) === version) setAssistantRegistryErrors((all) => ({ ...all, [project.workspace.id]: words(error) }));
@@ -1194,6 +1211,19 @@ export function PhoneApp() {
   }
 
   const sessionEdits = useRef(serialEdits());
+  function createPhoneTaskWorker(project: import('../assistantIdentity.ts').ProjectRef, profile: ParticipantConfig, assistant: import('../assistantIdentity.ts').AssistantRef) {
+    return sessionEdits.current(async () => {
+      const source = phoneTaskSources.find(source => source.assistant.hostId === assistant.hostId && source.assistant.assistantId === assistant.assistantId);
+      const route = source && phoneTaskBackend({verifiedHostId:assistant.hostId,routeHostId:source.routeHostId ?? assistant.hostId,offline:source.offline}, taskHosts);
+      if (!route || project.hostId !== assistant.hostId) throw new Error('Reconnect the owning machine with Full access before choosing a worker.');
+      const threadId = `pane-${crypto.randomUUID()}`;
+      await route.roomCreate(threadId, [profile], NEW_THREAD, project.cwd);
+      const fresh = await route.sessionLoad();
+      if (!fresh) throw new Error('The owning machine has no saved workspace.');
+      await route.sessionSave({ ...fresh, panes: [...fresh.panes, { id: threadId, workspaceId: project.workspaceId, kind: 'chat', assistantDraftFor: assistant, title: `${profile.display_name} · Task worker` }] });
+      return threadId;
+    });
+  }
   function saveSession(change: (current: AppSession) => AppSession | Promise<AppSession>) {
     return sessionEdits.current(async () => {
       if (!macHost) throw new Error(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread.");
@@ -1889,7 +1919,7 @@ export function PhoneApp() {
 
   /** Put a message on the clipboard; false when the phone couldn't. */
   async function copyMessage(text: string) {
-    const ok = await writeClipboard(text, navigator.clipboard);
+    const ok = await copyText(text);
     if (!ok) setNotice("The phone couldn't copy that message.");
     return ok;
   }
@@ -2054,7 +2084,7 @@ export function PhoneApp() {
   function copyPath(path: string) {
     const text = folderCopyText(path);
     if (!text) { setNotice("This project has no folder."); return; }
-    void writeClipboard(text, navigator.clipboard).then((ok) => setNotice(ok ? `Copied ${text}` : "The phone couldn't copy that path."));
+    void copyText(text).then((ok) => setNotice(ok ? `Copied ${text}` : "The phone couldn't copy that path."));
   }
 
   const draft = openKey ? draftFor(openKey) : emptyDraft();
@@ -2210,7 +2240,6 @@ export function PhoneApp() {
   }
   return (
     <div className="ph-app" data-rev={tick}>
-      <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(host,room)=>{setTab("threads");setOpenHost(host);setOpenId(room);}} />
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
@@ -2375,6 +2404,19 @@ export function PhoneApp() {
             archived={sections.archived.length}
             onArchived={() => setMenu({ kind: "archived" })}
           />
+        ) : tab === "tasks" ? (
+          <PhoneTasks delegationTargets={personalCollection.assistants.flatMap(summary => (personalCollection.lane(summary.ref)?.assistant?.projects ?? []).filter(binding => binding.tools !== 'off').map(binding => ({assistant:summary.ref,project:binding.project,name:assistantProjects.find(item => item.workspace.id === binding.project.workspaceId)?.workspace.name ?? binding.project.cwd})))} onCreateTaskWorkerThread={createPhoneTaskWorker} personalSources={phoneTaskSources} rows={taskRows} problems={[...Object.values(assistantRegistryErrors), ...hosts.filter(host => host.connection.get().status.kind === 'connected' && !phoneTaskFullAccess(host)).map(host => `Tasks on ${host.machine.name} require Full access. Change this phone’s access in that machine’s Settings → Phones.`)]} covered={covered} backendForRow={taskBackend} profiles={session?.profiles ?? []} panes={panes}
+            onKeepThread={(row, project, id) => { void sessionEdits.current(async () => {
+              const route = taskBackend(row); if (!route) throw new Error('Reconnect with Full access to keep this conversation.');
+              const fresh = await route.sessionLoad(); if (!fresh) throw new Error('The owning machine has no saved workspace.');
+              const existing = fresh.panes.find(pane => pane.id === id);
+              if (existing && existing.workspaceId !== project.workspaceId) throw new Error('This conversation belongs to another project.');
+              const pane = { ...(existing ?? {id,workspaceId:project.workspaceId,kind:'chat' as const,title:row.title}), closed:false,pinned:true,assistantDraftFor:undefined };
+              await route.sessionSave({...fresh,panes:[...fresh.panes.filter(item => item.id !== id),pane]});
+              setNotice('Conversation kept in Threads.');
+            }).catch(error => setNotice(words(error))); }}
+            onOpenProject={(row, project) => { const target = assistantProjects.find(item => item.workspace.id === project.workspaceId && item.workspace.path === project.cwd && workspaceHost(item.workspace) === row.routeHostId); if (target) setAssistantWorkspaceId(target.workspace.id); }}
+            onCreateWorkerThread={(row, project, profile) => { if (!row.assistant) return Promise.reject(new Error('This task has no assistant owner.')); return createPhoneTaskWorker(project, profile, row.assistant); }} onOpenThread={(row, id) => { setOpenHost(row.routeHostId); setOpenId(id); setTab("threads"); }} />
         ) : tab === "settings" ? (
           <main className="ph-content" inert={covered}>
             <h2>Settings</h2>
@@ -2460,10 +2502,11 @@ export function PhoneApp() {
             host.backend.detectAgents().then((found) => setAgents(found.filter((agent) => agent.found).map((agent) => agent.label))).catch(() => setAgents([]));
           }} />
         )}
+        <PhoneCallBar who={callWho} last={inChat} hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(host,room)=>{setTab("threads");setOpenHost(host);setOpenId(room);}} />
         {!inChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
-          {([[Command, "Agents", "agents"], [Terminal, "Code", "code"], [MessageSquare, "Threads", "threads"], [Folder, "Library", "library"]] as const).map(([Icon, label, item]) => (
+          {([[Command, "Agents", "agents"], [Terminal, "Code", "code"], [MessageSquare, "Threads", "threads"], [CheckCircle, "Tasks", "tasks"], [Folder, "Library", "library"]] as const).map(([Icon, label, item]) => (
             <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") { setOpenId(null); } }}>
-              <Icon size={21} />{label}{item === "code" && terminalNeedsAnswer && <i className="ph-tabs-amber-dot" />}
+              <Icon size={21} />{label}{item === "tasks" && taskAttention && <i className="ph-tabs-amber-dot" aria-label="Tasks need you" />}{item === "code" && terminalNeedsAnswer && <i className="ph-tabs-amber-dot" />}
             </button>
           ))}
         </nav>}
@@ -3136,6 +3179,11 @@ function ThreadView(props: {
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerHistory = useComposerHistory(
+    JSON.stringify([props.link.id, props.paneId]), props.draft.text,
+    value => props.onDraft(typeof value === "function" ? value(props.draft.text) : value),
+    () => threadHistoryTexts(props.messages),
+  );
   // The keyboard is up while the box has focus; the bot bar folds away until it goes down.
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
@@ -3201,7 +3249,7 @@ function ThreadView(props: {
   };
   const tag = (id: string) => {
     const text = tagFromBar(props.draft.text, props.participants.find((p) => p.id === id), props.participants);
-    props.onDraft(text);
+    composerHistory.setText(text);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
   };
   const everyone = props.participants.length > 1 && props.toIds !== null && props.participants.every((p) => props.toIds!.includes(p.id));
@@ -3210,7 +3258,7 @@ function ThreadView(props: {
   const picking = caret !== null && !paused && props.participants.length > 0 ? mentionPicks(props.draft.text, caret, props.participants) : null;
   const choose = (handle: string) => {
     const next = pickMention(props.draft.text, caret ?? props.draft.text.length, picking?.trigger ?? null, handle);
-    props.onDraft(next.text);
+    composerHistory.setText(next.text);
     setCaret(next.caret);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(next.caret, next.caret); });
   };
@@ -3612,7 +3660,11 @@ function ThreadView(props: {
           <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
               placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
-              onChange={(event) => { props.onDraft(event.target.value); setCaret(event.target.selectionStart); }}
+              onChange={(event) => { composerHistory.setText(event.target.value); setCaret(event.target.selectionStart); }}
+              onKeyDown={(event) => {
+                if (picking && picking.picks.length > 0) return;
+                composerHistory.onKeyDown(event);
+              }}
               onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
               onFocus={(event) => { setCaret(event.currentTarget.selectionStart); setTyping(true); }}
               onBlur={() => { setCaret(null); setTyping(false); }} />

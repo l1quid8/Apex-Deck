@@ -90,6 +90,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     look: rawTouched?.look === true,
     realtimeVoice: rawTouched?.realtimeVoice === true,
     realtimeModel: rawTouched?.realtimeModel === true,
+    metaModel: rawTouched?.metaModel === true,
   };
   const machines = new Map<string, VoiceSettings>(),
     machineLoaded = new Map<string, number>(),
@@ -321,6 +322,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
       if (settings.look !== before.look) touched.look = true;
       if (settings.realtimeVoice !== before.realtimeVoice) touched.realtimeVoice = true;
       if (settings.realtimeModel !== before.realtimeModel) touched.realtimeModel = true;
+      if (settings.metaModel !== before.metaModel) touched.metaModel = true;
       try {
         deps.storage.setItem(PHONE_VOICE_KEY, JSON.stringify(settings));
         deps.storage.setItem(PHONE_VOICE_TOUCHED_KEY, JSON.stringify(touched));

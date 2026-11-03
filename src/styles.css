@@ -3513,6 +3513,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .queued-inline .q-meta { position: relative; display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .queued-inline .q-meta button { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 0 2px; min-height: 0; font-size: 11px; color: var(--muted); }
 .queued-inline .q-meta button:hover { color: var(--text); }
+.access-note { margin: 4px 0; font-size: 12px; text-align: center; }
 .queued-inline .q-for { display: inline-flex; align-items: center; gap: 5px; }
 .queued-inline .q-for .identicon { --cell: 2px; --gap: 0px; width: 14px; height: 14px; border-radius: 4px; }
 .queued-inline .q-sep { width: 1px; height: 11px; background: var(--line); }

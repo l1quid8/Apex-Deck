@@ -44,6 +44,7 @@ mod memory_lifecycle;
 pub mod project_memory_service;
 pub mod personal_worker;
 mod personal_task_lifecycle;
+mod personal_todos;
 mod personal_archive;
 mod personal_voice;
 mod model_metrics;

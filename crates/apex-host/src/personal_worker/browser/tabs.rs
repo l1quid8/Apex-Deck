@@ -11,7 +11,7 @@ pub(super) const LEASE: Duration = Duration::from_secs(60);
 pub(super) const WIDTH: u32 = 1280;
 pub(super) const HEIGHT: u32 = 800;
 
-/// Who may reach a tab. The human reaches every tab; seeing one grants nobody else anything.
+/// Who may reach a tab. The user reaches every tab; seeing one grants nobody else anything.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Scope {
@@ -145,7 +145,7 @@ pub fn restorable(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
-/// Only the editing commands the human's keyboard needs, never an arbitrary browser command.
+/// Only the editing commands the user's keyboard needs, never an arbitrary browser command.
 pub fn editing_command(name: &str) -> bool {
     matches!(name, "selectAll" | "undo" | "redo" | "delete")
 }
@@ -189,7 +189,7 @@ mod tests {
         info.control = Control::Human;
         assert_eq!(info.claim(&bot("a"), now), Err("browser_taken_over"));
         assert!(!info.release("a"));
-        assert_eq!(info.holder(now + LEASE * 10), Control::Human, "the human's hold doesn't lapse");
+        assert_eq!(info.holder(now + LEASE * 10), Control::Human, "the user's hold doesn't lapse");
     }
 
     #[test]

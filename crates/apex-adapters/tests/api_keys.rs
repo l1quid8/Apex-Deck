@@ -48,7 +48,7 @@ fn request(text: &str) -> TurnRequest {
         effort_override: None,
         access: None,
         system: "You are a test bot.".into(),
-        turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
+        turns: vec![ViewTurn { role: Role::User, content: format!("[User]: {text}") }],
         unseen: vec![],
         plan: false,
         cwd: None,

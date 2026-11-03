@@ -225,6 +225,9 @@ struct ModelReply {
     remember: Vec<ProposedFact>,
     #[serde(default)]
     forget: Vec<String>,
+    /// Delegations Deck couldn't read; the rest of the reply still counts.
+    #[serde(skip)]
+    bad_delegations: usize,
 }
 
 impl ModelReply {
@@ -233,7 +236,7 @@ impl ModelReply {
     }
 
     fn plain(text: &str) -> Self {
-        ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![] }
+        ModelReply { reply: text.trim().to_owned(), delegations: vec![], task: None, schedule: None, helpers: vec![], remember: vec![], forget: vec![], bad_delegations: 0 }
     }
 }
 
@@ -312,11 +315,26 @@ struct ProposedFact {
 
 /// The outermost JSON object in the model's text, or the text as a plain reply.
 fn parse_reply(text: &str) -> ModelReply {
-    let parsed = serde_json::from_str::<ModelReply>(text.trim()).ok().or_else(|| {
-        let (start, end) = (text.find('{')?, text.rfind('}')?);
-        serde_json::from_str::<ModelReply>(text.get(start..=end)?).ok()
-    });
+    let outermost = || { let (start, end) = (text.find('{')?, text.rfind('}')?); text.get(start..=end) };
+    let parsed = reply_json(text.trim()).or_else(|| reply_json(outermost()?));
     parsed.unwrap_or_else(|| ModelReply::plain(text))
+}
+
+/// A reply with a delegation Deck can't read loses that delegation, not the
+/// whole reply, so the human never sees raw JSON in place of a failed job.
+fn reply_json(text: &str) -> Option<ModelReply> {
+    if let Ok(reply) = serde_json::from_str(text) { return Some(reply); }
+    let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let reply = value.as_object_mut()?;
+    let delegations = reply.get("delegations")?.clone();
+    let listed = delegations.as_array().cloned().unwrap_or_else(|| vec![delegations]);
+    let readable: Vec<serde_json::Value> = listed.iter().filter(|item| serde_json::from_value::<ProposedDelegation>((*item).clone()).is_ok()).cloned().collect();
+    let bad_delegations = listed.len() - readable.len();
+    reply.insert("delegations".into(), serde_json::Value::Array(readable));
+    reply.entry("reply").or_insert(serde_json::Value::String(String::new()));
+    let mut parsed: ModelReply = serde_json::from_value(value).ok()?;
+    parsed.bad_delegations = bad_delegations;
+    Some(parsed)
 }
 
 fn excerpt(text: &str) -> String {
@@ -341,7 +359,7 @@ pub(crate) fn clock(ms: u64) -> String {
     format!("{:02}:{:02} UTC", minutes / 60 % 24, minutes % 60)
 }
 
-/// "14:05" in the human's time zone.
+/// "14:05" in the user's time zone.
 fn local(assistant: &PersonalAssistant, ms: u64) -> String {
     let minutes = assistant.local_minutes(ms);
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
@@ -452,7 +470,7 @@ fn dollars(micros: u64) -> String {
     format!("${:.2}", micros as f64 / 1e6)
 }
 
-/// Why this reply needs the human's OK to spend, if it does.
+/// Why this reply needs the user's OK to spend, if it does.
 fn spend_hold(assistant: &PersonalAssistant, profile: &ParticipantConfig, event: &PersonalEvent, spent: u64) -> Option<String> {
     if let Some(prompt) = crate::personal::permissions::reply_spend_hold(assistant,event) { return Some(prompt); }
     let limit = assistant.budget.daily_limit_micros?;
@@ -712,7 +730,7 @@ impl Host {
         }
     }
 
-    /// Answer the human: privacy and spend checks in code, then one model
+    /// Answer the user: privacy and spend checks in code, then one model
     /// call with the assembled context. It has no tools, apart from any
     /// computer turn the helper accepts for this reply.
     async fn personal_answer(self: &Arc<Self>, tools: &WorkerTools, snapshot: PersonalAssistant, event: &PersonalEvent, text: String) -> Result<(), String> {
@@ -732,7 +750,8 @@ impl Host {
             return Ok(());
         }
         let tools_on = if snapshot.privacy.local_only { vec![] } else { connectors::available() };
-        let room_budget = (snapshot.context_budget_chars as usize / 3).clamp(2_000, 12_000);
+        // Small contexts must leave room for fixed instructions and private task context.
+        let room_budget = (snapshot.context_budget_chars as usize / 3).clamp(1_000, 12_000);
         let view = match &event.source { EventSource::Human { view_context, .. } => view_context.as_ref(), _ => None };
         let (catalog, outside) = self.personal_room_context(&snapshot, &text, view, room_budget)?;
         let (mut system, mut seen) = context::assemble_seen_reserved(&snapshot, &text, at, &tools_on, catalog.chars().count());
@@ -911,6 +930,20 @@ impl Host {
         })
     }
 
+    /// The worker's name as the human knows it, for the chat note.
+    fn delegation_worker(&self, proposed: &ProposedDelegation) -> String {
+        let id = proposed.destination.workers.first().cloned().unwrap_or_default();
+        let room = proposed.destination.thread_id.as_deref().and_then(|thread| self.store().room(thread).ok().flatten());
+        room.and_then(|room| room.snapshot.participants.iter().find(|profile| profile.id.to_string() == id).map(|profile| profile.display_name.clone())).unwrap_or(id)
+    }
+
+    /// The project's saved name, or its folder name.
+    fn delegation_project(&self, project: &crate::personal_workspace::ProjectRef) -> String {
+        let saved = self.session().ok().flatten().and_then(|session| session.workspaces).unwrap_or_default();
+        let name = saved.iter().find(|ws| ws["id"].as_str() == Some(&project.workspace_id)).and_then(|ws| ws["name"].as_str()).map(str::to_owned);
+        name.unwrap_or_else(|| std::path::Path::new(&project.cwd).file_name().map_or_else(|| project.cwd.clone(), |name| name.to_string_lossy().into_owned()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn commit_reply(self: &Arc<Self>, tools: &WorkerTools, assistant_id: &str, event_id: &str, asked: &str, reply: ModelReply, cost: CostEntry, seen: context::Seen, screen: bool) -> Result<(), String> {
         let local = self.local_host_id()?;
@@ -934,14 +967,18 @@ impl Host {
                 delegation_id: format!("{event_id}:{index}"), brief: proposed.brief.clone(), destination: proposed.destination.clone(),
                 mode: proposed.mode, review_criteria: proposed.review_criteria.clone(), expected_revision: current.revision,
             };
+            let (worker, place) = (self.delegation_worker(proposed), self.delegation_project(&proposed.project));
             delegation_notes.push(match self.prepare_personal_delegation_with_reply_cost(input,cost.micros.unwrap_or(0)) {
                 Ok(receipt) if receipt["standingTrust"]==true => {
                     dispatch_delegations=true;
-                    format!("Queued project task {} under your Full access.",receipt["taskId"].as_str().unwrap_or("unknown"))
+                    ("update", format!("The job for {worker} is queued in {place}."), receipt["taskId"].as_str().map(str::to_owned))
                 },
-                Ok(receipt) => format!("Proposed project task {}. It waits for your explicit approval in Tasks.", receipt["taskId"].as_str().unwrap_or("unknown")),
-                Err(error) => format!("Project proposal could not be saved: {error}"),
+                Ok(receipt) => ("update", format!("The plan for {worker} is ready in {place}. Nothing starts until you approve it."), receipt["taskId"].as_str().map(str::to_owned)),
+                Err(error) => ("delegation_failed", format!("I couldn't start that job: {error} Nothing is running."), None),
             });
+        }
+        if reply.bad_delegations > 0 {
+            delegation_notes.push(("delegation_failed", "I couldn't start that job. Deck turned down the project details I sent, so nothing is running.".to_owned(), None));
         }
         self.change_assistant(assistant_id, |assistant| {
             let at = now();
@@ -950,12 +987,15 @@ impl Host {
             event.state = EventState::Done;
             event.error = None;
             assistant.add_cost(cost);
+            let silent = reply.reply.trim().is_empty() && !delegation_notes.is_empty();
             let text = if reply.reply.trim().is_empty() { "…".to_owned() } else { reply.reply.trim().to_owned() };
-            if screen { assistant.post_outside(OutsideSource::Screen, text, Some(event_id.to_owned()), at); }
-            else { assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at); }
-            for note in delegation_notes { assistant.post("system", "update", note, None, Some(event_id.to_owned()), at); }
+            if !silent {
+                if screen { assistant.post_outside(OutsideSource::Screen, text, Some(event_id.to_owned()), at); }
+                else { assistant.post("assistant", "chat", text, None, Some(event_id.to_owned()), at); }
+            }
+            for (kind, note, task_id) in delegation_notes { assistant.post("assistant", kind, note, task_id, Some(event_id.to_owned()), at); }
             // Outside words in the prompt could have planted a "remember";
-            // only the human's own words may forget.
+            // only the user's own words may forget.
             let outside = seen.any();
             if outside && !reply.remember.is_empty() {
                 assistant.post("system", "update", "I didn't save that to memory, because outside content is in this conversation. Add it in Memory, or say it again in a new conversation.".into(), None, Some(event_id.to_owned()), at);
@@ -1142,7 +1182,7 @@ enum Claimed {
 }
 
 /// Re-check a queued task in the gateway and, if it may run, save the
-/// attempt. Everything the human or a rule allowed is checked again here.
+/// attempt. Everything the user or a rule allowed is checked again here.
 fn claim_run(assistant: &mut PersonalAssistant, tools: &WorkerTools, task_id: &str, local: &str, at: u64) -> Option<Claimed> {
     if assistant.archived_at.is_some(){return None;}
     let task = assistant.tasks.iter().find(|t| t.id == task_id && t.status == TaskStatus::Queued).cloned()?;
@@ -1542,7 +1582,7 @@ fn block_standing_task(assistant:&mut PersonalAssistant,task_id:&str,why:&str,at
 /// The clock's work for one assistant, in code with no model call.
 fn tick_assistant(assistant: &mut PersonalAssistant, local_id: &str, at: u64) -> (Option<u64>, Vec<crate::personal::Notice>) {
     assistant.prune_tasks();
-    // Schedules retain either the human confirmation or the original Full stamp.
+    // Schedules retain either the user confirmation or the original Full stamp.
     for index in 0..assistant.schedules.len() {
         let schedule = assistant.schedules[index].clone();
         if schedule.status != ScheduleStatus::Active || assistant.paused { continue; }
@@ -1831,7 +1871,7 @@ fn propose_schedule(assistant: &mut PersonalAssistant, event_id: &str, proposed:
     assistant.post("system", "approval", line, None, Some(event_id.to_owned()), at);
 }
 
-/// Save, correct and forget facts the model proposed in answer to the human.
+/// Save, correct and forget facts the model proposed in answer to the user.
 fn apply_memory(assistant: &mut PersonalAssistant, remember: &[ProposedFact], forget: &[String], event_id: &str, at: u64) {
     let mut said = Vec::new();
     for id in forget.iter().take(20) {
@@ -1905,7 +1945,7 @@ fn approval_line(assistant: &PersonalAssistant, decision: &PendingDecision, oper
     format!("Approval needed: {}{plan}", decision.prompt)
 }
 
-/// Hold a reply until the human OKs its cost.
+/// Hold a reply until the user OKs its cost.
 fn hold_for_spend(assistant: &mut PersonalAssistant, event_id: &str, prompt: String, at: u64) {
     let Some(source) = assistant.events.iter().find(|e| e.id == event_id && e.state == EventState::Processing).cloned() else { return };
     let scoped = crate::personal::permissions::reply_spend_operation(assistant,&source);
@@ -2039,7 +2079,7 @@ pub(crate) fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalE
     stop
 }
 
-/// The human's answer to one decision, on a task or a schedule.
+/// The user's answer to one decision, on a task or a schedule.
 pub(crate) fn decide(assistant: &mut PersonalAssistant, decision_id: &str, params_hash: &str, approve: bool, event_id: &str, local: &str, at: u64) -> Result<Option<(Option<String>, String)>, String> {
     if let Some(result) = computer::decide_permission(assistant,decision_id,params_hash,approve,event_id,at) { return result; }
     if let Some(index) = assistant.schedules.iter().position(|s| s.decision.as_ref().is_some_and(|d| d.id == decision_id)) {

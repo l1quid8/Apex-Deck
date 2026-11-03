@@ -6,6 +6,11 @@ func same(_ a: AXUIElement?, _ b: AXUIElement?) -> Bool {
   guard let a = a, let b = b else { return a == nil && b == nil }
   return CFEqual(a, b)
 }
+/// Untargeted input is only safe when focus belongs to the window being read.
+func focusForReadWindow(_ focus: AXUIElement?, focusedWindow: AXUIElement?, readWindow: AXUIElement) -> AXUIElement? {
+  guard let focusedWindow = focusedWindow, same(focusedWindow, readWindow) else { return nil }
+  return focus
+}
 func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
   if let deadline = Thread.current.threadDictionary["axDeadline"] as? Double,
     ProcessInfo.processInfo.systemUptime >= deadline
@@ -253,9 +258,13 @@ final class Accessibility {
     Thread.current.threadDictionary["axDeadline"] = ProcessInfo.processInfo.systemUptime + 2
     defer { Thread.current.threadDictionary.removeObject(forKey: "axDeadline") }
     let focused = element(root, kAXFocusedWindowAttribute)
-    let focus = element(root, kAXFocusedUIElementAttribute)
-    let best = focused ?? BackgroundSupport.bestWindow(infos: BackgroundSupport.windowInfos(root: root, focusedWindow: nil))?.element
+    var focus = element(root, kAXFocusedUIElementAttribute)
+    let normalFocus = focused.flatMap(windowNumber).flatMap(windowLayer).map { $0 == 0 } ?? (focused != nil)
+    let best = normalFocus ? focused
+      : BackgroundSupport.readableWindow(infos: BackgroundSupport.windowInfos(root: root, focusedWindow: focused))?.element ?? focused
     guard let window = best else { throw Refusal("app_has_no_window") }
+    // Keys and text would land in the window the bot isn't reading, so its focus doesn't count.
+    focus = focusForReadWindow(focus, focusedWindow: focused, readWindow: window)
     var tree = Tree(targetPID: app.processIdentifier)
     tree.walk(window)
     // A foreign surface can host another app's sheet, so reading stays refused.
@@ -297,13 +306,16 @@ final class Accessibility {
     }
     guard string(window, kAXDocumentAttribute) == s.document else { throw Refusal("window_document_changed") }
     guard let focus = s.focus, pid(focus) == s.app.processIdentifier, safe(focus) else { return nil }
-    if let print = s.focusFingerprint, print != fingerprint(focus) { throw Refusal("focused_control_changed") }
     return focus
   }
   /// Keys and text land on the app's focused control, so it must be the one the bot read.
   func liveFocus(_ s: Snapshot) throws -> AXUIElement {
     let root = AXUIElementCreateApplication(s.app.processIdentifier)
-    guard let focus = try validate(s), same(element(root, kAXFocusedUIElementAttribute), focus) else {
+    guard let focus = try validate(s) else { throw Refusal("foreign_secure_or_unknown_focus") }
+    // Numbered actions revalidate their engine target, independently of focus.
+    // Only untargeted input depends on the focused control's captured geometry/label.
+    if let print = s.focusFingerprint, print != fingerprint(focus) { throw Refusal("focused_control_changed") }
+    guard same(element(root, kAXFocusedUIElementAttribute), focus) else {
       throw Refusal("foreign_secure_or_unknown_focus")
     }
     guard attr(focus, kAXEnabledAttribute) as? Bool != false else { throw Refusal("focus_disabled") }

@@ -1,5 +1,7 @@
 export interface VoiceAudio {
   mute(value: boolean): void;
+  /** Pauses playback where it is; `flush` also lets go. */
+  hold?(value: boolean): void;
   play(pcm: Int16Array, generation: number): void;
   segmentEnd(id: number, generation: number): void;
   flush(generation: number): void;
@@ -12,8 +14,9 @@ export async function openVoiceAudio(
   onPlaying: () => void,
   onError: (error: Error) => void,
   onConsumed: (bytes: number) => void = () => {},
+  onLevel: (level: number) => void = () => {},
 ): Promise<VoiceAudio> {
-  const stream = await navigator.mediaDevices.getUserMedia({
+  const constraints: MediaStreamConstraints = {
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
@@ -21,10 +24,16 @@ export async function openVoiceAudio(
       channelCount: 1,
     },
     video: false,
-  });
+  };
+  let stream = await navigator.mediaDevices.getUserMedia(constraints);
   let capture: AudioContext | undefined, playback: AudioContext | undefined;
   let closed = false;
+  let removeListeners = () => {};
   let currentGeneration = 0;
+  const note = (event: string, detail: Record<string, unknown> = {}) =>
+    console.warn("[voice event] " + JSON.stringify({ ts: new Date().toISOString(), event, ...detail }));
+  note("micOpen", { sampleRate: stream.getAudioTracks()[0].getSettings().sampleRate });
+  let lastFrame = performance.now(), lastStats = lastFrame, frames = 0;
   try {
     capture = new AudioContext();
     playback = new AudioContext({ sampleRate: 24000 });
@@ -40,14 +49,25 @@ export async function openVoiceAudio(
     ]);
     const input = new AudioWorkletNode(capture, "deck-voice-capture");
     const output = new AudioWorkletNode(playback, "deck-voice-playback");
-    const source = capture.createMediaStreamSource(stream);
+    let source = capture.createMediaStreamSource(stream);
     const silent = capture.createGain();
     silent.gain.value = 0;
     source.connect(input);
     input.connect(silent).connect(capture.destination);
     output.connect(playback.destination);
     input.port.onmessage = (e) => {
-      if (!closed) onFrame(e.data);
+      if (closed) return;
+      const now = performance.now();
+      if (now - lastFrame > 200) note("micFrameGap", { gapMs: Math.round(now - lastFrame) });
+      lastFrame = now;
+      frames++;
+      if (now - lastStats > 1000) {
+        let sum = 0;
+        for (const x of e.data) sum += (x / 32768) ** 2;
+        note("audioChunk", { bytes: e.data.byteLength, rms: Math.sqrt(sum / Math.max(1, e.data.length)), frames });
+        lastStats = now;
+      }
+      onFrame(e.data);
     };
     output.port.onmessage = (e) => {
       if (closed) return;
@@ -69,30 +89,78 @@ export async function openVoiceAudio(
         e.data.generation === currentGeneration
       )
         onConsumed(e.data.bytes);
-      else if (e.data.type === "playing") onPlaying();
+      else if (e.data.type === "level" && e.data.generation === currentGeneration) onLevel(e.data.rms);
+      else if (e.data.type === "playing" && e.data.generation === currentGeneration) onPlaying();
       else if (e.data.type === "error")
         onError(Error("Voice playback overloaded"));
     };
-    stream.getAudioTracks()[0].onended = () => {
-      if (!closed) onError(Error("Microphone disconnected"));
+    let recovering = false;
+    const recoverInput = async () => {
+      if (closed || recovering) return;
+      recovering = true;
+      note("micRecoverStart");
+      try {
+        const replacement = await navigator.mediaDevices.getUserMedia(constraints);
+        if (closed) { replacement.getTracks().forEach(t => t.stop()); return; }
+        const nextSource = capture!.createMediaStreamSource(replacement);
+        nextSource.connect(input);
+        source.disconnect();
+        for (const track of stream.getTracks()) { track.onended = null; track.stop(); }
+        source = nextSource;
+        stream = replacement;
+        stream.getAudioTracks()[0].onended = recoverInput;
+        await Promise.all([capture!.resume(), playback!.resume()]);
+        note("micRecoverComplete");
+      } catch (e) {
+        note("micRecoverFailed", { reason: String(e) });
+        if (!closed) onError(Error("Microphone recovery failed: " + String(e)));
+      } finally { recovering = false; }
+    };
+    const resumeContexts = () => {
+      if (closed) return;
+      for (const context of [capture!, playback!]) {
+        if (context.state === "suspended" || String(context.state) === "interrupted")
+          void context.resume().then(() => note("audioResume", { state: context.state })).catch(e => {
+            if (!closed) onError(Error("Audio resume failed: " + String(e)));
+          });
+      }
+    };
+    stream.getAudioTracks()[0].onended = recoverInput;
+    navigator.mediaDevices.addEventListener("devicechange", recoverInput);
+    capture.onstatechange = resumeContexts;
+    playback.onstatechange = resumeContexts;
+    removeListeners = () => {
+      navigator.mediaDevices.removeEventListener("devicechange", recoverInput);
+      capture!.onstatechange = null;
+      playback!.onstatechange = null;
     };
     await Promise.all([capture.resume(), playback.resume()]);
     return {
       echoCancellation:
         stream.getAudioTracks()[0].getSettings().echoCancellation === true,
-      mute: (value) => input.port.postMessage({ muted: value }),
-      play: (pcm, generation) =>
-        output.port.postMessage({ type: "audio", pcm, generation }, [
-          pcm.buffer,
-        ]),
+      mute: (value) => { note("mute", { muted: value }); input.port.postMessage({ muted: value }); },
+      hold: (value) => {
+        note("playbackHold", { held: value });
+        output.port.postMessage({ type: "hold", held: value });
+      },
+      play: (pcm, generation) => {
+        note("ttsQueued", { bytes: pcm.byteLength, generation });
+        output.port.postMessage({ type: "audio", pcm, generation }, [pcm.buffer]);
+      },
       segmentEnd: (segmentId, generation) =>
         output.port.postMessage({ type: "end", segmentId, generation }),
       flush: (generation) => {
+        note("playbackFlushed", { generation });
+        onLevel(0);
         currentGeneration = generation;
         output.port.postMessage({ type: "flush", generation });
       },
       close: () => {
         closed = true;
+        removeListeners();
+        source.disconnect();
+        note("micClose");
+        onLevel(0);
         stream.getTracks().forEach((t) => t.stop());
         input.disconnect();
         output.disconnect();
@@ -101,6 +169,9 @@ export async function openVoiceAudio(
       },
     };
   } catch (e) {
+    closed = true;
+    removeListeners();
+    note("micClose", { reason: String(e) });
     stream.getTracks().forEach((t) => t.stop());
     void capture?.close();
     void playback?.close();

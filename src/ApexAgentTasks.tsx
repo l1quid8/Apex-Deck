@@ -36,7 +36,7 @@ type Props = {
   focused?: boolean;
 };
 
-/** Shown when ApexAgent proposed no chat that can run this task. The human answers in the main conversation. */
+/** Shown when ApexAgent proposed no chat that can run this task. The user answers in the main conversation. */
 const objectText = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 const taskFinal = (status: string) => isTerminalTask(status);
 const formatBytes = (bytes: number): string => bytes < 1024 * 1024 ? `${Math.max(0, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -95,6 +95,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const [pendingRequest, setPendingRequest] = useState<PendingAssistantRequest | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [taskContextId, setTaskContextId] = useState<string | null>(null);
+  const [inspectedReview, setInspectedReview] = useState<Record<string, { result?: boolean; changes?: boolean; checks?: boolean }>>({});
   const [visibleReviewRevision, setVisibleReviewRevision] = useState<Record<string, number>>({});
   // The sidebar keeps its own selection, separate from the assistant's unified Tasks view.
   const sidebarView = view === 'sidebar';
@@ -454,7 +455,11 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       const reviewChecks = checks[`${task.id}:${task.revision}`] ?? [];
       const hasCapturedDiff = typeof resultData.reviewDiff === 'string';
       const hasReviewData = hasReviewMaterial(task);
-      const currentReviewVisible = hasReviewData && visibleReviewRevision[task.id] === task.revision;
+      const inspectionKey = `${ownerKey}:${task.id}:${task.revision}`;
+      const inspection = inspectedReview[inspectionKey] ?? {};
+      const markInspected = (part: 'result' | 'changes' | 'checks', open: boolean) => setInspectedReview(before => ({ ...before, [inspectionKey]: { ...before[inspectionKey], [part]: open } }));
+      const inspectionComplete = !tasksOnly || (inspection.result && (task.mode === 'read_only' || (inspection.changes && inspection.checks)));
+      const currentReviewVisible = hasReviewData && visibleReviewRevision[task.id] === task.revision && inspectionComplete;
       return <article className={`assistant-task-card status-${task.status}`} key={task.id}>
         {namedOwner(task) && <div className="assistant-task-response-identity">{namedOwner(task)?.avatar}<strong>{taskAssistantName(task)} · {task.result?.trim() ? 'Task response' : 'Delegated work'}</strong></div>}
         {taskDetailView && <h2 className="assistant-task-title" id={`assistant-task-title-${task.id}`} tabIndex={-1} ref={titleRef}>{oneLine(task.originalRequest)}</h2>}
@@ -481,6 +486,11 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {task.mode === 'in_place' && ['running', 'needs_you', 'ready_for_review', 'applying'].includes(task.status) && <p className="assistant-task-lease">Edits are already in the checkout. This task holds the writer lease through review; other Deck writers wait. Accept releases the lease, and Request changes keeps it.</p>}
         <nav className="assistant-task-links" aria-label="Related threads">{taskThreadLinks(task).map((link) => <button type="button" key={link.id} onClick={() => onOpenThread?.(link.id)}>{link.label}</button>)}</nav>
         {task.status === 'ready_for_review' && hasReviewData && <div className="assistant-review-material" ref={reviewMaterialRef}>{!taskDetailView && task.result && <div className="assistant-task-result"><strong>Result</strong><Markdown text={task.result} onOpen={openResultLink} /></div>}{hasCapturedDiff && <section className="assistant-review-diff"><h3>{resultData.reviewDiff ? 'Review diff' : 'Review result'}</h3>{resultData.reviewDiff ? <pre>{resultData.reviewDiff}</pre> : <p>No file changes in this result.</p>}</section>}{task.evidence.length > 0 && <section className="assistant-task-evidence"><h3>Findings and evidence</h3>{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</section>}</div>}
+        {tasksOnly && task.status === 'ready_for_review' && hasReviewData && <section aria-label={`Inspect revision ${task.revision}`}>
+          <p>Inspect this revision before accepting. Revised results require a fresh inspection.</p>
+          <details key={`${inspectionKey}:result`} onToggle={event => markInspected('result', event.currentTarget.open)}><summary>Inspect current result</summary><Markdown text={task.result ?? 'No result text recorded.'} onOpen={openResultLink} />{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</details>
+          {task.mode !== 'read_only' && <><details key={`${inspectionKey}:changes`} onToggle={event => markInspected('changes', event.currentTarget.open)}><summary>Inspect changes</summary><pre>{resultData.reviewDiff || 'No file changes reported. Review the result limitations before accepting.'}</pre></details><details key={`${inspectionKey}:checks`} onToggle={event => markInspected('checks', event.currentTarget.open)}><summary>Inspect check evidence</summary><pre>{objectText(resultData.checkResults ?? resultData.checks ?? 'No verification reported.')}</pre></details></>}
+        </section>}
         {task.status === 'ready_for_review' && <div className="assistant-review-criteria">{renderChecks(task)}</div>}
         {task.status === 'ready_for_review' && !hasReviewData && <p className="assistant-task-warning">The current result has no review diff or captured findings. Open the worker chat and refresh after its result is available.</p>}
         {task.status === 'ready_for_review' && hasReviewData && !currentReviewVisible && <p className="assistant-task-muted">Scroll the current result, diff, or findings into view to enable review.</p>}

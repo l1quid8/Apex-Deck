@@ -197,3 +197,12 @@ test('update requests carry only the package facts and accept only a matching si
   await assert.rejects(mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async()=>forged}),/signature/);
   await assert.rejects(mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async()=>{throw new Error('Only the installed Apex Deck app can install updates');}}),/installed Apex Deck/);
 });
+
+test('permanent project task deletion requires exact UI attestation',()=>{
+  assert.equal(mod.needsAttestation('project_task_lifecycle'),true);
+  assert.equal(mod.needsAttestation('project_task_lifecycle',true),true);
+});
+
+test('human todo edits require protected UI attestation',()=>{
+  assert.equal(mod.needsAttestation('personal_todo'),true);
+});

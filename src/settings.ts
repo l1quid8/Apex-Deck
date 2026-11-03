@@ -66,6 +66,9 @@ export interface AppSettings {
   newThread: RoomOptions;
   /** The access a bot gets when the add form opens. */
   newBotAccess: Access;
+  /** Who bots are working for. Both optional; empty means "the user". */
+  userName: string;
+  userNickname: string;
   terminal: { fontSize: number; scrollback: number };
   /** Hosts whose pages open in your browser instead of the Preview pane. */
   preview: { openExternally: string[] };
@@ -86,6 +89,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   disabledProviders: [],
   newThread: { policy: "mention", max_bot_hops: 3 },
   newBotAccess: "read",
+  userName: "",
+  userNickname: "",
   terminal: { fontSize: 13, scrollback: 5000 },
   preview: { openExternally: [] },
   confirmSteer: true,
@@ -134,6 +139,8 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       max_bot_hops: hops(thread.max_bot_hops, d.newThread.max_bot_hops),
     },
     newBotAccess: ACCESS.includes(saved.newBotAccess as Access) ? saved.newBotAccess as Access : d.newBotAccess,
+    userName: typeof saved.userName === "string" ? saved.userName : d.userName,
+    userNickname: typeof saved.userNickname === "string" ? saved.userNickname : d.userNickname,
     terminal: {
       fontSize: whole(terminal.fontSize, FONT_SIZES.min, FONT_SIZES.max, d.terminal.fontSize),
       scrollback: SCROLLBACK_CHOICES.includes(terminal.scrollback as number) ? terminal.scrollback as number : d.terminal.scrollback,

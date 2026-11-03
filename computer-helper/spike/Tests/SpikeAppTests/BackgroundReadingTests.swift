@@ -18,6 +18,58 @@ final class BackgroundReadingTests: XCTestCase {
     XCTAssertTrue(Server.tools.contains { ($0["name"] as? String) == "read_screen" })
   }
 
+  private func window(layer: Int?, focused: Bool = false, minimized: Bool = false, number: UInt32) -> WindowInfo {
+    WindowInfo(element: AXUIElementCreateApplication(1), windowNumber: number, title: nil, minimized: minimized,
+      focused: focused, frame: nil, layer: layer)
+  }
+
+  func testFocusedFloatingWindowFallsBackToTheNormalWindow() {
+    let chosen = BackgroundSupport.readableWindow(infos: [
+      window(layer: 3, focused: true, number: 1), window(layer: 0, number: 2),
+    ])
+    XCTAssertEqual(chosen?.windowNumber, 2)
+  }
+
+  func testUnfocusedFloatingWindowNeverBeatsTheNormalWindow() {
+    let chosen = BackgroundSupport.readableWindow(infos: [window(layer: 3, number: 1), window(layer: 0, number: 2)])
+    XCTAssertEqual(chosen?.windowNumber, 2)
+  }
+
+  func testOnlyFloatingWindowsStillGiveAnAnswer() {
+    let chosen = BackgroundSupport.readableWindow(infos: [window(layer: 3, focused: true, number: 1)])
+    XCTAssertEqual(chosen?.windowNumber, 1, "the engine then reports the real failure")
+  }
+
+  func testUnknownLayerStaysReadable() {
+    let chosen = BackgroundSupport.readableWindow(infos: [
+      window(layer: nil, focused: true, number: 1), window(layer: 0, number: 2),
+    ])
+    XCTAssertEqual(chosen?.windowNumber, 1)
+  }
+
+  func testMissingFocusedWindowDiscardsFocusFromAnUnreadFloatingWindow() {
+    // AX focused-window lookup failed, but focused-control lookup still succeeded.
+    // Distinct AX references stand in for the normal window and floating control;
+    // the focus gate must refuse without needing another AX lookup.
+    let mainWindow = AXUIElementCreateApplication(1)
+    let floatingControl = AXUIElementCreateApplication(2)
+    XCTAssertNil(focusForReadWindow(floatingControl, focusedWindow: nil, readWindow: mainWindow))
+  }
+
+  func testDifferentFocusedWindowDiscardsFocus() {
+    let mainWindow = AXUIElementCreateApplication(1)
+    let floatingWindow = AXUIElementCreateApplication(2)
+    let floatingControl = AXUIElementCreateApplication(3)
+    XCTAssertNil(focusForReadWindow(floatingControl, focusedWindow: floatingWindow, readWindow: mainWindow))
+  }
+
+  func testVerifiedFocusedWindowKeepsFocus() {
+    let mainWindow = AXUIElementCreateApplication(1)
+    let control = AXUIElementCreateApplication(2)
+    XCTAssertTrue(same(focusForReadWindow(control, focusedWindow: mainWindow, readWindow: mainWindow), control))
+    XCTAssertNil(focusForReadWindow(nil, focusedWindow: mainWindow, readWindow: mainWindow))
+  }
+
   func testToolsPromiseBackgroundAndNoneAskForTheForeground() {
     let tools = Server.tools
     let byName = Dictionary(uniqueKeysWithValues: tools.map { (($0["name"] as? String) ?? "", $0) })

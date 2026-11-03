@@ -149,7 +149,7 @@ test('messages scroll behind the session strip and nothing starts hidden', {time
 // protected store. That banner used to take the strip out of its overlay
 // (`.assistant-workspace-problem~.assistant-workspace-head{position:relative}`),
 // so the strip joined the flow, the scroller started about a hundred pixels down
-// and messages were clipped at that line: the solid band the Human kept seeing.
+// and messages were clipped at that line: the solid band the user kept seeing.
 // A banner is an alert, not a layout change. It must not move the strip, and the
 // chat must still scroll behind both of them.
 test('a problem banner does not turn the floating strip into a solid band', {timeout:120000}, async()=>{

@@ -27,7 +27,7 @@ class EndpointDetector:
     return events
    self.active=False;self.run=0
    if self.voiced>=6:events.append('complete')
-   else:self.audio=[]
+   else:self.audio=[];events.append('discarded')
   return events
  def take(self):
   audio=b''.join(self.audio);self.audio=[];return audio

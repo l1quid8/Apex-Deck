@@ -1,5 +1,5 @@
 import { projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
-import { assistantTasksForOwner, taskBelongsToAssistant, type AssistantTask, type AssistantTaskOwner, type AssistantTaskSnapshot } from './assistantTaskModel.ts';
+import { assistantTasksForOwner, taskBelongsToAssistant, taskDisplayStatus, type AssistantTask, type AssistantTaskOwner, type AssistantTaskSnapshot } from './assistantTaskModel.ts';
 import type { ParticipantConfig } from './types.ts';
 import type { PersonalAssistantRecord } from './personalAssistant.ts';
 
@@ -23,4 +23,21 @@ export function activeProjectTask(task: Pick<AssistantTask,'status'|'resultData'
 export function sameWorkerConfiguration(left: ParticipantConfig, right: ParticipantConfig): boolean {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([,item])=>item!==undefined).sort(([a],[b])=>a.localeCompare(b)).map(([key,item])=>[key,canonical(item)])) : value;
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+export const taskAccessLabel = (mode: AssistantTask['mode']) => mode === 'read_only' ? 'Read only' : mode === 'isolated' ? 'Separate copy' : 'Edit project folder';
+
+const elapsed = (ms: number) => {
+  const minutes = Math.max(0, Math.floor(ms / 60000));
+  if (minutes < 1) return 'just started';
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+};
+
+/** The state and detail a project card shows for one active job. */
+export function projectJobState(task: Pick<AssistantTask,'status'|'desiredState'|'attempts'>, nowMs = Date.now()): { state: string; detail: string } {
+  if (task.status === 'proposed') return { state: 'Waiting for approval', detail: 'Not started' };
+  const label = taskDisplayStatus(task);
+  if (task.status !== 'running' || task.desiredState === 'paused') return { state: label, detail: '' };
+  const started = task.attempts.at(-1)?.startedAtMs;
+  return { state: started ? `${label} · ${elapsed(nowMs - started)}` : label, detail: 'Watchdog on' };
 }

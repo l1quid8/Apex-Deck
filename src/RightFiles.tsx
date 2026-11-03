@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileSearchResult, FolderListing, ThreadDiff } from "./types";
 import type { Backend } from "./backend";
 import { changeMarks, collapseAll, createTree, moveSelection, parseFilesPrefs, revealPath as modelRevealPath, toggle, visibleRows, type FilesTree, type Row } from "./filesTreeModel";
-import { writeClipboard } from "./threadCopy";
+import { copyText } from "./copyText";
 import { FilePreviewPanel } from "./FilePreview";
 import { createPortal } from "react-dom";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
@@ -93,7 +93,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   if (!root) return <p className="muted right-panel-empty">This project has no folder.</p>;
   const openFolder = (path: string) => { const wasOpen = tree.expanded.has(path); setTree((current) => toggle(current, path)); if (!wasOpen) load(path); };
   const refresh = () => { for (const path of tree.expanded) load(path); };
-  const copy = async (text: string, what: string) => { const ok = await writeClipboard(text, navigator.clipboard); setCopied(ok ? `${what} copied` : "Clipboard unavailable"); window.setTimeout(() => setCopied(""), 1600); };
+  const copy = async (text: string, what: string) => { const ok = await copyText(text); setCopied(ok ? `${what} copied` : "Clipboard unavailable"); window.setTimeout(() => setCopied(""), 1600); };
   const addToChat = (path: string) => { if (paneId) window.dispatchEvent(new CustomEvent("deck:insert-composer", { detail: { paneId, text: `\`${relative(root, path)}\`` } })); };
   /** Runs `action` now, or after the user agrees to drop unsaved edits in the open preview. */
   const confirmLeave = (action: () => void) => {

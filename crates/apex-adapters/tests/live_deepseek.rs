@@ -73,7 +73,7 @@ fn request(content: String, think: bool) -> TurnRequest {
 async fn live_deepseek_turn() {
     let bot = build(config(), &context());
     let first = std::env::var("DS_PROMPT").unwrap_or_else(|_| {
-        "[Human]: Before anything else, call the todo_write tool with a four-step plan for \
+        "[User]: Before anything else, call the todo_write tool with a four-step plan for \
          moving this project from SQLite to Postgres, and mark the first step in_progress. \
          Then answer in one sentence."
             .into()

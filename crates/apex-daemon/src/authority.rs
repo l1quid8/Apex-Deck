@@ -59,8 +59,8 @@ pub fn command_needs(command: &Command) -> Need {
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
         ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
-        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
-        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
+        | PersonalAvatarOptions { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarStatus { .. } | PersonalAvatarCancel { .. } | PersonalAvatarAsset { .. } | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalTaskLifecycle { .. } | PersonalTodo { .. } | PersonalArchive { .. } | PersonalReplyCancel { .. } | PersonalPause { .. } | PersonalConversationNew { .. }
+        | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalProjectProposeUi { .. } | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
         | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
@@ -68,7 +68,7 @@ pub fn command_needs(command: &Command) -> Need {
         // A device that can drive the shared browser reaches every signed-in site in it.
         | BrowserTabs { .. } | BrowserTabOpen { .. } | BrowserTabClose { .. } | BrowserTabControl { .. } | BrowserTabShare { .. } | BrowserTabFrame { .. }
         | BrowserTabInput { .. } | BrowserTabResize { .. } | BrowserTabUpload { .. } | BrowserTabStop { .. } => full(Global),
-        AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
+        AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } | ProjectTaskLifecycle { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } | RoomGitStatus { id } => read(thread(id)),
         RoomGitAction { .. } => full(Global),
@@ -98,6 +98,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomPost { id, .. } => chat(thread(id)),
         RoomPostTo { id, .. } => chat(thread(id)),
         RoomTargets { id, .. } => chat(thread(id)),
+        RoomRefreshPlans { id } => chat(thread(id)),
         RoomTurn { id, .. } => chat(thread(id)),
         RoomStopRequest { id, .. } => chat(thread(id)),
         RoomStop { id, .. } => chat(thread(id)),
@@ -113,6 +114,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomDelete { id } => full(thread(id)),
         RoomSetTrashed { id, .. } => full(thread(id)),
         RoomUpdateParticipant { id, .. } => full(thread(id)),
+        RoomApplyAccess { id, .. } => full(thread(id)),
         RoomAddParticipant { id, .. } => full(thread(id)),
         RoomRemoveParticipant { id, .. } => full(thread(id)),
         RoomSetOptions { id, .. } => full(thread(id)),
@@ -147,7 +149,7 @@ pub fn command_needs(command: &Command) -> Need {
         ChatPromoteAbandon { .. } => full(Global),
         SessionSave { .. } => full(Global),
         // ApexAgent reads whole project folders and any chat in them.
-        MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
+        MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorConnect { .. } | MonitorWatchSave { .. } | MonitorWatchStop { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
         SettingsLoad {} => full(Global),
         SettingsSave { .. } => full(Global),
         ReadAttachment { .. } => full(Global),
@@ -336,6 +338,8 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         FolderAccept { .. } => Raises,
         SessionSave { .. } => Raises,
         SettingsSave { .. } => Raises,
+        // Watch settings carry a provider profile, including its access field.
+        MonitorWatchSave { .. } => Raises,
         // Proven NOT to raise (see comments above)
         ChatCreate { .. } => None,
         ChatAddParticipant { .. } => None,
@@ -347,6 +351,8 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         RoomRunnerStart { .. } => None,
         PersonalProjectDelegate { .. } => None,
         PersonalProjectDelegateUi { .. } => None,
+        // Quick entry only records a proposal for separate approval.
+        PersonalProjectProposeUi { .. } => None,
         AssistantHandoffPrepare { .. } => None,
         RoomDecide { .. } => None,
         RoomSetTrashed { .. } => None,
@@ -365,6 +371,7 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         AssistantMessage { .. } => None,
         AssistantTasksList { .. } => None,
         AssistantTaskAction { .. } => None,
+        ProjectTaskLifecycle { .. } => None,
         LegacyImportPreview {} => None,
         LegacyImportApply { .. } => None,
         LegacyImportHistory { .. } => None,
@@ -384,6 +391,7 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         PersonalDecide { .. } => None,
         PersonalArchive { .. } => None,
         PersonalTaskLifecycle { .. } => None,
+        PersonalTodo { .. } => None,
         PersonalReplyCancel { .. } => None,
         PersonalCancel { .. } => None,
         PersonalPause { .. } => None,
@@ -445,6 +453,9 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         PhoneBot { .. } => None,
         PhoneChatQueued { .. } => None,
         MonitorAssign { .. } => None,
+        // Connecting/stopping a coordinator does not create or change a bot.
+        MonitorConnect { .. } => None,
+        MonitorWatchStop { .. } => None,
         MonitorSourcesUpdate { .. } => None,
         MonitorProfileUpdate { .. } => None,
         MonitorMessage { .. } => None,
@@ -493,6 +504,9 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         RoomState { .. } => None,
         RoomPost { .. } => None,
         RoomTargets { .. } => None,
+        // Refresh reads quota information; Apply restarts the saved config.
+        RoomRefreshPlans { .. } => None,
+        RoomApplyAccess { .. } => None,
         RoomPostTo { .. } => None,
         VoiceCapabilities {} => None,
         RoomStopRequest { .. } => None,
@@ -559,8 +573,8 @@ pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
         VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
         VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
         // An assistant is no room: its calls need what its other commands need.
-        VoiceRealtimeSession { room, .. } if room.starts_with("assistant:") => full(Scope::Global),
-        VoiceServerWarm { room } | VoiceServerOpen { room } | VoiceRealtimeSession { room, .. } => chat(thread(room)),
+        VoiceRealtimeSession { room, .. } | VoiceMetaSession { room, .. } if room.starts_with("assistant:") => full(Scope::Global),
+        VoiceServerWarm { room } | VoiceServerOpen { room } | VoiceRealtimeSession { room, .. } | VoiceMetaSession { room, .. } => chat(thread(room)),
     }
 }
 
@@ -621,6 +635,9 @@ mod tests {
             ("monitor_assign", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "text": "t", "profile": participant })),
             ("monitor_sources_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "files": [], "threads": [], "mode": "add" })),
             ("monitor_profile_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "revision": 1, "profile": participant })),
+            ("monitor_connect", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local" })),
+            ("monitor_watch_save", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "watchRevision": 1, "text": "t", "profile": participant })),
+            ("monitor_watch_stop", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c" })),
             ("monitor_message", Some((Full, "global")), json!({ "workspaceId": "w", "text": "t" })),
             ("monitor_pause", Some((Full, "global")), json!({ "workspaceId": "w", "paused": true })),
             ("personal_list", Some((Full, "global")), json!({})),
@@ -639,6 +656,8 @@ mod tests {
             ("personal_decide_always",Some((Full,"global")),json!({"assistantId":"a","requestId":"r","decisionId":"pd-1","paramsHash":"hash","expectedRevision":0,"capability":"threadDelete","scope":{"kind":"allProjects"}})),
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
+            ("personal_todo", Some((Full, "global")), json!({"assistantId":"a","expectedRevision":1,"action":"add","text":"To do"})),
+            ("project_task_lifecycle", Some((Full, "global")), json!({"taskId":"t","revision":1,"owner":{"workspaceId":"w","cwd":"/p","hostId":"local","conversationId":"c"},"action":"purge"})),
             ("personal_task_lifecycle", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "action": "delete", "task": { "source": "personal", "taskId": "pt-1" } })),
             ("personal_archive", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "archived": true })),
             ("personal_reply_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "eventId": "ev-1" })),
@@ -647,6 +666,7 @@ mod tests {
             ("personal_schedule_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "scheduleId": "ps-1" })),
             ("personal_project_delegate", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"pe-1","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
             ("personal_project_delegate_ui", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
+            ("personal_project_propose_ui", Some((Full, "global")), json!({"assistantId":"asst-1","project":{"hostId":"host","workspaceId":"w","cwd":"/p"},"sourceEventId":"","delegationId":"d","brief":"Fix login","destination":{"threadId":"mine","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[],"expectedRevision":1})),
             ("personal_workspace_configure", Some((Full, "global")), json!({ "assistantId": "asst-1", "expectedRevision": 1, "settings": {} })),
             ("personal_configure", Some((Full, "global")), json!({ "assistantId": "asst-1", "settings": {} })),
             ("personal_rule_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "ask", "class": "write", "mode": "ask" })),
@@ -716,6 +736,8 @@ mod tests {
             ("room_post", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
             ("room_post_to", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi", "targets": [] })),
             ("room_targets", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
+            ("room_refresh_plans", Some((Chat, "thread")), json!({ "id": "mine" })),
+            ("room_apply_access", Some((Full, "thread")), json!({ "id": "mine", "participant": "null" })),
             ("room_turn", Some((Chat, "thread")), json!({ "id": "mine", "participants": [] })),
             ("room_stop_request", Some((Chat, "thread")), json!({ "id": "mine", "participant":"a", "client_turn_id":"v1" })),
             ("room_stop", Some((Chat, "thread")), json!({ "id": "mine" })),
@@ -1001,6 +1023,7 @@ mod tests {
             ("folder_accept", AccessEffect::Raises, "lets Full bot run lower code, same as raise"),
             ("session_save", AccessEffect::Raises, "session JSON can carry profiles with Full access"),
             ("settings_save", AccessEffect::Raises, "settings could carry defaults affecting access"),
+            ("monitor_watch_save", AccessEffect::Raises, "watch settings persist a provider profile with an access field"),
             // Proven NOT to raise:
             ("chat_create", AccessEffect::None, "chat enforces Read-only: ChatBotPatch refuses access field, host forces Read (host.rs:1082,5435)"),
             ("chat_add_participant", AccessEffect::None, "chat clamps to Read, strips media (host.rs:5474)"),
@@ -1012,6 +1035,13 @@ mod tests {
             ("room_runner_start", AccessEffect::None, "runner uses existing workers ids, checks id in room (host.rs:1244), no bot creation"),
             ("personal_project_delegate", AccessEffect::None, "creates personal task proposal, does not set bot access"),
             ("personal_project_delegate_ui", AccessEffect::None, "UI variant, same as delegate"),
+            ("personal_project_propose_ui", AccessEffect::None, "quick entry forces a proposal for separate approval"),
+            ("personal_todo", AccessEffect::None, "durable to-do item, never an executable operation"),
+            ("project_task_lifecycle", AccessEffect::None, "only purges settled task records"),
+            ("monitor_connect", AccessEffect::None, "connects a coordinator without scheduling checks or creating a bot"),
+            ("monitor_watch_stop", AccessEffect::None, "stops coordinator checks"),
+            ("room_apply_access", AccessEffect::None, "restarts a participant using its already saved access"),
+            ("room_refresh_plans", AccessEffect::None, "reads provider quota information without changing participant access"),
             ("assistant_handoff_prepare", AccessEffect::None, "creates handoff receipt, validated under provenance, no access"),
             ("room_decide", AccessEffect::None, "resolves approval Approve/Reject/ApproveAlways (host.rs:1895-1907), never changes participant access; allowed rules are not access levels"),
         ];

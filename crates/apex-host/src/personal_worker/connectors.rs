@@ -2,7 +2,7 @@
 //! assistant's own browser. Each call is one operation through the gateway,
 //! like a command. What comes back is external content: it's shown and
 //! quoted as evidence, and it can never start a task or approve anything,
-//! because only the human's own events do that.
+//! because only the user's own events do that.
 //!
 //! Credentials stay in this machine's key store and never reach a prompt:
 //! `GITHUB_TOKEN` for GitHub, and `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`

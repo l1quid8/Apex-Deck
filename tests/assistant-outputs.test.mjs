@@ -160,7 +160,7 @@ test('markdown fences, human messages and empty replies are not promoted', () =>
   const markdown = api.promoteReply({ version: 1, artifacts: [] }, seen, { id: 'm2', role: 'assistant', text: 'example', at: 1 }, [{ language: 'md', text: '# Title' }], 'asst-1', 'art-3');
   assert.equal(markdown.added, false, 'a markdown fence is usually an example, so it waits');
   const human = api.promoteReply({ version: 1, artifacts: [] }, seen, { id: 'm3', role: 'human', text: 'hi', at: 2 }, [{ language: 'html', text: '<p>hi</p>' }], 'asst-1', 'art-4');
-  assert.equal(human.added, false, 'the Human writes their own messages');
+  assert.equal(human.added, false, 'the user writes their own messages');
   const none = api.promoteReply({ version: 1, artifacts: [] }, seen, { id: 'm4', role: 'assistant', text: 'no code', at: 3 }, [], 'asst-1', 'art-5');
   assert.equal(none.added, false);
 });

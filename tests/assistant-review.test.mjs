@@ -107,7 +107,7 @@ test('accepting sends the revision on screen, and a stale answer is refused', as
   byClass(tree, 'assistant-review-accept')[0].props.onClick();
   await settle();
   assert.deepEqual(calls, [['assistant_task_action', assistantTaskActionArgs(task, 'accept', {})]]);
-  assert.equal(calls[0][1].revision, 7, 'the action carries the revision the human reviewed');
+  assert.equal(calls[0][1].revision, 7, 'the action carries the revision the user reviewed');
   assert.equal(done, 1);
 
   const stale = [];

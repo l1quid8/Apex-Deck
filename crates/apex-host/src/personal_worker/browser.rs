@@ -1,7 +1,7 @@
-//! The shared browser: one headless Chromium per host, with real tabs that the human, the
+//! The shared browser: one headless Chromium per host, with real tabs that the user, the
 //! assistant and Work-thread bots all use. Its profile keeps sites signed in. Every tab has its
 //! own connection, its own queue of operations and its own holder, so work in one tab never
-//! waits for another. The human watches any tab as a live stream and can take it over; a bot
+//! waits for another. The user watches any tab as a live stream and can take it over; a bot
 //! reaches only tabs scoped to its thread, through [`work`].
 
 use std::collections::{BTreeMap, HashMap};
@@ -107,7 +107,7 @@ pub fn use_profile(dir: PathBuf) {
     let _ = PROFILE.set(dir);
 }
 
-/// Where downloads go while the human has a tab.
+/// Where downloads go while the user has a tab.
 pub fn use_downloads(dir: PathBuf) {
     let _ = DOWNLOADS.set(dir);
 }
@@ -602,7 +602,7 @@ impl Tab {
         Ok(tokio::sync::MutexGuard::map(held, |page| page.as_mut().unwrap()))
     }
 
-    /// The human has this tab from here on. Whatever was mid-step finishes first, and
+    /// The user has this tab from here on. Whatever was mid-step finishes first, and
     /// everything queued behind it is refused, before the caller is told.
     async fn fence(self: &Arc<Self>) {
         self.info.lock().unwrap().control = Control::Human;
@@ -880,7 +880,7 @@ pub enum Input {
     Back,
 }
 
-/// The human's click or keystroke in the assistant's tab while they've taken it over.
+/// The user's click or keystroke in the assistant's tab while they've taken it over.
 pub async fn input(input: Input) -> Result<View, String> {
     let tab = primary();
     if !tab.human() {
@@ -923,7 +923,7 @@ pub async fn input(input: Input) -> Result<View, String> {
     view_of(&tab).await
 }
 
-/// The human takes the assistant's tab (`true`) or hands it back (`false`).
+/// The user takes the assistant's tab (`true`) or hands it back (`false`).
 pub async fn take_over(on: bool) -> Result<View, String> {
     let tab = primary();
     set_control(&tab, on).await;

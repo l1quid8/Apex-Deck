@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Avatar } from "../Avatar";
 import { popoverTop } from "../floating.ts";
 import { CALL_LOOKS, callClock, callLine, pickNote, pickRows, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
+import { subscribePlaybackLevel } from "./playbackLevel.ts";
 import { callEngine, voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
 import { CALL_ENGINES, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, REALTIME_MODELS, REALTIME_VOICES, chatVoice, preferenceFor, readRealtimeModel, readRealtimeVoice, realtimeVoiceLabel, voiceFor, withChatPreference } from "./settings.ts";
 import type { VoiceCandidate, VoiceSettings } from "./types.ts";
@@ -92,8 +93,17 @@ const Icon = {
 };
 
 function Wave({ mode }: { mode: WaveMode }) {
+  const box = useRef<HTMLSpanElement>(null);
+  // GPT-Live plays through its own stream, so only the other engines have a measured level.
+  const metered = mode === "bot" && callEngine() !== "realtime";
+  useEffect(() => {
+    if (!metered) return;
+    return subscribePlaybackLevel((level) => box.current?.style.setProperty("--level", String(Math.min(1, level * 4))));
+  }, [metered]);
+  if (mode === "mic" || mode === "you" || mode === "muted")
+    return <span className="voice-wave" data-mode={mode} aria-hidden="true">{mode === "muted" ? Icon.micOff : Icon.mic}</span>;
   return (
-    <span className="voice-wave" data-mode={mode} aria-hidden="true">
+    <span ref={box} className="voice-wave" data-mode={mode} data-metered={metered || undefined} aria-hidden="true">
       <i />
       <i />
       <i />
@@ -112,11 +122,11 @@ export function Clock({ since }: { since?: number }) {
   return <span className="voice-timer">{callClock(since === undefined ? 0 : now - since)}</span>;
 }
 
-function Mute({ muted }: { muted: boolean }) {
+function Mute({ muted, wave }: { muted: boolean; wave?: WaveMode }) {
   return (
     <button type="button" className="voice-callbtn" aria-pressed={muted} aria-label={muted ? "Unmute microphone" : "Mute microphone"}
       title={muted ? "Unmute" : "Mute · the bot keeps talking"} onClick={() => voiceController.mute(!muted)}>
-      {muted ? Icon.micOff : Icon.mic}
+      {wave ? <Wave mode={wave} /> : muted ? Icon.micOff : Icon.mic}
     </button>
   );
 }
@@ -253,12 +263,14 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
   };
   const look = readCallLook(settings.look);
   // The running call's engine, not the saved one: Settings can change mid-call.
-  const live = callEngine() === "realtime";
-  const engineLabel = CALL_ENGINES.find((e) => e.id === (live ? "realtime" : "local"))?.label;
+  const liveEngine = callEngine();
+  const live = liveEngine === "realtime";
+  const liveIsMeta = liveEngine === "meta";
+  const engineLabel = CALL_ENGINES.find((e) => e.id === liveEngine)?.label;
   const here = candidates.filter((c) => c.hostId === scope.hostId && c.roomId === scope.roomId);
   return (
     <>
-      <div className="voice-pop-head">Call settings <span className="voice-engine-tag" data-engine={live ? "realtime" : "local"}>{engineLabel}</span></div>
+      <div className="voice-pop-head">Call settings <span className="voice-engine-tag" data-engine={liveEngine}>{engineLabel}</span></div>
       {here.length > 1 && (
         <div className="voice-set-row">
           <span>Talking to</span>
@@ -306,10 +318,13 @@ function CallSettings({ call, candidates, onPickLook }: { call: ReturnType<typeo
           </span>
         </label>
       )}
+      {liveIsMeta && (
+        <p className="voice-pop-note">Meta Voice Transcribe · {state.semantic ? "Smart Turn is on" : "endpointing"} · Kokoro TTS</p>
+      )}
       {!live && (
         <label className="voice-set-row col">
           <span>Pause before reply <b>{settings.silenceMs} ms</b></span>
-          <input type="range" min="100" max="2000" step="50" value={settings.silenceMs}
+          <input type="range" min="300" max="2000" step="50" value={settings.silenceMs}
             onChange={(e) => saveSettings({ silenceMs: e.target.valueAsNumber })} />
         </label>
       )}
@@ -591,10 +606,10 @@ export function VoiceCallControls({ disabled = false, ...props }: Props & { disa
       {live && look === "pill" ? (
         <div className={`voice-pill voice-call-ui${toneClass(call.line.tone)}`} role="group" aria-label={`Voice call with ${call.name}`}
           style={agentStyle(who, scope?.participantId)}>
-          <Mute muted={state.muted} />
+          <Mute muted={state.muted} wave={state.muted ? "muted" : call.line.wave === "you" ? "you" : "mic"} />
           <button ref={mid} type="button" className="voice-pill-mid" aria-expanded={call.ui.open} aria-label={`${call.line.status}. Call settings`}
             title={`${call.name} · ${call.line.status} · call settings`} onClick={() => setUi({ open: !ui.open })}>
-            <Wave mode={call.line.wave} />
+            {!["mic", "you", "muted"].includes(call.line.wave) && <Wave mode={call.line.wave} />}
             <Clock since={state.startedAt} />
           </button>
           <End round />

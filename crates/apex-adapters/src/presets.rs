@@ -82,6 +82,40 @@ pub(crate) fn agy_stdin_line(prompt: &str) -> String {
     line
 }
 
+/// One session's permissions for agy, passed with `--settings`. The person's
+/// saved `toolPermission` may be `always-proceed`, so it is always replaced,
+/// and agy's `--sandbox` only limits commands, never its file tools. Deny
+/// rules beat saved allow rules and reach subagents (checked against agy
+/// 1.4.12). A refused tool fails its step and the turn carries on, and agy
+/// older than `--settings` stops at the unknown flag instead of running free.
+/// `None` at Full, which is `--dangerously-skip-permissions`.
+fn agy_settings(access: Access) -> Option<String> {
+    let settings = match access {
+        // With nobody to ask, "ask first" means "do not", as for Grok.
+        // Reads must proceed: under `strict` headless mode refuses them too.
+        Access::Read | Access::Ask => serde_json::json!({
+            "toolPermission": "always-proceed",
+            "enableTerminalSandbox": false,
+            "permissions": { "deny": ["write_file(*)", "command(*)", "mcp(*)"] },
+        }),
+        // `accept-edits` approves files in the workspace; `request-review`
+        // then refuses the rest, which `always-proceed` would let through.
+        // A folder given to `--add-dir` counts as workspace, so the
+        // attachments folder is taken back out.
+        Access::Edits => {
+            let mut deny = vec!["command(*)".to_string(), "mcp(*)".to_string()];
+            deny.extend(READABLE.get().map(|dir| format!("write_file({dir})")));
+            serde_json::json!({
+                "toolPermission": "request-review",
+                "enableTerminalSandbox": false,
+                "permissions": { "allow": ["read_file(*)"], "deny": deny },
+            })
+        }
+        Access::Full => return None,
+    };
+    Some(settings.to_string())
+}
+
 pub(crate) fn resolve_gemini_program(path: Option<&str>) -> &'static str {
     let check_path = |p_str: &str| -> Option<&'static str> {
         for dir in std::env::split_paths(p_str) {
@@ -267,26 +301,14 @@ pub fn agent_command_in(
                     push(&["--add-dir", dir]);
                 }
             }
-            match access {
-                Access::Read => {
-                    if program != "gemini" {
-                        push(&["--sandbox"]);
-                    }
+            if program != "gemini" {
+                match access {
+                    Access::Read | Access::Ask => {}
+                    Access::Edits => push(&["--mode", "accept-edits"]),
+                    Access::Full => push(&["--dangerously-skip-permissions"]),
                 }
-                Access::Ask => {
-                    if program != "gemini" {
-                        push(&["--mode", "auto"]);
-                    }
-                }
-                Access::Edits => {
-                    if program != "gemini" {
-                        push(&["--mode", "accept-edits"]);
-                    }
-                }
-                Access::Full => {
-                    if program != "gemini" {
-                        push(&["--dangerously-skip-permissions"]);
-                    }
+                if let Some(settings) = agy_settings(access) {
+                    push(&["--settings", &settings]);
                 }
             }
             if program == "gemini" {
@@ -452,7 +474,8 @@ mod tests {
         let (program, args) = agent_command(AgentTool::Gemini, Some("some-model"), Some("high"), Access::Read);
         assert!(program == "gemini" || program == "agy" || program == "antigravity");
         if program == "agy" || program == "antigravity" {
-            assert_eq!(args, ["--model", "some-model", "--effort", "high", "--sandbox", "--output-format", "stream-json", "--input-format", "stream-json"]);
+            let settings = agy_settings(Access::Read).unwrap();
+            assert_eq!(args, ["--model", "some-model", "--effort", "high", "--settings", settings.as_str(), "--output-format", "stream-json", "--input-format", "stream-json"]);
         } else {
             assert_eq!(args, ["--model", "some-model", "--effort", "high", "-p", STDIN_INSTRUCTION]);
         }
@@ -464,15 +487,69 @@ mod tests {
         }
     }
 
+    fn agy_rules(access: Access) -> serde_json::Value {
+        serde_json::from_str(&agy_settings(access).expect("rules below Full")).unwrap()
+    }
+
+    #[test]
+    fn agy_read_and_ask_refuse_every_way_of_changing_things() {
+        for access in [Access::Read, Access::Ask] {
+            let rules = agy_rules(access);
+            // Replaces a saved `always-proceed`; `strict` would refuse reads.
+            assert_eq!(rules["toolPermission"], "always-proceed");
+            assert_eq!(rules["enableTerminalSandbox"], false);
+            assert_eq!(rules["permissions"]["deny"], serde_json::json!(["write_file(*)", "command(*)", "mcp(*)"]));
+        }
+    }
+
+    #[test]
+    fn agy_edits_stay_in_the_workspace_and_run_no_commands() {
+        let rules = agy_rules(Access::Edits);
+        assert_eq!(rules["toolPermission"], "request-review", "always-proceed writes outside the workspace");
+        assert_eq!(rules["permissions"]["allow"], serde_json::json!(["read_file(*)"]));
+        let deny = rules["permissions"]["deny"].as_array().unwrap();
+        assert!(deny.contains(&"command(*)".into()) && deny.contains(&"mcp(*)".into()), "{deny:?}");
+        assert!(!deny.contains(&"write_file(*)".into()), "{deny:?}");
+    }
+
+    #[test]
+    fn only_full_access_skips_agys_permissions() {
+        assert_eq!(agy_settings(Access::Full), None);
+        let line = |access| agent_command_in(AgentTool::Gemini, None, None, None, access, false, Some(&agy_path())).1;
+        for access in [Access::Read, Access::Ask, Access::Edits] {
+            let args = line(access);
+            assert!(args.iter().any(|a| a == "--settings"), "{args:?}");
+            assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions" || a == "--sandbox" || a == "auto"), "{args:?}");
+        }
+        assert!(line(Access::Edits).windows(2).any(|a| a == ["--mode", "accept-edits"]));
+        let full = line(Access::Full);
+        assert!(full.iter().any(|a| a == "--dangerously-skip-permissions") && !full.iter().any(|a| a == "--settings"), "{full:?}");
+    }
+
+    /// A folder holding an empty `agy`, so the test does not depend on what
+    /// is installed. It stays for the test run: its name is per-process.
+    fn agy_path() -> String {
+        let dir = std::env::temp_dir().join(format!("apx-agy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(if cfg!(windows) { "agy.cmd" } else { "agy" });
+        std::fs::write(&file, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn agy_reads_the_chat_from_stdin_as_a_message() {
-        let line = agy_stdin_line("[Human]: hi \"there\"\nsecond line");
+        let line = agy_stdin_line("[User]: hi \"there\"\nsecond line");
         assert!(line.ends_with('\n'));
         assert_eq!(line.matches('\n').count(), 1, "one NDJSON line");
         let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!(value["event"], "user");
         assert_eq!(value["message"]["role"], "user");
-        assert_eq!(value["message"]["content"], "[Human]: hi \"there\"\nsecond line");
+        assert_eq!(value["message"]["content"], "[User]: hi \"there\"\nsecond line");
     }
 
     #[test]

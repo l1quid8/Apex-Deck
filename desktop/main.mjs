@@ -4,7 +4,7 @@
 // relays lines and does what needs the machine with the screen. Each window
 // runs on one host, this Mac or another machine, so two can sit side by side.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, session, shell, systemPreferences, WebContentsView, webContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, session, shell, systemPreferences, WebContentsView, webContents } from 'electron';
 import { VoiceRuntimeManager } from './voiceRuntime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
+import { siteMemory } from './browserPermissions.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
 import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, assertHostUnused } from './hosts.mjs';
 import { openTauriApps, tauriStorage } from './legacy.mjs';
@@ -382,7 +383,7 @@ const voiceLog = () => path.join(app.getPath('userData'), 'voice-calls.log');
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', (...args) => {
     const message = String(args[0]?.message ?? args[2] ?? '');
-    if (!message.startsWith('[voice end]') && !message.startsWith('[voice event]')) return;
+    if (!/^\[voice (?:end|event|meta (?:end|event))\]/.test(message)) return;
     fs.promises.appendFile(voiceLog(), `${new Date().toISOString()} ${message}\n`).catch(() => {});
   });
 });
@@ -401,6 +402,12 @@ app.whenReady().then(() => {
     if(process.platform==='darwin') void systemPreferences.askForMediaAccess('microphone').then(callback).catch(()=>callback(false));
     else callback(true);
   });
+});
+
+// The real clipboard, so a copy never depends on the page's clipboard permission. Smoke runs keep their stand-in.
+handle('clipboard:write', (_entry, text) => {
+  if (typeof text !== 'string' || process.env.APEX_DECK_SMOKE) throw new Error('Clipboard unavailable.');
+  clipboard.writeText(text);
 });
 
 handle('connection:current', async ({ host }) => {
@@ -737,6 +744,10 @@ handle('browser:reload', async ({ browser }, pane) => browser.reload(String(pane
 handle('browser:back', async ({ browser }, pane) => browser.back(String(pane)));
 handle('browser:forward', async ({ browser }, pane) => browser.forward(String(pane)));
 handle('browser:close', async ({ browser }, pane) => browser.close(String(pane)));
+let siteAnswers = null;
+const sites = () => (siteAnswers ??= siteMemory(path.join(app.getPath('userData'), 'browser-sites.json')));
+handle('browser:sitePermissions', async () => sites().list());
+handle('browser:forgetSitePermission', async (_entry, origin, kind) => sites().forget(String(origin), String(kind)));
 ipcMain.on('browser:bounds', (event, pane, bounds) => {
   deckWindow(event)?.browser.bounds(String(pane), BOUNDS(bounds));
 });
@@ -831,6 +842,7 @@ function createWindow(host, beside) {
     return { action: 'deny' };
   });
   const browser = dockedBrowser({
+    memory: sites(),
     win,
     send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
     downloads: () => app.getPath('downloads'),
@@ -959,6 +971,7 @@ function createPopout(ownerEntry, snapshot, bounds) {
     return { action: 'deny' };
   });
   const browser = dockedBrowser({
+    memory: sites(),
     win,
     send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
     downloads: () => app.getPath('downloads'),

@@ -18,7 +18,7 @@
 use std::time::{Duration, Instant};
 
 use apex_core::{
-    Access, ActionKind, Answer, Approver, Decision, Progress, ProgressSink, ProposedAction,
+    Access, ActionKind, Answer, Approver, Decision, PlanAnswer, Progress, ProgressSink, ProposedAction,
     Question, QuestionOption,
 };
 use serde_json::{json, Value};
@@ -112,6 +112,7 @@ pub(crate) fn plan_exit_response(
     input: &Value,
     decision: Decision,
     own: Access,
+    note: Option<&str>,
 ) -> Value {
     let mode = match own {
         Access::Full => Some("bypassPermissions"),
@@ -125,7 +126,15 @@ pub(crate) fn plan_exit_response(
         }
         (true, Some(mode)) => json!({
             "behavior": "allow",
-            "updatedInput": input,
+            "updatedInput": match note {
+                // Claude shows the model the edited plan, so the note rides there.
+                Some(note) => {
+                    let mut edited = input.clone();
+                    edited["plan"] = json!(format!("{}\n\n{note}", input["plan"].as_str().unwrap_or("")));
+                    edited
+                }
+                None => input.clone(),
+            },
             "updatedPermissions": [{ "type": "setMode", "mode": mode, "destination": "session" }],
         }),
         (false, Some(_)) => {
@@ -307,13 +316,13 @@ pub(crate) async fn run_with_computer(
                 ) {
                     // Started by the Plan switch: Claude has a plan and asks
                     // to start the work. A read-only bot is refused unasked.
-                    let decision = if own == Access::Read {
-                        Decision::Reject
+                    let answer = if own == Access::Read {
+                        PlanAnswer { decision: Decision::Reject, note: None }
                     } else {
                         let plan = request["input"]["plan"].as_str().unwrap_or("").to_string();
                         on_progress(Progress::Activity("Waiting for you: start the work?"));
                         approver
-                            .decide(ProposedAction {
+                            .decide_plan(ProposedAction {
                                 kind: ActionKind::Plan,
                                 title: "Start the work?".into(),
                                 detail: plan,
@@ -322,7 +331,7 @@ pub(crate) async fn run_with_computer(
                             })
                             .await
                     };
-                    plan_exit_response(&message["request_id"], &request["input"], decision, own)
+                    plan_exit_response(&message["request_id"], &request["input"], answer.decision, own, answer.note.as_deref())
                 } else if request["subtype"] == "can_use_tool" {
                     let tool = request["tool_name"].as_str().unwrap_or("a tool");
                     let action = reader.claude_action(tool, &request["input"]);
@@ -515,10 +524,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plan_exit_allow_carries_the_note_as_probed() {
+        let input = json!({"plan": "1. A\n2. B", "other": 1});
+        let r = plan_exit_response(&json!("p1"), &input, Decision::Approve, Access::Full, Some("Do NOT do step 2"))["response"]["response"].clone();
+        assert_eq!(r["behavior"], "allow");
+        assert_eq!(r["updatedInput"]["plan"], "1. A\n2. B\n\nDo NOT do step 2");
+        assert_eq!(r["updatedInput"]["other"], 1);
+    }
+
+    #[test]
+    fn plan_exit_without_note_is_unchanged() {
+        let input = json!({"plan": "1. A"});
+        let r = plan_exit_response(&json!("p1"), &input, Decision::Approve, Access::Edits, None)["response"]["response"].clone();
+        assert_eq!(r["updatedInput"], input);
+    }
+
+    #[test]
     fn starting_the_work_hands_back_the_bots_own_access() {
         let input = json!({"plan": "1. Do it"});
         let response = |decision, own| {
-            plan_exit_response(&json!("p1"), &input, decision, own)["response"]["response"].clone()
+            plan_exit_response(&json!("p1"), &input, decision, own, None)["response"]["response"].clone()
         };
         let mode = |own| response(Decision::Approve, own)["updatedPermissions"][0]["mode"].clone();
         assert_eq!(

@@ -1,7 +1,8 @@
 import { createVoiceController, type VoiceController } from "./controller.ts";
 import { openVoiceAudio, playVoiceSample } from "./audio.ts";
 import { connectLocalVoice } from "./localClient.ts";
-import { readVoiceSettings, voiceFor } from "./settings.ts";
+import { DEFAULT_SILENCE_MS, readVoiceSettings, voiceFor } from "./settings.ts";
+import { publishPlaybackLevel } from "./playbackLevel.ts";
 import type {
   CallEngine,
   CallScope,
@@ -10,8 +11,10 @@ import type {
   VoiceSettings,
 } from "./types.ts";
 import { createRealtimeVoiceController } from "./realtimeController.ts";
+import { createMetaVoiceController } from "./metaController.ts";
 import { joinVoiceEngines } from "./engineController.ts";
 import { mintForScope } from "./realtimeMint.ts";
+import { mintMetaForScope } from "./metaMint.ts";
 
 export interface VoiceRegistration {
   candidates: VoiceCandidate[];
@@ -28,6 +31,12 @@ export interface VoiceRegistration {
     instructions?: string;
     tools?: unknown[];
   }): Promise<{ client_secret: string; expires_at?: number; model: string; voice: string }>;
+  /** Mint a Meta ASR session token via daemon. */
+  metaSession?(args: {
+    room: string;
+    participant?: string;
+    model?: string;
+  }): Promise<{ token: string; model: string }>;
 }
 
 const registry = new Map<string, VoiceRegistration>();
@@ -54,6 +63,9 @@ export function warmVoice() {
   void window.apexDeck?.voice?.warm?.().catch(() => {});
 }
 
+const openCallAudio: typeof openVoiceAudio = (frame, drain, playing, error, consumed) =>
+  openVoiceAudio(frame, drain, playing, error, consumed, publishPlaybackLevel);
+
 /* ---- local engine ---- */
 let localController: ReturnType<typeof createVoiceController>;
 localController = createVoiceController({
@@ -62,7 +74,7 @@ localController = createVoiceController({
     start: () => runtime().start(),
     stop: () => runtime().stop(),
   },
-  openAudio: openVoiceAudio,
+  openAudio: openCallAudio,
   playSample: playVoiceSample,
   connect: connectLocalVoice,
   candidates: () => [...registry.values()].flatMap((r) => r.candidates),
@@ -81,7 +93,7 @@ localController = createVoiceController({
   },
   silence: (): number => {
     const s = localController?.getState().scope;
-    return s ? lookup(s).settings.silenceMs : 100;
+    return s ? lookup(s).settings.silenceMs : DEFAULT_SILENCE_MS;
   },
   focus: (scope: CallScope) => lookup(scope).focus(),
 } as any);
@@ -105,6 +117,40 @@ const realtimeController = createRealtimeVoiceController({
   focus: (scope) => lookup(scope).focus(),
 });
 
+/* ---- meta engine ---- */
+const voiceSettingsForScope = () => {
+  const scope = realtimeController.getState().scope ?? localController.getState().scope;
+  if (scope) {
+    try { return lookup(scope).settings; } catch {}
+  }
+  const any = [...registry.values()][0]?.settings;
+  return any ?? readVoiceSettings(undefined);
+};
+
+const metaController = createMetaVoiceController({
+  runtime: {
+    status: () => runtime().status(),
+    start: () => runtime().start(),
+    stop: () => runtime().stop(),
+  },
+  openAudio: openCallAudio,
+  connect: connectLocalVoice,
+  playSample: playVoiceSample,
+  candidates: () => [...registry.values()].flatMap((r) => r.candidates),
+  bridge: (scope: CallScope) => lookup(scope).bridge(scope.participantId),
+  voice: (scope: CallScope) => {
+    const e = lookup(scope), c = e.candidates.find((c) => c.participantId === scope.participantId);
+    return voiceFor(e.settings, scope.hostId, c?.profileId ?? scope.participantId, scope.roomId, scope.participantId, c?.agentVoice);
+  },
+  silence: (): number => {
+    const s = metaController?.getState().scope ?? localController?.getState().scope;
+    return s ? lookup(s).settings.silenceMs : DEFAULT_SILENCE_MS;
+  },
+  voiceSettings: voiceSettingsForScope,
+  mintSession: (args: any) => mintMetaForScope((hostId, roomId) => registry.get(scopeKey({ hostId, roomId })), args),
+  focus: (scope: CallScope) => lookup(scope).focus(),
+} as any);
+
 /* ---- unified controller that picks engine based on settings ---- */
 function currentEngineFor(scope: CallScope): CallEngine {
   try {
@@ -114,7 +160,7 @@ function currentEngineFor(scope: CallScope): CallEngine {
   }
 }
 
-const joined = joinVoiceEngines(localController as VoiceController, realtimeController, currentEngineFor);
+const joined = joinVoiceEngines(localController as VoiceController, realtimeController, currentEngineFor, undefined, metaController as any);
 export const voiceController: VoiceController = joined.controller;
 export const callEngine = joined.engine;
 
@@ -134,6 +180,7 @@ export function registerVoiceThread(key: string, entry: VoiceRegistration) {
       entry.save(settings);
     },
     realtimeSession: entry.realtimeSession,
+    metaSession: entry.metaSession,
   };
   registry.set(key, registration);
 }

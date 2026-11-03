@@ -1,6 +1,6 @@
 //! Work-thread bots using the assistant's browser. Unified Computer Use's helper forwards each
 //! tool call over its authenticated control connection, so the debugging port stays private to
-//! the host and a bot can only name a tool from this file. Everything runs on the human's
+//! the host and a bot can only name a tool from this file. Everything runs on the user's
 //! machine with no window, so it needs no pointer, no keyboard and no focus.
 
 use std::collections::HashMap;

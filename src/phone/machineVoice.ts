@@ -1,6 +1,6 @@
 import type { VoiceSettings } from "../voice/types.ts";
 /** Which call settings the phone has changed itself. Those stay the phone's; the rest follow the machine. */
-export type PhoneTouched = { silence: boolean; look: boolean; realtimeVoice: boolean; realtimeModel: boolean };
+export type PhoneTouched = { silence: boolean; look: boolean; realtimeVoice: boolean; realtimeModel: boolean; metaModel: boolean };
 /**
  * The settings a call in one machine's threads uses: the phone's own, with the machine's saved
  * pause, look, default voice, agents' voices and GPT-Live picks wherever the phone hasn't chosen. The engine is
@@ -28,12 +28,14 @@ export function machineVoice(
   const defaultVoice = phone.defaultVoice ?? machine.defaultVoice;
   const realtimeVoice = touched.realtimeVoice ? phone.realtimeVoice : machine.realtimeVoice;
   const realtimeModel = touched.realtimeModel ? phone.realtimeModel : machine.realtimeModel;
-  const { realtimeVoice: _voice, realtimeModel: _model, ...own } = phone;
+  const metaModel = touched.metaModel ? phone.metaModel : machine.metaModel;
+  const { realtimeVoice: _voice, realtimeModel: _model, metaModel: _m, ...own } = phone;
   return {
     ...own,
     engine: machine.engine,
     ...(realtimeVoice ? { realtimeVoice } : {}),
     ...(realtimeModel ? { realtimeModel } : {}),
+    ...(metaModel ? { metaModel } : {}),
     ...(defaultVoice ? { defaultVoice } : {}),
     silenceMs: touched.silence ? phone.silenceMs : machine.silenceMs,
     look: touched.look ? phone.look : machine.look,
