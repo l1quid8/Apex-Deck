@@ -21,11 +21,11 @@ fn fixture(access: Access, tools: ProjectTools, version: Option<u32>) -> Fixture
     let root=base.join("repo");let data=base.join("data");
     std::fs::create_dir_all(&root).unwrap();
     for args in [vec!["init","-q"],vec!["config","user.name","Test"],vec!["config","user.email","test@example.invalid"]] {
-        assert!(Command::new("git").current_dir(&root).args(args).status().unwrap().success());
+        assert!(crate::project_process::git_command().current_dir(&root).args(args).status().unwrap().success());
     }
     std::fs::write(root.join("tracked.txt"),"baseline\n").unwrap();
-    assert!(Command::new("git").current_dir(&root).args(["add","tracked.txt"]).status().unwrap().success());
-    assert!(Command::new("git").current_dir(&root).args(["commit","-qm","baseline"]).status().unwrap().success());
+    assert!(crate::project_process::git_command().current_dir(&root).args(["add","tracked.txt"]).status().unwrap().success());
+    assert!(crate::project_process::git_command().current_dir(&root).args(["commit","-qm","baseline"]).status().unwrap().success());
     let runtime=tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let host=Host::try_new(HostPaths {data:data.clone(),downloads:None},runtime.handle().clone()).unwrap();
     std::fs::write(data.join("host-id"),"owner").unwrap();

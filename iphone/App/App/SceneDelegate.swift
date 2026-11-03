@@ -7,6 +7,7 @@ import ApexRemote
 class AppBridgeViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
         bridge?.registerPluginInstance(ApexRemotePlugin())
+        bridge?.registerPluginInstance(ApexSshPlugin())
         bridge?.registerPluginInstance(ApexScannerPlugin())
         bridge?.registerPluginInstance(ApexAppearancePlugin())
     }

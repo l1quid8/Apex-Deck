@@ -68,9 +68,8 @@ fn run_git(
     envs: &[(&str, &std::ffi::OsStr)],
     args: &[&str],
 ) -> Result<String, String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::project_process::git_command();
     cmd.current_dir(root);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in envs {
         if *k == "GIT_INDEX_FILE" {
             cmd.env(k, crate::assistant_git::external_path(Path::new(v)).as_os_str());
@@ -428,7 +427,7 @@ fn diff_trees(
     commit_b: &str,
 ) -> Result<std::collections::HashMap<String, DiffEntry>, String> {
     let mut map = std::collections::HashMap::new();
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::project_process::git_command();
     cmd.current_dir(repo);
     cmd.args(["diff-tree", "-r", "--raw", "--no-renames", "-z", commit_a, commit_b]);
     let out = cmd
@@ -494,7 +493,7 @@ fn get_blob(repo: &Path, sha: &str) -> Result<Vec<u8>, String> {
     if sha.chars().all(|c| c == '0') {
         return Ok(Vec::new());
     }
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::project_process::git_command();
     cmd.current_dir(repo);
     cmd.args(["cat-file", "-p", sha]);
     let out = cmd
@@ -517,7 +516,7 @@ fn is_binary(bytes: &[u8]) -> bool {
 
 fn get_ignored_new_in_work(root: &Path, work: &Path) -> Vec<String> {
     let mut skipped = Vec::new();
-    let out = match Command::new("git")
+    let out = match crate::project_process::git_command()
         .current_dir(work)
         .args(["status", "--ignored", "--porcelain", "-z"])
         .output()
@@ -730,7 +729,7 @@ pub fn merge_main_into_copy(copy: &BotCopy) -> Result<FoldOutcome, String> {
             std::fs::write(&m_file, &m_bytes)
                 .map_err(|e| format!("Could not write temp m: {e}"))?;
 
-            let res = Command::new("git")
+            let res = crate::project_process::git_command()
                 .args(["merge-file", "-p", "-L", "copy", "-L", "base", "-L", "main"])
                 .arg(&c_file)
                 .arg(&base_file)
@@ -1385,7 +1384,7 @@ mod tests {
         let root = temp.path().join("repo");
         fs::create_dir(&root).unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
+            let out = crate::project_process::git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -1414,7 +1413,7 @@ mod tests {
         let (_tmp, root, _data) = init_repo("nm-symlink");
         fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
+            let out = crate::project_process::git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -1445,7 +1444,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("nm-real-dir");
         fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         };
         run(&["add", ".gitignore"]);
@@ -1477,7 +1476,7 @@ mod tests {
         let (_tmp, root, _data) = init_repo("snapshot-content");
         fs::write(root.join(".gitignore"), "ignored.log\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", ".gitignore"]);
@@ -1541,7 +1540,7 @@ mod tests {
     fn snapshot_leaves_index_head_and_status_untouched() {
         let (_tmp, root, _data) = init_repo("snapshot-untouched");
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
@@ -1656,7 +1655,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("remove-locked");
         let copy = create_copy(&root, &data, "thread-locked", "bot-locked").unwrap();
         // create_copy creates the worktree with --lock
-        let out = Command::new("git")
+        let out = crate::project_process::git_command()
             .arg("-C")
             .arg(&root)
             .args(["worktree", "list", "--porcelain"])
@@ -1667,7 +1666,7 @@ mod tests {
 
         remove_copy(&data, &copy).unwrap();
 
-        let out = Command::new("git")
+        let out = crate::project_process::git_command()
             .arg("-C")
             .arg(&root)
             .args(["worktree", "list", "--porcelain"])
@@ -1749,7 +1748,7 @@ mod tests {
         fs::write(root.join("a.txt"), "a content").unwrap();
         fs::write(root.join("b.txt"), "b content").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -1781,7 +1780,7 @@ mod tests {
         let initial = "line 1\nline 2\nline 3\nline 4\nline 5\n";
         fs::write(root.join("file.txt"), initial).unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -1808,7 +1807,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("fold-conflict");
         fs::write(root.join("file.txt"), "original line\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -1845,7 +1844,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("fold-edit-del");
         fs::write(root.join("file.txt"), "content\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -1887,7 +1886,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("fold-bin");
         fs::write(root.join("data.bin"), [0u8, 1, 2, 0, 4]).unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -1913,7 +1912,7 @@ mod tests {
         fs::write(root.join("bot.txt"), "bot base\n").unwrap();
         fs::write(root.join("human.txt"), "human base\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -1942,7 +1941,7 @@ mod tests {
         let copy = create_copy(&root, &data, "t-br", "b-br").unwrap();
 
         let run_copy = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&copy.work).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&copy.work).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run_copy(&["checkout", "-b", "bot-branch"]);
@@ -1966,7 +1965,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("fold-ignored");
         fs::write(root.join(".gitignore"), ".env\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -2020,7 +2019,7 @@ mod tests {
         fs::write(root.join("untouched.txt"), "untouched\n").unwrap();
         fs::write(root.join("changed.txt"), "orig\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -2210,7 +2209,7 @@ mod tests {
         fs::write(&outside_b, "outside b\n").unwrap();
         std::os::unix::fs::symlink(&outside_a, root.join("link")).unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -2241,7 +2240,7 @@ mod tests {
         fs::write(&outside, "outside\n").unwrap();
         fs::write(root.join("f.txt"), "one\ntwo\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -2603,7 +2602,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("clash-reconcile");
         fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "seed.txt"]);
@@ -2659,7 +2658,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("clash-fix-retry");
         fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "seed.txt"]);
@@ -2713,7 +2712,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("clash-two-failed");
         fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "seed.txt"]);
@@ -2971,7 +2970,7 @@ mod tests {
         fs::write(root.join("f1.txt"), "f1 orig").unwrap();
         fs::write(root.join("f2.txt"), "f2 orig").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "f1.txt", "f2.txt"]);
@@ -3010,7 +3009,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("fold-markers-main-moves");
         fs::write(root.join("seed.txt"), "line 1\nline 2\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "seed.txt"]);
@@ -3079,7 +3078,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("fold-leak-check");
         fs::write(root.join("seed.txt"), "seed\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);
@@ -3132,7 +3131,7 @@ mod tests {
         let (_tmp, root, data) = init_repo("fold-marker-text-clean");
         fs::write(root.join("seed.txt"), "seed\n").unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            let out = crate::project_process::git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
         };
         run(&["add", "."]);

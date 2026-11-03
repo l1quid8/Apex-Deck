@@ -103,16 +103,16 @@ function useProfiles(hostId: string | null, load: (hostId: string) => Promise<Ch
   return state?.hostId === hostId ? state : null;
 }
 
-function ProfileRow({ item, picked, onToggle }: { item: ChatProfile; picked: boolean; onToggle(): void }) {
+function ProfileRow({ item, picked, onToggle, onSignIn }: { item: ChatProfile; picked: boolean; onToggle(): void; onSignIn?(agent: string): void }) {
   const face = look(item.profile);
   return (
     <div className="ph-bot-entry"><div className="ph-bot-row">
       <span className="ph-bot-info"><Avatar seed={face.seed} color={face.color} size="md" />
         <span className="ph-bot-label"><strong>{item.profile.display_name}</strong><small className={item.ok ? undefined : "ph-amber"}>{item.ok ? profileLine(item.profile) : item.reason ?? "Can't join a chat on this machine."}</small></span>
       </span>
-      <button type="button" className="ph-bot-action" role="checkbox" aria-checked={picked} disabled={!item.ok} aria-label={`${picked ? "Leave out" : "Add"} ${item.profile.display_name}`} onClick={onToggle}>
+      {item.signIn && onSignIn ? <button type="button" className="ph-plain" aria-label={`Sign in to ${item.profile.display_name}`} onClick={() => onSignIn(item.signIn!)}>Sign in</button> : <button type="button" className="ph-bot-action" role="checkbox" aria-checked={picked} disabled={!item.ok} aria-label={`${picked ? "Leave out" : "Add"} ${item.profile.display_name}`} onClick={onToggle}>
         {picked ? <Check size={18} /> : <Plus size={18} />}
-      </button>
+      </button>}
     </div></div>
   );
 }
@@ -132,6 +132,8 @@ export function NewChatBody(props: {
   machineIcon(hostId: string, size?: number): ReactNode;
   loadProfiles(hostId: string): Promise<ChatProfile[]>;
   onStart(hostId: string, profiles: string[]): Promise<void>;
+  /** Opens the tool in a terminal on the machine, where it signs itself in. */
+  onSignIn?(hostId: string, agent: string): void;
 }) {
   const [hostId, setHostId] = useState<string | null>(props.start?.hostId ?? null);
   const [picked, setPicked] = useState<string[]>(props.start?.picked ?? []);
@@ -167,7 +169,7 @@ export function NewChatBody(props: {
       {!profiles?.list && !profiles?.error && <p className="ph-sheet-text">Asking {machine.name} for its bots…</p>}
       {profiles?.list && profiles.list.length === 0 && <p className="ph-sheet-text">{machine.name} has no bots set up yet. Add one in Deck on that machine.</p>}
       {profiles?.list && <div className="ph-bot-list">{profiles.list.map((item) => (
-        <ProfileRow key={item.profile.id} item={item} picked={picked.includes(item.profile.id)} onToggle={() => { setEdited(true); setPicked((now) => now.includes(item.profile.id) ? now.filter((id) => id !== item.profile.id) : [...now, item.profile.id]); }} />
+        <ProfileRow key={item.profile.id} item={item} picked={picked.includes(item.profile.id)} onToggle={() => { setEdited(true); setPicked((now) => now.includes(item.profile.id) ? now.filter((id) => id !== item.profile.id) : [...now, item.profile.id]); }} onSignIn={hostId && props.onSignIn ? (agent) => props.onSignIn!(hostId, agent) : undefined} />
       ))}</div>}
       <p className="ph-sheet-text ph-quiet"><Lock size={13} /> Talk only: bots in a chat can't see or change your files.</p>
     </>}

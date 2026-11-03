@@ -36,6 +36,16 @@ export interface PairedMachine {
   /** Addresses to try directly, newest from the machine's welcome. */
   addrs: string[];
   pairedAt: number;
+  /** Present when SSH set this machine up. Holds no secret. */
+  setup?: MachineSetup;
+}
+
+export interface MachineSetup {
+  host: string;
+  port: number;
+  user: string;
+  /** A sign-in is in the Keychain, behind Face ID. */
+  kept: boolean;
 }
 
 export type Machine = DirectMachine | PairedMachine;
@@ -104,7 +114,7 @@ export function addMachine(list: Machine[], next: Machine): Machine[] {
   if (isPaired(next)) {
     if (!/^[0-9a-f]{64}$/.test(next.hostEndpointId)) throw new Error("The machine's endpoint ID is malformed.");
     if (!Array.isArray(next.addrs) || !next.addrs.every((addr) => typeof addr === "string")) throw new Error("The machine's addresses are malformed.");
-    made = { id, name, kind: next.kind, transport: "iroh", hostEndpointId: next.hostEndpointId, addrs: next.addrs.slice(0, 16), pairedAt: next.pairedAt };
+    made = { id, name, kind: next.kind, transport: "iroh", hostEndpointId: next.hostEndpointId, addrs: next.addrs.slice(0, 16), pairedAt: next.pairedAt, ...(next.setup ? { setup: next.setup } : {}) };
   } else {
     const url = next.url.trim();
     const token = next.token.trim();
@@ -225,6 +235,11 @@ export function machinesKey(): string {
   return MACHINES_KEY;
 }
 
+const validSetup = (value: unknown): value is MachineSetup => {
+  const setup = value as MachineSetup | null | undefined;
+  return !!setup && typeof setup.host === "string" && typeof setup.port === "number" && typeof setup.user === "string" && typeof setup.kept === "boolean";
+};
+
 /** Saved pairs, by WebSocket or QR. A bad entry is dropped; the rest are kept. */
 export function loadMachines(raw: string | null): Machine[] {
   if (!raw) return [];
@@ -240,7 +255,7 @@ export function loadMachines(raw: string | null): Machine[] {
         if (candidate.transport === "iroh") {
           if (typeof candidate.hostEndpointId !== "string" || !Array.isArray(candidate.addrs)) return [];
           const pairedAt = typeof candidate.pairedAt === "number" ? candidate.pairedAt : 0;
-          return [addMachine([], { id: candidate.id, name: candidate.name, kind: candidate.kind, transport: "iroh", hostEndpointId: candidate.hostEndpointId, addrs: candidate.addrs as string[], pairedAt })[0]];
+          return [addMachine([], { id: candidate.id, name: candidate.name, kind: candidate.kind, transport: "iroh", hostEndpointId: candidate.hostEndpointId, addrs: candidate.addrs as string[], pairedAt, ...(validSetup(candidate.setup) ? { setup: candidate.setup } : {}) })[0]];
         }
         if (typeof candidate.url !== "string" || typeof candidate.token !== "string") return [];
         return [addMachine([], { id: candidate.id, name: candidate.name, kind: candidate.kind, url: candidate.url, token: candidate.token })[0]];

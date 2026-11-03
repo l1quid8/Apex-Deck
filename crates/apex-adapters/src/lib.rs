@@ -10,7 +10,7 @@
 mod ansi;
 mod assistant;
 pub use assistant::{assistant_profile_ok, build_assistant, build_computer_assistant, computer_backend_supported};
-mod api_tools;
+pub mod api_tools;
 mod attachments;
 mod api_info;
 mod catalog;
@@ -19,6 +19,8 @@ mod claude_usage;
 mod cli;
 mod gemini_usage;
 mod gateway_sandbox;
+#[cfg(unix)]
+pub mod linux_jail;
 mod codex_server;
 pub mod codex_images;
 mod codex_hook;
@@ -114,6 +116,10 @@ pub struct BuildContext {
     pub attachment_roots: Vec<PathBuf>,
     /// Deck's shared phone, for Claude and Codex bots on a Mac. None turns it off.
     pub phone: Option<PhoneEnv>,
+    /// Where the daemon's data lives, for bot jail storage and protected paths.
+    pub data_dir: Option<PathBuf>,
+    /// Observed public IP addresses of this host (e.g. from iroh).
+    pub observed_addrs: Vec<std::net::IpAddr>,
 }
 
 /// Create the participant described by `config`. A bot reached through an
@@ -211,6 +217,8 @@ pub fn participant_for_room(
                 media_dir: None,
                 attachment_roots: Vec::new(),
                 phone: None,
+                data_dir: context.data_dir.clone(),
+                observed_addrs: context.observed_addrs.clone(),
             };
             match &config.backend {
                 Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config)),

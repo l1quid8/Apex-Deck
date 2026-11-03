@@ -54,7 +54,8 @@ for a real failure.
 
 1. Reached server.
 2. Server key checked, before any credentials are sent. First use trusts the
-   fingerprint. A changed key stops the flow.
+   fingerprint and saves it at once, even if a later step fails. A changed key
+   stops the flow; only the person can trust the new one, on that failure screen.
 3. Signed in.
 4. Found OS and architecture.
 5. Installed, updated or already up to date. Downloads are checked against the
@@ -91,6 +92,9 @@ Cases:
   updater refuse the release. Change them together with the updater recipe.
 
 ## Open decision: who can act on a Linux machine
+
+Design for the answer: `2026-10-30-linux-bot-confinement-design.md`. It also corrects
+this section: no provider has an outer sandbox in Work threads on Linux, not only Claude.
 
 This is the Human's call and needs Null's review. It comes before the SSH work,
 because every machine that work adds lands here.
@@ -140,15 +144,33 @@ Claude bots below Full have no operating-system sandbox on Linux; their limit is
 Claude's own approval step. Any command the person approves runs as them, whatever
 this decision says.
 
-## Known unknowns
+## How pairing works without anyone at the server
 
-1. **Headless pairing.** `apex-daemon pair` (`crates/apex-daemon/src/pair_cli.rs`)
-   prints the link, waits for a claim, and asks `Approve? [y/N]`. The phone can
-   answer over SSH, but it needs machine-readable output, and remote access must
-   be on.
-2. **User-only install after sign-out.** Whether a user-only service survives SSH
-   sign-out (lingering). Test with a throwaway user on Apex-Terminal once the
-   Human says yes; otherwise setup checks and reports it.
+`apex-daemon pair --json` prints one JSON event per line. The phone reads the
+link, dials it, and works out the 6-digit code. The machine prints the code of
+whoever claimed it. The phone writes `approve CODE` only if the two match, so
+someone else who got the link can't pair. SSH ending before that cancels the
+invitation. The code carries the machine's OS, so a Linux machine is never filed
+as the phone's Mac.
+
+## What setup learned
+
+- `loginctl enable-linger` needs polkit. Without lingering a user service ends at
+  sign-out, so setup hands over to a plain process with an `@reboot` cron line.
+  That path is tested in Docker. Polkit won't run in a container, so the
+  lingering-on path still needs a real server.
+- A machine with the updater (`/etc/apex-deck-update`) is never overwritten.
+  Below 0.9.8 setup says to wait for it to update itself.
+- Citadel needs iOS 17, so the app's minimum went from 15 to 17. It can't open
+  ECDSA keys, so the phone accepts ed25519 and RSA only.
+- A headless machine with no saved bots offers its detected tools. `chat_profiles`
+  marks Claude and Codex as needing sign-in from their login files, and Sign in
+  opens the tool in a terminal on the machine.
+- A test iPhone build reads the release list from one tag with
+  `VITE_SSH_RELEASE_TAG=v0.9.8`, because a pre-release is never `latest`.
+- Linux binaries must be on the release: pass `--linux arch=path` to
+  `scripts/release-update-manifest.mjs`. Until a release has them, setup stops
+  with "No Deck download yet".
 
 ## Evidence so far
 

@@ -42,14 +42,7 @@ fn config() -> ParticipantConfig {
 fn context() -> BuildContext {
     BuildContext {
         cwd: Some(std::env::temp_dir()),
-        path: None,
-        codex_hook: None,
-        temp: None,
-        process_registry: None,
-        cargo_target_dir: None,
-        media_dir: None,
-        attachment_roots: vec![],
-        phone: None,
+        ..Default::default()
     }
 }
 

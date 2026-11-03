@@ -1940,7 +1940,7 @@ async fn automatic_git_status_disables_configured_fsmonitor_execution() {
     let dir = std::env::temp_dir().join(format!("apex-personal-git-hooks-{}-{}", std::process::id(), FIXTURE.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir_all(&dir).unwrap();
     let git = |args: &[&str]| {
-        let output = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+        let output = crate::project_process::git_command().args(args).current_dir(&dir).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     };
     git(&["init", "-q"]);

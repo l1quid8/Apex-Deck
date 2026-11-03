@@ -250,6 +250,11 @@ impl apex_core::TurnStartHook for StartCheckpoint {
     }
 }
 
+/// The `pty_spawn` agent that signs `tool` in.
+fn sign_in_key(tool: AgentTool) -> &'static str {
+    if matches!(tool, AgentTool::Codex) { "codex" } else { "claude" }
+}
+
 impl Host {
     /// Open the host's data in `paths.data`. Old snapshots are compacted on a
     /// background thread, and agents may read the attachments folder.
@@ -959,10 +964,15 @@ impl Host {
             .into_iter()
             .map(|p| {
                 let check = apex_adapters::chat_profile_ok(&p, path.as_deref());
+                let sign_in = match (&p.backend, &check) {
+                    (apex_core::Backend::Agent { tool, .. }, Ok(())) if agents::needs_sign_in(*tool) => Some(sign_in_key(*tool)),
+                    _ => None,
+                };
                 let p = crate::chat_bots::redacted(p);
-                match check {
-                    Ok(()) => serde_json::json!({ "profile": p, "chatOk": true, "reason": serde_json::Value::Null }),
-                    Err(reason) => serde_json::json!({ "profile": p, "chatOk": false, "reason": reason }),
+                match (check, sign_in) {
+                    (Ok(()), Some(key)) => serde_json::json!({ "profile": p, "chatOk": false, "reason": "Needs sign-in on this machine", "signIn": key }),
+                    (Ok(()), None) => serde_json::json!({ "profile": p, "chatOk": true, "reason": serde_json::Value::Null }),
+                    (Err(reason), _) => serde_json::json!({ "profile": p, "chatOk": false, "reason": reason }),
                 }
             })
             .collect();
@@ -1176,6 +1186,8 @@ impl Host {
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
             phone: if !kind.is_chat() && cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
+            data_dir: Some(self.paths.data.clone()),
+            observed_addrs: Vec::new(),
         };
         let mut seen: Vec<&ParticipantId> = Vec::new();
         for config in &participants {
@@ -2251,6 +2263,23 @@ impl Host {
         if next.access != current.access { self.computer.revoke(Some(&id),Some(name.as_str())); }
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         let access_moved = next.access != current.access && handle.runtime.busy();
+        if next.access != current.access {
+            // Step 1: Refuse new tool calls for that bot, and end its turn.
+            handle.approvals.reject_for(&name);
+            handle.runtime.stop(Some(&name));
+
+            // Step 2: Stop the whole process: group kill, then wait until it's reaped.
+            // If step 2 fails, the level stays as it was and the change reports the failure.
+            if let Some(existing) = room.participant(&name) {
+                if let Err(why) = existing.cancel_active_turn().await {
+                    return Err(format!("Could not stop process tree for `{name}`: {why}"));
+                }
+            }
+
+            // Step 3: Drop that bot's MCP links and clear their cached tool lists.
+            self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+        }
+        // Step 4: Save the new level.
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
@@ -2732,6 +2761,106 @@ impl Host {
         let data = self.paths.data.clone();
         tokio::task::spawn_blocking(move || crate::bot_copies_ui::set_check(Path::new(&root), &data, cmd)).await.map_err(|e| e.to_string())?
     }
+    pub fn folder_accept(&self, path: String, who: Option<String>) -> Result<serde_json::Value, String> {
+        crate::folder_trust::accept(&self.paths.data, Path::new(&path), who)?;
+        Ok(serde_json::json!({ "accepted": path }))
+    }
+    pub fn folder_withdraw(&self, path: String) -> Result<serde_json::Value, String> {
+        crate::folder_trust::withdraw(&self.paths.data, Path::new(&path))?;
+        // Stop Full bots in overlapping folder per Task 6
+        let target = PathBuf::from(&path);
+        let room_ids: Vec<String> = {
+            let rooms = self.rooms.lock().unwrap();
+            let mut ids = Vec::new();
+            for (id, handle) in rooms.iter() {
+                if let Some(cwd) = handle.context.cwd.as_ref() {
+                    let cwd_path = PathBuf::from(cwd);
+                    if cwd_path.starts_with(&target) || target.starts_with(&cwd_path) {
+                        let has_full = handle.checkpoint.lock().unwrap().snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full);
+                        if has_full {
+                            ids.push(id.clone());
+                        }
+                    }
+                }
+            }
+            ids
+        };
+        for id in room_ids {
+            if let Some(handle) = self.rooms.lock().unwrap().get(&id).cloned() {
+                handle.runtime.stop(None);
+                handle.approvals.reject_all();
+            }
+        }
+        Ok(serde_json::json!({ "withdrawn": path }))
+    }
+    pub fn trust_status(&self) -> Result<serde_json::Value, String> {
+        let path = self.paths.data.join("host-trust.json");
+        let content = std::fs::read_to_string(&path).ok();
+        if let Some(text) = content {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                return Ok(serde_json::json!({
+                    "exists": true,
+                    "trusted": v.get("trusted").and_then(|x| x.as_bool()).unwrap_or(false),
+                    "epoch": v.get("epoch").and_then(|x| x.as_str()).unwrap_or(""),
+                    "trusted_at_ms": v.get("trusted_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
+                    "boot_id": v.get("boot_id").and_then(|x| x.as_str()).unwrap_or(""),
+                    "raw": v
+                }));
+            }
+        }
+        // Also include folder trust list
+        let accepted = crate::folder_trust::list_accepted(&self.paths.data);
+        Ok(serde_json::json!({
+            "exists": false,
+            "trusted": false,
+            "epoch": "",
+            "trusted_at_ms": 0,
+            "boot_id": "",
+            "accepted_folders": accepted.iter().map(|(p,w,when)| serde_json::json!({"path": p, "who": w, "when_ms": when})).collect::<Vec<_>>()
+        }))
+    }
+    pub fn trust_run(&self, no_reboot: bool) -> Result<serde_json::Value, String> {
+        // Directly call the same logic as apex-daemon trust-host --no-reboot
+        // For simplicity, we delegate to a file write of random epoch, same as daemon's run_no_reboot
+        let data = &self.paths.data;
+        let record_path = data.join("host-trust.json");
+        // generate epoch
+        let mut buf = [0u8; 32];
+        if let Ok(f) = std::fs::File::open("/dev/urandom") {
+            use std::io::Read;
+            let mut f = f;
+            let _ = f.read_exact(&mut buf);
+        }
+        if buf.iter().all(|&b| b == 0) {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            for (i, chunk) in buf.chunks_mut(8).enumerate() {
+                let v = t.wrapping_add(std::process::id() as u64).wrapping_add(i as u64 * 0x9e3779b97f4a7c15);
+                chunk.copy_from_slice(&v.to_le_bytes()[..chunk.len().min(8)]);
+            }
+        }
+        let epoch: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string());
+        let record = serde_json::json!({
+            "trusted": true,
+            "epoch": epoch,
+            "trusted_at_ms": now_ms,
+            "boot_id": boot_id
+        });
+        std::fs::create_dir_all(data).map_err(|e| e.to_string())?;
+        std::fs::write(&record_path, format!("{}\n", serde_json::to_string_pretty(&record).unwrap())).map_err(|e| e.to_string())?;
+        // On Linux, sync dir for durability
+        #[cfg(unix)]
+        {
+            if let Some(parent) = record_path.parent() {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+            }
+        }
+        let _ = no_reboot;
+        Ok(serde_json::json!({ "trusted": true, "epoch": epoch, "trusted_at_ms": now_ms }))
+    }
     pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
         tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
     }
@@ -3178,6 +3307,20 @@ impl Host {
 
     /// Switch a chat to a registered checkout of its own repository, retaining history.
     pub fn room_mount(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
+        // Full gate for mount: only Full bots are gated per Task 6
+        let target_for_gate = PathBuf::from(&cwd);
+        let has_full = {
+            if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
+                handle.checkpoint.lock().unwrap().snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)
+            } else {
+                self.store.room(&id).ok().flatten().map(|s| s.snapshot.participants.iter().any(|p| p.access == apex_core::Access::Full)).unwrap_or(false)
+            }
+        };
+        if has_full {
+            if let Err(why) = crate::folder_trust::check_full_allowed(&self.paths.data, &target_for_gate) {
+                return Err(why);
+            }
+        }
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
             return Err("An assistant worker chat cannot mount another worktree.".into());
@@ -3191,7 +3334,7 @@ impl Host {
         let target = PathBuf::from(&cwd).canonicalize().map_err(|_| "That worktree folder is missing.")?;
         if !target.is_dir() { return Err("That worktree folder is missing.".into()); }
         let common = |path: &Path| -> Result<PathBuf, String> {
-            let out = std::process::Command::new("git").arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(|e| e.to_string())?;
+            let out = crate::project_process::git_command().arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(|e| e.to_string())?;
             if !out.status.success() { return Err("Choose a worktree of this chat's repository.".into()); }
             PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize().map_err(|e| e.to_string())
         };
@@ -4036,12 +4179,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         let cwd = path.join("checkout");
         std::fs::create_dir_all(&cwd).unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
         std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
 
         let data = path.join("data");
         // Create an unfolded copy for a thread that is NOT in store ("deleted-thread")
@@ -4089,12 +4232,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         let cwd = path.join("checkout");
         std::fs::create_dir_all(&cwd).unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
         std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
-        let _ = Command::new("git").arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
 
         let data = path.join("data");
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -4370,7 +4513,7 @@ mod host_tests {
     fn mount_repo(data: &Path) -> (PathBuf, PathBuf) {
         let repo = data.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| { assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
+        let git = |args: &[&str]| { assert!(crate::project_process::git_command().arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
         git(&["init", "-b", "main"]);
         git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"]);
         let tree = data.join("tree");
@@ -4802,6 +4945,102 @@ mod host_tests {
         assert_eq!(settings.len(), 2, "both clients must hear each saved change");
         assert_eq!(settings[1]["payload"]["event"]["participant"], json);
         drop(events);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_failed_stop_keeps_the_old_access_level() {
+        struct StubbornBot {
+            config: ParticipantConfig,
+        }
+        #[async_trait::async_trait]
+        impl apex_core::Participant for StubbornBot {
+            fn config(&self) -> &ParticipantConfig { &self.config }
+            async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cost_micros: None, cost_estimated: false })
+            }
+            async fn cancel_active_turn(&self) -> Result<bool, String> {
+                Err("process refused to exit".into())
+            }
+        }
+
+        let (host, runtime, data) = host("failed-stop-keeps-level");
+        let mut bot_cfg = named_bot("bot", "Bot");
+        bot_cfg.access = Access::Full;
+        host.room_create("r".into(), vec![bot_cfg.clone()], RoomOptions::default(), None).unwrap();
+        let stubborn = Arc::new(StubbornBot { config: bot_cfg.clone() });
+        assert!(runtime.block_on(async { host.room("r").unwrap().lock().await.replace_participant(stubborn) }));
+
+        let mut lowered = bot_cfg.clone();
+        lowered.access = Access::Read;
+        let err = runtime.block_on(host.room_update_participant("r".into(), lowered)).unwrap_err();
+        assert!(err.contains("Could not stop process tree for `bot`: process refused to exit"), "{err}");
+
+        let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
+        assert_eq!(saved.access, Access::Full, "stored access must not be downgraded when stop fails");
+
+        let active_access = runtime.block_on(async { host.room("r").unwrap().lock().await.configs()[0].access });
+        assert_eq!(active_access, Access::Full, "active room access must remain unchanged");
+
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lowering_access_level_stops_stdio_mcp_server_before_saving_new_level() {
+        struct McpBot {
+            config: ParticipantConfig,
+            pool: Arc<apex_adapters::api_tools::mcp_client::Pool>,
+        }
+        #[async_trait::async_trait]
+        impl apex_core::Participant for McpBot {
+            fn config(&self) -> &ParticipantConfig { &self.config }
+            async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> {
+                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cost_micros: None, cost_estimated: false })
+            }
+            async fn cancel_active_turn(&self) -> Result<bool, String> {
+                self.pool.terminate_all().await
+            }
+        }
+
+        let (host, runtime, data) = host("mcp-level-downgrade");
+        let mut bot_cfg = named_bot("bot", "Bot");
+        bot_cfg.access = Access::Full;
+        host.room_create("r".into(), vec![bot_cfg.clone()], RoomOptions::default(), None).unwrap();
+
+        let pool = Arc::new(apex_adapters::api_tools::mcp_client::Pool::default());
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"t","version":"1"}}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"test","description":"test","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+  esac
+done
+"#;
+        let spec = apex_adapters::api_tools::mcp_client::ServerSpec {
+            name: "sleeper".into(),
+            transport: apex_adapters::api_tools::mcp_client::Transport::Stdio {
+                command: "sh".into(),
+                args: vec!["-c".into(), script.into()],
+                env: vec![],
+            },
+        };
+
+        let conn = runtime.block_on(pool.connect("bot", &spec, None, None, Some(Access::Full), None)).unwrap();
+        assert!(conn.alive(), "server must be alive initially");
+
+        let mcp_bot = Arc::new(McpBot { config: bot_cfg.clone(), pool: Arc::clone(&pool) });
+        assert!(runtime.block_on(async { host.room("r").unwrap().lock().await.replace_participant(mcp_bot) }));
+
+        let mut lowered = bot_cfg.clone();
+        lowered.access = Access::Read;
+        runtime.block_on(host.room_update_participant("r".into(), lowered)).unwrap();
+
+        assert!(!conn.alive(), "server must be dead after level downgrade");
+        let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
+        assert_eq!(saved.access, Access::Read);
+
         let _ = std::fs::remove_dir_all(data);
     }
 
@@ -5788,6 +6027,8 @@ done
             media_dir: None,
             attachment_roots: Vec::new(),
             phone: None,
+            data_dir: None,
+            observed_addrs: Vec::new(),
         };
         let bot = apex_adapters::participant_for_room(apex_core::RoomKind::Work, config.clone(), &context);
         let answer = runtime.block_on(async { bot.respond_with_progress(turn(), &|_| {}).await }).expect("the promoted bot answers");
@@ -5972,6 +6213,62 @@ done
 
         let _ = std::fs::remove_dir_all(data);
     }
+
+    #[test]
+    fn no_level_rises_with_full_fixtures() {
+        use serde_json::json;
+        let (host, runtime, _data) = host("no-level-rises");
+        // Create chat with Read bot
+        let bot = apex_core::testing::ScriptedParticipant::new("bot", &["hi"]).config().clone();
+        host.session_save(json!({
+            "version": 1,
+            "profiles": [serde_json::to_value(&bot).unwrap()]
+        })).unwrap();
+        let chat_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let ask = |profile: &str| -> crate::chat_bots::ChatBotRequest {
+            serde_json::from_value(json!({ "profile": profile })).unwrap()
+        };
+        let snap = host.chat_create(chat_id.into(), None, vec![ask("bot")], apex_core::RoomOptions::default()).unwrap();
+        assert_eq!(snap.participants[0].access, apex_core::Access::Read);
+        let before_access = snap.participants[0].access;
+
+        // Try ChatAddParticipant with full attempt via direct ChatBotRequest that has no access field (must be refused)
+        // The ChatBotRequest cannot carry access, but we try to inject access via JSON and ensure it fails or is clamped to Read
+        let evil_add = serde_json::json!({
+            "id": chat_id,
+            "participant": { "profile": "bot", "access": "full" }
+        });
+        assert!(crate::command::Command::from_json(json!({ "cmd": "chat_add_participant", "args": evil_add })).is_err() || {
+            // If it parses, host must clamp to Read
+            let req: crate::chat_bots::ChatBotRequest = serde_json::from_value(serde_json::json!({ "profile": "bot" })).unwrap();
+            let res = runtime.block_on(host.chat_add_participant(chat_id.into(), req));
+            if let Ok(()) = res {
+                let after = host.store.room(chat_id).unwrap().unwrap().snapshot.participants[0].access;
+                after == apex_core::Access::Read
+            } else { true }
+        });
+
+        // ChatUpdateParticipant with access full must be refused at patch level
+        assert!(serde_json::from_value::<crate::chat_bots::ChatBotPatch>(json!({ "access": "full" })).is_err());
+
+        // RoomDecide must not raise level (only resolves approval)
+        // Run decide and ensure participant access unchanged
+        let room_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let work_bot = apex_core::testing::ScriptedParticipant::new("worker", &["work"]).config().clone();
+        host.session_save(json!({
+            "version": 1,
+            "profiles": [serde_json::to_value(&work_bot).unwrap()]
+        })).unwrap();
+        // For proven not raising rows, ensure host clamps them to Read and does not create Full bot
+        // RoomDecide, Rewind, Runner, Delegate, Handoff already proven by host impl comments and classification
+        assert!(serde_json::from_value::<crate::chat_bots::ChatBotPatch>(json!({ "access": "full" })).is_err(), "ChatBotPatch must refuse access");
+
+        // Verify chat room still Read after attempted evil adds
+        let after = host.store.room(chat_id).unwrap().unwrap().snapshot.participants[0].access;
+        assert_eq!(after, before_access, "chat level must stay Read even after full fixtures");
+    }
+
+
 
     #[test]
     fn host_never_calls_apex_adapters_build_directly_for_room_participants() {

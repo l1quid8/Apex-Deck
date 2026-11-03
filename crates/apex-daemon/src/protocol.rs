@@ -658,7 +658,31 @@ where
                                 None => return Ended::Revoked,
                                 Some(device) => {
                                     let need = authority::command_needs(&command);
-                                    authority::check(&device, &need).map(|()| Some(need))
+                                    let effect = authority::access_effect(&command);
+                                    // Design: Raises only works on Confined+trusted hosts, Full all-threads, current epoch, old_level match, folder match
+                                    // The last two checks are done under room lock in host.rs; here we enforce Full all-threads + trusted+epoch
+                                    if matches!(effect, authority::AccessEffect::Raises) {
+                                        if device.tier != crate::devices::Tier::Full || !device.threads.is_all() {
+                                            Err("would raise access and needs full on all threads".into())
+                                        } else if crate::trust_host::is_trusted(&daemon.data) {
+                                            match (crate::trust_host::epoch(&daemon.data), &device.confined_epoch) {
+                                                (Some(current), Some(dev_epoch)) if current == *dev_epoch => {
+                                                    match authority::check(&device, &need) {
+                                                        Ok(()) => Ok(Some(need)),
+                                                        Err(e) => Err(e),
+                                                    }
+                                                },
+                                                _ => Err("this device was paired before trust and must pair again".into()),
+                                            }
+                                        } else {
+                                            Err("raising access needs a trusted host".into())
+                                        }
+                                    } else {
+                                        match authority::check(&device, &need) {
+                                            Ok(()) => Ok(Some(need)),
+                                            Err(e) => Err(e),
+                                        }
+                                    }
                                 }
                             },
                         };

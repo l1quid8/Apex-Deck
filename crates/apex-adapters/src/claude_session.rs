@@ -392,6 +392,94 @@ pub async fn list_servers(
     cwd: Option<String>,
     path: Option<String>,
 ) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    if crate::linux_jail::should_jail(apex_core::Access::Read) {
+        let bwrap = crate::gateway_sandbox::find_bwrap(path.as_deref());
+        match crate::linux_jail::state(bwrap.as_deref()) {
+            crate::linux_jail::JailState::Fails(reason) => {
+                return Err(format!("Couldn't list Claude tool servers: {reason}"));
+            }
+            crate::linux_jail::JailState::Works => {}
+        }
+        let _bwrap = bwrap.ok_or_else(|| {
+            format!("Couldn't list Claude tool servers: {}: it isn't installed", crate::linux_jail::probe::NEEDS_ADMIN)
+        })?;
+        #[cfg(target_os = "linux")]
+        {
+            let cwd_path = cwd.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let data_dir = home.join(".local/share/apex-deck");
+            let path_os = path.as_ref().map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+            let program = crate::executable::program("claude", path.as_deref());
+            let backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: None };
+
+            let run_jailed = |args: &[&str]| {
+                let spec = crate::linux_jail::build_spec(
+                    std::path::Path::new(&program),
+                    &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    &cwd_path,
+                    apex_core::Access::Read,
+                    Some(&backend),
+                    &home,
+                    &data_dir,
+                    "discovery",
+                    "claude",
+                    &path_os,
+                    &[],
+                    &[],
+                );
+                let bwrap = _bwrap.clone();
+                async move {
+                    let spec = spec.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    let registry = crate::owned_process::Registry::default();
+                    let mut jailed = crate::linux_jail::launch::jailed_command(&spec, &bwrap)
+                        .map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    jailed.command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+                    let (mut child, control) = jailed.spawn(&registry)
+                        .map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    let net = std::sync::Arc::new(crate::linux_jail::proxy::Internet::default());
+                    let purposes = std::sync::Arc::new(crate::linux_jail::DaemonPurposes::new(net));
+                    tokio::spawn(crate::linux_jail::channel::serve(control, purposes));
+                    let mut stdout = child.stdout.take().unwrap();
+                    let mut stderr = child.stderr.take().unwrap();
+                    let mut out = Vec::new();
+                    let mut err = Vec::new();
+                    let (status, _, _) = tokio::join!(
+                        child.wait(),
+                        tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut out),
+                        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut err),
+                    );
+                    let status = status.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    Ok::<std::process::Output, String>(std::process::Output { status, stdout: out, stderr: err })
+                }
+            };
+
+            let (servers, plugins) = tokio::join!(
+                run_jailed(&["mcp", "list"]),
+                tokio::time::timeout(Duration::from_secs(15), run_jailed(&["plugin", "list", "--json"]))
+            );
+            let output = servers.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+            if !output.status.success() {
+                return Err("Couldn't list Claude tool servers".into());
+            }
+            let mut entries: Vec<apex_core::server_request::ToolServer> =
+                crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout))
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
+            let plugins = plugins.ok().and_then(Result::ok).filter(|o| o.status.success()).map(|o| {
+                crate::mcp::claude_plugins(&String::from_utf8_lossy(&o.stdout), cwd.as_deref())
+            });
+            for name in plugins.unwrap_or_default() {
+                let entry = apex_core::server_request::ToolServer::from(name);
+                if !entries.iter().any(|known| known.token == entry.token) {
+                    entries.push(entry);
+                }
+            }
+            return Ok(entries);
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("Couldn't list Claude tool servers: Linux bot jail is only available on Linux".into());
+    }
     let claude = |args: &[&str]| {
         let mut command = tokio::process::Command::new(crate::executable::program("claude", path.as_deref()));
         if let Some(path) = &path {

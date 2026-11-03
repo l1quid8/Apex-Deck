@@ -197,16 +197,13 @@ fn run_git(
     if let Some(limit) = limit.as_ref().filter(|limit| limit.ended()) {
         return Err(limit.reason().to_owned());
     }
-    let mut command = Command::new("git");
+    let mut command = crate::project_process::git_command();
     #[cfg(unix)]
     if limit.is_some() {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    command
-        .current_dir(root)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0");
+    command.current_dir(root).args(args);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", external_path(index).as_os_str());
     }

@@ -8,11 +8,10 @@ use crate::{
 use std::{path::Path, process::Command};
 
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let out = Command::new("git")
+    let out = crate::project_process::git_command()
         .arg("-C")
         .arg(root)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
@@ -171,7 +170,7 @@ mod tests {
             vec!["config", "user.name", "Test"],
             vec!["config", "user.email", "test@example.com"],
         ] {
-            assert!(Command::new("git")
+            assert!(crate::project_process::git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -182,7 +181,7 @@ mod tests {
         }
         fs::write(root.join("seed"), "seed").unwrap();
         for args in [vec!["add", "seed"], vec!["commit", "-m", "seed"]] {
-            assert!(Command::new("git")
+            assert!(crate::project_process::git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)

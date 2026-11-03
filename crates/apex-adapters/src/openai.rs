@@ -67,7 +67,7 @@ impl OpenAiCompatParticipant {
     /// Lend the bot tools to work in the chat's folder with, as `context`
     /// describes it.
     pub fn with_tools(mut self, context: &crate::BuildContext) -> Self {
-        self.tools = Some(Arc::new(ToolBox::new(context)));
+        self.tools = Some(Arc::new(ToolBox::new_with_bot(context, self.config.id.as_str())));
         self
     }
 
@@ -552,7 +552,11 @@ impl Participant for OpenAiCompatParticipant {
 
     async fn cancel_active_turn(&self) -> Result<bool, String> {
         match &self.tools {
-            Some(tools) => tools.processes.terminate_all().await,
+            Some(tools) => {
+                let p = tools.processes.terminate_all().await?;
+                let m = tools.mcp.terminate_all().await?;
+                Ok(p || m)
+            }
             None => Ok(false),
         }
     }

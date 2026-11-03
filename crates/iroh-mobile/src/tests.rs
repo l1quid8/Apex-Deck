@@ -191,7 +191,7 @@ async fn close_during_a_hanging_connect_is_quick_and_final() {
 async fn pair_cancel_mid_pair_is_quick_and_final() {
     let (hole, addr) = black_hole();
     let (b, events, _) = bridge(Mode::Automatic).await;
-    let invite = Invite { v: 1, host: *SecretKey::generate().public().as_bytes(), name: "Nowhere".into(), relay: RELAY.into(), addrs: vec![addr], inv: [7; 16], secret: [9; 32], exp: now_s() + 300 };
+    let invite = Invite { v: 1, host: *SecretKey::generate().public().as_bytes(), name: "Nowhere".into(), relay: RELAY.into(), addrs: vec![addr], inv: [7; 16], secret: [9; 32], exp: now_s() + 300, os: String::new() };
     let h = b.pair(&invite.to_link(), "Phone", now_s()).unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     let closing = Instant::now();

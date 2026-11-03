@@ -1031,6 +1031,8 @@ async fn handle_chat_completions(
         media_dir: None,
         attachment_roots: Vec::new(),
         phone: None,
+        data_dir: Some(state.data_dir.clone()),
+        observed_addrs: Vec::new(),
     };
 
     // Ignore legacy allow_mcp fields, including on already-issued keys.

@@ -54,7 +54,7 @@ pub struct Outcome {
 }
 
 fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::project_process::git_command();
     command
         .arg("-C")
         .arg(crate::assistant_git::external_path(cwd).as_os_str())
@@ -66,7 +66,7 @@ fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String
             "core.fsmonitor=false",
         ])
         .args(args);
-    command.env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null());
+    command.stdin(Stdio::null());
     if let Some(path) = crate::agents::login_path() {
         command.env("PATH", path);
     }
@@ -567,10 +567,9 @@ fn merge(cwd: &Path, expected: &State) -> Result<String, String> {
     }
 }
 async fn run(cwd: &Path, program: &str, args: &[&str]) -> Result<String, String> {
-    let mut command = tokio::process::Command::new(program);
+    let mut command = crate::project_process::tokio_command_in(program, cwd);
     command
         .args(args)
-        .current_dir(cwd)
         .stdin(Stdio::null())
         .kill_on_drop(true);
     command
@@ -740,7 +739,7 @@ mod tests {
             repo
         }
         fn git(&self, args: &[&str]) -> String {
-            let output = Command::new("git")
+            let output = crate::project_process::git_command()
                 .arg("-C")
                 .arg(&self.0)
                 .args(args)
@@ -919,7 +918,7 @@ mod tests {
             main_before,
             "a branch another worktree has checked out must not move"
         );
-        let sibling_status = Command::new("git")
+        let sibling_status = crate::project_process::git_command()
             .arg("-C")
             .arg(&sibling)
             .args(["status", "--porcelain"])

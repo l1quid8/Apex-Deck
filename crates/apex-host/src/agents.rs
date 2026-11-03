@@ -4,10 +4,11 @@
 //! names are the commands these tools are commonly installed under; if yours
 //! differs, change it here.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use apex_core::AgentTool;
 use serde::Serialize;
 
 pub struct KnownAgent {
@@ -157,6 +158,23 @@ fn run_with_deadline(command: &mut Command) -> Option<String> {
     }
     let output = child.wait_with_output().ok()?;
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Whether a tool still needs signing in on this headless machine. Only Linux
+/// keeps these logins in plain files; elsewhere the answer lies in a keychain,
+/// so the tool itself reports it when it runs.
+pub fn needs_sign_in(tool: AgentTool) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return false };
+    cfg!(target_os = "linux") && sign_in_missing(tool, &home, |name| std::env::var_os(name).is_some())
+}
+
+fn sign_in_missing(tool: AgentTool, home: &Path, env: impl Fn(&str) -> bool) -> bool {
+    let filled = |path: PathBuf| std::fs::metadata(path).is_ok_and(|file| file.len() > 0);
+    match tool {
+        AgentTool::ClaudeCode => !filled(home.join(".claude/.credentials.json")) && !env("ANTHROPIC_API_KEY"),
+        AgentTool::Codex => !filled(home.join(".codex/auth.json")) && !env("OPENAI_API_KEY"),
+        _ => false,
+    }
 }
 
 /// Report which known agents are installed.

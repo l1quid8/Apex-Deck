@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -97,6 +97,10 @@ pub struct CliParticipant {
     attachment_roots: Vec<PathBuf>,
     /// Deck's shared phone, for Claude and Codex bots. See phone_env.rs.
     phone: Option<PhoneEnv>,
+    /// Where daemon data lives, for bot jail storage.
+    pub data_dir: Option<PathBuf>,
+    /// Observed public IP addresses of this host.
+    pub observed_addrs: Vec<std::net::IpAddr>,
     computer: Option<apex_core::ComputerTurn>,
     /// A tool-free turn may still carry the host-issued computer server, and nothing else.
     computer_only: bool,
@@ -104,7 +108,7 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, computer: None, computer_only: false }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
     }
 
     /// Start a conversation turn with tools disabled at both the CLI and
@@ -152,6 +156,8 @@ impl CliParticipant {
         self.processes = Registry::new(context.process_registry.clone());
         self.cargo_target_dir = context.cargo_target_dir.clone();
         self.phone = context.phone.clone();
+        self.data_dir = context.data_dir.clone();
+        self.observed_addrs = context.observed_addrs.clone();
         self
     }
 
@@ -251,6 +257,37 @@ impl CliParticipant {
 
     /// `start`, with extra environment variables for the program.
     fn start_with(&self, program: &str, args: &[String], env: &[(&str, std::ffi::OsString)]) -> Result<OwnedChild, ParticipantError> {
+        self.start_with_hook(program, args, env, None)
+    }
+
+    fn start_with_hook(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &[(&str, std::ffi::OsString)],
+        hook: Option<&codex_hook::Hook>,
+    ) -> Result<OwnedChild, ParticipantError> {
+        if crate::linux_jail::should_jail(self.config.access) {
+            let bwrap = crate::gateway_sandbox::find_bwrap(self.path.as_deref());
+            match crate::linux_jail::state(bwrap.as_deref()) {
+                crate::linux_jail::JailState::Fails(reason) => return Err(ParticipantError::Failed(reason)),
+                crate::linux_jail::JailState::Works => {}
+            }
+            let bwrap = bwrap.ok_or_else(|| {
+                ParticipantError::Failed(format!("{}: it isn't installed", crate::linux_jail::probe::NEEDS_ADMIN))
+            })?;
+            return self.start_jailed(program, args, env, &bwrap, hook);
+        }
+        // Full gate: even unjailed Full bots are refused in tainted folders
+        if matches!(self.config.access, apex_core::Access::Full) {
+            if let Some(cwd) = &self.cwd {
+                if let Some(data_dir) = &self.data_dir {
+                    if let Err(why) = crate::linux_jail::check_full_allowed(data_dir, cwd) {
+                        return Err(ParticipantError::Failed(why));
+                    }
+                }
+            }
+        }
         let mut command = if let Some(isolation) = &self.isolation {
             isolation.command(program, args, self.path.as_deref())?
         } else {
@@ -303,7 +340,9 @@ impl CliParticipant {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        self.processes.spawn(&mut command)
+        // An isolated command's environment is the sandbox's, not the daemon's.
+        let spawned = if self.isolation.is_some() { self.processes.spawn_cleared(&mut command) } else { self.processes.spawn(&mut command) };
+        spawned
             .map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     ParticipantError::NotConfigured(format!("program `{program}` was not found"))
@@ -311,6 +350,92 @@ impl CliParticipant {
                 _ => ParticipantError::Failed(format!("could not start `{program}`: {e}")),
             })
     }
+
+    fn start_jailed(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &[(&str, std::ffi::OsString)],
+        bwrap: &Path,
+        hook: Option<&codex_hook::Hook>,
+    ) -> Result<OwnedChild, ParticipantError> {
+        let cwd = if let Some(cwd) = &self.cwd {
+            if !cwd.is_dir() {
+                return Err(ParticipantError::Failed(format!(
+                    "the workspace folder {} does not exist",
+                    cwd.display()
+                )));
+            }
+            cwd.clone()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"))
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+        let data_dir = self.data_dir.clone().unwrap_or_else(|| home.join(".local/share/apex-deck"));
+        let room = self.phone.as_ref().map(|p| p.room.as_str()).unwrap_or("room");
+        let bot = self.config.id.as_str();
+        let path_os = self.path.as_ref().map(|p| std::ffi::OsString::from(p)).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+        let program_path = crate::executable::program(program, self.path.as_deref());
+
+        let mut spec = crate::linux_jail::build_spec(
+            Path::new(&program_path),
+            args,
+            &cwd,
+            self.config.access,
+            Some(&self.config.backend),
+            &home,
+            &data_dir,
+            room,
+            bot,
+            &path_os,
+            &self.attachment_roots,
+            &[],
+        ).map_err(|e| ParticipantError::Failed(e.to_string()))?;
+
+        for (k, v) in env {
+            spec.provider_env.push((k.to_string(), v.clone()));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut jailed = crate::linux_jail::launch::jailed_command(&spec, bwrap)
+                .map_err(|e| ParticipantError::Failed(e.to_string()))?;
+            jailed.command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let (child, control) = jailed.spawn(&self.processes)
+                .map_err(|e| ParticipantError::Failed(format!("could not start `{program}`: {e}")))?;
+            let net = std::sync::Arc::new(crate::linux_jail::proxy::Internet {
+                observed: std::sync::Mutex::new(self.observed_addrs.clone()),
+            });
+            let purposes = if let Some(hook) = hook {
+                let token = hook.token.as_deref().unwrap_or_default().to_string();
+                let sender = hook.sender().expect("jailed hook sender");
+                crate::linux_jail::DaemonPurposes::with_hook(net, token, sender)
+            } else {
+                crate::linux_jail::DaemonPurposes::new(net)
+            };
+            tokio::spawn(crate::linux_jail::channel::serve(control, std::sync::Arc::new(purposes)));
+            Ok(child)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (bwrap, hook);
+            Err(ParticipantError::Failed("Linux bot jail is only available on Linux".into()))
+        }
+    }
+
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = std::io::Read::read_exact(&mut f, &mut bytes);
+    } else {
+        use std::hash::{BuildHasher, Hasher};
+        let h1 = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let h2 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        bytes[..8].copy_from_slice(&h1.to_le_bytes());
+        bytes[8..].copy_from_slice(&h2.to_le_bytes()[..8]);
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
     /// A Codex turn through its app server, which reports the reply as it
     /// is written. An unavailable server refuses the turn: exec cannot
@@ -353,14 +478,31 @@ impl CliParticipant {
         // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
         // has gone would make Codex run every tool unasked, so check first.
         let hook = self.codex_hook.as_deref().filter(|helper| !self.mcp_disabled && helper.is_file()).and_then(|helper| {
-            codex_hook::Hook::bind(helper).map_err(|e| eprintln!("[apex-deck] Codex approval hook unavailable: {e}")).ok()
+            if crate::linux_jail::should_jail(self.config.access) {
+                let token = Self::random_token();
+                let helper_path = Path::new(crate::linux_jail::INIT_PATH);
+                Some(codex_hook::Hook::bind_jailed(helper_path, token))
+            } else {
+                codex_hook::Hook::bind(helper).map_err(|e| eprintln!("[apex-deck] Codex approval hook unavailable: {e}")).ok()
+            }
         });
         let mut env = Vec::new();
         if let Some(hook) = &hook {
             args.extend(["-c".to_string(), hook.flag()]);
-            env.push((codex_hook::SOCKET_ENV, hook.socket().into_os_string()));
+            if let Some(socket) = hook.socket() {
+                env.push((codex_hook::SOCKET_ENV, socket.into_os_string()));
+            }
         }
-        let child = self.start_with(program, &args, &env)?;
+        if crate::linux_jail::should_jail(self.config.access) {
+            if let Some(data_dir) = &self.data_dir {
+                let program_path = crate::executable::program("codex", self.path.as_deref());
+                let path_os = self.path.as_ref().map(|p| std::ffi::OsString::from(p)).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+                crate::linux_jail::refresh::ensure(&self.processes, data_dir, AgentTool::Codex, Path::new(&program_path), &path_os)
+                    .await
+                    .map_err(|e| ParticipantError::Failed(e.to_string()))?;
+            }
+        }
+        let child = self.start_with_hook(program, &args, &env, hook.as_ref())?;
         let effort = clean_effort(self.config.effort.as_deref());
         let turn = codex_server::Turn {
             model: clean_model(model),
@@ -752,22 +894,8 @@ impl Participant for CliParticipant {
         let effective_cwd = request.cwd.clone().or_else(|| self.cwd.clone());
         if effective_cwd != self.cwd {
             let scoped = Self {
-                config: self.config.clone(),
-                timeout: self.timeout,
                 cwd: effective_cwd,
-                path: self.path.clone(),
-                codex_hook: self.codex_hook.clone(),
-                temp: self.temp.clone(),
-                plan: self.plan,
-                tools_disabled: self.tools_disabled,
-                mcp_disabled: self.mcp_disabled,
-                isolation: self.isolation.clone(),
-                processes: self.processes.clone(),
-                cargo_target_dir: self.cargo_target_dir.clone(),
-                attachment_roots: self.attachment_roots.clone(),
-                phone: self.phone.clone(),
-                computer: self.computer.clone(),
-                computer_only: self.computer_only,
+                ..self.clone()
             };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
@@ -775,7 +903,10 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone(), computer_only: self.computer_only };
+            let scoped = Self {
+                config: effective,
+                ..self.clone()
+            };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -786,7 +917,11 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone(), computer_only: self.computer_only };
+            let planning = Self {
+                config,
+                plan: Some(self.config.access),
+                ..self.clone()
+            };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -797,7 +932,10 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone(), computer: self.computer.clone(), computer_only: self.computer_only };
+            let scoped = Self {
+                config,
+                ..self.clone()
+            };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         if self.mcp_disabled && self.isolation.is_none() && (self.tools_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })) {
@@ -808,10 +946,29 @@ impl Participant for CliParticipant {
                 .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??
                 .with_computer(self.computer.as_ref().filter(|_| self.computer_on()).map(|turn| turn.relay.clone()));
             let isolation = std::sync::Arc::new(isolation);
-            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: self.attachment_roots.clone(), phone: None, computer: self.computer.clone(), computer_only: self.computer_only };
+            let scoped = Self {
+                cwd: None,
+                codex_hook: None,
+                temp: None,
+                isolation: Some(isolation),
+                cargo_target_dir: None,
+                phone: None,
+                ..self.clone()
+            };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
+        if crate::linux_jail::should_jail(self.config.access) {
+            if let Some(data_dir) = &self.data_dir {
+                if let Backend::Agent { tool, .. } = &self.config.backend {
+                    let program_path = crate::executable::program(&program, self.path.as_deref());
+                    let path_os = self.path.as_ref().map(|p| std::ffi::OsString::from(p)).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+                    crate::linux_jail::refresh::ensure(&self.processes, data_dir, *tool, Path::new(&program_path), &path_os)
+                        .await
+                        .map_err(|e| ParticipantError::Failed(e.to_string()))?;
+                }
+            }
+        }
         let program = program.as_str();
         let images = crate::attachments::for_request(&request, &self.attachment_roots)?;
         let mut prompt = render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &request.turns);

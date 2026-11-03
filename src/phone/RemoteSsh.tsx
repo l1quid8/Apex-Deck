@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Check, Lock, X } from "./icons";
-import { goodPort, MAX_KEY_BYTES, readKey, sshFormError, sshRequest, sshTarget, type SetupEvent, type SshForm, type SshKey, type SshSetup } from "./sshSetup";
+import { goodPort, handOff, MAX_KEY_BYTES, readKey, sshFormError, sshTarget, type ServerKey, type SetupEvent, type SshForm, type SshKey } from "./sshSetup";
+import type { SetupRuns } from "./sshNative";
 
 const words = (error: unknown) => String(error).replace(/^Error: /, "");
 
@@ -9,18 +10,21 @@ interface Line { id: string; text: string; failed?: boolean }
 
 /**
  * Remote SSH on Add a machine: the form, then a list that runs by itself.
- * Secrets live in this component's state only, so leaving it drops them.
- * `setup` is null until this build can sign in over SSH; Connect then says so.
+ * The form's secrets live in this component's state until Connect moves them to
+ * the run, which wipes them, so a failed try asks for them again. Leaving only detaches: the run keeps going above
+ * this screen, and coming back shows it again. `setup` is null where the app
+ * can't sign in over SSH (a browser); Connect then says so.
  */
-export function RemoteSsh({ setup, onCancel, onDone }: { setup: SshSetup | null; onCancel?: () => void; onDone(): void }) {
+export function RemoteSsh({ setup, onCancel, onDone }: { setup: SetupRuns | null; onCancel?: () => void; onDone(): void }) {
   const [form, setForm] = useState<SshForm>({ label: "", host: "", user: "", port: "22", password: "", key: null, passphrase: "", keep: false });
   const [error, setError] = useState("");
   const [lines, setLines] = useState<Line[] | null>(null);
+  const [finishing, setFinishing] = useState(false);
   const [paired, setPaired] = useState(false);
-  const [end, setEnd] = useState<{ failed: boolean; message: string } | null>(null);
-  const run = useRef<{ cancel(): void } | null>(null);
+  const [trustAsk, setTrustAsk] = useState<{ message: string } | null>(null);
+  const [end, setEnd] = useState<{ failed: boolean; message: string; trust?: ServerKey } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
-  useEffect(() => () => run.current?.cancel(), []);
+  const heardRef = useRef<(event: SetupEvent) => void>(() => {});
 
   const target = sshTarget(form);
   const change = (next: Partial<SshForm>) => { setError(""); setForm({ ...form, ...next }); };
@@ -39,38 +43,69 @@ export function RemoteSsh({ setup, onCancel, onDone }: { setup: SshSetup | null;
 
   const heard = (event: SetupEvent) => {
     if (event.kind === "step") setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.text }]);
+    else if (event.kind === "finishing") setFinishing(true);
     else if (event.kind === "paired") setPaired(true);
-    else if (event.kind === "done") { run.current = null; setEnd({ failed: false, message: event.message }); }
+    else if (event.kind === "trust") setTrustAsk({ message: event.message });
+    else if (event.kind === "done") setEnd({ failed: false, message: event.message });
     else {
-      run.current = null;
       setLines((list) => [...(list ?? []).filter((line) => line.id !== event.id), { id: event.id, text: event.label, failed: true }]);
-      setEnd({ failed: true, message: event.message });
+      setEnd({ failed: true, message: event.message, trust: event.trust });
     }
   };
+
+  heardRef.current = heard;
+  useEffect(() => {
+    if (!setup?.current()) return undefined;
+    setLines([]);
+    return setup.watch((event) => heardRef.current(event));
+  }, [setup]);
 
   const connect = () => {
     const wrong = sshFormError(form);
     if (wrong) { setError(wrong); return; }
-    if (!setup) { setError("Remote SSH isn't in this build yet. Use a QR code for now."); return; }
+    if (!setup) { setError("Remote SSH needs the iPhone app. Use a QR code here."); return; }
     setError("");
     setLines([]);
+    setFinishing(false);
     setPaired(false);
     setEnd(null);
-    run.current = setup(sshRequest(form), heard);
+    const { request, form: emptied } = handOff(form);
+    setForm(emptied);
+    setup.start(request);
+    setup.watch((event) => heardRef.current(event));
+  };
+
+  const back = () => {
+    setup?.clear();
+    setLines(null);
+    setError("The sign-in was wiped. Type the password or import the key again.");
   };
 
   if (lines) {
     const failed = end?.failed === true;
-    const name = form.label.trim() || target.host;
+    const name = form.label.trim() || target.host || "the server";
     const status = end?.message ?? (paired ? "Paired and saved. Safe to close now." : `Setting up ${name}… If this stops before pairing, nothing is added to this phone. Connect again and it picks up where it left off, never adding a second copy.`);
     return <>
       <div className="ph-list">
         {lines.map((line) => <div key={line.id} className="ph-srow"><span className="ph-srow-icon">{line.failed ? <span className="ph-red"><X size={16} /></span> : <Check size={16} />}</span><span className={`ph-grow${line.failed ? " ph-red" : ""}`}>{line.text}</span></div>)}
       </div>
+      {trustAsk && (
+        <div className="ph-card ph-trust-card" role="dialog" aria-label="Trust this machine">
+          <h3>Trust this machine?</h3>
+          <p className="ph-sheet-text">{trustAsk.message}</p>
+          <p className="ph-muted">Deck can&apos;t check this machine for you. Only continue if you trust what has run on this account. Your tap carries the decision over your SSH session.</p>
+          <div className="ph-row2">
+            <button type="button" className="primary" onClick={() => { setTrustAsk(null); setup?.decideTrust(true); }}>Trust this machine</button>
+            <button type="button" className="ph-plain" onClick={() => { setTrustAsk(null); setup?.decideTrust(false); }}>Not now</button>
+          </div>
+        </div>
+      )}
       <p className={`ph-sheet-text${failed ? " ph-red" : " ph-quiet"}`} role={failed ? "alert" : "status"}>{status}</p>
+      {end?.trust && <button type="button" className="ph-plain ph-wide" onClick={() => { setup?.trust(end.trust!); back(); }}>I rebuilt this server. Trust {end.trust.fingerprint}</button>}
       {failed
-        ? <button type="button" className="primary ph-wide" onClick={() => setLines(null)}>Back</button>
-        : <button type="button" className="primary ph-wide" disabled={!paired} onClick={onDone}>Done</button>}
+        ? <button type="button" className="primary ph-wide" onClick={back}>Back</button>
+        : <button type="button" className="primary ph-wide" disabled={!paired} onClick={() => { if (end) setup?.clear(); onDone(); }}>Done</button>}
+      {!paired && !end && !trustAsk && <button type="button" className="ph-plain ph-wide" disabled={finishing} onClick={() => setup?.cancel()}>{finishing ? "Finishing pairing" : "Stop setup"}</button>}
     </>;
   }
 
