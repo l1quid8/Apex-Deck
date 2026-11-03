@@ -122,11 +122,11 @@ export function Clock({ since }: { since?: number }) {
   return <span className="voice-timer">{callClock(since === undefined ? 0 : now - since)}</span>;
 }
 
-function Mute({ muted }: { muted: boolean }) {
+function Mute({ muted, wave }: { muted: boolean; wave?: WaveMode }) {
   return (
     <button type="button" className="voice-callbtn" aria-pressed={muted} aria-label={muted ? "Unmute microphone" : "Mute microphone"}
       title={muted ? "Unmute" : "Mute · the bot keeps talking"} onClick={() => voiceController.mute(!muted)}>
-      {muted ? Icon.micOff : Icon.mic}
+      {wave ? <Wave mode={wave} /> : muted ? Icon.micOff : Icon.mic}
     </button>
   );
 }
@@ -606,10 +606,10 @@ export function VoiceCallControls({ disabled = false, ...props }: Props & { disa
       {live && look === "pill" ? (
         <div className={`voice-pill voice-call-ui${toneClass(call.line.tone)}`} role="group" aria-label={`Voice call with ${call.name}`}
           style={agentStyle(who, scope?.participantId)}>
-          <Mute muted={state.muted} />
+          <Mute muted={state.muted} wave={state.muted ? "muted" : call.line.wave === "you" ? "you" : "mic"} />
           <button ref={mid} type="button" className="voice-pill-mid" aria-expanded={call.ui.open} aria-label={`${call.line.status}. Call settings`}
             title={`${call.name} · ${call.line.status} · call settings`} onClick={() => setUi({ open: !ui.open })}>
-            <Wave mode={call.line.wave} />
+            {!["mic", "you", "muted"].includes(call.line.wave) && <Wave mode={call.line.wave} />}
             <Clock since={state.startedAt} />
           </button>
           <End round />
