@@ -171,12 +171,26 @@ impl Decision {
 pub trait Approver: Send + Sync {
     async fn decide(&self, action: ProposedAction) -> Decision;
 
+    /// Ask about a plan card. The answer may carry an instruction for the
+    /// bot (which steps to do and skip). By default there is none.
+    async fn decide_plan(&self, action: ProposedAction) -> PlanAnswer {
+        PlanAnswer { decision: self.decide(action).await, note: None }
+    }
+
     /// Put questions to the person and wait for their answer. Backends call
     /// this for a tool like Claude's AskUserQuestion. With nobody to ask,
     /// the questions are skipped.
     async fn ask(&self, _questions: Vec<Question>) -> Answer {
         Answer::Skipped
     }
+}
+
+/// The answer to a plan card: the decision, and the instruction left for
+/// the bot when the plan was approved with steps skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanAnswer {
+    pub decision: Decision,
+    pub note: Option<String>,
 }
 
 /// Rejects everything. Used where nobody can be asked, so that a backend
@@ -303,12 +317,14 @@ impl ApprovalDesk {
     /// Take a proposal down without an answer, as when the tool that asked
     /// stopped waiting. Returns false if it was already answered.
     pub fn withdraw(&self, request: &str) -> bool {
+        self.plan_notes.lock().unwrap().remove(request);
         self.waiting.lock().unwrap().remove(request).is_some() | self.asking.lock().unwrap().remove(request).is_some()
     }
 
     /// Reject everything that is waiting, as when the person presses stop.
     /// Returns how many proposals that was.
     pub fn reject_all(&self) -> usize {
+        self.plan_notes.lock().unwrap().clear();
         let waiting: Vec<_> = self.waiting.lock().unwrap().drain().collect();
         let count = waiting.len();
         for (_, (_, sender)) in waiting {
@@ -323,6 +339,7 @@ impl ApprovalDesk {
         let mut waiting = self.waiting.lock().unwrap();
         let requests: Vec<_> = waiting.iter().filter(|(_, (owner, _))| owner.as_ref() == Some(participant)).map(|(id, _)| id.clone()).collect();
         for request in &requests {
+            self.plan_notes.lock().unwrap().remove(request);
             if let Some((_, sender)) = waiting.remove(request) { let _ = sender.send(Decision::Reject); }
         }
         let mut asking = self.asking.lock().unwrap();

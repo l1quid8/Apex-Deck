@@ -232,9 +232,9 @@ pub(crate) struct RoomApprover<'a> {
     pub(crate) on_event: EventSink<'a>,
 }
 
-#[async_trait]
-impl Approver for RoomApprover<'_> {
-    async fn decide(&self, action: ProposedAction) -> Decision {
+impl RoomApprover<'_> {
+    /// Ask, and say which card it was (none when a saved rule answered).
+    async fn decide_tracked(&self, action: ProposedAction) -> (Option<String>, Decision) {
         // Starting the work after a plan, and paying for a picture or
         // video, are asked every time.
         let once = action.kind.asked_every_time();
@@ -243,11 +243,12 @@ impl Approver for RoomApprover<'_> {
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
             // A plain yes: the thread's saved rule answered, so no tool is
             // told to remember anything, and removing the rule takes it back.
-            return Decision::Approve;
+            return (None, Decision::Approve);
         }
         let remembered = action.clone();
         let (request, answer) = self.desk.open_for(self.id.clone());
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
+        let remembered_request = request.clone();
         let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = match answer.await.unwrap_or(Decision::Reject) {
@@ -259,7 +260,21 @@ impl Approver for RoomApprover<'_> {
         if decision == Decision::ApproveAlways && self.desk.allow_always(self.id, &remembered) {
             (self.on_event)(RoomEvent::AllowedChanged { allowed: self.desk.allowed() });
         }
-        decision
+        (Some(remembered_request), decision)
+    }
+}
+
+#[async_trait]
+impl Approver for RoomApprover<'_> {
+    async fn decide(&self, action: ProposedAction) -> Decision {
+        self.decide_tracked(action).await.1
+    }
+
+    async fn decide_plan(&self, action: ProposedAction) -> crate::PlanAnswer {
+        let (request, decision) = self.decide_tracked(action).await;
+        // Taken whatever the answer, so a refused plan leaves nothing behind.
+        let note = request.and_then(|r| self.desk.take_plan_note(&r));
+        crate::PlanAnswer { decision, note: if decision.approved() { note } else { None } }
     }
 
     async fn ask(&self, questions: Vec<crate::Question>) -> crate::Answer {
@@ -1668,6 +1683,54 @@ mod approver_tests {
             futures::join!(approver.decide(start.clone()), async { desk.resolve("ask-2", Decision::Approve) })
         });
         assert!(asked, "a saved rule never answers it");
+    }
+
+    #[test]
+    fn room_approver_returns_the_desk_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A\n2. B".into(), expires_at: None, risky: false };
+        let (answer, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide_plan(start.clone()), async {
+                desk.set_plan_note("ask-1", "Skip step 2".into());
+                desk.resolve("ask-1", Decision::Approve)
+            })
+        });
+        assert_eq!(answer, crate::PlanAnswer { decision: Decision::Approve, note: Some("Skip step 2".into()) });
+        assert_eq!(desk.take_plan_note("ask-1"), None, "taken once");
+    }
+
+    #[test]
+    fn a_rejected_plan_has_no_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A".into(), expires_at: None, risky: false };
+        let (answer, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide_plan(start.clone()), async {
+                desk.set_plan_note("ask-1", "stale".into());
+                desk.resolve("ask-1", Decision::Reject)
+            })
+        });
+        assert_eq!(answer, crate::PlanAnswer { decision: Decision::Reject, note: None });
+        assert_eq!(desk.take_plan_note("ask-1"), None, "nothing left behind");
+    }
+
+    #[test]
+    fn a_withdrawn_plan_card_leaves_no_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let (request, _rx) = desk.open_for(id.clone());
+        desk.set_plan_note(&request, "x".into());
+        assert!(desk.withdraw(&request));
+        assert_eq!(desk.take_plan_note(&request), None);
+        let (request, _rx2) = desk.open_for(id.clone());
+        desk.set_plan_note(&request, "y".into());
+        desk.reject_for(&id);
+        assert_eq!(desk.take_plan_note(&request), None);
     }
 
     #[test]

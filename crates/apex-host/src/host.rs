@@ -1963,11 +1963,27 @@ impl Host {
             (true, true) => apex_core::Decision::ApproveAlways,
         };
         let skip = skip.unwrap_or_default();
-        let plan_card = handle.live.lock().unwrap().approvals.iter().any(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan");
+        let plan_card = handle.live.lock().unwrap().approvals.iter().find(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan")
+            .map(|a| (a["id"].as_str().unwrap_or("").to_string(), a["action"]["detail"].as_str().unwrap_or("").to_string()));
+        // Read before the runs lock: the checkpoint lock comes first.
+        let transcript = handle.checkpoint.lock().unwrap().snapshot.transcript.len();
         let gone = || "that request is no longer waiting for an answer".to_string();
         // Held across `resolve`, so the woken bot's to-dos meet the new state.
         let mut runs = handle.plan_runs.lock().unwrap();
-        let at = if plan_card { runs.iter().rposition(|r| r.request == request && r.state == apex_core::PlanRunState::Waiting) } else { None };
+        let mut at = if plan_card.is_some() { runs.iter().rposition(|r| r.request == request && r.state == apex_core::PlanRunState::Waiting) } else { None };
+        // A plan card whose run was evicted (the 20 cap) still gets one, built
+        // from the card, so its approval is tracked like any other.
+        let mut created = false;
+        if let (None, true, Some((by, detail))) = (at, approve, &plan_card) {
+            let by = ParticipantId::new(by.as_str());
+            let version = runs.iter().rev().find(|r| r.by == by).map_or(0, |r| r.version) + 1;
+            let mut run = apex_core::PlanRun::new(request.clone(), by, detail.clone(), version);
+            run.started_seq = transcript;
+            runs.push(run);
+            evict_plan_runs(&mut runs);
+            at = runs.iter().rposition(|r| r.request == request);
+            created = at.is_some();
+        }
         let Some(at) = at else {
             if !skip.is_empty() { return Err("only a plan card can skip steps".into()); }
             drop(runs);
@@ -1975,10 +1991,13 @@ impl Host {
         };
         let mut run = runs[at].clone();
         if approve {
+            let undo = |runs: &mut Vec<apex_core::PlanRun>| if created { runs.remove(at); };
             if let Some(unknown) = skip.iter().find(|s| !run.steps.iter().any(|step| step.id == **s)) {
+                undo(&mut runs);
                 return Err(format!("the plan has no step {unknown}"));
             }
             if !run.steps.is_empty() && run.steps.iter().all(|step| skip.contains(&step.id)) {
+                undo(&mut runs);
                 return Err("at least one step must stay in the plan".into());
             }
             if let Some(note) = run.approve(&skip) { handle.approvals.set_plan_note(&request, note); }
@@ -1988,6 +2007,7 @@ impl Host {
         // A dead card's run expires through its own event.
         if !handle.approvals.resolve(&request, decision) {
             handle.approvals.take_plan_note(&request);
+            if created { runs.remove(at); }
             return Err(gone());
         }
         runs[at] = run.clone();
@@ -5063,6 +5083,33 @@ mod host_tests {
             std::mem::forget(plan_card(&host, "jigga"));
             let names: Vec<String> = runs(&host).iter().map(|r| r.request.clone()).collect();
             assert!(!names.contains(&"o2".to_string()) && names.contains(&"o0".to_string()) && names.contains(&"o1".to_string()));
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn plan_run_is_created_for_an_approved_card_whose_run_was_evicted() {
+            let (host, _runtime, data) = room("plan-run-recreate");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.handle("r").unwrap().plan_runs.lock().unwrap().clear();
+            host.room_decide("r".into(), request.clone(), true, None, skip(&["S2"])).expect("approved");
+            let list = runs(&host);
+            assert_eq!(list.len(), 1);
+            assert_eq!((list[0].request.clone(), list[0].state, list[0].version), (request.clone(), PlanRunState::Running, 1));
+            assert_eq!(list[0].steps[1].state, PlanStepState::Skipped);
+            let note = host.handle("r").unwrap().approvals.take_plan_note(&request).expect("the bot is told");
+            assert!(note.contains("S1") && note.contains("S3"), "{note}");
+            assert_eq!(saved(&host), list);
+            let _ = std::fs::remove_dir_all(data);
+        }
+
+        #[test]
+        fn a_refused_skip_on_an_evicted_plan_run_leaves_no_run_behind() {
+            let (host, _runtime, data) = room("plan-run-recreate-bad");
+            let (request, _answer) = plan_card(&host, "jigga");
+            host.handle("r").unwrap().plan_runs.lock().unwrap().clear();
+            assert!(host.room_decide("r".into(), request.clone(), true, None, skip(&["S9"])).is_err());
+            assert!(host.handle("r").unwrap().plan_runs.lock().unwrap().is_empty());
+            host.room_decide("r".into(), request, true, None, None).expect("still waiting");
             let _ = std::fs::remove_dir_all(data);
         }
 
