@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>UCU native window fixture</title>
+<style>
+  body { font: 18px system-ui; margin: 40px; max-width: 700px; }
+  label, output { display: block; margin: 20px 0; }
+  input, button { font: inherit; padding: 10px; }
+</style>
+<h1>UCU native window fixture</h1>
+<label>Native input <input id="input" autocomplete="off"></label>
+<button id="increment" type="button">Native increment</button>
+<button id="reset" type="button">Native reset</button>
+<button id="select" type="button">Native select prefix</button>
+<output id="count" role="status">Native count: 0.</output>
+<output id="value" role="status">Native value: empty.</output>
+<script>
+  const input = document.getElementById('input');
+  const count = document.getElementById('count');
+  const value = document.getElementById('value');
+  let clicks = 0;
+  function showValue() { value.textContent = 'Native value: ' + (input.value || 'empty') + '.'; }
+  input.addEventListener('input', showValue);
+  document.getElementById('increment').onclick = () => { count.textContent = 'Native count: ' + (++clicks) + '.'; };
+  document.getElementById('reset').onclick = () => {
+    clicks = 0; count.textContent = 'Native count: 0.'; input.value = ''; showValue();
+  };
+  document.getElementById('select').onclick = () => { input.focus(); input.setSelectionRange(0, 6); };
+</script>
+</html>
