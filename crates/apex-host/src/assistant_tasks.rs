@@ -173,6 +173,18 @@ pub struct TaskControl {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AnnouncementGate {
+    pub announcement_id: String,
+    pub assistant_id: String,
+    pub source_event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AssistantTask {
     #[serde(flatten)]
     pub control: TaskControl,
@@ -204,6 +216,9 @@ pub struct AssistantTask {
     pub usage: Option<TaskUsage>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    /// Reference-only gate for conversational handoff announcement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announcement_gate: Option<AnnouncementGate>,
     /// Set only on a task imported from pre-provenance data. Never verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy: Option<crate::legacy_import::LegacyMarker>,
@@ -777,6 +792,11 @@ impl AssistantTasks {
             .cloned()
             .ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
         check_owner_revision(&current, expected_revision, owner)?;
+        if let Some(gate) = &current.announcement_gate {
+            if gate.released_at_ms.is_none() {
+                return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Task announcement gate not released."));
+            }
+        }
         if current.control.desired_state != DesiredState::Running {
             return Err(TaskError::new(TaskErrorKind::InvalidTransition, "The task is paused or cancelled."));
         }
@@ -1236,6 +1256,57 @@ impl AssistantTasks {
         save_mutation(&self.inner, &mut document, before)
     }
 
+    pub fn set_announcement_gate(&self, task_id: &str, gate: AnnouncementGate) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(task_id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        if task.announcement_gate.is_some() {
+            // idempotent if same announcement id
+            if task.announcement_gate.as_ref().unwrap().announcement_id == gate.announcement_id {
+                return Ok(task.clone());
+            }
+            return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Task already has an announcement gate."));
+        }
+        task.announcement_gate = Some(gate);
+        task.revision += 1;
+        task.updated_at_ms = now_ms();
+        let result = task.clone();
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(result)
+    }
+
+    pub fn release_announcement_gate(&self, task_id: &str, released_at_ms: u64) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(task_id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        if let Some(gate) = task.announcement_gate.as_mut() {
+            if gate.released_at_ms.is_none() {
+                gate.released_at_ms = Some(released_at_ms);
+                task.revision += 1;
+                task.updated_at_ms = now_ms();
+            }
+        }
+        let result = task.clone();
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(result)
+    }
+
+    pub fn update_announcement_gate_message(&self, task_id: &str, message_id: &str) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let task = document.tasks.get_mut(task_id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
+        if let Some(gate) = task.announcement_gate.as_mut() {
+            if gate.message_id.is_none() {
+                gate.message_id = Some(message_id.to_owned());
+                task.revision += 1;
+                task.updated_at_ms = now_ms();
+            }
+        }
+        let result = task.clone();
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(result)
+    }
+
     pub fn execution(&self, thread_id: &str) -> Result<Option<ExecutionEntry>, TaskError> {
         Ok(self
             .inner
@@ -1385,6 +1456,7 @@ fn make_task(
         usage: None,
         created_at_ms: now,
         updated_at_ms: now,
+        announcement_gate: None,
         legacy: None,
     };
     document.tasks.insert(id, task.clone());
@@ -2482,5 +2554,93 @@ mod tests {
         assert!(task.id.ends_with("1"));
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_announcement_cannot_begin_or_create_room() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("gate-pending", "Do it"), "brief".into(), Some(destination())).unwrap();
+        let gate = AnnouncementGate {
+            announcement_id: "ann-1".into(),
+            assistant_id: "asst-1".into(),
+            source_event_id: "pe-1".into(),
+            message_id: None,
+            released_at_ms: None,
+        };
+        store.set_announcement_gate(&task.id, gate).unwrap();
+        assert!(store.begin_attempt(&task.id, store.get(&task.id).unwrap().unwrap().revision, &owner()).is_err(), "task with unreleased gate must not begin");
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn announcement_commit_releases_once() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("gate-release", "Do it"), "brief".into(), Some(destination())).unwrap();
+        let gate = AnnouncementGate {
+            announcement_id: "ann-2".into(),
+            assistant_id: "asst-1".into(),
+            source_event_id: "pe-1".into(),
+            message_id: Some("pm-1".into()),
+            released_at_ms: None,
+        };
+        store.set_announcement_gate(&task.id, gate).unwrap();
+        assert!(store.begin_attempt(&task.id, store.get(&task.id).unwrap().unwrap().revision, &owner()).is_err());
+        let released = store.release_announcement_gate(&task.id, now_ms()).unwrap();
+        assert!(released.announcement_gate.as_ref().unwrap().released_at_ms.is_some());
+        let (running, _) = store.begin_attempt(&task.id, released.revision, &owner()).unwrap();
+        assert_eq!(running.status, TaskStatus::Running);
+        // Second release is idempotent
+        let again = store.release_announcement_gate(&task.id, now_ms()).unwrap();
+        assert_eq!(again.announcement_gate.as_ref().unwrap().released_at_ms, released.announcement_gate.as_ref().unwrap().released_at_ms);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn task_record_contains_no_saved_reply_payload() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("no-payload", "Do it"), "brief".into(), Some(destination())).unwrap();
+        // Ensure serialized task record itself does not contain personal saved reply payload
+        let stored = store.get(&task.id).unwrap().unwrap();
+        let json = serde_json::to_value(&stored).unwrap();
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(!serialized.contains("saved_reply") && !serialized.to_lowercase().contains("savedreply") && !serialized.contains("prepared"), "task ledger must not contain personal saved reply payload");
+        assert!(stored.announcement_gate.is_none(), "new tasks without gate retain legacy semantics");
+        // Also ensure on-disk ledger doesn't contain saved payload
+        if let Ok(data) = std::fs::read(ledger(&path)) {
+            let s = String::from_utf8_lossy(&data);
+            assert!(!s.contains("saved_reply") && !s.to_lowercase().contains("savedreply"), "on-disk task ledger must not leak saved reply");
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn restart_new_thread_preserves_preparation_revision() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let original_revision = 42u64;
+        let prep = HandoffPreparation {
+            request_id: "rev-preserve".into(),
+            batch_id: "batch-rev".into(),
+            owner: owner(),
+            revision: original_revision,
+            original_request: "Fix it".into(),
+            brief: "Fix it".into(),
+            destination: destination(),
+            mode: TaskMode::Isolated,
+            review_criteria: vec![],
+            lineage: None,
+            context: None,
+        };
+        let task = store.prepare_handoff(prep.clone()).unwrap();
+        assert_eq!(task.result_data.as_ref().unwrap()["monitorRevision"], original_revision);
+        drop(store);
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        let same = reopened.prepare_handoff(prep).unwrap();
+        assert_eq!(same.id, task.id);
+        assert_eq!(same.result_data.as_ref().unwrap()["monitorRevision"], original_revision, "preparation revision must be preserved across restart");
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

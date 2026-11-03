@@ -17,7 +17,7 @@ impl Host {
                 if let Some(decision)=task.decision.as_mut(){if decision.status==DecisionStatus::Open{decision.status=DecisionStatus::Superseded;decision.decided_at=Some(now());}}
             }
             a.counters.event+=1;
-            a.events.push(PersonalEvent{id:format!("pe-{}",a.counters.event),request_id:request.into(),source:EventSource::Internal{what},received_at:now(),state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false});
+            a.events.push(PersonalEvent{id:format!("pe-{}",a.counters.event),request_id:request.into(),source:EventSource::Internal{what},received_at:now(),state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false,saved_reply:None});
             Ok(())
         })?;
         if let Some(stop)=self.personal_stops.lock().unwrap().get(&format!("reply:{id}:{event_id}")){stop.notify_one();}

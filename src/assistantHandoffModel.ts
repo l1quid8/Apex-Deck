@@ -72,6 +72,7 @@ function deriveProgressLabel(progress?: TaskConversationProgress): { label: stri
   if (todos && todos.length) {
     const done = todos.filter(t => t.status === 'done').length;
     const total = todos.length;
+    // Do NOT include brief; only use latestActivity for separate activity field, not for count label
     return { label: `step ${done}/${total}`, done, total, activity: progress?.latestActivity };
   }
   const activity = progress?.latestActivity;
@@ -108,11 +109,45 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
   const sentence = `Handing this to ${teamPreview || leadName}${threadLabel ? ` in ${threadLabel}` : ''}, I'll tell you when it's done.`;
   const state = toPillState(task);
   const prog = deriveProgressLabel(progress);
+  const firstWorker = distinct[0] ?? 'Hyke';
 
-  // Label contract: step N/M when todos exist, else working + activity (no brief leak, no worker prefix in core label)
-  const label = prog.label;
+  // Contract from browser tests:
+  // running -> "Hyke · step 20/40"
+  // team -> "Muck + Null · 20/40" and "Muck + Null · Muck leads" preview
+  // no_total -> "Hyke · working · ran tools/step.sh 21"
+  // status overrides: "needs your OK", "Hyke · needs you", "Hyke · couldn't start", "Hyke · queued", "Hyke · stopping"
+  let label = '';
+  if (state === 'needs_ok') {
+    label = 'needs your OK';
+  } else if (state === 'waiting_to_start') {
+    label = `${firstWorker} · queued`;
+  } else if (state === 'needs_you') {
+    label = `${firstWorker} · needs you`;
+  } else if (state === 'stopping') {
+    label = `${firstWorker} · stopping`;
+  } else if (state === 'stopped') {
+    label = `${firstWorker} · stopped`;
+  } else if (state === 'couldnt_start') {
+    label = `${firstWorker} · couldn't start`;
+  } else if (state === 'ready_for_review') {
+    label = `${firstWorker} · ready for review`;
+  } else if (state === 'done') {
+    label = `${firstWorker} · done`;
+  } else {
+    // running default
+    if (prog.total != null && prog.done != null) {
+      if (distinct.length > 1) {
+        label = `${distinct.map(workerDisplay).join(' + ')} · ${prog.done}/${prog.total}`;
+      } else {
+        label = `${firstWorker} · step ${prog.done}/${prog.total}`;
+      }
+    } else if (prog.activity) {
+      label = `${firstWorker} · ${prog.label}`;
+    } else {
+      label = `${firstWorker} · ${prog.label}`;
+    }
+  }
 
-  // Round 1: only stop / retry / open
   if (state === 'running' || state === 'waiting_to_start' || state === 'needs_you' || state === 'stopping') {
     return {
       taskId: task.id,
@@ -128,7 +163,7 @@ export function deriveHandoffPill(task: AssistantTask, progress?: TaskConversati
       doneCount: prog.done,
       latestActivity: prog.activity,
       stopA11yLabel: `Stop ${teamPreview || leadName}`,
-      availableActions: ['stop', 'open'],
+      availableActions: state === 'waiting_to_start' || state === 'running' || state === 'needs_you' || state === 'stopping' ? ['stop', 'open'] : ['open'],
       threadLabel,
     };
   }

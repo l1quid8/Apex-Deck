@@ -128,7 +128,12 @@ impl crate::Host {
     }
 
     pub fn personal_conversation_new(&self, id: &str) -> Result<Changed, String> {
-        self.changed(id, |assistant| { assistant.conversation_from = now(); Ok(()) })
+        self.changed(id, |assistant| {
+            assistant.conversation_from = now();
+            // New-conversation clears unresolved routing drafts without deleting task history.
+            assistant.pending_handoffs.clear();
+            Ok(())
+        })
             .inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 
