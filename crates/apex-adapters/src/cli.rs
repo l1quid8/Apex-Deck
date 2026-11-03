@@ -700,6 +700,11 @@ impl Approver for Timed<'_> {
         self.inner.decide(action).await
     }
 
+    async fn decide_plan(&self, action: ProposedAction) -> apex_core::PlanAnswer {
+        let _asking = self.waiting();
+        self.inner.decide_plan(action).await
+    }
+
     async fn ask(&self, questions: Vec<apex_core::Question>) -> apex_core::Answer {
         let _asking = self.waiting();
         self.inner.ask(questions).await
@@ -1242,6 +1247,29 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         assert!(last_heard.lock().unwrap().elapsed() < Duration::from_secs(5));
     }
 
+    #[test]
+    fn the_plan_note_gets_through_and_the_quiet_clock_stops_for_a_plan_card() {
+        use super::{AtomicBool, Duration, Instant, Mutex, Ordering, Timed};
+        use apex_core::{ActionKind, Approver, Decision, PlanAnswer, ProposedAction};
+        use futures::FutureExt;
+        struct Noted<'a>(&'a AtomicBool);
+        #[async_trait::async_trait]
+        impl Approver for Noted<'_> {
+            async fn decide(&self, _: ProposedAction) -> Decision { Decision::Approve }
+            async fn decide_plan(&self, _: ProposedAction) -> PlanAnswer {
+                assert!(self.0.load(Ordering::SeqCst), "the person is being asked");
+                PlanAnswer { decision: Decision::Approve, note: Some("Do NOT do step 2".into()) }
+            }
+        }
+        let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
+        let asking = AtomicBool::new(false);
+        let inner = Noted(&asking);
+        let timed = Timed { inner: &inner, last_heard: &last_heard, asking: &asking };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A".into(), expires_at: None, risky: false };
+        let answer = timed.decide_plan(start).now_or_never().expect("answered");
+        assert_eq!(answer.note.as_deref(), Some("Do NOT do step 2"));
+        assert!(!asking.load(Ordering::SeqCst));
+    }
 }
 
 #[cfg(test)]
