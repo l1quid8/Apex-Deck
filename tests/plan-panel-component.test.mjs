@@ -19,10 +19,11 @@ const boxes = (tree) => walk(tree).filter((n) => n.type === 'input' && n.props.t
 const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
 
 function panel(run, others = []) {
-  const states = []; let cursor = 0; const decisions = []; const stops = [];
+  const states = []; let cursor = 0; const decisions = []; const stops = []; const timers = []; const cleanups = [];
+  const setTimeout = (fn, ms) => { timers.push({ fn, ms, live: true }); return timers.length; }; const clearTimeout = (id) => { if (timers[id - 1]) timers[id - 1].live = false; }; const useEffect = (fn) => { if (!cleanups.length) cleanups.push(fn()); };
   const useState = (initial) => { const i = cursor++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], (value) => { states[i] = typeof value === 'function' ? value(states[i]) : value; }]; };
-  const PlanPanel = new Function('React', 'useState', 'useRef', 'Markdown', ...Object.keys(model), `${compile(read('PlanPanel.tsx'))}; return PlanPanel;`)(React, useState, (value) => ({ current: value }), 'Markdown', ...Object.values(model));
-  return { decisions, stops, render() {
+  const PlanPanel = new Function('React', 'useState', 'useRef', 'useEffect', 'setTimeout', 'clearTimeout', 'Markdown', ...Object.keys(model), `${compile(read('PlanPanel.tsx'))}; return PlanPanel;`)(React, useState, (value) => { const i = cursor++; if (!(i in states)) states[i] = { current: value }; return states[i]; }, useEffect, setTimeout, clearTimeout, 'Markdown', ...Object.values(model));
+  return { decisions, stops, timers, unmount() { for (const c of cleanups) c?.(); }, render() {
     cursor = 0;
     return PlanPanel({ run, others, onDecide: async (...args) => { decisions.push(args); }, onStop: async (who) => { stops.push(who); }, onClose() {}, onExpand() {}, expanded: false });
   } };
@@ -123,6 +124,18 @@ test('busy_stays_until_the_run_changes', async () => {
   const p = panel(run());
   await named(p.render(), 'Start the work').props.onClick();
   assert.equal(named(p.render(), 'Start the work').props.disabled, true, 'no second click after a successful send');
+  const wait = p.timers.find((t) => t.live);
+  assert.ok(wait && wait.ms >= 2000 && wait.ms <= 10000, 'a release timer is set');
+  wait.fn();
+  assert.equal(named(p.render(), 'Start the work').props.disabled, false, 'released if the run never moved');
+});
+
+test('busy_timer_is_cleared_on_unmount', async () => {
+  const p = panel(run());
+  p.render();
+  await named(p.render(), 'Start the work').props.onClick();
+  p.unmount();
+  assert.equal(p.timers.some((t) => t.live), false);
 });
 
 test('chip_open_names_its_run_and_pane_and_popout_points_home', () => {

@@ -118,7 +118,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     voiceCapabilities: () => call("voice_capabilities", {}),
     roomStopRequest: (id, participant, client_turn_id) => call("room_stop_request", {id,participant,client_turn_id}),
     roomStop: (id, participant) => call("room_stop", { id, participant: participant ?? null }),
-    roomDecide: (id, request, approve, always = false, skip) => call("room_decide", { id, request, approve, always, skip }),
+    roomDecide: (id, request, approve, always = false, skip) => call("room_decide", { id, request, approve, always, ...(skip ? { skip } : {}) }),
     roomAnswer: (id, request, answers) => call("room_answer", { id, request, answers }),
     roomSetPlan: (id, on) => call("room_set_plan", { id, on }),
     roomSetOptions: (id, options) => call("room_set_options", { id, options }),

@@ -1,10 +1,12 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Markdown } from "./Markdown";
 import { frontRun, planTitle, planView } from "./planRunModel";
 import type { PlanRun, PlanRunStep } from "./types";
 import "./plan-panel.css";
 
+/** How long the buttons stay off after a call succeeds without the run moving on. */
+export const RELEASE_MS = 4000;
 const SIZES = [14, 16, 18];
 const WORD: Partial<Record<PlanRunStep["state"], string>> = { active: "In progress", skipped: "Skipped", cancelled: "Cancelled" };
 const MARK: Partial<Record<PlanRunStep["state"], string>> = { done: "✓", skipped: "–", cancelled: "–" };
@@ -30,13 +32,15 @@ export function PlanPanel({ run, others, onDecide, onStop, onClose, onExpand, ex
   const [sentIn, setSentIn] = useState<string | null>(null);
   const busy = sentIn === run.state;
   const sending = useRef(false);
+  const release = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (release.current) clearTimeout(release.current); }, []);
   const view = planView(run, unticked);
   const waiting = run.state === "waiting";
   const ticks = waiting && run.steps.length > 0;
   const send = async (action: () => void | Promise<void>) => {
     if (sending.current) return;
     sending.current = true; setSentIn(run.state); setError("");
-    try { await action(); } catch (failure) { setError(String(failure)); setSentIn(null); } finally { sending.current = false; }
+    try { await action(); if (release.current) clearTimeout(release.current); release.current = setTimeout(() => setSentIn(null), RELEASE_MS); } catch (failure) { setError(String(failure)); setSentIn(null); } finally { sending.current = false; }
   };
   const toggle = (id: string) => setUnticked((old) => { const next = new Set(old); if (!next.delete(id)) next.add(id); return next; });
   const activeAt = run.steps.findIndex((step) => step.state === "active");
