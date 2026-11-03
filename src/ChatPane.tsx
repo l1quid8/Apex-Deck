@@ -1,3 +1,5 @@
+import { useComposerHistory } from "./useComposerHistory";
+import { threadHistoryTexts } from "./composerHistory";
 import { RunnerWork } from "./runner/RunnerWork.tsx";
 import { useRunner } from './runner/useRunner.ts';
 import { runnerCommand, runnerAction } from './runner/client.ts';
@@ -759,7 +761,9 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   const [accessNotes, setAccessNotes] = useState<{ key: number; text: string }[]>([]);
   const closeQuickSettings = () => setQuickSettings(null);
   const [busy, setBusy] = useState(false);
-  const [text, setText] = useState(talkOnly ? chatDraft : "");
+  const [text, writeText] = useState(talkOnly ? chatDraft : "");
+  const composerHistory = useComposerHistory(JSON.stringify([backend.host?.id, pane.id]), text, writeText, () => threadHistoryTexts(messagesOf(entries)));
+  const setText = composerHistory.setText;
   const chatCallbacks = useRef({onChatDraft, onChatParticipants});
   chatCallbacks.current = {onChatDraft, onChatParticipants};
   useEffect(() => { if (talkOnly) chatCallbacks.current.onChatDraft?.(text); }, [text, talkOnly]);
@@ -4120,6 +4124,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
           onKeyDown={(e) => {
             if (composerMenu.current?.key(e)) return;
             if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && formKeys(e.key)) { e.preventDefault(); return; }
+            if (composerHistory.onKeyDown(e)) return;
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); toggleTldr(); return; }
             // Esc stops every bot and keeps your draft, like Claude Code and Codex.
             if (e.key === "Escape" && busy) { e.preventDefault(); stopBots(); return; }

@@ -1,3 +1,5 @@
+import { useComposerHistory } from "./useComposerHistory";
+import { assistantHistoryTexts } from "./composerHistory";
 import { PersonalAlwaysPermission } from './PersonalApprovalActions';
 import { PersonalTaskTiming } from './PersonalTaskTiming';
 import { assistantConversationMessages, type AssistantConversationMessage } from './assistantConversation';
@@ -149,7 +151,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     .filter((item) => inView(item.workspaceId));
   const shownTasks = taskNodes ? (filterWorkspaceId ? taskNodes.filter((item) => item.workspaceId === filterWorkspaceId) : taskNodes).map((item) => item.node) : tasks;
   const filterName = filterWorkspaceId ? names[filterWorkspaceId] ?? 'Project' : '';
-  const [text, setText] = useAssistantComposerDraftState(draftKey, 'text', '');
+  const [text, writeText] = useAssistantComposerDraftState(draftKey, 'text', '');
   const [replyQuotes, setReplyQuotes] = useAssistantComposerDraftState<(MessageQuote & { laneId: string })[]>(draftKey, 'replyQuotes', []);
   /** A second Reply stacks instead of replacing; exact duplicates are ignored. The first quote fixes the lane. */
   const addReplyQuote = (quote: MessageQuote & { laneId: string }) => {
@@ -231,6 +233,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     unmatched = unmatched.replace(pattern, ' '); return true;
   });
   const globalReply = !filterWorkspaceId && !replyQuotes.length && !attachmentLane && !!onOverview && (mentionsAll(text) || /\b(everywhere|all (?:my |the )?(?:projects|threads)|across (?:my |the )?projects|overall)\b/i.test(prose) || namedProjects.length > 1 || (!mentioned && !namedProjects.length && (fallbackLane === '*' || !fallbackLane)));
+  // Aggregate transcripts contain unrelated projects; recall only the composer's lane.
+  const historyLane = globalReply ? '*' : attachmentLane ?? replyQuotes[0]?.laneId ?? target;
+  const composerHistory = useComposerHistory(JSON.stringify([draftKey, assistant?.hostId, assistant?.id, filterWorkspaceId, focus, attachmentLane, replyQuotes[0]?.laneId]), text, writeText, () => assistantHistoryTexts(entries, historyLane), assistantComposerDraftFor(draftKey));
+  const setText = composerHistory.setText;
   const bottom = useRef<HTMLDivElement | null>(null);
   const isPinnedToBottom = useRef(true);
   // `busy` only updates on the next render; this blocks a second Enter pressed before then.
@@ -800,7 +806,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           }}
           onCommand={(command) => runCommand(command, attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL)} />
         <div className="composer-field"><textarea onPaste={event=>{const files=Array.from(event.clipboardData.files);if(files.length){event.preventDefault();composerTools.current?.attachFiles(files);}}} ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label={`Message ${conversationName}`} placeholder={voice.hint ?? (firstRun ? `Give ${personal!.name} its first brief` : selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…')}
-          onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if((event.metaKey||event.ctrlKey)&&event.shiftKey&&event.key.toLowerCase()==='t'){event.preventDefault();setTldr(!tldr);return;} if (event.key === 'Escape' && pendingReply && personal?.cancelReply) {event.preventDefault();void run(()=>personal!.cancelReply!(pendingReply.id));return;} if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /></div>
+          onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if (composerHistory.onKeyDown(event)) { if (!text && !draftFallback) setDraftFallback(historyLane); return; } if((event.metaKey||event.ctrlKey)&&event.shiftKey&&event.key.toLowerCase()==='t'){event.preventDefault();setTldr(!tldr);return;} if (event.key === 'Escape' && pendingReply && personal?.cancelReply) {event.preventDefault();void run(()=>personal!.cancelReply!(pendingReply.id));return;} if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /></div>
         <ComposerModeControls planOn={planOn} onPlan={()=>setPlanOn(false)} tldr={tldr} onTldr={()=>{setTldr(!tldr);composerInput.current?.focus();}}/>
         {embedded&&round.mic&&!(voice.slot.live && voice.slot.look === 'capsule')&&<VoiceCallControls settings={voice.settings} candidates={voice.candidates} who={voice.who} disabled={!!personal?.offline}/>}
         {embedded&&round.send&&<button type="submit" className="round-send" aria-label="Send" disabled={busy||attachmentState.pending||attachmentState.hasErrors||(!text.trim()&&!attachmentState.paths.length)}>↑</button>}

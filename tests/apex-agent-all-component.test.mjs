@@ -1,3 +1,6 @@
+import { historyHookFor } from './helpers/composer-history-hook.mjs';
+import { assistantHistoryTexts } from '../src/composerHistory.ts';
+import { setAssistantComposerField } from '../src/assistantComposerDrafts.ts';
 import { sharedComposerSurface } from './helpers/shared-composer-surface.mjs';
 import { taskMessageDeleted } from '../src/assistantTaskVisibility.ts';
 import { assistantConversationMessages } from '../src/assistantConversation.ts';
@@ -53,16 +56,17 @@ function harness(props, { effects = false, voice = {} } = {}) {
     useState(initial) { const i = cursor++; if (!(i in states)) states[i] = initial; return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value; }]; },
     useRef(initial) { const i = cursor++; return effects ? refs[i] ??= { current: initial } : { current: initial }; },
     useMemo(fn) { cursor++; return fn(); },
-    useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || deps.some((v, j) => v !== effectDeps[i][j]))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
+    useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || (!deps || deps.some((v, j) => v !== effectDeps[i][j])))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
     useCallback(fn) { cursor++; return fn; },
   };
+  hooks.useLayoutEffect = hooks.useEffect;
   // The voice coordinator has external stores and a native audio transport;
   // this harness exercises its caller boundary without starting either one.
   const useAssistantVoice = input => {
     const settings = readVoiceSettings(input.settings);
     return { settings, candidates: [], slot: { live: false, look: settings.look }, hint: undefined, who: () => undefined, ...voice };
   };
-  const bindings = { PersonalTaskTiming: () => null, assistantConversationMessages, PersonalAlwaysPermission: () => null, taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
+  const bindings = { useComposerHistory: historyHookFor(hooks), assistantHistoryTexts, PersonalTaskTiming: () => null, assistantConversationMessages, PersonalAlwaysPermission: () => null, taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
   const component = new Function(...Object.keys(bindings), `${compiled}\nreturn ApexAgentAll;`)(...Object.values(bindings));
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
@@ -1109,4 +1113,56 @@ test('opening the shared browser closes the tools sheet and preserves the chat d
  const panel=find(tree,n=>n.type===PersonalPanelsStub);assert.equal(panel.props.initial,'connections');panel.props.onOpenBrowser();tree=h.render();
  assert.equal(opened,1);assert.equal(find(tree,n=>n.type===PersonalPanelsStub),null,'browser opens over chat, with the tools sheet dismissed');
  assert.equal(find(tree,n=>n.type==='textarea').props.value,'Keep this browser task draft');
+});
+
+function historyEvent(input, key = 'ArrowUp') {
+  return { key, currentTarget: input, nativeEvent: {}, preventDefault() { this.defaultPrevented = true; } };
+}
+function historyInput(value = '') {
+  return { value, selectionStart: 0, selectionEnd: 0, selectionDirection: 'none', setSelectionRange(start, end, direction) { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; } };
+}
+test('assistant recall uses explicit project target instead of the fallback project', () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)]), monitor('billing', [message('billing', 'human', 10)])] }, { effects: true });
+  let input = find(h.render(), n => n.type === 'textarea');
+  input.props.onChange({ target: { value: '@billing-api next' } });
+  input = find(h.render(), n => n.type === 'textarea');
+  input.props.onKeyDown(historyEvent(historyInput(input.props.value)));
+  input = find(h.render(), n => n.type === 'textarea');
+  assert.equal(input.props.value, 'Message billing');
+});
+test('background project messages preserve active recall and its original empty draft', () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)]), monitor('billing', [message('billing', 'human', 10)])] }, { effects: true });
+  let input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  input.props.onKeyDown(historyEvent(historyInput()));
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  assert.equal(input.props.value, 'Message mobile');
+  h.props.monitors = [h.props.monitors[0], monitor('billing', [message('later', 'assistant', 30)])];
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  const field = historyInput(input.props.value); field.selectionStart = field.selectionEnd = field.value.length;
+  input.props.onKeyDown(historyEvent(field, 'ArrowDown'));
+  assert.equal(find(h.render(), n => n.type === 'textarea').props.value, '');
+});
+test('same-value external assistant draft writes end history browsing', () => {
+  const h = harness({ draftKey: 'history-external', workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)])] }, { effects: true });
+  let input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  input.props.onChange({ target: { value: 'draft' } });
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  input.props.onKeyDown(historyEvent(historyInput('draft')));
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  assert.equal(input.props.value, 'Message mobile');
+  setAssistantComposerField('history-external', 'text', 'Message mobile');
+  const field = historyInput('Message mobile'); field.selectionStart = field.selectionEnd = field.value.length;
+  input.props.onKeyDown(historyEvent(field, 'ArrowDown'));
+  assert.equal(find(h.render(), n => n.type === 'textarea').props.value, 'Message mobile');
+});
+test('attachment ownership takes priority over a different mentioned project during recall', () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)]), monitor('billing', [message('billing', 'human', 10)])] }, { effects: true });
+  let tree = h.render();
+  find(tree, n => n.type === ApexAgentComposerToolsStub).props.onChooseAttachment();
+  tree = h.render();
+  find(tree, n => n.type === 'textarea').props.onChange({ target: { value: '@billing-api next' } });
+  let input = find(h.render(), n => n.type === 'textarea');
+  input.props.onKeyDown(historyEvent(historyInput(input.props.value)));
+  input = find(h.render(), n => n.type === 'textarea');
+  assert.equal(input.props.value, 'Message mobile');
 });
