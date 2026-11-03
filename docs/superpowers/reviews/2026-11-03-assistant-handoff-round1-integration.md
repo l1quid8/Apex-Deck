@@ -81,3 +81,30 @@ Product commit chain:
 Review the final product with `git diff 47f77248..626cd884` and `git show --stat 626cd884`. This review document and the coordination status update are a following documentation-only commit. TypeScript and the final host/daemon/production checks all exited 0 before the product commit; no product changes followed verification.
 
 Git read-back confirmed `feat/assistant-handoff-round1` at `626cd884`. Original unrelated browser-work, phone-history, generated build and older mockup changes are excluded and preserved in the shared checkout. Nothing was merged, installed or packaged. Send this package to Jigga for implementation review, with the installed-app acceptance limit retained.
+
+## Jigga review follow-up
+
+Jigga conditionally approved Round 1 after reviewing the integration. This follow-up addresses his requested items 1, 2 and 4; it does not authorize a main/release merge or replace installed-app acceptance.
+
+- **Watchdog fixture ordering:** `hung_delegation` now waits until the real `hung` worker appears in the room's active set before tests inject command events. `TurnStarted` clears the worker's stale commands and inserts its active entry under the same live-state lock, so the wait observes the required event boundary. The longer-command-allowance regression also checks that Running/Done events actually set/clear command activity. Production `host.rs` watchdog bookkeeping is unchanged.
+- **Unsupported new-thread startup revision:** the project task view withholds the worker picker, revised-plan button and its instructions for `destination.newThread`. The handler also refuses that unsupported path. Startup diagnostics, cancellation and the existing supported approval flow remain visible. Two component regressions cover blocked and proposed/preflight states; existing saved-thread revision and retry checks remain intact. The new regressions failed before the UI fix.
+- **Private reply coverage:** the weak task-struct test was replaced with a real personal completion that saves distinctive reply, memory, helper and cost data, admits a gated child, publishes the announcement and releases it. The test proves the marker is durable in the protected personal file and then reads the actual protected task ledger with a required successful read. It checks the persisted child exists and no private marker or saved-reply field reaches either the ledger or serialized project task. The broad `contains("prepared")` assertion and optional read of the wrong, unprotected path are gone.
+
+Follow-up product commit: `ab8a1ce6` (`fix(assistant): address round one integration review`). Review the delta with `git diff 5544efce..ab8a1ce6`, or the complete product integration with `git diff 47f77248..ab8a1ce6`.
+
+| Check on the scoped product tree | Result |
+| --- | --- |
+| `cargo test -p apex-host --lib`, run 1 | Exit 0: 1,112 passed, 0 failed, 14 ignored; 88.63 seconds. |
+| `cargo test -p apex-host --lib`, run 2 | Exit 0: 1,112 passed, 0 failed, 14 ignored; 89.49 seconds. |
+| `cargo test -p apex-host --lib`, run 3 | Exit 0: 1,112 passed, 0 failed, 14 ignored; 88.35 seconds. |
+| `npx tsc --noEmit` | Exit 0. |
+| `node --experimental-strip-types --test tests/assistant-projects-component.test.mjs tests/assistant-projects.test.mjs tests/assistant-task-model.test.mjs` | Exit 0: 76 passed, 0 failed, 0 skipped. |
+| `cargo test -p apex-host --lib task_record_contains_no_saved_reply_payload` | Exit 0: the real completion/protected-ledger regression passed. |
+| Independent scoped static review | No actionable findings; confirmed live-lock ordering, required protected-file reads and preservation of the saved-thread revision path. This review did not run tests. |
+| `git diff --cached --check` before the product commit | Exit 0. |
+
+All three full host runs used default test concurrency, without `--test-threads=8`, against unchanged product sources. Compiler warnings remain as noted above. Raw host/client/TypeScript logs are in `/tmp/apex-handoff-review-host-{1,2,3}.log`, `/tmp/apex-handoff-review-client.log` and `/tmp/apex-handoff-review-tsc.log` for this local review session.
+
+For verification, the three pre-existing tracked browser/phone changes were saved in a path-scoped stash; older untracked mockups and build output were left in place. The unrelated tracked changes were restored after the checks, and their binary diff compared byte-for-byte equal to the pre-stash copy. The temporary stash was then removed. No test run in this follow-up includes those unrelated tracked edits. Product commit `ab8a1ce6` contains exactly the five scoped implementation/test files; this review record follows separately.
+
+Jigga's requested follow-up checks pass. No main/release merge, installer or installation was performed. Installed-app, real wall-clock watchdog and phone acceptance remain pending before release.
