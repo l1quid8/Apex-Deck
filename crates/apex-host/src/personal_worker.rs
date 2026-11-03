@@ -1014,6 +1014,9 @@ impl Host {
         // Normalize once before saving; recovery consumes exactly this payload.
         let bulk_error=reply.task.as_mut().and_then(|task|self.personal_normalize_bulk_delete(&initial,task).err());
         let mut frozen=Vec::new();
+        let human_request=initial.events.iter().find(|event|event.id==event_id).and_then(|event|match &event.source {
+            EventSource::Human{text,..}=>Some(text.as_str()), _=>None,
+        });
         for (index,proposed) in reply.delegations.iter().take(3).enumerate() {
             let delegation_id=format!("{event_id}:{index}");
             let reference=crate::personal_workspace::AssistantRef {host_id:initial.host_id.clone(),assistant_id:assistant_id.into()};
@@ -1023,7 +1026,7 @@ impl Host {
             };
             frozen.push(crate::personal::FrozenDelegation {
                 request_id:crate::assistant_delegation::delegation_request_id(&reference,&delegation_id),delegation_id,
-                brief:proposed.brief.clone(),destination:proposed.destination.clone(),mode:proposed.mode,
+                brief:proposed.brief.clone(),destination:proposed.destination.clone(),mode:human_request.map_or(proposed.mode,|text|crate::assistant_delegation::human_handoff_mode(text,proposed.mode)),
                 review_criteria:proposed.review_criteria.clone(),project:proposed.project.clone(),
                 announcement_id:format!("ann-{event_id}:{index}"),
                 owner,revision,standing_allowed,

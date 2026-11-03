@@ -732,7 +732,7 @@ impl crate::Host {
             if let Some(previous)=assistant.pending_handoffs.iter().find(|draft|draft.source_event_id==event_id) {
                 if previous.original_request!=*text {return Err("Handoff source changed.".into())}return Ok(());
             }
-            let mode=if assistant.workspace_config_version.is_some()&&assistant.profile.as_ref().is_some_and(|profile|profile.access==apex_core::Access::Read) {crate::assistant_tasks::TaskMode::ReadOnly}else{draft_mode()};
+            let mode=if assistant.workspace_config_version.is_some()&&assistant.profile.as_ref().is_some_and(|profile|profile.access==apex_core::Access::Read) {crate::assistant_tasks::TaskMode::ReadOnly}else{crate::assistant_delegation::human_handoff_mode(text,draft_mode())};
             let at=crate::personal::now();
             assistant.pending_handoffs.push(PendingHandoff {
                 id:format!("handoff-{event_id}"),revision:1,source_event_id:event_id.into(),original_request:text.clone(),brief:text.clone(),mode,
@@ -765,7 +765,7 @@ impl crate::Host {
         let destination=proposed.destination.clone().or_else(||focused.filter(|r|project.as_ref()==Some(&r.project)).map(|r|TaskDestination{thread_id:Some(r.thread.clone()),workers:vec![],new_thread:false,new_thread_title:None})).or(remembered);
         let workers=destination.as_ref().map(|d|d.workers.as_slice()).unwrap_or_default();
         let Some(missing)=missing_slot_for(project.as_ref(),destination.as_ref(),workers) else {return Err("A complete destination should use ordinary delegation admission.".into())};
-        let draft=PendingHandoff{id:format!("handoff-{event_id}"),revision:1,source_event_id:event_id.into(),original_request:text.clone(),brief:proposed.brief.clone(),mode:proposed.mode,project,destination,missing,selection_event_ids:vec![],assistant_id:assistant.id.clone(),host_id:assistant.host_id.clone(),created_at_ms:crate::personal::now(),updated_at_ms:crate::personal::now()};
+        let draft=PendingHandoff{id:format!("handoff-{event_id}"),revision:1,source_event_id:event_id.into(),original_request:text.clone(),brief:proposed.brief.clone(),mode:crate::assistant_delegation::human_handoff_mode(text,proposed.mode),project,destination,missing,selection_event_ids:vec![],assistant_id:assistant.id.clone(),host_id:assistant.host_id.clone(),created_at_ms:crate::personal::now(),updated_at_ms:crate::personal::now()};
         self.change_assistant(assistant_id,|a|{
             if let Some(previous)=a.pending_handoffs.iter().find(|d|d.source_event_id==event_id) {
                 if previous.original_request!=draft.original_request {return Err("Handoff source changed.".into())} return Ok(());

@@ -81,6 +81,7 @@ fn codex_mcp_disable_flags(listing: &[u8]) -> Result<Vec<String>, ParticipantErr
 pub struct CliParticipant {
     config: ParticipantConfig,
     timeout: Duration,
+    watchdog_managed: bool,
     cwd: Option<PathBuf>,
     path: Option<String>,
     codex_hook: Option<PathBuf>,
@@ -108,7 +109,7 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
+        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
     }
 
     /// Start a conversation turn with tools disabled at both the CLI and
@@ -148,6 +149,7 @@ impl CliParticipant {
 
     /// Run the tool in the folder, and with the PATH, given by `context`.
     pub fn with_context(mut self, context: &BuildContext) -> Self {
+        self.watchdog_managed = context.watchdog_managed;
         self.attachment_roots = context.attachment_roots.iter().filter_map(|root| root.canonicalize().ok()).collect();
         self.cwd = context.cwd.clone();
         self.path = context.path.clone();
@@ -1042,6 +1044,10 @@ impl Participant for CliParticipant {
         };
         // The time limit is on silence, not on the whole turn. Time spent
         // waiting for the person to answer does not count against it.
+        // Delegated execution is watched by the host at 20 quiet minutes (60
+        // during a command). Its cancellation path still owns this process tree.
+        // A second stall is reported and left for the user, per watchdog policy.
+        if self.watchdog_managed && !self.tools_disabled { return turn.await; }
         tokio::pin!(turn);
         loop {
             let left = self.timeout.saturating_sub(last_heard.lock().unwrap().elapsed());
@@ -1079,6 +1085,19 @@ impl Participant for CliParticipant {
 #[cfg(test)]
 mod tests {
     use apex_core::AgentTool;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delegated_watchdog_owns_silence_but_ordinary_cli_still_times_out() {
+        use apex_core::Participant;
+        use std::time::Duration;
+        let config = || serde_json::from_value(serde_json::json!({"id":"quiet","display_name":"Quiet","backend":{"kind":"cli","program":"/bin/sh","args":["-c","sleep 0.25; printf recovered"]}})).unwrap();
+        let request = || apex_core::TurnRequest { computer:None, system:"test".into(), turns:vec![], unseen:vec![], access:None, effort_override:None, plan:false, cwd:None };
+        let ordinary = super::CliParticipant::new(config()).with_timeout(Duration::from_millis(50));
+        assert!(ordinary.respond(request(), &|_| {}).await.unwrap_err().to_string().contains("without any output"));
+        let delegated = super::CliParticipant::new(config()).with_context(&crate::BuildContext { watchdog_managed:true, ..Default::default() }).with_timeout(Duration::from_millis(50));
+        assert_eq!(delegated.respond(request(), &|_| {}).await.unwrap().text, "recovered");
+    }
 
     #[cfg(target_os="macos")]
     #[tokio::test]

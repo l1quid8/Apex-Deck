@@ -66,6 +66,17 @@ fn bounded_identifier(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+/// A human restriction can only reduce access. Outside context and model
+/// summaries never supply this text. This is a cap, not work authorization.
+pub(crate) fn human_handoff_mode(text: &str, proposed: TaskMode) -> TaskMode {
+    let words = text.to_lowercase().replace(['-', '‐', '‑', '–', '—'], " ").replace('’', "'");
+    let words = words.split(|c:char| !c.is_alphanumeric() && c!='\'').filter(|s|!s.is_empty()).collect::<Vec<_>>();
+    let constrained = words.windows(2).any(|w|w==["read","only"])
+        || words.windows(3).any(|w|w==["do","not","edit"] || w==["do","not","modify"] || w==["do","not","write"])
+        || words.windows(2).any(|w|w==["don't","edit"] || w==["don't","modify"] || w==["don't","write"]);
+    if constrained { TaskMode::ReadOnly } else { proposed }
+}
+
 /// Conservative shared boundary for model-proposed work and routing drafts.
 /// A question phrased as an action request ("Can you fix ...?") can authorize
 /// work; requests for explanation/status and quoted instructions cannot.
@@ -270,7 +281,7 @@ fn plan_delegation_internal(assistant:&PersonalAssistant,input:&DelegationInput,
         original_request: text.clone(),
         brief: input.brief.clone(),
         destination: input.destination.clone(),
-        mode: input.mode,
+        mode: human_handoff_mode(text,input.mode),
         review_criteria: input.review_criteria.clone(),
         lineage: Some(lineage.clone()),
         context: None,
@@ -528,12 +539,15 @@ impl crate::host::Host {
         self.prepare_personal_delegation_scoped(input,returned_reply_cost,force_proposal,preparation,false)
     }
 
-    fn prepare_personal_delegation_scoped(&self, input: DelegationInput, returned_reply_cost: Option<u64>, force_proposal: bool, preparation: Option<(TaskOwner,u64)>, explicit_ui: bool) -> Result<Value, String> {
+    fn prepare_personal_delegation_scoped(&self, mut input: DelegationInput, returned_reply_cost: Option<u64>, force_proposal: bool, preparation: Option<(TaskOwner,u64)>, explicit_ui: bool) -> Result<Value, String> {
         let assistants = self.store().personal()?.unwrap_or_default().assistants;
         let assistant = assistants
             .iter()
             .find(|assistant| assistant.id == input.assistant_id)
             .ok_or("That assistant is not on this machine.")?;
+        if let Some(PersonalEvent { source: EventSource::Human { text, .. }, .. }) = assistant.events.iter().find(|event|event.id==input.source_event_id) {
+            input.mode=human_handoff_mode(text,input.mode);
+        }
         let binding = assistant.projects.iter().find(|b| b.project == input.project).ok_or("Project is not assigned.")?;
         let checked = self.validate_project_binding(assistant, binding.clone())?;
         if checked.project != input.project { return Err("Project path is no longer canonical.".into()); }
@@ -649,6 +663,19 @@ mod tests {
         let owner = TaskOwner {workspace_id:"w".into(),cwd:"/repo".into(),host_id:"h".into(),conversation_id:"monitor".into()};
         (assistant,input,owner)
     }
+    #[test]
+    fn verified_read_only_request_caps_direct_admission_and_preserves_editing_default() {
+        let (mut assistant,input,owner)=fixture();
+        let text="Delegate a read-only task to inspect README.md. Do not edit files.";
+        assistant.events[0].source=EventSource::Human{text:text.into(),view_context:None};
+        assistant.messages.iter_mut().find(|m|m.role=="human").unwrap().text=text.into();
+        assert_eq!(plan_delegation(&assistant,&input,&assistant.events[0],owner,9).unwrap().preparation.mode,TaskMode::ReadOnly);
+        for request in ["Delegate a read only task", "Inspect it; do not modify files", "Inspect it; don't edit files", "Inspect it; don’t write files"] {
+            assert_eq!(human_handoff_mode(request,TaskMode::Isolated),TaskMode::ReadOnly, "{request}");
+        }
+        assert_eq!(human_handoff_mode("Fix the login flow",TaskMode::Isolated),TaskMode::Isolated);
+    }
+
     #[test]
     fn archived_assistant_cannot_prepare_a_new_project_task() {
         let (mut assistant,input,owner)=fixture();assistant.archived_at=Some(10);

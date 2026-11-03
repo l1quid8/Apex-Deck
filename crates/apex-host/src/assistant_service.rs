@@ -4720,6 +4720,7 @@ mod tests {
     fn stuck_delegated_job_gets_one_restart_then_tells_the_human_once() {
         let f = fixture();
         let (task,assistant)=hung_delegation(&f,"stuck");
+        assert!(f.host.handle(task.execution_thread_id.as_deref().unwrap()).unwrap().context.watchdog_managed, "delegated worker must use host silence policy");
         f.host.watch_delegated_work(crate::personal::now(),0).unwrap();
         assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().attempts.len(),1,"a fresh job is left alone");
 

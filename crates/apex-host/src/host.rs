@@ -1205,6 +1205,9 @@ impl Host {
             self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from))
         };
         let context = BuildContext {
+            watchdog_managed: !kind.is_chat() && self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?
+                .and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten())
+                .is_some_and(|task|task.lineage.is_some() && task.execution_thread_id.as_deref()==Some(id.as_str())),
             codex_hook: if !kind.is_chat() && cfg!(unix) { std::env::current_exe().ok() } else { None },
 
             cwd: cwd.filter(|c| !c.is_empty()).map(PathBuf::from),
@@ -6047,6 +6050,7 @@ done
             cwd: None,
         };
         let context = apex_adapters::BuildContext {
+            watchdog_managed: false,
             cwd: saved.cwd.as_ref().map(PathBuf::from),
             path: Some(format!("{}:/usr/bin:/bin", bin.display())),
             codex_hook: None,

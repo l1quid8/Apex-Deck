@@ -3134,3 +3134,49 @@ async fn delegated_report_publish_after_retry_does_not_publish_the_old_run() {
 async fn delegated_report_publish_after_unchanged_task_keeps_its_summary() {
     delegated_report_publish_after_change("unchanged").await;
 }
+
+#[tokio::test]
+async fn explicit_read_only_survives_model_draft_and_unrouted_context() {
+    use crate::personal_handoff::HandoffDraftProposal;
+    use crate::assistant_tasks::TaskMode;
+    for unrouted in [false, true] {
+        let f=Fixture::new();
+        f.project_chat(crate::personal_workspace::ProjectTools::Ask);
+        let source=f.host.personal_send(&f.id,"readonly-mode","Delegate a read-only task to inspect README.md and return its first sentence. Ask me to choose the workers before starting. Do not edit files.").unwrap();
+        f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==source.event_id).unwrap().state=crate::personal::EventState::Processing;Ok(())}).unwrap();
+        if unrouted { f.host.save_unrouted_human_handoff(&f.id,&source.event_id).unwrap(); }
+        else { f.host.save_personal_handoff_draft(&f.id,&source.event_id,&HandoffDraftProposal {brief:"Read README".into(),project:None,destination:None,mode:TaskMode::Isolated},false).unwrap(); }
+        let draft=f.get().pending_handoffs[0].clone();
+        assert_eq!(draft.mode,TaskMode::ReadOnly,"unrouted={unrouted}");
+        assert!(f.host.assistant_tasks.list(None).unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn direct_read_only_handoff_replays_the_capped_mode() {
+    use crate::assistant_delegation::DelegationInput;
+    use crate::assistant_tasks::{TaskDestination,TaskMode};
+    let f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let source=f.host.personal_send(&f.id,"read-only-direct","Delegate a read-only task to inspect README.md. Do not edit files.").unwrap();
+    let input=DelegationInput { assistant_id:f.id.clone(),project,source_event_id:source.event_id,delegation_id:"readonly-direct".into(),brief:"Read README".into(),destination:TaskDestination {thread_id:Some(THREAD.into()),workers:vec!["jigga".into()],new_thread:false,new_thread_title:None},mode:TaskMode::Isolated,review_criteria:vec![],expected_revision:f.get().revision };
+    let first=f.host.prepare_personal_delegation(input.clone()).unwrap();
+    let replay=f.host.prepare_personal_delegation(input).unwrap();
+    assert_eq!(first["taskId"],replay["taskId"]);
+    assert_eq!(f.host.assistant_tasks.get(first["taskId"].as_str().unwrap()).unwrap().unwrap().mode,TaskMode::ReadOnly);
+}
+
+#[tokio::test]
+async fn model_read_only_handoff_freezes_effective_mode_and_recovers_once() {
+    use crate::assistant_tasks::TaskMode;
+    let mut f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let text="Delegate a read-only task to inspect README.md. Do not edit files.";
+    let accepted=f.host.personal_send(&f.id,"model-readonly",text).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==accepted.event_id).unwrap().state=EventState::Processing;Ok(())}).unwrap();
+    let reply=parse_reply(&serde_json::json!({"reply":"Handing over the inspection.","delegations":[{"project":project,"brief":"Read README","destination":{"threadId":THREAD,"workers":["jigga"],"newThread":false},"mode":"isolated"}]}).to_string());
+    f.host.commit_reply(&Fake::new(true).tools(),&f.id,&accepted.event_id,text,reply,saved_reply_fixture("unused").cost,context::Seen {screen:false,report:false},false).unwrap();
+    assert_eq!(f.get().events.iter().find(|e|e.id==accepted.event_id).unwrap().saved_reply.as_ref().unwrap().delegations[0].mode,TaskMode::ReadOnly);
+    let tasks=f.host.assistant_tasks.list(None).unwrap();assert_eq!(tasks.len(),1);assert_eq!(tasks[0].mode,TaskMode::ReadOnly);
+    assert!(tasks[0].announcement_gate.as_ref().unwrap().released_at_ms.is_some());
+    f.restart();f.host.reconcile_personal_handoff_announcements().unwrap();
+    assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+}

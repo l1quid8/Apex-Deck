@@ -1022,6 +1022,7 @@ async fn handle_chat_completions(
     };
 
     let context = BuildContext {
+        watchdog_managed: false,
         codex_hook: None,
         cwd: Some(scratch.path().to_path_buf()),
         path: state.login_path.clone(),
