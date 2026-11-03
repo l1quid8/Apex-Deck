@@ -74,6 +74,7 @@ test('missing identity metadata on both inventories cannot establish preservatio
 const verifier = readFileSync(new URL('../scripts/verify-protected-bundle.sh', import.meta.url), 'utf8');
 const acceptance = readFileSync(new URL('../scripts/acceptance-provenance.sh', import.meta.url), 'utf8');
 const hashes = { ui: 'a'.repeat(40), daemon: 'b'.repeat(40), broker: 'c'.repeat(40) };
+const jitEntitlements = '<?xml version="1.0"?><plist version="1.0"><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>';
 
 function fakeBundle(dir, name, wires = ['000011011']) {
   const app = path.join(dir, name);
@@ -85,6 +86,7 @@ function fakeBundle(dir, name, wires = ['000011011']) {
   mkdirSync(path.join(app, 'Contents/Resources/bin'), { recursive: true });
   writeFileSync(path.join(app, 'Contents/Resources/bin/apex-daemon'), 'daemon');
   writeFileSync(path.join(app, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.apexdeck.app</string><key>ElectronAsarIntegrity</key><dict><key>hash</key><string>fixture</string></dict></dict></plist>');
+  writeFileSync(app + '.entitlements.plist', jitEntitlements);
   return app;
 }
 
@@ -94,10 +96,85 @@ const signatureEffect = `
 test_codesign() {
   if [[ "$1" == --verify ]]; then return 0; fi
   local image="\${@: -1}" hash="$UI_HASH"
+  if [[ " $* " == *' --entitlements '* ]]; then
+    if [[ -f "$image.entitlements.plist" ]]; then /bin/cat "$image.entitlements.plist"; fi
+    [[ "$image" != "\${FAIL_ENTITLEMENTS_IMAGE:-}" ]]
+    return $?
+  fi
   case "$image" in */apex-daemon) hash="$DAEMON_HASH" ;; */apex-provenance) hash="$BROKER_HASH" ;; esac
   printf 'flags=0x10000(runtime)\\nCDHash=%s\\n' "$hash" >&2
 }
 `;
+
+// These fixtures catch the missing JIT entitlement that can leave a valid,
+// hardened Electron signature unable to initialize V8 on startup.
+const entitlementCases = [
+  { name: 'missing entitlement plist', xml: '', valid: false },
+  { name: 'missing JIT entitlement', xml: '<plist version="1.0"><dict/></plist>', valid: false },
+  { name: 'false JIT entitlement', xml: jitEntitlements.replace('<true/>', '<false/>'), valid: false },
+  { name: 'integer JIT entitlement', xml: jitEntitlements.replace('<true/>', '<integer>1</integer>'), valid: false },
+  { name: 'string JIT entitlement', xml: jitEntitlements.replace('<true/>', '<string>true</string>'), valid: false },
+  { name: 'malformed entitlement plist', xml: '<plist', valid: false },
+  { name: 'non-dictionary entitlement plist', xml: '<plist version="1.0"><array/></plist>', valid: false },
+  { name: 'failed codesign entitlement read', xml: jitEntitlements, readFails: true, valid: false },
+  { name: 'true JIT entitlement with empty daemon and broker entitlements', xml: jitEntitlements, valid: true },
+];
+
+for (const gate of ['candidate verification', 'installed acceptance']) {
+  for (const fixture of entitlementCases) {
+    test(`${gate} ${fixture.valid ? 'accepts' : 'rejects'} ${fixture.name}`, () => {
+      const dir = mkdtempSync('/tmp/apex-entitlements-test-');
+      try {
+        const app = fakeBundle(dir, 'Apex Deck.app');
+        writeFileSync(app + '.entitlements.plist', fixture.xml);
+        const daemon = path.join(app, 'Contents/Resources/bin/apex-daemon');
+        const broker = path.join(dir, 'apex-provenance'); writeFileSync(broker, 'broker');
+        const installedCheck = acceptance.slice(acceptance.indexOf('static_entitlements() {'), acceptance.indexOf('\nstatic_ownership() {'));
+        const input = gate === 'candidate verification'
+          ? verifier
+          : `set -euo pipefail\n${installedCheck}
+pass_check() { printf 'PASS %s %s\\n' "$1" "$2"; }
+fail_check() { printf 'FAIL %s %s\\n' "$1" "$2"; failed=1; }
+skip_check() { printf 'SKIP %s %s\\n' "$1" "$2"; }
+failed=0
+static_entitlements
+exit "$failed"
+`;
+        const result = spawnSync('/bin/bash', ['-s', '--', app, hashes.ui, hashes.daemon, broker, hashes.broker], {
+          input: signatureEffect + input.replaceAll('/usr/bin/codesign', 'test_codesign'), encoding: 'utf8',
+          env: { PATH: '/usr/bin:/bin', UI_HASH: hashes.ui, DAEMON_HASH: hashes.daemon, BROKER_HASH: hashes.broker,
+            APP: app, DAEMON: daemon, BROKER: broker, WORK: dir, FAIL_ENTITLEMENTS_IMAGE: fixture.readFails ? app : '' },
+        });
+        assert.equal(result.status, fixture.valid ? 0 : 1, result.stdout + result.stderr);
+        if (!fixture.valid) assert.match(result.stdout + result.stderr, /FAIL.*(?:entitlements|allow-jit)/);
+        if (fixture.valid && gate === 'installed acceptance') {
+          assert.match(result.stdout, /PASS static\.entitlements\.daemon no entitlements/);
+          assert.match(result.stdout, /PASS static\.entitlements\.broker no entitlements/);
+        }
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+}
+
+test('installed acceptance still rejects forbidden entitlements alongside valid JIT', () => {
+  const dir = mkdtempSync('/tmp/apex-entitlements-test-');
+  try {
+    const app = fakeBundle(dir, 'Apex Deck.app');
+    writeFileSync(app + '.entitlements.plist', jitEntitlements.replace('</dict>', '<key>com.apple.security.get-task-allow</key><true/></dict>'));
+    const check = acceptance.slice(acceptance.indexOf('static_entitlements() {'), acceptance.indexOf('\nstatic_ownership() {'));
+    const result = spawnSync('/bin/bash', ['-s'], {
+      input: signatureEffect + check.replaceAll('/usr/bin/codesign', 'test_codesign') + `
+pass_check() { printf 'PASS %s %s\\n' "$1" "$2"; }
+fail_check() { printf 'FAIL %s %s\\n' "$1" "$2"; }
+skip_check() { printf 'SKIP %s %s\\n' "$1" "$2"; }
+static_entitlements
+`, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', UI_HASH: hashes.ui, APP: app,
+        DAEMON: path.join(app, 'Contents/Resources/bin/apex-daemon'), BROKER: path.join(dir, 'absent-broker'), WORK: dir },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /FAIL static\.entitlements\.app .*com\.apple\.security\.get-task-allow/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('candidate verification rejects a different signed broker and requires its expected hash', () => {
   const dir = mkdtempSync('/tmp/apex-bundle-test-');
