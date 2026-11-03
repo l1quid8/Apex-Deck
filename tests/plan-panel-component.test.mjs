@@ -108,7 +108,27 @@ test('plan_with_no_steps_shows_markdown_without_ticks', () => {
   const tree = panel(run({ steps: [] })).render();
   assert.equal(boxes(tree).length, 0);
   assert.ok(walk(tree).some((n) => n.type === 'Markdown' && n.props.text.includes('Why it matters')));
-  assert.ok(named(tree, 'Start the work'));
+  const go = named(tree, 'Start the work');
+  assert.ok(go);
+  assert.equal(go.props.disabled, false, 'a prose plan can be approved from the panel');
+});
+
+test('prose_plan_start_sends_approve', async () => {
+  const p = panel(run({ steps: [] }));
+  await named(p.render(), 'Start the work').props.onClick();
+  assert.deepEqual(p.decisions, [['r1', true, []]]);
+});
+
+test('busy_stays_until_the_run_changes', async () => {
+  const p = panel(run());
+  await named(p.render(), 'Start the work').props.onClick();
+  assert.equal(named(p.render(), 'Start the work').props.disabled, true, 'no second click after a successful send');
+});
+
+test('chip_open_names_its_run_and_pane_and_popout_points_home', () => {
+  assert.match(read('ChatPane.tsx'), /onOpenPlan\?\.\(pane\.id, planChipRun\.request\)/);
+  assert.match(read('PlanPanel.tsx'), /want/);
+  assert.match(read('PopoutApp.tsx'), /tabKind === "plan"/);
 });
 
 test('keyboard_can_reach_every_control', () => {

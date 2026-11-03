@@ -26,15 +26,17 @@ export function PlanPanel({ run, others, onDecide, onStop, onClose, onExpand, ex
   const [size, setSize] = useState(0);
   const [source, setSource] = useState(false);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  /** The state the run was in when a call went out; the buttons stay off until the run moves on or the call fails. */
+  const [sentIn, setSentIn] = useState<string | null>(null);
+  const busy = sentIn === run.state;
   const sending = useRef(false);
   const view = planView(run, unticked);
   const waiting = run.state === "waiting";
   const ticks = waiting && run.steps.length > 0;
   const send = async (action: () => void | Promise<void>) => {
     if (sending.current) return;
-    sending.current = true; setBusy(true); setError("");
-    try { await action(); } catch (failure) { setError(String(failure)); } finally { sending.current = false; setBusy(false); }
+    sending.current = true; setSentIn(run.state); setError("");
+    try { await action(); } catch (failure) { setError(String(failure)); setSentIn(null); } finally { sending.current = false; }
   };
   const toggle = (id: string) => setUnticked((old) => { const next = new Set(old); if (!next.delete(id)) next.add(id); return next; });
   const activeAt = run.steps.findIndex((step) => step.state === "active");
@@ -87,11 +89,17 @@ export function PlanPanel({ run, others, onDecide, onStop, onClose, onExpand, ex
   </div>;
 }
 
-interface TabProps extends Omit<PanelProps, "run" | "others" | "onPick"> { runs: PlanRun[] }
+interface TabProps extends Omit<PanelProps, "run" | "others" | "onPick"> { runs: PlanRun[]; want?: { request: string; n: number } | null }
 
 /** The Plan tab for the focused thread. Leads with the run that needs you; other runs stay one click away. */
-export function PlanTab({ runs, ...rest }: TabProps) {
-  const [picked, setPicked] = useState<string | null>(null);
+export function PlanTab({ runs, want, ...rest }: TabProps) {
+  const [picked, setPicked] = useState<string | null>(want?.request ?? null);
+  const seenWant = useRef(want?.n);
+  const seenWaiting = useRef(new Set(runs.filter((item) => item.state === "waiting").map((item) => item.request)));
+  // A chip click names its run; a newer plan that needs a decision takes the tab back from an older pick.
+  if (want && seenWant.current !== want.n) { seenWant.current = want.n; if (picked !== want.request) setPicked(want.request); }
+  const fresh = runs.filter((item) => item.state === "waiting" && !seenWaiting.current.has(item.request));
+  if (fresh.length) { fresh.forEach((item) => seenWaiting.current.add(item.request)); if (picked !== null) setPicked(null); }
   const run = runs.find((item) => item.request === picked) ?? frontRun(runs);
   if (!run) return <p className="muted right-panel-empty">No plan in this thread yet.</p>;
   return <PlanPanel key={`${run.request}:${run.version}`} run={run} others={runs.filter((item) => item !== run)} onPick={setPicked} {...rest} />;

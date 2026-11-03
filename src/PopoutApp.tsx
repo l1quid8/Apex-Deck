@@ -563,6 +563,9 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
       />
     );
   }
+  if (tabKind === "plan") {
+    return <div className="right-panel-empty"><p className="muted">This thread's plan is in the main Deck window, where you can approve or stop it.</p><button type="button" className="popout-return" onClick={() => window.close()}>Return to Deck</button></div>;
+  }
   if (tabKind === "phone") {
     return <RightPhone phone={backend.phone} visible />;
   }

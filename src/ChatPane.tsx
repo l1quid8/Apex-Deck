@@ -153,7 +153,7 @@ export interface PlanFeed {
 interface Props {
   /** Feeds the Plan tab. Left out where there is no tab, which keeps the approval card. */
   onPlanRuns?: (id: string, feed: PlanFeed) => void;
-  onOpenPlan?: () => void;
+  onOpenPlan?: (paneId: string, request: string) => void;
   talkOnly?: boolean;
   chatDraft?: string;
   onChatDraft?: (text: string) => void;
@@ -3924,7 +3924,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
             </div>
           );
         })}
-        {transcriptMounted.current && planChipRun && <PlanChip key={planChipRun.request} run={planChipRun} onOpen={() => onOpenPlan?.()} />}
+        {transcriptMounted.current && planChipRun && <PlanChip key={planChipRun.request} run={planChipRun} onOpen={() => onOpenPlan?.(pane.id, planChipRun.request)} />}
         {queued.map((item) => {
           const who = item.to.map((id) => names.get(id) ?? id).join(", ");
           const steerable = !item.failed && item.kind === "message" && item.to.some((id) => working[id]);

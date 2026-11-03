@@ -64,3 +64,12 @@ test('newestRun picks the last run', () => {
   const a = run('done'); const b = run('waiting');
   assert.equal(newestRun([a, b]), b);
 });
+
+test('plan with no steps can start and never says 0 of 0', () => {
+  const v = planView(run('waiting', []), new Set());
+  assert.equal(v.canStart, true);
+  assert.equal(v.note, null);
+  assert.doesNotMatch(v.chipLine, /0 of 0/);
+  const stopped = planView(run('stopped', []), new Set());
+  assert.doesNotMatch(stopped.note ?? '', /0 of 0/);
+});

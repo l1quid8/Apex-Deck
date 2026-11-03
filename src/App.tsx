@@ -445,14 +445,20 @@ export function App() {
   /** Plan runs by chat pane; the Plan tab shows the focused pane's. */
   const [planFeeds, setPlanFeeds] = useState<Record<string, PlanFeed>>({});
   const onPlanRuns = useCallback((id: string, feed: PlanFeed) => setPlanFeeds((all) => ({ ...all, [id]: feed })), []);
-  const openPlan = useCallback(() => setPanel((p) => openTab(p, "plan", Date.now())), []);
+  /** Which run a chip asked for, so the tab opens on it in the chip's own pane. */
+  const [planWant, setPlanWant] = useState<{ pane: string; request: string; n: number } | null>(null);
+  const openPlan = useCallback((paneId: string, request: string) => {
+    setFocusedPane(paneId);
+    setPlanWant((old) => ({ pane: paneId, request, n: (old?.n ?? 0) + 1 }));
+    setPanel((p) => openTab(p, "plan", Date.now()));
+  }, []);
   /** Runs that have already opened the tab, so closing it leaves just the chip. */
   const openedPlans = useRef(new Set<string>());
   useEffect(() => {
     const fresh = (focusedPane ? planFeeds[focusedPane]?.runs ?? [] : []).filter((run) => run.state === "waiting" && !openedPlans.current.has(`${run.request}:${run.version}`));
     if (!fresh.length) return;
     fresh.forEach((run) => openedPlans.current.add(`${run.request}:${run.version}`));
-    openPlan();
+    if (focusedPane) openPlan(focusedPane, fresh[fresh.length - 1].request);
   }, [focusedPane, planFeeds, openPlan]);
   useEffect(() => savePanel(withPoppedTabs(panel, poppedTabs)), [panel, poppedTabs]);
   const detailsOpen = panel.open;
@@ -3130,7 +3136,7 @@ export function App() {
                   thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} onStopAll={() => { void browserRoute.call("computer_stop").catch(() => {}); }} />;
               },
               plan: () => { const feed = focusedPane ? planFeeds[focusedPane] : undefined; return feed?.runs.length
-                ? <PlanTab key={focusedPane} runs={feed.runs} onDecide={feed.decide} onStop={feed.stop} onClose={closeDetails} expanded={sidePanelFull} onExpand={() => setSidePanelFull(!sidePanelFull)} />
+                ? <PlanTab key={focusedPane} runs={feed.runs} want={planWant?.pane === focusedPane ? planWant : null} onDecide={feed.decide} onStop={feed.stop} onClose={closeDetails} expanded={sidePanelFull} onExpand={() => setSidePanelFull(!sidePanelFull)} />
                 : <p className="muted right-panel-empty">No plan in this thread yet.</p>; },
               phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
               terminal: (_tab, visible) => {
