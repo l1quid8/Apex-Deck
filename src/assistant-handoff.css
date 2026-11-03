@@ -1,0 +1,290 @@
+/* Task 7: Slim handoff pill, hover-only Stop, view-only popover — no purple/indigo accent, quiet UI */
+.assistant-handoff-line {
+  display: inline;
+  line-height: 1.5;
+}
+.assistant-handoff-sentence {
+  color: var(--text);
+}
+.assistant-handoff-pill-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+  vertical-align: middle;
+}
+.assistant-handoff-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--aa-line, var(--line));
+  background: color-mix(in srgb, var(--panel-2, var(--panel)) 92%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.assistant-handoff-pill:hover {
+  border-color: color-mix(in srgb, var(--text) 18%, var(--aa-line, var(--line)));
+}
+.assistant-handoff-stop.quiet {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.assistant-handoff-pill-wrap:hover .assistant-handoff-stop.quiet,
+.assistant-handoff-pill-wrap:focus-within .assistant-handoff-stop.quiet,
+.assistant-handoff-stop.quiet:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.assistant-handoff-stop.quiet:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.assistant-handoff-popover {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 280px;
+  max-width: min(360px, 90vw);
+  padding: 10px;
+  border: 1px solid var(--aa-line, var(--line));
+  border-radius: 12px;
+  background: var(--panel, #1a1a1a);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  display: grid;
+  gap: 8px;
+}
+.assistant-handoff-popover-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.assistant-handoff-popover-head strong {
+  font-weight: 600;
+}
+.assistant-handoff-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  font: inherit;
+}
+.assistant-handoff-tape {
+  display: grid;
+  grid-template-columns: repeat(20, minmax(0, 1fr));
+  gap: 2px;
+}
+.assistant-handoff-cell {
+  height: 14px;
+  border: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  cursor: pointer;
+  padding: 0;
+}
+.assistant-handoff-cell.done {
+  background: #2ea868;
+}
+.assistant-handoff-cell.active {
+  background: color-mix(in srgb, var(--text) 55%, transparent);
+  outline: 1px solid var(--text);
+}
+.assistant-handoff-cell.stall {
+  background: #d6a243;
+}
+.assistant-handoff-cell.is-selected {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+.assistant-handoff-step-detail {
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+}
+.assistant-handoff-step-title {
+  font-weight: 600;
+  color: var(--text);
+}
+.assistant-handoff-step-text {
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.assistant-handoff-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.assistant-handoff-actions button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--aa-line, var(--line));
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.assistant-handoff-actions button.primary {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--bg, #0b0b0d);
+  font-weight: 600;
+}
+.assistant-handoff-footer {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* Clarification UI */
+.assistant-handoff-clarify {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--aa-line, var(--line));
+  border-radius: 10px;
+  background: var(--panel);
+  max-width: 420px;
+}
+.assistant-handoff-clarify-head {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.assistant-handoff-agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 180px;
+  overflow: auto;
+}
+.assistant-handoff-agent-list li {
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+.assistant-handoff-agent-list li.is-highlighted {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.assistant-handoff-agent-list label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  cursor: pointer;
+}
+.assistant-handoff-lead {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+.assistant-handoff-order {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+.assistant-handoff-preview {
+  font-size: 11px;
+  color: var(--muted);
+}
+.assistant-handoff-clarify-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* Paused question */
+.assistant-handoff-paused {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, #d6a243 50%, var(--aa-line, var(--line)));
+  border-radius: 10px;
+  background: color-mix(in srgb, #d6a243 8%, var(--panel));
+  max-width: 460px;
+}
+.assistant-handoff-paused-head {
+  font-weight: 600;
+  font-size: 12px;
+}
+.assistant-handoff-paused-actions {
+  display: flex;
+  gap: 6px;
+}
+.assistant-handoff-composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+.assistant-handoff-composer input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--aa-line, var(--line));
+  border-radius: 6px;
+  background: var(--bg, transparent);
+  color: var(--text);
+  font: inherit;
+}
+.assistant-handoff-hint {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* Composer auxiliary fixed 24px empty when idle */
+.assistant-handoff-composer-line {
+  min-height: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.assistant-handoff-composer-line:empty {
+  visibility: hidden;
+}
+.assistant-handoff-mode {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.assistant-handoff-mode.is-selected {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+/* Mobile: ensure Stop visible on tap/focus */
+@media (max-width: 600px) {
+  .assistant-handoff-pill-wrap .assistant-handoff-stop.quiet {
+    opacity: 0.7;
+  }
+}

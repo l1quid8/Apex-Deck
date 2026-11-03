@@ -4,6 +4,8 @@ import { PersonalAlwaysPermission } from './PersonalApprovalActions';
 import { PersonalTaskTiming } from './PersonalTaskTiming';
 import { assistantConversationMessages, type AssistantConversationMessage } from './assistantConversation';
 import { taskMessageDeleted } from './assistantTaskVisibility';
+import { HandoffPillView } from './AssistantHandoff';
+import './assistant-handoff.css';
 import type { AssistantTask } from './assistantTaskModel';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
@@ -735,6 +737,12 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={projectBubble}>{projectBody}</div>{projectActions}</article>
           : <article className={projectBubble} key={`${workspaceId}:${message.id}`}>{projectBody}</article>;
       })}
+      {/* Round 1 handoff pills: delegated tasks owned by this assistant */}
+      {delegatedTasks?.length ? delegatedTasks.filter(t => !t.resultData?.archivedAtMs).slice(0, 6).map((dt) => (
+        <article className="assistant-chat-message assistant apex-agent-personal apex-agent-handoff" key={`handoff:${dt.id}`}>
+          <HandoffPillView task={dt} threadLabel={workspaces.find(w => w.id === dt.workspaceId)?.name ?? dt.workspaceId} onOpen={(taskId) => onOpenProjectTask?.(projectTaskKey(dt.owner.hostId, dt.owner.workspaceId, taskId))} onStop={() => { /* host control wired in Task 4a */ }} onRetry={() => { /* host retry */ }} />
+        </article>
+      )) : null}
       {embedded && visibleSchedules.map((schedule) => {
         const decision = schedule.decision!;
         const off = busy || personal!.offline;
