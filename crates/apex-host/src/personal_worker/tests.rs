@@ -3202,6 +3202,43 @@ async fn first_authorized_worker_selection_clears_draft_and_replays_without_dupl
 }
 
 #[tokio::test]
+async fn selection_left_unfinished_by_old_launch_panic_settles_on_admitted_task() {
+    use crate::personal_handoff::{HandoffDraftProposal,HandoffSelectInput,HandoffSelectReceipt,HandoffSelection,HandoffSlot};
+    use crate::assistant_tasks::{TaskDestination,TaskMode};
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    let source=f.host.personal_send(&f.id,"stale-selection","Delegate a read-only inspection of README. Do not edit files.").unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==source.event_id).unwrap().state=EventState::Processing;a.extra.remove("lastHandoffDestination");Ok(())}).unwrap();
+    f.host.save_personal_handoff_draft(&f.id,&source.event_id,&HandoffDraftProposal{brief:"Read README".into(),project:Some(project),destination:Some(TaskDestination{thread_id:Some(THREAD.into()),workers:vec![],new_thread:false,new_thread_title:None}),mode:TaskMode::ReadOnly},false).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
+    let draft=f.get().pending_handoffs[0].clone();
+    let input=HandoffSelectInput{assistant_id:f.id.clone(),request_id:"stale-workers".into(),draft_id:draft.id.clone(),expected_draft_revision:draft.revision,slot:HandoffSlot::Workers,selection:HandoffSelection::Workers{worker_ids:vec!["jigga".into()]},owner:None};
+    let admitted=f.host.personal_handoff_select_impl(input.clone()).unwrap().task_id.unwrap();
+    let announced=|f:&Fixture|f.get().messages.iter().filter(|m|m.text.starts_with("I'll hand this to")).count();
+    assert_eq!(announced(&f),1);
+    // What bd945081 left on disk: the job was admitted and announced, but the panic
+    // dropped the final write (draft removal, remembered destination, finished receipt).
+    let mut stale=crate::personal_handoff::apply_selection(&f.get(),&draft,&input).unwrap();
+    stale.revision+=1;stale.selection_event_ids.push(input.request_id.clone());
+    let leave_unfinished=|f:&Fixture|f.host.change_assistant(&f.id,|a|{
+        a.pending_handoffs.retain(|d|d.id!=stale.id);a.pending_handoffs.push(stale.clone());a.extra.remove("lastHandoffDestination");
+        let unfinished=HandoffSelectReceipt{draft:Some(stale.clone()),task_id:None,task_revision:None,duplicate:false};
+        a.extra.get_mut("handoffSelectReceipts").unwrap().as_object_mut().unwrap().insert(format!("handoff-select:{}",input.request_id),serde_json::json!([input,unfinished]));Ok(())
+    }).unwrap();
+    // Replaying the unfinished request settles on the admitted job.
+    leave_unfinished(&f);
+    let replay=f.host.personal_handoff_select_impl(input.clone()).unwrap();
+    assert_eq!(replay.task_id.as_deref(),Some(admitted.as_str())); assert!(replay.draft.is_none()); assert!(replay.duplicate);
+    assert!(f.get().pending_handoffs.is_empty()); assert!(f.get().extra.get("lastHandoffDestination").is_some());
+    // The picker still shows the draft and sends a fresh request id; that settles on the same job too.
+    leave_unfinished(&f);
+    let fresh=HandoffSelectInput{request_id:"stale-workers-again".into(),expected_draft_revision:stale.revision,..input.clone()};
+    let again=f.host.personal_handoff_select_impl(fresh).unwrap();
+    assert_eq!(again.task_id.as_deref(),Some(admitted.as_str())); assert!(again.draft.is_none());
+    assert!(f.get().pending_handoffs.is_empty()); assert!(f.get().extra.get("lastHandoffDestination").is_some());
+    assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1); assert_eq!(announced(&f),1);
+}
+
+#[tokio::test]
 async fn team_report_preserves_host_answer_instead_of_model_denial() {
     let f=Fixture::new(); let task=delegated_report_publish_fixture(&f);
     let (task,run)=f.host.assistant_tasks.begin_attempt(&task.id,task.revision,&task.owner).unwrap();
