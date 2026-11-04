@@ -96,7 +96,7 @@ function Harness() {
 
   return (
     <main>
-      <div className="assistant-handoff-stage">{pill}</div>
+      <div className="assistant-handoff-stage" style={{ position: 'relative', height: 90, overflow: 'hidden', marginTop: 20 }}>{pill}</div>
       <div id="composer-line" className="assistant-handoff-composer-line">{line}</div>
       <AgentClarification
         allAgents={agents}
@@ -118,6 +118,17 @@ function Harness() {
     </main>
   );
 }
+
+window.runNarrowHandoffCheck = async () => {
+  window.setScenario('running'); await settle();
+  const pill=document.querySelector('.assistant-handoff-pill'); pill.click(); await settle();
+  const pop=document.querySelector('.assistant-handoff-popover'); const r=pop?.getBoundingClientRect();
+  const button=[...(pop?.querySelectorAll('button') ?? [])].find(b=>b.textContent==='Open task'); const b=button?.getBoundingClientRect();
+  const visible=!!r && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;
+  const hit=!!b && document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===button;
+  button?.click(); await settle();
+  return {visible,hit,opened:window.calls.some(c=>c.type==='open' && c.args[0]==='at-409'),closed:!document.querySelector('.assistant-handoff-popover')};
+};
 
 window.calls = [];
 window.__handoffReady = false;
@@ -163,6 +174,16 @@ window.runHandoffChecks = async () => {
   window.calls = [];
   pill().click();
   await settle();
+  const pop = q('.assistant-handoff-popover');
+  const rect = pop?.getBoundingClientRect();
+  const openButton = [...(pop?.querySelectorAll('button') ?? [])].find(b => b.textContent === 'Open task');
+  const buttonRect = openButton?.getBoundingClientRect();
+  check('details fit viewport', rect && rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth, JSON.stringify(rect));
+  check('Open task is visible and hit-testable through clipping ancestors', buttonRect && document.elementFromPoint(buttonRect.x + buttonRect.width / 2, buttonRect.y + buttonRect.height / 2) === openButton);
+  openButton?.click();
+  check('Open task targets current task', calls().includes('open:["at-409"]'));
+  await settle(); pill().click(); await settle();
+  window.calls = [];
   check('popover opens', q('.assistant-handoff-popover')?.getAttribute('role') === 'dialog');
   check('popover title', q('.assistant-handoff-popover-head strong')?.textContent === '20 of 40 done');
   check('no handover', !/Hand the rest|Branch|Causal/.test(q('.assistant-handoff-popover').textContent));

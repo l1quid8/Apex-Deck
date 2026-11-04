@@ -5,7 +5,8 @@
  * - Ordered agent/team with lead badge, preview before Start
  * - No ghost horizon colored border, fixed 24px composer auxiliary space handled by parent
  */
-import { forwardRef, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { forwardRef, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import type { AssistantTask } from './assistantTaskModel';
 import type { PersonalLane, PendingHandoff, HandoffOptions, HandoffSelection, HandoffQuestion, PendingControlConfirmation } from './personalAssistant';
 import { deriveHandoffPill, deriveHandoffPopover, classifyPlainHandoffReply, preserveTypedAgentOrder, type TaskConversationProgress, type TaskConversationEvent } from './assistantHandoffModel';
@@ -80,23 +81,25 @@ export function HandoffPillView({
           </button>
         )}
       </span>
-      {open && (
+      {open && createPortal(
         <HandoffPopover
           ref={popRef}
+          anchorRef={anchorRef}
           task={task}
           progress={progress}
           events={events}
           offline={offline}
           onClose={closeDetails}
           onRetry={onRetry ? () => { onRetry(pill.taskId, pill.revision); closeDetails(); } : undefined}
-          onOpenTask={() => onOpen?.(pill.taskId)}
-        />
+          onOpenTask={() => { onOpen?.(pill.taskId); closeDetails(); }}
+        />, document.body
       )}
     </span>
   );
 }
 
 type PopoverProps = {
+  anchorRef: RefObject<HTMLSpanElement | null>;
   task: AssistantTask;
   progress?: TaskConversationProgress;
   events: TaskConversationEvent[];
@@ -107,12 +110,43 @@ type PopoverProps = {
 };
 
 const HandoffPopoverImpl = forwardRef<HTMLDivElement, PopoverProps>(function HandoffPopoverImpl(
-  { task, progress, events, offline = false, onClose, onRetry, onOpenTask },
+  { anchorRef, task, progress, events, offline = false, onClose, onRetry, onOpenTask },
   ref
 ) {
   const model = deriveHandoffPopover(task, progress, events);
   const pill = deriveHandoffPill(task, progress, undefined, offline);
   const [selectedIndex, setSelectedIndex] = useState(model.currentIndex);
+  const layoutRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState({ left: 8, top: 8 });
+  useLayoutEffect(() => {
+    layoutRef.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+  }, []);
+  useLayoutEffect(() => {
+    const place = () => {
+      const anchor = anchorRef.current?.getBoundingClientRect();
+      const pop = layoutRef.current?.getBoundingClientRect();
+      if (!anchor || !pop) return;
+      const viewport = window.visualViewport;
+      const x = viewport?.offsetLeft ?? 0, y = viewport?.offsetTop ?? 0;
+      const width = viewport?.width ?? window.innerWidth, height = viewport?.height ?? window.innerHeight;
+      const top = anchor.bottom + 6 + pop.height <= y + height - 8 ? anchor.bottom + 6 : anchor.top - pop.height - 6;
+      setPosition({ left: Math.max(x + 8, Math.min(anchor.left, x + width - pop.width - 8)), top: Math.max(y + 8, Math.min(top, y + height - pop.height - 8)) });
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    if (layoutRef.current) observer.observe(layoutRef.current);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    window.visualViewport?.addEventListener('resize', place);
+    window.visualViewport?.addEventListener('scroll', place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+      window.visualViewport?.removeEventListener('resize', place);
+      window.visualViewport?.removeEventListener('scroll', place);
+    };
+  }, [anchorRef]);
 
   // Keep selected in bounds when task updates
   useEffect(() => { setSelectedIndex(model.currentIndex); }, [model.currentIndex, model.taskId]);
@@ -120,7 +154,7 @@ const HandoffPopoverImpl = forwardRef<HTMLDivElement, PopoverProps>(function Han
   const selectedStep = model.steps.find(s => s.index === selectedIndex);
 
   return (
-    <div className="assistant-handoff-popover" role="dialog" aria-label={`Progress for ${task.brief.slice(0, 60)}`} ref={ref}>
+    <div className="assistant-handoff-popover" style={position} role="dialog" aria-label={`Progress for ${task.brief.slice(0, 60)}`} ref={node => { layoutRef.current = node; if (typeof ref === 'function') ref(node); else if (ref) ref.current = node; }}>
       <div className="assistant-handoff-popover-head">
         <strong>{model.steps.length ? `${offline ? 'Last reported: ' : ''}${model.steps.filter(s => s.state === 'done').length} of ${model.steps.length} done` : pill.label}</strong>
         <button type="button" className="assistant-handoff-close" aria-label="Close details" onClick={onClose}>✕</button>

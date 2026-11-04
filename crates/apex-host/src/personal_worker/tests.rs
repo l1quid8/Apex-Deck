@@ -3180,3 +3180,38 @@ async fn model_read_only_handoff_freezes_effective_mode_and_recovers_once() {
     f.restart();f.host.reconcile_personal_handoff_announcements().unwrap();
     assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
 }
+
+#[tokio::test]
+async fn first_authorized_worker_selection_clears_draft_and_replays_without_duplicate() {
+    use crate::personal_handoff::{HandoffDraftProposal,HandoffSelectInput,HandoffSelection,HandoffSlot};
+    use crate::assistant_tasks::{TaskDestination,TaskMode};
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    let source=f.host.personal_send(&f.id,"first-selection","Delegate a read-only inspection of README. Do not edit files.").unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==source.event_id).unwrap().state=EventState::Processing;a.extra.remove("lastHandoffDestination");Ok(())}).unwrap();
+    f.host.save_personal_handoff_draft(&f.id,&source.event_id,&HandoffDraftProposal{brief:"Read README".into(),project:Some(project),destination:Some(TaskDestination{thread_id:Some(THREAD.into()),workers:vec![],new_thread:false,new_thread_title:None}),mode:TaskMode::ReadOnly},false).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
+    let draft=f.get().pending_handoffs[0].clone();
+    let input=HandoffSelectInput{assistant_id:f.id.clone(),request_id:"first-workers".into(),draft_id:draft.id,expected_draft_revision:draft.revision,slot:HandoffSlot::Workers,selection:HandoffSelection::Workers{worker_ids:vec!["jigga".into()]},owner:None};
+    let receipt=f.host.personal_handoff_select_impl(input.clone()).unwrap();
+    assert!(receipt.task_id.is_some()); assert!(receipt.draft.is_none());
+    assert!(f.get().pending_handoffs.is_empty());
+    assert!(f.get().extra.get("lastHandoffDestination").is_some());
+    let duplicate=f.host.personal_handoff_select_impl(input).unwrap();
+    assert_eq!(duplicate.task_id,receipt.task_id); assert!(duplicate.duplicate);
+    assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+}
+
+#[tokio::test]
+async fn team_report_preserves_host_answer_instead_of_model_denial() {
+    let f=Fixture::new(); let task=delegated_report_publish_fixture(&f);
+    let (task,run)=f.host.assistant_tasks.begin_attempt(&task.id,task.revision,&task.owner).unwrap();
+    // A real saved question-resolution projection from this exact attempt.
+    assert!(f.host.assistant_tasks.observe_conversation_event(&task.id,&run,&apex_core::RoomEvent::QuestionResolved{id:apex_core::ParticipantId::new("jigga"),request:"ask-2".into(),end:apex_core::QuestionEnd::Answered,answers:vec![vec!["Keep going".into()]]},99,now()).unwrap());
+    f.host.assistant_tasks.finish_attempt(&task.id,&run,crate::assistant_tasks::TaskOutcome{status:crate::assistant_tasks::TaskStatus::ReadyForReview,result:Some("Lead continued successfully".into()),result_data:None,usage:None}).unwrap();
+    f.host.reconcile_delegation_results().unwrap();
+    let fake=Fake::new(true);fake.say(r#"{"reply":"Jigga did not ask or wait. The run is invalid."}"#);
+    f.drain(&fake.tools()).await;
+    let a=f.get(); let report=a.messages.iter().find(|m|m.kind=="result").unwrap();
+    assert!(report.text.contains("Keep going"),"{}",report.text);
+    assert!(!report.text.contains("run is invalid"),"{}",report.text);
+}

@@ -15,9 +15,14 @@ pub(crate) fn factual(task: &AssistantTask, attempt: &TaskAttempt) -> String {
         _ if attempt.result.as_deref()==Some(crate::assistant_git::SAVE_TOO_LONG) => format!("Saving {worker}'s result took too long, so I stopped that attempt. The saved work is still there to review."),
         _ => format!("{worker} couldn't finish the job."),
     };
+    let controls=task.conversation_events.iter().filter(|e|e.run_id==attempt.run_id && e.kind=="question_resolved").map(|e|format!("Host record · {}: {}",e.worker_id,e.text)).collect::<Vec<_>>().join("\n");
+    let state=if controls.is_empty() {state} else {format!("{state}\n{controls}")};
     let output=attempt.result.as_deref().unwrap_or("");
+    // Team collection already bounds each of at most ten worker reports.
+    // Preserve their labels/output instead of letting a long lead hide peers.
+    let limit=if task.workers.len()>1 {24_000} else {2000};
     if output.is_empty() || output==crate::assistant_watchdog::RESTARTED_RESULT || output==crate::assistant_git::SAVE_TOO_LONG { state }
-    else {format!("{state} {}",output.chars().take(2000).collect::<String>())}
+    else {format!("{state}\n\nWorker report (claims are not host observations):\n{}",output.chars().take(limit).collect::<String>().lines().map(|line|format!("> {line}")).collect::<Vec<_>>().join("\n"))}
 }
 
 pub(crate) fn post(assistant:&mut PersonalAssistant,text:String,task_id:String,event_id:String,at:u64) {
@@ -46,7 +51,10 @@ impl Host {
         let fallback=factual(&task,attempt);
         let mut text=fallback.clone();
         let mut charge=None;
-        if let Some(profile)=snapshot.profile.clone().filter(|p|endpoint_refusal(&snapshot,p).is_none()) {
+        // A peer or summarizer cannot adjudicate a real host answer. Preserve
+        // factual receipts and attributed output for teams and question runs.
+        let preserve_receipts=task.workers.len()>1 || task.conversation_events.iter().any(|e|e.run_id==run && e.kind=="question_resolved");
+        if let Some(profile)=snapshot.profile.clone().filter(|p|!preserve_receipts && endpoint_refusal(&snapshot,p).is_none()) {
             // Spend rules still apply; a declined/unavailable summary uses the
             // same bounded factual receipt without opening another action.
             if spend_hold(&snapshot,&profile,event,self.effective_personal_spent_today(&snapshot,now())).is_none() {
@@ -99,6 +107,13 @@ mod tests {
         assert!(seen.report,"aging a worker summary must never turn it into trusted assistant instructions");
         assert!(prompt.contains("quoted evidence"));
         assert_eq!(a.messages[0].task_id.as_deref(),Some("t"));
+    }
+    #[test] fn a_long_lead_report_does_not_hide_the_peer_report() {
+        let mut task=task();task.workers=vec!["lead".into(),"peer".into()];
+        let mut attempt=attempt();attempt.result=Some(format!("lead: {}\n\npeer: PEER_FINDING", "x".repeat(2000)));
+        let text=factual(&task,&attempt);
+        assert!(text.contains("peer: PEER_FINDING"));
+        assert!(text.contains("ready for your review"));
     }
     #[test] fn ready_result_is_not_done_or_a_prompt_echo() {
         let text=factual(&task(),&attempt());

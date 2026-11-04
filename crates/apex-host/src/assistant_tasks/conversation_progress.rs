@@ -31,6 +31,21 @@ fn bounded(text: &str) -> String { text.chars().take(240).collect() }
 fn project_event(task: &mut AssistantTask, run: &str, event: &RoomEvent, seq: u64, at: u64) -> bool {
     if task.attempts.last().is_none_or(|a| a.run_id != run || a.finished_at_ms.is_some())
         || !matches!(task.status,TaskStatus::Running|TaskStatus::NeedsYou) { return false; }
+    // Answers are host observations for every selected worker. They must not
+    // overwrite the lead's checklist or be inferred from a worker's report.
+    if let RoomEvent::QuestionResolved { id, request, end, answers } = event {
+        if !task.workers.iter().any(|worker| worker == id.as_str()) { return false; }
+        let event_id = format!("{run}:{seq}:question_resolved");
+        if task.conversation_events.iter().any(|e| e.id == event_id) { return false; }
+        let text = match end {
+            apex_core::QuestionEnd::Answered => format!("Question {} answered: {}", bounded(request), bounded(&answers.iter().flatten().cloned().collect::<Vec<_>>().join(", "))),
+            apex_core::QuestionEnd::Skipped => format!("Question {} skipped", bounded(request)),
+            apex_core::QuestionEnd::Dropped => format!("Question {} ended without an answer", bounded(request)),
+        };
+        task.conversation_events.push(TaskConversationEvent { id:event_id, task_id:task.id.clone(), run_id:run.into(), worker_id:id.to_string(), at_ms:at, kind:"question_resolved".into(), text });
+        if task.conversation_events.len() > 128 { task.conversation_events.remove(0); }
+        return true;
+    }
     let (id, kind, text) = match event {
         RoomEvent::TurnStarted{id} => (id,"milestone","Started working".to_owned()),
         RoomEvent::Activity{id,text} => (id,"activity",bounded(text)),
@@ -103,6 +118,21 @@ mod tests {
     }
     fn todo(worker: &str, status: TodoStatus) -> RoomEvent {
         RoomEvent::Todo {id:ParticipantId::new(worker),items:vec![TodoItem{text:"Check result".into(),status}]}
+    }
+    #[test] fn host_question_answers_are_bound_to_current_attempt_and_do_not_replace_lead_progress() {
+        let mut t=task();
+        project_event(&mut t,"current",&todo("lead",TodoStatus::Completed),1,10);
+        let before=t.conversation_progress.clone();
+        let answer=RoomEvent::QuestionResolved{id:ParticipantId::new("peer"),request:"ask-2".into(),end:apex_core::QuestionEnd::Answered,answers:vec![vec!["Keep going".into()]]};
+        assert!(!project_event(&mut t,"old",&answer,2,11));
+        assert!(project_event(&mut t,"current",&answer,2,11));
+        assert!(!project_event(&mut t,"current",&answer,2,11));
+        assert_eq!(t.conversation_progress,before);
+        assert_eq!(t.conversation_events.len(),1);
+        assert_eq!(t.conversation_events[0].text,"Question ask-2 answered: Keep going");
+        let dropped=RoomEvent::QuestionResolved{id:ParticipantId::new("peer"),request:"ask-3".into(),end:apex_core::QuestionEnd::Dropped,answers:vec![]};
+        assert!(project_event(&mut t,"current",&dropped,3,12));
+        assert_eq!(t.conversation_events[1].text,"Question ask-3 ended without an answer");
     }
     #[test] fn old_attempt_todo_cannot_change_current_progress() {
         let mut t=task();

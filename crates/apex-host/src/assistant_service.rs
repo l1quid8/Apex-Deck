@@ -2677,9 +2677,22 @@ fn spawn_task_attempt(
         }
         result_data["leaseHeld"] = json!(!is_isolated && !read_only);
         result_data["budgetPaused"] = json!(status == TaskStatus::NeedsYou && run.budget_pause.load(Ordering::SeqCst));
-        let worker_result = handle.checkpoint.lock().unwrap().snapshot.transcript.iter().rev()
-            .find(|message| matches!(message.speaker, apex_core::Speaker::Bot(_)))
-            .map(|message| message.text.clone());
+        let worker_result = {
+            let checkpoint = handle.checkpoint.lock().unwrap();
+            let transcript = &checkpoint.snapshot.transcript;
+            if let Some(task) = task_before.as_ref().filter(|task| task.workers.len() > 1) {
+                let started = task.attempts.last().map(|a| a.started_at_ms).unwrap_or(u64::MAX);
+                let reports = task.workers.iter().filter_map(|worker| {
+                    transcript.iter().rev().find(|message| {
+                        matches!(&message.speaker, apex_core::Speaker::Bot(id) if id.as_str() == worker)
+                            && message.at.is_some_and(|at| at >= started)
+                    }).map(|message| format!("{worker}: {}", message.text.chars().take(2000).collect::<String>()))
+                }).collect::<Vec<_>>();
+                (!reports.is_empty()).then(|| reports.join("\n\n"))
+            } else {
+                transcript.iter().rev().find(|message| matches!(message.speaker, apex_core::Speaker::Bot(_))).map(|message| message.text.clone())
+            }
+        };
         let result = if watchdog_stop && !run.manual_pause.load(Ordering::SeqCst) {
             Some(crate::assistant_watchdog::RESTARTED_RESULT.into())
         } else if status == TaskStatus::Interrupted {
@@ -3502,6 +3515,23 @@ mod tests {
         assert!(state["snapshot"]["transcript"].as_array().unwrap().iter().any(|message| message["text"].as_str().is_some_and(|text| text.contains("Additional human clarification") && text.contains("leave archived chats untouched"))));
         assert!(ready.result_data.unwrap()["taskHistory"].as_array().unwrap().iter().any(|entry| entry["kind"] == "clarification"));
     }
+    #[test]
+    fn team_result_attributes_each_workers_output_in_selected_order() {
+        let f=fixture();
+        f.host.room_create("team".into(),vec![profile("lead",Backend::Scripted{lines:vec!["LEAD_CONTINUED".into()]},Access::Read),profile("peer",Backend::Scripted{lines:vec!["PEER_DISPUTES".into()]},Access::Read)],RoomOptions::default(),Some(f.owner.cwd.clone())).unwrap();
+        let mut request=input(&f,"team-attribution");request.mode=TaskMode::ReadOnly;
+        request.text="Please read README with the selected team".into();
+        request.thread_labels=vec![ThreadLabel{id:"team".into(),label:"Team".into()}];
+        request.destination=Some(TaskDestination{thread_id:Some("team".into()),workers:vec!["lead".into(),"peer".into()],new_thread:false,new_thread_title:None});
+        let response=f.runtime.block_on(f.host.assistant_message_with(request,handoff)).unwrap();
+        let initial:AssistantTask=serde_json::from_value(response["task"].clone()).unwrap();
+        let task=wait_for(&f,&initial.id);assert_eq!(task.status,TaskStatus::ReadyForReview);
+        let result=task.result.unwrap();
+        assert!(result.contains("lead: LEAD_CONTINUED"),"{result}");
+        assert!(result.contains("peer: PEER_DISPUTES"),"{result}");
+        assert!(result.find("lead:").unwrap()<result.find("peer:").unwrap());
+    }
+
     fn input(f: &Fixture, request_id: &str) -> AssistantMessageInput {
         AssistantMessageInput {
             workspace_id: f.owner.workspace_id.clone(),

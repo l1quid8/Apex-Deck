@@ -836,7 +836,7 @@ impl crate::Host {
         receipt.task_id=Some(task.id);receipt.task_revision=Some(task.revision);receipt.draft=None;
         self.change_assistant(&input.assistant_id,|a|{
             a.pending_handoffs.retain(|d|d.id!=input.draft_id);
-            if !matches!(task.status,crate::assistant_tasks::TaskStatus::Proposed|crate::assistant_tasks::TaskStatus::NeedsClarification) {a.extra["lastHandoffDestination"]=serde_json::json!({"project":project,"destination":task.destination});}
+            if !matches!(task.status,crate::assistant_tasks::TaskStatus::Proposed|crate::assistant_tasks::TaskStatus::NeedsClarification) {a.extra.insert("lastHandoffDestination".into(),serde_json::json!({"project":project,"destination":task.destination}));}
             let records=a.extra.entry("handoffSelectReceipts").or_insert_with(||serde_json::json!({}));
             records.as_object_mut().ok_or("Invalid selection receipts.")?.insert(receipt_key.clone(),serde_json::json!([input,receipt]));Ok(())
         })?;Ok(receipt)
