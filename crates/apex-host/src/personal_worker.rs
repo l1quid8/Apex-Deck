@@ -1172,14 +1172,17 @@ impl Host {
         // worker was unavailable) must not lock the request: the corrected choice
         // replaces it. Model replies and anything already admitted keep their
         // saved recovery truth.
-        let retryable=match event.saved_reply.as_ref().filter(|saved|!saved.delegations.is_empty()) {
-            Some(saved) if saved.cost.purpose=="handoff" && event.state==EventState::Done => {
-                let mut admitted=false;
-                for id in &saved.delegated_request_ids {admitted|=self.assistant_tasks.handoff_for_request(id).map_err(|e|e.to_string())?.is_some();}
-                !admitted
-            }
-            _=>false,
+        let admitted_any=|saved:&crate::personal::PreparedPersonalReply|->Result<bool,String> {
+            for id in &saved.delegated_request_ids {if self.assistant_tasks.handoff_for_request(id).map_err(|e|e.to_string())?.is_some() {return Ok(true)}}
+            Ok(false)
         };
+        let failed_start=|e:&crate::personal::PersonalEvent|->Result<bool,String> {
+            match e.saved_reply.as_ref().filter(|saved|!saved.delegations.is_empty()) {
+                Some(saved) if saved.cost.purpose=="handoff" && e.state==EventState::Done => Ok(!admitted_any(saved)?),
+                _=>Ok(false),
+            }
+        };
+        let retryable=failed_start(event)?;
         if let Some(saved)=event.saved_reply.as_ref().filter(|saved|!saved.delegations.is_empty() && !retryable) {
             let frozen=saved.delegations.first().unwrap();
             if frozen.project!=project || frozen.brief!=brief || frozen.destination!=destination || frozen.mode!=mode {return Err("This handoff already has a different saved preparation.".into());}
@@ -1191,7 +1194,11 @@ impl Host {
         self.change_assistant(assistant_id,|a| {
             if reply_stopped(a,event_id) {return Err("Reply stopped by you.".into());}
             let e=a.events.iter_mut().find(|e|e.id==event_id).ok_or("Original request unavailable.")?;
-            if let Some(saved)=e.saved_reply.as_ref().filter(|s|!s.delegations.is_empty() && !retryable) {if saved!=&prepared {return Err("This handoff already has a saved preparation.".into());}}
+            // Decide again under the lock: a concurrent start may have replaced or
+            // admitted the preparation since it was inspected.
+            let replace=retryable && failed_start(e)?;
+            if let Some(saved)=e.saved_reply.as_ref().filter(|s|!s.delegations.is_empty() && !replace) {if saved!=&prepared {return Err("This handoff already has a saved preparation.".into());}}
+            else if replace {e.saved_reply=Some(prepared.clone());e.state=EventState::Processing;}
             else {if e.state!=EventState::Done {return Err("The original reply has not settled yet.".into());}e.saved_reply=Some(prepared.clone());e.state=EventState::Processing;}
             Ok(())
         })?;

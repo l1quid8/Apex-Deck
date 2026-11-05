@@ -3313,8 +3313,11 @@ async fn failed_start_can_be_corrected_without_a_duplicate_task_or_announcement(
     assert_eq!(announced(&f),1); assert_eq!(failures(&f),1);
     // Once admitted, the saved preparation is fixed again.
     let event=f.get().events.into_iter().find(|e|e.id==draft.source_event_id).unwrap();
+    let saved=event.saved_reply.clone();
     assert!(f.host.commit_resolved_personal_handoff(&f.id,&event.id,draft.brief.clone(),project,on_thread(&["ghost"]),draft.mode,"x".into()).is_err());
     assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+    assert_eq!(announced(&f),1); assert_eq!(failures(&f),1);
+    assert_eq!(f.get().events.into_iter().find(|e|e.id==draft.source_event_id).unwrap().saved_reply,saved);
 }
 
 async fn human_says(f:&Fixture,request:&str,text:&str)->(bool,String) {
