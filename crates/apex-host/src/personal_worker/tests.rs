@@ -3252,3 +3252,29 @@ async fn team_report_preserves_host_answer_instead_of_model_denial() {
     assert!(report.text.contains("Keep going"),"{}",report.text);
     assert!(!report.text.contains("run is invalid"),"{}",report.text);
 }
+
+// Installed 6d0061c9 (pm-669/pm-670): Alfred said "Handing this to Jigga…"
+// while its proposed task had no arguments, so nothing started.
+#[tokio::test]
+async fn refused_task_never_publishes_a_handoff_claim() {
+    let f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Ask);
+    let text="Delegate a read-only task to Jigga in apex-deck using a new thread named Relaunch QA.";
+    let accepted=f.host.personal_send(&f.id,"refused-claim",text).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==accepted.event_id).unwrap().state=EventState::Processing;Ok(())}).unwrap();
+    let reply=parse_reply(&serde_json::json!({"reply":"Handing this to Jigga in apex-deck in a new thread called \"Relaunch QA\".","task":{"goal":"Hand off to Jigga","argv":[]}}).to_string());
+    f.host.commit_reply(&Fake::new(true).tools(),&f.id,&accepted.event_id,text,reply,saved_reply_fixture("unused").cost,context::Seen {screen:false,report:false},false).unwrap();
+    let a=f.get();
+    let said:Vec<_>=a.messages.iter().filter(|m|m.event_id.as_deref()==Some(accepted.event_id.as_str())).map(|m|(m.role.as_str(),m.kind.as_str(),m.text.as_str())).collect();
+    assert!(!said.iter().any(|(_,_,t)|t.contains("Handing this")),"a refused task must not publish the model's handoff claim: {said:?}");
+    assert!(said.contains(&("assistant","delegation_failed","I couldn't start that, so nothing is running.")),"{said:?}");
+    assert!(said.iter().any(|(r,k,t)|*r=="system"&&*k=="update"&&*t=="No task was made: The command needs between 1 and 32 arguments."),"one reason, one full stop: {said:?}");
+    assert!(a.tasks.is_empty());assert!(f.host.assistant_tasks.list(None).unwrap().is_empty());
+    let _=project;
+}
+
+#[test]
+fn prompt_explains_how_to_hand_off_to_a_named_new_thread() {
+    let catalog=rooms::catalog(&[]).unwrap();
+    assert!(catalog.contains("destination {threadId:null,workers,newThread:true,newThreadTitle}"),"{catalog}");
+    assert!(catalog.contains("never hand off via task or room.create"),"{catalog}");
+}

@@ -9,7 +9,7 @@ import { forwardRef, useEffect, useLayoutEffect, useRef, useState, type Keyboard
 import { createPortal } from 'react-dom';
 import type { AssistantTask } from './assistantTaskModel';
 import type { PersonalLane, PendingHandoff, HandoffOptions, HandoffSelection, HandoffQuestion, PendingControlConfirmation } from './personalAssistant';
-import { deriveHandoffPill, deriveHandoffPopover, classifyPlainHandoffReply, preserveTypedAgentOrder, type TaskConversationProgress, type TaskConversationEvent } from './assistantHandoffModel';
+import { deriveHandoffPill, deriveHandoffPopover, classifyPlainHandoffReply, handoffQuestionKey, startLabel, preserveTypedAgentOrder, type TaskConversationProgress, type TaskConversationEvent } from './assistantHandoffModel';
 
 export function HandoffPillView({
   task,
@@ -267,7 +267,7 @@ export function AgentClarification({
       {preview && <div className="assistant-handoff-preview" role="status">{preview}</div>}
       <div className="assistant-handoff-clarify-actions">
         {!isFirstQuestion && <button type="button" onClick={() => onBack?.()}>Back</button>}
-        <button type="button" className="primary" disabled={!typedOrder.length} onClick={() => onStart(typedOrder)}>Start with {typedOrder.length || 1} agent{typedOrder.length === 1 ? '' : 's'}</button>
+        <button type="button" className="primary" disabled={!typedOrder.length} onClick={() => onStart(typedOrder)}>{startLabel(typedOrder.length)}</button>
       </div>
       <div className="assistant-handoff-hint">Enter ticks a name. ⌘↵ or Ctrl+↵ starts.</div>
     </div>
@@ -357,7 +357,7 @@ export function HandoffTaskQuestion({task, lane}: {task: AssistantTask; lane: Pe
     let current = true; setQuestion(null);
     if (task.status === 'needs_you' || task.resultData?.pendingQuestions?.length) lane.handoffQuestion?.(task.id).then(value => { if(current) setQuestion(value); }).catch(error => { if(current) setProblem(String(error)); });
     return () => {current = false;};
-  }, [task.id, task.revision, lane.ref?.hostId, lane.ref?.assistantId]);
+  }, [handoffQuestionKey(task), lane.ref?.hostId, lane.ref?.assistantId]);
   if (!question) return problem ? <p role="alert">{problem}</p> : null;
   const control = async (action: 'continue' | 'stop') => {
     if (busy || !lane.handoffControl) return; setBusy(true); setProblem('');

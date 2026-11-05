@@ -1102,7 +1102,12 @@ impl Host {
             let text=if failures.is_empty() {prepared.reply.clone()} else if admitted.is_empty() {failures.join("\n")} else {format!("{}\n{}",prepared.reply,failures.join("\n"))};
             // The publication referenced by gates always has a real message id.
             let text=if text.trim().is_empty() {"The project work is ready.".into()} else {text};
-            if prepared.screen {a.post_outside(OutsideSource::Screen,text,Some(event_id.into()),at);} else {let kind=if text=="I couldn't start that job. Deck turned down the project details I sent, so nothing is running." || !failures.is_empty() {"delegation_failed"} else {"chat"};let task_id=if admitted.len()==1 {Some(admitted[0].1.clone())} else {None};a.post("assistant",kind,text,task_id,Some(event_id.into()),at);}
+            // The model wrote its reply expecting the task to start. If the app
+            // turns the task down, that reply would claim work that never began.
+            let refused=if admitted.is_empty() {proposed_task.as_ref().and_then(|task|task_refusal(a,tools,task,room.as_ref()))} else {None};
+            // The reason follows in the app's own "No task was made" line.
+            let text=if refused.is_some() {"I couldn't start that, so nothing is running.".to_owned()} else {text};
+            if prepared.screen {a.post_outside(OutsideSource::Screen,text,Some(event_id.into()),at);} else {let kind=if refused.is_some() || text=="I couldn't start that job. Deck turned down the project details I sent, so nothing is running." || !failures.is_empty() {"delegation_failed"} else {"chat"};let task_id=if admitted.len()==1 {Some(admitted[0].1.clone())} else {None};a.post("assistant",kind,text,task_id,Some(event_id.into()),at);}
             let message_id=a.messages.last().unwrap().id.clone();
             for (frozen,task_id,_) in &admitted {
                 a.announcement_receipts.insert(frozen.announcement_id.clone(),crate::personal::AnnouncementReceipt {task_id:task_id.clone(),message_id:message_id.clone()});
@@ -1831,34 +1836,14 @@ fn queue_report(assistant: &mut PersonalAssistant, task_id: &str, op_id: &str, a
 /// A proposed task goes through the gateway: it runs, asks or is handed over.
 #[allow(clippy::too_many_arguments)]
 fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &str, event_id: &str, asked: &str, proposed: ProposedTask, room: Option<Result<rooms::Target, String>>, native_request: Option<String>, routine_request: Option<String>, outside: bool, at: u64) {
-    let tool = proposed.tool.clone().unwrap_or_else(|| COMMAND_TOOL.to_owned());
     if let Some(Err(why)) = &room {
         assistant.post("system", "update", format!("No task was made: {why}"), None, Some(event_id.to_owned()), at);
         return;
     }
     let room = room.and_then(Result::ok);
-    let machine = proposed.machine.as_deref().map(str::trim).filter(|m| !m.is_empty() && !["server", "this", "here", "vps"].contains(&m.to_lowercase().as_str()));
-    let place_on = match machine {
-        _ if room.is_some() => Ok(room.as_ref().map(|r| (r.project.host_id.clone(), Some(r.project.cwd.clone()))).unwrap_or_default()),
-        None => Ok((assistant.host_id.clone(), assistant.allowed_folders.first().cloned())),
-        Some(name) => assistant.machines.iter().find(|m| m.name.eq_ignore_ascii_case(name) || m.host_id == name)
-            .map(|m| (m.host_id.clone(), Some(m.folder.clone())))
-            .ok_or_else(|| format!("there's no machine called \"{name}\" linked to the assistant")),
-    };
-    let probe = OperationSpec { tool: tool.clone(), host: String::new(), cwd: String::new(), argv: proposed.argv.clone(), plan: None };
-    let problem = if tool == COMMAND_TOOL && proposed.argv.first().is_some_and(|name| rooms::known(name)) {
-        Some("native room actions are not command-line programs; set task.tool to the room action and omit it from argv, for example {\"tool\":\"room.assign\",\"argv\":[\"thread\",\"worker\",\"message\"]}".to_owned())
-    } else if tool_repeatable(tools, &probe).is_none() {
-        Some(format!("{tool} isn't something this machine can run for the assistant"))
-    } else if let Some(why) = room.as_ref().and_then(|target| target.refusal(&tool, &proposed.argv, proposed.every_minutes.is_some() || proposed.start_in_minutes.is_some() || proposed.after.is_some(), proposed.machine.is_some())) {
-        Some(why)
-    } else if let Err(why) = valid_argv(&proposed.argv) {
-        Some(why)
-    } else {
-        match &place_on { Err(why) => Some(why.clone()), Ok((_, None)) => Some("the assistant has no folder on that machine".to_owned()), Ok(_) => None }
-    };
+    let (tool, place_on, problem) = task_check(assistant, tools, &proposed, room.as_ref());
     if let Some(problem) = problem {
-        assistant.post("system", "update", format!("No task was made: {problem}."), None, Some(event_id.to_owned()), at);
+        assistant.post("system", "update", format!("No task was made: {}.", problem.trim_end_matches('.')), None, Some(event_id.to_owned()), at);
         return;
     }
     let (host, cwd) = place_on.map(|(h, c)| (h, c.unwrap_or_default())).unwrap_or_default();
@@ -1952,6 +1937,41 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
             assistant.post("system", "approval", line, Some(task_id), Some(event_id.to_owned()), at);
         }
     }
+}
+
+/// Why a proposed task can't be made, checked before anything is posted.
+fn task_refusal(assistant: &PersonalAssistant, tools: &WorkerTools, proposed: &ProposedTask, room: Option<&Result<rooms::Target, String>>) -> Option<String> {
+    match room {
+        Some(Err(why)) => Some(why.trim_end_matches('.').to_owned()),
+        Some(Ok(target)) => task_check(assistant, tools, proposed, Some(target)).2,
+        None => task_check(assistant, tools, proposed, None).2,
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn task_check(assistant: &PersonalAssistant, tools: &WorkerTools, proposed: &ProposedTask, room: Option<&rooms::Target>) -> (String, Result<(String, Option<String>), String>, Option<String>) {
+    let tool = proposed.tool.clone().unwrap_or_else(|| COMMAND_TOOL.to_owned());
+    let machine = proposed.machine.as_deref().map(str::trim).filter(|m| !m.is_empty() && !["server", "this", "here", "vps"].contains(&m.to_lowercase().as_str()));
+    let place_on = match machine {
+        _ if room.is_some() => Ok(room.map(|r| (r.project.host_id.clone(), Some(r.project.cwd.clone()))).unwrap_or_default()),
+        None => Ok((assistant.host_id.clone(), assistant.allowed_folders.first().cloned())),
+        Some(name) => assistant.machines.iter().find(|m| m.name.eq_ignore_ascii_case(name) || m.host_id == name)
+            .map(|m| (m.host_id.clone(), Some(m.folder.clone())))
+            .ok_or_else(|| format!("there's no machine called \"{name}\" linked to the assistant")),
+    };
+    let probe = OperationSpec { tool: tool.clone(), host: String::new(), cwd: String::new(), argv: proposed.argv.clone(), plan: None };
+    let problem = if tool == COMMAND_TOOL && proposed.argv.first().is_some_and(|name| rooms::known(name)) {
+        Some("native room actions are not command-line programs; set task.tool to the room action and omit it from argv, for example {\"tool\":\"room.assign\",\"argv\":[\"thread\",\"worker\",\"message\"]}".to_owned())
+    } else if tool_repeatable(tools, &probe).is_none() {
+        Some(format!("{tool} isn't something this machine can run for the assistant"))
+    } else if let Some(why) = room.as_ref().and_then(|target| target.refusal(&tool, &proposed.argv, proposed.every_minutes.is_some() || proposed.start_in_minutes.is_some() || proposed.after.is_some(), proposed.machine.is_some())) {
+        Some(why)
+    } else if let Err(why) = valid_argv(&proposed.argv) {
+        Some(why)
+    } else {
+        match &place_on { Err(why) => Some(why.clone()), Ok((_, None)) => Some("the assistant has no folder on that machine".to_owned()), Ok(_) => None }
+    };
+    (tool, place_on, problem)
 }
 
 fn propose_schedule(assistant: &mut PersonalAssistant, event_id: &str, proposed: ProposedSchedule, at: u64) {
