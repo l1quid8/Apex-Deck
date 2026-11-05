@@ -196,6 +196,23 @@ pub fn missing_slot_for(project: Option<&ProjectRef>, destination: Option<&TaskD
     None
 }
 
+/// Map the worker words Alfred wrote (saved ids or display names) to saved ids,
+/// in order. One unknown or ambiguous word returns None, so the human picks from
+/// the list instead of getting a start that is bound to fail.
+pub fn resolve_worker_words(choices: &[WorkerChoice], words: &[String]) -> Option<Vec<String>> {
+    let mut ids = Vec::<String>::new();
+    for word in words.iter().map(|word| word.trim()) {
+        let exact = choices.iter().filter(|choice| choice.id == word).collect::<Vec<_>>();
+        let found = if exact.len() == 1 { exact } else {
+            let lower = word.to_lowercase();
+            choices.iter().filter(|choice| choice.id.to_lowercase() == lower || choice.name.trim().to_lowercase() == lower).collect()
+        };
+        if found.len() != 1 { return None; }
+        if !ids.contains(&found[0].id) { ids.push(found[0].id.clone()); }
+    }
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// Classify plain reply — thin wrapper around assistant_handoff_reply.
 pub fn classify_plain_handoff_reply(text: &str) -> PlainReply {
     classify_plain_reply(text)
@@ -457,6 +474,19 @@ mod tests {
     }
 
     #[test]
+    fn worker_words_resolve_to_one_saved_id_or_ask() {
+        let choices=vec![WorkerChoice{id:"probe".into(),name:"Probe".into()},WorkerChoice{id:"muck".into(),name:"Muck".into()},WorkerChoice{id:"muck-2".into(),name:"Muck".into()}];
+        let words=|w:&[&str]|w.iter().map(|s|s.to_string()).collect::<Vec<_>>();
+        assert_eq!(resolve_worker_words(&choices,&words(&["Probe"])),Some(vec!["probe".into()]));
+        assert_eq!(resolve_worker_words(&choices,&words(&["muck-2","PROBE"])),Some(vec!["muck-2".into(),"probe".into()]));
+        assert_eq!(resolve_worker_words(&choices,&words(&["probe","Probe"])),Some(vec!["probe".into()]));
+        // Two workers share the name Muck, and nobody is called Hyke.
+        assert_eq!(resolve_worker_words(&choices,&words(&["Muck"])),None);
+        assert_eq!(resolve_worker_words(&choices,&words(&["Probe","Hyke"])),None);
+        assert_eq!(resolve_worker_words(&choices,&[]),None);
+    }
+
+    #[test]
     fn typed_worker_order_is_preserved() {
         let draft = draft_for_missing(HandoffSlot::Workers);
         let assistant = PersonalAssistant {
@@ -675,13 +705,15 @@ impl crate::Host {
         let kind=classify_plain_reply(text);
         let tasks=self.assistant_tasks.list(None).map_err(|e|e.to_string())?.into_iter().filter(|t|t.lineage.as_ref().is_some_and(|l|l.assistant.assistant_id==assistant.id&&l.assistant.host_id==assistant.host_id)
             && !matches!(t.status,crate::assistant_tasks::TaskStatus::Done|crate::assistant_tasks::TaskStatus::Cancelled|crate::assistant_tasks::TaskStatus::Failed|crate::assistant_tasks::TaskStatus::Interrupted|crate::assistant_tasks::TaskStatus::ReadyForReview|crate::assistant_tasks::TaskStatus::Applying)).collect::<Vec<_>>();
-        let reply=if kind!=PlainReply::Other {
-            if kind==PlainReply::Stop && assistant.pending_handoffs.len()==1 && tasks.is_empty() {
-                let draft=&assistant.pending_handoffs[0];
-                self.personal_reply_cancel(&assistant.id,&format!("draft-stop:{}",event.id),&draft.source_event_id)?;
-                self.change_assistant(&assistant.id,|a|{a.pending_handoffs.retain(|d|d.id!=draft.id);Ok(())})?;
-                Some("The pending handoff was cancelled. No worker was started.".into())
-            } else if !assistant.pending_handoffs.is_empty() && !tasks.is_empty() {
+        // A handoff still being set up is the open question, so a cancel goes to
+        // it first. Cancelling a draft starts and stops nothing.
+        let reply=if assistant.pending_handoffs.len()==1 && crate::assistant_handoff_reply::cancels_pending_handoff(text) {
+            let draft=&assistant.pending_handoffs[0];
+            self.personal_reply_cancel(&assistant.id,&format!("draft-stop:{}",event.id),&draft.source_event_id)?;
+            self.change_assistant(&assistant.id,|a|{a.pending_handoffs.retain(|d|d.id!=draft.id);Ok(())})?;
+            Some(if tasks.is_empty() {"The pending handoff was cancelled. No worker was started."} else {"The pending handoff was cancelled. No worker was started for it, and your other task is unchanged."}.into())
+        } else if kind!=PlainReply::Other {
+            if !assistant.pending_handoffs.is_empty() && !tasks.is_empty() {
                 Some("Choose whether you mean the pending handoff or the active task before changing either.".into())
             } else if tasks.len()!=1 {Some(if tasks.is_empty(){"There is no single active task to control.".into()}else{"Choose which task you mean before stopping or continuing it.".into()})}
             else {
@@ -708,6 +740,18 @@ impl crate::Host {
             if let Some(selection)=selection {
                 let receipt=self.personal_handoff_select_impl(HandoffSelectInput{assistant_id:assistant.id.clone(),request_id:format!("reply:{}",event.id),draft_id:draft.id.clone(),expected_draft_revision:draft.revision,slot:draft.missing,selection,owner:None})?;
                 if receipt.task_id.is_some() {Some(String::new())}else{Some(match receipt.draft.map(|d|d.missing){Some(HandoffSlot::Project)=>"Which project should I use?",Some(HandoffSlot::Thread)=>"Use an existing thread, or a new thread?",_=>"Who should work on this? Choose one to ten saved workers; the first leads."}.into())}
+            }else if crate::assistant_delegation::human_requests_work(text) {
+                // A new job is not an answer. Set the unfinished one aside so it
+                // can't swallow every later message, then let Alfred read this one.
+                let id=draft.id.clone();
+                self.change_assistant(&assistant.id,|a|{
+                    if a.pending_handoffs.iter().any(|d|d.id==id) {
+                        a.pending_handoffs.retain(|d|d.id!=id);
+                        a.post("system","update","I set aside the earlier handoff that was waiting for your choice. Nothing was started for it.".into(),None,Some(event.id.clone()),crate::personal::now());
+                    }
+                    Ok(())
+                })?;
+                return Ok(false);
             }else{Some(match draft.missing{HandoffSlot::Project=>"Choose a project for your original request.",HandoffSlot::Thread=>"Choose an existing thread, or say new thread.",HandoffSlot::Workers=>"Choose saved workers for your original request. Their order decides who leads."}.into())}
         }else{None};
         let Some(reply)=reply else{return Ok(false)};
@@ -762,7 +806,8 @@ impl crate::Host {
             let room=rooms.iter().find(|r|r.project==remembered_project&&destination.thread_id.as_ref()==Some(&r.thread))?;
             destination.workers.iter().all(|id|room.workers.iter().any(|(worker,_)|worker==id)).then_some(destination)
         });
-        let destination=proposed.destination.clone().or_else(||focused.filter(|r|project.as_ref()==Some(&r.project)).map(|r|TaskDestination{thread_id:Some(r.thread.clone()),workers:vec![],new_thread:false,new_thread_title:None})).or(remembered);
+        let mut destination=proposed.destination.clone().or_else(||focused.filter(|r|project.as_ref()==Some(&r.project)).map(|r|TaskDestination{thread_id:Some(r.thread.clone()),workers:vec![],new_thread:false,new_thread_title:None})).or(remembered);
+        if let Some(destination)=destination.as_mut() {self.settle_destination_workers(&assistant,destination)?;}
         let workers=destination.as_ref().map(|d|d.workers.as_slice()).unwrap_or_default();
         let Some(missing)=missing_slot_for(project.as_ref(),destination.as_ref(),workers) else {return Err("A complete destination should use ordinary delegation admission.".into())};
         let draft=PendingHandoff{id:format!("handoff-{event_id}"),revision:1,source_event_id:event_id.into(),original_request:text.clone(),brief:proposed.brief.clone(),mode:crate::assistant_delegation::human_handoff_mode(text,proposed.mode),project,destination,missing,selection_event_ids:vec![],assistant_id:assistant.id.clone(),host_id:assistant.host_id.clone(),created_at_ms:crate::personal::now(),updated_at_ms:crate::personal::now()};
@@ -777,6 +822,33 @@ impl crate::Host {
     fn checked_handoff_project(&self, assistant:&PersonalAssistant, project:&ProjectRef) -> Result<(),String> {
         let binding=assistant.projects.iter().find(|b|b.project==*project && b.tools!=crate::personal_workspace::ProjectTools::Off).ok_or("Project is not available to this assistant.")?;
         if self.validate_project_binding(assistant,binding.clone())?.project!=*project {return Err("Project identity changed.".into())} Ok(())
+    }
+
+    /// The workers admission accepts for this destination, or None while no
+    /// thread is chosen yet.
+    fn destination_worker_choices(&self, assistant:&PersonalAssistant, destination:&TaskDestination) -> Result<Option<Vec<WorkerChoice>>,String> {
+        if destination.new_thread {
+            return Ok(Some(self.saved_handoff_profiles()?.into_iter().filter(|p|crate::personal_worker::endpoint_refusal(assistant,p).is_none())
+                .map(|p|WorkerChoice{id:p.id.to_string(),name:p.display_name}).collect()));
+        }
+        let Some(thread)=destination.thread_id.as_deref() else {return Ok(None)};
+        let participants=self.store().room(thread)?.map(|room|room.snapshot.participants).unwrap_or_default();
+        Ok(Some(participants.into_iter().filter(crate::assistant_service::task_worker_eligible).map(|p|WorkerChoice{id:p.id.to_string(),name:p.display_name}).collect()))
+    }
+
+    /// Saved ids for Alfred's worker words, when every word names exactly one worker.
+    pub(crate) fn destination_worker_ids(&self, assistant:&PersonalAssistant, destination:&TaskDestination) -> Option<Vec<String>> {
+        let choices=self.destination_worker_choices(assistant,destination).ok()??;
+        resolve_worker_words(&choices,&destination.workers)
+    }
+
+    /// Replace Alfred's worker words with saved ids. If any word is unknown or
+    /// ambiguous the list is cleared, so the worker question is asked instead.
+    pub(crate) fn settle_destination_workers(&self, assistant:&PersonalAssistant, destination:&mut TaskDestination) -> Result<(),String> {
+        if destination.workers.is_empty() {return Ok(())}
+        let Some(choices)=self.destination_worker_choices(assistant,destination)? else {return Ok(())};
+        destination.workers=resolve_worker_words(&choices,&destination.workers).unwrap_or_default();
+        Ok(())
     }
 
     pub(crate) fn personal_handoff_options_impl(&self, assistant_id:&str,draft_id:&str) -> Result<HandoffOptions,String> {
@@ -807,6 +879,9 @@ impl crate::Host {
         } else {
             let draft=snapshot.pending_handoffs.iter().find(|d|d.id==input.draft_id).ok_or("Draft not found.")?;
             let mut updated=apply_selection(&snapshot,draft,&input)?;
+            if matches!(input.selection,HandoffSelection::Thread{..}|HandoffSelection::NewThread{..}) {
+                if let Some(destination)=updated.destination.as_mut() {self.settle_destination_workers(&snapshot,destination)?;}
+            }
             if let Some(project)=&updated.project {self.checked_handoff_project(&snapshot,project)?;}
             let options=self.personal_handoff_options_impl(&input.assistant_id,&draft.id)?;
             match &input.selection {
@@ -824,6 +899,8 @@ impl crate::Host {
             })?; receipt
         };
         if receipt.task_id.is_some() {return Ok(receipt)}
+        // A replayed selection cannot revive a handoff that was cancelled or set aside.
+        if !self.personal_get(&input.assistant_id)?.pending_handoffs.iter().any(|d|d.id==input.draft_id) {return Err("That handoff was cancelled or replaced.".into())}
         let Some(draft)=receipt.draft.as_ref() else {return Ok(receipt)};
         let Some(project)=draft.project.clone() else {return Ok(receipt)};
         let Some(destination)=draft.destination.clone() else {return Ok(receipt)};

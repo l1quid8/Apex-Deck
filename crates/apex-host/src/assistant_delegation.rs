@@ -460,8 +460,16 @@ impl crate::host::Host {
         let workspaces = self.session()?.and_then(|session| session.workspaces).unwrap_or_default();
         let saved = workspaces.iter().find(|ws| ws["id"].as_str() == Some(&project.workspace_id)).ok_or("Project assignment is unavailable.")?;
         let cwd = saved["path"].as_str().unwrap_or(&project.cwd).to_owned();
-        let host_id = saved["hostId"].as_str().unwrap_or("local").to_owned();
-        self.monitor_connect(project.workspace_id.clone(), cwd, host_id)
+        self.monitor_connect(project.workspace_id.clone(), cwd, self.coordinator_host(&project.workspace_id)?)
+    }
+
+    /// The machine a coordinator record names: the app's saved workspace host,
+    /// or `local` for this Mac. The desktop and phone look records up this way,
+    /// so a record made with the raw host id is invisible to both.
+    pub(crate) fn coordinator_host(&self, workspace_id: &str) -> Result<String, String> {
+        let workspaces = self.session()?.and_then(|session| session.workspaces).unwrap_or_default();
+        Ok(workspaces.iter().find(|ws| ws["id"].as_str() == Some(workspace_id))
+            .and_then(|ws| ws["hostId"].as_str()).unwrap_or("local").to_owned())
     }
 
     /// The explicit delegation form supplies its own human authorization. Keep

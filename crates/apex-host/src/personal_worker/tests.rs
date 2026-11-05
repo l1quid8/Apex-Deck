@@ -3238,6 +3238,123 @@ async fn selection_left_unfinished_by_old_launch_panic_settles_on_admitted_task(
     assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1); assert_eq!(announced(&f),1);
 }
 
+/// A human request with a saved draft for THREAD (or a new thread), the way
+/// commit_reply leaves it once the model asked a routing question.
+fn handoff_draft(f:&Fixture,project:&crate::personal_workspace::ProjectRef,request:&str,destination:crate::assistant_tasks::TaskDestination)->crate::personal_handoff::PendingHandoff {
+    let source=f.host.personal_send(&f.id,request,"Delegate a read-only inspection of README. Do not edit files.").unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==source.event_id).unwrap().state=EventState::Processing;a.extra.remove("lastHandoffDestination");Ok(())}).unwrap();
+    f.host.save_personal_handoff_draft(&f.id,&source.event_id,&crate::personal_handoff::HandoffDraftProposal{brief:"Read README".into(),project:Some(project.clone()),destination:Some(destination),mode:crate::assistant_tasks::TaskMode::ReadOnly},false).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
+    f.get().pending_handoffs.into_iter().find(|d|d.source_event_id==source.event_id).unwrap()
+}
+
+fn on_thread(workers:&[&str])->crate::assistant_tasks::TaskDestination {
+    crate::assistant_tasks::TaskDestination{thread_id:Some(THREAD.into()),workers:workers.iter().map(|w|w.to_string()).collect(),new_thread:false,new_thread_title:None}
+}
+
+#[tokio::test]
+async fn first_handoff_into_a_project_without_a_record_is_visible_to_the_app() {
+    use crate::personal_handoff::{HandoffSelectInput,HandoffSelection,HandoffSlot};
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    // The project's ref names the raw host id; the app saved the workspace with no hostId.
+    assert_ne!(project.host_id,"local"); assert!(f.host.monitor_get("w1").unwrap().is_none());
+    let draft=handoff_draft(&f,&project,"first-project",on_thread(&[]));
+    let receipt=f.host.personal_handoff_select_impl(HandoffSelectInput{assistant_id:f.id.clone(),request_id:"first-project-workers".into(),draft_id:draft.id,expected_draft_revision:draft.revision,slot:HandoffSlot::Workers,selection:HandoffSelection::Workers{worker_ids:vec!["jigga".into()]},owner:None}).unwrap();
+    let task=f.host.assistant_tasks.get(&receipt.task_id.unwrap()).unwrap().unwrap();
+    // Desktop (workspace.hostId ?? "local") and phone (the Mac is machine "local") both look it up this way.
+    let monitor=f.host.monitor_get("w1").unwrap().expect("first handoff records the coordinator");
+    assert_eq!(monitor.host_id,"local"); assert_eq!(monitor.cwd,project.cwd); assert_eq!(monitor.workspace_id,"w1");
+    assert_eq!(task.owner.host_id,"local"); assert_eq!(task.owner.conversation_id,monitor.conversation_id);
+}
+
+#[tokio::test]
+async fn draft_with_an_unknown_worker_name_asks_instead_of_being_refused() {
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    let unknown=handoff_draft(&f,&project,"unknown-worker",on_thread(&["Probe"]));
+    assert!(unknown.destination.unwrap().workers.is_empty()); assert_eq!(unknown.missing,crate::personal_handoff::HandoffSlot::Workers);
+}
+
+#[tokio::test]
+async fn bad_prefilled_worker_is_cleared_at_the_thread_step_instead_of_starting() {
+    use crate::personal_handoff::{HandoffSelectInput,HandoffSelection,HandoffSlot};
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    // No thread yet, so the names can't be checked when the draft is saved.
+    let draft=handoff_draft(&f,&project,"thread-step",crate::assistant_tasks::TaskDestination{thread_id:None,workers:vec!["Probe".into()],new_thread:false,new_thread_title:None});
+    assert_eq!(draft.missing,HandoffSlot::Thread);
+    let receipt=f.host.personal_handoff_select_impl(HandoffSelectInput{assistant_id:f.id.clone(),request_id:"thread-step-thread".into(),draft_id:draft.id.clone(),expected_draft_revision:draft.revision,slot:HandoffSlot::Thread,selection:HandoffSelection::Thread{thread_id:THREAD.into()},owner:None}).unwrap();
+    assert!(receipt.task_id.is_none()); let next=receipt.draft.unwrap();
+    assert!(next.destination.unwrap().workers.is_empty()); assert_eq!(next.missing,HandoffSlot::Workers);
+    assert!(f.host.assistant_tasks.list(None).unwrap().is_empty());
+    // A display name that does resolve starts with the id.
+    let named=handoff_draft(&f,&project,"thread-step-named",crate::assistant_tasks::TaskDestination{thread_id:None,workers:vec!["Jigga".into()],new_thread:false,new_thread_title:None});
+    let started=f.host.personal_handoff_select_impl(HandoffSelectInput{assistant_id:f.id.clone(),request_id:"thread-step-named-thread".into(),draft_id:named.id,expected_draft_revision:named.revision,slot:HandoffSlot::Thread,selection:HandoffSelection::Thread{thread_id:THREAD.into()},owner:None}).unwrap();
+    let task=f.host.assistant_tasks.get(&started.task_id.unwrap()).unwrap().unwrap();
+    assert_eq!(task.workers,vec!["jigga"]);
+}
+
+#[tokio::test]
+async fn failed_start_can_be_corrected_without_a_duplicate_task_or_announcement() {
+    use crate::personal_handoff::{HandoffSelectInput,HandoffSelection,HandoffSlot};
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    let draft=handoff_draft(&f,&project,"retry",on_thread(&[]));
+    // What ac032649 did with "Probe": a start the host made that admitted nothing.
+    let failed=f.host.commit_resolved_personal_handoff(&f.id,&draft.source_event_id,draft.brief.clone(),project.clone(),on_thread(&["ghost"]),draft.mode,"I'll hand this to Ghost in slice.".into());
+    assert!(failed.is_err()); assert!(f.host.assistant_tasks.list(None).unwrap().is_empty());
+    let failures=|f:&Fixture|f.get().messages.iter().filter(|m|m.kind=="delegation_failed").count();
+    let announced=|f:&Fixture|f.get().messages.iter().filter(|m|m.text.starts_with("I'll hand this to")).count();
+    assert_eq!(failures(&f),1); assert_eq!(announced(&f),0);
+    // The corrected pick is no longer refused as "a different saved preparation".
+    let input=HandoffSelectInput{assistant_id:f.id.clone(),request_id:"retry-workers".into(),draft_id:draft.id.clone(),expected_draft_revision:draft.revision,slot:HandoffSlot::Workers,selection:HandoffSelection::Workers{worker_ids:vec!["jigga".into()]},owner:None};
+    let receipt=f.host.personal_handoff_select_impl(input.clone()).unwrap();
+    let task_id=receipt.task_id.unwrap(); assert!(f.get().pending_handoffs.is_empty());
+    let replay=f.host.personal_handoff_select_impl(input).unwrap();
+    assert_eq!(replay.task_id.as_deref(),Some(task_id.as_str()));
+    assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+    assert_eq!(announced(&f),1); assert_eq!(failures(&f),1);
+    // Once admitted, the saved preparation is fixed again.
+    let event=f.get().events.into_iter().find(|e|e.id==draft.source_event_id).unwrap();
+    assert!(f.host.commit_resolved_personal_handoff(&f.id,&event.id,draft.brief.clone(),project,on_thread(&["ghost"]),draft.mode,"x".into()).is_err());
+    assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(),1);
+}
+
+async fn human_says(f:&Fixture,request:&str,text:&str)->(bool,String) {
+    let sent=f.host.personal_send(&f.id,request,text).unwrap();
+    f.host.change_assistant(&f.id,|a|{a.events.iter_mut().find(|e|e.id==sent.event_id).unwrap().state=EventState::Processing;Ok(())}).unwrap();
+    let a=f.get(); let event=a.events.iter().find(|e|e.id==sent.event_id).unwrap().clone();
+    let handled=f.host.personal_handoff_human_reply(&a,&event,text).await.unwrap();
+    (handled,f.get().messages.last().unwrap().text.clone())
+}
+
+#[tokio::test]
+async fn a_pending_handoff_can_always_be_cancelled_or_replaced() {
+    use crate::personal_handoff::{HandoffSelectInput,HandoffSelection,HandoffSlot};
+    let f=Fixture::new(); let project=f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
+    // An active task exists, so the old code answered "Choose whether you mean...".
+    let first=handoff_draft(&f,&project,"active",on_thread(&[]));
+    f.host.personal_handoff_select_impl(HandoffSelectInput{assistant_id:f.id.clone(),request_id:"active-workers".into(),draft_id:first.id,expected_draft_revision:first.revision,slot:HandoffSlot::Workers,selection:HandoffSelection::Workers{worker_ids:vec!["jigga".into()]},owner:None}).unwrap();
+    let before=f.host.assistant_tasks.list(None).unwrap();
+    for (n,phrase) in ["Cancel that","Cancel the pending handoff","never mind"].into_iter().enumerate() {
+        let draft=handoff_draft(&f,&project,&format!("cancel-{n}"),on_thread(&[]));
+        let (handled,reply)=human_says(&f,&format!("cancel-say-{n}"),phrase).await;
+        assert!(handled,"{phrase}"); assert!(f.get().pending_handoffs.is_empty(),"{phrase}");
+        assert!(reply.starts_with("The pending handoff was cancelled."),"{phrase}: {reply}");
+        // A replayed picker request cannot bring it back.
+        let replay=f.host.personal_handoff_select_impl(HandoffSelectInput{assistant_id:f.id.clone(),request_id:format!("cancel-replay-{n}"),draft_id:draft.id,expected_draft_revision:draft.revision,slot:HandoffSlot::Workers,selection:HandoffSelection::Workers{worker_ids:vec!["jigga".into()]},owner:None});
+        assert!(replay.is_err(),"{phrase}");
+    }
+    let after=f.host.assistant_tasks.list(None).unwrap();
+    assert_eq!(after.len(),before.len()); assert_eq!(after[0].status,before[0].status);
+    // A new job is not an answer to the old picker: the draft is set aside and Alfred reads it.
+    let stale=handoff_draft(&f,&project,"stale",on_thread(&[]));
+    let (handled,note)=human_says(&f,"new-request","Delegate a read-only check of the tests folder. Do not edit files.").await;
+    assert!(!handled); assert!(note.starts_with("I set aside the earlier handoff"));
+    assert!(f.get().pending_handoffs.iter().all(|d|d.id!=stale.id));
+    // Unclear words still leave the question open.
+    let open=handoff_draft(&f,&project,"open",on_thread(&[]));
+    let (handled,reply)=human_says(&f,"unclear","hmm").await;
+    assert!(handled); assert!(reply.starts_with("Choose saved workers")); assert!(f.get().pending_handoffs.iter().any(|d|d.id==open.id));
+}
+
 #[tokio::test]
 async fn team_report_preserves_host_answer_instead_of_model_denial() {
     let f=Fixture::new(); let task=delegated_report_publish_fixture(&f);

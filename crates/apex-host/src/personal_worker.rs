@@ -989,7 +989,9 @@ impl Host {
         let standing=crate::personal::permissions::full_access(a) && binding.tools==crate::personal_workspace::ProjectTools::Full;
         let (owner,revision)=match self.monitor_get(&project.workspace_id)? {
             Some(monitor)=>(crate::assistant_tasks::TaskOwner {workspace_id:monitor.workspace_id,cwd:monitor.cwd,host_id:monitor.host_id,conversation_id:monitor.conversation_id},monitor.revision),
-            None=>(crate::assistant_tasks::TaskOwner {workspace_id:project.workspace_id.clone(),cwd:project.cwd.clone(),host_id:project.host_id.clone(),conversation_id:format!("apex-agent-{}-{event_id}",project.workspace_id)},1),
+            // A first handoff reserves the record the app itself would make, so
+            // the desktop and phone recognise it as this project's coordinator.
+            None=>(crate::assistant_tasks::TaskOwner {workspace_id:project.workspace_id.clone(),cwd:project.cwd.clone(),host_id:self.coordinator_host(&project.workspace_id)?,conversation_id:format!("apex-agent-{}-{event_id}",project.workspace_id)},1),
         };
         Ok((owner,revision,standing))
     }
@@ -1024,9 +1026,12 @@ impl Host {
                 Ok(captured)=>captured,
                 Err(_)=>{reply.bad_delegations+=1;continue;}
             };
+            // Alfred may name a worker by its display name; admission wants the id.
+            let mut destination=proposed.destination.clone();
+            if let Some(ids)=self.destination_worker_ids(&initial,&destination) {destination.workers=ids;}
             frozen.push(crate::personal::FrozenDelegation {
                 request_id:crate::assistant_delegation::delegation_request_id(&reference,&delegation_id),delegation_id,
-                brief:proposed.brief.clone(),destination:proposed.destination.clone(),mode:human_request.map_or(proposed.mode,|text|crate::assistant_delegation::human_handoff_mode(text,proposed.mode)),
+                brief:proposed.brief.clone(),destination,mode:human_request.map_or(proposed.mode,|text|crate::assistant_delegation::human_handoff_mode(text,proposed.mode)),
                 review_criteria:proposed.review_criteria.clone(),project:proposed.project.clone(),
                 announcement_id:format!("ann-{event_id}:{index}"),
                 owner,revision,standing_allowed,
@@ -1163,7 +1168,19 @@ impl Host {
         let EventSource::Human {text,..}=&event.source else {return Err("A handoff requires its original human request.".into())};
         if !a.messages.iter().any(|m|m.role=="human" && m.event_id.as_deref()==Some(event_id) && m.legacy.is_none() && m.text==*text) || reply_stopped(&a,event_id) {return Err("Original human request is no longer authorized.".into());}
         let asked=text.clone();
-        if let Some(saved)=event.saved_reply.as_ref().filter(|saved|!saved.delegations.is_empty()) {
+        // A start the host made from the picker that admitted nothing (say the
+        // worker was unavailable) must not lock the request: the corrected choice
+        // replaces it. Model replies and anything already admitted keep their
+        // saved recovery truth.
+        let retryable=match event.saved_reply.as_ref().filter(|saved|!saved.delegations.is_empty()) {
+            Some(saved) if saved.cost.purpose=="handoff" && event.state==EventState::Done => {
+                let mut admitted=false;
+                for id in &saved.delegated_request_ids {admitted|=self.assistant_tasks.handoff_for_request(id).map_err(|e|e.to_string())?.is_some();}
+                !admitted
+            }
+            _=>false,
+        };
+        if let Some(saved)=event.saved_reply.as_ref().filter(|saved|!saved.delegations.is_empty() && !retryable) {
             let frozen=saved.delegations.first().unwrap();
             if frozen.project!=project || frozen.brief!=brief || frozen.destination!=destination || frozen.mode!=mode {return Err("This handoff already has a different saved preparation.".into());}
             self.recover_saved_reply(&WorkerTools::real(),assistant_id,event_id,&asked,saved.clone(),context::Seen {screen:false,report:false})?;
@@ -1174,7 +1191,7 @@ impl Host {
         self.change_assistant(assistant_id,|a| {
             if reply_stopped(a,event_id) {return Err("Reply stopped by you.".into());}
             let e=a.events.iter_mut().find(|e|e.id==event_id).ok_or("Original request unavailable.")?;
-            if let Some(saved)=e.saved_reply.as_ref().filter(|s|!s.delegations.is_empty()) {if saved!=&prepared {return Err("This handoff already has a saved preparation.".into());}}
+            if let Some(saved)=e.saved_reply.as_ref().filter(|s|!s.delegations.is_empty() && !retryable) {if saved!=&prepared {return Err("This handoff already has a saved preparation.".into());}}
             else {if e.state!=EventState::Done {return Err("The original reply has not settled yet.".into());}e.saved_reply=Some(prepared.clone());e.state=EventState::Processing;}
             Ok(())
         })?;
