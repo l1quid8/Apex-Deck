@@ -60,6 +60,7 @@ pub enum Intent {
     WelcomeUp,
     WelcomeDown,
     WelcomeOpen,
+    Panel(crate::settings::PanelIntent),
 }
 pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
     match event {
@@ -72,6 +73,27 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
         Event::Key(key) if key.kind != KeyEventKind::Release => {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 return Intent::Quit;
+            }
+            // ⇧Tab comes before the / and @ menus. Some terminals send Tab+Shift.
+            if key.code == KeyCode::BackTab
+                || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+            {
+                s.menu = None;
+                crate::settings::toggle(s);
+                return Intent::Panel(crate::settings::PanelIntent::None);
+            }
+            // While open, the panel owns arrows, Tab, Enter and Esc (Esc never
+            // stops agents here). A menu opened from it (the model list) is on top.
+            if s.settings.is_some() {
+                if s.menu.is_some() {
+                    // Esc in the model list goes back to the panel, never stops work.
+                    if key.code == KeyCode::Esc {
+                        s.menu = None;
+                        return Intent::Panel(crate::settings::PanelIntent::None);
+                    }
+                } else if let Some(intent) = crate::settings::handle_key(s, key.code) {
+                    return Intent::Panel(intent);
+                }
             }
             if (key.code == KeyCode::Enter
                 && key

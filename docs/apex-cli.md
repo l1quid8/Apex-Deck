@@ -149,6 +149,14 @@ the daemon. Reopening a thread preserves its own routing state.
   nothing. Ctrl-C exits this client without stopping other clients' work.
 - F1 opens Welcome, F2 opens pending approvals/questions, F3 opens Threads,
   and F4 shows members/models/activity/responders.
+- ⇧Tab opens a settings panel above the message box for one agent at a time,
+  starting on the first ★ agent. Changes apply to **this thread only**; the saved
+  agent keeps its defaults (`/agents edit` changes those). Tab moves to the next
+  agent, ↑↓ moves between Model, Reasoning, Speed and Access, ←→ changes a value,
+  Enter on Model lists every model, Esc closes. Model, reasoning and speed save on
+  each press and show `saving…` until the service confirms. Access only changes
+  on Enter, and Full asks once more. Changing access while an agent is replying
+  stops its current turn. While the panel is open, Esc never stops agents.
 
 The client restores raw mode, cursor, alternate screen, mouse capture, bracketed
 paste and keyboard enhancements on exit, handled errors, SIGINT, SIGTERM and
@@ -171,8 +179,8 @@ remain typed Rust code. `/help` opens the same command choices.
 | `/remove [@name]` | Pick and confirm removal. The last member may be removed. |
 | `/agents` | Show members, models, access and authoritative stars. |
 | `/stop [@name]` | Stop all selected-thread agents or one named member. |
-| `/model [@name]` | Choose a daemon-provided model; confirm before saving. |
-| `/access [@name]` | Choose and confirm a Work agent's access. Talk threads keep read access. |
+| `/model [@name]` | Open the settings panel on Model (see ⇧Tab below). |
+| `/access [@name]` | Open the settings panel on Access. Talk threads keep read access. |
 | `/clear` | Confirm deletion of this shared thread's messages everywhere. Default is Cancel. Agents/settings stay. |
 | `/compact` | Summarize earlier context for the whole thread. |
 | `/curate`, `/curate undo` | Use the daemon's whole-thread history curation/undo. |

@@ -38,6 +38,16 @@ enum Update {
         generation: u64,
         result: Result<Value, String>,
     },
+    Saved {
+        generation: u64,
+        agent: String,
+        result: Result<Value, String>,
+    },
+    Models {
+        generation: u64,
+        agent: String,
+        result: Result<Value, String>,
+    },
 }
 async fn network(data: PathBuf, tx: mpsc::Sender<Update>) {
     let mut cursor: Option<Cursor> = None;
@@ -131,6 +141,9 @@ fn load(s: &AppState, client: &Option<Client>, tx: &mpsc::Sender<Update>) {
 }
 fn apply_outcome(s: &mut AppState, out: Outcome) -> bool {
     s.notice = out.notice;
+    if let Some((row, agent)) = out.settings {
+        crate::settings::open(s, Some(row), agent);
+    }
     if let Some(menu) = out.menu {
         s.menu = Some(menu);
     }
@@ -281,6 +294,13 @@ fn run_action(
         Action::Setup(command) => {s.menu=None;s.setup=Some(command);}
         Action::Dismiss => {
             s.menu = None;
+        }
+        Action::Setting { agent, change } => {
+            s.menu = None;
+            if !crate::settings::begin_save(s, &agent, crate::settings::Row::Model) {
+                return;
+            }
+            save_setting(s, agent, change, client, data, tx);
         }
         Action::Open(id) => {
             s.select(id);
@@ -446,6 +466,70 @@ fn run_action(
             });
         }
     }
+}
+/// Fetch the open panel agent's model list once per panel.
+fn ensure_models(s: &mut AppState, client: &Option<Client>, tx: &mpsc::Sender<Update>) {
+    let (Some(client), Some(room), Some(p)) = (client.clone(), s.selected.clone(), crate::settings::agent(s)) else {
+        return;
+    };
+    let Some(panel) = s.settings.as_mut() else { return };
+    let agent = panel.agent.clone();
+    if !crate::settings::needs_models(panel, s.generation, &agent) {
+        return;
+    }
+    let (generation, tx) = (s.generation, tx.clone());
+    tokio::spawn(async move {
+        let (cmd, args) = controller::model_query(&room, &p);
+        let result = client.request(cmd, args).await;
+        let _ = tx.send(Update::Models { generation, agent, result }).await;
+    });
+}
+fn save_setting(s: &mut AppState, agent: String, change: crate::settings::Change, client: &Option<Client>, data: &Path, tx: &mpsc::Sender<Update>) {
+    let fail = |s: &mut AppState, why: String| crate::settings::saved(s, &agent, Err(why));
+    let c = match context(s, client, data) {
+        Ok(c) => c,
+        Err(e) => return fail(s, e),
+    };
+    let Some(p) = s.members().into_iter().find(|p| p["id"] == agent.as_str()) else {
+        return fail(s, "That agent left this thread.".into());
+    };
+    // Panel keys mark the save themselves; this covers any other caller.
+    crate::settings::begin_save(s, &agent, crate::settings::Row::Model);
+    let chat = crate::settings::is_chat(s);
+    let (generation, tx) = (s.generation, tx.clone());
+    tokio::spawn(async move {
+        let room = c.room.clone().unwrap_or_default();
+        let result = controller::save_setting(&c.client, &c.data, &room, chat, &p, &change).await;
+        let _ = tx.send(Update::Saved { generation, agent, result }).await;
+    });
+}
+fn panel_intent(s: &mut AppState, intent: crate::settings::PanelIntent, client: &Option<Client>, data: &Path, tx: &mpsc::Sender<Update>) {
+    use crate::settings::PanelIntent;
+    match intent {
+        PanelIntent::None => {}
+        PanelIntent::Save { agent, change } => save_setting(s, agent, change, client, data, tx),
+        PanelIntent::ModelMenu(agent) => {
+            let current = s.members().into_iter().find(|p| p["id"] == agent.as_str());
+            let list = s.settings.as_ref().and_then(|p| p.models.get(&agent)).cloned().unwrap_or_default();
+            let Some(p) = current else { return };
+            let now = crate::settings::model_of(&p);
+            let selected = list.iter().position(|m| m.id == now).unwrap_or(0);
+            let choices = list
+                .into_iter()
+                .map(|m| {
+                    let mut change = crate::settings::Change { model: Some(m.id.clone()), ..Default::default() };
+                    if let (Some(known), Some(effort)) = (&m.efforts, p["effort"].as_str()) {
+                        if !known.iter().any(|e| e == effort) {
+                            change.effort = Some(None);
+                        }
+                    }
+                    choice(m.id.clone().unwrap_or_else(|| "Default".into()), m.label, Action::Setting { agent: agent.clone(), change })
+                })
+                .collect();
+            s.menu = Some(Menu { title: "Model · this thread".into(), choices, selected, completion: false });
+        }
+    }
+    ensure_models(s, client, tx);
 }
 fn requests(s: &mut AppState) {
     let Some(state) = s.current() else {
@@ -625,8 +709,14 @@ pub async fn run(args: Args) -> Result<(), String> {
                     match result{Ok(out)=>{
                         if let Some(draft)=&draft {s.pending_messages.retain(|_,(room,text)|Some(room.as_str())!=s.selected.as_deref()||text!=draft.trim());}
                         if apply_outcome(&mut s,out){dirty=true;}
+                        ensure_models(&mut s,&client,&tx);
                     },Err(e)=>{s.notice=e;if let Some(draft)=draft{if s.editor.text.is_empty(){s.editor.insert(&draft);}}dirty=true;}}
                 }
+                Update::Saved{generation,agent,result}=>{if generation==s.generation{crate::settings::saved(&mut s,&agent,result);dirty=true;}}
+                Update::Models{generation,agent,result}=>{if generation==s.generation{
+                    let p=s.members().into_iter().find(|p|p["id"]==agent.as_str());
+                    if let (Some(panel),Some(p))=(s.settings.as_mut(),p){match result{Ok(rows)=>{panel.models.insert(agent,crate::settings::parse_models(&p,&rows));},Err(_)=>{panel.requested.remove(&agent);}}}
+                }}
                 Update::Stopped{generation,result}=>{if generation==s.generation{s.notice=match result{Ok(_)=>"Stopped.".into(),Err(e)=>e};dirty=true;}}
             }},
             event=async {events.as_mut().expect("terminal reader restored").next().await}=>{
@@ -663,7 +753,7 @@ pub async fn run(args: Args) -> Result<(), String> {
                         if s.agent_wizard.take().is_some(){s.editor.take();s.notice="Agent creation canceled. No profile saved.".into();continue;}
                         answer=None;s.answering=false;let active=s.current().is_some_and(|v|v["active"].as_array().is_some_and(|a|!a.is_empty())||matches!(v["runner"]["phase"].as_str(),Some("running"|"scheduled")));
                         if active&&s.connected {if let Ok(c)=context(&s,&client,&args.data){let tx=tx.clone();let generation=s.generation;tokio::spawn(async move{let result=controller::execute(&c.client,&c.data,"room_stop",json!({"id":c.room,"participant":null})).await;let _=tx.send(Update::Stopped{generation,result}).await;});}}
-                    },Intent::None=>{}
+                    },Intent::Panel(intent)=>panel_intent(&mut s,intent,&client,&args.data,&tx),Intent::None=>{}
                 }
             }
         }

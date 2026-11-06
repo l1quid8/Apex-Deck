@@ -21,6 +21,8 @@ pub struct Outcome {
     pub notice: String,
     pub open: Option<String>,
     pub refresh: bool,
+    /// Open the settings panel on this row, optionally on one agent.
+    pub settings: Option<(crate::settings::Row, Option<String>)>,
 }
 pub fn choice(label: impl Into<String>, detail: impl Into<String>, action: Action) -> Choice {
     Choice {
@@ -415,22 +417,20 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
             ));
         }
         HandlerId::Model | HandlerId::Access => {
-            if arg.is_empty() {
-                return Ok(member_menu(
-                    c,
-                    if row.handler == HandlerId::Model {
-                        "model"
-                    } else {
-                        "access"
-                    },
-                ));
-            }
-            let p = member(c, &arg)?;
-            return if row.handler == HandlerId::Model {
-                models(c, &p).await
+            let agent = if arg.is_empty() {
+                None
             } else {
-                access(c, &p)
+                member(c, &arg)?["id"].as_str().map(str::to_string)
             };
+            let row = if row.handler == HandlerId::Model {
+                crate::settings::Row::Model
+            } else {
+                crate::settings::Row::Access
+            };
+            return Ok(Outcome {
+                settings: Some((row, agent)),
+                ..Outcome::default()
+            });
         }
         HandlerId::Agents | HandlerId::Usage => {
             let stars = c.state.get("untagged_responders").and_then(Value::as_array);
@@ -554,59 +554,8 @@ pub async fn action(a: &Action, c: &Context) -> Result<Outcome, String> {
                 ..Outcome::default()
             })
         }
-        Action::Model(id) => {
-            let p = members(c)
-                .into_iter()
-                .find(|p| p["id"] == id.as_str())
-                .ok_or("Agent removed")?;
-            models(c, &p).await
-        }
-        Action::Access(id) => {
-            let p = members(c)
-                .into_iter()
-                .find(|p| p["id"] == id.as_str())
-                .ok_or("Agent removed")?;
-            access(c, &p)
-        }
         _ => Err("Action requires terminal interaction".into()),
     }
-}
-async fn models(c: &Context, p: &Value) -> Result<Outcome, String> {
-    let id = c.room.as_ref().ok_or("No thread")?;
-    let (cmd, args) = model_query(id, p);
-    let rows = c.client.request(cmd, args).await?;
-    let mut choices = vec![];
-    for row in rows.as_array().into_iter().flatten() {
-        let Some(model) = row["id"].as_str() else {
-            continue;
-        };
-        let (cmd, args) = if c.state["snapshot"]["kind"] == "chat" {
-            (
-                "chat_update_participant",
-                json!({"id":id,"participant":p["id"],"patch":{"model":model}}),
-            )
-        } else {
-            let mut next = p.clone();
-            next["backend"]["model"] = json!(model);
-            (
-                "room_update_participant",
-                json!({"id":id,"participant":next,"base":p}),
-            )
-        };
-        choices.push(choice(
-            model,
-            row["label"].as_str().unwrap_or(""),
-            Action::Rpc {
-                cmd: cmd.into(),
-                args,
-                confirmation: Some(format!("Use model {model}?")),
-            },
-        ));
-    }
-    if choices.is_empty() {
-        return Err("This provider returned no selectable models.".into());
-    }
-    Ok(menu("Choose a model", choices))
 }
 pub fn model_query(room: &str, p: &Value) -> (&'static str, Value) {
     if p["backend"]["kind"] == "agent" {
@@ -618,40 +567,19 @@ pub fn model_query(room: &str, p: &Value) -> (&'static str, Value) {
         )
     }
 }
-fn access(c: &Context, p: &Value) -> Result<Outcome, String> {
-    if c.state["snapshot"]["kind"] == "chat" {
-        return Err(
-            "Talk-only chats keep read access. Open a Work thread to change access.".into(),
-        );
-    }
-    let id = c.room.as_ref().ok_or("No thread")?;
-    Ok(menu(
-        "Choose access",
-        [
-            ("read", "Read files"),
-            ("ask", "Ask before edits and commands"),
-            ("edits", "Edit files"),
-            ("full", "Edit files and run commands"),
-        ]
-        .iter()
-        .map(|(level, detail)| {
-            let mut next = p.clone();
-            next["access"] = json!(level);
-            choice(
-                *level,
-                *detail,
-                Action::Rpc {
-                    cmd: "room_update_participant".into(),
-                    args: json!({"id":id,"participant":next,"base":p}),
-                    confirmation: Some(format!(
-                        "Set {} access to {level}?",
-                        p["display_name"].as_str().unwrap_or("agent")
-                    )),
-                },
-            )
-        })
-        .collect(),
-    ))
+/// Save one per-thread setting for an agent, based on the participant as last
+/// received. Work threads send the full participant with `base` so the host
+/// merges only what changed; talk-only chats send a patch without access.
+pub async fn save_setting(
+    client: &Client,
+    data: &Path,
+    room: &str,
+    chat: bool,
+    p: &Value,
+    change: &crate::settings::Change,
+) -> Result<Value, String> {
+    let (cmd, args) = crate::settings::request(room, chat, p, change)?;
+    execute(client, data, cmd, args).await
 }
 async fn runner(c: &Context, kind: &str, arg: &str) -> Result<Outcome, String> {
     let id = c.room.as_ref().ok_or("No thread")?;

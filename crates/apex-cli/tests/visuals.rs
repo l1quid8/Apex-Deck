@@ -266,3 +266,93 @@ fn short_conversation_sits_above_composer_as_in_approved_mockup() {
     assert!(row(&b, 18).trim().is_empty());
     assert!(row(&b, 19).contains("Message"));
 }
+
+fn panel_state(stars: usize) -> AppState {
+    let names = ["Null", "Muck", "Jigga", "Cast", "Luna", "Gronk"];
+    let participants: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"id":n.to_lowercase(),"display_name":n,"access":"ask","effort":"high","backend":{"kind":"agent","tool":"codex","model":"gpt-5.5"}}))
+        .collect();
+    let star_ids: Vec<Value> = names.iter().take(stars).map(|n| json!(n.to_lowercase())).collect();
+    let mut s = AppState::default();
+    s.select("r".into());
+    s.connected = true;
+    s.install_snapshot("r", s.generation, json!({"recovery_seq":0,"cwd":"/tmp/app","untagged_responders":star_ids,"snapshot":{"kind":"work","participants":participants,"transcript":[{"speaker":{"kind":"human","id":"p"},"text":"hello"}],"usage":{"null":{"input":12400,"output":3100,"turns":7}}},"active":[]}));
+    s
+}
+fn widths_fit(b: &Buffer) {
+    use unicode_width::UnicodeWidthStr;
+    for y in 0..b.area.height {
+        let line = row(b, y);
+        assert!(line.trim_end().width() <= usize::from(b.area.width), "row {y} too wide: {line}");
+    }
+}
+
+#[test]
+fn settings_panel_matches_v6_at_both_sizes() {
+    use apex_cli::settings;
+    for (w, h) in [(120u16, 40u16), (80, 24)] {
+        let mut s = panel_state(2);
+        settings::toggle(&mut s);
+        let b = render(&s, w, h);
+        widths_fit(&b);
+        let title = find(&b, " Null this thread");
+        assert!(row(&b, title).contains("1 of 6 · Tab next"), "{}", text(&b));
+        assert!(row(&b, title + 1).contains("Model") && row(&b, title + 1).contains("◂  gpt-5.5  ▸"));
+        assert!(row(&b, title + 2).starts_with(" ▸ Reasoning"), "focus starts on Reasoning");
+        assert!(row(&b, title + 3).contains("Speed") && row(&b, title + 3).contains("default"));
+        assert!(row(&b, title + 4).contains("Access") && row(&b, title + 4).contains("Ask"));
+        assert!(row(&b, title + 5).contains("This thread · 12.4k in · 3.1k out · 7 turns"));
+        assert!(row(&b, title + 6).contains("←→ change · ↑↓ row · Esc close"));
+        // Panel sits directly above the message box; focused value is cyan.
+        assert!(row(&b, title + 7).starts_with('┌'));
+        let x = row(&b, title + 2).find(" high ").map(|i| row(&b, title + 2)[..i].chars().count()).unwrap() as u16;
+        assert_eq!(b[(x + 1, title + 2)].bg, Color::Rgb(103, 232, 249));
+        assert_ne!(b[(x + 1, title + 1)].bg, Color::Rgb(103, 232, 249), "only the focused value is highlighted");
+        assert!(row(&b, h - 1).trim_end().ends_with("⇧Tab settings"));
+    }
+}
+
+#[test]
+fn settings_footer_states_fit_at_80_columns() {
+    use apex_cli::settings::{self, Row};
+    let mut s = panel_state(2);
+    settings::open(&mut s, Some(Row::Access), Some("muck".into()));
+    s.settings.as_mut().unwrap().pending_access = Some("full".into());
+    let b = render(&s, 80, 24);
+    widths_fit(&b);
+    assert!(text(&b).contains("Enter applies Full · now Ask · Esc cancels"), "{}", text(&b));
+    assert!(text(&b).contains("◂  Full  ▸"), "pending choice shows in the row");
+    s.settings.as_mut().unwrap().confirm_full = true;
+    let b = render(&s, 80, 24);
+    assert!(text(&b).contains("Muck can run commands without asking. Enter yes · Esc no"));
+    s.settings.as_mut().unwrap().confirm_full = false;
+    s.settings.as_mut().unwrap().pending_access = None;
+    s.settings.as_mut().unwrap().row = Some(Row::Reasoning);
+    settings::begin_save(&mut s, "muck", Row::Reasoning);
+    let b = render(&s, 80, 24);
+    let y = find(&b, "Reasoning");
+    assert!(row(&b, y).contains("◂  high  ▸  saving…"));
+    s.saves.clear();
+    s.settings.as_mut().unwrap().error = Some("no participant with the id `muck` is in this chat".into());
+    let b = render(&s, 80, 24);
+    let y = find(&b, "no participant");
+    let x = row(&b, y).find("no participant").unwrap() as u16;
+    assert_eq!(b[(x, y)].fg, Color::Rgb(248, 113, 113), "errors are the only red");
+}
+
+#[test]
+fn bottom_line_keeps_shortcut_with_six_star_agents() {
+    let s = panel_state(6);
+    let b = render(&s, 80, 24);
+    widths_fit(&b);
+    let last = row(&b, 23);
+    assert!(last.trim_end().ends_with("⇧Tab settings"), "{last}");
+    assert!(last.contains("★ Null"));
+    assert!(last.contains("★"));
+    let s = panel_state(6);
+    let b = render(&s, 40, 24);
+    let last = row(&b, 23);
+    assert!(last.trim_end().ends_with("⇧Tab settings"), "{last}");
+    assert!(last.contains("+"), "names that don't fit fold into +N: {last}");
+}

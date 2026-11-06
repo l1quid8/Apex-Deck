@@ -8,6 +8,7 @@ pub mod commands;
 pub mod controller;
 pub mod input;
 pub mod runtime;
+pub mod settings;
 pub mod state;
 pub mod terminal;
 pub mod ui;

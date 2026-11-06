@@ -41,8 +41,10 @@ pub enum Action {
         args: Value,
         confirmation: Option<String>,
     },
-    Model(String),
-    Access(String),
+    Setting {
+        agent: String,
+        change: crate::settings::Change,
+    },
     Add(Value),
     Remove(String),
     Answer {
@@ -93,6 +95,8 @@ pub struct AppState {
     pub pending_messages: HashMap<String, (String, String)>,
     pub view: u8,
     pub overflowed: bool,
+    pub settings: Option<crate::settings::Panel>,
+    pub saves: crate::settings::Saves,
     buffered: VecDeque<Value>,
     /// Highest recovery number already reflected in the selected room's live
     /// view. Set by the first snapshot installed after selection; events at or
@@ -115,6 +119,7 @@ impl AppState {
         );
         self.editor = self.drafts.remove(&id).unwrap_or_default();
         self.answering = false;
+        self.settings = None;
         self.selected = Some(id);
         self.generation += 1;
         self.busy = false;
@@ -257,6 +262,15 @@ impl AppState {
             }
             "participants_changed" => {
                 room["snapshot"]["participants"] = event["participants"].clone()
+            }
+            "participant_changed" => {
+                let next = &event["participant"];
+                if let Some(slot) = room["snapshot"]["participants"]
+                    .as_array_mut()
+                    .and_then(|list| list.iter_mut().find(|p| p["id"] == next["id"]))
+                {
+                    *slot = next.clone();
+                }
             }
             "plan_changed" => room["plan"] = event["on"].clone(),
             _ => {}

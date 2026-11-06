@@ -384,14 +384,15 @@ async fn controller_commands_reach_shared_daemon_and_require_real_decisions() {
     // because tests have no interactive terminal), so it no longer prompts.
     let bare = dispatch("/new work", &c).await.unwrap_err();
     assert!(bare.contains("interactive terminal"), "{bare}");
-    assert!(
-        dispatch("/model @fixture", &c).await.is_err(),
-        "scripted backend has no selectable models"
-    );
-    assert!(dispatch("/access @fixture", &c)
-        .await
-        .unwrap_err()
-        .contains("Talk-only"));
+    // /model and /access open the settings panel on their row; no old menus.
+    let model = dispatch("/model @fixture", &c).await.unwrap();
+    assert!(model.menu.is_none());
+    assert!(matches!(
+        model.settings,
+        Some((apex_cli::settings::Row::Model, Some(_)))
+    ));
+    let access = dispatch("/access", &c).await.unwrap();
+    assert_eq!(access.settings, Some((apex_cli::settings::Row::Access, None)));
     assert!(dispatch("/goal", &c)
         .await
         .unwrap()
@@ -776,4 +777,76 @@ fn slow_model_server(words: &'static str) -> String {
         }
     });
     format!("http://{address}/v1")
+}
+
+/// Settings panel saves against a real daemon, with a second client watching.
+/// Sends the exact command the panel builds (`settings::request`); the signing
+/// step in front of it needs the installed CLI, so it isn't part of this test.
+#[tokio::test]
+async fn settings_panel_saves_reach_second_client_and_refusals_keep_old_value() {
+    use apex_cli::settings::{self, Change, Row};
+    let mut fixture = Fixture::start();
+    let (cli, _cli_events, _) = fixture.connect().await;
+    let (desktop, _desktop_events, _) = fixture.connect().await;
+    let profile = json!({"id":"codey","display_name":"Codey","persona":"","access":"ask","effort":"high","backend":{"kind":"agent","tool":"codex","model":null}});
+    cli.request("session_save", json!({"session":{"version":1,"profiles":[profile.clone()]}})).await.unwrap();
+    let send = |client: &Client, room: &str, chat: bool, p: &Value, change: &Change| {
+        let built = settings::request(room, chat, p, change).map(|(c, a)| (c.to_string(), a));
+        let client = client.clone();
+        async move {
+            let (cmd, args) = built?;
+            client.request(&cmd, args).await
+        }
+    };
+    let member = |state: &Value| state["snapshot"]["participants"][0].clone();
+
+    // Talk-only chat: model/reasoning/speed save; access is never sent.
+    cli.request("chat_create", json!({"id":"chat","participants":[],"options":options()})).await.unwrap();
+    cli.request("chat_add_participant", json!({"id":"chat","participant":{"profile":"codey"}})).await.unwrap();
+    let p = member(&cli.request("room_state", json!({"id":"chat"})).await.unwrap());
+    let fast = Change { speed: Some(Some("fast".into())), ..Change::default() };
+    let saved = send(&cli, "chat", true, &p, &fast).await.unwrap();
+    assert_eq!(saved["speed"], "fast");
+    let seen = member(&desktop.request("room_state", json!({"id":"chat"})).await.unwrap());
+    assert_eq!(seen["speed"], "fast", "second client sees the change");
+    assert_eq!(seen["effort"], p["effort"], "other fields untouched");
+    let full = Change { access: Some("full".into()), ..Change::default() };
+    assert!(send(&cli, "chat", true, &seen, &full).await.unwrap_err().contains("read access"));
+    assert_eq!(member(&desktop.request("room_state", json!({"id":"chat"})).await.unwrap())["access"], seen["access"]);
+    // The saved agent keeps its own settings; only this thread changed.
+    let profiles = cli.request("agent_profile_list", json!({})).await.unwrap();
+    let saved_profile = profiles["profiles"].as_array().unwrap().iter().find(|x| x["id"] == "codey").unwrap().clone();
+    assert!(saved_profile.get("speed").is_none_or(Value::is_null), "{saved_profile}");
+
+    // Work thread: an older copy from this client doesn't undo another client's change.
+    cli.request("room_create", json!({"id":"work","participants":[profile.clone()],"options":options(),"cwd":null})).await.unwrap();
+    let old = member(&cli.request("room_state", json!({"id":"work"})).await.unwrap());
+    assert_eq!(old["id"], "codey");
+    let theirs = send(&desktop, "work", false, &old, &fast).await.unwrap();
+    assert_eq!(theirs["speed"], "fast");
+    let xhigh = Change { effort: Some(Some("xhigh".into())), ..Change::default() };
+    let ours = send(&cli, "work", false, &old, &xhigh).await.unwrap();
+    assert_eq!(ours["effort"], "xhigh");
+    assert_eq!(ours["speed"], "fast", "stale base merges field by field");
+    let seen = member(&desktop.request("room_state", json!({"id":"work"})).await.unwrap());
+    assert_eq!((seen["effort"].clone(), seen["speed"].clone()), (json!("xhigh"), json!("fast")));
+    let edits = Change { access: Some("edits".into()), ..Change::default() };
+    assert_eq!(send(&cli, "work", false, &seen, &edits).await.unwrap()["access"], "edits");
+
+    // Refused save: the other client removes the agent first. The CLI state
+    // keeps the old value and shows the daemon's reason.
+    desktop.request("chat_remove_participant", json!({"id":"chat","participant":"codey"})).await.unwrap();
+    let mut s = apex_cli::state::AppState::default();
+    s.select("chat".into());
+    s.install_snapshot("chat", s.generation, json!({"recovery_seq":0,"untagged_responders":["codey"],"snapshot":{"kind":"chat","participants":[p.clone()],"transcript":[]},"active":[]}));
+    settings::open(&mut s, Some(Row::Speed), Some("codey".into()));
+    assert!(settings::begin_save(&mut s, "codey", Row::Speed));
+    let refused = send(&cli, "chat", true, &p, &fast).await;
+    let why = refused.clone().unwrap_err();
+    assert!(why.contains("no participant"), "{why}");
+    settings::saved(&mut s, "codey", refused);
+    assert_eq!(settings::saving(&s, "codey"), None);
+    assert!(s.settings.as_ref().unwrap().error.as_deref().unwrap().contains("no participant"));
+    let shown = settings::agent(&s).unwrap();
+    assert!(shown.get("speed").is_none_or(Value::is_null), "old value kept: {shown}");
 }

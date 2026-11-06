@@ -21,6 +21,10 @@ const CODE: Color = Color::Rgb(253, 186, 116);
 const AMBER: Color = Color::Rgb(251, 191, 36);
 const DIM_MINT: Color = Color::Rgb(34, 85, 65);
 const DIM_CYAN: Color = Color::Rgb(21, 76, 88);
+const PANEL: Color = Color::Rgb(19, 24, 32);
+const INK: Color = Color::Rgb(13, 17, 23);
+const RED: Color = Color::Rgb(248, 113, 113);
+pub const PANEL_ROWS: u16 = 7;
 
 // Pixel copies of public/branding/mark.svg (diamond, mint top, cyan bottom,
 // `>_` prompt) and the logo-horizontal.svg wordmark. g = mint, c = cyan,
@@ -581,6 +585,172 @@ fn empty_lines(s: &AppState, screen: Rect) -> Vec<Line<'static>> {
     out.extend(mark.into_iter().map(|line| line.centered()));
     out
 }
+
+fn width_of(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.width()).sum()
+}
+fn fit(mut spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    // Cut anything past the window edge, cell-accurately.
+    let mut used = 0;
+    let mut out = vec![];
+    for span in spans.drain(..) {
+        if used >= width {
+            break;
+        }
+        let w = span.content.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+        } else {
+            out.push(Span::styled(truncate(&span.content, width - used), span.style));
+            used = width;
+        }
+    }
+    Line::from(out)
+}
+
+/// The bottom line: dim `★ Name` entries and `⇧Tab settings`. The shortcut's
+/// room is reserved first; agents that don't fit fold into `+N ★`.
+pub fn status_line(s: &AppState, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let stars = s.current().and_then(|v| v["untagged_responders"].as_array().cloned()).unwrap_or_default();
+    let names: Vec<(String, String)> = s
+        .members()
+        .into_iter()
+        .filter(|p| stars.contains(&p["id"]))
+        .map(|p| (p["id"].as_str().unwrap_or("").to_string(), safe(p["display_name"].as_str().unwrap_or("Agent"))))
+        .collect();
+    let tail = vec![Span::styled("⇧Tab", Style::default().fg(GRAY)), Span::styled(" settings ", Style::default().fg(DIM_GRAY))];
+    let room = width.saturating_sub(width_of(&tail) + 1);
+    let mut left = vec![Span::raw(" ")];
+    let mut shown = 0;
+    for (i, (id, name)) in names.iter().enumerate() {
+        let gap = if shown > 0 { "  " } else { "" };
+        let more = names.len() - i - 1;
+        let need = gap.width() + 2 + name.width() + if more > 0 { 6 } else { 0 };
+        if width_of(&left) + need > room {
+            break;
+        }
+        left.push(Span::raw(gap));
+        left.push(Span::styled("★ ", Style::default().fg(DIM_GRAY)));
+        left.push(Span::styled(name.clone(), Style::default().fg(color(id))));
+        shown += 1;
+    }
+    if shown < names.len() {
+        let fold = format!("{}+{} ★", if shown > 0 { "  " } else { "" }, names.len() - shown);
+        if width_of(&left) + fold.width() <= room {
+            left.push(Span::styled(fold, Style::default().fg(DIM_GRAY)));
+        }
+    }
+    if width_of(&left) + width_of(&tail) > width {
+        return fit(left, width);
+    }
+    let pad = width - width_of(&left) - width_of(&tail);
+    left.push(Span::raw(" ".repeat(pad)));
+    left.extend(tail);
+    Line::from(left)
+}
+
+/// The seven panel rows (v6): title, four settings, usage, footer.
+pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
+    use crate::settings::{self, Row};
+    let (Some(panel), Some(p)) = (s.settings.as_ref(), settings::agent(s)) else {
+        return vec![];
+    };
+    let w = usize::from(width);
+    let id = p["id"].as_str().unwrap_or("").to_string();
+    let name = safe(p["display_name"].as_str().unwrap_or("Agent"));
+    let cast = settings::order(s);
+    let at = cast.iter().position(|c| c["id"] == id.as_str()).unwrap_or(0) + 1;
+    let dim = Style::default().fg(DIM_GRAY);
+    let mut out = vec![];
+    // Title: ── Name this thread ───── 1 of 3 · Tab next ──
+    let left = format!(" {name} ");
+    let mut right = format!(" {at} of {} · Tab next ", cast.len());
+    let mut thread = "this thread";
+    if 4 + left.width() + thread.width() + 1 + right.width() > w {
+        right = format!(" {at} of {} ", cast.len());
+    }
+    if 4 + left.width() + thread.width() + 1 + right.width() > w {
+        thread = "";
+    }
+    let rule = w.saturating_sub(4 + left.width() + thread.width() + 1 + right.width());
+    out.push(fit(
+        vec![
+            Span::styled("──", dim),
+            Span::styled(left, Style::default().fg(color(&id)).add_modifier(Modifier::BOLD)),
+            Span::styled(thread, dim),
+            Span::raw(" "),
+            Span::styled("─".repeat(rule), dim),
+            Span::styled(right, dim),
+            Span::styled("──", dim),
+        ],
+        w,
+    ));
+    let saving = crate::settings::saving(s, &id);
+    for (row, label) in [(Row::Model, "Model"), (Row::Reasoning, "Reasoning"), (Row::Speed, "Speed"), (Row::Access, "Access")] {
+        let focused = panel.row() == row;
+        let mut spans = vec![
+            Span::styled(if focused { " ▸ " } else { "   " }, Style::default().fg(CYAN)),
+            Span::styled(format!("{label:<12}"), Style::default().fg(if focused { WORD_WHITE } else { GRAY })),
+        ];
+        match settings::value(s, panel, &p, row) {
+            Err(reason) => spans.push(Span::styled(reason, dim)),
+            Ok(value) => {
+                let arrow = Style::default().fg(if focused { CYAN } else { DIM_GRAY });
+                spans.push(Span::styled("◂ ", arrow));
+                spans.push(Span::styled(
+                    format!(" {} ", safe(&value)),
+                    if focused { Style::default().fg(INK).bg(CYAN) } else { Style::default().fg(WORD_WHITE) },
+                ));
+                spans.push(Span::styled(" ▸", arrow));
+                if saving == Some(row) {
+                    spans.push(Span::styled("  saving…", dim));
+                }
+            }
+        }
+        out.push(fit(spans, w));
+    }
+    out.push(fit(vec![Span::raw("   "), Span::styled(safe(&settings::usage_line(s, &p)), dim)], w));
+    let white = Style::default().fg(WORD_WHITE);
+    let gray = Style::default().fg(GRAY);
+    let busy = s.working().iter().any(|a| a == &id);
+    let chat = settings::is_chat(s);
+    let footer: Vec<Span<'static>> = if let Some(error) = &panel.error {
+        vec![Span::styled(safe(error).replace('\n', " "), Style::default().fg(RED))]
+    } else if panel.confirm_full {
+        vec![
+            Span::styled(format!("{name} can run commands without asking. "), white),
+            Span::styled("Enter", white),
+            Span::styled(" yes · ", gray),
+            Span::styled("Esc", white),
+            Span::styled(" no", gray),
+        ]
+    } else if let Some(level) = &panel.pending_access {
+        vec![
+            Span::styled("Enter", white),
+            Span::styled(
+                format!(
+                    " applies {} · now {}{} · ",
+                    settings::label(level),
+                    settings::label(&settings::access_of(&p)),
+                    if busy { " · stops its current turn" } else { "" }
+                ),
+                gray,
+            ),
+            Span::styled("Esc", white),
+            Span::styled(" cancels", gray),
+        ]
+    } else {
+        let keys = if panel.row() == Row::Access && !chat { "←→ choose · Enter apply · Esc close" } else { "←→ change · ↑↓ row · Esc close" };
+        let hint = if busy && panel.row() != Row::Access { " · applies from its next turn" } else { "" };
+        vec![Span::styled(format!("{keys}{hint}"), dim)]
+    };
+    let mut footer_spans = vec![Span::raw("   ")];
+    footer_spans.extend(footer);
+    out.push(fit(footer_spans, w));
+    out.into_iter().map(|line| line.style(Style::default().bg(PANEL))).collect()
+}
 pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
     let area = f.area();
     let width = area.width.saturating_sub(2).max(1);
@@ -603,7 +773,16 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
             .style(Style::default().fg(DIM_GRAY)),
         rows[1],
     );
-    let screen = rows[2];
+    let panel = if s.view != 0 { settings_lines(s, area.width) } else { vec![] };
+    let (screen, panel_rect) = if !panel.is_empty() && rows[2].height > PANEL_ROWS {
+        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(PANEL_ROWS)]).split(rows[2]);
+        (parts[0], Some(parts[1]))
+    } else {
+        (rows[2], None)
+    };
+    if let Some(rect) = panel_rect {
+        f.render_widget(Paragraph::new(panel).style(Style::default().bg(PANEL)), rect);
+    }
     if s.view == 0 {
         let mut lines = vec![Line::from("")];
         lines.extend(logo_lines(screen.width, screen.height));
@@ -811,16 +990,7 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
             inner.y + y.saturating_sub(offset).min(inner.height - 1),
         ));
     }
-    let status = format!(
-        " {} · {} agents{} · Alt+Enter/Ctrl-J newline · Ctrl-C exit",
-        if s.connected { "connected" } else { "offline" },
-        s.members().len(),
-        if s.busy { " · working…" } else { "" }
-    );
-    f.render_widget(
-        Paragraph::new(status).style(Style::default().fg(GRAY)),
-        rows[4],
-    );
+    f.render_widget(Paragraph::new(status_line(s, area.width)), rows[4]);
     if let Some(menu) = &s.menu {
         let height = (menu.choices.len() + 3)
             .min(14)
