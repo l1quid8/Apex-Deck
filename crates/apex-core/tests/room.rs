@@ -358,14 +358,14 @@ impl Participant for WorkingBot {
     ) -> Result<Reply, ParticipantError> {
         on_progress(Progress::Activity("Reading notes.txt"));
         on_progress(Progress::Text("Done."));
-        on_progress(Progress::Context(ContextUse { used_tokens: 36_000, window_tokens: 200_000 }));
+        on_progress(Progress::Context(ContextUse { estimated: false, used_tokens: 36_000, window_tokens: 200_000 }));
         on_progress(Progress::Plan(&PlanUsage {
             provider: AgentTool::Codex,
             windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
             partial: true,
             reset_credits: None,
         }));
-        Ok(Reply { text: "Done.".into(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false })
+        Ok(Reply { text: "Done.".into(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false, cached_input_tokens: None })
     }
 }
 
@@ -414,7 +414,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
             &RoomEvent::TurnStarted { id: id.clone() },
             &RoomEvent::Activity { id: id.clone(), text: "Reading notes.txt".into() },
             &RoomEvent::Delta { id: id.clone(), text: "Done.".into() },
-            &RoomEvent::ContextUsage { id: id.clone(), used_tokens: 36_000, window_tokens: 200_000 },
+            &RoomEvent::ContextUsage { id: id.clone(), used_tokens: 36_000, window_tokens: 200_000, estimated: false },
             // The plan is the provider's, so it is not tied to the bot.
             &RoomEvent::PlanUsage {
                 provider: AgentTool::Codex,
@@ -423,7 +423,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
                 model: None,
                 reset_credits: None,
             },
-            &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false },
+            &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false, cached_input_tokens: None },
             &RoomEvent::MessageAdded {
                 message: apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, late_reply_from: None, servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into(), at: None }
             },
@@ -817,7 +817,7 @@ fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
     let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: Some(0) });
     say(&mut room, "go");
     say(&mut room, "again");
-    assert_eq!(room.usage().get(&id), Some(&TokenTotals { input: 240, output: 14, turns: 2, cost_micros: 0, unknown_cost_turns: 2, ..Default::default() }));
+    assert_eq!(room.usage().get(&id), Some(&TokenTotals { input_reported_turns: Some(2), output_reported_turns: Some(2), input: 240, output: 14, turns: 2, cost_micros: 0, unknown_cost_turns: 2, ..Default::default() }));
     assert!(room.usage().get(&ParticipantId::new("quiet")).is_none(), "a bot that reports nothing has no totals");
 
     let snapshot = room.snapshot();

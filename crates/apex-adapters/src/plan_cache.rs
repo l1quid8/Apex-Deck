@@ -135,7 +135,15 @@ impl Provider {
             return Ok(answer);
         }
         let result = read().await;
-        self.slots().entry(key.to_string()).or_default().record(Instant::now(), result)
+        let mut slots = self.slots();
+        let slot = slots.entry(key.to_string()).or_default();
+        if key.starts_with("gateway:") && result.is_err() {
+            // An unavailable remote account must remain unknown throughout
+            // backoff, rather than reviving the last report as fresh data.
+            slot.last = None;
+            slot.read_at = None;
+        }
+        slot.record(Instant::now(), result)
     }
 
     /// Note a plan a turn reported.
@@ -152,7 +160,8 @@ impl Provider {
 /// Which answer a caller gets. A model with a quota group of its own gets a
 /// slot of its own; everything else shares the provider's unnamed slot.
 fn slot_key(model: Option<&str>) -> String {
-    model.map(str::trim).filter(|model| !model.is_empty()).unwrap_or("").to_lowercase()
+    let key = model.map(str::trim).filter(|model| !model.is_empty()).unwrap_or("");
+    if key.starts_with("gateway:") { key.to_owned() } else { key.to_lowercase() }
 }
 
 static CLAUDE: std::sync::LazyLock<Provider> = std::sync::LazyLock::new(Provider::new);
@@ -204,6 +213,16 @@ pub(crate) fn remember(plan: &PlanUsage) {
     }
 }
 
+/// Gateway-owned account cache slots never alias local provider login slots.
+pub(crate) fn remember_for(plan: &PlanUsage, key: &str) {
+    if let Some(provider) = provider(plan.provider) {
+        provider.slots().entry(slot_key(Some(key))).or_default().remember(Instant::now(), plan);
+    }
+}
+pub(crate) fn last_for(tool: AgentTool, key: &str) -> Option<PlanUsage> {
+    provider(tool)?.slots().get(&slot_key(Some(key))).and_then(|slot| slot.last.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +237,16 @@ mod tests {
             partial,
             reset_credits: None,
         }
+    }
+
+    #[tokio::test]
+    async fn gateway_failure_backoff_never_restores_stale_quota() {
+        let provider = Provider::new();
+        let key = "gateway:account";
+        provider.slots().entry(key.into()).or_default().record(Instant::now(), Ok(plan(20,false))).unwrap();
+        assert!(provider.get(key, Duration::ZERO, || async { Err(Failure::new("401", Failure::SHORT)) }).await.is_err());
+        let during_backoff = provider.get(key, Duration::ZERO, || async { panic!("must respect failure backoff") }).await.unwrap();
+        assert_eq!(during_backoff, None);
     }
 
     #[test]

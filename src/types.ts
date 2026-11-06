@@ -244,6 +244,9 @@ export interface AllowedRule {
 
 /** Tokens a bot has used in one thread, over the turns that reported a count. */
 export interface TokenTotals {
+  input_reported_turns?: number;
+  output_reported_turns?: number;
+  cached_input?: number;
   input: number;
   output: number;
   turns: number;
@@ -403,9 +406,9 @@ export type RoomEvent = { recovery_seq?: number } & (
   /** A bot changed a file. */
   | { type: "changed"; id: string; change: FileChange }
   /** Tokens a finished turn used, when the backend reports them. */
-  | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cost_micros?: number | null; cost_estimated?: boolean }
+  | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cached_input_tokens?: number | null; cost_micros?: number | null; cost_estimated?: boolean }
   /** How full a participant's context window was on its latest request. */
-  | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
+  | { type: "context_usage"; estimated?: boolean; id: string; used_tokens: number; window_tokens: number }
   /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value.
    *  `model` names the model whose own quota group this is, when the provider reads one apart from the account. */
   | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }

@@ -540,12 +540,12 @@ pub(crate) async fn run(
                     output_tokens = Some(output_tokens.unwrap_or(0) + n);
                 }
                 if let (Some(used), Some(window)) = (params["promptTokens"].as_u64(), window) {
-                    on_progress(Progress::Context(ContextUse { used_tokens: used, window_tokens: window }));
+                    on_progress(Progress::Context(ContextUse { estimated: false, used_tokens: used, window_tokens: window }));
                 }
             }
             "session/contextUsage" => {
                 if let (Some(used), Some(window)) = (params["usedTokens"].as_u64(), params["windowTokens"].as_u64().or(window)) {
-                    on_progress(Progress::Context(ContextUse { used_tokens: used, window_tokens: window }));
+                    on_progress(Progress::Context(ContextUse { estimated: false, used_tokens: used, window_tokens: window }));
                 }
             }
             "usage/changed" => {
@@ -604,6 +604,7 @@ pub(crate) async fn run(
         return Err(TurnError::Failed(why));
     }
     Ok(Reply {
+            cached_input_tokens: None,
         text: writing.text.trim().to_string(),
         input_tokens,
         output_tokens,

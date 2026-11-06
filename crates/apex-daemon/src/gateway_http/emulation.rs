@@ -90,8 +90,7 @@ pub(super) fn text_request(body: &Value) -> Result<TurnRequest, String> {
 pub(super) fn text_result(body: &Value, reply: &Reply) -> Result<(Value, Value), String> {
     let envelope: Value = serde_json::from_str(reply.text.trim()).map_err(|_| "Provider returned invalid envelope JSON")?;
     let message = translate(body, &envelope)?;
-    let usage = json!({"prompt_tokens":reply.input_tokens.unwrap_or(0), "completion_tokens":reply.output_tokens.unwrap_or(0),
-        "cost":reply.cost_micros.map(|c| c as f64 / 1_000_000.)});
+    let usage = super::telemetry::reply_usage(reply);
     Ok((message, usage))
 }
 
@@ -105,11 +104,18 @@ async fn run_text(
         data_dir: Some(state.data_dir.clone()),
         ..Default::default()
     }).with_tools_disabled();
-    let reply = participant.respond_with_approvals(text_request(body)?, &|_| {}, &GatewayApprover).await
+    let context_use = std::sync::Mutex::new(None);
+    let reply = participant.respond_with_approvals(text_request(body)?, &|update| {
+        if let Progress::Plan(plan) = update { let model = match &target.config.backend { Backend::Agent {model,..} => model.as_deref(), _ => None };
+            apex_adapters::remember_gateway_plan_usage(plan, model, &BuildContext {data_dir:Some(state.data_dir.clone()), ..Default::default()}); }
+        if let Progress::Context(value) = update { *context_use.lock().unwrap() = Some(value); }
+    }, &GatewayApprover).await
         .map_err(|e| e.to_string())?;
     completed.store(true, Ordering::Relaxed);
     if let Some(cost) = reply.cost_micros { state.keys.record_spend(&key.id, cost); }
-    text_result(body, &reply)
+    let (message, mut usage) = text_result(body, &reply)?;
+    usage["context"] = json!(*context_use.lock().unwrap());
+    Ok((message, usage))
 }
 
 fn command(
@@ -257,8 +263,7 @@ async fn run(
         .get("structured_output")
         .ok_or("Subscription CLI did not return structured output")?;
     let message = translate(body, envelope)?;
-    let usage = json!({"prompt_tokens":result["usage"]["input_tokens"].as_u64().unwrap_or(0),
-        "completion_tokens":result["usage"]["output_tokens"].as_u64().unwrap_or(0),"cost":result.get("total_cost_usd")});
+    let usage = super::telemetry::cli_usage(&result, matches!(target.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }));
     Ok((message, usage))
 }
 
@@ -303,7 +308,7 @@ pub(super) async fn respond(
         write_auth_error(stream, AuthError::Revoked).await;
         return;
     }
-    let (message, mut usage) = match result {
+    let (message, usage) = match result {
         Ok(r) => r,
         Err(why) => {
             if !completed.load(Ordering::Relaxed) {
@@ -313,10 +318,6 @@ pub(super) async fn respond(
             return;
         }
     };
-    usage["total_tokens"] = json!(usage["prompt_tokens"]
-        .as_u64()
-        .unwrap_or(0)
-        .saturating_add(usage["completion_tokens"].as_u64().unwrap_or(0)));
     let reason = if message.get("tool_calls").is_some() {
         "tool_calls"
     } else {
