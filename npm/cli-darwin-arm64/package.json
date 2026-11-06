@@ -1,0 +1,23 @@
+{
+  "name": "@apex-deck/cli-darwin-arm64",
+  "version": "0.9.8",
+  "description": "Apex Deck CLI signed binaries for macOS Apple Silicon",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": [
+    "apex",
+    "apex-daemon",
+    "apex-provenance",
+    "manifest.json",
+    "install-cli-provenance.sh",
+    "INSTALL.txt"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apex-deck/apex-deck"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

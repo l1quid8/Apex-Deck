@@ -1,0 +1,28 @@
+{
+  "name": "@apex-deck/cli",
+  "version": "0.9.8",
+  "description": "Apex Deck standalone CLI launcher - shares agents and threads with the desktop app. Requires one-time admin setup.",
+  "bin": {
+    "apex": "bin/apex"
+  },
+  "files": [
+    "bin/"
+  ],
+  "optionalDependencies": {
+    "@apex-deck/cli-darwin-arm64": "0.9.8"
+  },
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apex-deck/apex-deck"
+  },
+  "preferGlobal": true,
+  "publishConfig": {
+    "access": "public"
+  }
+}
