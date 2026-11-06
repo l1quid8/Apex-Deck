@@ -64,9 +64,6 @@ export interface SshKey {
 const KEY_PARTS: Record<string, { public: number; private: number }> = {
   "ssh-ed25519": { public: 1, private: 3 },
   "ssh-rsa": { public: 2, private: 7 },
-  "ecdsa-sha2-nistp256": { public: 2, private: 4 },
-  "ecdsa-sha2-nistp384": { public: 2, private: 4 },
-  "ecdsa-sha2-nistp521": { public: 2, private: 4 },
 };
 const ED25519_PUBLIC_BYTES = 32;
 const ED25519_PRIVATE_BYTES = 64;
@@ -144,7 +141,7 @@ export function readKey(name: string, text: string): SshKey {
   const type = publicKey.field();
   if (!/^[a-z0-9][a-z0-9@.-]*$/.test(type)) throw new Error(NOT_A_KEY);
   const parts = KEY_PARTS[type];
-  if (!parts) throw new Error(`${type} keys won't work here. Use an ed25519, RSA or ECDSA key.`);
+  if (!parts) throw new Error(`${type} keys won't work here. Use an ed25519 or RSA key.`);
   const publicParts = Array.from({ length: parts.public }, publicKey.field);
   if (publicKey.rest() || publicParts.some((part) => !part)) throw new Error(NOT_A_KEY);
   if (type === "ssh-ed25519" && publicParts[0].length !== ED25519_PUBLIC_BYTES) throw new Error(NOT_A_KEY);
@@ -186,12 +183,19 @@ export function sshFormError(form: SshForm): string | null {
   return null;
 }
 
+export interface ServerKey { hostPort: string; fingerprint: string }
+
 /** One step of the run. A failed step stops it, and nothing after it happens. */
 export type SetupEvent =
   | { kind: "step"; id: string; text: string }
+  /** The approve went out, so the machine may already have paired and Stop no longer applies. */
+  | { kind: "finishing" }
   /** Saved on the phone the moment the machine pairs, so closing the screen can't lose it. */
   | { kind: "paired"; name: string }
-  | { kind: "failed"; id: string; label: string; message: string }
+  /** Host trust decision: fresh server with no host-trust.json, ask if user trusts it. */
+  | { kind: "trust"; fresh: boolean; message: string }
+  /** `trust` is set when the server's key changed: the key the person may choose to trust. */
+  | { kind: "failed"; id: string; label: string; message: string; trust?: ServerKey }
   | { kind: "done"; message: string };
 
 export interface SshRequest {
@@ -205,10 +209,12 @@ export interface SshRequest {
   keep: boolean;
 }
 
-/** Runs setup on the server and reports each step. `cancel` stops it at any point. */
-export type SshSetup = (request: SshRequest, onEvent: (event: SetupEvent) => void) => { cancel(): void };
-
 export function sshRequest(form: SshForm): SshRequest {
   const { host, port } = sshTarget(form);
   return { label: form.label.trim(), host, port: Number(port), user: form.user.trim(), password: form.password, key: form.key, passphrase: form.passphrase, keep: form.keep };
+}
+
+/** Connect moves the secrets to the run: the form keeps only what isn't one. */
+export function handOff(form: SshForm): { request: SshRequest; form: SshForm } {
+  return { request: sshRequest(form), form: { ...form, password: "", key: null, passphrase: "", keep: false } };
 }

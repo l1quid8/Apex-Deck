@@ -16,10 +16,10 @@ function run(command, args) {
   return `${result.stdout || ''}${result.stderr || ''}`;
 }
 export function validateManifest(value) {
-  for (const key of ['ui', 'daemon', 'broker']) if (!/^[a-f0-9]{40}$/.test(value[key] ?? '')) throw new Error(`Invalid ${key} CDHash`);
+  for (const key of ['ui', 'daemon', 'broker', ...('cli' in value ? ['cli'] : [])]) if (!/^[a-f0-9]{40}$/.test(value[key] ?? '')) throw new Error(`Invalid ${key} CDHash`);
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.id ?? '')) throw new Error('Invalid upgrade id');
   if (!/^\d+(?:\.\d+){1,3}$/.test(value.version ?? '')) throw new Error('Invalid version');
-  return { id: value.id, version: value.version, ui: value.ui, daemon: value.daemon, broker: value.broker };
+  return { id: value.id, version: value.version, ui: value.ui, daemon: value.daemon, broker: value.broker, ...('cli' in value ? { cli: value.cli } : {}) };
 }
 export function validateOutput(output) {
   const resolved = path.resolve(output);
@@ -53,8 +53,10 @@ export function buildUpgrade(appPath, outputPath) {
     return hash;
   };
   const info = JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(app, 'Contents/Info.plist')]));
-  const manifest = validateManifest({ id: randomUUID(), version: info.CFBundleShortVersionString, ui: cdhash(app), daemon: cdhash(path.join(app, 'Contents/Resources/bin/apex-daemon')), broker: cdhash(path.join(app, 'Contents/Resources/bin/apex-provenance')) });
-  run('/bin/bash', [verifier, app, manifest.ui, manifest.daemon, path.join(app, 'Contents/Resources/bin/apex-provenance'), manifest.broker]);
+  const cliPath = path.join(app, 'Contents/Resources/bin/apex');
+  const cli = fs.existsSync(cliPath) ? { cli: cdhash(cliPath) } : {};
+  const manifest = validateManifest({ ...cli, id: randomUUID(), version: info.CFBundleShortVersionString, ui: cdhash(app), daemon: cdhash(path.join(app, 'Contents/Resources/bin/apex-daemon')), broker: cdhash(path.join(app, 'Contents/Resources/bin/apex-provenance')) });
+  run('/bin/bash', [verifier, app, manifest.ui, manifest.daemon, path.join(app, 'Contents/Resources/bin/apex-provenance'), manifest.broker, ...(manifest.cli ? [manifest.cli] : [])]);
   const work = fs.mkdtempSync(path.join(release, '.native-upgrade-'));
   try {
     const payload = path.join(work, 'payload'); const scripts = path.join(work, 'scripts');

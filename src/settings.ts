@@ -8,6 +8,7 @@ import type { VoiceSettings } from './voice/types.ts';
 import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types";
 import { isChipStyle, type ChipParts } from "./botChip.ts";
 import { accentHex, readAppearance, themeMode, type AppearanceSettings, type AppearanceValues } from "./themes.ts";
+import { readAppearanceDraft, type AppearanceDraft } from "./appearanceDraft.ts";
 
 /** The glyph field behind empty threads. Saved only after a user changes it; older files omit it. */
 export interface LandingTextureSettings {
@@ -54,6 +55,8 @@ export interface AppSettings {
   voice?: VoiceSettings;
   /** Saved only after a user changes Appearance; older settings files omit it. */
   appearance?: AppearanceSettings;
+  /** Appearance work not applied yet. Deck paints from the keys it would replace, never from this. */
+  appearanceDraft?: AppearanceDraft;
   /** Saved only after a user changes the landing texture; older settings files omit it. */
   landingTexture?: LandingTextureSettings;
   version: 1;
@@ -63,6 +66,9 @@ export interface AppSettings {
   newThread: RoomOptions;
   /** The access a bot gets when the add form opens. */
   newBotAccess: Access;
+  /** Who bots are working for. Both optional; empty means "the user". */
+  userName: string;
+  userNickname: string;
   terminal: { fontSize: number; scrollback: number };
   /** Hosts whose pages open in your browser instead of the Preview pane. */
   preview: { openExternally: string[] };
@@ -83,6 +89,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   disabledProviders: [],
   newThread: { policy: "mention", max_bot_hops: 3 },
   newBotAccess: "read",
+  userName: "",
+  userNickname: "",
   terminal: { fontSize: 13, scrollback: 5000 },
   preview: { openExternally: [] },
   confirmSteer: true,
@@ -101,14 +109,27 @@ const whole = (value: unknown, min: number, max: number, fallback: number) =>
 const hops = (value: unknown, fallback: number | null): number | null =>
   value === null ? null : whole(value, 0, MAX_ROUNDS, fallback ?? DEFAULT_SETTINGS.newThread.max_bot_hops as number);
 
+/** Read the bot chip settings, dropping each bad value on its own. */
+export function readBotChips(raw: unknown): ChipParts {
+  const chips = record(raw);
+  const d = DEFAULT_SETTINGS.botChips;
+  return {
+    ...(isChipStyle(chips.style) ? { style: chips.style } : {}),
+    tool: typeof chips.tool === "boolean" ? chips.tool : d.tool,
+    effort: typeof chips.effort === "boolean" ? chips.effort : d.effort,
+    usage: typeof chips.usage === "boolean" ? chips.usage : d.usage,
+  };
+}
+
 /** Read a saved settings file. `legacyDisabled` is the provider list older
  *  versions kept in the session file; it is used only when this file has none. */
 export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSettings {
   const saved = record(raw);
   const thread = record(saved.newThread);
   const terminal = record(saved.terminal);
-  const chips = record(saved.botChips);
   const d = DEFAULT_SETTINGS;
+  const appearance = saved.appearance !== null && typeof saved.appearance === "object" && !Array.isArray(saved.appearance) ? readAppearance(saved.appearance) : undefined;
+  const appearanceDraft = readAppearanceDraft(saved.appearanceDraft, appearance?.saved ?? []);
   return {
     ...(saved.voice ? {voice: readVoiceSettings(saved.voice)} : {}),
     version: 1,
@@ -118,6 +139,8 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       max_bot_hops: hops(thread.max_bot_hops, d.newThread.max_bot_hops),
     },
     newBotAccess: ACCESS.includes(saved.newBotAccess as Access) ? saved.newBotAccess as Access : d.newBotAccess,
+    userName: typeof saved.userName === "string" ? saved.userName : d.userName,
+    userNickname: typeof saved.userNickname === "string" ? saved.userNickname : d.userNickname,
     terminal: {
       fontSize: whole(terminal.fontSize, FONT_SIZES.min, FONT_SIZES.max, d.terminal.fontSize),
       scrollback: SCROLLBACK_CHOICES.includes(terminal.scrollback as number) ? terminal.scrollback as number : d.terminal.scrollback,
@@ -127,13 +150,9 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
     },
     confirmSteer: typeof saved.confirmSteer === "boolean" ? saved.confirmSteer : d.confirmSteer,
     codeRunButtons: typeof saved.codeRunButtons === "boolean" ? saved.codeRunButtons : d.codeRunButtons,
-    botChips: {
-      ...(isChipStyle(chips.style) ? { style: chips.style } : {}),
-      tool: typeof chips.tool === "boolean" ? chips.tool : d.botChips.tool,
-      effort: typeof chips.effort === "boolean" ? chips.effort : d.botChips.effort,
-      usage: typeof chips.usage === "boolean" ? chips.usage : d.botChips.usage,
-    },
-    ...(saved.appearance !== null && typeof saved.appearance === "object" && !Array.isArray(saved.appearance) ? { appearance: readAppearance(saved.appearance) } : {}),
+    botChips: readBotChips(saved.botChips),
+    ...(appearance ? { appearance } : {}),
+    ...(appearanceDraft ? { appearanceDraft } : {}),
     ...(saved.landingTexture !== null && typeof saved.landingTexture === "object" && !Array.isArray(saved.landingTexture) ? { landingTexture: readLandingTexture(saved.landingTexture) } : {}),
   };
 }

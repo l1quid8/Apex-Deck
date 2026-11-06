@@ -5,7 +5,7 @@ export interface RealtimeControllerDeps {
   candidates(): VoiceCandidate[];
   bridge(scope: CallScope): ThreadVoiceBridge;
   voiceSettings(): VoiceSettings;
-  mintSession(args: { room: string; participant?: string; model?: string; voice?: string; instructions?: string; tools?: unknown[] }): Promise<{ client_secret: string; expires_at?: number; model: string; voice: string }>;
+  mintSession(args: { hostId: string; room: string; participant?: string; model?: string; voice?: string; instructions?: string; tools?: unknown[] }): Promise<{ client_secret: string; expires_at?: number; model: string; voice: string }>;
   focus(scope: CallScope): void;
 }
 
@@ -102,7 +102,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
               set({ status: "waiting" });
             } else if (type === "response.audio.delta" || type === "response.audio_transcript.delta" || type === "response.output_audio.delta") {
               set({ status: "speaking" });
-            } else if (type === "response.done" || type === "response.audio.done" || type === "input_audio_buffer.cleared") {
+            } else if (type === "response.done" || type === "response.audio.done" || type === "input_audio_buffer.cleared" || type === "conversation.item.input_audio_transcription.failed" || (type === "conversation.item.input_audio_transcription.completed" && typeof e.transcript === "string" && !e.transcript.trim())) {
               set({ status: "listening" });
             } else if (type === "error") {
               console.warn("[realtime error]", e);
@@ -218,6 +218,7 @@ export function createRealtimeVoiceController(deps: RealtimeControllerDeps) {
     switchAgent,
     mute(value: boolean) {
       set({ muted: value });
+      pcClient?.setMuted(value);
       if (localStream) {
         for (const t of localStream.getAudioTracks()) t.enabled = !value;
       }

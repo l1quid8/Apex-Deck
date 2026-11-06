@@ -98,6 +98,10 @@ pub(crate) struct Env {
     pub path: Option<String>,
     pub temp: Option<PathBuf>,
     pub cargo_target_dir: Option<PathBuf>,
+    pub access: Option<apex_core::Access>,
+    pub data_dir: Option<PathBuf>,
+    #[allow(dead_code)]
+    pub observed_addrs: Vec<std::net::IpAddr>,
 }
 
 impl Env {
@@ -239,6 +243,65 @@ type Started = (OwnedChild, Arc<Mutex<Output>>, tokio::task::JoinHandle<()>);
 
 /// Start `script`, with both output streams copied into one buffer.
 fn start(env: &Env, registry: &Registry, script: &str) -> Result<Started, String> {
+    if let Some(access) = env.access {
+        if crate::linux_jail::should_jail(access) {
+            let bwrap = crate::gateway_sandbox::find_bwrap(env.path.as_deref());
+            match crate::linux_jail::state(bwrap.as_deref()) {
+                crate::linux_jail::JailState::Fails(reason) => return Err(reason),
+                crate::linux_jail::JailState::Works => {}
+            }
+            let _bwrap = bwrap.ok_or_else(|| {
+                format!("{}: it isn't installed", crate::linux_jail::probe::NEEDS_ADMIN)
+            })?;
+            #[cfg(target_os = "linux")]
+            {
+                let cwd = env.cwd.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")));
+                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+                let data_dir = env.data_dir.clone().unwrap_or_else(|| home.join(".local/share/apex-deck"));
+                let path_os = env.path.as_ref().map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+                let spec = crate::linux_jail::build_spec(
+                    std::path::Path::new("/bin/sh"),
+                    &["-c".into(), script.into()],
+                    &cwd,
+                    access,
+                    None,
+                    &home,
+                    &data_dir,
+                    "api-shell",
+                    "shell",
+                    &path_os,
+                    &[],
+                    &[],
+                ).map_err(|e| e.to_string())?;
+
+                let mut jailed = crate::linux_jail::launch::jailed_command(&spec, &_bwrap)
+                    .map_err(|e| e.to_string())?;
+                jailed.command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+                let (child, control) = jailed.spawn(registry).map_err(|e| format!("Couldn't start the shell: {e}"))?;
+                let net = std::sync::Arc::new(crate::linux_jail::proxy::Internet {
+                    observed: std::sync::Mutex::new(env.observed_addrs.clone()),
+                });
+                let purposes = std::sync::Arc::new(crate::linux_jail::DaemonPurposes::new(net));
+                tokio::spawn(crate::linux_jail::channel::serve(control, purposes));
+
+                let output = Arc::new(Mutex::new(Output::default()));
+                let mut child = child;
+                let out = child.stdout.take().map(|p| tokio::spawn(pump(p, output.clone())));
+                let err = child.stderr.take().map(|p| tokio::spawn(pump(p, output.clone())));
+                let readers = tokio::spawn(async move {
+                    if let Some(out) = out {
+                        let _ = out.await;
+                    }
+                    if let Some(err) = err {
+                        let _ = err.await;
+                    }
+                });
+                return Ok((child, output, readers));
+            }
+            #[cfg(not(target_os = "linux"))]
+            return Err("Linux bot jail is only available on Linux".into());
+        }
+    }
     let mut command = env.command(script)?;
     let mut child = registry.spawn(&mut command).map_err(|e| format!("Couldn't start the shell: {e}"))?;
     let output = Arc::new(Mutex::new(Output::default()));
@@ -471,5 +534,18 @@ mod tests {
         let (fresh, to) = output.since(output.total - 3);
         assert_eq!(fresh, "end");
         assert_eq!(to, output.total);
+    }
+
+    #[tokio::test]
+    async fn jailed_shell_refuses_when_jail_fails() {
+        let _lock = crate::linux_jail::TEST_LOCK.lock().unwrap();
+        crate::linux_jail::set_forced_for_test(true);
+        crate::linux_jail::set_state_for_test(Some(crate::linux_jail::JailState::Fails("test fail".into())));
+        let mut e = env();
+        e.access = Some(apex_core::Access::Read);
+        let err = run(&e, &Registry::default(), "echo hi", Duration::from_secs(1)).await.unwrap_err();
+        assert_eq!(err, "test fail");
+        crate::linux_jail::set_forced_for_test(false);
+        crate::linux_jail::set_state_for_test(None);
     }
 }

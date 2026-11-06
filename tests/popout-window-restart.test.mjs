@@ -27,13 +27,14 @@ test('native external windows reopen after process exit with fresh snapshots and
       ipcMain.on('apex:smoke', event => { event.returnValue = true; });
       app.whenReady().then(async()=>{try {
         const {PopoutLayoutStore,fitPopoutBounds,trackPopoutWindow}=await import(${JSON.stringify(pathToFileURL(path.join(desktop, 'popoutLayout.mjs')).href)});
+        const {assistantFloatBounds,movedAssistantFloatBounds}=await import(${JSON.stringify(pathToFileURL(path.join(desktop, 'assistantFloatLayout.mjs')).href)});
         const {dockedBrowser}=await import(${JSON.stringify(pathToFileURL(path.join(desktop, 'browser.mjs')).href)});
         const gate={confirmed:false},callbacks=new Map();
         const owner={win:new BrowserWindow({show:false}),role:'deck'};
         const windows=new Map([[owner.win.id,owner]]);
         const api=runInNewContext(${JSON.stringify(production + '\n({windows:popoutWindows,snapshots:popoutSnapshots,store:popoutLayout});')},{
-          app,BrowserWindow,screen,dialog,fs,path,crypto,process,dockedBrowser,gate,windows,
-          PopoutLayoutStore,fitPopoutBounds,trackPopoutWindow,
+          app,BrowserWindow,screen,dialog,fs,path,crypto,process,dockedBrowser,sites:()=>({}),gate,windows,
+          PopoutLayoutStore,fitPopoutBounds,trackPopoutWindow,assistantFloatBounds,movedAssistantFloatBounds,
           here:${JSON.stringify(desktop)},smoke:true,devUrl:${JSON.stringify(pathToFileURL(blank).href)},
           UI_ORIGINS:new Set(['file://']),originOf:()=> 'file://',openExternally:()=>{},
           handle:(channel,fn)=>callbacks.set(channel,fn),
@@ -52,6 +53,42 @@ test('native external windows reopen after process exit with fresh snapshots and
           assert.deepEqual(JSON.parse(JSON.stringify(await callbacks.get('popout:restore')(owner,available))),[]);
           const thread=await open('pane','thread','Original title');
           const files=await open('tab','files','Files');
+          // The renderer tracks one assistant float. Switching assistants must
+          // close the former view, never leave an untracked window taking sends.
+          const first=await open('assistant','assistant-a','Assistant A');
+          const again=await callbacks.get('popout:open')(owner,{kind:'assistant',id:'assistant-a',title:'Assistant A'});
+          assert.equal(again.token,first.token,'same assistant reuses its live view');
+          const second=await open('assistant','assistant-b','Assistant B');
+          assert.ok(first.win.isDestroyed(),'opening B closes A before its handle is replaced');
+          assert.equal([...api.windows.values()].filter(e=>e.floatId).length,1,'only the tracked assistant view survives');
+          assert.ok(!thread.win.isDestroyed() && !files.win.isDestroyed(),'ordinary pop-outs stay open');
+          assert.ok(!api.snapshots.has(first.token),'old assistant snapshot is removed');
+          const before=second.win.getBounds();
+          await callbacks.get('popout:assistant-layout')(owner,second.token,'minimized');
+          assert.equal(second.win.getBounds().width,76,'native avatar-only window is genuinely compact');
+          assert.equal(second.win.getBounds().height,76);
+          await wait(()=>api.store.get('assistant','assistant-b')?.bounds.width===76);
+          assert.equal(api.store.get('assistant','assistant-b').bounds.width,76,'compact placement is saved without re-inflating it');
+          const stranger={win:new BrowserWindow({show:false}),role:'deck'};
+          const compact=second.win.getBounds();
+          await callbacks.get('popout:assistant-layout')(stranger,second.token,'chat');
+          assert.deepEqual(second.win.getBounds(),compact,'another owner cannot resize this assistant');
+          await assert.rejects(()=>callbacks.get('popout:snapshot')(stranger,second.token));
+          await callbacks.get('popout:assistant-move')(owner,second.token,{dx:90000,dy:0});
+          assert.deepEqual(second.win.getBounds(),compact,'unbounded renderer movement is rejected');
+          await callbacks.get('popout:assistant-layout')(owner,second.token,'pill');
+          assert.equal(second.win.getBounds().x+second.win.getBounds().width,before.x+before.width,'one shared right anchor');
+          await callbacks.get('popout:assistant-visibility')(owner,second.token,false);
+          assert.equal(second.win.isVisible(),false);
+          assert.ok(api.windows.has(second.win.id)&&api.snapshots.has(second.token),'Hide retains the live owner/token instead of closing the lane');
+          await callbacks.get('popout:assistant-visibility')(owner,second.token,true);
+          assert.equal(second.win.isVisible(),true);
+          stranger.win.destroy();
+          await callbacks.get('popout:close')(owner,second.token);
+          // Placement remains saved for reopening an assistant, independently
+          // of the ordinary pane/tab restart fixture below.
+          api.store.remove('assistant','assistant-a');
+          api.store.remove('assistant','assistant-b');
           const a=screen.getPrimaryDisplay().workArea;
           thread.win.setBounds({x:a.x+40,y:a.y+50,width:600,height:400});
           files.win.setBounds({x:a.x+100,y:a.y+120,width:650,height:430});

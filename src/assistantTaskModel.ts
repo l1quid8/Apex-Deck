@@ -21,12 +21,17 @@ export interface AssistantTaskDestination {
   threadId: string | null;
   workers: string[];
   newThread: boolean;
+  newThreadTitle?: string | null;
 }
 export type AssistantTaskMode = 'read_only' | 'in_place' | 'isolated';
 export interface TaskHistoryEntry { atMs: number; kind: string; text: string }
 export interface AssistantLineage { assistant: AssistantRef; project: ProjectRef; sourceEventId: string; delegationId: string }
 export interface AssistantTask {
   lineage?: AssistantLineage;
+  workerNames?: Record<string, string>;
+  conversationProgress?: import('./assistantHandoffModel').TaskConversationProgress;
+  conversationEvents?: import('./assistantHandoffModel').TaskConversationEvent[];
+  availableHandoffActions?: ('stop' | 'retry' | 'open')[];
   desiredState?: 'running' | 'paused' | 'cancelled';
   pauseReason?: 'assistant' | 'manual' | null;
   controlRevision?: number;

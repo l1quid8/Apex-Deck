@@ -12,6 +12,7 @@ use tokio::net::TcpListener;
 
 fn config(id: &str, backend: Backend) -> ParticipantConfig {
     ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new(id),
         display_name: id.to_string(),
         backend,
@@ -26,10 +27,11 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
 
 fn request(text: &str) -> TurnRequest {
     TurnRequest {
+        computer: None,
         effort_override: None,
         access: None,
         system: "You are a test bot.".into(),
-        turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
+        turns: vec![ViewTurn { role: Role::User, content: format!("[User]: {text}") }],
         unseen: vec![],
         plan: false,
         cwd: None,
@@ -38,7 +40,7 @@ fn request(text: &str) -> TurnRequest {
 
 /// The same request with the thread's Plan switch on, as the room sends it.
 fn planning(text: &str) -> TurnRequest {
-    TurnRequest { effort_override: None, access: Some(Access::Read), plan: true, ..request(text) }
+    TurnRequest { computer: None, effort_override: None, access: Some(Access::Read), plan: true, ..request(text) }
 }
 
 /// Run `respond` and return the result plus everything streamed.
@@ -75,7 +77,7 @@ async fn cli_receives_the_system_prompt_and_conversation_on_stdin() {
     let (result, _) = ask(&bot, "what is 2+2?").await;
     let echoed = result.unwrap().text;
     assert!(echoed.starts_with("You are a test bot."));
-    assert!(echoed.contains("[Human]: what is 2+2?"));
+    assert!(echoed.contains("[User]: what is 2+2?"));
     assert!(echoed.ends_with("--- Your reply ---"));
 }
 
@@ -315,7 +317,7 @@ async fn cli_runs_in_the_workspace_folder() {
     let dir = std::env::temp_dir().join(format!("apex-deck-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let real = std::fs::canonicalize(&dir).unwrap();
-    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
+    let context = BuildContext { cwd: Some(dir.clone()), ..Default::default() };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; pwd -P"))).with_context(&context);
     let (result, _) = ask(&bot, "where are you?").await;
     assert_eq!(result.unwrap().text, real.to_string_lossy());
@@ -348,7 +350,7 @@ async fn cli_turn_runs_in_request_cwd() {
 async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
     let dir = std::env::temp_dir().join(format!("apex-deck-tmp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()), process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
+    let context = BuildContext { temp: Some(dir.clone()), ..Default::default() };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; printf %s \"$TMPDIR\""))).with_context(&context);
     let (result, _) = ask(&bot, "where is scratch?").await;
     assert_eq!(result.unwrap().text, dir.to_string_lossy());
@@ -358,7 +360,7 @@ async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
 #[cfg(unix)]
 #[tokio::test]
 async fn cli_reports_a_workspace_folder_that_no_longer_exists() {
-    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
+    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), ..Default::default() };
     let bot = CliParticipant::new(config("cli", sh("echo hi"))).with_context(&context);
     let (result, _) = ask(&bot, "hi").await;
     match result {
@@ -386,7 +388,7 @@ async fn cli_finds_the_program_on_the_path_it_is_given() {
     assert!(matches!(missing, Err(ParticipantError::NotConfigured(_))), "{missing:?}");
 
     let path = format!("{}:/usr/bin:/bin", dir.to_string_lossy());
-    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
+    let context = BuildContext { path: Some(path), ..Default::default() };
     let bot = CliParticipant::new(config("cli", backend)).with_context(&context);
     let (found, _) = ask(&bot, "hi").await;
     assert_eq!(found.unwrap().text, "found-on-custom-path");
@@ -424,7 +426,7 @@ async fn codex_agent_refuses_exec_even_when_model_effort_and_access_are_configur
     let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("some-model".into()) });
     cfg.access = Access::Edits;
     cfg.effort = Some("high".into());
-    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), ..Default::default() };
     let bot = build(cfg, &context);
     let (result, _) = ask(bot.as_ref(), "hey, testing").await;
     assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
@@ -522,7 +524,7 @@ async fn api_streams_text_even_when_events_are_split_mid_line_and_mid_character(
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][0]["content"], "You are a test bot.");
     assert_eq!(body["messages"][1]["role"], "user");
-    assert_eq!(body["messages"][1]["content"], "[Human]: is it open?");
+    assert_eq!(body["messages"][1]["content"], "[User]: is it open?");
     assert!(!sent.to_ascii_lowercase().contains("authorization:"));
 }
 
@@ -714,14 +716,7 @@ async fn deepseek_todo_write_becomes_the_bots_todo_list() {
     // tools and the captured call would never run.
     let context = BuildContext {
         cwd: Some(std::env::temp_dir()),
-        path: None,
-        codex_hook: None,
-        temp: None,
-        process_registry: None,
-        cargo_target_dir: None,
-        media_dir: None,
-        attachment_roots: vec![],
-        phone: None,
+        ..Default::default()
     };
     let bot = build(config("deepseek", api(address, None)), &context);
     let lists = std::sync::Mutex::new(Vec::new());
@@ -810,7 +805,7 @@ fn fake_tool(tag: &str, name: &str, script: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn context_in(dir: &std::path::Path) -> BuildContext {
-    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![dir.to_path_buf()], phone: None }
+    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), attachment_roots: vec![dir.to_path_buf()], ..Default::default() }
 }
 
 /// Run one turn the way the room does and collect text and activity.
@@ -1061,6 +1056,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
     let script = script.replace("env > \"$PWD/env.txt\"", "env > \"$PWD/env.txt\"\nprintf 'arg:%s\\n' \"$@\" >> \"$PWD/env.txt\"");
     let dir = fake_tool(&format!("phone-probe-{name}-{}", phone.is_some()), name, &script);
     let mut cfg = config("jig", Backend::Agent { tool, model: None });
+    cfg.access = Access::Full;
     cfg.display_name = "Jigga".into();
     let bot = build(cfg, &BuildContext { phone, ..context_in(&dir) });
     let (result, _, _) = work(bot.as_ref()).await;
@@ -1110,10 +1106,11 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
     let result = bot
         .respond(
             TurnRequest {
+                computer: None,
                 effort_override: None,
                 access: None,
                 system: "You are a test bot.".into(),
-                turns: vec![ViewTurn { role: Role::User, content: "[Human]: please fail".into() }],
+                turns: vec![ViewTurn { role: Role::User, content: "[User]: please fail".into() }],
                 unseen: vec![],
                 plan: false,
                 cwd: None,
@@ -2823,8 +2820,9 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
         &BuildContext { cwd: None, ..context_in(&dir) },
     );
     let req_nodir = TurnRequest {
+        computer: None,
         system: "sys".into(),
-        turns: vec![ViewTurn { role: Role::User, content: "[Human]: bare first turn".into() }],
+        turns: vec![ViewTurn { role: Role::User, content: "[User]: bare first turn".into() }],
         unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: Speaker::Human, text: "bare first turn".into(), servers: vec![], at: None }],
         access: None,
         effort_override: None,
@@ -2860,9 +2858,9 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let mut req2 = request("second message");
     req2.cwd = Some(dir2.clone());
     req2.turns = vec![
-        ViewTurn { role: Role::User, content: "[Human]: first message".into() },
+        ViewTurn { role: Role::User, content: "[User]: first message".into() },
         ViewTurn { role: Role::Assistant, content: "ok".into() },
-        ViewTurn { role: Role::User, content: "[Human]: second message".into() },
+        ViewTurn { role: Role::User, content: "[User]: second message".into() },
     ];
     req2.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 1, speaker: Speaker::Human, text: "second message".into(), servers: vec![], at: None }];
     let res2 = bot.respond(req2, &|_| {}).await;
@@ -2878,11 +2876,11 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let mut req3 = request("third message");
     req3.cwd = Some(dir1.clone());
     req3.turns = vec![
-        ViewTurn { role: Role::User, content: "[Human]: first message".into() },
+        ViewTurn { role: Role::User, content: "[User]: first message".into() },
         ViewTurn { role: Role::Assistant, content: "ok".into() },
-        ViewTurn { role: Role::User, content: "[Human]: second message".into() },
+        ViewTurn { role: Role::User, content: "[User]: second message".into() },
         ViewTurn { role: Role::Assistant, content: "ok".into() },
-        ViewTurn { role: Role::User, content: "[Human]: third message".into() },
+        ViewTurn { role: Role::User, content: "[User]: third message".into() },
     ];
     req3.unseen = vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 2, speaker: Speaker::Human, text: "third message".into(), servers: vec![], at: None }];
     let res3 = bot.respond(req3, &|_| {}).await;
@@ -2898,4 +2896,45 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let _ = std::fs::remove_dir_all(&dir1);
     let _ = std::fs::remove_dir_all(&dir2);
     let _ = std::fs::remove_dir_all(&log_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn launch_points_below_full_refuse_when_linux_jail_fails() {
+    let _lock = apex_adapters::linux_jail::TEST_LOCK.lock().unwrap();
+    use apex_adapters::linux_jail::{set_forced_for_test, set_state_for_test, should_jail, JailState};
+    use apex_core::{Access, Backend, Participant};
+
+    struct ResetJail;
+    impl Drop for ResetJail {
+        fn drop(&mut self) {
+            set_forced_for_test(false);
+            set_state_for_test(None);
+        }
+    }
+    let _reset = ResetJail;
+    set_forced_for_test(true);
+
+    // Full is never jailed
+    assert!(!should_jail(Access::Full));
+    assert!(should_jail(Access::Read));
+    assert!(should_jail(Access::Ask));
+    assert!(should_jail(Access::Edits));
+
+    set_state_for_test(Some(JailState::Fails("simulated sandbox fault".into())));
+
+    // Launch point 1: CLI participant
+    let mut cfg = config("bot", Backend::Cli { program: "echo".into(), args: vec!["hi".into()] });
+    cfg.access = Access::Read;
+    let bot = apex_adapters::CliParticipant::new(cfg);
+    let err = bot.respond(request("hi"), &|_| {}).await.unwrap_err();
+    assert!(err.to_string().contains("simulated sandbox fault"), "got: {err}");
+
+    // Launch point 2: Claude tool discovery
+    let err2 = apex_adapters::claude_tool_servers(None, None).await.unwrap_err();
+    assert!(err2.contains("simulated sandbox fault"), "got: {err2}");
+
+    // Launch point 3: Codex tool discovery
+    let err3 = apex_adapters::codex_tool_servers(None, None).await.unwrap_err();
+    assert!(err3.contains("simulated sandbox fault"), "got: {err3}");
 }

@@ -78,6 +78,9 @@ pub struct Device {
     /// ms since the epoch.
     pub added_at: u64,
     pub last_seen: Option<u64>,
+    /// Confined epoch when this device was paired (Linux trusted host). None = pre-epoch, cannot act on trusted host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confined_epoch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,10 +302,23 @@ impl Devices {
         }
     }
 
+    fn current_confined_epoch(&self) -> Option<String> {
+        let data = self.path.parent()?;
+        let trust_path = data.join(crate::trust_host::FILE);
+        let bytes = std::fs::read(trust_path).ok()?;
+        let rec: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        if rec.get("trusted").and_then(|v| v.as_bool()).unwrap_or(false) {
+            rec.get("epoch").and_then(|v| v.as_str()).map(|s| s.to_string())
+        } else {
+            None
+        }
+    }
+
     /// Add a device. A revoked ID is refused unless `restore`, which lifts
     /// its tombstone.
     pub fn add(&self, id: &str, label: &str, tier: Tier, threads: Threads, restore: bool) -> Result<Device, String> {
         check_id(id)?;
+        let confined_epoch = self.current_confined_epoch();
         self.change(|registry| {
             if registry.is_revoked(id) {
                 if !restore {
@@ -313,7 +329,7 @@ impl Devices {
             if registry.devices.iter().any(|d| d.endpoint_id == id) {
                 return Err(format!("{id} is already paired"));
             }
-            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None };
+            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None, confined_epoch: confined_epoch.clone() };
             registry.devices.push(device.clone());
             registry.bump(id);
             Ok(device)
@@ -329,6 +345,7 @@ impl Devices {
     /// write whose folder sync failed but whose file landed is `Ok` too.
     pub fn approve_pairing(&self, id: &str, label: &str, tier: Tier, threads: Threads, expect_revision: u64) -> Result<Device, ApproveError> {
         check_id(id)?;
+        let confined_epoch = self.current_confined_epoch();
         self.change_then(true, |registry| {
             if registry.revision(id) != expect_revision {
                 return Err(ApproveError::Changed);
@@ -337,7 +354,7 @@ impl Devices {
             if registry.devices.iter().any(|d| d.endpoint_id == id) {
                 return Err(ApproveError::Registry(format!("{id} is already paired")));
             }
-            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None };
+            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None, confined_epoch: confined_epoch.clone() };
             registry.devices.push(device.clone());
             registry.bump(id);
             Ok(device)

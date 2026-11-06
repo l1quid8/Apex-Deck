@@ -54,6 +54,14 @@ export function projectIdentityKey(ref: ProjectRef): string {
   return JSON.stringify([hostId, workspaceId, cwd]);
 }
 
+export function tryProjectIdentityKey(ref: unknown): string | null {
+  try {
+    return projectIdentityKey(ref as ProjectRef);
+  } catch {
+    return null;
+  }
+}
+
 /** Call when creating an editor draft, then persist the result on explicit save. */
 export function createAssistantAppearance(used: AgentAppearance[] = []): AssistantAppearance {
   return { ...createAppearance(used), kind: "pixel" };

@@ -1,5 +1,9 @@
+import { historyHookFor } from './helpers/composer-history-hook.mjs';
+import { assistantHistoryTexts } from '../src/composerHistory.ts';
+import { setAssistantComposerField } from '../src/assistantComposerDrafts.ts';
 import { sharedComposerSurface } from './helpers/shared-composer-surface.mjs';
 import { taskMessageDeleted } from '../src/assistantTaskVisibility.ts';
+import { assistantConversationMessages } from '../src/assistantConversation.ts';
 import { composerButton } from '../src/voice/callView.ts';
 import { readVoiceSettings } from '../src/voice/settings.ts';
 import { withTldr, TLDR_LINE } from '../src/tldr.ts';
@@ -9,7 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, withoutLaneMentions } from '../src/apexAgentModel.ts';
-import { TaskViewContext, personalTaskGroup, personalTaskKey } from '../src/apexAgentTaskView.ts';
+import { TaskViewContext, personalTaskGroup, personalTaskKey, projectTaskKey } from '../src/apexAgentTaskView.ts';
 import { messageStateKey, retryMessageText } from '../src/apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from '../src/apexAgentQuote.ts';
 import { assistantDisplayName } from '../src/assistantName.ts';
@@ -38,6 +42,9 @@ const PersonalCallStub = (props) => ({ type: PersonalCallStub, props, children: 
 const ApexAgentMessageActionsStub = (props) => ({ type: ApexAgentMessageActionsStub, props, children: [] });
 const ApexAgentReplyQuoteStub = (props) => ({ type: ApexAgentReplyQuoteStub, props, children: [] });
 const ApexAgentComposerToolsStub = (props) => ({ type: ApexAgentComposerToolsStub, props, children: [] });
+const HandoffPillStub = () => null;
+const HandoffDraftStub = () => null;
+const HandoffQuestionStub = () => null;
 const VoiceCallBarStub = () => null;
 const VoiceCallControlsStub = () => null;
 const VoiceCallCapsuleStub = () => null;
@@ -52,16 +59,17 @@ function harness(props, { effects = false, voice = {} } = {}) {
     useState(initial) { const i = cursor++; if (!(i in states)) states[i] = initial; return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value; }]; },
     useRef(initial) { const i = cursor++; return effects ? refs[i] ??= { current: initial } : { current: initial }; },
     useMemo(fn) { cursor++; return fn(); },
-    useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || deps.some((v, j) => v !== effectDeps[i][j]))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
+    useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || (!deps || deps.some((v, j) => v !== effectDeps[i][j])))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
     useCallback(fn) { cursor++; return fn; },
   };
+  hooks.useLayoutEffect = hooks.useEffect;
   // The voice coordinator has external stores and a native audio transport;
   // this harness exercises its caller boundary without starting either one.
   const useAssistantVoice = input => {
     const settings = readVoiceSettings(input.settings);
     return { settings, candidates: [], slot: { live: false, look: settings.look }, hint: undefined, who: () => undefined, ...voice };
   };
-  const bindings = { taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
+  const bindings = { HandoffPillView: HandoffPillStub, HandoffDraftView: HandoffDraftStub, HandoffTaskQuestion: HandoffQuestionStub, HandoffControlConfirmationView: () => null, projectTaskKey, useComposerHistory: historyHookFor(hooks), assistantHistoryTexts, PersonalTaskTiming: () => null, assistantConversationMessages, PersonalAlwaysPermission: () => null, taskMessageDeleted, assistantComposerDraftFor, useAssistantComposerDraftState: draftHookFor(hooks), React, Markdown: MarkdownStub, LegacyBadge: LegacyBadgeStub, ...hooks, mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanels: PersonalPanelsStub, PersonalCall: PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActions: ApexAgentMessageActionsStub, ApexAgentReplyQuote: ApexAgentReplyQuoteStub, ApexAgentComposerTools: ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, assistantDisplayName, formatApexAgentQuote, messageStateKey, retryMessageText, LandingTexture: LandingTextureStub, useAssistantVoice, composerButton, withTldr, ThreadComposerBox, ComposerModeControls, VoiceCallBar: VoiceCallBarStub, VoiceCallControls: VoiceCallControlsStub, VoiceCallCapsule: VoiceCallCapsuleStub, VoiceSessionStrip: VoiceSessionStripStub, createPortal: children => children };
   const component = new Function(...Object.keys(bindings), `${compiled}\nreturn ApexAgentAll;`)(...Object.values(bindings));
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
@@ -287,11 +295,14 @@ const personalLane = (tasks = [], messages = [], extras = {}) => {
     send: async (text) => { calls.push(['send', text]); }, decide: async (...args) => { calls.push(['decide', ...args]); }, cancel: async (id) => { calls.push(['cancel', id]); }, ...extras } };
 };
 const pm = (id, role, kind, at, text, taskId) => ({ id, role, kind, at, text, ...(taskId ? { taskId } : {}) });
-// A task's approval, result and app lines show as one link in the conversation; its details open from that link.
+// Routine execution details remain reachable through Tasks after leaving chat.
 const openFirstTaskLink = (h) => {
   const link = find(h.render(), node => node.props?.className === 'apex-agent-task-link');
-  assert.ok(link, 'a task link is shown in the conversation');
-  link.props.onClick();
+  if (link) link.props.onClick();
+  else {
+    find(h.render(), node => node.type === 'button' && node.props.role === 'tab' && /^Tasks/.test(textOf(node))).props.onClick();
+    find(h.render(), node => node.props?.className === 'apex-agent-task-row').props.onClick();
+  }
   return h.render();
 };
 const collectAll = (tree, predicate) => { const found = []; const walk = (node) => { if (node && typeof node === 'object') { if (predicate(node)) found.push(node); node.children?.forEach(walk); } }; walk(tree); return found; };
@@ -478,7 +489,7 @@ test('an open approval is one link in the conversation; its detail shows the exa
   const { calls, lane } = personalLane([personalTask('needsYou')], messages);
   const h = harness({ workspaces: projects, monitors: [], personal: lane });
   const chat = h.render();
-  assert.equal(find(chat, node => node.type === 'button' && textOf(node) === 'Approve'), null, 'no approval buttons in the conversation');
+  assert.equal(find(chat, node => node.type === 'button' && textOf(node) === 'Allow once'), null, 'no approval buttons in the conversation');
   assert.match(textOf(chat), /Task · Needs you · Report free disk space ›/);
   const tree = openFirstTaskLink(h);
   const text = textOf(tree);
@@ -486,7 +497,7 @@ test('an open approval is one link in the conversation; its detail shows the exa
   assert.match(text, /\/root\/apex-assistant-slice/);
   assert.match(text, /apex-terminal/);
   assert.match(text, /Needs you/);
-  find(tree, node => node.type === 'button' && textOf(node) === 'Approve').props.onClick();
+  find(tree, node => node.type === 'button' && textOf(node) === 'Allow once').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, [['decide', 'pd-1', 'sha256:abc', true]]);
 });
@@ -494,10 +505,10 @@ test('an open approval is one link in the conversation; its detail shows the exa
 test('a settled or superseded approval has no buttons, and only the newest line asks', () => {
   const messages = [pm('pm-2', 'system', 'approval', 2, 'Approval needed: old', 'pt-1'), pm('pm-3', 'system', 'approval', 3, 'Approval needed: new', 'pt-1')];
   const asking = openFirstTaskLink(harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('needsYou')], messages).lane }));
-  assert.equal(collectAll(asking, node => node.type === 'button' && textOf(node) === 'Approve').length, 1);
+  assert.equal(collectAll(asking, node => node.type === 'button' && textOf(node) === 'Allow once').length, 1);
   for (const task of [personalTask('done', 'approved'), personalTask('needsYou', 'superseded'), personalTask('cancelled', 'denied')]) {
     const tree = openFirstTaskLink(harness({ workspaces: projects, monitors: [], personal: personalLane([task], messages).lane }));
-    assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Approve'), null, task.status);
+    assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Allow once'), null, task.status);
   }
 });
 
@@ -575,13 +586,13 @@ test('Notifications owns approvals, proposed schedules and delivered notices; op
   lane.assistant.schedules = [{ id: 'schedule-1', goal: 'Check disk every morning', argv: ['df', '-h', '/'], dailyAt: '08:00', status: 'proposed', createdAt: 1, runs: 0, paramsHash: 'sha256:schedule', decision: { id: 'schedule-decision', kind: 'schedule', paramsHash: 'sha256:schedule', prompt: '', status: 'open', openedAt: 2 } }];
   const h = harness({ workspaces: projects, monitors: [], personal: lane });
   let tree = h.render();
-  assert.doesNotMatch(textOf(tree), /Confirm schedule|Approve|Disk check completed/);
+  assert.doesNotMatch(textOf(tree), /Confirm schedule|Allow once|Disk check completed/);
   find(tree, node => node.type === 'button' && node.props.role === 'tab' && /Notifications/.test(textOf(node))).props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   tree = h.render();
   assert.deepEqual(seen, ['seen']);
   assert.match(textOf(tree), /Confirm schedule/);
-  assert.match(textOf(tree), /Approve/);
+  assert.match(textOf(tree), /Allow once/);
   assert.match(textOf(tree), /Disk check completed/);
   assert.match(textOf(tree), /Notifications · 2/);
   assert.match(find(tree, node => node.type === 'article' && /Disk check completed/.test(textOf(node))).props.className, /is-seen/);
@@ -607,18 +618,19 @@ test('the menu opens the Memory panel over the transcript', () => {
   assert.equal(panel.props.lane, lane);
 });
 
-test('a task is one link where it started in the conversation, while its chat lines stay as ordinary messages', () => {
+test('a finished action returns one conversational result at completion and keeps its original history in Tasks', () => {
   const messages = [pm('pm-1', 'human', 'chat', 1, 'Disk?'), pm('pm-2', 'system', 'approval', 2, 'Approval needed', 'pt-1'), pm('pm-3', 'system', 'update', 3, 'Approved.', 'pt-1'), pm('pm-4', 'human', 'chat', 4, 'Thanks'), pm('pm-5', 'assistant', 'result', 5, '`df -h /` exited with 0.\n```\n55G free\n```', 'pt-1')];
-  const h = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('done', 'approved')], messages).lane });
+  const task = {...personalTask('done', 'approved'), receipts:[{opId:'op',phase:'verified',exitCode:0,outputExcerpt:'55G free',rerunAfterRestart:false,startedAt:3,finishedAt:5}]};
+  const h = harness({ workspaces: projects, monitors: [], personal: personalLane([task], messages).lane });
   const chat = h.render();
   const links = collectAll(chat, node => node.props?.className === 'apex-agent-task-link');
-  assert.equal(links.length, 1);
+  assert.equal(links.length, 0);
   assert.equal(collectAll(chat, node => node.type === 'article' && /apex-agent-task-card/.test(node.props.className ?? '')).length, 0, 'no card in the conversation');
-  assert.match(textOf(links[0]), /Result ready · Report free disk space ›/);
   const text = textOf(chat);
-  assert.ok(text.indexOf('Report free disk space') < text.indexOf('Thanks'), 'the link sits where the task started');
+  assert.ok(text.indexOf('Thanks') < text.indexOf('55G free'), 'the result follows the messages sent before completion');
   assert.match(text, /Thanks/);
-  assert.doesNotMatch(text, /55G free/, 'the result output is in the task, not the conversation');
+  assert.match(text, /55G free/);
+  assert.doesNotMatch(text, /Approved\.|exited with|Open details|Allowed once/);
   const detail = openFirstTaskLink(h);
   const cards = collectAll(detail, node => node.type === 'article' && /apex-agent-task-card/.test(node.props.className ?? ''));
   assert.equal(cards.length, 1);
@@ -1011,7 +1023,7 @@ test('embedded chat renders tasks as plain messages with at most two action butt
  const tree=h.render();
  assert.equal(find(tree,n=>n.props?.className==='apex-agent-task-link'),null,'no boxed task link or pill');
  assert.equal(find(tree,n=>/apex-agent-task-card/.test(n.props?.className??'')),null,'no bulky task card');
- const buttons=collectAll(tree,n=>n.type==='button'&&(textOf(n)==='Approve'||textOf(n)==='Decline'));
+ const buttons=collectAll(tree,n=>n.type==='button'&&(textOf(n)==='Allow once'||textOf(n)==='Decline'));
  assert.equal(buttons.length,2,'at most two decision buttons');
  const details=find(tree,n=>n.type==='details'&&n.props?.className==='dot-details');
  assert.ok(details,'details disclosure is present');
@@ -1021,14 +1033,15 @@ test('embedded chat renders tasks as plain messages with at most two action butt
  assert.equal(calls.filter(c=>c[0]==='decide').length,1,'decide was called');
 });
 
-test('answered decision shows user reply bubble and hides buttons in embedded chat', () => {
+test('answered decisions hide approval controls and do not invent a user receipt bubble in embedded chat', () => {
  const messages=[pm('pm-1','human','chat',1,'Disk?'),pm('pm-2','system','approval',2,'Approval needed: Run `df -h /`?','pt-1')];
  const task=personalTask('done','approved');
  const {lane}=personalLane([task],messages);
  const tree=harness({embedded:true,personal:lane,workspaces:[],monitors:[]}).render();
- assert.equal(find(tree,n=>n.type==='button'&&textOf(n)==='Approve'),null,'buttons disappear once answered');
+ assert.equal(find(tree,n=>n.type==='button'&&textOf(n)==='Allow once'),null,'buttons disappear once answered');
  const userMsgs=collectAll(tree,n=>n.props?.className==='apex-agent-message-row human');
- assert.ok(userMsgs.some(m=>textOf(m).includes('Approve')),'user answer shows as chat bubble');
+ assert.ok(userMsgs.every(m=>!textOf(m).includes('Allowed once')),'a saved decision is not fabricated as something the user typed');
+ assert.match(textOf(tree),/couldn’t verify the outcome/,'done without a verified receipt is not presented as success');
 });
 
 const rain={enabled:true,mode:'rainbow',color:'#3def91',rainbowSpeed:1,rippleShape:'diamond'};
@@ -1103,4 +1116,84 @@ test('opening the shared browser closes the tools sheet and preserves the chat d
  const panel=find(tree,n=>n.type===PersonalPanelsStub);assert.equal(panel.props.initial,'connections');panel.props.onOpenBrowser();tree=h.render();
  assert.equal(opened,1);assert.equal(find(tree,n=>n.type===PersonalPanelsStub),null,'browser opens over chat, with the tools sheet dismissed');
  assert.equal(find(tree,n=>n.type==='textarea').props.value,'Keep this browser task draft');
+});
+
+function historyEvent(input, key = 'ArrowUp') {
+  return { key, currentTarget: input, nativeEvent: {}, preventDefault() { this.defaultPrevented = true; } };
+}
+function historyInput(value = '') {
+  return { value, selectionStart: 0, selectionEnd: 0, selectionDirection: 'none', setSelectionRange(start, end, direction) { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; } };
+}
+test('assistant recall uses explicit project target instead of the fallback project', () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)]), monitor('billing', [message('billing', 'human', 10)])] }, { effects: true });
+  let input = find(h.render(), n => n.type === 'textarea');
+  input.props.onChange({ target: { value: '@billing-api next' } });
+  input = find(h.render(), n => n.type === 'textarea');
+  input.props.onKeyDown(historyEvent(historyInput(input.props.value)));
+  input = find(h.render(), n => n.type === 'textarea');
+  assert.equal(input.props.value, 'Message billing');
+});
+test('background project messages preserve active recall and its original empty draft', () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)]), monitor('billing', [message('billing', 'human', 10)])] }, { effects: true });
+  let input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  input.props.onKeyDown(historyEvent(historyInput()));
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  assert.equal(input.props.value, 'Message mobile');
+  h.props.monitors = [h.props.monitors[0], monitor('billing', [message('later', 'assistant', 30)])];
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  const field = historyInput(input.props.value); field.selectionStart = field.selectionEnd = field.value.length;
+  input.props.onKeyDown(historyEvent(field, 'ArrowDown'));
+  assert.equal(find(h.render(), n => n.type === 'textarea').props.value, '');
+});
+test('same-value external assistant draft writes end history browsing', () => {
+  const h = harness({ draftKey: 'history-external', workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)])] }, { effects: true });
+  let input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  input.props.onChange({ target: { value: 'draft' } });
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  input.props.onKeyDown(historyEvent(historyInput('draft')));
+  input = find(h.render(), n => n.type === 'textarea'); h.flushEffects();
+  assert.equal(input.props.value, 'Message mobile');
+  setAssistantComposerField('history-external', 'text', 'Message mobile');
+  const field = historyInput('Message mobile'); field.selectionStart = field.selectionEnd = field.value.length;
+  input.props.onKeyDown(historyEvent(field, 'ArrowDown'));
+  assert.equal(find(h.render(), n => n.type === 'textarea').props.value, 'Message mobile');
+});
+test('attachment ownership takes priority over a different mentioned project during recall', () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile', 'human', 20)]), monitor('billing', [message('billing', 'human', 10)])] }, { effects: true });
+  let tree = h.render();
+  find(tree, n => n.type === ApexAgentComposerToolsStub).props.onChooseAttachment();
+  tree = h.render();
+  find(tree, n => n.type === 'textarea').props.onChange({ target: { value: '@billing-api next' } });
+  let input = find(h.render(), n => n.type === 'textarea');
+  input.props.onKeyDown(historyEvent(historyInput(input.props.value)));
+  input = find(h.render(), n => n.type === 'textarea');
+  assert.equal(input.props.value, 'Message mobile');
+});
+
+
+test('real conversation handoff Stop and Retry use captured host task revisions', async () => {
+ const {lane}=personalLane();const controls=[];lane.handoffControl=async input=>{controls.push(input);return {taskId:input.taskId,outcome:'stopped'}};
+ const task={id:'delegated-1',workspaceId:'mobile',owner:{hostId:'vps',workspaceId:'mobile'},lineage:{assistant:{hostId:'vps',assistantId:'asst-1'}},revision:8,status:'running',workers:['worker'],attempts:[],resultData:{},conversationProgress:{taskId:'delegated-1',runId:'run-1',participantId:'worker',latestActivity:'Ran harmless check'}};
+ const h=harness({workspaces:projects,monitors:[],personal:lane,embedded:true,delegatedTasks:[task]});
+ const pill=find(h.render(),node=>node.type===HandoffPillStub);assert.ok(pill);
+ assert.equal(pill.props.progress,task.conversationProgress);
+ pill.props.onStop(task.id,task.revision);await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(controls,[{taskId:'delegated-1',expectedTaskRevision:8,action:'stop'}]);
+ pill.props.onRetry(task.id,task.revision);await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(controls[1],{taskId:'delegated-1',expectedTaskRevision:8,action:'retry'});
+});
+
+test('older personal hosts keep existing conversation without unsupported handoff pills', () => {
+ const {lane}=personalLane();const h=harness({workspaces:projects,monitors:[],personal:lane,embedded:true,delegatedTasks:[{id:'old-task',revision:1,status:'running',workers:['worker'],attempts:[],resultData:{},owner:{hostId:'vps',workspaceId:'mobile'}}]});
+ assert.equal(find(h.render(),node=>node.type===HandoffPillStub),null);
+});
+
+test('real conversation passes lane and project disconnection into its handoff pill',()=>{
+ const {lane}=personalLane([],[],{handoffControl:async()=>{throw new Error('offline command must not run')}});
+ const task={id:'offline-task',workspaceId:'mobile',owner:{hostId:'vps',workspaceId:'mobile'},lineage:{assistant:{hostId:'vps',assistantId:'asst-1'}},revision:8,status:'running',workers:['worker'],attempts:[],resultData:{}};
+ for(const props of [{personal:{...lane,offline:true}},{personal:lane,offlineWorkspaceIds:['mobile']}]){
+   const h=harness({workspaces:projects,monitors:[],embedded:true,delegatedTasks:[task],...props});
+   const pill=find(h.render(),n=>n.type===HandoffPillStub);
+   assert.ok(pill);assert.equal(pill.props.offline,true);
+ }
 });

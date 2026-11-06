@@ -1,7 +1,58 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 const mod=await import('../desktop/provenance.mjs').catch(()=>({}));
+
+test('every host command requiring provenance enters desktop attestation',()=>{
+  const source=readFileSync(new URL('../crates/apex-host/src/command.rs',import.meta.url),'utf8');
+  const body=source.match(/pub fn requires_provenance\(&self\) -> bool \{([\s\S]*?)\n    \}/)?.[1];
+  assert.ok(body,'locate the host provenance boundary');
+  const commands=[...body.matchAll(/Self::([A-Za-z0-9_]+)/g)].map(([,variant])=>variant.replace(/[A-Z]/g,(letter,index)=>(index?'_':'')+letter.toLowerCase()));
+  assert.ok(commands.length>0,'extract the protected host variants');
+  assert.deepEqual(commands.filter(cmd=>!mod.needsAttestation(cmd,false)),[],'host-protected commands must receive installed UI receipts');
+  const broker=readFileSync(new URL('../crates/apex-provenance/src/lib.rs',import.meta.url),'utf8');
+  const brokerBody=broker.match(/pub fn protected\(name: &str\) -> bool \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(brokerBody,'locate the broker provenance boundary');
+  const brokerCommands=new Set([...brokerBody.matchAll(/"([a-z_]+)"/g)].map(([,cmd])=>cmd));
+  assert.deepEqual(commands.filter(cmd=>!brokerCommands.has(cmd)),[],'host-protected commands must be accepted by the broker');
+});
+
+test('approval grants, permission edits, trash and action labels bind exact signed submissions',async()=>{
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const frames=[
+    {id:31,cmd:'personal_decide_always',args:{assistantId:'alfred',requestId:'approval-request',decisionId:'decision-1',paramsHash:'params-hash',expectedRevision:7,capability:'commandRun',scope:{kind:'project',host:'mac',cwd:'/project'}}},
+    {id:32,cmd:'personal_permission_set',args:{assistantId:'alfred',expectedRevision:8,capability:'commandRun',scope:{kind:'allProjects'},mode:'always',delegate:false}},
+    {id:33,cmd:'room_set_trashed',args:{id:'thread-1',trashed:true}},
+    {id:34,cmd:'computer_set_action_labels',args:{enabled:true}},
+  ];
+  const response=command=>{
+    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});
+    return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+  };
+  for(const frame of frames){
+    let issued;
+    const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
+      assert.equal(request.op,'issue');assert.equal(request.dataDir,'/data');
+      issued=request.command;return response(issued);
+    }});
+    assert.equal(result.cmd,'provenance_execute',`${frame.cmd} must be attested`);
+    assert.equal(result.id,frame.id);
+    assert.equal(issued.cmd,frame.cmd);assert.deepEqual(issued.args,frame.args);
+    if(frame.cmd==='personal_decide_always') assert.equal(issued.provenanceRequestId,undefined,'atomic approval retries use the original requestId');
+    else assert.match(issued.provenanceRequestId,/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+    assert.deepEqual(JSON.parse(result.args.receipt.payload).receipt.command,issued);
+    await assert.rejects(mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response({...request.command,args:{...request.command.args,expectedRevision:99}})}),/Receipt does not match/);
+    await assert.rejects(mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response({...request.command,provenanceRequestId:'another-submission'})}),/Receipt does not match/);
+    if(frame.cmd==='personal_decide_always'){
+      assert.deepEqual(await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response(request.command)}),result,'the same atomic approval keeps its signed request identity');
+      for(const change of [{scope:{kind:'allProjects'}},{requestId:'other-request'}]){
+        await assert.rejects(mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response({...request.command,args:{...request.command.args,...change}})}),/Receipt does not match/);
+      }
+    }
+  }
+});
 
 test('provenance wrapper binds actual command and rejects a substituted signed response',async()=>{
   assert.equal(typeof mod.attestFrame,'function');
@@ -210,4 +261,53 @@ test('update requests carry only the package facts and accept only a matching si
   const forged=reply({});forged.payload=forged.payload.replace('0.9.1','0.9.1 ');
   await assert.rejects(mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async()=>forged}),/signature/);
   await assert.rejects(mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async()=>{throw new Error('Only the installed Apex Deck app can install updates');}}),/installed Apex Deck/);
+});
+
+test('permanent project task deletion requires exact UI attestation',()=>{
+  assert.equal(mod.needsAttestation('project_task_lifecycle'),true);
+  assert.equal(mod.needsAttestation('project_task_lifecycle',true),true);
+});
+
+test('human todo edits require protected UI attestation',()=>{
+  assert.equal(mod.needsAttestation('personal_todo'),true);
+});
+
+test('handoff selections and controls attest one stable request and reject changed signed bindings',async()=>{
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  for(const cmd of ['personal_handoff_select','personal_handoff_control']){
+    const frame={id:91,cmd,args:{assistantId:'a',requestId:'handoff-1',taskId:'task-1',expectedTaskRevision:7,action:'stop'}};
+    const issued=[];
+    const options={dataDir:'/data',uid:501,publicKey:raw,issue:async r=>{issued.push(r.command);return response(r.command);}};
+    const first=await mod.attestFrame(frame,options),second=await mod.attestFrame(frame,options);
+    assert.equal(first.cmd,'provenance_execute');
+    assert.deepEqual(issued[0],issued[1],'retry uses same signed request identity');
+    assert.equal(issued[0].provenanceRequestId,undefined);
+    assert.deepEqual(first,second);
+    await assert.rejects(mod.attestFrame(frame,{...options,issue:async r=>response({...r.command,args:{...r.command.args,assistantId:'other'}})}),/does not match/);
+  }
+});
+
+
+test('shared agent, provider setup, and backend lifecycle intents bind exact protected submissions', async () => {
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  for (const [cmd,args] of [
+    ['agent_profile_save',{handle:'null',name:'Null',provider:'codex',instructions:'shared agent',access:'ask',expectedRevision:2}],
+    ['provider_setup_begin',{provider:'codex',method:'reuse'}],
+    ['backend_stop',{bootId:'shared-boot'}],
+  ]) {
+    assert.equal(mod.needsAttestation(cmd,false),true,cmd);
+    const frame={id:51,cmd,args};
+    const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
+      assert.equal(request.command.cmd,cmd);
+      assert.deepEqual(request.command.args,args);
+      assert.match(request.command.provenanceRequestId,/^[a-f0-9-]{36}$/);
+      return response(request.command);
+    }});
+    assert.equal(result.cmd,'provenance_execute');
+    await assert.rejects(mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response({...request.command,args:{...args,substituted:true}})}),/Receipt does not match/);
+  }
 });

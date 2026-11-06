@@ -1,0 +1,22 @@
+   Compiling apex-adapters v0.9.7 (/Users/tylercaldwell/Downloads/apex-deck/crates/apex-adapters)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.26s
+     Running unittests src/lib.rs (target/debug/deps/apex_adapters-da2f912086ea6fc2)
+
+running 1 test
+test curator_preflight_tests::gemini_curator_requires_the_isolated_cli_not_agy ... FAILED
+
+failures:
+
+---- curator_preflight_tests::gemini_curator_requires_the_isolated_cli_not_agy stdout ----
+
+thread 'curator_preflight_tests::gemini_curator_requires_the_isolated_cli_not_agy' (823212) panicked at crates/apex-adapters/src/lib.rs:419:61:
+called `Result::unwrap_err()` on an `Ok` value: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    curator_preflight_tests::gemini_curator_requires_the_isolated_cli_not_agy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 330 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p apex-adapters --lib`

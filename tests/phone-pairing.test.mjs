@@ -38,7 +38,7 @@ test("a paired Mac still has to use the id local", () => {
 
 test("the camera and paste go through the same parser", () => {
   const preview = parsePairingLink(`  ${link()}\n`, now);
-  assert.deepEqual(preview, { name: "Tyler's Mac Studio", host: HOST, addrs: ["192.168.1.20:41641"], exp: now + 300 });
+  assert.deepEqual(preview, { name: "Tyler's Mac Studio", host: HOST, addrs: ["192.168.1.20:41641"], exp: now + 300, os: "" });
 });
 
 test("a link naming another relay is refused", () => {

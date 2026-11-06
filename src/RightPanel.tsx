@@ -4,7 +4,7 @@ import { isWindows } from "./paths";
 import { FIXED, KINDS, TAB_GAP, activate, closeTab, fitTabs, moveTab, openTab, outsideViewport, tabIndexAt, tabReleaseAction, type PanelTab, type RightPanelState, type TabFit, type TabKind } from "./rightPanelModel";
 import "./right-panel.css";
 
-export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", artifacts: "Artifacts", browser: "Browser", assistantbrowser: "Browser", files: "Files", worktrees: "Worktrees", phone: "Phone", terminal: "Terminal" };
+export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", artifacts: "Artifacts", browser: "Preview", assistantbrowser: "Browser", files: "Files", worktrees: "Worktrees", phone: "Phone", terminal: "Terminal", plan: "Plan" };
 
 /** Tab-strip line icons, drawn on the same 24-unit grid / 1.7 stroke as SidebarIcons. Kept local so the tab strip has no extra imports. */
 const TAB_PATHS: Record<TabKind, ReactNode> = {
@@ -17,6 +17,7 @@ const TAB_PATHS: Record<TabKind, ReactNode> = {
   files: <path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9H3V7Z" />,
   worktrees: <><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M6 3v12" /><path d="M18 9a9 9 0 0 1-9 9" /></>,
   phone: <><rect x="6.5" y="2.5" width="11" height="19" rx="2.5" /><path d="M10.5 18.5h3" /></>,
+  plan: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></>,
   terminal: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 9l3 3-3 3" /><path d="M12 15h5" /></>,
 };
 
@@ -63,7 +64,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   // The window listeners below outlive the render that attached them.
   const live = useRef({ state, onChange, onPopoutDragOut });
   live.current = { state, onChange, onPopoutDragOut };
-  const labelOf = (tab: PanelTab) => tab.kind === "browser" && tab.url ? hostOf(tab.url) : TAB_LABEL[tab.kind];
+  const labelOf = (tab: PanelTab) => tab.kind === "browser" && tab.url ? `Preview · ${hostOf(tab.url)}` : TAB_LABEL[tab.kind];
   const labels = tabs.map(labelOf);
   const fitKey = `${labels.join("\n")}\n${state.active}`;
   const fitRef = useRef<() => void>(() => {});
@@ -224,5 +225,5 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
 }
 
 function hostOf(url: string): string {
-  try { return new URL(url).host || "Browser"; } catch { return "Browser"; }
+  try { return new URL(url).host || "Preview"; } catch { return "Preview"; }
 }

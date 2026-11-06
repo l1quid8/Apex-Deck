@@ -28,6 +28,8 @@ export interface ProjectSidebarProps {
   rosterProblem?: string | null;
   assistantBackend?: (ref:AssistantRef) => Backend | undefined;
   onOpenAssistant?: (ref:AssistantRef) => void;
+  floatingAssistant?: AssistantRef | null;
+  onPopOutAssistant?: (ref:AssistantRef) => void;
   onCreateAssistant?: () => void;
   backend: Backend;
   section: AppSection;
@@ -61,10 +63,14 @@ export interface ProjectSidebarProps {
   appearanceOpen: boolean;
   settingsOpen: boolean;
   onOpenAppearance(): void;
+  /** Appearance changes waiting for Apply, shown on Settings while it's closed. */
+  appearanceDraftCount?: number;
   onOpenSettings(): void;
   onRestore(pane: Pane): void;
   /** The Chats section, drawn above Projects. */
   chats?: ReactNode;
+  /** Host-owned recoverable thread Trash, distinct from the local archive. */
+  trash?: ReactNode;
   style?: CSSProperties;
 }
 
@@ -319,7 +325,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       {/* Only the lists scroll; the preferences row below stays at the bottom. */}
       <div className="rail-scroll" onScroll={hover.hide}>
       <div className="rail-sec"><span>Your team</span><button type="button" className="icon" aria-label="Add teammate" onClick={props.onCreateAssistant}>+</button></div>
-      {props.assistants?.map(assistant => <AssistantTeamRow key={assistantIdentityKey(assistant.ref)} assistant={assistant} status={props.assistantStatusFor?.(assistant.ref) ?? assistantStatus({offline:assistant.offline,paused:assistant.paused,personalTasks:assistant.personalTasks,delegatedTasks:[]})} selected={!!props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)} backend={props.assistantBackend?.(assistant.ref)} onOpen={ref=>props.onOpenAssistant?.(ref)}/>)}
+      {props.assistants?.map(assistant => <AssistantTeamRow key={assistantIdentityKey(assistant.ref)} assistant={assistant} status={props.assistantStatusFor?.(assistant.ref) ?? assistantStatus({offline:assistant.offline,paused:assistant.paused,personalTasks:assistant.personalTasks,delegatedTasks:[]})} selected={!!props.selectedAssistant && assistantIdentityKey(props.selectedAssistant)===assistantIdentityKey(assistant.ref)} backend={props.assistantBackend?.(assistant.ref)} floated={!!props.floatingAssistant && assistantIdentityKey(props.floatingAssistant)===assistantIdentityKey(assistant.ref)} onPopOut={props.onPopOutAssistant} onOpen={ref=>props.onOpenAssistant?.(ref)}/>)}
       {!props.assistants?.length && <p className="assistant-team-empty">{props.rosterProblem ?? 'No assistants yet.'}</p>}
       {lists.pinned.length > 0 && <>
         <div className="rail-sec" data-sec="pinned">Pinned</div>
@@ -359,14 +365,16 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </span>
         </div>
       )}
+      {props.trash}
       </div>
       <div className="rail-controls" aria-label="Preferences">
         <span className="rail-version" title={`Apex Deck ${__APP_VERSION__}`}>Apex Deck <span>{__APP_VERSION__}</span></span>
         <button className={props.appearanceOpen ? "icon active" : "icon"} onClick={props.onOpenAppearance} aria-label="Appearance" title="Appearance" aria-pressed={props.appearanceOpen}>
           <DeckIcon name="moon" />
         </button>
-        <button className={props.settingsOpen ? "icon active" : "icon"} onClick={props.onOpenSettings} aria-label="Settings" title="Settings (⌘,)" aria-pressed={props.settingsOpen}>
+        <button className={props.settingsOpen ? "icon active" : "icon"} onClick={props.onOpenSettings} aria-label={props.appearanceDraftCount ? `Settings, ${props.appearanceDraftCount} unapplied appearance change${props.appearanceDraftCount === 1 ? "" : "s"}` : "Settings"} title="Settings (⌘,)" aria-pressed={props.settingsOpen}>
           <DeckIcon name="settings" />
+          {props.appearanceDraftCount ? <span className="appearance-draft-count" aria-hidden="true">{props.appearanceDraftCount}</span> : null}
         </button>
       </div>
       {menu && <MenuList id={`${menu.kind}:${menu.id}`} entries={menuEntries()} anchor={menu.anchor} opener={menu.opener}

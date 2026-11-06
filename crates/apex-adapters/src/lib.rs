@@ -9,8 +9,8 @@
 
 mod ansi;
 mod assistant;
-pub use assistant::{assistant_profile_ok, build_assistant};
-mod api_tools;
+pub use assistant::{assistant_profile_ok, build_assistant, build_computer_assistant, computer_backend_supported};
+pub mod api_tools;
 mod attachments;
 mod api_info;
 mod catalog;
@@ -19,6 +19,8 @@ mod claude_usage;
 mod cli;
 mod gemini_usage;
 mod gateway_sandbox;
+#[cfg(unix)]
+pub mod linux_jail;
 mod codex_server;
 pub mod codex_images;
 mod codex_hook;
@@ -28,6 +30,7 @@ mod grok_images;
 mod grok_usage;
 pub mod keys;
 mod mcp;
+mod computer;
 pub mod media;
 pub mod model_metrics;
 mod muse_server;
@@ -113,6 +116,10 @@ pub struct BuildContext {
     pub attachment_roots: Vec<PathBuf>,
     /// Deck's shared phone, for Claude and Codex bots on a Mac. None turns it off.
     pub phone: Option<PhoneEnv>,
+    /// Where the daemon's data lives, for bot jail storage and protected paths.
+    pub data_dir: Option<PathBuf>,
+    /// Observed public IP addresses of this host (e.g. from iroh).
+    pub observed_addrs: Vec<std::net::IpAddr>,
 }
 
 /// Create the participant described by `config`. A bot reached through an
@@ -163,6 +170,31 @@ pub fn chat_profile_ok(config: &ParticipantConfig, path: Option<&str>) -> Result
     }
 }
 
+/// Preflight the verified tool-free curator path, including its actual executable.
+/// Gemini's normal `agy` route cannot provide this isolation.
+pub fn curator_profile_ok(config: &ParticipantConfig, path: Option<&str>) -> Result<(), String> {
+    if matches!(config.backend, Backend::Agent { tool: AgentTool::Gemini, .. }) {
+        let search = path
+            .map(str::to_owned)
+            .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+        #[cfg(windows)]
+        let available = executable::on_path("gemini", &search);
+        #[cfg(not(windows))]
+        let available = std::env::split_paths(&search).any(|dir| {
+            let Ok(metadata) = std::fs::metadata(dir.join("gemini")) else { return false; };
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))] { metadata.is_file() }
+        });
+        if !available {
+            return Err("The tool-free Gemini CLI (`gemini`) is unavailable; `agy` cannot be used for this turn.".into());
+        }
+    }
+    chat_profile_ok(config, path)
+}
+
 /// Single room-participant builder: `Work` rooms get full tools and workspace context;
 /// `Chat` rooms are built with tools disabled, no `cwd`, no `media_dir`, no attachment roots, and `Access::Read`.
 pub fn participant_for_room(
@@ -185,6 +217,8 @@ pub fn participant_for_room(
                 media_dir: None,
                 attachment_roots: Vec::new(),
                 phone: None,
+                data_dir: context.data_dir.clone(),
+                observed_addrs: context.observed_addrs.clone(),
             };
             match &config.backend {
                 Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config)),
@@ -210,6 +244,15 @@ pub fn participant_for_room(
 /// small quota group of its own (Antigravity's Argon), so the answer for one
 /// model is not the answer for another, and each model keeps its own answer.
 pub async fn plan_usage(tool: AgentTool, model: Option<&str>, context: &BuildContext) -> Option<PlanUsage> {
+    plan_usage_within(tool, model, context, None).await
+}
+
+/// `plan_usage` right after a turn, when an older answer no longer holds.
+pub async fn plan_usage_after_turn(tool: AgentTool, model: Option<&str>, context: &BuildContext) -> Option<PlanUsage> {
+    plan_usage_within(tool, model, context, Some(plan_cache::AFTER_TURN)).await
+}
+
+async fn plan_usage_within(tool: AgentTool, model: Option<&str>, context: &BuildContext, fresh: Option<std::time::Duration>) -> Option<PlanUsage> {
     let name = match tool {
         AgentTool::ClaudeCode => "Claude",
         AgentTool::Codex => "Codex",
@@ -228,8 +271,11 @@ pub async fn plan_usage(tool: AgentTool, model: Option<&str>, context: &BuildCon
             AgentTool::Muse => unreachable!("answered from the last turn above"),
         }
     };
-    plan_cache::get(tool, model, read)
-        .await
+    let answer = match fresh {
+        Some(fresh) => plan_cache::get_within(tool, model, fresh, read).await,
+        None => plan_cache::get(tool, model, read).await,
+    };
+    answer
         .map_err(|failure| {
             let wait = failure.wait.as_secs();
             eprintln!("[apex-deck] could not read {name} plan limits: {}; trying again in {wait}s", failure.why)
@@ -396,5 +442,29 @@ mod tests {
     fn invalid_bytes_are_replaced_instead_of_stalling_the_stream() {
         let mut chunks = Utf8Chunks::default();
         assert_eq!(chunks.push(&[b'a', 0xff, b'b']), "a\u{fffd}b");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod curator_preflight_tests {
+    use super::*;
+    #[test]
+    fn gemini_curator_requires_the_isolated_cli_not_agy() {
+        let root = std::env::temp_dir().join(format!("curate-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("agy"), "").unwrap();
+        let mut config = ScriptedParticipant::new("forge", &["ok"]).config().clone();
+        config.backend = Backend::Agent { tool: AgentTool::Gemini, model: None };
+        let path = root.to_str().unwrap();
+        let error = curator_profile_ok(&config, Some(path)).unwrap_err();
+        assert!(error.contains("gemini"));
+        std::fs::write(root.join("gemini"), "").unwrap();
+        assert!(curator_profile_ok(&config, Some(path)).is_err(), "a non-executable file is not a CLI");
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.join("gemini"), std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(curator_profile_ok(&config, Some(path)), chat_profile_ok(&config, Some(path)));
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

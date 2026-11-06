@@ -1,4 +1,4 @@
-//! When the assistant brings something to the human. Checked in code, in
+//! When the assistant brings something to the user. Checked in code, in
 //! order: is it new (fingerprint), is it urgent (needs a decision or a
 //! deadline is close), quiet hours, and grouping of the rest into a digest.
 //! Permission to notify is never permission to do anything else.
@@ -7,7 +7,7 @@ use crate::personal::{Notice, PersonalAssistant, MAX_NOTICES};
 
 /// Non-urgent notices wait this long so they can go out together.
 pub const DIGEST_MS: u64 = 20 * 60 * 1000;
-/// The human was just here: a notice about what they're looking at is noise.
+/// The user was just here: a notice about what they're looking at is noise.
 const ACTIVE_MS: u64 = 2 * 60 * 1000;
 
 fn minutes(hhmm: &str) -> Option<u32> {

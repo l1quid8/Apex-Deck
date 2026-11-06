@@ -56,6 +56,8 @@ export class TurnQueue {
 /** `to` names who answers. It is settled when the message is queued, for ordering, and asked
  *  again when it is sent unless `pinned`: a rule changed while it waited still applies. */
 export interface ParticipantMessage extends QueuedMessage { to: string[]; pinned?: boolean; failed?: boolean }
+/** Why a queued message is not going out on its own. */
+export type QueueHold = "connection" | "stopped" | "failed";
 /** One FIFO per recipient. Multi-recipient messages wait until every target
  * is free, then post once. Other participants can continue independently. */
 export class ParticipantQueues {
@@ -85,7 +87,17 @@ export class ParticipantQueues {
   }
   private requireAvailable(epoch = this.availabilityEpoch) { if (!this.available() || epoch !== this.availabilityEpoch) throw new Error("Not connected to the host; nothing was queued."); }
   availabilityChanged() {
-    if (!this.available()) { this.availabilityEpoch++; if (this.items.length || this.active) this.connectionPaused = true; this.publish(); }
+    if (!this.available()) { this.availabilityEpoch++; if (this.items.length || this.active) this.connectionPaused = true; this.publish(); return; }
+    // Back on the machine: what was only waiting goes on by itself. A send whose
+    // acknowledgement was lost stays failed, so it still needs an explicit Retry.
+    if (this.connectionPaused) { this.connectionPaused = false; this.publish(); void this.drain(); }
+  }
+  /** Why `item` is held, or null when it only waits for its bots to finish. */
+  holdOf(item: ParticipantMessage): QueueHold | null {
+    if (this.connectionPaused) return "connection";
+    const held = item.to.filter(id => this.paused.has(id));
+    if (!held.length) return null;
+    return held.some(id => this.halted.has(id)) ? "stopped" : "failed";
   }
   get active() { return Object.values(this.state).includes("working"); }
   send(text: string, kind: TurnKind = "message"): Promise<number> {
@@ -94,9 +106,9 @@ export class ParticipantQueues {
       const to = await this.targets(text);
       this.requireAvailable(epoch);
       const id = ++this.serial;
-      // Stop pauses a bot so what was queued for it waits. A new message to a
-      // stopped bot with nothing waiting is the person going on with it.
-      for (const target of to) if (this.halted.has(target) && !this.items.some(item => item.to.includes(target))) { this.paused.delete(target); this.halted.delete(target); }
+      // Stop or a failure pauses a bot so what was queued for it waits. A new message
+      // to a paused bot with nothing waiting is the person going on with it.
+      for (const target of to) if (this.paused.has(target) && !this.items.some(item => item.to.includes(target))) { this.paused.delete(target); this.halted.delete(target); }
       this.items.push({id, text, kind, to}); this.publish();
       await this.drain(); return id;
     });
@@ -115,7 +127,9 @@ export class ParticipantQueues {
     this.accepting = accepted.catch(() => {});
     return accepted;
   }
-  started(id: string) { this.state[id] = "working"; this.publish(); }
+  /** A bot that runs again has got past its failure, so that hold must not outlive this turn.
+   *  A Stop is the person's own and stays until they resume. */
+  started(id: string) { this.state[id] = "working"; if (!this.halted.has(id)) this.paused.delete(id); this.publish(); }
   idle(id: string) { this.state[id] = "idle"; this.publish(); void this.drain(); }
   /** Room Idle has no batch identity: it can arrive after ParticipantIdle
    * already dispatched a newer turn. Only recipient terminal events release

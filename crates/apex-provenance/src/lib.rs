@@ -650,6 +650,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
         || !matches!(
             name,
             "personal-assistants.json"
+                | "computer-enabled.json"
                 | "assistant-tasks-v1.json"
                 | "assistant-conversations-v1.json"
                 | "room-authority-v1.json"
@@ -668,10 +669,15 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
 pub fn protected(name: &str) -> bool {
     matches!(
         name,
-        "assistant_message"
+        "computer_setup" | "computer_set_enabled" | "computer_set_action_labels"
+            // Shared desktop/terminal intents use the same exact receipt and
+            // replay boundary. Peer admission still validates app/CLI identity.
+            | "agent_profile_save" | "provider_setup_begin" | "backend_stop"
+            | "assistant_message"
             | "assistant_task_action"
             | "personal_send"
             | "personal_decide"
+            | "personal_decide_always"
             | "room_post"
             | "room_post_to"
             | "room_turn"
@@ -682,9 +688,13 @@ pub fn protected(name: &str) -> bool {
             | "personal_workspace_configure"
             | "personal_avatar_generate"
             | "personal_avatar_cancel"
+            | "personal_handoff_select"
+            | "personal_handoff_control"
             | "personal_project_delegate"
             | "personal_project_delegate_ui"
+            | "personal_project_propose_ui"
             | "personal_rule_add"
+            | "personal_permission_set"
             | "personal_rule_remove"
             | "personal_machine_link"
             | "personal_machine_unlink"
@@ -693,10 +703,15 @@ pub fn protected(name: &str) -> bool {
             | "personal_pause"
             | "personal_cancel"
             | "personal_task_lifecycle"
+            | "project_task_lifecycle"
+            | "personal_todo"
             | "personal_archive"
             | "personal_reply_cancel"
             | "personal_schedule_cancel"
+            // Mints the session for the person's browser surface: one receipt, not one per frame.
+            | "personal_browser_session"
             | "room_create"
+            | "room_set_trashed"
             | "room_import"
             | "room_fork"
             | "chat_promote"
@@ -739,10 +754,12 @@ fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, Stri
     }
     if let Some(key) = phone::phone_key(uid, data_dir, command) { return key; }
     let args = &command["args"];
+    // Atomic Always approvals retain their UI request ID across retries, just
+    // like one-shot decisions; the journal binds the entire grant to that ID.
     let id = if name.starts_with("room_")
         || !matches!(
             name,
-            "assistant_message" | "personal_send" | "personal_decide" | "assistant_task_action"
+            "assistant_message" | "personal_send" | "personal_decide" | "personal_decide_always" | "assistant_task_action" | "personal_handoff_select" | "personal_handoff_control"
         ) {
         json!(command["provenanceRequestId"]
             .as_str()
@@ -1446,6 +1463,61 @@ mod tests {
             .is_err());
     }
 
+    #[test]
+    fn handoff_controls_bind_request_and_exact_scope() {
+        for name in ["personal_handoff_select","personal_handoff_control"] {
+            let mut journal=Journal::new();
+            let command=json!({"cmd":name,"args":{"assistantId":"a","requestId":"handoff-1","taskId":"t","expectedTaskRevision":7,"action":"stop"}});
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(journal.issue(501,"/data",command.clone(),true).unwrap(),receipt);
+            for (field,value) in [("assistantId",json!("other")),("taskId",json!("t2")),("expectedTaskRevision",json!(8)),("action",json!("continue"))] {
+                let mut changed=command.clone();changed["args"][field]=value;
+                assert!(journal.issue(501,"/data",changed,true).is_err());
+            }
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+        }
+    }
+
+    #[test]
+    fn atomic_always_approval_binds_request_scope_revision_and_decision() {
+        let mut journal=Journal::new();
+        let command=json!({"cmd":"personal_decide_always","args":{"assistantId":"alfred","requestId":"always-1","decisionId":"decision-1","paramsHash":"hash","expectedRevision":7,"capability":"commandRun","scope":{"kind":"project","host":"mac","cwd":"/project"}}});
+        assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+        let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+        assert_eq!(journal.issue(501,"/data",command.clone(),true).unwrap(),receipt);
+        for (field,value) in [("scope",json!({"kind":"allProjects"})),("expectedRevision",json!(8)),("decisionId",json!("decision-2")),("paramsHash",json!("other")),("assistantId",json!("another")),("capability",json!("fileRead"))] {
+            let mut changed=command.clone();changed["args"][field]=value;
+            assert!(journal.issue(501,"/data",changed,true).is_err(),"changed {field} under same request");
+        }
+        let mut missing=command.clone();missing["args"].as_object_mut().unwrap().remove("requestId");
+        assert!(journal.issue(501,"/data",missing,true).is_err());
+        journal.claim(501,"/data",&receipt,NONCE).unwrap();
+        assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+    }
+
+    #[test]
+    fn permission_trash_and_action_label_receipts_bind_exact_delivery_content() {
+        for (command,field,value) in [
+            (json!({"cmd":"personal_permission_set","provenanceRequestId":"permission-1","args":{"assistantId":"alfred","expectedRevision":7,"capability":"commandRun","scope":{"kind":"allProjects"},"mode":"always","delegate":false}}),"expectedRevision",json!(8)),
+            (json!({"cmd":"room_set_trashed","provenanceRequestId":"trash-1","args":{"id":"thread-1","trashed":true}}),"trashed",json!(false)),
+            (json!({"cmd":"computer_set_action_labels","provenanceRequestId":"labels-1","args":{"enabled":true}}),"enabled",json!(false)),
+        ] {
+            let mut journal=Journal::new();
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(receipt.command,command);
+            assert_eq!(journal.issue(501,"/data",command.clone(),true).unwrap(),receipt);
+            let mut changed=command.clone();changed["args"][field]=value;
+            assert!(journal.issue(501,"/data",changed,true).is_err());
+            let mut missing=command.clone();missing.as_object_mut().unwrap().remove("provenanceRequestId");
+            assert!(journal.issue(501,"/data",missing,true).is_err());
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+        }
+    }
+
     fn task_action(action:&str, qualified:bool)->Value {
         let mut command=json!({"cmd":"assistant_task_action","args":{"taskId":"task-1","revision":4,"action":action,"owner":{"workspaceId":"qa","cwd":"/qa","hostId":"local","conversationId":"monitor"}}});
         if qualified {command["provenanceRequestId"]=json!(format!("task-action:{action}"));}
@@ -1598,6 +1670,28 @@ mod tests {
         assert!(journal
             .claim(501, "/data", &changed, "0123456789abcdef0123456789abcdef")
             .is_err());
+    }
+
+    #[test]
+    fn shared_cli_intents_require_trust_and_bind_exact_content_and_replay() {
+        for (name, args) in [
+            ("agent_profile_save", json!({"handle":"null","name":"Null","provider":"codex","instructions":"shared agent","access":"ask","expectedRevision":2})),
+            ("provider_setup_begin", json!({"provider":"codex","method":"reuse"})),
+            ("backend_stop", json!({"bootId":"shared-boot"})),
+        ] {
+            let mut journal=Journal::new();
+            let command=json!({"cmd":name,"args":args,"provenanceRequestId":"shared-delivery"});
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(receipt.command,command);
+            let mut changed=command.clone();
+            changed["args"]["substituted"]=json!(true);
+            assert!(journal.issue(501,"/data",changed,true).is_err());
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+            let mut reopened=Journal::open(&serde_json::to_vec(&journal).unwrap(),new_key().unwrap().public_key().as_ref()).unwrap();
+            assert!(reopened.claim(501,"/data",&receipt,NONCE).is_err());
+        }
     }
 
     #[test]

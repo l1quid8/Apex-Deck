@@ -27,7 +27,7 @@ test("the owner sends found agents and settings with a popped thread, and keeps 
 
 test("both pop-out chats get the live bundle, never an empty agent list", () => {
   assert.equal((popout.match(/agents=\{bundle\.agents\}/g) ?? []).length, 4); // Two ChatPanes, each inside its HostPane.
-  assert.equal((popout.match(/profiles=\{bundle\.profiles\}/g) ?? []).length, 3); // Plus the Tasks tab.
+  assert.equal((popout.match(/profiles=\{bundle\.profiles\}/g) ?? []).length, 4); // Task details and the quick-add worker picker.
   assert.doesNotMatch(popout, /snapshot\.chatConfig\?\.profiles/);
   assert.match(popout, /patch\.chatConfig !== undefined/);
 });

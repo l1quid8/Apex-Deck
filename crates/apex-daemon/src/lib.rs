@@ -20,6 +20,7 @@ pub mod log_time;
 pub mod pair_cli;
 pub mod pair_commands;
 pub mod paths;
+pub mod shared_store;
 #[cfg(feature = "remote")]
 pub mod pairing;
 pub mod phone_cli;
@@ -36,6 +37,7 @@ pub mod stdio;
 pub mod websocket;
 
 pub mod voice;
+pub mod trust_host;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;

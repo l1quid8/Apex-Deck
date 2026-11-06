@@ -18,7 +18,7 @@
 //! page, ask below Full access.
 
 pub(crate) mod files;
-pub(crate) mod mcp_client;
+pub mod mcp_client;
 pub(crate) mod shell;
 pub(crate) mod web;
 
@@ -42,33 +42,76 @@ const MCP_DEFAULT: Duration = Duration::from_secs(120);
 /// What a bot's tools work with. Lives as long as the bot: its MCP servers
 /// keep running between replies.
 pub(crate) struct ToolBox {
+    pub bot: String,
     pub roots: files::Roots,
     pub env: shell::Env,
     /// Commands the bot runs. Stop ends them all.
     pub processes: Registry,
     pub mcp: mcp_client::Pool,
+    /// The host-issued computer server and nothing else: no files, commands,
+    /// web fetches or personal MCP servers.
+    pub computer_only: bool,
 }
 
 impl ToolBox {
+    #[allow(dead_code)]
     pub fn new(context: &crate::BuildContext) -> Self {
+        Self::new_with_bot(context, "")
+    }
+
+    pub fn new_with_bot(context: &crate::BuildContext, bot: impl Into<String>) -> Self {
         let mut readable: Vec<PathBuf> = context.attachment_roots.clone();
         readable.extend(context.temp.clone());
         if let Some(dir) = crate::presets::readable_dir() {
             readable.push(PathBuf::from(dir));
         }
         Self {
+            bot: bot.into(),
             roots: files::Roots::new(context.cwd.as_deref(), &readable),
             env: shell::Env {
                 cwd: context.cwd.clone(),
                 path: context.path.clone(),
                 temp: context.temp.clone(),
                 cargo_target_dir: context.cargo_target_dir.clone(),
+                access: None,
+                data_dir: context.data_dir.clone(),
+                observed_addrs: context.observed_addrs.clone(),
             },
             processes: Registry::new(context.process_registry.clone()),
             mcp: mcp_client::Pool::default(),
+            computer_only: false,
         }
     }
 }
+
+/// Ephemeral model input. Deliberately not serializable into work/history.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ToolImage {
+    pub mime: String,
+    pub data: String,
+}
+
+impl std::fmt::Debug for ToolImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolImage").field("mime", &self.mime).field("data", &"[hidden]").finish()
+    }
+}
+
+/// Text and image results have separate consumers; only text may enter steps.
+pub(crate) struct ToolReply {
+    pub text: String,
+    pub images: Vec<ToolImage>,
+}
+
+impl From<String> for ToolReply {
+    fn from(text: String) -> Self { Self { text, images: Vec::new() } }
+}
+
+impl From<&str> for ToolReply {
+    fn from(text: &str) -> Self { text.to_string().into() }
+}
+
+pub(crate) const NO_SCREENSHOTS: &str = "This model can't read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.";
 
 /// One tool call the model made.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -80,6 +123,23 @@ pub(crate) struct ToolCall {
     /// What else the server put on the call (Gemini's thought signature),
     /// as JSON, to be sent back with it unchanged.
     pub extra: Option<String>,
+}
+
+impl ToolCall {
+    /// A malformed MCP call may still carry typed text. Hide more when we
+    /// cannot identify its server; this flag only controls presentation.
+    pub(crate) fn has_computer_content(&self) -> bool {
+        if !matches!(self.name.as_str(), "mcp_call" | "mcp_list_tools") {
+            return false;
+        }
+        match serde_json::from_str::<Value>(&self.arguments) {
+            Ok(args) => match args["server"].as_str().filter(|server| !server.trim().is_empty()) {
+                Some(server) => crate::mcp::is_computer_server(server),
+                None => true,
+            },
+            Err(_) => true,
+        }
+    }
 }
 
 fn tool(name: &str, description: &str, parameters: Value) -> Value {
@@ -98,6 +158,8 @@ pub(crate) struct Turn<'a> {
     plan: bool,
     /// The bot's own access level.
     own: Access,
+    can_read_images: bool,
+    trusted_computer: bool,
     approver: &'a dyn Approver,
     progress: ProgressSink<'a>,
     jobs: shell::Jobs,
@@ -116,13 +178,33 @@ enum Need {
 impl<'a> Turn<'a> {
     pub fn new(tools: &'a ToolBox, access: Access, plan: bool, own: Access, approver: &'a dyn Approver, progress: ProgressSink<'a>) -> Self {
         // Leave the MCP client's long-lived servers on the room folder across turns.
-        let servers = tools.mcp.servers(tools.env.cwd.as_deref());
+        let servers = if tools.computer_only { vec![] } else { tools.mcp.servers(tools.env.cwd.as_deref(), Some(own)) };
         if !servers.is_empty() {
             let menu: Vec<apex_core::server_request::ToolServer> = servers.iter().map(|s| s.name.clone().into()).collect();
             progress(Progress::ToolServers(&menu));
         }
         let roots = tools.roots.clone();
-        Self { tools, access, plan, own, approver, progress, jobs: shell::Jobs::default(), servers, cwd: None, roots }
+        Self { tools, access, plan, own, can_read_images: false, trusted_computer: false, approver, progress, jobs: shell::Jobs::default(), servers, cwd: None, roots }
+    }
+
+    pub fn with_computer(mut self, computer: Option<&apex_core::ComputerTurn>) -> Self {
+        if let Some(computer) = computer {
+            self.servers.retain(|s| s.name != crate::computer::SERVER);
+            self.servers.push(mcp_client::ServerSpec { name: crate::computer::SERVER.into(), transport: mcp_client::Transport::Stdio {
+                command: computer.relay.to_string_lossy().into_owned(), args: vec![], env: crate::computer::env(computer)
+            }});
+            self.trusted_computer = true;
+            let menu: Vec<apex_core::server_request::ToolServer> = self.servers.iter().map(|s| if s.name == crate::computer::SERVER {
+                apex_core::server_request::ToolServer {token:s.name.clone(),label:"Unified Computer Use".into(),aliases:vec![]}
+            } else {s.name.clone().into()}).collect();
+            (self.progress)(Progress::ToolServers(&menu));
+        }
+        self
+    }
+
+    pub fn with_can_read_images(mut self, can_read_images: bool) -> Self {
+        self.can_read_images = can_read_images;
+        self
     }
 
     pub fn with_cwd(mut self, cwd: Option<PathBuf>) -> Self {
@@ -139,6 +221,9 @@ impl<'a> Turn<'a> {
 
     /// What to add to the bot's instructions, so it knows what it has.
     pub fn instructions(&self) -> String {
+        if self.tools.computer_only {
+            return "\nYour only tools are mcp_list_tools and mcp_call on the apex-computer server. Never say you did or saw something unless a tool result in this reply shows it.\n".into();
+        }
         let folder = self.roots.workspace.as_ref().map(|w| format!(" ({})", w.display())).unwrap_or_default();
         let mut out = format!(
             "\nYou have tools for working in the project folder{folder}: read, find and search files, edit files, run shell commands, and fetch web pages"
@@ -169,6 +254,14 @@ impl<'a> Turn<'a> {
 
     /// The tools offered now, as the API's `tools` list.
     pub fn definitions(&self) -> Vec<Value> {
+        let mut definitions = self.all_definitions();
+        if self.tools.computer_only {
+            definitions.retain(|t| matches!(t["function"]["name"].as_str(), Some("mcp_list_tools" | "mcp_call")));
+        }
+        definitions
+    }
+
+    fn all_definitions(&self) -> Vec<Value> {
         let path = json!({"type": "string", "description": "A path relative to the project folder, or absolute."});
         let mut out = vec![
             tool(
@@ -262,7 +355,7 @@ impl<'a> Turn<'a> {
                 tool(
                     "mcp_call",
                     "Call a tool on an MCP server. Tools that can spend money, publish or change things ask the person first.",
-                    object(json!({"server": server, "tool": {"type": "string"}, "arguments": {"type": "object"}, "timeout_seconds": {"type": "integer"}}), &["server", "tool"]),
+                    object(json!({"server": server, "tool": {"type": "string"}, "arguments": {"type": "object", "description": "The tool's own inputs as a JSON object, not text. Every input goes here, for example {\"app\":\"com.apple.TextEdit\"}."}, "timeout_seconds": {"type": "integer"}}), &["server", "tool"]),
                 ),
             ]);
         }
@@ -352,33 +445,40 @@ impl<'a> Turn<'a> {
     }
 
     /// Carry out one call and give back what the model should be told.
-    pub async fn run(&mut self, call: &ToolCall) -> String {
+    pub async fn run(&mut self, call: &ToolCall) -> ToolReply {
+        let private = call.has_computer_content();
         let arguments: Value = if call.arguments.trim().is_empty() {
             json!({})
         } else {
             match serde_json::from_str(&call.arguments) {
                 Ok(value @ Value::Object(_)) => value,
                 Ok(_) => return "The arguments must be a JSON object. Send the call again.".into(),
-                Err(e) => return format!("The arguments weren't valid JSON ({e}). Send the call again with a JSON object."),
+                Err(_) if private => return "The arguments weren't valid JSON. Send the call again with a JSON object.".into(),
+                Err(e) => return format!("The arguments weren't valid JSON ({e}). Send the call again with a JSON object.").into(),
             }
         };
         let started = Instant::now();
         let (mut step, outcome) = self.dispatch(call, &arguments).await;
-        let (text, failed, code) = match outcome {
-            Ok(Done { text, failed, code }) => (text, failed, code),
-            Err(why) => (why, true, None),
+        let (text, images, failed, code) = match outcome {
+            Ok(Done { text, images, failed, code }) => (text, images, failed, code),
+            Err(why) => (why, Vec::new(), true, None),
         };
         step.status = if failed { StepStatus::Failed } else { StepStatus::Done };
         step.exit_code = code;
         step.duration_ms = Some(started.elapsed().as_millis() as u64);
-        let shown = cut_output(&text);
-        step.output_cut = shown.len() < text.len();
-        step.output = Some(shown);
+        if !private {
+            let shown = cut_output(&text);
+            step.output_cut = shown.len() < text.len();
+            step.output = Some(shown);
+        }
         (self.progress)(Progress::Work(&step));
-        cut_result(&text)
+        ToolReply { text: cut_result(&text), images }
     }
 
     async fn dispatch(&mut self, call: &ToolCall, args: &Value) -> (WorkStep, Result<Done, String>) {
+        if self.tools.computer_only && !matches!(call.name.as_str(), "mcp_list_tools" | "mcp_call") {
+            return (self.step(call, StepKind::Tool, "Refused tool", ""), Err("Only the computer tools are available in this conversation.".into()));
+        }
         let s = |key: &str| args[key].as_str().unwrap_or("").to_string();
         match call.name.as_str() {
             "read_file" | "list_dir" | "glob" | "grep" => {
@@ -450,7 +550,7 @@ impl<'a> Turn<'a> {
                         shell::State::Stopped => ("stopped".to_string(), None),
                     };
                     let body = if text.is_empty() { "(no new output)".to_string() } else { text };
-                    Done { text: format!("{id} (`{command}`): {status}.\n{body}"), failed: false, code }
+                    Done { text: format!("{id} (`{command}`): {status}.\n{body}"), images: Vec::new(), failed: false, code }
                 });
                 (step, result)
             }
@@ -541,10 +641,13 @@ impl<'a> Turn<'a> {
                 }
                 (self.progress)(Progress::Activity("Waiting for you: start the work?"));
                 let action = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: plan, expires_at: None, risky: false };
-                if self.approver.decide(action).await.approved() {
+                let answer = self.approver.decide_plan(action).await;
+                if answer.decision.approved() {
                     self.plan = false;
                     self.access = self.own;
-                    (step, Ok(Done::text("The person approved the plan. Plan mode is off; carry the plan out now.")))
+                    let mut text = "The person approved the plan. Plan mode is off; carry the plan out now.".to_string();
+                    if let Some(note) = answer.note { text.push_str("\n\n"); text.push_str(&note); }
+                    (step, Ok(Done::text(text)))
                 } else {
                     (step, Ok(Done::text("The person wants to keep planning. Change nothing; ask what to adjust, or refine the plan.")))
                 }
@@ -620,9 +723,12 @@ impl<'a> Turn<'a> {
         let env = if let Some(cwd) = &self.cwd {
             let mut e = self.tools.env.clone();
             e.cwd = Some(cwd.clone());
+            e.access = Some(self.own);
             e
         } else {
-            self.tools.env.clone()
+            let mut e = self.tools.env.clone();
+            e.access = Some(self.own);
+            e
         };
         if args["background"] == true {
             let result = self
@@ -643,7 +749,7 @@ impl<'a> Turn<'a> {
             if finished.leftovers_stopped {
                 text.push_str("\n[something it started kept running and was stopped; to keep a process running, use background]");
             }
-            Done { text, failed: finished.timed_out || finished.code != Some(0), code: finished.code }
+            Done { text, images: Vec::new(), failed: finished.timed_out || finished.code != Some(0), code: finished.code }
         });
         (step, result)
     }
@@ -652,15 +758,27 @@ impl<'a> Turn<'a> {
         let name = args["server"].as_str().unwrap_or("").to_string();
         let tool_name = args["tool"].as_str().unwrap_or("").to_string();
         let listing = call.name == "mcp_list_tools";
-        let label = if listing { format!("{name}: list tools") } else { format!("{name}: {tool_name}") };
-        let step = self.step(call, StepKind::Tool, &label, &args.to_string());
+        let private = call.has_computer_content();
+        let label = if private {
+            crate::mcp::redacted_step(&tool_name, &args["arguments"]).label
+        } else if listing { format!("{name}: list tools") } else { format!("{name}: {tool_name}") };
+        let detail = if private { String::new() } else { args.to_string() };
+        let step = self.step(call, StepKind::Tool, &label, &detail);
+        if !listing && crate::mcp::is_computer_server(&name) && !self.can_read_images {
+            (self.progress)(Progress::Work(&crate::work_feed::computer_text_notice(
+                "This model can’t read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.",
+            )));
+        }
+        if !listing && crate::mcp::is_computer_server(&name) && tool_name == "get_screenshot" && !self.can_read_images {
+            return (step, Err(NO_SCREENSHOTS.into()));
+        }
         let Some(spec) = self.servers.iter().find(|s| s.name == name).cloned() else {
             let known: Vec<&str> = self.servers.iter().map(|s| s.name.as_str()).collect();
             return (step, Err(format!("There is no MCP server called `{name}`. The servers are: {}.", known.join(", "))));
         };
         (self.progress)(Progress::Work(&step));
         (self.progress)(Progress::Activity(&format!("Starting {name}")));
-        let connection = match self.tools.mcp.connect(&spec, self.tools.env.cwd.as_deref(), self.tools.env.path.as_deref()).await {
+        let connection = match self.tools.mcp.connect(&self.tools.bot, &spec, self.tools.env.cwd.as_deref(), self.tools.env.path.as_deref(), Some(self.own), self.tools.env.data_dir.as_deref()).await {
             Ok(connection) => connection,
             Err(why) => return (step, Err(why)),
         };
@@ -686,15 +804,27 @@ impl<'a> Turn<'a> {
             let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
             return (step, Err(format!("`{name}` has no tool called `{tool_name}`. Its tools are: {}.", names.join(", "))));
         };
-        let arguments = if args["arguments"].is_object() { args["arguments"].clone() } else { json!({}) };
+        let arguments = match mcp_arguments(args, definition) {
+            Ok(arguments) => arguments,
+            Err(fault) => {
+                let step = self.step(call, StepKind::Tool, &format!("{label}: {}", fault.shape), &detail);
+                return (step, Err(fault.reply(&tool_name)));
+            }
+        };
         let catalog = [json!({"name": name, "tools": {tool_name.clone(): definition}})];
         let risky = crate::mcp::catalog_approval(&catalog, &name, &tool_name).unwrap_or_else(|| crate::mcp::needs_approval(&tool_name));
-        let need = if !risky {
+        let need = if self.trusted_computer && name == crate::computer::SERVER {
+            Need::Free
+        } else if !risky {
             Need::Free
         } else if self.plan {
             Need::Refuse(format!("Plan mode is on, and `{tool_name}` could change things. Include it in the plan instead."))
         } else {
-            let mut action = crate::mcp::action(&name, &tool_name, &arguments);
+            let mut action = if private {
+                ProposedAction { kind: ActionKind::Tool, title: label.clone(), detail: "Computer content hidden".into(), expires_at: None, risky: true }
+            } else {
+                crate::mcp::action(&name, &tool_name, &arguments)
+            };
             action.risky = true;
             Need::Ask(action)
         };
@@ -705,6 +835,7 @@ impl<'a> Turn<'a> {
         (self.progress)(Progress::Activity(&label));
         let result = connection.call(&tool_name, arguments, timeout).await.map(|result| Done {
             text: if result.text.trim().is_empty() { "(no content)".into() } else { result.text },
+            images: if self.can_read_images { result.images } else { Vec::new() },
             failed: result.is_error,
             code: None,
         });
@@ -717,6 +848,42 @@ impl<'a> Turn<'a> {
     }
 }
 
+/// Why an `mcp_call` was refused. `shape` holds fixed words only, so a step can
+/// show it without repeating a model's arguments.
+#[derive(Debug, PartialEq)]
+struct ArgumentFault {
+    shape: &'static str,
+    required: Vec<String>,
+}
+
+impl ArgumentFault {
+    fn reply(&self, tool: &str) -> String {
+        let example: serde_json::Map<String, Value> = self.required.iter().map(|name| (name.clone(), json!("..."))).collect();
+        format!("`{tool}` did not run: {}. Send its inputs as a JSON object in `arguments`, for example {}.", self.shape, Value::Object(example))
+    }
+}
+
+/// The tool's inputs. Anything else is refused rather than sent as empty
+/// inputs, which would run the tool and blame the wrong thing.
+fn mcp_arguments(args: &Value, definition: &Value) -> Result<Value, ArgumentFault> {
+    let required: Vec<String> = definition["inputSchema"]["required"]
+        .as_array()
+        .map(|names| names.iter().filter_map(|name| name.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let fault = |shape| Err(ArgumentFault { shape, required: required.clone() });
+    let outside = args.as_object().is_some_and(|fields| fields.keys().any(|key| !matches!(key.as_str(), "server" | "tool" | "arguments" | "timeout_seconds")));
+    let given = &args["arguments"];
+    match given {
+        Value::Object(inputs) if required.iter().all(|name| inputs.contains_key(name)) => Ok(given.clone()),
+        Value::Object(_) | Value::Null if outside => fault("inputs were outside arguments"),
+        Value::Object(_) => fault("a required input was missing"),
+        Value::Null if required.is_empty() => Ok(json!({})),
+        Value::Null => fault("arguments was missing"),
+        Value::String(_) => fault("arguments was text"),
+        _ => fault("arguments was not an object"),
+    }
+}
+
 /// A file whose contents can make Deck or another agent start a program.
 fn starts_programs(path: &std::path::Path) -> bool {
     path.file_name().is_some_and(|n| n == ".mcp.json")
@@ -726,13 +893,14 @@ fn starts_programs(path: &std::path::Path) -> bool {
 /// What a call came to.
 struct Done {
     text: String,
+    images: Vec<ToolImage>,
     failed: bool,
     code: Option<i32>,
 }
 
 impl Done {
     fn text(text: impl Into<String>) -> Self {
-        Self { text: text.into(), failed: false, code: None }
+        Self { text: text.into(), images: Vec::new(), failed: false, code: None }
     }
 }
 
@@ -794,8 +962,243 @@ mod tests {
         ToolCall { id: format!("call-{name}"), name: name.into(), arguments: arguments.to_string(), extra: None }
     }
 
+    #[tokio::test]
+    async fn a_computer_only_turn_offers_and_runs_nothing_but_the_computer() {
+        let dir = std::env::temp_dir().join(format!("apex-computer-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("private.txt"), "PRIVATE").unwrap();
+        let tools = ToolBox { computer_only: true, ..toolbox(&dir) };
+        let progress = |_: Progress<'_>| {};
+        let computer = apex_core::ComputerTurn { relay: "/A/SpikeMCP".into(), thread_id: "assistant:a".into(), participant_id: "p".into(), token: "t".repeat(64) };
+        let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &progress).with_computer(Some(&computer));
+        assert_eq!(names(&turn), ["mcp_list_tools", "mcp_call"]);
+        assert!(!turn.instructions().contains("shell"));
+        let text = turn.run(&call("read_file", json!({"path":"private.txt"}))).await.text;
+        assert!(!text.contains("PRIVATE"), "{text}");
+        let refused = turn.run(&call("run_command", json!({"command":"touch hacked"}))).await.text;
+        assert!(refused.contains("Only the computer tools"), "{refused}");
+        assert!(!dir.join("hacked").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn names(turn: &Turn<'_>) -> Vec<String> {
         turn.definitions().iter().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect()
+    }
+
+    // Fixture at the transport boundary: exercise real MCP parsing, approval,
+    // result handling and progress without reading the person's server config.
+    #[cfg(unix)]
+    async fn computer_run(server: &str, tool: &str, decision: Decision) -> (ToolReply, Vec<WorkStep>, Vec<ProposedAction>, Vec<String>) {
+        computer_run_options(server, tool, decision, true).await
+    }
+
+    #[cfg(unix)]
+    async fn computer_run_options(server: &str, tool: &str, decision: Decision, can_read_images: bool) -> (ToolReply, Vec<WorkStep>, Vec<ProposedAction>, Vec<String>) {
+        let tools = ToolBox::new(&crate::BuildContext::default());
+        let steps = Mutex::new(Vec::new());
+        let activities = Mutex::new(Vec::new());
+        let progress = |p: Progress<'_>| match p {
+            Progress::Work(step) => steps.lock().unwrap().push(step.clone()),
+            Progress::Activity(activity) => activities.lock().unwrap().push(activity.to_string()),
+            _ => {},
+        };
+        let answers = approver(decision);
+        let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) result='{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}' ;;
+    *'"tools/list"'*) result='{"tools":[{"name":"read_screen","inputSchema":{"type":"object"}},{"name":"type_text","inputSchema":{"type":"object"}},{"name":"private-tool-SCREEN_SECRET","inputSchema":{"type":"object"}}]}' ;;
+    *'"tools/call"'*) result='{"content":[{"type":"text","text":"SCREEN_SECRET credential=TOKEN_SECRET"},{"type":"image","mimeType":"image/png","data":"AQ=="}]}' ;;
+    *) continue ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
+        let servers = vec![mcp_client::ServerSpec { name: server.into(), transport: mcp_client::Transport::Stdio {
+            command: "sh".into(), args: vec!["-c".into(), script.into()], env: vec![],
+        }}];
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images, approver: &answers,
+            progress: &progress, jobs: shell::Jobs::default(), servers, cwd: None, roots: tools.roots.clone() };
+        let result = turn.run(&call("mcp_call", json!({"server": server, "tool": tool,
+            "arguments": {"text":"TYPED_SECRET", "app":"APP_SECRET", "snapshot":"SNAPSHOT_SECRET"}}))).await;
+        (result, steps.into_inner().unwrap(), answers.asked.into_inner().unwrap(), activities.into_inner().unwrap())
+    }
+
+    #[test]
+    fn mcp_arguments_refuse_every_shape_that_would_lose_inputs() {
+        let needs_app = json!({"inputSchema": {"required": ["app"]}});
+        let base = |extra: Value| {
+            let mut args = json!({"server": "s", "tool": "t"});
+            args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            args
+        };
+        assert_eq!(mcp_arguments(&base(json!({"arguments": {"app": "x"}, "timeout_seconds": 5})), &needs_app).unwrap(), json!({"app": "x"}));
+        assert_eq!(mcp_arguments(&base(json!({})), &json!({"inputSchema": {}})).unwrap(), json!({}));
+        assert_eq!(mcp_arguments(&base(json!({"arguments": {"app": "x"}, "reason": "harmless"})), &needs_app).unwrap(), json!({"app": "x"}));
+        for (extra, shape) in [
+            (json!({}), "arguments was missing"),
+            (json!({"arguments": null}), "arguments was missing"),
+            (json!({"arguments": {}}), "a required input was missing"),
+            (json!({"arguments": "{\"app\":\"x\"}"}), "arguments was text"),
+            (json!({"arguments": ["x"]}), "arguments was not an object"),
+            (json!({"app": "x"}), "inputs were outside arguments"),
+        ] {
+            assert_eq!(mcp_arguments(&base(extra), &needs_app).unwrap_err().shape, shape);
+        }
+        let reply = ArgumentFault { shape: "arguments was missing", required: vec!["app".into()] }.reply("request_app");
+        assert!(reply.contains("`request_app` did not run: arguments was missing") && reply.contains(r#"{"app":"..."}"#));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn images_never_reach_the_work_step() {
+        let (reply,steps,_,activities) = computer_run("apex-computer","read_screen",Decision::Approve).await;
+        assert_eq!(reply.images.len(),1);
+        assert_eq!(reply.images[0].data,"AQ==");
+        let saved = serde_json::to_string(&steps).unwrap();
+        assert!(!saved.contains("AQ==") && !saved.contains("SCREEN_SECRET"));
+        assert!(activities.iter().all(|activity| !activity.contains("AQ==")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unexpected_images_from_other_computer_tools_are_dropped_for_text_bots() {
+        let (reply,_,_,_) = computer_run_options("apex-computer","read_screen",Decision::Approve,false).await;
+        assert!(reply.images.is_empty());
+        assert!(reply.text.contains("SCREEN_SECRET"),"accessibility text still reaches the bot");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_screen_output_never_reaches_the_work_step() {
+        let (_, steps, _, _) = computer_run("apex-computer", "read_screen", Decision::Approve).await;
+        assert!(!steps.is_empty());
+        assert!(steps.iter().all(|s| s.output.is_none() && !s.output_cut));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn typed_text_never_reaches_the_label_or_arguments() {
+        for tool in ["type_text", "private-tool-SCREEN_SECRET"] {
+            let (_, steps, _, activities) = computer_run("apex-computer", tool, Decision::Approve).await;
+            assert!(activities.iter().all(|activity| !activity.contains("SECRET")));
+            for step in steps {
+                let saved = serde_json::to_string(&step).unwrap();
+                assert!(!saved.contains("SECRET"), "private content reached work metadata");
+                assert!(step.detail.is_empty());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn typed_text_never_reaches_the_approval_action() {
+        let (result, _, actions, _) = computer_run("apex-computer", "type_text", Decision::Reject).await;
+        assert!(result.text.contains("declined"));
+        assert_eq!(actions.len(), 1, "privacy must not bypass approval");
+        assert!(!format!("{:?}", actions[0]).contains("SECRET"));
+        assert!(actions[0].risky);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn saved_history_has_no_screen_text() {
+        let (_, steps, _, _) = computer_run("apex-computer", "read_screen", Decision::Approve).await;
+        let history = apex_core::work_steps::ReplySteps { by: apex_core::ParticipantId::new("bot"), seq: 0, steps, todo: vec![], dropped: 0 };
+        let saved = serde_json::to_string(&history).unwrap();
+        assert!(!saved.contains("SECRET"), "private content reached serialized reply steps");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_model_still_receives_the_full_result() {
+        let (result, _, _, _) = computer_run("apex-computer", "read_screen", Decision::Approve).await;
+        assert!(result.text.contains("SCREEN_SECRET credential=TOKEN_SECRET"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn other_servers_keep_their_output() {
+        let (result, steps, _, _) = computer_run("weather", "read_screen", Decision::Approve).await;
+        assert!(result.text.contains("SCREEN_SECRET"));
+        assert!(steps.last().unwrap().output.as_deref().unwrap().contains("SCREEN_SECRET"));
+        assert!(steps[0].detail.contains("TYPED_SECRET"));
+    }
+
+    #[tokio::test]
+    async fn screenshot_is_refused_before_connecting_or_capturing() {
+        let tools = ToolBox::new(&crate::BuildContext::default());
+        let progress = |_: Progress<'_>| {};
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full,
+            can_read_images: false, approver: &NoApprover, progress: &progress, jobs: shell::Jobs::default(),
+            cwd: None, roots: tools.roots.clone(), servers: vec![mcp_client::ServerSpec {
+                name: "apex-computer".into(), transport: mcp_client::Transport::Unsupported("connection attempted".into())
+            }] };
+        let reply = turn.run(&call("mcp_call", json!({"server":"apex-computer","tool":"get_screenshot"}))).await;
+        assert_eq!(reply.text,"This model can't read screenshots and relies on accessibility text. Some controls may be missing or interpreted incorrectly, making computer use less reliable.");
+        assert!(reply.images.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_computer_connections_keep_errors_out_of_work_steps() {
+        let tools = ToolBox::new(&crate::BuildContext::default());
+        let steps = Mutex::new(Vec::new());
+        let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
+            progress: &progress, jobs: shell::Jobs::default(), cwd: None, roots: tools.roots.clone(),
+            servers: vec![mcp_client::ServerSpec { name: "apex-computer".into(),
+                transport: mcp_client::Transport::Unsupported("SCREEN_SECRET TOKEN_SECRET".into()) }] };
+        let result = turn.run(&call("mcp_call", json!({"server":"apex-computer", "tool":"read_screen"}))).await.text;
+        assert!(result.contains("SCREEN_SECRET"), "the model needs the full error to recover");
+        let steps = steps.lock().unwrap();
+        assert_eq!(steps.last().unwrap().status, StepStatus::Failed);
+        assert!(steps.iter().all(|step| step.output.is_none() && step.detail.is_empty()));
+        assert!(!serde_json::to_string(&*steps).unwrap().contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn malformed_computer_arguments_are_private_before_dispatch() {
+        let tools = ToolBox::new(&crate::BuildContext::default());
+        let steps = Mutex::new(Vec::new());
+        let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
+        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
+            progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
+        let call = ToolCall { name: "mcp_call".into(), arguments: r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#.into(), ..Default::default() };
+        assert!(call.has_computer_content());
+        let result = turn.run(&call).await.text;
+        assert!(result.contains("weren't valid JSON"));
+        assert!(!result.contains("SECRET"));
+        assert!(steps.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unidentified_server_dispatch_never_records_private_arguments() {
+        let cases = [
+            ("missing", None), ("null", Some(Value::Null)), ("number", Some(json!(42))),
+            ("object", Some(json!({"text":"SERVER_SECRET"}))), ("array", Some(json!(["SERVER_SECRET"]))),
+            ("empty", Some(json!(""))), ("whitespace", Some(json!(" \t"))),
+        ];
+        for (case, server) in cases {
+            for name in ["mcp_call", "mcp_list_tools"] {
+                let tools = ToolBox::new(&crate::BuildContext::default());
+                let steps = Mutex::new(Vec::new());
+                let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
+                let answers = approver(Decision::Approve);
+                let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &answers,
+                    progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
+                let mut args = json!({"tool":"TOOL_SECRET", "arguments":{"text":"TYPED_SECRET", "credential":"TOKEN_SECRET"}});
+                if let Some(server) = &server { args["server"] = server.clone(); }
+                let result = turn.run(&call(name, args)).await.text;
+                assert!(result.contains("no MCP server"), "{case}: the model needs a routing error");
+                let steps = steps.lock().unwrap();
+                assert_eq!(steps.len(), 1, "{case}: exercise the real failed dispatch");
+                assert!(!serde_json::to_string(&*steps).unwrap().contains("SECRET"), "{case}: private arguments reached saved steps");
+                assert!(steps[0].detail.is_empty() && steps[0].output.is_none(), "{case}");
+                assert_eq!(steps[0].status, StepStatus::Failed);
+                assert!(answers.asked.lock().unwrap().is_empty(), "{case}: an unidentified server cannot execute");
+            }
+        }
     }
 
     #[test]
@@ -829,14 +1232,14 @@ mod tests {
         // Read only: a write is refused without asking anyone.
         let nobody = approver(Decision::Approve);
         let mut read = Turn::new(&tools, Access::Read, false, Access::Read, &nobody, &progress);
-        let out = read.run(&call("write_file", json!({"path": "a.txt", "content": "x"}))).await;
+        let out = read.run(&call("write_file", json!({"path": "a.txt", "content": "x"}))).await.text;
         assert!(out.contains("read-only"), "{out}");
         assert!(nobody.asked.lock().unwrap().is_empty() && !dir.join("a.txt").exists());
 
         // Ask first: the edit becomes a card; declining leaves the file alone.
         let no = approver(Decision::Reject);
         let mut ask = Turn::new(&tools, Access::Ask, false, Access::Ask, &no, &progress);
-        let out = ask.run(&call("write_file", json!({"path": "a.txt", "content": "x\n"}))).await;
+        let out = ask.run(&call("write_file", json!({"path": "a.txt", "content": "x\n"}))).await.text;
         assert!(out.contains("declined"), "{out}");
         assert_eq!(no.asked.lock().unwrap()[0].kind, ActionKind::Edit);
         assert_eq!(no.asked.lock().unwrap()[0].title, "Write a.txt");
@@ -845,15 +1248,15 @@ mod tests {
         // Can edit files: edits inside go ahead, commands still ask.
         let yes = approver(Decision::Approve);
         let mut edits = Turn::new(&tools, Access::Edits, false, Access::Edits, &yes, &progress);
-        assert!(edits.run(&call("write_file", json!({"path": "a.txt", "content": "one\ntwo\n"}))).await.contains("Created a.txt"));
+        assert!(edits.run(&call("write_file", json!({"path": "a.txt", "content": "one\ntwo\n"}))).await.text.contains("Created a.txt"));
         assert!(yes.asked.lock().unwrap().is_empty(), "no card for an edit inside the project");
         assert_eq!(changes.lock().unwrap().last().unwrap().path, "a.txt");
-        let out = edits.run(&call("edit_file", json!({"path": "a.txt", "old_string": "two", "new_string": "2"}))).await;
+        let out = edits.run(&call("edit_file", json!({"path": "a.txt", "old_string": "two", "new_string": "2"}))).await.text;
         assert!(out.contains("Edited a.txt"), "{out}");
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n2\n");
         #[cfg(unix)]
         {
-            let out = edits.run(&call("run_command", json!({"command": "echo hi"}))).await;
+            let out = edits.run(&call("run_command", json!({"command": "echo hi"}))).await.text;
             assert!(out.contains("hi") && out.contains("[exit code 0]"), "{out}");
             assert_eq!(yes.asked.lock().unwrap()[0].kind, ActionKind::Command);
             assert_eq!(yes.asked.lock().unwrap()[0].detail, "echo hi");
@@ -864,7 +1267,7 @@ mod tests {
         {
             let none = approver(Decision::Reject);
             let mut full = Turn::new(&tools, Access::Full, false, Access::Full, &none, &progress);
-            let out = full.run(&call("run_command", json!({"command": "printf ok; exit 2"}))).await;
+            let out = full.run(&call("run_command", json!({"command": "printf ok; exit 2"}))).await.text;
             assert!(out.contains("ok") && out.contains("[exit code 2]"), "{out}");
             assert!(none.asked.lock().unwrap().is_empty());
             let failed = steps.lock().unwrap().iter().rev().find(|s| s.kind == StepKind::Command).unwrap().clone();
@@ -874,10 +1277,10 @@ mod tests {
         std::fs::write(outside.join("o.txt"), "far").unwrap();
         let no = approver(Decision::Reject);
         let mut read = Turn::new(&tools, Access::Read, false, Access::Read, &no, &progress);
-        let out = read.run(&call("read_file", json!({"path": outside.join("o.txt").to_string_lossy()}))).await;
+        let out = read.run(&call("read_file", json!({"path": outside.join("o.txt").to_string_lossy()}))).await.text;
         assert!(out.contains("declined"), "{out}");
         assert!(no.asked.lock().unwrap()[0].title.starts_with("Read outside the project"));
-        let out = read.run(&call("read_file", json!({"path": "a.txt"}))).await;
+        let out = read.run(&call("read_file", json!({"path": "a.txt"}))).await.text;
         assert!(out.contains("one"), "reading inside needs no card: {out}");
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(outside);
@@ -891,7 +1294,7 @@ mod tests {
         let no = approver(Decision::Reject);
         let mut edits = Turn::new(&tools, Access::Edits, false, Access::Edits, &no, &quiet);
         for path in [".mcp.json", ".claude/settings.json", ".git/config"] {
-            let out = edits.run(&call("write_file", json!({"path": path, "content": "{}"}))).await;
+            let out = edits.run(&call("write_file", json!({"path": path, "content": "{}"}))).await.text;
             assert!(out.contains("declined"), "{path}: {out}");
             assert!(!dir.join(path).exists());
         }
@@ -906,15 +1309,34 @@ mod tests {
         let quiet = |_: Progress<'_>| {};
         let yes = approver(Decision::Approve);
         let mut turn = Turn::new(&tools, Access::Read, true, Access::Edits, &yes, &quiet);
-        assert!(turn.run(&call("write_file", json!({"path": "p.txt", "content": "x"}))).await.contains("Plan mode is on"));
-        let out = turn.run(&call("exit_plan_mode", json!({"plan": "1. Write p.txt"}))).await;
+        assert!(turn.run(&call("write_file", json!({"path": "p.txt", "content": "x"}))).await.text.contains("Plan mode is on"));
+        let out = turn.run(&call("exit_plan_mode", json!({"plan": "1. Write p.txt"}))).await.text;
         assert!(out.contains("approved"), "{out}");
         assert_eq!(yes.asked.lock().unwrap()[0].kind, ActionKind::Plan);
         assert!(names(&turn).iter().any(|n| n == "write_file"));
-        assert!(turn.run(&call("write_file", json!({"path": "p.txt", "content": "x"}))).await.contains("Created"));
+        assert!(turn.run(&call("write_file", json!({"path": "p.txt", "content": "x"}))).await.text.contains("Created"));
 
         let mut read_only = Turn::new(&tools, Access::Read, true, Access::Read, &yes, &quiet);
-        assert!(read_only.run(&call("exit_plan_mode", json!({"plan": "x"}))).await.contains("read-only"));
+        assert!(read_only.run(&call("exit_plan_mode", json!({"plan": "x"}))).await.text.contains("read-only"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn api_plan_approval_text_includes_the_note() {
+        struct Noted;
+        #[async_trait::async_trait]
+        impl Approver for Noted {
+            async fn decide(&self, _: ProposedAction) -> Decision { Decision::Approve }
+            async fn decide_plan(&self, _: ProposedAction) -> apex_core::PlanAnswer {
+                apex_core::PlanAnswer { decision: Decision::Approve, note: Some("Do NOT do step 2".into()) }
+            }
+        }
+        let dir = scratch("plannote");
+        let tools = toolbox(&dir);
+        let quiet = |_: Progress<'_>| {};
+        let mut turn = Turn::new(&tools, Access::Read, true, Access::Edits, &Noted, &quiet);
+        let out = turn.run(&call("exit_plan_mode", json!({"plan": "1. A\n2. B"}))).await.text;
+        assert!(out.contains("approved") && out.ends_with("Do NOT do step 2"), "{out}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -925,8 +1347,8 @@ mod tests {
         let quiet = |_: Progress<'_>| {};
         let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &quiet);
         let bad = ToolCall { id: "1".into(), name: "read_file".into(), arguments: "{not json".into(), extra: None };
-        assert!(turn.run(&bad).await.contains("weren't valid JSON"));
-        assert!(turn.run(&call("fly", json!({}))).await.contains("no tool called `fly`"));
+        assert!(turn.run(&bad).await.text.contains("weren't valid JSON"));
+        assert!(turn.run(&call("fly", json!({}))).await.text.contains("no tool called `fly`"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -949,7 +1371,7 @@ mod tests {
         // instead of comparing native paths with MSYS's /c/... display paths.
         let command = "echo apex-cwd > .apex-cwd-check";
         let call = ToolCall { id: "1".into(), name: "run_command".into(), arguments: json!({"command": command}).to_string(), extra: None };
-        let output = turn.run(&call).await;
+        let output = turn.run(&call).await.text;
         assert!(
             dir_request.join(".apex-cwd-check").is_file() && !dir_context.join(".apex-cwd-check").exists(),
             "expected {dir_request:?}, got {output}"

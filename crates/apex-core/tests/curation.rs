@@ -171,7 +171,7 @@ fn digest_shows_whole_humans_and_both_ends_of_long_bot_messages() {
         &snap.participants,
         DIGEST_CHARS,
     );
-    assert!(d.contains("#3 [Human] line one line two"));
+    assert!(d.contains("#3 [User] line one line two"));
     assert!(d.contains("start of it"));
     assert!(d.contains("open question at the end"));
     assert!(!d.contains(&"buried middle".repeat(30)));
@@ -391,8 +391,8 @@ fn keeping_a_batch_advances_and_wraps_the_scan() {
     let (z, _) = curate(&mut r, &b);
     assert!(matches!(a,Ok(CurateOutcome::Nothing{unchecked}) if unchecked>0));
     let requests = b.requests();
-    assert!(requests[0].turns[0].content.contains("#0 [Human]"));
-    assert!(!requests[1].turns[0].content.contains("#0 [Human]"));
+    assert!(requests[0].turns[0].content.contains("#0 [User]"));
+    assert!(!requests[1].turns[0].content.contains("#0 [User]"));
     assert!(z.is_ok());
 }
 #[test]
@@ -417,12 +417,12 @@ fn scan_wraps_after_the_end_and_resets_on_clear_and_rewind() {
     curate(&mut r, &b).0.unwrap();
     assert!(b.requests().last().unwrap().turns[0]
         .content
-        .contains("#0 [Human]"));
+        .contains("#0 [User]"));
     r.rewind(30);
     curate(&mut r, &b).0.unwrap();
     assert!(b.requests().last().unwrap().turns[0]
         .content
-        .contains("#0 [Human]"));
+        .contains("#0 [User]"));
     r.clear();
     assert!(r.snapshot().curations.is_empty());
 }
@@ -509,7 +509,7 @@ fn undo_resets_the_scan_for_restored_messages() {
     curate(&mut r, &b).0.unwrap();
     r.undo_curation(&|_| {});
     curate(&mut r, &b).0.unwrap();
-    assert!(b.requests()[1].turns[0].content.contains("#0 [Human]"));
+    assert!(b.requests()[1].turns[0].content.contains("#0 [User]"));
 }
 fn decoded_messages(journal: &str) -> Vec<String> {
     let mut messages = vec![];
@@ -564,6 +564,8 @@ fn journal_hint_is_present_only_for_standing_curations_and_precedes_plan() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let req = request(&r);
     assert!(req.system.contains("/journal/chat.md"));
+    assert!(req.system.contains("isn't in the messages you can see, search this file first"));
+    assert!(req.system.contains("before you say you don't know"));
     assert!(!req.plan);
     r.set_journal_path(None);
     assert!(request(&r).system.contains("can't be read right now"));
@@ -628,4 +630,28 @@ fn curator_usage_is_counted_even_when_it_hides_nothing() {
             ..
         }
     )));
+}
+
+#[test]
+fn picks_refuse_the_prompt_example_even_when_its_ids_are_offered() {
+    let example = r#"{"hide":["120-340","355"],"reason":"one short line"}"#;
+    assert!(CURATE_SYSTEM.contains(example), "update the rejection guard if the prompt example changes");
+    let offered = (0..400).collect::<Vec<_>>();
+    assert!(parse_picks(example, &offered).is_err());
+    assert!(parse_picks(&format!("```json\n{example}\n```"), &offered).is_err());
+    assert!(parse_picks(&format!("{example}\n{{\"hide\":[],\"reason\":\"\"}}"), &offered).unwrap().hidden.is_empty());
+    assert_eq!(parse_picks(r#"{"hide":["120-340","355"],"reason":"completed tests"}"#, &offered).unwrap().hidden.len(), 2);
+}
+
+#[test]
+fn copied_schema_example_leaves_curation_state_and_transcript_unchanged() {
+    let mut room = seed(400).0;
+    let before = room.snapshot();
+    let writer = ScriptedParticipant::new("null", &[r#"{"hide":["120-340","355"],"reason":"one short line"}"#]);
+    let (result, events) = curate(&mut room, &writer);
+    assert!(result.is_err());
+    assert_eq!(room.transcript(), before.transcript);
+    assert_eq!(room.snapshot().curations, before.curations);
+    assert!(!events.iter().any(|event| matches!(event, RoomEvent::CurationsChanged { .. })));
+    assert!(events.iter().any(|event| matches!(event, RoomEvent::ParticipantIdle { .. })));
 }

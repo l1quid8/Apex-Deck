@@ -7,15 +7,22 @@ class VoicePlayback extends AudioWorkletProcessor {
     this.count = 0;
     this.generation = 0;
     this.tail = 0;
+    this.levelSamples = 0;
+    this.levelSum = 0;
+    this.held = false;
     this.port.onmessage = (e) => {
       const m = e.data;
-      if (m.type === "flush") {
+      if (m.type === "hold") this.held = m.held;
+      else if (m.type === "flush") {
+        this.held = false;
         this.queue = [];
         this.current = null;
         this.offset = 0;
         this.count = 0;
         this.generation = m.generation;
         this.tail = 0;
+        this.levelSamples = 0;
+        this.levelSum = 0;
         this.port.postMessage({ type: "flushed" });
       } else if (m.generation === this.generation) {
         if (m.type === "end") this.queue.push({ end: m.segmentId });
@@ -33,6 +40,10 @@ class VoicePlayback extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const out = outputs[0][0];
     for (let i = 0; i < out.length; i++) {
+      if (this.held) {
+        out[i] = 0;
+        continue;
+      }
       while (!this.current && this.queue.length) {
         const item = this.queue.shift();
         if (item.end !== undefined)
@@ -62,6 +73,13 @@ class VoicePlayback extends AudioWorkletProcessor {
           this.current = null;
         }
       } else out[i] = 0;
+    }
+    for (const sample of out) this.levelSum += sample * sample;
+    this.levelSamples += out.length;
+    if (this.levelSamples >= sampleRate / 20) {
+      this.port.postMessage({ type: "level", rms: Math.sqrt(this.levelSum / this.levelSamples), generation: this.generation });
+      this.levelSamples = 0;
+      this.levelSum = 0;
     }
     return true;
   }

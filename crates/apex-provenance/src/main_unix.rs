@@ -23,38 +23,54 @@ use std::{
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Config {
-    ui_cdhash: String,
+    #[serde(default)]
+    ui_cdhash: Option<String>,
     daemon_cdhash: String,
+    #[serde(default)]
+    cli_cdhash: Option<String>,
+    #[serde(default)]
+    cli_standalone_cdhash: Option<String>,
+    #[serde(default)]
+    daemon_standalone_cdhash: Option<String>,
 }
 #[cfg(target_os = "macos")]
 extern "C" {
     fn apex_provenance_peer(fd: i32, requirement: *const std::ffi::c_char, uid: *mut u32) -> i32;
 }
-fn peer(stream: &UnixStream, hash: &str, ui: bool) -> (u32, bool) {
-    let mut uid = u32::MAX;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Peer { App, Daemon, Cli }
+fn peer_requirement(role: Peer, hash: Option<&str>) -> Option<String> {
+    let hash = hash.filter(|hash| hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))?;
+    let identity = match role {
+        Peer::App => "identifier \"dev.apexdeck.app\" and ",
+        Peer::Cli => "identifier \"dev.apexdeck.cli\" and ",
+        Peer::Daemon => "",
+    };
+    Some(format!("anchor apple generic and {identity}cdhash H\"{hash}\""))
+}
+fn may_issue(role: Peer, command: &serde_json::Value) -> bool {
+    role == Peer::App || (role == Peer::Cli && cli_submission(command))
+}
+// Only the terminal's typed first-build operations. Never admit broker admin,
+// device grants, personal assistant APIs, arbitrary room execution or updates.
+fn cli_submission(command: &serde_json::Value) -> bool {
+    matches!(command["cmd"].as_str(), Some("room_post" | "room_decide" | "room_answer"
+        | "room_set_plan" | "room_runner_start" | "room_runner_action"
+        | "room_add_participant" | "room_update_participant" | "room_remove_participant"
+        | "room_set_options" | "room_create" | "agent_profile_save" | "provider_setup_begin" | "backend_stop"))
+}
+fn peer(stream: &UnixStream, hash: Option<&str>, role: Peer) -> (u32, bool) {
+    let uid = u32::MAX;
     #[cfg(target_os = "macos")]
     {
-        // Pin the exact build, not just the user's signing identity (the same
-        // user may also have access to the Developer ID signing key).
-        let identifier = if ui {
-            "identifier \"dev.apexdeck.app\" and "
-        } else {
-            ""
-        };
-        let requirement = std::ffi::CString::new(format!(
-            "anchor apple generic and {identifier}cdhash H\"{hash}\""
-        ))
-        .unwrap();
-        let trusted =
-            unsafe { apex_provenance_peer(stream.as_raw_fd(), requirement.as_ptr(), &mut uid) }
-                == 1;
+        let mut uid = uid;
+        let Some(rule) = peer_requirement(role, hash) else { return (uid, false) };
+        let requirement = std::ffi::CString::new(rule).unwrap();
+        let trusted = unsafe { apex_provenance_peer(stream.as_raw_fd(), requirement.as_ptr(), &mut uid) } == 1;
         (uid, trusted)
     }
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (stream, hash, ui);
-        (uid, false)
-    }
+    { let _ = (stream, hash, role); (uid, false) }
 }
 fn atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     let temporary = path.with_extension("pending");
@@ -175,8 +191,8 @@ fn run() -> Result<(), String> {
     // The installer creates the directory; no auto-migration of user files.
     let config: Config = serde_json::from_slice(&root_file(&root.join("config.json"))?)
         .map_err(|e| e.to_string())?;
-    if [&config.ui_cdhash, &config.daemon_cdhash]
-        .iter()
+    if [config.ui_cdhash.as_deref(), Some(config.daemon_cdhash.as_str()), config.cli_cdhash.as_deref(), config.cli_standalone_cdhash.as_deref(), config.daemon_standalone_cdhash.as_deref()]
+        .into_iter().flatten()
         .any(|hash| hash.len() != 40 || !hash.bytes().all(|b| b.is_ascii_hexdigit()))
     {
         return Err("Invalid pinned UI CDHash".into());
@@ -253,8 +269,15 @@ fn run() -> Result<(), String> {
         let Ok(mut stream) = stream else { continue };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
-        let (uid, trusted) = peer(&stream, &config.ui_cdhash, true);
-        let (daemon_uid, trusted_daemon) = peer(&stream, &config.daemon_cdhash, false);
+        let (_, trusted) = peer(&stream, config.ui_cdhash.as_deref(), Peer::App);
+        let (daemon_uid, trusted_daemon_primary) = peer(&stream, Some(&config.daemon_cdhash), Peer::Daemon);
+        let uid = daemon_uid;
+        let (_, trusted_daemon_standalone) = peer(&stream, config.daemon_standalone_cdhash.as_deref(), Peer::Daemon);
+        let trusted_daemon = trusted_daemon_primary || trusted_daemon_standalone;
+        let (primary_cli_uid, trusted_cli_primary) = peer(&stream, config.cli_cdhash.as_deref(), Peer::Cli);
+        let (standalone_cli_uid, trusted_cli_standalone) = peer(&stream, config.cli_standalone_cdhash.as_deref(), Peer::Cli);
+        let trusted_cli = trusted_cli_primary || trusted_cli_standalone;
+        let cli_uid = if trusted_cli_primary { primary_cli_uid } else { standalone_cli_uid };
         let response = (|| -> Result<Signed, String> {
             if uid == u32::MAX || uid != daemon_uid {
                 return Err("No kernel peer identity".into());
@@ -305,7 +328,9 @@ fn run() -> Result<(), String> {
                         request["nonce"].as_str().unwrap_or(""), trusted_daemon,
                     )?,
                     Some("issue") => {
-                        let receipt = next.issue(uid, folder, request["command"].clone(), trusted)?;
+                        let role = if trusted { Some(Peer::App) } else if trusted_cli && cli_uid == uid { Some(Peer::Cli) } else { None };
+                        let allowed = role.is_some_and(|role| may_issue(role, &request["command"]));
+                        let receipt = next.issue(uid, folder, request["command"].clone(), allowed)?;
                         json!({"domain":DOMAIN,"kind":"submission","receipt":receipt})
                     }
                     Some("write") => {
@@ -409,10 +434,12 @@ mod tests {
     #[test]
     fn native_audit_token_rejects_an_unpinned_same_user_process() {
         let (a, _b) = UnixStream::pair().unwrap();
-        let (uid, trusted) = peer(&a, "0000000000000000000000000000000000000000", true);
-        #[cfg(target_os = "macos")]
-        assert_eq!(uid, unsafe { libc::geteuid() });
-        assert!(!trusted);
+        for role in [Peer::App, Peer::Daemon, Peer::Cli] {
+            let (uid, trusted) = peer(&a, Some("0000000000000000000000000000000000000000"), role);
+            #[cfg(target_os = "macos")]
+            assert_eq!(uid, unsafe { libc::geteuid() });
+            assert!(!trusted, "unsigned local peer cannot claim {role:?}");
+        }
     }
 
     const NONCE: &str = "0123456789abcdef0123456789abcdef";
@@ -536,5 +563,34 @@ mod tests {
         println!("read  per request: old {old_read:.2} ms, new {new_read:.4} ms");
         println!("write per request: old {old_write:.2} ms, new {new_write:.2} ms (of which CPU {new_write_cpu:.3} ms; the rest is waiting on the disk flush)");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cli_admission_tests {
+    use super::*;
+    #[test]
+    fn legacy_configs_disable_cli_and_pins_require_exact_identity() {
+        let old: Config = serde_json::from_value(json!({"uiCdhash":"a".repeat(40),"daemonCdhash":"b".repeat(40)})).unwrap();
+        assert!(old.cli_cdhash.is_none());
+        let standalone:Config=serde_json::from_value(json!({"uiCdhash":null,"daemonCdhash":"b".repeat(40),"cliCdhash":"c".repeat(40)})).unwrap();
+        assert!(standalone.ui_cdhash.is_none());assert!(standalone.cli_cdhash.is_some());
+        let coexist:Config=serde_json::from_value(json!({"uiCdhash":"a".repeat(40),"daemonCdhash":"b".repeat(40),"cliStandaloneCdhash":"c".repeat(40),"daemonStandaloneCdhash":"d".repeat(40)})).unwrap();
+        assert!(coexist.cli_standalone_cdhash.is_some());assert!(coexist.daemon_standalone_cdhash.is_some());
+        assert_eq!(peer_requirement(Peer::Cli, None), None);
+        assert_eq!(peer_requirement(Peer::Cli, Some(&"c".repeat(40))).unwrap(), format!("anchor apple generic and identifier \"dev.apexdeck.cli\" and cdhash H\"{}\"", "c".repeat(40)));
+        assert!(peer_requirement(Peer::Cli, Some("bad\" or true")).is_none());
+        assert!(peer_requirement(Peer::App, Some(&"a".repeat(40))).unwrap().contains("dev.apexdeck.app"));
+    }
+    #[test]
+    fn cli_can_only_issue_first_build_submissions() {
+        for cmd in ["room_post","room_decide","room_answer","room_set_plan","room_runner_start","room_runner_action","room_add_participant","room_update_participant","room_remove_participant","room_set_options","room_create","agent_profile_save","provider_setup_begin"] {
+            assert!(may_issue(Peer::Cli, &json!({"cmd":cmd})), "{cmd}");
+        }
+        for cmd in ["devices_add","pair_approve","provenance_execute","personal_permission_set","room_mount","room_fork","assistant_message","unknown"] {
+            assert!(!may_issue(Peer::Cli, &json!({"cmd":cmd})), "{cmd}");
+        }
+        assert!(!may_issue(Peer::Daemon, &json!({"cmd":"room_set_plan"})));
+        assert!(may_issue(Peer::App, &json!({"cmd":"personal_permission_set"})));
     }
 }

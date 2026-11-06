@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Apex Deck CLI · Twil Mockup</title>
+<style>
+:root{color-scheme:dark;--bg:#000;--panel:#101010;--line:#2a2a2a;--text:#f2f2f2;--muted:#9a9a9a;--mint:#3def91;--cyan:#1ed7ee;--prompt:#b4b7b8}
+*:not([class]) {font:14px/1.65 ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace}
+body{margin:0;background:#080b0c;color:var(--text)}
+button,input{font:inherit}
+button{cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+.composer{display:flex;align-items:center;gap:8px;height:40px;padding:4px 12px 0;font-family:inherit}
+.composer .promptline{flex:0 0 auto}
+header{max-width:1160px;margin:30px auto 20px;display:flex;align-items:center;justify-content:space-between;padding:0 24px}
+.brand{display:flex;align-items:center;gap:12px;font:600 16px system-ui}
+.brand img{width:36px;height:36px}
+.preview{color:var(--muted);font-size:12px}
+nav{max-width:1112px;margin:0 auto 18px;display:flex;gap:8px;flex-wrap:wrap}
+nav button{background:transparent;color:var(--muted);border:1px solid transparent;padding:6px 13px;border-radius:5px}
+nav button[aria-selected=true]{background:#14241d;color:var(--mint);border-color:#28553e}
+.terminal{max-width:1112px;margin:auto;border:1px solid #343a3c;border-radius:11px;overflow:hidden;background:var(--bg);box-shadow:0 24px 90px #0009}
+.titlebar{height:43px;background:#191c1d;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:12px;position:relative}
+.lights{position:absolute;left:17px;display:flex;gap:8px}
+.lights i{width:10px;height:10px;border-radius:50%;background:#ff6059}
+.lights i:nth-child(2){background:#ffbd2e}
+.lights i:nth-child(3){background:#28c840}
+.screen{min-height:550px;padding:30px 38px 12px;overflow-y:auto;scroll-behavior:smooth}
+.intro{display:flex;gap:30px;margin-bottom:26px;align-items:center}
+.terminal-mark{width:104px;height:104px;object-fit:contain;flex:none}
+.ascii{white-space:pre;font-size:14px;line-height:1.2;color:var(--mint);margin:0}
+.ascii span{color:var(--cyan)}
+h1{font-size:20px;letter-spacing:2px;margin:0 0 3px}
+.cyan{color:var(--cyan)}
+.green{color:var(--mint)}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+.line{border-top:1px solid var(--line);margin:20px 0}
+.promptline{color:var(--prompt);margin-bottom:12px}
+.user{color:var(--mint);font-weight:600;margin-bottom:8px}
+.agent{color:var(--mint);font-weight:500;margin-top:4px}
+.approval{margin-top:24px}
+.approval button{margin-right:12px;padding:6px 12px;font:500 14px system-ui}
+.block{margin-bottom:14px}
+.block .muted{font-size:12px;margin-top:4px}
+.row{display:flex;gap:18px;margin-bottom:14px;font-size:13px}
+.row .cyan{color:var(--cyan)}
+.row .muted{color:var(--muted)}
+.status{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.4}
+.status .cyan{color:var(--cyan)}
+footer.help{margin-top:24px;font-size:11px;color:var(--muted)}
+footer.help kbd{font-family:'SFMono-Regular',Menlo,Consolas,monospace;color:var(--text);background:var(--muted);padding:2px 6px;border-radius:3px}
+footer.help span{margin-left:12px}
+</style>
+<header>
+  <div class="brand">
+    <img src="../public/branding/mark.svg" alt="Apex Deck">
+    Apex Deck
+  </div>
+  <div class="preview">Interactive concept · Design only</div>
+</header>
+<nav role="tablist" aria-label="Preview scenarios">
+  <button role="tab" data-view="welcome">Welcome</button>
+  <button role="tab" data-view="chat">Chat & tools</button>
+  <button role="tab" data-view="team">Agent team</button>
+  <button role="tab" data-view="approval">Approval</button>
+  <button role="tab" data-view="sessions">Resume</button>
+</nav>
+<main class="terminal">
+  <div class="titlebar">
+    <div class="lights" aria-hidden="true">
+      <i></i><i></i><i></i>
+    </div>
+    apex — ~/Projects/apex-deck
+  </div>
+  <div class="screen">
+    <div class="intro">
+      <img class="terminal-mark" src="../public/branding/mark.svg" alt="Apex Deck mark">
+      <div>
+        <h1>APEX DECK</h1>
+        <div class="cyan">Your agents. One workspace.</div>
+        <div class="muted small">CLI concept v0.2 · Local host</div>
+      </div>
+    </div>
+    <div id="content"></div>
+    <div id="transcript" aria-live="polite"></div>
+  </div>
+  <div class="composer" id="form">
+    <div class="promptline">❯ </div>
+    <input id="prompt" aria-label="Message or slash command" autocomplete="off" placeholder="Ask anything, or / for commands…">
+  </div>
+  <div class="status">
+    <span>● <span id="agent">Twil</span> &nbsp; <span class="cyan">Reasoning</span> &nbsp; ~/Projects/apex-deck</span>
+    <span>Local mode &nbsp; <span class="green">Enabled</span></span>
+  </div>
+</main>
+<footer class="help">
+  <span><kbd>Enter</kbd> send &nbsp; <kbd>/</kbd> commands &nbsp; <kbd>Esc</kbd> welcome</span>
+  <span>Simulated activity · No commands execute</span>
+</footer>
+<script>
+const content = document.querySelector('#content'),
+      transcript = document.querySelector('#transcript'),
+      input = document.querySelector('#prompt');
+
+const screens = {
+  welcome: `
+    <div class="promptline"><b>❯ </b> apex</div>
+    <p>Welcome back, Tyler.</p>
+    <p class="muted">Pick up where you left off, or start something new.</p>
+
+    <div class="block">
+      <div><span class="green">✓</span> Workspace instructions loaded</div>
+      <div><span class="green">✓</span> Twil is ready</div>
+      <div class="muted">Same workspace on desktop, terminal, and phone</div>
+    </div>
+
+    <div class="line"></div>
+    <div class="row"><span class="cyan">/</span><span>help</span><span class="muted">Show available commands</span></div>
+    <div class="row"><span class="cyan">/</span><span>resume</span><span class="muted">Continue a recent conversation</span></div>
+    <div class="row"><span class="cyan">/</span><span>team</span><span class="muted">Give your agents a shared task</span></div>
+    <div class="row"><span class="cyan">/</span><span>model</span><span class="muted">Preview model output</span></div>
+    <div class="row"><span class="cyan">/</span><span>approval</span><span class="muted">Review simulated edits</span></div>
+    <div class="row"><span class="cyan">/</span><span>session</span><span class="muted">List recent sessions</span></div>
+
+    <p class="muted small">Type “Review the composer changes” to preview a conversation.</p>
+  `,
+
+  chat: `
+    <div class="user">❯ Review the composer changes before we ship.</div>
+    <p class="agent">[Twil] I’ll inspect the diff and check how the composer handles history.</p>
+    <div class="block">
+      <div><span class="green">✓</span> Read &nbsp; src/ChatPane.tsx <span class="muted">&nbsp; 218 lines</span></div>
+      <div><span class="green">✓</span> Shell &nbsp; git diff -- src/ <span class="muted">&nbsp; 0.2s</span></div>
+      <div><span class="green">✓</span> Read &nbsp; tests/phone-composer-history.test.mjs</div>
+    </div>
+    <p>The draft survives navigation. One edge case needs attention:</p>
+    <p class="muted">Pressing ↑ in a multiline draft can replace the current text.</p>
+    <p class="muted">I’d keep cursor navigation until the caret reaches the first line.</p>
+    <p class="cyan">Want me to prepare that change?</p>
+  `,
+
+  team: `
+    <div class="user">❯ Have the team review the composer. Check behavior and tests.</div>
+    <p class="agent">[Twil] I’ve split the review into two independent checks.</p>
+    <div class="block">
+      <div><span class="green">✓</span> Alfred &nbsp; Behavior review <span class="muted">· completed</span></div>
+      <div><span class="green">✓</span> Jigga &nbsp; Code review <span class="muted">· completed</span></div>
+      <div><span class="green">✓</span> deepgeek &nbsp; Edge cases <span class="muted">· in progress</span></div>
+    </div>
+    <p>All reviewers see the same history. No race conditions in shared state.</p>
+    <p class="cyan">Approve this plan?</p>
+  `,
+
+  approval: `
+    <div class="approval">
+      <p class="agent">[Jigga] Simulated edit: src/chat/index.ts line 42 · Add logging for user intent</p>
+      <p class="muted">Risk: Low (only dev workspace)</p>
+      <p class="muted small">Preview shows diff highlights and affected lines.</p>
+    </div>
+    <div class="line"></div>
+    <div class="row"><span class="green">✓</span><span>Review</span><span class="muted">Diff preview loaded</span></div>
+    <button data-answer="allow">Allow edit</button>
+    <button>Deny edit</button>
+    <button data-answer="allow" style="margin-left:12px">Allow with justification</button>
+  `,
+
+  sessions: `
+    <div class="user">❯ session list</div>
+    <p class="agent">[Twil] Recent sessions:</p>
+    <ul class="muted">
+      <li><strong>composer-review</strong> — 2024-06-01 10:30 · Jigga (Codex) · <span class="cyan">Resume</span></li>
+      <li><strong>team-plan</strong> — 2024-06-01 09:15 · Alfred (Reasoning) · <span class="cyan">Resume</span></li>
+    </ul>
+    <div class="line"></div>
+    <div class="row"><span class="cyan">/</span><span>resume</span><span class="muted">Choose a session to continue</span></div>
+  `,
+};
+
+function show(view) {
+  content.innerHTML = screens[view];
+  transcript.replaceChildren();
+  document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === view)));
+  input.value = '';
+}
+
+document.querySelector('nav').onclick = e => {
+  if (e.target.dataset.view) show(e.target.dataset.view);
+};
+
+document.querySelector('#form').onsubmit = e => {
+  e.preventDefault();
+  const value = input.value.trim();
+  if (!value) return;
+  const cmd = value.split(' ')[0];
+  const map = {
+    '/': 'welcome',
+    '/help': 'welcome',
+    '/resume': 'sessions',
+    '/team': 'team',
+    '/model': 'chat',
+    '/approval': 'approval',
+    '/session': 'sessions',
+  };
+  if (map[cmd]) {
+    show(map[cmd]);
+    return;
+  }
+  // Non-command text goes to chat
+  content.querySelector('.user').textContent = '❯ ' + value;
+  show('chat');
+  input.value = '';
+};
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') show('welcome');
+  if (e.key === '/' && document.activeElement !== input) {
+    e.preventDefault();
+    input.focus();
+    input.value = '/';
+  }
+});
+
+function addAgentLine(agentName, message) {
+  const p = document.createElement('p');
+  p.className = 'agent';
+  p.innerHTML = `<strong>[${agentName}]</strong> ${message}`;
+  transcript.appendChild(p);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+function addUserLine(message) {
+  const div = document.createElement('div');
+  div.className = 'user';
+  div.textContent = '❯ ' + message;
+  transcript.appendChild(div);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+show('welcome');
+</script>
+</html>

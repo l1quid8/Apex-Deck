@@ -9,7 +9,7 @@ type Correction = { id: string; text: string; kind: ProjectNoteKind; version: nu
 const when = (at: number) => new Date(at).toLocaleString();
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-export function ProjectMemoryPanel({ lane, embedded = false, selectedProject, initialProject, notebookControl }: { lane: PersonalLane; embedded?: boolean; selectedProject?: ProjectMemoryRead['project']; initialProject?: ProjectMemoryRead['project']; notebookControl?: ReactNode }) {
+export function ProjectMemoryPanel({ lane, embedded = false, selectedProject, initialProject, notebookControl }: { lane: Pick<PersonalLane, 'ref' | 'assistant' | 'offline' | 'projectMemory' | 'projectMemoryProblem'>; embedded?: boolean; selectedProject?: ProjectMemoryRead['project']; initialProject?: ProjectMemoryRead['project']; notebookControl?: ReactNode }) {
   const owner = lane.ref ?? (lane.assistant ? { hostId: lane.assistant.hostId, assistantId: lane.assistant.id } : null);
   const ownerKey = owner ? assistantIdentityKey(owner) : '';
   const projects = lane.assistant?.projects ?? [];

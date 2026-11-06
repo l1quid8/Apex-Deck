@@ -42,6 +42,7 @@ try {
 }
 
 contextBridge.exposeInMainWorld('apexDeck', {
+  clipboard: { writeText: (text) => ipcRenderer.invoke('clipboard:write', text) },
   ...(process.platform === 'win32' ? {} : {
     voice: {
       status: () => ipcRenderer.invoke('voice:status'),
@@ -121,6 +122,8 @@ contextBridge.exposeInMainWorld('apexDeck', {
     back: (pane) => ipcRenderer.invoke('browser:back', pane),
     forward: (pane) => ipcRenderer.invoke('browser:forward', pane),
     close: (pane) => ipcRenderer.invoke('browser:close', pane),
+    sitePermissions: () => ipcRenderer.invoke('browser:sitePermissions'),
+    forgetSitePermission: (origin, kind) => ipcRenderer.invoke('browser:forgetSitePermission', origin, kind),
     onState: (cb) => subscribe('browser:state', cb),
     onShortcut: (cb) => subscribe('browser:shortcut', cb),
     zoom: () => webFrame.getZoomFactor(),
@@ -130,6 +133,10 @@ contextBridge.exposeInMainWorld('apexDeck', {
     open: (snapshot, bounds) => ipcRenderer.invoke('popout:open', snapshot, bounds),
     snapshot: (token) => ipcRenderer.invoke('popout:snapshot', token),
     close: (token) => ipcRenderer.invoke('popout:close', token),
+    assistantLayout: (token, presentation) => ipcRenderer.invoke('popout:assistant-layout', token, presentation),
+    assistantVisibility: (token, visible) => ipcRenderer.invoke('popout:assistant-visibility', token, visible),
+    moveAssistant: (token, delta) => ipcRenderer.invoke('popout:assistant-move', token, delta),
+    alwaysOnTop: (token, on) => ipcRenderer.invoke('popout:always-on-top', token, on),
     update: (token, patch) => ipcRenderer.invoke('popout:update', token, patch),
     sendAction: (token, action) => ipcRenderer.invoke('popout:action', token, action),
     onUpdate: (cb) => subscribe('popout:update', cb),

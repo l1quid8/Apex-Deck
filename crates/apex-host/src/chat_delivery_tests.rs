@@ -227,7 +227,7 @@ fn missing_saved_chat_never_downgrades_client_posts_to_legacy_delivery() {
         std::fs::rename(&rooms, &backup).unwrap();
         std::fs::create_dir(&rooms).unwrap();
         // A missing room reads as None on every platform. A legacy send
-        // would append the human message before this replacement fails.
+        // would append the user message before this replacement fails.
         std::fs::create_dir(rooms.join("72.tmp")).unwrap();
         let post = json!({"command":command,"id":"r","text":"hello","targets":["a"],"clientMessageId":"m"});
         runtime.block_on(async {
@@ -282,7 +282,7 @@ fn import_refuses_phone_selected_credentials_and_resolves_target_profiles() {
     let (runtime, host, path) = fixture("import-trusted-profile");
     let safe = json!({"id":"api", "display_name":"Saved API", "persona":"Target persona", "access":"full",
         "backend":{"kind":"open_ai_compatible","base_url":"https://target.example/v1","model":"saved-model","api_key_env":"TARGET_KEY"}});
-    host.session_save(json!({"version":1,"profiles":[safe.clone()]})).unwrap();
+    host.session_save(json!({"version":1,"profileRevision":host.session_load().unwrap().unwrap()["profileRevision"],"profiles":[safe.clone()]})).unwrap();
     runtime.block_on(async {
         let mut forged = safe;
         forged["backend"]["base_url"] = "https://attacker.example".into();
@@ -311,7 +311,7 @@ fn import_refuses_phone_selected_credentials_and_resolves_target_profiles() {
         assert_eq!(rows["rooms"].as_array().unwrap().iter().find(|r| r["id"] == "safe").unwrap()["profiles"], json!({"api-2":"api"}));
         // The same move keeps its chosen profiles even if the phone changes
         // the request or the target's saved profiles are later removed.
-        host.session_save(json!({"version":1,"profiles":[]})).unwrap();
+        host.session_save(json!({"version":1,"profileRevision":host.session_load().unwrap().unwrap()["profileRevision"],"profiles":[]})).unwrap();
         let mut retry = command;
         retry["participants"] = json!([]);
         let repeated = call(&host, retry).await.unwrap();

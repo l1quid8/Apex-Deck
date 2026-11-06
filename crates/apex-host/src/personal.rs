@@ -12,6 +12,9 @@
 //! decision is applied only from a `personal_decide` event whose parameter
 //! hash matches the task's current operation.
 
+#[path = "personal_permissions.rs"]
+pub mod permissions;
+
 use std::sync::Mutex;
 
 use apex_core::ParticipantConfig;
@@ -35,6 +38,7 @@ const MESSAGE_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "👀", "
 /// One change to `personal-assistants.json` at a time. Never held across a
 /// model call or a command run.
 static PERSONAL: Mutex<()> = Mutex::new(());
+pub(crate) fn authority_guard() -> std::sync::MutexGuard<'static, ()> { PERSONAL.lock().unwrap_or_else(|p|p.into_inner()) }
 
 #[cfg(test)]
 pub(crate) fn with_personal_lock_for_test<T>(run: impl FnOnce() -> T) -> T {
@@ -74,7 +78,7 @@ pub struct Counters {
 }
 
 /// What kind of action something is. The assistant's rule for the class
-/// decides whether it runs, asks or is handed to the human.
+/// decides whether it runs, asks or is handed to the user.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolClass {
@@ -91,11 +95,11 @@ pub enum ToolClass {
 pub enum ActionMode {
     /// Do it without asking.
     Auto,
-    /// Do it only when the human's own message asked for it.
+    /// Do it only when the user's own message asked for it.
     OnRequest,
     /// Ask first, every time.
     Ask,
-    /// Prepare it and hand it to the human; nothing runs.
+    /// Prepare it and hand it to the user; nothing runs.
     HandOff,
 }
 
@@ -107,6 +111,8 @@ pub struct ActionModes {
     pub send: ActionMode,
     pub spend: ActionMode,
 }
+
+fn is_zero(value: &u64) -> bool { *value == 0 }
 
 impl Default for ActionModes {
     fn default() -> Self {
@@ -195,7 +201,7 @@ pub struct Fact {
     pub id: String,
     pub text: String,
     pub kind: FactKind,
-    /// The human said it outright. Otherwise the assistant inferred it.
+    /// The user said it outright. Otherwise the assistant inferred it.
     pub explicit: bool,
     /// 0–100.
     pub confidence: u8,
@@ -230,13 +236,13 @@ pub struct FactSource {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ScheduleStatus {
-    /// Waiting for the human to confirm it.
+    /// Waiting for the user to confirm it.
     Proposed,
     Active,
     Cancelled,
 }
 
-/// A set-time job the human confirmed. Each firing makes one task.
+/// A set-time job the user confirmed. Each firing makes one task.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Schedule {
@@ -252,18 +258,18 @@ pub struct Schedule {
     pub next_at: Option<u64>,
     pub status: ScheduleStatus,
     pub created_at: u64,
-    /// What the human confirmed: the operation every firing runs.
+    /// What the user confirmed: the operation every firing runs.
     pub params_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_task_id: Option<String>,
     #[serde(default)]
     pub runs: u32,
-    /// The human's confirmation, bound to `params_hash`.
+    /// The user's confirmation, bound to `params_hash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<PendingDecision>,
 }
 
-/// Something the assistant brings to the human's attention.
+/// Something the assistant brings to the user's attention.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Notice {
@@ -357,6 +363,12 @@ pub struct PersonalAssistant {
     #[serde(default)]
     pub modes: ActionModes,
     #[serde(default)]
+    pub permissions: permissions::PermissionPolicy,
+    /// Where the current conversation began. Older messages stay saved and
+    /// leave the model's context; memory, tasks and shared chats are untouched.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub conversation_from: u64,
+    #[serde(default)]
     pub rules: Vec<StandingRule>,
     #[serde(default)]
     pub budget: Budget,
@@ -378,6 +390,11 @@ pub struct PersonalAssistant {
     /// Phones that get its notices as pushes.
     #[serde(default)]
     pub push_devices: Vec<PushDevice>,
+    #[serde(default)]
+    pub announcement_receipts: std::collections::BTreeMap<String, AnnouncementReceipt>,
+    /// Conversational handoff drafts (Task 2): one missing slot at a time, revision bound.
+    #[serde(default)]
+    pub pending_handoffs: Vec<crate::personal_handoff::PendingHandoff>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -399,6 +416,16 @@ pub struct MachineLink {
     pub last_seen: Option<u64>,
 }
 
+/// Where a reply's outside words came from.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OutsideSource {
+    /// A reply that used the computer tools.
+    Screen,
+    /// A summary of a chat read or of helper reports.
+    Report,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalMessage {
@@ -417,16 +444,31 @@ pub struct PersonalMessage {
     /// Reactions from the authenticated human account, shared by its devices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<String>,
+    /// Set when the words retell outside content, so they stay quoted evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outside: Option<OutsideSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalViewContext {
+    pub host_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_thread_id: Option<String>,
+    #[serde(default)]
+    pub open_thread_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub followed_thread_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum EventSource {
-    /// Text the human typed in a client. The only source that can start a task.
-    Human { text: String },
-    /// The human's answer to one decision, bound to the operation it approves.
+    /// Text the user typed in a client. The only source that can start a task.
+    Human { text: String, #[serde(default, rename = "viewContext", skip_serializing_if = "Option::is_none")] view_context: Option<PersonalViewContext> },
+    /// The user's answer to one decision, bound to the operation it approves.
     Decision { decision_id: String, params_hash: String, approve: bool },
     Cancel { task_id: String },
     /// Pause or resume the assistant. Applied as soon as it's saved: while
@@ -444,10 +486,61 @@ pub enum EventSource {
 pub enum EventState {
     Received,
     Processing,
-    /// Waiting for the human to OK its cost before the model is called.
+    /// Waiting for the user to OK its cost before the model is called.
     Held,
     Done,
     Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnouncementReceipt {
+    pub task_id: String,
+    pub message_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenDelegation {
+    pub delegation_id: String,
+    pub request_id: String,
+    pub brief: String,
+    pub destination: crate::assistant_tasks::TaskDestination,
+    pub mode: crate::assistant_tasks::TaskMode,
+    #[serde(default)]
+    pub review_criteria: Vec<String>,
+    pub project: crate::personal_workspace::ProjectRef,
+    pub announcement_id: String,
+    pub owner: crate::assistant_tasks::TaskOwner,
+    pub revision: u64,
+    /// Recovery may tighten this saved admission ceiling, never raise it.
+    #[serde(default)]
+    pub standing_allowed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedPersonalReply {
+    pub reply: String,
+    pub cost: CostEntry,
+    #[serde(default)]
+    pub remember: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub forget: Vec<String>,
+    #[serde(default)]
+    pub helpers: Vec<String>,
+    #[serde(default)]
+    pub delegations: Vec<FrozenDelegation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_task: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_schedule: Option<serde_json::Value>,
+    #[serde(default)]
+    pub screen: bool,
+    #[serde(default)]
+    pub outside: bool,
+    #[serde(default)]
+    pub delegated_request_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -463,22 +556,28 @@ pub struct PersonalEvent {
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The human OK'd this reply's cost (over the budget, or unknown).
+    /// The user OK'd this reply's cost (over the budget, or unknown).
     #[serde(default)]
     pub spend_approved: bool,
+    /// This reply was given computer tools, so running it again could repeat
+    /// real actions. It settles once, whatever happens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub computer_started: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_reply: Option<PreparedPersonalReply>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskStatus {
-    /// Waiting for the human: an approval or a question (`wait` says which).
+    /// Waiting for the user: an approval or a question (`wait` says which).
     NeedsYou,
     /// Approved and ready for the worker.
     Queued,
     Running,
     /// Approved, but waiting for a time, another task or a machine (`wait` says which).
     Waiting,
-    /// Can't go on without a change only the human can make.
+    /// Can't go on without a change only the user can make.
     Blocked,
     Done,
     Failed,
@@ -584,7 +683,7 @@ pub enum DecisionKind {
     Approve,
     /// A non-repeatable operation may or may not have happened. Run it again?
     Uncertain,
-    /// The human does this step themselves; approving means "I did it".
+    /// The user does this step themselves; approving means "I did it".
     HandOff,
     /// Go ahead although the cost is unknown or over the budget?
     Spend,
@@ -682,7 +781,7 @@ pub struct PersonalTask {
     pub decision: Option<PendingDecision>,
     #[serde(default)]
     pub receipts: Vec<OperationReceipt>,
-    /// The human event that started it.
+    /// The user event that started it.
     pub from_event: String,
     pub max_attempts: u32,
     pub created_at: u64,
@@ -778,11 +877,17 @@ impl PersonalAssistant {
 
     pub(crate) fn post(&mut self, role: &str, kind: &str, text: String, task_id: Option<String>, event_id: Option<String>, at: u64) {
         let id = self.next_message_id();
-        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), legacy: None });
+        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new(), outside: None, legacy: None });
         if self.messages.len() > MAX_MESSAGES {
             let extra = self.messages.len() - MAX_MESSAGES;
             self.messages.drain(..extra);
         }
+    }
+
+    /// An assistant message that retells outside content.
+    pub(crate) fn post_outside(&mut self, source: OutsideSource, text: String, event_id: Option<String>, at: u64) {
+        self.post("assistant", "chat", text, None, event_id, at);
+        if let Some(message) = self.messages.last_mut() { message.outside = Some(source); }
     }
 
     pub(crate) fn task_mut(&mut self, id: &str) -> Option<&mut PersonalTask> {
@@ -807,7 +912,12 @@ impl PersonalAssistant {
 
     /// Settled events beyond the limit are dropped oldest first. Pending ones never are.
     fn prune_events(&mut self) {
-        let referenced: std::collections::BTreeSet<_> = self.tasks.iter().map(|task|task.from_event.clone()).collect();
+        let mut referenced: std::collections::BTreeSet<_> = self.tasks.iter().map(|task|task.from_event.clone()).collect();
+        // The task ledger can still contain an unreleased gate after source
+        // publication. Keep its source/control proof until explicit purge.
+        referenced.extend(self.events.iter().filter(|event|event.saved_reply.as_ref().is_some_and(|saved|!saved.delegations.is_empty())).map(|event|event.id.clone()));
+        let stops:Vec<_>=self.events.iter().filter_map(|event|match &event.source {EventSource::Internal {what}=>what.strip_prefix("reply-stop:").filter(|source|referenced.contains(*source)).map(|_|event.id.clone()),_=>None}).collect();
+        referenced.extend(stops);
         let settled = self.events.iter().filter(|e| !referenced.contains(&e.id) && matches!(e.state, EventState::Done | EventState::Failed)).count();
         let mut extra = settled.saturating_sub(MAX_SETTLED_EVENTS);
         self.events.retain(|e| {
@@ -824,11 +934,22 @@ impl PersonalAssistant {
     /// an operation that was attempted but never finished is now uncertain.
     pub(crate) fn recover(&mut self) -> bool {
         let mut changed = false;
+        let mut interrupted = Vec::new();
         for event in &mut self.events {
             if event.state == EventState::Processing {
-                event.state = EventState::Received;
+                // A finished private reply is recovery truth even when its
+                // computer turn performed side effects. Publish it, never rerun.
+                let uncertain=event.computer_started && event.saved_reply.is_none();
+                event.state = if uncertain { EventState::Failed } else { EventState::Received };
+                if uncertain {
+                    event.error = Some(crate::personal_worker::COMPUTER_INTERRUPTED.into());
+                    interrupted.push(event.id.clone());
+                }
                 changed = true;
             }
+        }
+        for id in interrupted {
+            self.post("system", "update", crate::personal_worker::COMPUTER_INTERRUPTED.into(), None, Some(id), now());
         }
         for task in &mut self.tasks {
             if task.status == TaskStatus::Running {
@@ -844,6 +965,150 @@ impl PersonalAssistant {
             }
         }
         changed
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalEventView {
+    pub id: String,
+    pub request_id: String,
+    pub source: EventSource,
+    pub received_at: u64,
+    pub state: EventState,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub spend_approved: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub computer_started: bool,
+}
+
+impl From<&PersonalEvent> for PersonalEventView {
+    fn from(e: &PersonalEvent) -> Self {
+        Self {
+            id: e.id.clone(),
+            request_id: e.request_id.clone(),
+            source: e.source.clone(),
+            received_at: e.received_at,
+            state: e.state,
+            attempts: e.attempts,
+            error: e.error.clone(),
+            spend_approved: e.spend_approved,
+            computer_started: e.computer_started,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalAssistantView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<u64>,
+    pub id: String,
+    pub name: String,
+    pub style: String,
+    pub host_id: String,
+    pub profile: Option<ParticipantConfig>,
+    #[serde(default)]
+    pub projects: Vec<crate::personal_workspace::AssistantProjectBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_config_version: Option<u32>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+    pub allowed_folders: Vec<String>,
+    pub paused: bool,
+    pub revision: u64,
+    pub created_at: u64,
+    pub counters: Counters,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub delegated_result_receipts: std::collections::BTreeSet<String>,
+    pub messages: Vec<PersonalMessage>,
+    pub events: Vec<PersonalEventView>,
+    pub tasks: Vec<PersonalTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<Look>,
+    #[serde(default = "utc")]
+    pub timezone: String,
+    #[serde(default)]
+    pub utc_offset_minutes: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_hours: Option<QuietHours>,
+    #[serde(default)]
+    pub modes: ActionModes,
+    #[serde(default)]
+    pub permissions: permissions::PermissionPolicy,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub conversation_from: u64,
+    #[serde(default)]
+    pub rules: Vec<StandingRule>,
+    #[serde(default)]
+    pub budget: Budget,
+    #[serde(default)]
+    pub privacy: Privacy,
+    #[serde(default = "default_context_budget")]
+    pub context_budget_chars: u64,
+    #[serde(default)]
+    pub facts: Vec<Fact>,
+    #[serde(default)]
+    pub schedules: Vec<Schedule>,
+    #[serde(default)]
+    pub notices: Vec<Notice>,
+    #[serde(default)]
+    pub costs: Vec<CostEntry>,
+    #[serde(default)]
+    pub machines: Vec<MachineLink>,
+    #[serde(default)]
+    pub push_devices: Vec<PushDevice>,
+    #[serde(default)]
+    pub announcement_receipts: std::collections::BTreeMap<String, AnnouncementReceipt>,
+    #[serde(default)]
+    pub pending_handoffs: Vec<crate::personal_handoff::PendingHandoff>,
+}
+
+impl From<&PersonalAssistant> for PersonalAssistantView {
+    fn from(a: &PersonalAssistant) -> Self {
+        Self {
+            archived_at: a.archived_at,
+            id: a.id.clone(),
+            name: a.name.clone(),
+            style: a.style.clone(),
+            host_id: a.host_id.clone(),
+            profile: a.profile.clone(),
+            projects: a.projects.clone(),
+            workspace_config_version: a.workspace_config_version,
+            extra: a.extra.clone(),
+            allowed_folders: a.allowed_folders.clone(),
+            paused: a.paused,
+            revision: a.revision,
+            created_at: a.created_at,
+            counters: a.counters.clone(),
+            delegated_result_receipts: a.delegated_result_receipts.clone(),
+            messages: a.messages.clone(),
+            events: a.events.iter().map(PersonalEventView::from).collect(),
+            tasks: a.tasks.clone(),
+            look: a.look.clone(),
+            timezone: a.timezone.clone(),
+            utc_offset_minutes: a.utc_offset_minutes,
+            quiet_hours: a.quiet_hours.clone(),
+            modes: a.modes.clone(),
+            permissions: a.permissions.clone(),
+            conversation_from: a.conversation_from,
+            rules: a.rules.clone(),
+            budget: a.budget.clone(),
+            privacy: a.privacy.clone(),
+            context_budget_chars: a.context_budget_chars,
+            facts: a.facts.clone(),
+            schedules: a.schedules.clone(),
+            notices: a.notices.clone(),
+            costs: a.costs.clone(),
+            machines: a.machines.clone(),
+            push_devices: a.push_devices.clone(),
+            announcement_receipts: a.announcement_receipts.clone(),
+            pending_handoffs: a.pending_handoffs.clone(),
+        }
     }
 }
 
@@ -886,7 +1151,7 @@ pub(crate) fn valid_argv(argv: &[String]) -> Result<(), String> {
 pub struct Accepted {
     pub event_id: String,
     pub duplicate: bool,
-    pub assistant: PersonalAssistant,
+    pub assistant: PersonalAssistantView,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1067,9 +1332,10 @@ impl crate::Host {
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],
                 look: None, timezone: utc(), utc_offset_minutes: 0, quiet_hours: None,
-                modes: ActionModes::default(), rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
+                modes: ActionModes::default(), permissions: permissions::PermissionPolicy::default(), conversation_from: 0, rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
                 context_budget_chars: default_context_budget(), facts: vec![], schedules: vec![], notices: vec![], costs: vec![],
-                machines: vec![], push_devices: vec![],
+                machines: vec![], push_devices: vec![], announcement_receipts: Default::default(),
+                pending_handoffs: vec![],
             };
             let mut assistant = assistant;
             if let Some(mut look) = input.look { if image.is_some() && (look.image.is_none() || look.image == image) {look.image=None;look.kind=None;} assistant.look = Some(crate::personal_workspace::merge_look(&assistant,look)?); }
@@ -1101,6 +1367,8 @@ impl crate::Host {
                 }
                 return Ok((existing.id.clone(), true));
             }
+            let permission_key=format!("{:x}",Sha256::digest(request.as_bytes()));
+            if assistant.extra.get("alwaysApprovalReceipts").and_then(|v|v.get(&permission_key)).is_some() {return Err("That request belongs to a saved permission confirmation.".into())}
             if assistant.extra.get("purgedTaskAuthority").and_then(serde_json::Value::as_object).is_some_and(|records|records.values().any(|record|record["requestId"].as_str()==Some(&request))) {
                 return Err("This request belongs to a permanently deleted task and cannot run again.".into());
             }
@@ -1128,18 +1396,32 @@ impl crate::Host {
             };
             assistant.events.push(PersonalEvent {
                 id: event_id.clone(), request_id: request, source, received_at: at,
-                state, attempts: 0, error: None, spend_approved: false,
+                state, attempts: 0, error: None, spend_approved: false, computer_started: false, saved_reply: None,
             });
             assistant.prune_events();
             Ok((event_id, false))
-        }).and_then(|(event_id, duplicate)| Ok(Accepted { event_id, duplicate, assistant: self.personal_get(id)? }))
+        }).and_then(|(event_id, duplicate)| {
+            let a = self.personal_get(id)?;
+            Ok(Accepted { event_id, duplicate, assistant: PersonalAssistantView::from(&a) })
+        })
     }
 
-    /// Save the human's message and its event, then answer at once. The
+    /// Save the user's message and its event, then answer at once. The
     /// worker replies later.
     pub(crate) fn personal_send(&self, id: &str, request_id: &str, text: &str) -> Result<Accepted, String> {
+        self.personal_send_with_context(id, request_id, text, None)
+    }
+
+    pub(crate) fn personal_send_with_context(&self, id: &str, request_id: &str, text: &str, view_context: Option<PersonalViewContext>) -> Result<Accepted, String> {
         let text = message_text(text)?;
-        self.personal_accept(id, request_id, EventSource::Human { text: text.clone() }, Some(text))
+        if let Some(view) = &view_context {
+            let assistant = self.personal_get(id)?;
+            if view.host_id != assistant.host_id { return Err("The view context belongs to another machine.".into()); }
+            if view.open_thread_ids.len() > 64 || view.followed_thread_ids.len() > 64 || view.open_thread_ids.iter().chain(view.followed_thread_ids.iter()).chain(view.focused_thread_id.iter()).any(|id| id.is_empty() || id.len() > 256) {
+                return Err("The view context contains too many or invalid thread identities.".into());
+            }
+        }
+        self.personal_accept(id, request_id, EventSource::Human { text: text.clone(), view_context }, Some(text))
     }
 
     pub(crate) fn personal_decide(&self, id: &str, request_id: &str, decision_id: &str, params_hash: &str, approve: bool) -> Result<Accepted, String> {
@@ -1151,8 +1433,10 @@ impl crate::Host {
         self.personal_accept(id, request_id, EventSource::Cancel { task_id: task_id.into() }, None)
     }
 
+    /// Saved before the revoke, so a reply starting now reads the pause.
     pub fn personal_pause(&self, id: &str, request_id: &str, paused: bool) -> Result<Accepted, String> {
         self.personal_accept(id, request_id, EventSource::Pause { paused }, None)
+            .inspect(|_| if paused { self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None); })
     }
 
     /// Cancel one schedule. Tasks it already started are left alone.
@@ -1164,6 +1448,15 @@ impl crate::Host {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn human_event_retains_send_time_view_context() {
+        let value = serde_json::json!({"kind":"human", "text":"Fix this", "viewContext":{"hostId":"machine-a","focusedThreadId":"thread-a","openThreadIds":["thread-a","thread-b"],"followedThreadIds":["thread-b"]}});
+        let event: EventSource = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(event).unwrap(), value);
+        let old: EventSource = serde_json::from_value(serde_json::json!({"kind":"human","text":"Hi"})).unwrap();
+        assert_eq!(serde_json::to_value(old).unwrap(), serde_json::json!({"kind":"human","text":"Hi"}));
+    }
 
     #[tokio::test]
     async fn personal_list_keeps_deleted_task_review_diffs_off_the_phone() {
@@ -1183,7 +1476,7 @@ pub(crate) mod tests {
         let task = host.assistant_tasks.prepare_handoff(HandoffPreparation {
             request_id: "large-deleted-diff".into(), batch_id: "batch".into(), owner: owner.clone(), revision: 1,
             original_request: "Inspect changes".into(), brief: "Inspect changes".into(),
-            destination: TaskDestination { thread_id: Some("parent".into()), workers: vec!["worker".into()], new_thread: false },
+            destination: TaskDestination { thread_id: Some("parent".into()), workers: vec!["worker".into()], new_thread: false, new_thread_title: None },
             mode: TaskMode::ReadOnly, review_criteria: vec![], lineage: Some(lineage.clone()), context: None,
         }).unwrap();
         let task = host.assistant_tasks.transition(&task.id, task.revision, &owner, TaskStatus::Cancelled, None).unwrap();
@@ -1227,9 +1520,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_restart_never_replays_a_reply_that_had_computer_tools() {
+        let event=|id:&str,computer_started|PersonalEvent{id:id.into(),request_id:id.into(),source:EventSource::Human{text:"Close the tab".into(),view_context:None},received_at:0,state:EventState::Processing,attempts:1,error:None,spend_approved:false,computer_started,saved_reply:None};
+        let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        assistant.events=vec![event("plain",false),event("acted",true)];
+        assert!(assistant.recover());
+        assert_eq!(assistant.events[0].state,EventState::Received,"a tool-free reply still reruns");
+        assert_eq!(assistant.events[1].state,EventState::Failed);
+        assert_eq!(assistant.messages.last().unwrap().text,crate::personal_worker::COMPUTER_INTERRUPTED);
+    }
+
+    #[test]
     fn lifecycle_source_receipts_survive_event_pruning_until_explicit_purge() {
         let mut assistant: PersonalAssistant=serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[{"id":"pt-1","goal":"Task","completionCriteria":[],"targetHost":"h","status":"cancelled","fromEvent":"source","maxAttempts":3,"createdAt":0,"updatedAt":0,"deletedAt":1}]})).unwrap();
-        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into()},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false});}
+        for i in 0..MAX_SETTLED_EVENTS+2 {assistant.events.push(PersonalEvent{id:if i==0 {"source".into()} else {format!("event-{i}")},request_id:format!("request-{i}"),source:EventSource::Human{text:"Original".into(),view_context:None},received_at:0,state:EventState::Done,attempts:0,error:None,spend_approved:false,computer_started:false,saved_reply:None});}
         assistant.prune_events();
         assert!(assistant.events.iter().any(|event|event.id=="source"),"source request authority cannot be discarded while a deleted task awaits Empty");
     }
@@ -1256,5 +1560,39 @@ pub(crate) mod tests {
         assert!(request_id("").is_err());
         assert!(request_id("has space").is_err());
         assert!(request_id(&"x".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn personal_api_omits_prepared_reply() {
+        let cost = CostEntry { at: 0, purpose: "reply".into(), kind: "text".into(), source: CostSource::Reported, micros: Some(100), input_tokens: None, output_tokens: None, bytes_out: 10, endpoint: "test".into() };
+        let prepared = PreparedPersonalReply {
+            reply: "Hello".into(), cost, remember: vec![], forget: vec![], helpers: vec![], delegations: vec![], proposed_task: None, proposed_schedule: None, screen: false, outside: false, delegated_request_ids: vec![],
+        };
+        let event = PersonalEvent { id: "pe-1".into(), request_id: "req-1".into(), source: EventSource::Human { text: "Hi".into(), view_context: None }, received_at: 0, state: EventState::Done, attempts: 1, error: None, spend_approved: false, computer_started: false, saved_reply: Some(prepared) };
+        let assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        let mut assistant = assistant;
+        assistant.events = vec![event];
+        // Internal round-trip preserves saved_reply
+        let bytes = serde_json::to_vec(&assistant).unwrap();
+        let restored: PersonalAssistant = serde_json::from_slice(&bytes).unwrap();
+        assert!(restored.events[0].saved_reply.is_some(), "internal personal-store round trip preserves prepared payload");
+        // Outbound view omits it
+        let view = PersonalAssistantView::from(&assistant);
+        let view_json = serde_json::to_value(&view).unwrap();
+        assert!(view_json["events"][0].get("savedReply").is_none() && view_json["events"][0].get("saved_reply").is_none(), "personal list/get/mutation responses must omit prepared payload");
+        let changed_json=serde_json::to_value(crate::personal_settings::Changed {assistant:assistant.clone()}).unwrap();
+        assert!(changed_json["assistant"]["events"][0].get("savedReply").is_none(),"mutation responses must use the private outbound view too");
+        // Also ensure serialized view string does not contain reply text as private envelope marker? The text itself is okay as public sentence but saved_reply container must not appear.
+        let view_str = serde_json::to_string(&view_json).unwrap();
+        assert!(!view_str.contains("savedReply"), "outbound view must not contain savedReply field");
+    }
+
+    #[test]
+    fn announcement_receipt_preserves_through_pruning() {
+        let mut assistant: PersonalAssistant = serde_json::from_value(serde_json::json!({"id":"a","name":"A","style":"","hostId":"h","profile":null,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        assistant.announcement_receipts.insert("ann-1".into(), AnnouncementReceipt { task_id: "task-1".into(), message_id: "pm-1".into() });
+        // Pruning tasks should not drop receipts
+        assistant.prune_tasks();
+        assert!(assistant.announcement_receipts.contains_key("ann-1"), "permanent announcement receipts survive pruning");
     }
 }

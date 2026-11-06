@@ -1,0 +1,48 @@
+{
+  "access": "ask",
+  "outcome": "finished",
+  "seconds": 95.27,
+  "messages": [
+    {
+      "at": 1793478543393,
+      "seq": 54,
+      "speaker": {
+        "kind": "human"
+      },
+      "text": "@ds4 Journal retrieval acceptance test. Read ORIGINAL hidden messages #0 and #31 from this chat journal. Return the short marker from #0 and the marker beyond character 3000 in #31. Decode and concatenate the | JSON chunks of #31; do not use #1 as a substitute. Reply ONLY with the two markers. Use read/search tools only. Do not infer or guess."
+    },
+    {
+      "at": 1793478637002,
+      "seq": 55,
+      "speaker": {
+        "id": "dsfoe",
+        "kind": "bot"
+      },
+      "text": "COBALT-FERN-7319 AMBER-OTTER-8642"
+    }
+  ],
+  "approvals": [],
+  "pass_markers": true,
+  "steps": {
+    "id": 1,
+    "ok": {
+      "replies": {
+        "31": {
+          "by": "null",
+          "count": 1,
+          "helpers": 0,
+          "len": 5297,
+          "offset": 0
+        },
+        "55": {
+          "by": "dsfoe",
+          "count": 1,
+          "helpers": 0,
+          "len": 13052,
+          "offset": 5298
+        }
+      },
+      "version": 1
+    }
+  }
+}

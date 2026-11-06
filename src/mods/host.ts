@@ -5,6 +5,7 @@
 import { getBackend } from "../backend";
 import type { ProposedAction, RoomEvent } from "../types";
 import type { ModNode } from "./runtime";
+import { deckClipboard } from "../copyText";
 
 /** A host command, through whichever backend the app runs on. */
 const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => (await getBackend()).call<T>(cmd, args);
@@ -380,7 +381,7 @@ async function serve(mod: ModEntry, method: string, args: any): Promise<unknown>
       return raw === null ? undefined : JSON.parse(raw);
     }
     case "store.set": localStorage.setItem(storeKey, JSON.stringify(args.value ?? null)); return null;
-    case "clipboard.write": await navigator.clipboard.writeText(String(args.text)); return null;
+    case "clipboard.write": await deckClipboard.writeText(String(args.text)); return null;
   }
   return null;
 }

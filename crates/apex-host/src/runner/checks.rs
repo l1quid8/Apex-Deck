@@ -26,12 +26,13 @@ impl ConfiguredCheck {
 
 /// Execute only checks from protected start configuration, after the host has
 /// applied the worker's current room permission. No shell interpolation.
+/// Uses `project_process` so tainted-folder tracking and Full-gate share one entry.
 pub fn prepare_check(check: &ConfiguredCheck, cwd: &std::path::Path, process_dir: &std::path::Path) -> Result<PreparedCheck,String> {
     use tokio::io::AsyncReadExt;
     check.validate()?;
     let cwd = cwd.canonicalize().map_err(|e|e.to_string())?;
-    let mut cmd = tokio::process::Command::new(&check.argv[0]);
-    cmd.args(&check.argv[1..]).current_dir(cwd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    let mut cmd = crate::project_process::tokio_command_in(&check.argv[0], &cwd);
+    cmd.args(&check.argv[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     std::fs::create_dir_all(process_dir).map_err(|e|e.to_string())?;
     let process_dir=process_dir.canonicalize().map_err(|e|e.to_string())?;
     let registry = apex_adapters::OwnedProcessRegistry::new(Some(process_dir));

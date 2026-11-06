@@ -1,14 +1,31 @@
+/* Serif replies in the themes whose own reply face is sans. Same rules as Clay's
+   reading layout: reply text only, code and tables keep their own faces. */
+:root[data-deck-reply="serif"] {
+  --deck-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --deck-font-reading: "Iowan Old Style", Charter, "Source Serif 4", Georgia, serif;
+  --deck-reading-size: calc(13px + 3px * var(--deck-density, 1));
+}
+:root[data-deck-reply="serif"] .bubble.bot > :is(.md, .draft-text) {
+  font-family: var(--deck-font-reading);
+  font-size: var(--deck-reading-size);
+  line-height: 1.62;
+}
+:root[data-deck-reply="serif"] .bubble.bot :is(.md-code, .md-table) {
+  font-family: var(--deck-font-ui);
+  font-size: 13px;
+}
+
 /* Optional glass appearance. Classic has no matching root selector, so it
    continues to use the existing styles unchanged. */
 :root[data-deck-theme="glass"],
 :root[data-deck-theme="flat"] {
-  --deck-bg: #090d12;
-  --deck-panel: 13 19 26;
-  --deck-panel-raised: 22 31 41;
-  --deck-code: #060a0f;
+  --deck-bg: #000000;
+  --deck-panel: 16 16 16;
+  --deck-panel-raised: 24 24 24;
+  --deck-code: #101010;
   --deck-line: 255 255 255;
-  --deck-text: #e4eaf0;
-  --deck-muted: #b0bccb;
+  --deck-text: #f5f5f5;
+  --deck-muted: #aaaaaa;
   --deck-warning: #f59e0b;
   --deck-danger: #f87171;
   --deck-accent: var(--deck-custom-accent, oklch(.85 .13 var(--deck-hue, 172)));
@@ -18,7 +35,7 @@
   --bg: var(--deck-bg);
   --panel: rgb(var(--deck-panel));
   --panel-2: rgb(var(--deck-panel-raised));
-  --line: rgb(var(--deck-line) / .14);
+  --line: rgb(255 255 255 / .14);
   --text: var(--deck-text);
   --muted: var(--deck-muted);
   --accent: var(--deck-accent);
@@ -233,6 +250,11 @@
   --box: rgb(var(--deck-panel-raised) / var(--deck-opacity, .44));
   border-color: var(--deck-edge);
 }
+/* The shared placeholder grey fails on Liquid's light surfaces. Plan and TL;DR
+   keep their own tints. */
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .composer:not(.tldr, .plan) .composer-box textarea::placeholder {
+  color: var(--deck-muted);
+}
 :root[data-deck-theme="glass"] :is(.md-code, .md-code pre, .approval-detail, .diff, .answer-command) {
   background: color-mix(in srgb, var(--deck-code) 88%, transparent);
   color: var(--deck-text);
@@ -403,7 +425,7 @@
 :where(:root[data-deck-theme="glass"]) .pane-ws { background: var(--deck-raised-fill); }
 :where(:root[data-deck-theme="glass"]) .pane-ws .fold { --cut: transparent; }
 
-/* The empty-thread card, its emblem and the human bubble had fixed dark
+/* The empty-thread card, its emblem and the user bubble had fixed dark
    greens; tie them to the accent so they read on Frost too. */
 :where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) .empty-emblem {
   background: color-mix(in srgb, var(--accent) 14%, var(--deck-raised-fill, var(--panel-2)));
@@ -473,9 +495,12 @@
   box-shadow: 0 0 0 1px rgb(209 138 0 / .18), 0 0 calc(22px * var(--deck-glow, 0)) -8px #d18a00;
   font-size: max(12px, 1em);
 }
-:root[data-deck-theme="glass"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) ,
-:root[data-deck-theme="flat"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]),
-:root[data-deck-theme="clay"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) {
+:root[data-deck-theme="glass"] .approval .approval-head strong,
+:root[data-deck-theme="glass"] .approval :is(.approval-host, .approval-kind, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]),
+:root[data-deck-theme="flat"] .approval .approval-head strong,
+:root[data-deck-theme="flat"] .approval :is(.approval-host, .approval-kind, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]),
+:root[data-deck-theme="clay"] .approval .approval-head strong,
+:root[data-deck-theme="clay"] .approval :is(.approval-host, .approval-kind, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) {
   color: #2d220d;
   font-size: max(12px, 1em);
 }
@@ -517,7 +542,9 @@
 
 /* Plans are review content: follow the active palette, keeping an amber
    boundary and explicit decisions. Other permission cards retain the solid
-   safety treatment above. Scope these rules to plans in every skin. */
+   safety treatment above. Scope these rules to plans in every skin. These tie
+   the rules above on specificity and win by order, so keep compound selectors
+   out of the :is() lists there: :is() takes its strongest member's weight. */
 :root .approval.approval-plan-card {
   background: var(--panel);
   color: var(--text);
@@ -546,3 +573,8 @@
 
 @media (prefers-reduced-motion: reduce) {
 }
+
+/* Panel edges: Strong. Clay has its own rule beside its tokens. */
+:root[data-deck-theme="classic"][data-deck-edges="strong"] { --line: #3f3f3f; }
+:root[data-deck-theme="glass"][data-deck-edges="strong"],
+:root[data-deck-theme="flat"][data-deck-edges="strong"] { --line: rgb(var(--deck-line) / .3); }

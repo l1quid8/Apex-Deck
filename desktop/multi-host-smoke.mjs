@@ -97,7 +97,7 @@ export async function runMultiHostSmoke(win) {
   assert.equal(await page('const s=await __deck.backend.sessionLoad();return s.workspaces.find(w=>w.hostId==="at").id!=="shared-workspace-id"'),true);
   await until('recents after replies',async()=>(await sections())==='pinned,projects,recents');
   // Copy › with a stand-in clipboard; the real one is never touched.
-  await page(`window.__copied=[];window.__clipboardOk=true;Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async t=>{if(!window.__clipboardOk)throw Error('denied');window.__copied.push(t);}}});return true;`);
+  await page(`document.execCommand=()=>false;window.__copied=[];window.__clipboardOk=true;Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async t=>{if(!window.__clipboardOk)throw Error('denied');window.__copied.push(t);}}});return true;`);
   const copyItem=async(rowSel,label)=>{
     await page(`document.querySelector('${rowSel} [aria-haspopup=menu]').click();return true;`);
     await page('[...document.querySelectorAll(".pane-menu [role=menuitem]")].find(b=>b.textContent.startsWith("Copy")).click();return true;');

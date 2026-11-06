@@ -54,7 +54,7 @@ impl Fixture {
                         if std::fs::read(data.join("snapshots/threads/r.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()).is_some_and(|thread| thread["checkpoints"].as_array().is_some_and(|points| points.iter().any(|point| point["kind"] == "open"))) { break; }
                         tokio::task::yield_now().await;
                     }
-                }).await.expect("opening snapshot finishes before the human edit");
+                }).await.expect("opening snapshot finishes before the user edit");
             }
         });
         Self { host, runtime, data }
@@ -94,7 +94,7 @@ fn assert_work_revert(command: &str) {
         f.idle().await;
         let plan = f.host.room_revert_plan("r".into(), 0, None).await.unwrap();
         assert!(plan.available);
-        assert!(plan.files.iter().any(|file| file.path == "file.txt" && !file.conflict), "Revert must preserve the human's pre-send edit: {plan:?}");
+        assert!(plan.files.iter().any(|file| file.path == "file.txt" && !file.conflict), "Revert must preserve the user's pre-send edit: {plan:?}");
         assert!(f.host.room_revert("r".into(), 0, None, false, vec!["file.txt".into()]).await.unwrap().is_empty());
         assert_eq!(std::fs::read_to_string(file).unwrap(), "human edit");
         assert!(f.host.store().room("r").unwrap().unwrap().snapshot.client_messages.is_empty(), "ordinary Work sends do not enter chat delivery tracking");
@@ -147,7 +147,7 @@ fn assert_work_task_ownership(command: &str) {
     use crate::assistant_tasks::{HumanRequest, TaskDestination, TaskMode, TaskOwner};
     let f = Fixture::new(&format!("task-{command}"), false);
     let owner = TaskOwner { workspace_id: "workspace".into(), cwd: f.data.to_string_lossy().into_owned(), host_id: "host".into(), conversation_id: "parent".into() };
-    let destination = TaskDestination { thread_id: Some("r".into()), workers: vec!["bot".into()], new_thread: false };
+    let destination = TaskDestination { thread_id: Some("r".into()), workers: vec!["bot".into()], new_thread: false, new_thread_title: None };
     let task = f.host.assistant_tasks.submit_human_request(HumanRequest { request_id: "task-request".into(), owner: owner.clone(), text: "work".into(), destination: Some(destination.clone()) }, "work".into(), Some(destination)).unwrap();
     let task = f.host.assistant_tasks.bind_execution(&task.id, task.revision, &owner, "r".into(), TaskMode::ReadOnly, None).unwrap();
     f.host.assistant_tasks.begin_attempt(&task.id, task.revision, &owner).unwrap();
@@ -185,5 +185,22 @@ fn work_voice_turn_ids_still_deduplicate_and_reject_mismatched_message_ids() {
         assert_eq!(saved.transcript.iter().filter(|message| matches!(message.speaker, apex_core::Speaker::Human)).count(), 1);
         assert_eq!(saved.transcript.iter().filter(|message| matches!(message.speaker, apex_core::Speaker::Bot(_))).count(), 1);
         assert_eq!(saved.transcript[0].client_message_id.as_deref(), Some("voice-turn"));
+    });
+}
+
+#[test]
+fn computer_bang_is_discoverable_and_disabled_requests_explain_setup() {
+    let f = Fixture::new("computer-bang", false);
+    f.host.handle("r").unwrap().checkpoint.lock().unwrap().snapshot.participants[0].backend = apex_core::Backend::OpenAiCompatible {
+        base_url: "http://127.0.0.1:9/v1".into(), api_key_env: None, model: "fixture".into(),
+    };
+    f.runtime.block_on(async {
+        let servers = f.host.list_tool_servers("r".into(), "bot".into()).await.unwrap();
+        if cfg!(target_os = "macos") {
+            assert!(servers.iter().any(|s| s.token == "unified-computer-use"));
+        }
+        let error = f.call("room_post", "!unified-computer-use open TextEdit", None).await.unwrap_err();
+        assert!(error.contains("Settings → Unified Computer Use"), "{error}");
+        assert!(f.host.room_state("r".into()).unwrap()["active"].as_array().unwrap().is_empty());
     });
 }

@@ -26,7 +26,7 @@ impl Host {
                 if assistant.archived_at.is_none(){return Err("This assistant is not archived. Refresh its saved state.".into());}
                 assistant.archived_at=None;
             }
-            // Restore never resumes execution. The human can inspect the saved
+            // Restore never resumes execution. The user can inspect the saved
             // tasks and use the existing explicit Resume control afterward.
             assistant.paused=true;
             Ok(())

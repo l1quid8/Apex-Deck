@@ -66,7 +66,7 @@ pub async fn mint(api_key: &str, args: MintArgs, base_url: Option<&str>) -> Resu
         "audio": {
             "input": {
                 "transcription": { "model": "whisper-1" },
-                "turn_detection": { "type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 500 }
+                "turn_detection": { "type": "server_vad", "create_response": false, "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 500 }
             },
             "output": { "voice": voice }
         }
@@ -175,6 +175,7 @@ mod tests {
             use tokio::io::AsyncReadExt;
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), socket.read(&mut buf)).await;
             let text = String::from_utf8_lossy(&buf);
+            assert!(text.contains("\"create_response\":false"), "minted sessions must wait for correlated input");
             // If expected key not present, return 401 with proper framing.
             if !text.contains(expected_key) {
                 let body = "invalid key";

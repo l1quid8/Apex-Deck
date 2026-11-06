@@ -1,0 +1,53 @@
+name: linux-jail
+
+# The bot jail on a real x86_64 kernel with Ubuntu's AppArmor restriction on,
+# which Docker on a Mac can't give: the probe and every kernel test, unprivileged.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feat/add-machine-ssh"]
+    paths:
+      - "crates/apex-adapters/src/linux_jail/**"
+      - "crates/apex-adapters/tests/linux_jail_kernel.rs"
+      - "tests/linux-jail/**"
+      - ".github/workflows/linux-jail.yml"
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install what the tests run in the jail
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap gcc-multilib libc6-dev-x32 protobuf-compiler
+          npm install -g @anthropic-ai/claude-code @openai/codex
+      - name: Report the machine
+        run: |
+          uname -a
+          bwrap --version
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          sudo aa-status --enabled && echo "AppArmor enforcing" || echo "AppArmor off"
+      - name: Build 32-bit and x32 socket makers
+        run: |
+          gcc -static -m32 tests/linux-jail/socket32.c -o /tmp/socket32
+          gcc -static -mx32 tests/linux-jail/socket32.c -o /tmp/socketx32 || echo "no x32 on this kernel"
+      - name: Build
+        run: cargo build -p apex-daemon && cargo test -p apex-adapters --test linux_jail_kernel --no-run
+      - name: Jail with the restriction as shipped, expected to name the reason if refused
+        env:
+          APEX_JAIL_KERNEL_TEST: "1"
+          APEX_JAIL_INIT: ${{ github.workspace }}/target/debug/apex-daemon
+        run: cargo test -p apex-adapters --test linux_jail_kernel -- --test-threads=1 --nocapture the_probe_passes || true
+      - name: Kernel tests, restriction lifted for bubblewrap
+        env:
+          APEX_JAIL_KERNEL_TEST: "1"
+          APEX_JAIL_INIT: ${{ github.workspace }}/target/debug/apex-daemon
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          cargo test -p apex-adapters --test linux_jail_kernel -- --test-threads=1 --nocapture the_probe breakout a_bot_at
+          # The mount tests need root, like the Docker run.
+          binary="$(ls -t target/debug/deps/linux_jail_kernel-* | grep -v '\.d$' | head -1)"
+          sudo -E env "PATH=$PATH" "$binary" --test-threads=1 --nocapture

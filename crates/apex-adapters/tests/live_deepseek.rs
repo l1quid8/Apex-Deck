@@ -20,6 +20,7 @@ use apex_core::{
 
 fn config() -> ParticipantConfig {
     ParticipantConfig {
+        can_read_images: false,
         id: ParticipantId::new("deepseek"),
         display_name: "DeepSeek".into(),
         backend: Backend::OpenAiCompatible {
@@ -41,19 +42,13 @@ fn config() -> ParticipantConfig {
 fn context() -> BuildContext {
     BuildContext {
         cwd: Some(std::env::temp_dir()),
-        path: None,
-        codex_hook: None,
-        temp: None,
-        process_registry: None,
-        cargo_target_dir: None,
-        media_dir: None,
-        attachment_roots: vec![],
-        phone: None,
+        ..Default::default()
     }
 }
 
 fn request(content: String, think: bool) -> TurnRequest {
     TurnRequest {
+        computer: None,
         effort_override: None,
         access: None,
         system: if think {
@@ -78,7 +73,7 @@ fn request(content: String, think: bool) -> TurnRequest {
 async fn live_deepseek_turn() {
     let bot = build(config(), &context());
     let first = std::env::var("DS_PROMPT").unwrap_or_else(|_| {
-        "[Human]: Before anything else, call the todo_write tool with a four-step plan for \
+        "[User]: Before anything else, call the todo_write tool with a four-step plan for \
          moving this project from SQLite to Postgres, and mark the first step in_progress. \
          Then answer in one sentence."
             .into()

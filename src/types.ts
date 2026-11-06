@@ -53,6 +53,8 @@ export interface ParticipantConfig {
   backend: ParticipantBackend;
   persona: string;
   access: Access;
+  /** Explicitly allow screenshots from Unified Computer Use for this model. */
+  can_read_images?: boolean;
   /** How hard the model should think, in the backend's own words. Null leaves its default. */
   effort: string | null;
   /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
@@ -213,10 +215,14 @@ export interface RoomSnapshot {
   compaction?: Compaction | null;
   /** Visibility changes leave every original transcript message intact. */
   curations?: Curation[];
+  plan_runs?: PlanRun[];
   /** What the person chose "Always allow" for. */
   allowed?: AllowedRule[];
   /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
   usage?: Record<string, TokenTotals>;
+  /** The effective untagged responders at the time the snapshot was taken.
+   *  Missing means unavailable; never locally guessed stars. */
+  untagged_responders?: string[];
   /** The thread's Plan switch: every bot plans and changes nothing. */
   plan?: boolean;
 }
@@ -272,6 +278,8 @@ export type CurateReply = { by: string; unchecked?: number } & (
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  /** Effective responders from the same checkpoint as snapshot. */
+  untagged_responders?: string[];
   roomRevision?: number;
   hostNow?: number;
   /** From the protected room manifest; editable transcript files cannot set this. */
@@ -298,6 +306,10 @@ export interface AppSession {
    *  tool). Terminals come back Stopped: nothing is started on launch. */
   panes: Pane[];
   profiles: ParticipantConfig[];
+  /** Host-issued revision for saved agents shared with CLI clients. */
+  profileRevision?: number;
+  /** Author of the accepted profile revision, independent of layout saves. */
+  profileSavedBy?: string;
   disabledProviders?: string[];
   activeWorkspace: string | null;
   focusedPane: string | null;
@@ -338,7 +350,22 @@ export interface Question { header: string; question: string; options: QuestionO
 export interface NextStep { label: string; prompt: string }
 export type QuestionEnd = "answered" | "skipped" | "dropped";
 
+export type PlanStepState = "open" | "active" | "done" | "skipped" | "cancelled";
+export type PlanRunState = "waiting" | "revising" | "running" | "stopped" | "done" | "expired";
+export interface PlanRunStep { id: string; text: string; state: PlanStepState; off_plan: boolean }
+export interface PlanRun {
+  request: string;
+  by: string;
+  detail: string;
+  version: number;
+  state: PlanRunState;
+  steps: PlanRunStep[];
+  reporting: boolean;
+  started_seq: number;
+}
+
 export type RoomEvent = { recovery_seq?: number } & (
+  | { type: "state_changed" }
   | { type: "voice_event"; client_turn_id: string; id:string; event:RoomEvent }
   | { type: "participant_changed"; participant: ParticipantConfig }
   | { type: "participants_changed"; participants: ParticipantConfig[] }
@@ -365,6 +392,12 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "next_steps"; id: string; steps: NextStep[]; pending: boolean }
   /** The thread's Plan switch was turned on or off. */
   | { type: "plan_changed"; on: boolean }
+  /** A bot's access was changed while it was working. */
+  | { type: "access_changed"; id: string; access: Access }
+  /** A plan run was created or changed. Holds the whole run. */
+  | { type: "plan_run"; run: PlanRun }
+  /** Plan runs were removed by `/clear` or a rewind. Holds the whole list. */
+  | { type: "plan_runs_reset"; runs: PlanRun[] }
   /** The thread's whole "Always allow" list, after it changed. */
   | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */
@@ -455,6 +488,11 @@ export interface WorktreeList { root: string; items: Worktree[]; checkCommand?: 
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {
+  /** Last explicit metadata revision read from this pane's owning host. */
+  hostMetadataRevision?: number;
+  /** Keep a local rename visible until the owning host confirms it. */
+  hostTitlePending?: string;
+  hostArchivePending?: boolean;
   /** A worker destination created for a named assistant; only opt-in lists it. */
   assistantDraftFor?: {hostId:string;assistantId:string};
   /** This chat is mounted in another checkout of its project. */

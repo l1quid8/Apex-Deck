@@ -26,6 +26,10 @@ pub enum Command {
     /// Exact root-attested command; never an arbitrary nested command.
     ProvenanceExecute { receipt: apex_provenance::Signed },
     SessionLoad {},
+    AgentProfileList {},
+    ProviderSetupBegin { provider: String, method: String },
+    BackendStop { boot_id: String },
+    AgentProfileSave { #[serde(flatten)] input: crate::agent_profiles::SaveProfile },
     SessionSave { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
@@ -42,6 +46,7 @@ pub enum Command {
     /// Review diffs are left out unless asked for: one can be megabytes and the phone never shows them.
     AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String>, #[serde(default)] include_diffs: bool },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
+    ProjectTaskLifecycle { #[serde(flatten)] input: crate::personal_task_lifecycle::ProjectLifecycleInput },
     /// Snapshot pre-provenance ledgers (originals untouched) and describe an import. Read-only.
     LegacyImportPreview {},
     /// Import exactly the previewed legacy sources, bound by their sha256. Protected.
@@ -60,15 +65,24 @@ pub enum Command {
     /// An assistant proposes project work. Creates a proposal; never dispatches.
     PersonalProjectDelegate { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
     PersonalProjectDelegateUi { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
-    PersonalSend { assistant_id: String, request_id: String, text: String },
+    PersonalProjectProposeUi { #[serde(flatten)] input: crate::assistant_delegation::DelegationInput },
+    PersonalSend { assistant_id: String, request_id: String, text: String, #[serde(default)] view_context: Option<crate::personal::PersonalViewContext> },
     PersonalReact { assistant_id: String, message_id: String, emoji: String, enabled: bool },
+    PersonalApprovalOptions { assistant_id: String, decision_id: String, params_hash: String },
+    PersonalDecideAlways { assistant_id: String, request_id: String, decision_id: String, params_hash: String, expected_revision: u64, capability: crate::personal::permissions::Capability, scope: crate::personal::permissions::Scope },
     PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
     PersonalArchive { assistant_id: String, expected_revision: u64, archived: bool },
     PersonalTaskLifecycle { #[serde(flatten)] input: crate::personal_task_lifecycle::LifecycleInput },
+    PersonalTodo { #[serde(flatten)] input: crate::personal_todos::TodoInput },
     PersonalReplyCancel { assistant_id: String, request_id: String, event_id: String },
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
+    PersonalConversationNew { assistant_id: String },
     PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
+    PersonalHandoffOptions { assistant_id: String, draft_id: String },
+    PersonalHandoffQuestion { assistant_id: String, task_id: String },
+    PersonalHandoffSelect { #[serde(flatten)] input: crate::personal_handoff::HandoffSelectInput },
+    PersonalHandoffControl { #[serde(flatten)] input: crate::personal_handoff::HandoffControlInput },
     PersonalAvatarOptions { owner: crate::assistant_avatar::Owner },
     PersonalAvatarGenerate { #[serde(flatten)] input: crate::assistant_avatar::Generate },
     PersonalAvatarStatus { owner: crate::assistant_avatar::Owner, generation_id: String },
@@ -76,6 +90,7 @@ pub enum Command {
     PersonalAvatarAsset { assistant_id: Option<String>, owner: Option<crate::assistant_avatar::Owner>, generation_id: Option<String>, asset_id: String, sha256: String },
     PersonalWorkspaceConfigure { #[serde(flatten)] input: crate::personal_workspace::Configure },
     PersonalConfigure { assistant_id: String, settings: crate::personal_settings::Settings },
+    PersonalPermissionSet { assistant_id: String, expected_revision: u64, capability: crate::personal::permissions::Capability, scope: crate::personal::permissions::Scope, mode: crate::personal::permissions::GrantMode, delegate: bool },
     PersonalRuleAdd { assistant_id: String, text: String, class: crate::personal::ToolClass, mode: crate::personal::ActionMode },
     PersonalRuleRemove { assistant_id: String, rule_id: String },
     PersonalMemoryAdd { assistant_id: String, text: String, #[serde(default)] expected_revision: Option<u64> },
@@ -91,9 +106,36 @@ pub enum Command {
     PersonalMachineAllowed {},
     PersonalExecuteLocal { assistant_id: String, assistant_host_id: String, operation: crate::personal::OperationSpec },
     PersonalConnectors {},
-    PersonalBrowserView {},
-    PersonalBrowserTakeOver { on: bool },
-    PersonalBrowserInput { input: crate::personal_worker::browser::Input },
+    /// Opens the person's browser surface. Needs a protected receipt or a verified device.
+    PersonalBrowserSession {},
+    PersonalBrowserView { session: String },
+    PersonalBrowserTakeOver { session: String, on: bool },
+    PersonalBrowserInput { session: String, input: crate::personal_worker::browser::Input },
+    BrowserTabs { session: String },
+    BrowserTabOpen { session: String, #[serde(default)] url: Option<String> },
+    BrowserTabClose { session: String, tab: String },
+    BrowserTabControl { session: String, tab: String, take: bool },
+    BrowserTabShare { session: String, tab: String, thread: String, share: bool },
+    BrowserTabFrame { session: String, tab: String, after: u64 },
+    BrowserTabInput { session: String, tab: String, events: Vec<crate::personal_worker::browser::Event> },
+    BrowserTabResize { session: String, tab: String, width: u32, height: u32, scale: f64 },
+    BrowserTabUpload { session: String, tab: String, name: String, data: String },
+    BrowserTabStop { session: String, tab: String },
+    ComputerStatus {},
+    ComputerSetup {},
+    ComputerSetEnabled { enabled: bool },
+    ComputerSetActionLabels { enabled: bool },
+    ComputerSetCursorOverlay { prefs: serde_json::Value },
+    ComputerSetCursorImage {
+        #[serde(alias = "image_base64")]
+        image_base64: String,
+        #[serde(default, alias = "hotspot_x")]
+        hotspot_x: Option<f64>,
+        #[serde(default, alias = "hotspot_y")]
+        hotspot_y: Option<f64>,
+    },
+    ComputerResetCursorOverlay {},
+    ComputerStop {},
     PhoneStatus {},
     PhoneStart {},
     PhoneStop {},
@@ -109,6 +151,9 @@ pub enum Command {
     MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
     MonitorMessage { workspace_id: String, text: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorReact { workspace_id: String, message_id: String, emoji: String, enabled: bool, cwd: String, host_id: String, conversation_id: String },
+    MonitorConnect { workspace_id: String, cwd: String, host_id: String },
+    MonitorWatchSave { workspace_id: String, cwd: String, host_id: String, conversation_id: String, watch_revision: u64, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: ParticipantConfig, #[serde(default)] start: bool },
+    MonitorWatchStop { workspace_id: String, cwd: String, host_id: String, conversation_id: String },
     MonitorPause { workspace_id: String, paused: bool, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorCheckNow { workspace_id: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorResolve { workspace_id: String, finding_id: String, status: String, #[serde(default)] snoozed_until: Option<u64>, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
@@ -153,10 +198,14 @@ pub enum Command {
     LibraryRemove { file: String },
     LibraryRename { file: String, name: String },
     RoomMount { id: String, cwd: String },
+    FolderAccept { path: String, who: Option<String> },
+    FolderWithdraw { path: String },
+    TrustStatus {},
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     ChatProfiles {},
     ChatList {},
     ChatCreate { id: String, participants: Vec<crate::chat_bots::ChatBotRequest>, options: RoomOptions, #[serde(default)] title: Option<String> },
+    RoomSetTrashed { id: String, trashed: bool },
     ChatUpdateMeta { id: String, #[serde(default)] title: Option<String>, #[serde(default)] archived: Option<bool>, #[serde(default)] moved_to: Option<Option<crate::storage::ChatMovedTo>> },
     ChatAddParticipant { id: String, participant: crate::chat_bots::ChatBotRequest },
     ChatUpdateParticipant { id: String, participant: ParticipantId, patch: crate::chat_bots::ChatBotPatch },
@@ -195,12 +244,14 @@ pub enum Command {
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     RoomTargets { id: String, text: String },
+    RoomRefreshPlans { id: String },
+    RoomApplyAccess { id: String, participant: ParticipantId },
     RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
     VoiceCapabilities {},
     RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
     RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
     RoomStop { id: String, participant: Option<ParticipantId> },
-    RoomDecide { id: String, request: String, approve: bool, always: Option<bool> },
+    RoomDecide { id: String, request: String, approve: bool, always: Option<bool>, skip: Option<Vec<String>> },
     RoomSetPlan { id: String, on: bool },
     RoomAnswer { id: String, request: String, answers: Option<Vec<Vec<String>>> },
     RoomForgetAllowed { id: String, rule: AllowedRule },
@@ -261,7 +312,8 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        if matches!(self, Self::AgentProfileSave { .. } | Self::ProviderSetupBegin { .. } | Self::BackendStop { .. }) { return true; }
+        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalProjectProposeUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalTodo { .. } | Self::ProjectTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. } | Self::PersonalHandoffSelect { .. } | Self::PersonalHandoffControl { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -343,6 +395,10 @@ impl Host {
             if self.device_folder_command(&command)? {
                 return self.dispatch_command(command, capability).await;
             }
+            // The daemon already checked this device's full grant, and it's all a receipt would prove here.
+            if matches!(command, Command::PersonalBrowserSession {}) {
+                return self.dispatch_command(command, capability).await;
+            }
             return self.call_with_client_capability(command, capability).await;
         }
         #[cfg(feature="test-support")]
@@ -379,6 +435,13 @@ impl Host {
             ProvenanceExecute { .. } => return Err("Nested provenance commands are forbidden".into()),
             SessionLoad {} => reply(self.session_load()?),
             SessionSave { session } => reply(self.session_save(session)?),
+            AgentProfileList {} => self.agent_profile_list(),
+            BackendStop { .. } => Err("Backend stop receipts are accepted only on standalone backend control".into()),
+            ProviderSetupBegin { provider,method } => {
+                if !matches!((provider.as_str(),method.as_str()),("codex","reuse"|"browser"|"device")|("claude","reuse"|"subscription")) {return Err("Unsupported provider sign-in method".into());}
+                Ok(serde_json::json!({"provider":provider,"method":method,"authorized":true}))
+            },
+            AgentProfileSave { input } => self.agent_profile_save(input),
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
@@ -409,8 +472,15 @@ impl Host {
                 let host = Arc::clone(self);
                 reply(blocking(move || host.legacy_import_history(snapshot, request_id)).await?)
             }
-            PersonalList {} => reply(self.personal_list()?),
-            PersonalGet { assistant_id } => reply(self.personal_get(&assistant_id)?),
+            PersonalList {} => {
+                let list = self.personal_list()?;
+                let views: Vec<crate::personal::PersonalAssistantView> = list.iter().map(crate::personal::PersonalAssistantView::from).collect();
+                reply(views)
+            },
+            PersonalGet { assistant_id } => {
+                let a = self.personal_get(&assistant_id)?;
+                reply(crate::personal::PersonalAssistantView::from(&a))
+            },
             PersonalCreate { mut input } => {
                 if input.workspace_version == Some(4) {
                     // Validate the complete runtime selection before any durable insertion.
@@ -418,19 +488,33 @@ impl Host {
                     input.profile=self.workspace_profile(&snapshot,crate::personal_workspace::parse_profile(serde_json::to_value(input.profile).map_err(|e|e.to_string())?)?).await?;
                 }
                 let host = Arc::clone(self);
-                reply(blocking(move || host.personal_create(input)).await?)
+                let created = blocking(move || host.personal_create(input)).await?;
+                reply(crate::personal::PersonalAssistantView::from(&created))
             }
             PersonalProjectDelegate { input } => reply(self.personal_project_delegate(input).await?),
             PersonalProjectDelegateUi { input } => reply(self.personal_project_delegate_ui(input)?),
-            PersonalSend { assistant_id, request_id, text } => reply(self.personal_send(&assistant_id, &request_id, &text)?),
-            PersonalReact { assistant_id, message_id, emoji, enabled } => reply(serde_json::json!({"assistant": self.personal_react(&assistant_id, &message_id, &emoji, enabled)?})),
+            PersonalProjectProposeUi { input } => reply(self.personal_project_propose_ui(input)?),
+            PersonalSend { assistant_id, request_id, text, view_context } => reply(self.personal_send_with_context(&assistant_id, &request_id, &text, view_context)?),
+            PersonalReact { assistant_id, message_id, emoji, enabled } => {
+                let a = self.personal_react(&assistant_id, &message_id, &emoji, enabled)?;
+                reply(serde_json::json!({"assistant": crate::personal::PersonalAssistantView::from(&a)}))
+            },
+            PersonalApprovalOptions { assistant_id, decision_id, params_hash } => reply(self.personal_approval_options(&assistant_id,&decision_id,&params_hash)?),
+            PersonalDecideAlways { assistant_id, request_id, decision_id, params_hash, expected_revision, capability, scope } => reply(self.personal_decide_always(&assistant_id,&request_id,&decision_id,&params_hash,expected_revision,capability,scope)?),
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
             PersonalArchive { assistant_id, expected_revision, archived } => reply(self.personal_archive(&assistant_id, expected_revision, archived)?),
             PersonalTaskLifecycle { input } => reply(self.personal_task_lifecycle(input).await?),
+            PersonalTodo { input } => reply(self.personal_todo(input)?),
+            ProjectTaskLifecycle { input } => reply(self.project_task_lifecycle(input).await?),
             PersonalReplyCancel { assistant_id, request_id, event_id } => reply(self.personal_reply_cancel(&assistant_id, &request_id, &event_id)?),
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
+            PersonalConversationNew { assistant_id } => reply(self.personal_conversation_new(&assistant_id)?),
             PersonalPause { assistant_id, request_id, paused } => { let accepted = self.personal_pause(&assistant_id, &request_id, paused)?; if !paused { self.redispatch_recovered_queued()?; } reply(accepted) },
             PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
+            PersonalHandoffOptions { assistant_id, draft_id } => reply(self.personal_handoff_options_impl(&assistant_id,&draft_id)?),
+            PersonalHandoffQuestion { assistant_id, task_id } => reply(self.personal_handoff_question_impl(&assistant_id,&task_id)?),
+            PersonalHandoffSelect { input } => reply(self.personal_handoff_select_impl(input)?),
+            PersonalHandoffControl { input } => reply(self.personal_handoff_control_impl(input).await?),
             ProjectMemoryList { input } => reply(self.project_memory_list(input)?),
             ProjectMemorySave { input } => reply(self.project_memory_save(input)?),
             ProjectMemoryForget { input } => reply(self.project_memory_forget(input)?),
@@ -443,6 +527,7 @@ impl Host {
             PersonalAvatarAsset { assistant_id, owner, generation_id, asset_id, sha256 } => self.personal_avatar_asset(assistant_id, owner, generation_id, asset_id, sha256),
             PersonalWorkspaceConfigure { input } => reply(self.personal_workspace_configure(input).await?),
             PersonalConfigure { assistant_id, settings } => reply(self.personal_configure(&assistant_id, settings)?),
+            PersonalPermissionSet { assistant_id, expected_revision, capability, scope, mode, delegate } => reply(self.personal_permission_set(&assistant_id, expected_revision, capability, scope, mode, delegate)?),
             PersonalRuleAdd { assistant_id, text, class, mode } => reply(self.personal_rule_add(&assistant_id, &text, class, mode)?),
             PersonalRuleRemove { assistant_id, rule_id } => reply(self.personal_rule_remove(&assistant_id, &rule_id)?),
             PersonalMemoryAdd { assistant_id, text, expected_revision } => reply(self.personal_memory_add_at_revision(&assistant_id, &text, expected_revision)?),
@@ -461,9 +546,28 @@ impl Host {
             PersonalMachineAllowed {} => reply(self.personal_machine_allowed()?),
             PersonalExecuteLocal { assistant_id, assistant_host_id, operation } => reply(self.personal_execute_local(&assistant_id, &assistant_host_id, operation).await?),
             PersonalConnectors {} => reply(blocking(|| Ok(crate::personal_worker::connectors::status())).await?),
-            PersonalBrowserView {} => reply(self.personal_browser_view().await?),
-            PersonalBrowserTakeOver { on } => reply(self.personal_browser_take_over(on).await?),
-            PersonalBrowserInput { input } => reply(self.personal_browser_input(input).await?),
+            PersonalBrowserSession {} => reply(serde_json::json!({ "session": crate::personal_worker::browser::session_open() })),
+            PersonalBrowserView { session } => { crate::personal_worker::browser::session_check(&session)?; reply(self.personal_browser_view().await?) }
+            PersonalBrowserTakeOver { session, on } => { crate::personal_worker::browser::session_check(&session)?; reply(self.personal_browser_take_over(on).await?) }
+            PersonalBrowserInput { session, input } => { crate::personal_worker::browser::session_check(&session)?; reply(self.personal_browser_input(input).await?) }
+            BrowserTabs { session } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tabs().await?) }
+            BrowserTabOpen { session, url } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_open(url).await?) }
+            BrowserTabClose { session, tab } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_close(tab).await?) }
+            BrowserTabControl { session, tab, take } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_control(tab, take).await?) }
+            BrowserTabShare { session, tab, thread, share } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_share(tab, thread, share).await?) }
+            BrowserTabFrame { session, tab, after } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_frame(tab, after).await?) }
+            BrowserTabInput { session, tab, events } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_input(tab, events).await?) }
+            BrowserTabResize { session, tab, width, height, scale } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_resize(tab, width, height, scale).await?) }
+            BrowserTabUpload { session, tab, name, data } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_upload(tab, name, data).await?) }
+            BrowserTabStop { session, tab } => { crate::personal_worker::browser::session_check(&session)?; reply(self.browser_tab_stop(tab).await?) }
+            ComputerStatus {} => reply(self.computer_status().await),
+            ComputerSetup {} => reply(self.computer_setup().await?),
+            ComputerSetActionLabels { enabled } => reply(self.computer_set_action_labels(enabled).await?),
+            ComputerSetEnabled { enabled } => reply(self.computer_set_enabled(enabled).await?),
+            ComputerSetCursorOverlay { prefs } => reply(self.computer_set_cursor_overlay(prefs).await?),
+            ComputerSetCursorImage { image_base64, hotspot_x, hotspot_y } => reply(self.computer_set_cursor_image(image_base64, hotspot_x, hotspot_y).await?),
+            ComputerResetCursorOverlay {} => reply(self.computer_reset_cursor_overlay().await?),
+            ComputerStop {} => reply(self.computer_stop().await),
             PhoneStatus {} => reply(self.phone.status()),
             PhoneStart {} => reply(self.phone.start()),
             PhoneStop {} => reply(self.phone.stop().await?),
@@ -497,6 +601,19 @@ impl Host {
             MonitorMessage { workspace_id, text, cwd, host_id, conversation_id } => {
                 let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
                 reply(self.monitor_message_owned(&workspace_id, owner, &text)?)
+            }
+            MonitorConnect { workspace_id, cwd, host_id } => {
+                let host = self.clone();
+                reply(blocking(move || host.monitor_connect(workspace_id, cwd, host_id)).await?)
+            }
+            MonitorWatchSave { workspace_id, cwd, host_id, conversation_id, watch_revision, text, files, threads, profile, start } => {
+                let host = self.clone();
+                let owner = crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id };
+                let settings = crate::monitor_commands::WatchSettings { text, files, threads, profile };
+                reply(blocking(move || host.monitor_watch_save(&workspace_id, owner, watch_revision, settings, start)).await?)
+            }
+            MonitorWatchStop { workspace_id, cwd, host_id, conversation_id } => {
+                reply(self.monitor_watch_stop(&workspace_id, crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id })?)
             }
             MonitorReact { workspace_id, message_id, emoji, enabled, cwd, host_id, conversation_id } => {
                 let owner = crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id };
@@ -556,6 +673,7 @@ impl Host {
             ChatProfiles {} => reply(self.chat_profiles()?),
             ChatList {} => reply(self.chat_list()?),
             ChatCreate { id, title, participants, options } => reply(self.chat_create(id, title, participants, options)?),
+            RoomSetTrashed { id, trashed } => reply(self.room_set_trashed(id, trashed)?),
             ChatUpdateMeta { id, title, archived, moved_to } => reply(self.chat_update_meta(id, title, archived, moved_to)?),
             ChatAddParticipant { id, participant } => reply(self.chat_add_participant(id, participant).await?),
             ChatUpdateParticipant { id, participant, patch } => reply(self.chat_update_participant(id, participant, patch).await?),
@@ -575,6 +693,8 @@ impl Host {
                 _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
+            RoomRefreshPlans { id } => reply(self.room_refresh_plans(id)?),
+            RoomApplyAccess { id, participant } => reply(self.room_apply_access(id, participant).await?),
             RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id } => {
                 if let Some(request_id) = client_turn_id {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
@@ -591,7 +711,7 @@ impl Host {
             RoomStopRequest { id, participant, client_turn_id } => reply(self.room_voice_stop(id, participant, client_turn_id)?),
             RoomTurn { id, participants, hops, interactive_answers } => reply(self.room_turn_with_answer_guidance(id, participants, hops, interactive_answers, capability).await?),
             RoomStop { id, participant } => { self.room_stop(id, participant); reply(()) },
-            RoomDecide { id, request, approve, always } => reply(self.room_decide(id, request, approve, always)?),
+            RoomDecide { id, request, approve, always, skip } => reply(self.room_decide(id, request, approve, always, skip)?),
             RoomSetPlan { id, on } => reply(self.room_set_plan(id, on)?),
             RoomAnswer { id, request, answers } => reply(self.room_answer(id, request, answers)?),
             RoomForgetAllowed { id, rule } => reply(self.room_forget_allowed(id, rule)?),
@@ -647,6 +767,9 @@ impl Host {
             ModFsWrite { path, text } => reply(self.mod_fs_write(path, text)?),
             ModFsStat { path, resolve } => reply(self.mod_fs_stat(path, resolve)?),
             ModEnvGet { name } => reply(self.mod_env_get(name)),
+            FolderAccept { path, who } => reply(self.folder_accept(path, who)?),
+            FolderWithdraw { path } => reply(self.folder_withdraw(path)?),
+            TrustStatus {} => reply(self.trust_status()?),
         }
     }
 }
@@ -683,6 +806,9 @@ mod tests {
         assert!(error.contains("protected provenance receipt"), "{error}");
         let delegation = Command::from_json(json!({"cmd":"personal_project_delegate_ui","args":{"assistantId":"nonexistent","project":{"hostId":"host","workspaceId":"workspace","cwd":"/repo"},"sourceEventId":"","delegationId":"ui-task","brief":"Inspect login","destination":{"threadId":"thread","workers":["worker"],"newThread":false},"mode":"read_only","expectedRevision":1}})).unwrap();
         let error = runtime.block_on(host.call(delegation)).unwrap_err();
+        assert!(error.contains("protected provenance receipt"), "{error}");
+        let proposal = Command::from_json(json!({"cmd":"personal_project_propose_ui","args":{"assistantId":"nonexistent","project":{"hostId":"host","workspaceId":"workspace","cwd":"/repo"},"sourceEventId":"","delegationId":"ui-proposal","brief":"Inspect login","destination":{"threadId":"thread","workers":["worker"],"newThread":false},"mode":"read_only","expectedRevision":1}})).unwrap();
+        let error = runtime.block_on(host.call(proposal)).unwrap_err();
         assert!(error.contains("protected provenance receipt"), "{error}");
         for value in [
             json!({"cmd":"room_runner_start","args":{"id":"r","requestId":"forged","runner":{"schemaVersion":1,"kind":"goal","objective":"unauthorized","workers":["w"],"limits":{"schemaVersion":1,"maxTurns":1,"maxInvocations":1,"lifetimeMs":60000}}}}),
@@ -793,13 +919,100 @@ mod tests {
     }
 
     #[test]
+    fn computer_set_cursor_image_deserializes_canonical_and_legacy() {
+        // Canonical camelCase from UI
+        let canonical = Command::from_json(json!({
+            "cmd": "computer_set_cursor_image",
+            "args": {
+                "imageBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==",
+                "hotspotX": 12.0,
+                "hotspotY": 14.0
+            }
+        })).expect("canonical key should deserialize");
+        let Command::ComputerSetCursorImage { image_base64, hotspot_x, hotspot_y } = canonical else {
+            panic!("expected ComputerSetCursorImage");
+        };
+        assert!(image_base64.starts_with("iVBOR"));
+        assert_eq!(hotspot_x, Some(12.0));
+        assert_eq!(hotspot_y, Some(14.0));
+
+        // Legacy snake_case format
+        let legacy = Command::from_json(json!({
+            "cmd": "computer_set_cursor_image",
+            "args": {
+                "image_base64": "iVBORw0KGgoAAAANSUhEUg==",
+                "hotspot_x": 0.0,
+                "hotspot_y": 0.0
+            }
+        })).expect("legacy key should deserialize");
+        let Command::ComputerSetCursorImage { image_base64: leg_b64, hotspot_x: leg_x, hotspot_y: leg_y } = legacy else {
+            panic!("expected ComputerSetCursorImage");
+        };
+        assert_eq!(leg_b64, "iVBORw0KGgoAAAANSUhEUg==");
+        assert_eq!(leg_x, Some(0.0));
+        assert_eq!(leg_y, Some(0.0));
+
+        // Duplicate field: sending both imageBase64 and image_base64 fails serde deserialization
+        let dup = Command::from_json(json!({
+            "cmd": "computer_set_cursor_image",
+            "args": {
+                "imageBase64": "abc",
+                "image_base64": "abc"
+            }
+        }));
+        assert!(dup.is_err(), "duplicate alias fields must be rejected by serde");
+    }
+
+    /// The socket is open to anything running as this user, including bots with a shell.
+    #[tokio::test]
+    async fn a_raw_local_caller_cannot_reach_the_persons_browser() {
+        let folder = std::env::temp_dir().join(format!("apex-browser-authority-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let host = Host::new(crate::HostPaths { data: folder.clone(), downloads: None }, tokio::runtime::Handle::current());
+        let session = Command::from_json(serde_json::json!({ "cmd": "personal_browser_session" })).unwrap();
+        assert!(host.call(session).await.unwrap_err().contains("protected provenance receipt"));
+        for (cmd, args) in [
+            ("browser_tabs", serde_json::json!({})),
+            ("browser_tab_open", serde_json::json!({})),
+            ("browser_tab_share", serde_json::json!({ "tab": "t", "thread": "r", "share": true })),
+            ("browser_tab_control", serde_json::json!({ "tab": "t", "take": true })),
+            ("browser_tab_frame", serde_json::json!({ "tab": "t", "after": 0 })),
+            ("browser_tab_input", serde_json::json!({ "tab": "t", "events": [{ "kind": "reload" }] })),
+            ("browser_tab_stop", serde_json::json!({ "tab": "t" })),
+            ("personal_browser_view", serde_json::json!({})),
+            ("personal_browser_take_over", serde_json::json!({ "on": true })),
+            ("personal_browser_input", serde_json::json!({ "input": { "kind": "back" } })),
+        ] {
+            let mut args = args;
+            assert!(Command::from_json(serde_json::json!({ "cmd": cmd, "args": args })).is_err(), "{cmd} needs a session");
+            args["session"] = serde_json::json!("guessed");
+            let command = Command::from_json(serde_json::json!({ "cmd": cmd, "args": args })).unwrap();
+            assert_eq!(host.call(command).await.unwrap_err(), "browser_session_required", "{cmd}");
+        }
+        let issued = host.call_assuming_verified_ui_for_test(Command::PersonalBrowserSession {}).await.unwrap();
+        let session = issued["session"].as_str().unwrap();
+        let reply = host.call(Command::BrowserTabFrame { session: session.into(), tab: "missing".into(), after: 0 }).await;
+        assert_eq!(reply.unwrap_err(), "tab_not_found", "the UI's session passes the gate");
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 194);
+        assert_eq!(names.len(), 237);
         for name in [
+            "personal_handoff_select",
+            "personal_handoff_control",
+            "personal_handoff_options",
+            "personal_handoff_question",
+            "room_refresh_plans",
+            "room_apply_access",
             "room_curate",
             "room_curate_undo",
             "chat_profiles",
+            "agent_profile_list",
+            "agent_profile_save",
+            "provider_setup_begin",
             "chat_list",
             "chat_create",
             "chat_update_meta",
@@ -829,6 +1042,7 @@ mod tests {
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"personal_project_delegate".to_string()));
         assert!(names.contains(&"personal_project_delegate_ui".to_string()));
+        assert!(names.contains(&"personal_project_propose_ui".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"room_steps".to_string()));
         assert!(names.contains(&"personal_workspace_configure".to_string()));
@@ -850,7 +1064,7 @@ mod tests {
             assert!(names.contains(&phone.to_string()), "{phone}");
         }
         assert!(names.contains(&"monitor_suggest_sources".to_string()));
-        for write in ["monitor_assign", "monitor_sources_update", "monitor_message", "monitor_pause", "monitor_check_now", "monitor_resolve"] {
+        for write in ["monitor_assign", "monitor_connect", "monitor_watch_save", "monitor_watch_stop", "monitor_sources_update", "monitor_message", "monitor_pause", "monitor_check_now", "monitor_resolve"] {
             assert!(names.contains(&write.to_string()), "{write}");
         }
     }

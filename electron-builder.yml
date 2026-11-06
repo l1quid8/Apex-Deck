@@ -31,6 +31,8 @@ files:
 # Copied into the app's resources on every platform. The service binary is not
 # here because its file name differs per platform: see `mac:` and `win:` below.
 extraResources:
+  - from: build/unified-computer-use/Unified Computer Use.app
+    to: Unified Computer Use.app
   - from: voice-sidecar
     to: voice-sidecar
     filter: ["**/*", "!**/__pycache__/**", "!tests/**", "!.venv/**"]
@@ -40,7 +42,8 @@ mac:
   icon: build/icons/icon.icns
   category: public.app-category.developer-tools
   extendInfo:
-    NSMicrophoneUsageDescription: "Apex Deck uses your microphone only during voice calls you start."
+    NSMicrophoneUsageDescription: "Apex Deck uses your microphone during voice calls you start and for sites you allow in its browser."
+    NSCameraUsageDescription: "Apex Deck uses your camera only for sites you allow in its browser."
   target: dmg
   # A bare electron-builder run signs ad hoc; scripts/package-mac.mjs passes
   # the Developer ID identity instead when the keychain has one.
@@ -53,6 +56,8 @@ mac:
       to: bin/apex-daemon
     - from: target/release/apex-provenance
       to: bin/apex-provenance
+    - from: target/release/apex
+      to: bin/apex
     # The upgrade transaction and its bundle check, run as root by the update job
     # from the protected copy (scripts/upgrade.py). Sealed by the app's signature.
     - from: scripts/upgrade.py
@@ -63,7 +68,7 @@ dmg:
   # One fixed name, like the installer: each build overwrites the last one
   # instead of leaving release/ full of near-identical disk images. The version
   # and the stamped commit are in the bundle and in the .pkg manifest sidecar.
-  artifactName: Apex-Deck.${ext}
+  artifactName: Apex-Deck_${version}_${arch}.${ext}
 win:
   icon: build/icons/icon.ico
   target:

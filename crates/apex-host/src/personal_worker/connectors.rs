@@ -2,7 +2,7 @@
 //! assistant's own browser. Each call is one operation through the gateway,
 //! like a command. What comes back is external content: it's shown and
 //! quoted as evidence, and it can never start a task or approve anything,
-//! because only the human's own events do that.
+//! because only the user's own events do that.
 //!
 //! Credentials stay in this machine's key store and never reach a prompt:
 //! `GITHUB_TOKEN` for GitHub, and `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
@@ -20,7 +20,7 @@ pub const TOOLS: &[(&str, &str)] = &[
     ("gmail.read", "Read one Gmail message as text. argv: [\"MESSAGE_ID\"]"),
     ("drive.search", "Search Google Drive by text, read-only. argv: [\"quarterly report\"]"),
     ("drive.read", "Read one Drive file as text. argv: [\"FILE_ID\"]"),
-    ("browser.open", "Open a web page in your own browser and read its text; this asks the human first. argv: [\"https://example.com\"]"),
+    ("browser.open", "Open a web page in your own browser and read its text; follows saved assistant access. argv: [\"https://example.com\"]"),
 ];
 const MAX_TEXT: usize = 48 * 1024;
 

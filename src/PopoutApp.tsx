@@ -5,7 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { WorkspaceTasks } from "./WorkspaceTasksScreen";
 import { WorkspaceTaskDetails } from "./WorkspaceTaskDetails";
-import type { WorkspaceTaskRow } from "./workspaceTasks";
+import { assistantIdentityKey, projectIdentityKey } from "./assistantIdentity.ts";
+import type { TaskDelegationTarget, TaskWorkerThreadCreator } from "./taskManagerDelegation.ts";
+import type { PersonalTaskSource, WorkspaceTaskRow } from "./workspaceTasks";
 import type { Backend } from "./backend";
 import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
 import type { DashRow } from "./dashboardModel";
@@ -15,6 +17,7 @@ import { HostPane } from "./HostPane";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { changedProfiles, createForkChannel, type ChatBundle, type PopoutAction, type PopoutSnapshot } from "./popoutModel.ts";
 import { PreviewPane } from "./PreviewPane";
+import { SharedBrowser } from "./SharedBrowser";
 import { RightBrowser } from "./RightBrowser";
 import { RightDashboard } from "./RightDashboard";
 import { RightFilesTab } from "./RightFiles";
@@ -28,6 +31,7 @@ import type { ArtifactsHost } from "./ArtifactsPanel";
 import type { DetailsHost } from "./ThreadDetails";
 import type { Pane, ParticipantConfig } from "./types";
 import "./popout.css";
+import { copyText } from "./copyText";
 
 /** Before the owner's first bundle arrives; replaced by the snapshot's right away. */
 const EMPTY_BUNDLE: ChatBundle = {
@@ -71,6 +75,8 @@ export function PopoutApp({ token }: { token: string }) {
   const [rows, setRows] = useState<DashRow[]>([]);
   const [taskRows, setTaskRows] = useState<WorkspaceTaskRow[]>([]);
   const [taskProblems, setTaskProblems] = useState<string[]>([]);
+  const [taskPersonalSources, setTaskPersonalSources] = useState<PersonalTaskSource[] | undefined>(undefined);
+  const [taskDelegationTargets, setTaskDelegationTargets] = useState<TaskDelegationTarget[] | undefined>(undefined);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("");
   const [hostId, setHostId] = useState("local");
@@ -85,6 +91,7 @@ export function PopoutApp({ token }: { token: string }) {
   // The owner's agents, saved Agents and settings, resent whenever they change in Deck.
   const [bundle, setBundle] = useState<ChatBundle>(EMPTY_BUNDLE);
   const forks = useRef(createForkChannel());
+  const taskWorkers = useRef(createForkChannel());
   const [countsSlot, setCountsSlot] = useState<HTMLElement | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
   const menuOpener = useRef<HTMLElement | null>(null);
@@ -95,8 +102,8 @@ export function PopoutApp({ token }: { token: string }) {
   const renameSent = useRef(false);
   const [winWidth, setWinWidth] = useState(() => window.innerWidth);
   // The owner's skin, sent with the snapshot and again whenever it changes in Deck.
-  const [appearance, setAppearance] = useState<AppearanceValues>(DEFAULT_APPEARANCE);
-  useAppearance(appearance);
+  const [appearance, setAppearance] = useState<AppearanceValues | import("./themes").AppearanceSettings>(DEFAULT_APPEARANCE);
+  useAppearance(appearance as any);
 
   useEffect(() => {
     const measure = () => setWinWidth(window.innerWidth);
@@ -119,6 +126,8 @@ export function PopoutApp({ token }: { token: string }) {
       setUrl(snap.url ?? "");
       setRows(snap.dashboardRows ?? []);
       setTaskRows(snap.workspaceTaskRows ?? []);
+      setTaskPersonalSources(snap.taskPersonalSources);
+      setTaskDelegationTargets(snap.taskDelegationTargets);
       setTaskProblems(snap.workspaceTaskProblems ?? []);
       setActiveChatId(snap.activeChatId ?? null);
       setCwd(snap.cwd ?? "");
@@ -141,6 +150,8 @@ export function PopoutApp({ token }: { token: string }) {
       if (patch.url !== undefined) setUrl(patch.url);
       if (patch.dashboardRows !== undefined) setRows(patch.dashboardRows);
       if (patch.workspaceTaskRows !== undefined) setTaskRows(patch.workspaceTaskRows);
+      if (patch.taskPersonalSources !== undefined) setTaskPersonalSources(patch.taskPersonalSources);
+      if (patch.taskDelegationTargets !== undefined) setTaskDelegationTargets(patch.taskDelegationTargets);
       if (patch.workspaceTaskProblems !== undefined) setTaskProblems(patch.workspaceTaskProblems);
       if (patch.activeChatId !== undefined) setActiveChatId(patch.activeChatId);
       if (patch.cwd !== undefined) setCwd(patch.cwd);
@@ -151,6 +162,7 @@ export function PopoutApp({ token }: { token: string }) {
       if (patch.previewSource !== undefined) setPreviewSource(patch.previewSource);
       if (patch.chatConfig !== undefined) setBundle(patch.chatConfig);
       if (patch.forkResult !== undefined) forks.current.settle(patch.forkResult);
+      if (patch.taskWorkerResult !== undefined) taskWorkers.current.settle(patch.taskWorkerResult);
       if (patch.appearance !== undefined) setAppearance(patch.appearance);
     });
     void electronBackend(bridge).then((made) => {
@@ -175,6 +187,13 @@ export function PopoutApp({ token }: { token: string }) {
     send({ type: "fork", title: forkTitle, upto, at, requestId });
     const timer = setTimeout(() => forks.current.settle({ requestId, error: "Deck didn't answer, so the fork may not have happened." }), 30000);
     return result.finally(() => clearTimeout(timer));
+  };
+
+  const createTaskWorker: TaskWorkerThreadCreator = (project, profile, assistant) => {
+    const { requestId, result } = taskWorkers.current.request();
+    send({ type: "task-create-worker", project, profile, assistant, requestId });
+    const timer = setTimeout(() => taskWorkers.current.settle({ requestId, error: "Deck did not confirm the saved worker thread. Reconnect before retrying." }), 30000);
+    return result.then(id => { if (!id) throw new Error("Deck returned no saved worker thread."); return id; }).finally(() => clearTimeout(timer));
   };
 
   /** Saved Agents go back one change at a time, never as this window's whole copy. */
@@ -289,11 +308,11 @@ export function PopoutApp({ token }: { token: string }) {
           />
         ) : snapshot.kind === "tab" ? (
           <TabBody
-            snapshot={snapshot} backend={backend} route={route} title={title} url={url} rows={rows} taskRows={taskRows} taskProblems={taskProblems}
+            snapshot={snapshot} backend={backend} route={route} title={title} url={url} rows={rows} taskRows={taskRows} taskProblems={taskProblems} taskPersonalSources={taskPersonalSources} taskDelegationTargets={taskDelegationTargets}
             activeChatId={activeChatId} cwd={cwd} hostId={hostId} workspaceId={workspaceId}
             conversationId={conversationId} workspaceName={workspaceName} bundle={bundle}
             tabDetails={tabDetails} profilesChanged={profilesChanged}
-            onUrl={setUrl} send={send} openPath={openPath}
+            onUrl={setUrl} send={send} openPath={openPath} createTaskWorker={createTaskWorker}
           />
         ) : (
           <p className="muted">Nothing to show. Return it to Deck.</p>
@@ -435,7 +454,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
                 onActivity={() => {}}
                 onSignal={() => {}}
                 onCopy={(text) => {
-                  void navigator.clipboard?.writeText(text).catch(() => {});
+                  void copyText(text);
                 }}
               />
             </div>
@@ -482,7 +501,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
 }
 
 /** A popped-out side-panel tab. Selection-following tabs move with the main window. */
-function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskProblems, activeChatId, cwd, hostId, workspaceId, workspaceName, bundle, tabDetails, profilesChanged, onUrl, send, openPath }: {
+function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskProblems, taskPersonalSources, taskDelegationTargets, activeChatId, cwd, hostId, workspaceId, workspaceName, bundle, tabDetails, profilesChanged, onUrl, send, openPath, createTaskWorker }: {
   snapshot: PopoutSnapshot;
   backend: Backend;
   route: Backend;
@@ -491,6 +510,8 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
   rows: DashRow[];
   taskRows: WorkspaceTaskRow[];
   taskProblems: string[];
+  taskPersonalSources?: PersonalTaskSource[];
+  taskDelegationTargets?: TaskDelegationTarget[];
   activeChatId: string | null;
   cwd: string;
   hostId: string;
@@ -505,6 +526,7 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
   onUrl: (url: string) => void;
   send: (action: PopoutAction) => void;
   openPath: (path: string) => void;
+  createTaskWorker: TaskWorkerThreadCreator;
 }) {
   const tabKind = snapshot.tabKind ?? "files";
   const showPane = (id: string) => send({ type: "show-pane", id });
@@ -524,6 +546,9 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
   if (tabKind === "worktrees") {
     return <RightWorktreesTab root={cwd || null} backend={route} visible mounted={cwd} pendingMount={snapshot.pendingMount ?? undefined} busyTurn={snapshot.busyTurn} onMount={activeChatId ? path => send({type:"mount-worktree",id:activeChatId,path}) : undefined} onCancelMount={() => { if(activeChatId) send({type:"cancel-mount",id:activeChatId}); }} onOpen={openPath} />;
   }
+  if (tabKind === "assistantbrowser") {
+    return <SharedBrowser call={(cmd, args) => route.call(cmd, args)} hostName={route.host?.name ?? "This Mac"} visible roomName={() => undefined} assistantName="Assistant" />;
+  }
   if (tabKind === "browser") {
     return (
       <RightBrowser
@@ -538,6 +563,9 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
       />
     );
   }
+  if (tabKind === "plan") {
+    return <div className="right-panel-empty"><p className="muted">This thread's plan is in the main Deck window, where you can approve or stop it.</p><button type="button" className="popout-return" onClick={() => window.close()}>Return to Deck</button></div>;
+  }
   if (tabKind === "phone") {
     return <RightPhone phone={backend.phone} visible />;
   }
@@ -545,10 +573,11 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
     return <RightDashboard rows={rows} onOpen={(id, destination) => send({ type: "dashboard-open", id, destination })} />;
   }
   if (tabKind === "tasks") {
-    return <WorkspaceTasks rows={taskRows} problems={taskProblems} renderDetail={row => {
+    const delegationTargets = taskDelegationTargets ?? [...new Map(taskRows.filter(row => row.assistant && row.project).map(row => [JSON.stringify([assistantIdentityKey(row.assistant!), projectIdentityKey(row.project!)]), { assistant: row.assistant!, project: row.project!, name: row.projectName }])).values()];
+    return <WorkspaceTasks personalSources={taskPersonalSources} profiles={bundle.profiles} delegationTargets={delegationTargets} onCreateWorkerThread={createTaskWorker} rows={taskRows} problems={taskProblems} backendForRow={row => { try { return row.routeHostId === 'local' ? backend : backend.machines?.get(row.routeHostId) ?? null; } catch { return null; } }} renderDetail={row => {
       let ownerBackend: Backend | null = null;
       try { ownerBackend = row.routeHostId === 'local' ? backend : backend.machines?.get(row.routeHostId) ?? null; } catch { /* Retain offline rows. */ }
-      return <WorkspaceTaskDetails key={row.key} row={row} backend={ownerBackend} profiles={bundle.profiles} onOpenThread={showPane} />;
+      return <WorkspaceTaskDetails key={row.key} row={row} backend={ownerBackend} profiles={bundle.profiles} onOpenThread={id => row.project ? send({ type: "task-open-thread", project: row.project, id }) : showPane(id)} onOpenProject={project => send({ type: "task-open-project", project })} onKeepThread={(project, id) => send({ type: "task-keep-thread", project, id })} onCreateWorkerThread={row.assistant ? (project, profile) => createTaskWorker(project, profile, row.assistant!) : undefined} />;
     }} />;
   }
   if (tabKind === "details" || tabKind === "artifacts") {

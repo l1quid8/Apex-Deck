@@ -62,6 +62,8 @@ clear, step-by-step plan.";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomEvent {
+    /// A full checkpoint is available. Clients should reload room_state.
+    StateChanged,
     /// Request-scoped companion event. Ordinary room events remain unchanged.
     VoiceEvent { client_turn_id: String, id: ParticipantId, event: Box<RoomEvent> },
     /// Settings saved by any connected client. Applies to the next turn.
@@ -111,6 +113,10 @@ pub enum RoomEvent {
     },
     /// The thread's Plan switch was turned on or off.
     PlanChanged { on: bool },
+    /// A plan run was created or changed. It is the whole run.
+    PlanRun { run: crate::PlanRun },
+    /// Plan runs were removed by `/clear` or a rewind. It is the whole list.
+    PlanRunsReset { runs: Vec<crate::PlanRun> },
     /// The thread's "Always allow" list changed. It is the whole list.
     AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
@@ -161,9 +167,11 @@ pub enum RoomEvent {
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
     CurationsChanged { curations: Vec<Curation> },
-    /// The human pressed stop.
+    /// A bot's access was changed while it was working.
+    AccessChanged { id: ParticipantId, access: crate::Access },
+    /// The user pressed stop.
     Stopped,
-    /// The room finished handling the human message.
+    /// The room finished handling the user message.
     Idle,
     /// This participant has released its turn slot.
     ParticipantIdle { id: ParticipantId },
@@ -228,9 +236,9 @@ pub(crate) struct RoomApprover<'a> {
     pub(crate) on_event: EventSink<'a>,
 }
 
-#[async_trait]
-impl Approver for RoomApprover<'_> {
-    async fn decide(&self, action: ProposedAction) -> Decision {
+impl RoomApprover<'_> {
+    /// Ask, and say which card it was (none when a saved rule answered).
+    async fn decide_tracked(&self, action: ProposedAction) -> (Option<String>, Decision) {
         // Starting the work after a plan, and paying for a picture or
         // video, are asked every time.
         let once = action.kind.asked_every_time();
@@ -239,11 +247,12 @@ impl Approver for RoomApprover<'_> {
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
             // A plain yes: the thread's saved rule answered, so no tool is
             // told to remember anything, and removing the rule takes it back.
-            return Decision::Approve;
+            return (None, Decision::Approve);
         }
         let remembered = action.clone();
         let (request, answer) = self.desk.open_for(self.id.clone());
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
+        let remembered_request = request.clone();
         let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = match answer.await.unwrap_or(Decision::Reject) {
@@ -255,7 +264,21 @@ impl Approver for RoomApprover<'_> {
         if decision == Decision::ApproveAlways && self.desk.allow_always(self.id, &remembered) {
             (self.on_event)(RoomEvent::AllowedChanged { allowed: self.desk.allowed() });
         }
-        decision
+        (Some(remembered_request), decision)
+    }
+}
+
+#[async_trait]
+impl Approver for RoomApprover<'_> {
+    async fn decide(&self, action: ProposedAction) -> Decision {
+        self.decide_tracked(action).await.1
+    }
+
+    async fn decide_plan(&self, action: ProposedAction) -> crate::PlanAnswer {
+        let (request, decision) = self.decide_tracked(action).await;
+        // Taken whatever the answer, so a refused plan leaves nothing behind.
+        let note = request.and_then(|r| self.desk.take_plan_note(&r));
+        crate::PlanAnswer { decision, note: if decision.approved() { note } else { None } }
     }
 
     async fn ask(&self, questions: Vec<crate::Question>) -> crate::Answer {
@@ -488,14 +511,37 @@ pub struct RoomSnapshot {
     /// them; a fork starts without them.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage: HashMap<ParticipantId, TokenTotals>,
+    /// The effective untagged responders at the time the snapshot was taken.
+    /// Derived from `last_targets` plus policy; mirrors what
+    /// `resolve_targets` would return for an untagged message. Available for
+    /// clients that read state but cannot run routing themselves (e.g. the CLI).
+    #[serde(default)]
+    pub untagged_responders: Vec<ParticipantId>,
     /// The thread's Plan switch: every bot plans and changes nothing.
     #[serde(default)]
     pub plan: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub checklists: HashMap<ParticipantId, Checklist>,
+    /// Approved and waiting plans, newest last, at most 20. A fork starts
+    /// without them.
+    #[serde(default)]
+    pub plan_runs: Vec<crate::PlanRun>,
 }
 
 impl RoomSnapshot {
+    /// No card or turn survives a restart: settle the saved plan runs and
+    /// return the ones that changed.
+    pub fn settle_plan_runs(&mut self) -> Vec<crate::PlanRun> {
+        let mut changed = Vec::new();
+        for run in &mut self.plan_runs {
+            let before = run.state;
+            run.expire();
+            run.turn_ended();
+            if run.state != before { changed.push(run.clone()); }
+        }
+        changed
+    }
+
     /// Imported IDs are tombstones, never executable claims from another host.
     pub fn remember_history_ids(&mut self) {
         for message in &self.transcript {
@@ -531,8 +577,10 @@ impl RoomSnapshot {
             baseline: self.baseline.clone(),
             allowed: Vec::new(),
             usage: HashMap::new(),
+            untagged_responders: if upto == self.transcript.len() { self.untagged_responders.clone() } else { Vec::new() },
             plan: self.plan,
             checklists: self.checklists.iter().filter(|(_, list)| list.seq < upto).map(|(id, list)| (id.clone(), list.clone())).collect(),
+            plan_runs: Vec::new(),
         }
     }
 }
@@ -566,6 +614,7 @@ pub struct Room {
     /// The Plan switch. Shared with the host, which flips it while a turn
     /// may hold the room.
     plan: Arc<AtomicBool>,
+    plan_runs: Arc<Mutex<Vec<crate::PlanRun>>>,
     /// Whether bots are told they may end a reply with an interactive answer
     /// card. Always on: every thread starts with it.
     answers: Arc<AtomicBool>,
@@ -612,8 +661,10 @@ impl Room {
             baseline: self.baseline.clone(),
             allowed: self.desk.allowed(),
             usage: self.usage.clone(),
+            untagged_responders: self.untagged_responders(),
             plan: self.plan.load(Ordering::SeqCst),
             checklists: self.checklists.lock().unwrap().clone(),
+            plan_runs: self.plan_runs.lock().unwrap().clone(),
         }
     }
 
@@ -646,6 +697,7 @@ impl Room {
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(plan)),
+            plan_runs: Arc::new(Mutex::new(snapshot.plan_runs)),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(desk),
@@ -677,6 +729,7 @@ impl Room {
             options,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(false)),
+            plan_runs: Arc::default(),
             // Card guidance is always on.
             answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(ApprovalDesk::default()),
@@ -739,6 +792,11 @@ impl Room {
         true
     }
 
+    /// Find a participant in the room by id.
+    pub fn participant(&self, id: &ParticipantId) -> Option<Arc<dyn Participant>> {
+        self.roster.iter().find(|p| p.config().id == *id).cloned()
+    }
+
     /// Swap in a new version of a participant that is already in the room
     /// (same id), keeping its place in the roster and what it has seen.
     /// Returns false if nobody in the room has that id.
@@ -790,6 +848,7 @@ impl Room {
         self.pins = self.pins.iter().map(|pin| response_pin_parts(pin).map_or_else(|| pin.clone(), |(_, text)| text.to_string())).collect();
         self.transcript.clear();
         self.checklists.lock().unwrap().clear();
+        self.plan_runs.lock().unwrap().clear();
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
@@ -812,6 +871,7 @@ impl Room {
             record.reply_seqs.retain(|seq| *seq < upto);
         }
         self.checklists.lock().unwrap().retain(|_, list| list.seq < upto);
+        self.plan_runs.lock().unwrap().retain(|run| run.started_seq < upto);
         for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
         self.last_targets.clear();
         if self.compaction.as_ref().is_some_and(|c| c.upto > upto) { self.compaction = None; }
@@ -873,7 +933,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_hiding(self.summary(), &self.transcript[self.compacted_upto()..], &self.hidden_ranges(), &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
+        let request = TurnRequest { computer: None, effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -946,6 +1006,7 @@ impl Room {
             );
         }
         let request = TurnRequest {
+            computer: None,
             system,
             turns: vec![ViewTurn {
                 role: Role::User,
@@ -1085,6 +1146,11 @@ impl Room {
         Arc::clone(&self.stop)
     }
 
+    /// The plan runs, for the host to change without the room's lock.
+    pub fn plan_runs_handle(&self) -> Arc<Mutex<Vec<crate::PlanRun>>> {
+        Arc::clone(&self.plan_runs)
+    }
+
     /// The Plan switch, for the host to flip without the room's lock.
     pub fn plan_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.plan)
@@ -1135,6 +1201,27 @@ impl Room {
     }
 
     pub(crate) fn client_message(&self, id: &str) -> Option<&ClientMessageRecord> { self.client_messages.get(id) }
+
+    /// Save a legacy post before publishing it, restoring admission state if
+    /// storage refuses the complete snapshot.
+    pub(crate) fn accept_post(
+        &mut self, speaker: Speaker, text: &str, targets: Vec<ParticipantId>,
+        commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync),
+    ) -> Result<Message, String> {
+        let previous_targets = std::mem::replace(&mut self.last_targets, targets);
+        let previous_origin = self.next_origin_seq;
+        let reply_record = self.reply_client_message_id.as_ref()
+            .and_then(|id| self.client_messages.get(id).map(|record| (id.clone(), record.clone())));
+        self.push(speaker, text.into(), &|_| {});
+        if let Err(error) = commit(&self.snapshot()) {
+            self.transcript.pop();
+            self.last_targets = previous_targets;
+            self.next_origin_seq = previous_origin;
+            if let Some((id, record)) = reply_record { self.client_messages.insert(id, record); }
+            return Err(error);
+        }
+        Ok(self.transcript.last().unwrap().clone())
+    }
 
     pub(crate) fn set_reply_client_message(&mut self, id: Option<String>) { self.reply_client_message_id = id; }
 
@@ -1216,18 +1303,26 @@ impl Room {
         match parse_mentions(text, &configs) {
             MentionTarget::Everyone => configs.iter().filter(|c| !self.named_only(&c.id) || crate::names(text, c)).map(|c| c.id.clone()).collect(),
             MentionTarget::Some(ids) => ids,
-            MentionTarget::None => match self.options.policy {
-                TurnPolicy::Everyone | TurnPolicy::RoundRobin => self.unnamed_ids(),
-                TurnPolicy::Mention => {
-                    let sticky: Vec<ParticipantId> =
-                        self.last_targets.iter().filter(|id| self.has(id) && !self.named_only(id)).cloned().collect();
-                    if sticky.is_empty() {
-                        self.unnamed_ids().into_iter().take(1).collect()
-                    } else {
-                        sticky
-                    }
+            MentionTarget::None => self.untagged_responders(),
+        }
+    }
+
+    /// The effective untagged responders for this room, computed from the same
+    /// room state that `resolve_targets` uses during routing. This returns the
+    /// exact list an untagged message would target, without actually sending
+    /// anything or mutating state.
+    pub fn untagged_responders(&self) -> Vec<ParticipantId> {
+        match self.options.policy {
+            TurnPolicy::Everyone | TurnPolicy::RoundRobin => self.unnamed_ids(),
+            TurnPolicy::Mention => {
+                let sticky: Vec<ParticipantId> =
+                    self.last_targets.iter().filter(|id| self.has(id) && !self.named_only(id)).cloned().collect();
+                if sticky.is_empty() {
+                    self.unnamed_ids().into_iter().take(1).collect()
+                } else {
+                    sticky
                 }
-            },
+            }
         }
     }
 
@@ -1271,6 +1366,7 @@ impl Room {
             .cloned()
             .collect();
         let mut request = TurnRequest {
+            computer: None,
             effort_override: None,
             access: Some(participant.config().access),
             system: self.turn_system(participant.config(), answers, capability, plan),
@@ -1480,7 +1576,7 @@ impl Room {
 
     /// Add a human message and let the room answer it.
     ///
-    /// The human's message is answered by the participants it @mentions, or
+    /// The user's message is answered by the participants it @mentions, or
     /// by the room's turn policy if it mentions nobody. If a reply @mentions
     /// another participant, that participant answers next, up to
     /// `max_bot_hops` rounds (`None` keeps going until no reply addresses
@@ -1633,6 +1729,54 @@ mod approver_tests {
             futures::join!(approver.decide(start.clone()), async { desk.resolve("ask-2", Decision::Approve) })
         });
         assert!(asked, "a saved rule never answers it");
+    }
+
+    #[test]
+    fn room_approver_returns_the_desk_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A\n2. B".into(), expires_at: None, risky: false };
+        let (answer, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide_plan(start.clone()), async {
+                desk.set_plan_note("ask-1", "Skip step 2".into());
+                desk.resolve("ask-1", Decision::Approve)
+            })
+        });
+        assert_eq!(answer, crate::PlanAnswer { decision: Decision::Approve, note: Some("Skip step 2".into()) });
+        assert_eq!(desk.take_plan_note("ask-1"), None, "taken once");
+    }
+
+    #[test]
+    fn a_rejected_plan_has_no_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A".into(), expires_at: None, risky: false };
+        let (answer, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide_plan(start.clone()), async {
+                desk.set_plan_note("ask-1", "stale".into());
+                desk.resolve("ask-1", Decision::Reject)
+            })
+        });
+        assert_eq!(answer, crate::PlanAnswer { decision: Decision::Reject, note: None });
+        assert_eq!(desk.take_plan_note("ask-1"), None, "nothing left behind");
+    }
+
+    #[test]
+    fn a_withdrawn_plan_card_leaves_no_note() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let (request, _rx) = desk.open_for(id.clone());
+        desk.set_plan_note(&request, "x".into());
+        assert!(desk.withdraw(&request));
+        assert_eq!(desk.take_plan_note(&request), None);
+        let (request, _rx2) = desk.open_for(id.clone());
+        desk.set_plan_note(&request, "y".into());
+        desk.reject_for(&id);
+        assert_eq!(desk.take_plan_note(&request), None);
     }
 
     #[test]
@@ -1825,5 +1969,148 @@ mod approver_tests {
         let events = events.into_inner().unwrap();
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
             RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
+    }
+    // --- Untagged responders tests ---
+
+    #[test]
+    fn initial_reset_untagged_responders_returns_first_eligible() {
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["hi"]));
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["hey"]));
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // Initial: first unnamed participant answers.
+        let responders = room.untagged_responders();
+        assert_eq!(responders, vec![ParticipantId::new("jigga")]);
+        // resolve_targets for untagged text must match.
+        assert_eq!(room.resolve_targets("hello"), responders);
+    }
+
+    #[test]
+    fn sticky_mention_untagged_responders_follows_targets() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a", "b"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["c", "d"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // Initial: jigga is first.
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga")]);
+        // Address null explicitly: untagged should now stick to null.
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("null")]);
+    }
+
+    #[test]
+    fn multiple_sticky_untagged_responders_via_at_all() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a", "b"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["c", "d"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // @all selects everyone.
+        futures::executor::block_on(room.post_human("@all hi", &|_| {}));
+        let responders = room.untagged_responders();
+        assert_eq!(responders.len(), 2);
+        assert!(responders.contains(&ParticipantId::new("jigga")));
+        assert!(responders.contains(&ParticipantId::new("null")));
+    }
+
+    #[test]
+    fn removed_members_excluded_from_untagged_responders() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // After @null, sticky is null.
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("null")]);
+        // Remove null: the responder list should drop the removed member.
+        assert!(room.remove_participant(&ParticipantId::new("null")));
+        let responders = room.untagged_responders();
+        assert_eq!(responders, vec![ParticipantId::new("jigga")], "fallback to first when sticky removed");
+    }
+
+    #[test]
+    fn named_only_excluded_from_untagged_responders() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]).named_only());
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // null is named-only; untagged goes to jigga.
+        let responders = room.untagged_responders();
+        assert_eq!(responders, vec![ParticipantId::new("jigga")]);
+    }
+
+    #[test]
+    fn empty_roster_untagged_responders_returns_empty() {
+        let room = Room::new(vec![], RoomOptions::default());
+        assert!(room.untagged_responders().is_empty());
+    }
+
+    #[test]
+    fn everyone_policy_untagged_responders_returns_all_unnamed() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions { policy: TurnPolicy::Everyone, ..RoomOptions::default() });
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga"), ParticipantId::new("null")]);
+    }
+
+    #[test]
+    fn round_robin_policy_untagged_responders_returns_all_unnamed() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions { policy: TurnPolicy::RoundRobin, ..RoomOptions::default() });
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga"), ParticipantId::new("null")]);
+    }
+
+    #[test]
+    fn snapshot_untagged_responders_matches_resolve_targets() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a", "b"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["c", "d"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // After @all, snapshot should carry the multi-responder list.
+        futures::executor::block_on(room.post_human("@all hi", &|_| {}));
+        let snap = room.snapshot();
+        let expected = room.untagged_responders();
+        assert_eq!(snap.untagged_responders, expected, "snapshot responders match live computation");
+        // The snapshot carries the same responders the room computed.
+    }
+
+    #[test]
+    fn snapshot_serialization_includes_untagged_responders() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        let snap = room.snapshot();
+        let json = serde_json::to_value(&snap).unwrap();
+        let responders = json["untagged_responders"].as_array().unwrap();
+        assert_eq!(responders.len(), 1);
+        assert_eq!(responders[0].as_str().unwrap(), "null");
+    }
+
+    #[test]
+    fn untagged_projection_is_read_only_and_restore_recomputes_old_or_stale_values() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &[]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &[]).named_only());
+        let mut room = Room::new(vec![null.clone(), jigga.clone()], RoomOptions::default());
+        room.targets_for_human("@null hello");
+        let before = serde_json::to_value(room.snapshot()).unwrap();
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga")]);
+        assert_eq!(serde_json::to_value(room.snapshot()).unwrap(), before, "reading does not change routing or scheduling");
+        let mut legacy = before;
+        legacy.as_object_mut().unwrap().remove("untagged_responders");
+        let mut snapshot: RoomSnapshot = serde_json::from_value(legacy).unwrap();
+        snapshot.untagged_responders = vec![ParticipantId::new("removed")];
+        let restored = Room::restore(vec![null, jigga], snapshot);
+        assert_eq!(restored.snapshot().untagged_responders, vec![ParticipantId::new("jigga")]);
+        room.clear();
+        assert_eq!(room.snapshot().untagged_responders, vec![ParticipantId::new("jigga")]);
+        assert_eq!(serde_json::to_value(Room::new(vec![], RoomOptions::default()).snapshot()).unwrap()["untagged_responders"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn multiple_explicit_mentions_project_the_same_targets_without_sending() {
+        let mut room = Room::new(vec![
+            Arc::new(crate::testing::ScriptedParticipant::new("jigga", &[])),
+            Arc::new(crate::testing::ScriptedParticipant::new("null", &[])),
+            Arc::new(crate::testing::ScriptedParticipant::new("cast", &[])),
+        ], RoomOptions::default());
+        let targets = room.targets_for_human("@null @cast hello");
+        assert_eq!(targets, vec![ParticipantId::new("null"), ParticipantId::new("cast")]);
+        assert_eq!(room.snapshot().untagged_responders, targets);
+        assert_eq!(room.resolve_targets("follow up"), targets);
     }
 }

@@ -20,6 +20,7 @@ import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
+  clipboard?: { writeText(text: string): Promise<void> };
   voice?: {
     status(): Promise<{supported:boolean;installed:boolean;installing:boolean;downloadBytes:number;requiredDiskBytes:number}>;
     install(): Promise<unknown>; cancelInstall():Promise<void>;
@@ -74,6 +75,9 @@ export interface DeckBridge {
     onMenu(cb: (action: string) => void): () => void;
   };
   browser: BrowserApi & {
+    /** What the person chose to remember for sites in the docked browser. */
+    sitePermissions(): Promise<{ origin: string; kind: "microphone" | "camera"; allowed: boolean }[]>;
+    forgetSitePermission(origin: string, kind: string): Promise<void>;
     /** Key presses in a docked page that the deck owns (desktop/browser-keys.mjs). */
     onShortcut(cb: (press: KeyboardEventInit) => void): () => void;
   };
@@ -82,11 +86,16 @@ export interface DeckBridge {
     open(snapshot: PopoutSnapshot, bounds?: { x: number; y: number; width: number; height: number }): Promise<{ token: string }>;
     snapshot(token: string): Promise<PopoutSnapshot>;
     close(token: string): Promise<void>;
+    assistantLayout?(token: string, presentation: 'pill'|'threads'|'chat'|'minimized'|'menu'): Promise<void>;
+    assistantVisibility?(token: string, visible: boolean): Promise<void>;
+    moveAssistant?(token: string, delta: {dx:number;dy:number}): Promise<void>;
     update(token: string, patch: PopoutUpdate): Promise<void>;
     sendAction(token: string, action: PopoutAction): Promise<void>;
     onUpdate(cb: (patch: PopoutUpdate) => void): () => void;
     onAction(cb: (token: string, action: PopoutAction) => void): () => void;
     onClosed(cb: (token: string) => void): () => void;
+        /** Reads the assistant window's pin, or sets it when `on` is given. */
+        alwaysOnTop?(token: string, on?: boolean): Promise<boolean>;
   };
   smoke: boolean;
 }

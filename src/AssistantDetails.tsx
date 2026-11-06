@@ -19,7 +19,7 @@ import { isWindows } from './paths.ts';
 import type { ParticipantConfig } from './types';
 import './assistant-details.css';
 
-/** Statuses that are sitting on the human's answer or a look at the result. */
+/** Statuses that are sitting on the user's answer or a look at the result. */
 const WAITING = new Set(['proposed', 'needs_clarification', 'needs_you', 'ready_for_review']);
 const WORKING = new Set(['queued', 'running', 'applying']);
 

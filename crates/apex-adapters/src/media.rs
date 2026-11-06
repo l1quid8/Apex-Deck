@@ -544,7 +544,7 @@ impl Job<'_> {
 
 /// Nobody: a price quote is not a turn, so no message names it.
 fn quote_bot() -> ParticipantConfig {
-    ParticipantConfig { id: ParticipantId::new(""), display_name: String::new(), backend: apex_core::Backend::Scripted { lines: vec![] }, persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None }
+    ParticipantConfig { can_read_images: false, id: ParticipantId::new(""), display_name: String::new(), backend: apex_core::Backend::Scripted { lines: vec![] }, persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None }
 }
 
 /// What one video costs with these choices, from Venice's own quote.
@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn turn(unseen: Vec<Message>, turns: Vec<ViewTurn>) -> TurnRequest {
-        TurnRequest { access: None, effort_override: None, system: String::new(), turns, unseen, plan: false, cwd: None }
+        TurnRequest { computer: None, access: None, effort_override: None, system: String::new(), turns, unseen, plan: false, cwd: None }
     }
 
     #[test]
@@ -635,7 +635,7 @@ mod tests {
         let (said, images) = latest_ask(&request);
         assert_eq!(said, "a fox in snow");
         assert_eq!(images, [PathBuf::from("/a/fox.png")]);
-        let from_view = turn(vec![], vec![ViewTurn { role: Role::User, content: "[Human]: first\n\n[Human]: a red bike".into() }]);
+        let from_view = turn(vec![], vec![ViewTurn { role: Role::User, content: "[User]: first\n\n[User]: a red bike".into() }]);
         assert_eq!(latest_ask(&from_view).0, "a red bike");
     }
 

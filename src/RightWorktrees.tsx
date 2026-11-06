@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Backend } from "./backend";
 import { pathBase, pathDir, trimTrailingSlash } from "./paths";
 import type { Worktree, WorktreeAdd, WorktreeList } from "./types";
-import { writeClipboard } from "./threadCopy";
+import { copyText } from "./copyText";
 
 const shorten = (path: string) => path.length > 48 ? `…${path.slice(-47)}` : path;
 const initialRequest = (branch = ""): WorktreeAdd => ({ branch, newBranch: true, base: "HEAD", folder: null });
@@ -50,7 +50,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
   const copyPathname = async (path: string) => {
     window.clearTimeout(copyTimer.current);
     setCopyStatus("");
-    const ok = await writeClipboard(path, navigator.clipboard);
+    const ok = await copyText(path);
     setCopyStatus(ok ? "Pathname copied" : "Clipboard unavailable");
     copyTimer.current = window.setTimeout(() => setCopyStatus(""), 1500);
   };

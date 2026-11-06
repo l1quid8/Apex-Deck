@@ -24,11 +24,13 @@ test("desktop calls wait for an explicit singleton thread choice", { timeout: 15
       subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
       start: async (scope) => { window.starts.push(scope); state = { ...state, status: "listening", scope, startedAt: Date.now() }; emit(); },
       switchAgent: async (scope) => { window.switched.push(scope); state = { ...state, status: "listening", scope, candidates: undefined, threadQuery: undefined, error: undefined }; emit(); },
+      mute: (muted) => { state = { ...state, muted }; emit(); },
       end: async () => { state = { ...state, status: "off", scope: undefined }; emit(); },
     };
     export const voiceRegistration = () => ({ settings, save() {} });
     export const warmVoice = () => {};
     export const callEngine = () => "local";
+    window.setCallStatus = (status) => { state = { ...state, status }; emit(); };
     window.askThread = () => {
       state = { ...state, status: "needs-attention", error: "Choose which thread to call.", threadQuery: "voise call", candidates: [elsewhere] };
       emit();
@@ -88,6 +90,21 @@ test("desktop calls wait for an explicit singleton thread choice", { timeout: 15
         await wait('!!document.querySelector(".voice-pill")');
         assert.equal(await run('window.starts.length'), 1, "one ordinary local agent starts immediately");
         assert.equal(await run('!!document.querySelector(".voice-pick")'), false);
+        assert.equal(await run('document.querySelectorAll(".voice-pill svg rect").length'), 1, "listening shows only one microphone");
+        await run('document.querySelector(".voice-callbtn").click()');
+        await wait('document.querySelector(".voice-callbtn").getAttribute("aria-label") === "Unmute microphone"');
+        assert.equal(await run('document.querySelectorAll(".voice-pill svg rect").length'), 1, "muted shows only one microphone");
+        await run('document.querySelector(".voice-callbtn").click()');
+        await wait('document.querySelector(".voice-callbtn").getAttribute("aria-label") === "Mute microphone"');
+        for (const [status, mode] of [["hearing", "you"], ["waiting", "dots"], ["speaking", "bot"]]) {
+          await run('window.setCallStatus(' + JSON.stringify(status) + ')');
+          await wait("!!document.querySelector(" + JSON.stringify('.voice-pill .voice-wave[data-mode="' + mode + '"]') + ")");
+          assert.equal(await run('document.querySelectorAll(".voice-pill svg rect").length'), 1, status + " keeps one microphone");
+        }
+        await run('window.setCallStatus("listening"); document.querySelector(".voice-pill-mid").click()');
+        await wait('!!document.querySelector(".voice-settings")');
+        await run('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))');
+        await wait('!document.querySelector(".voice-settings")');
         await run('window.askThread()');
         await wait('document.querySelector(".voice-pick")?.getAttribute("aria-label") === "Which thread?"');
         assert.equal(await run('document.querySelector(".voice-pop-head").textContent'), "Which thread?");

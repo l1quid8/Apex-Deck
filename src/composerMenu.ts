@@ -2,6 +2,7 @@ import type { ToolServer } from "./types.ts";
 import { normalizeServer, proseMask } from "./serverRequests.ts";
 import type { Command } from "./commands";
 import { mentionFor } from "./slug.ts";
+import { appComposerCommands } from './composerCommandRegistry.ts';
 
 /** What the composer's "+" menu offers. Typing `/` at the start of the
  *  message or `@` at the start of a word opens it filtered to that kind. */
@@ -23,20 +24,7 @@ export interface Trigger {
 
 /** A null command means the item needs an argument, so it is inserted
  *  for you to finish instead of running. */
-export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = [
-  {kind:'command',key:'goal',label:'/goal',detail:'Keep working toward an outcome',command:null},
-  {kind:'command',key:'loop',label:'/loop',detail:'Repeat a prompt: /loop 10m check build',command:null},
-  { kind: "command", key: "compact", label: "/compact", detail: "Summarize earlier turns and free up context", command: { name: "compact" } },
-  { kind: "command", key: "curate", label: "/curate", detail: "Hide old messages from bots; nothing is deleted", command: { name: "curate" } },
-  { kind: "command", key: "curate undo", label: "/curate undo", detail: "Bring back messages /curate hid", command: { name: "curate_undo" } },
-  { kind: "command", key: "clear", label: "/clear", detail: "Empty the chat; keep the models", command: { name: "clear" } },
-  { kind: "command", key: "diff", label: "/diff", detail: "Show what changed in the folder", command: { name: "diff" } },
-  { kind: "command", key: "fork", label: "/fork", detail: "Copy this chat into a new thread", command: { name: "fork", title: "" } },
-  { kind: "command", key: "export", label: "/export", detail: "Save the chat as Markdown", command: { name: "export", format: "markdown" } },
-  { kind: "command", key: "image", label: "/image", detail: "Make a picture: /image [chatgpt|grok|venice] prompt", command: null },
-  { kind: "command", key: "export json", label: "/export json", detail: "Save the raw transcript as JSON", command: { name: "export", format: "json" } },
-  { kind: "command", key: "plan", label: "/plan", detail: "Bots plan and ask; nothing gets changed (again to stop)", command: { name: "plan" } },
-];
+export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = appComposerCommands;
 
 export function findTrigger(text: string, caret: number): Trigger | null {
   const before = text.slice(0, caret);

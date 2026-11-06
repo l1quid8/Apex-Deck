@@ -59,6 +59,7 @@ test('composer access switches immediately, persists, and marks a busy change un
         await wait(()=>document.querySelector('.chip-access')?.textContent.includes('after this reply'));
         assert.equal(await run(()=>window.fixture.count('roomUpdateParticipant')),1,'no confirmation step');
         assert.equal(await run(()=>document.querySelector('.bot-access-note').textContent.includes('after this reply')),true);
+        assert.deepEqual(await run(()=>Array.from(document.querySelectorAll('.bot-access-choice button')).map(b=>[b.textContent,b.classList.contains('primary')])),[['Apply now',false],['After this reply',true]],'raising access leads with waiting');
         const fullStyle=await run(()=>{const c=getComputedStyle(document.querySelector('.chip-access'));return {border:c.borderWidth,background:c.backgroundColor,color:c.color};});
         assert.equal(fullStyle.border,'0px','no nested pill');assert.equal(fullStyle.background,'rgba(0, 0, 0, 0)');
         await run(()=>window.fixture.emit({type:'participant_idle',id:'bot'}));

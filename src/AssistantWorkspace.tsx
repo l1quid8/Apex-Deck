@@ -25,7 +25,7 @@ export function AssistantWorkspaceAvatar({lane,backend}:{lane:PersonalLane;backe
  *  Everything else — the assistant's own settings, memory and project access —
  *  is a subview you reach from the ⋯ menu, and its details live in the app's
  *  right sidebar, never in a second one of its own. */
-export function AssistantWorkspace({lane,backend,section,onNavigate,chat,projects,editor,memoryProject,delegatedTasks=[],onSubviewBack,previousSection='chat',callControls,browser,onOpenBrowser,detailsOpen,onToggleDetails,onStartCall}:{lane:PersonalLane;backend?:Backend;section:AssistantSection;onNavigate:(section:AssistantSection)=>void;chat:ReactNode;projects:ReactNode;editor:ReactNode;memoryProject?:ProjectRef;delegatedTasks?:AssistantTask[];onSubviewBack?:()=>void;previousSection?:AssistantSection;callControls?:ReactNode;browser?:ReactNode;onOpenBrowser?:()=>void;detailsOpen?:boolean;onToggleDetails?:()=>void;onStartCall?:()=>void}) {
+export function AssistantWorkspace({lane,backend,section,onNavigate,chat,projects,editor,memoryProject,delegatedTasks=[],onSubviewBack,previousSection='chat',callControls,browser,onOpenBrowser,detailsOpen,onToggleDetails,onStartCall,onPopOut}:{lane:PersonalLane;backend?:Backend;section:AssistantSection;onNavigate:(section:AssistantSection)=>void;chat:ReactNode;projects:ReactNode;editor:ReactNode;memoryProject?:ProjectRef;delegatedTasks?:AssistantTask[];onSubviewBack?:()=>void;previousSection?:AssistantSection;callControls?:ReactNode;browser?:ReactNode;onOpenBrowser?:()=>void;detailsOpen?:boolean;onToggleDetails?:()=>void;onStartCall?:()=>void;onPopOut?:()=>void}) {
  const record=lane.assistant;
  const ref=lane.ref??{hostId:record?.hostId??lane.hostName,assistantId:record?.id??lane.name};
  const look=assistantAppearance(ref,record?.look);
@@ -63,6 +63,8 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,chat,project
    <div className="assistant-strip-right">
     {!inCall&&!isWindows&&<button type="button" className="assistant-strip-button assistant-strip-phone" aria-label={`Call ${lane.name}`} title={`Call ${lane.name}`} onClick={()=>onStartCall?.()}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg></button>}
     <details className="assistant-workspace-menu"><summary aria-label="Projects, memory and settings">⋯</summary><div role="menu">
+     {lane.newConversation&&<button type="button" role="menuitem" disabled={lane.offline} onClick={event=>{closeMenu(event.currentTarget);void lane.newConversation!().catch(cause=>setError(String(cause instanceof Error?cause.message:cause)));}}>New conversation</button>}
+     {onPopOut&&<button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);onPopOut();}}>Pop out</button>}
      <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);onNavigate('projects');}}>Projects &amp; access</button>
      <button type="button" role="menuitem" disabled={!onOpenBrowser||!lane.browserView} title={!lane.browserView?'This host does not expose the assistant browser.':undefined} onClick={event=>{closeMenu(event.currentTarget);onOpenBrowser?.();}}>Browser</button>
      <button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);onNavigate('memory');}}>Memory</button>
@@ -71,6 +73,7 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,chat,project
     </div></details>
    </div>
   </header>
+  {lane.currentThread&&<div className="assistant-workspace-context" role="status" title={lane.currentThread.title}>Context: {lane.currentThread.title}</div>}
   {(lane.problem||error)&&<p className="assistant-workspace-problem" role="alert">{error||lane.problem}</p>}
   <div className="assistant-workspace-content" hidden={section!=='chat'}>{chat}</div>
   {section!=='chat'&&section!=='settings'&&<div className="assistant-workspace-subview">

@@ -1,0 +1,219 @@
+#!/bin/sh
+# Apex CLI launcher for npm distribution
+# - Always execs the root-owned Standalone/apex, never the npm copy
+# - Handles one-time setup and upgrades via sudo hint
+# - Test overrides via APEX_CLI_NPM_TEST env (fake Standalone / platform dirs)
+set -eu
+
+# Resolve absolute path of this launcher (follow symlink if needed)
+launcher="$0"
+# If $0 is not absolute, make it absolute relative to PWD
+case "$launcher" in
+  /*) abs_launcher="$launcher" ;;
+  *) abs_launcher="$(pwd)/$launcher" ;;
+esac
+# Resolve symlink if readlink available
+if command -v readlink >/dev/null 2>&1; then
+  # BSD readlink -f not available, loop resolving
+  real="$abs_launcher"
+  # limit loops
+  i=0
+  while [ -L "$real" ] && [ $i -lt 10 ]; do
+    link=$(readlink "$real" 2>/dev/null || true)
+    case "$link" in
+      /*) real="$link" ;;
+      *) real="$(dirname "$real")/$link" ;;
+    esac
+    i=$((i+1))
+  done
+  abs_launcher="$real"
+fi
+# Canonicalize to remove ., .. and extra slashes (no symlink re-resolution)
+abs_launcher=$(/usr/bin/python3 -I - "$abs_launcher" <<'PY' 2>/dev/null || echo "$abs_launcher"
+import os,sys
+p=sys.argv[1]
+try:
+  # normpath removes ../ without resolving symlinks beyond what we already did
+  print(os.path.normpath(p))
+except:
+  print(p)
+PY
+)
+
+# Determine platform package directory
+# In production: sibling ../cli-darwin-arm64 or node_modules
+find_platform_dir() {
+  # Test override
+  if [ -n "${APEX_CLI_NPM_TEST:-}" ] && [ -n "${APEX_CLI_NPM_TEST_PLATFORM:-}" ]; then
+    if [ -d "$APEX_CLI_NPM_TEST_PLATFORM" ]; then
+      echo "$APEX_CLI_NPM_TEST_PLATFORM"
+      return 0
+    fi
+  fi
+  # Candidates relative to this file
+  base=$(dirname "$(dirname "$abs_launcher")") # @apex-deck/cli root
+  # 1. sibling package @apex-deck/cli-darwin-arm64 at same node_modules level
+  #    e.g. /opt/homebrew/lib/node_modules/@apex-deck/cli -> ../cli-darwin-arm64
+  cand="$base/../cli-darwin-arm64"
+  if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
+  # 2. nested optional dep: <cli>/node_modules/@apex-deck/cli-darwin-arm64
+  cand="$base/node_modules/@apex-deck/cli-darwin-arm64"
+  if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
+  # 3. global: resolve via npm root -g ? Try common global locations
+  #    Walk up from launcher to find node_modules containing platform
+  dir=$(dirname "$abs_launcher")
+  while [ "$dir" != "/" ] && [ "$dir" != "." ]; do
+    cand="$dir/@apex-deck/cli-darwin-arm64"
+    if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
+    cand="$dir/node_modules/@apex-deck/cli-darwin-arm64"
+    if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
+    dir=$(dirname "$dir")
+  done
+  # 4. Relative to CWD if running from repo
+  cand="$(pwd)/npm/cli-darwin-arm64"
+  if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
+  cand="$(pwd)/../cli-darwin-arm64"
+  if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
+  return 1
+}
+
+platform_dir=""
+if ! platform_dir=$(find_platform_dir); then
+  echo "Apex CLI platform package not found. Reinstall with: npm i -g @apex-deck/cli" >&2
+  echo "Looked for @apex-deck/cli-darwin-arm64 alongside $(dirname "$abs_launcher")" >&2
+  exit 1
+fi
+
+# Standalone root (test override)
+if [ -n "${APEX_CLI_NPM_TEST:-}" ] && [ -n "${APEX_CLI_NPM_TEST_STANDALONE:-}" ]; then
+  prov_root="$APEX_CLI_NPM_TEST_STANDALONE"
+else
+  prov_root="/Library/Application Support/Apex Deck Provenance"
+fi
+standalone_root="$prov_root/Standalone"
+installed_manifest="$standalone_root/manifest.json"
+package_manifest="$platform_dir/manifest.json"
+
+version_from_manifest() {
+  # $1 path
+  /usr/bin/python3 -I - "$1" <<'PY'
+import json,sys
+try:
+  with open(sys.argv[1]) as f: print(json.load(f).get('version',''))
+except Exception: print('')
+PY
+}
+
+compare_versions() {
+  # echo newer/older/same
+  /usr/bin/python3 -I - "$1" "$2" <<'PY'
+import sys
+old,new=sys.argv[1],sys.argv[2]
+def parts(v):
+  base=v.split('-')[0]
+  p=[]
+  for x in base.split('.'):
+    try: p.append(int(x))
+    except: p.append(0)
+  while len(p)<3: p.append(0)
+  return p
+if old==new:
+  print('same'); sys.exit(0)
+op=parts(old); np=parts(new)
+if np<op:
+  print('older'); sys.exit(0)
+if np==op:
+  old_pre='-' in old; new_pre='-' in new
+  if not old_pre and new_pre:
+    print('older'); sys.exit(0)
+print('newer')
+PY
+}
+
+# Root actions: setup / uninstall
+if [ "$(id -u)" = "0" ]; then
+  case "${1:-}" in
+    setup)
+      # Must be root, platform dir contains installer
+      if [ ! -f "$platform_dir/install-cli-provenance.sh" ]; then
+        echo "Platform installer not found in $platform_dir" >&2; exit 1
+      fi
+      exec /bin/bash "$platform_dir/install-cli-provenance.sh" --no-path-link "$platform_dir"
+      ;;
+    uninstall)
+      if [ ! -f "$platform_dir/install-cli-provenance.sh" ]; then
+        # Fallback to system installer if platform missing? Use platform dir if present else try standalone
+        echo "Platform installer not found, trying system uninstall..." >&2
+        if [ -f "/Library/Application Support/Apex Deck Provenance/Standalone/install-cli-provenance.sh" ]; then
+          exec /bin/bash "/Library/Application Support/Apex Deck Provenance/Standalone/install-cli-provenance.sh" --uninstall --no-path-link
+        fi
+        echo "Installer not found for uninstall." >&2; exit 1
+      fi
+      exec /bin/bash "$platform_dir/install-cli-provenance.sh" --uninstall --no-path-link "$platform_dir"
+      ;;
+  esac
+fi
+
+# Normal user path
+# If apex binary in standalone is missing
+if [ ! -f "$standalone_root/apex" ] || [ ! -f "$installed_manifest" ]; then
+  echo "One-time setup needs your admin password:" >&2
+  echo "  sudo \"$abs_launcher\" setup" >&2
+  echo "" >&2
+  echo "This copies the signed Apex binaries to $prov_root and pins their identities." >&2
+  echo "Your chats and agents are shared with Apex Deck and remain after setup." >&2
+  exit 1
+fi
+
+installed_version=$(version_from_manifest "$installed_manifest")
+package_version=$(version_from_manifest "$package_manifest")
+
+if [ -z "$installed_version" ]; then installed_version="unknown"; fi
+if [ -z "$package_version" ]; then package_version="unknown"; fi
+
+manifests_match() {
+  # Compare file hashes from manifest.json, not just version string.
+  # A rebuilt package keeps same version but changes hashes.
+  /usr/bin/python3 -I - "$1" "$2" <<'PY'
+import json,sys
+try:
+  with open(sys.argv[1]) as f: a=json.load(f)
+  with open(sys.argv[2]) as f: b=json.load(f)
+  fa={x['name']:x['sha256'] for x in a.get('files',[])}
+  fb={x['name']:x['sha256'] for x in b.get('files',[])}
+  sys.exit(0 if fa==fb and fa else 1)
+except Exception:
+  sys.exit(1)
+PY
+}
+
+needs_setup=0
+if [ "$installed_version" != "$package_version" ]; then
+  needs_setup=1
+  cmp=$(compare_versions "$installed_version" "$package_version")
+  if [ "$cmp" = "older" ]; then
+    echo "Installed Apex is newer than this npm package ($installed_version vs $package_version)." >&2
+    echo "Update the npm package: npm i -g @apex-deck/cli@latest" >&2
+    echo "Or to remove: sudo \"$abs_launcher\" uninstall" >&2
+    exit 1
+  fi
+else
+  # Same version string but different build? Compare file fingerprints.
+  if ! manifests_match "$installed_manifest" "$package_manifest"; then
+    needs_setup=1
+  fi
+fi
+
+if [ $needs_setup -eq 1 ]; then
+  if [ "$installed_version" = "$package_version" ]; then
+    echo "Apex CLI update available: a newer build of $installed_version is available" >&2
+  else
+    echo "Apex CLI update available: $installed_version → $package_version" >&2
+  fi
+  echo "One-time update needs your admin password:" >&2
+  echo "  sudo \"$abs_launcher\" setup" >&2
+  exit 1
+fi
+
+# Version and build match, exec trusted binary
+exec "$standalone_root/apex" "$@"

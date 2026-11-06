@@ -1,26 +1,30 @@
 import { useEffect, useRef, useState } from "react";
+import { browserCaller } from "./browserTabs.ts";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import type { Backend, HostEntry } from "./backend";
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type AssistantLook } from "./assistantIdentity.ts";
 import { ASSISTANT_FOLDER, ASSISTANT_PROFILE, linkThisMacOn, requestId, runMachineBridge } from "./personalAssistant.ts";
 import type { AssistantProjectBinding } from "./assistantIdentity.ts";
-import type { PersonalTask } from "./personalAssistant.ts";
+import type { PersonalTask, PersonalTodo } from "./personalAssistant.ts";
 import type { PersonalAssistantRecord, PersonalLane, PersonalSettings, ConnectorState, BrowserView, BrowserInput } from "./personalAssistant.ts";
 import { unsupported as unsupportedCommand } from "./threadMove.ts";
 import { createProjectMemoryClient, PROJECT_MEMORY_CAPABILITY } from "./projectMemory.ts";
 
+import type { PersonalViewContext } from "./assistantViewContext.ts";
 export type PersonalAssistantsOptions = {
   hosts: Pick<HostEntry, "id" | "name" | "remote">[];
   hostBackend: (routeHostId: string) => Backend;
   offlineHost: (routeHostId: string) => boolean;
   open?: boolean; device?: string; bridge?: boolean;
   onOpen?: (ref: AssistantRef | null) => void;
+  viewContext?: (routeHostId: string, hostId: string, owner: AssistantRef) => PersonalViewContext | undefined;
+  currentThread?: (routeHostId: string, hostId: string, owner: AssistantRef) => PersonalLane["currentThread"];
   storage?: Pick<Storage, "getItem" | "setItem">;
 };
 export type PersonalAssistantSummary = {
   ref: AssistantRef; name: string; hostName: string; look?: AssistantLook;
   offline: boolean; revision: number; archivedAt?:number; lastSeen: number; legacy?: PersonalAssistantRecord["legacy"];
-  paused: boolean; personalTasks: PersonalTask[]; projects: AssistantProjectBinding[];
+  paused: boolean; personalTasks: PersonalTask[]; taskManagerTodos?: PersonalTodo[]; schedules?: PersonalAssistantRecord["schedules"]; projects: AssistantProjectBinding[];
   /** Its service is this Mac's, so restarting that service stops its work. */
   onThisMac: boolean; events: NonNullable<PersonalAssistantRecord["events"]>;
 };
@@ -101,7 +105,7 @@ export class PersonalAssistantsCollection {
         || this.hosts.get(row.routeHostId)?.state === "error" || this.hosts.get(row.routeHostId)?.state === "unsupported";
     } catch { return true; }
   }
-  private summary(row:Row):PersonalAssistantSummary { return {ref:{...row.ref},name:row.assistant.name,legacy:row.assistant.legacy,look:row.assistant.look,revision:row.assistant.revision,archivedAt:row.assistant.archivedAt,hostName:this.hosts.get(row.routeHostId)?.name??row.routeHostId,offline:this.offline(row),paused:!!row.assistant.paused,personalTasks:row.assistant.tasks,projects:row.assistant.projects??[],onThisMac:this.options.hosts.some(h=>h.id===row.routeHostId&&!h.remote),events:row.assistant.events??[],lastSeen:row.lastSeen}; }
+  private summary(row:Row):PersonalAssistantSummary { return {ref:{...row.ref},name:row.assistant.name,legacy:row.assistant.legacy,look:row.assistant.look,revision:row.assistant.revision,archivedAt:row.assistant.archivedAt,hostName:this.hosts.get(row.routeHostId)?.name??row.routeHostId,offline:this.offline(row),paused:!!row.assistant.paused,personalTasks:row.assistant.tasks,taskManagerTodos:row.assistant.taskManagerTodos,schedules:row.assistant.schedules,projects:row.assistant.projects??[],onThisMac:this.options.hosts.some(h=>h.id===row.routeHostId&&!h.remote),events:row.assistant.events??[],lastSeen:row.lastSeen}; }
   snapshot = () => ({
     assistants: [...this.rows.values()].filter(row=>row.assistant.archivedAt==null).map(row=>this.summary(row)),
     archivedAssistants: [...this.rows.values()].filter(row=>row.assistant.archivedAt!=null).map(row=>this.summary(row)),
@@ -201,12 +205,34 @@ export class PersonalAssistantsCollection {
         if (!this.rows.get(key)?.assistant.projects?.some(binding => projectIdentityKey(binding.project) === identity)) throw new Error("This project is no longer assigned to this assistant. Refresh its projects before reading memory.");
       },
     });
+    const sendContext = () => {
+      if (route.supports?.("assistant_live_context_v1") !== true) return {};
+      const value = this.options.viewContext?.(row.routeHostId, row.ref.hostId,row.ref);
+      if (!value || value.hostId !== row.ref.hostId) return {};
+      return { viewContext: { hostId: value.hostId, focusedThreadId: value.focusedThreadId, openThreadIds: [...value.openThreadIds].slice(0, 64), ...(value.followedThreadIds?{followedThreadIds:[...value.followedThreadIds].slice(0,64)}:{}) } };
+    };
+    const view = this.options.viewContext?.(row.routeHostId,row.ref.hostId,row.ref);
+    const currentThread = this.options.currentThread?.(row.routeHostId,row.ref.hostId,row.ref);
+    const permittedThread = view?.hostId === row.ref.hostId && view.focusedThreadId === currentThread?.id && row.assistant.projects?.some(binding =>
+      binding.tools !== "off" && binding.project.hostId === currentThread?.project?.hostId && binding.project.cwd === currentThread.project.cwd);
     return {
       ref: { ...row.ref }, draftKey: key, attachmentKey: key,
+      currentThread: permittedThread && currentThread ? {...currentThread,project:currentThread.project && {...currentThread.project}} : undefined,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
-      send: text => after("personal_send", { requestId: request(), text }),
+      send: text => after("personal_send", { requestId: request(), text, ...sendContext() }),
+      handoffSelect: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : async (draft, selection) => {
+        const result = await call<import('./personalAssistant').HandoffSelectReceipt>("personal_handoff_select", {assistantId: need(), requestId: request(), draftId: draft.id, expectedDraftRevision: draft.revision, slot: draft.missing, selection});
+        need(); await this.refresh(); return result;
+      },
+      handoffOptions: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : draftId => call("personal_handoff_options", {assistantId: need(), draftId}),
+      handoffQuestion: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : taskId => call("personal_handoff_question", {assistantId: need(), taskId}),
+      handoffControl: route.supports?.("assistant_conversation_handoff_v1") !== true ? undefined : async input => {
+        const result = await call<import('./personalAssistant').HandoffControlReceipt>("personal_handoff_control", {assistantId: need(), requestId: request(), ...input});
+        if (result.taskId !== input.taskId) throw new Error("The host returned a control for a different task.");
+        need(); await this.refresh(); return result;
+      },
       sendRequest: route.supports?.("assistant_voice_v1") !== true ? undefined : async (text, requestId) => {
-        const result = await afterResult("personal_send", { requestId, text });
+        const result = await afterResult("personal_send", { requestId, text, ...sendContext() });
         if (!result.eventId) throw new Error("The host did not return the reply identity.");
         return {eventId: result.eventId};
       },
@@ -223,15 +249,22 @@ export class PersonalAssistantsCollection {
       },
       saveAttachment: (name, bytes) => attachment(() => route.saveAttachment(need(), name, bytes)),
       pickFolder: async () => { need(); const path = await route.pickFolder(); if (!path) return null; return attachment(() => route.copyAttachment(need(), path)); },
+      approvalOptions: route.supports?.("assistant_approval_grants_v1") !== true ? undefined : async (decisionId,paramsHash) => {
+        const result=await call<import("./personalAssistant.ts").PersonalApprovalOptions>("personal_approval_options",{assistantId:need(),decisionId,paramsHash});need();
+        if(result.decisionId!==decisionId||result.paramsHash!==paramsHash)throw new Error("The host returned a different approval.");return result;
+      },
+      decideAlways: route.supports?.("assistant_approval_grants_v1") !== true ? undefined : (options,scope) => after("personal_decide_always",{requestId:request(),decisionId:options.decisionId,paramsHash:options.paramsHash,expectedRevision:options.permissionRevision,capability:options.capability,scope}),
       decide: (decisionId, paramsHash, approve) => after("personal_decide", { requestId: request(), decisionId, paramsHash, approve }),
       cancel: taskId => after("personal_cancel", { requestId: request(), taskId }),
       pause: paused => after("personal_pause", { requestId: request(), paused }),
+      newConversation: () => after("personal_conversation_new", {}),
       configure: settings => { this.legacySettings(settings); return after("personal_configure", { settings }); },
       configureWorkspace: route.supports?.("assistant_workspace_v4") !== true ? undefined : configuration => {
         if (route.supports?.("assistant_workspace_v4") !== true) throw new Error("This machine no longer supports workspace settings. Reconnect and refresh.");
         if (!Number.isSafeInteger(configuration.expectedRevision) || configuration.expectedRevision < 0) throw new Error("Workspace settings require the editor's saved revision.");
         return afterResult("personal_workspace_configure", { ...configuration }).then(result=>result.assistant);
       },
+      setPermission: route.supports?.("assistant_permissions_v1") === true ? (capability, scope, mode, delegate) => after("personal_permission_set", { expectedRevision: row.assistant.permissions?.revision ?? 0, capability, scope, mode, delegate }) : undefined,
       addRule: (text, cls, mode) => after("personal_rule_add", { text, class: cls, mode }),
       removeRule: ruleId => after("personal_rule_remove", { ruleId }),
       remember: text => after("personal_memory_add", { text, ...memoryRevision() }),
@@ -260,9 +293,10 @@ export class PersonalAssistantsCollection {
       connectors: () => call<ConnectorState[]>("personal_connectors"),
       saveKey: async (name, value) => { await call("api_key_save", { name, key: value }); },
       removeKey: async name => { await call("api_key_remove", { name }); },
-      browserView: () => call<BrowserView>("personal_browser_view"),
-      browserTakeOver: on => call<BrowserView>("personal_browser_take_over", { on }),
-      browserInput: (input: BrowserInput) => call<BrowserView>("personal_browser_input", { input }),
+      browserView: () => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_view"),
+      browserTakeOver: on => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_take_over", { on }),
+      browserInput: (input: BrowserInput) => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_input", { input }),
+      browserCall: call as NonNullable<PersonalLane["browserCall"]>,
     };
   };
   /** Legacy configure denies unknown fields. V4 runtime/projects require negotiated support and its separate API. */

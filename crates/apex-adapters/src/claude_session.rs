@@ -18,7 +18,7 @@
 use std::time::{Duration, Instant};
 
 use apex_core::{
-    Access, ActionKind, Answer, Approver, Decision, Progress, ProgressSink, ProposedAction,
+    Access, ActionKind, Answer, Approver, Decision, PlanAnswer, Progress, ProgressSink, ProposedAction,
     Question, QuestionOption,
 };
 use serde_json::{json, Value};
@@ -112,6 +112,7 @@ pub(crate) fn plan_exit_response(
     input: &Value,
     decision: Decision,
     own: Access,
+    note: Option<&str>,
 ) -> Value {
     let mode = match own {
         Access::Full => Some("bypassPermissions"),
@@ -125,7 +126,15 @@ pub(crate) fn plan_exit_response(
         }
         (true, Some(mode)) => json!({
             "behavior": "allow",
-            "updatedInput": input,
+            "updatedInput": match note {
+                // Claude shows the model the edited plan, so the note rides there.
+                Some(note) => {
+                    let mut edited = input.clone();
+                    edited["plan"] = json!(format!("{}\n\n{note}", input["plan"].as_str().unwrap_or("")));
+                    edited
+                }
+                None => input.clone(),
+            },
             "updatedPermissions": [{ "type": "setMode", "mode": mode, "destination": "session" }],
         }),
         (false, Some(_)) => {
@@ -203,8 +212,9 @@ pub(crate) async fn run_with_policy(
 // Eight parts of one turn. A struct would be assembled at every call site and
 // taken apart again here, and the call sites read better as a flat list.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn run_with_images(
-    mut child: OwnedChild,
+    child: OwnedChild,
     prompt: &str,
     cwd: Option<String>,
     on_progress: ProgressSink<'_>,
@@ -212,6 +222,15 @@ pub(crate) async fn run_with_images(
     after_plan: Option<Access>,
     tools_disabled: bool,
     images: &[crate::attachments::Image],
+) -> std::io::Result<Finished> {
+    run_with_computer(child,prompt,cwd,on_progress,approver,after_plan,tools_disabled,images,false).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_with_computer(
+    mut child: OwnedChild, prompt: &str, cwd: Option<String>, on_progress: ProgressSink<'_>,
+    approver: &dyn Approver, after_plan: Option<Access>, tools_disabled: bool,
+    images: &[crate::attachments::Image], trusted_computer: bool,
 ) -> std::io::Result<Finished> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -278,9 +297,12 @@ pub(crate) async fn run_with_images(
                 // mode, Full included (probed 2026-10-06). The questions go
                 // out raw; the room cleans them for display, and the answers
                 // come back matched by position.
-                let reply = if tools_disabled && request["subtype"] == "can_use_tool" {
+                // A trusted computer call is the one exception to a tool-free turn.
+                let computer_call = trusted_computer && request["subtype"] == "can_use_tool"
+                    && request["tool_name"].as_str().and_then(crate::mcp::claude_tool).is_some_and(|(server, _)| server == crate::computer::SERVER);
+                let reply = if tools_disabled && !computer_call && request["subtype"] == "can_use_tool" {
                     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": message["request_id"], "response": { "behavior": "deny", "message": "This turn is configured without tools." } } })
-                } else if tools_disabled {
+                } else if tools_disabled && !computer_call {
                     json!({ "type": "control_response", "response": { "subtype": "error", "request_id": message["request_id"], "error": "This turn is configured without tools or control requests." } })
                 } else if request["subtype"] == "can_use_tool"
                     && request["tool_name"] == "AskUserQuestion"
@@ -294,13 +316,13 @@ pub(crate) async fn run_with_images(
                 ) {
                     // Started by the Plan switch: Claude has a plan and asks
                     // to start the work. A read-only bot is refused unasked.
-                    let decision = if own == Access::Read {
-                        Decision::Reject
+                    let answer = if own == Access::Read {
+                        PlanAnswer { decision: Decision::Reject, note: None }
                     } else {
                         let plan = request["input"]["plan"].as_str().unwrap_or("").to_string();
                         on_progress(Progress::Activity("Waiting for you: start the work?"));
                         approver
-                            .decide(ProposedAction {
+                            .decide_plan(ProposedAction {
                                 kind: ActionKind::Plan,
                                 title: "Start the work?".into(),
                                 detail: plan,
@@ -309,11 +331,12 @@ pub(crate) async fn run_with_images(
                             })
                             .await
                     };
-                    plan_exit_response(&message["request_id"], &request["input"], decision, own)
+                    plan_exit_response(&message["request_id"], &request["input"], answer.decision, own, answer.note.as_deref())
                 } else if request["subtype"] == "can_use_tool" {
                     let tool = request["tool_name"].as_str().unwrap_or("a tool");
                     let action = reader.claude_action(tool, &request["input"]);
                     let decision = match crate::mcp::claude_tool(tool) {
+                        Some(("apex-computer", _)) if trusted_computer => Decision::Approve,
                         Some((_, name)) if !crate::mcp::needs_approval(name) => Decision::Approve,
                         _ => {
                             on_progress(Progress::Activity(&format!(
@@ -369,6 +392,94 @@ pub async fn list_servers(
     cwd: Option<String>,
     path: Option<String>,
 ) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    if crate::linux_jail::should_jail(apex_core::Access::Read) {
+        let bwrap = crate::gateway_sandbox::find_bwrap(path.as_deref());
+        match crate::linux_jail::state(bwrap.as_deref()) {
+            crate::linux_jail::JailState::Fails(reason) => {
+                return Err(format!("Couldn't list Claude tool servers: {reason}"));
+            }
+            crate::linux_jail::JailState::Works => {}
+        }
+        let _bwrap = bwrap.ok_or_else(|| {
+            format!("Couldn't list Claude tool servers: {}: it isn't installed", crate::linux_jail::probe::NEEDS_ADMIN)
+        })?;
+        #[cfg(target_os = "linux")]
+        {
+            let cwd_path = cwd.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let data_dir = home.join(".local/share/apex-deck");
+            let path_os = path.as_ref().map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+            let program = crate::executable::program("claude", path.as_deref());
+            let backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: None };
+
+            let run_jailed = |args: &[&str]| {
+                let spec = crate::linux_jail::build_spec(
+                    std::path::Path::new(&program),
+                    &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    &cwd_path,
+                    apex_core::Access::Read,
+                    Some(&backend),
+                    &home,
+                    &data_dir,
+                    "discovery",
+                    "claude",
+                    &path_os,
+                    &[],
+                    &[],
+                );
+                let bwrap = _bwrap.clone();
+                async move {
+                    let spec = spec.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    let registry = crate::owned_process::Registry::default();
+                    let mut jailed = crate::linux_jail::launch::jailed_command(&spec, &bwrap)
+                        .map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    jailed.command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+                    let (mut child, control) = jailed.spawn(&registry)
+                        .map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    let net = std::sync::Arc::new(crate::linux_jail::proxy::Internet::default());
+                    let purposes = std::sync::Arc::new(crate::linux_jail::DaemonPurposes::new(net));
+                    tokio::spawn(crate::linux_jail::channel::serve(control, purposes));
+                    let mut stdout = child.stdout.take().unwrap();
+                    let mut stderr = child.stderr.take().unwrap();
+                    let mut out = Vec::new();
+                    let mut err = Vec::new();
+                    let (status, _, _) = tokio::join!(
+                        child.wait(),
+                        tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut out),
+                        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut err),
+                    );
+                    let status = status.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+                    Ok::<std::process::Output, String>(std::process::Output { status, stdout: out, stderr: err })
+                }
+            };
+
+            let (servers, plugins) = tokio::join!(
+                run_jailed(&["mcp", "list"]),
+                tokio::time::timeout(Duration::from_secs(15), run_jailed(&["plugin", "list", "--json"]))
+            );
+            let output = servers.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+            if !output.status.success() {
+                return Err("Couldn't list Claude tool servers".into());
+            }
+            let mut entries: Vec<apex_core::server_request::ToolServer> =
+                crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout))
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
+            let plugins = plugins.ok().and_then(Result::ok).filter(|o| o.status.success()).map(|o| {
+                crate::mcp::claude_plugins(&String::from_utf8_lossy(&o.stdout), cwd.as_deref())
+            });
+            for name in plugins.unwrap_or_default() {
+                let entry = apex_core::server_request::ToolServer::from(name);
+                if !entries.iter().any(|known| known.token == entry.token) {
+                    entries.push(entry);
+                }
+            }
+            return Ok(entries);
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("Couldn't list Claude tool servers: Linux bot jail is only available on Linux".into());
+    }
     let claude = |args: &[&str]| {
         let mut command = tokio::process::Command::new(crate::executable::program("claude", path.as_deref()));
         if let Some(path) = &path {
@@ -413,10 +524,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plan_exit_allow_carries_the_note_as_probed() {
+        let input = json!({"plan": "1. A\n2. B", "other": 1});
+        let r = plan_exit_response(&json!("p1"), &input, Decision::Approve, Access::Full, Some("Do NOT do step 2"))["response"]["response"].clone();
+        assert_eq!(r["behavior"], "allow");
+        assert_eq!(r["updatedInput"]["plan"], "1. A\n2. B\n\nDo NOT do step 2");
+        assert_eq!(r["updatedInput"]["other"], 1);
+    }
+
+    #[test]
+    fn plan_exit_without_note_is_unchanged() {
+        let input = json!({"plan": "1. A"});
+        let r = plan_exit_response(&json!("p1"), &input, Decision::Approve, Access::Edits, None)["response"]["response"].clone();
+        assert_eq!(r["updatedInput"], input);
+    }
+
+    #[test]
     fn starting_the_work_hands_back_the_bots_own_access() {
         let input = json!({"plan": "1. Do it"});
         let response = |decision, own| {
-            plan_exit_response(&json!("p1"), &input, decision, own)["response"]["response"].clone()
+            plan_exit_response(&json!("p1"), &input, decision, own, None)["response"]["response"].clone()
         };
         let mode = |own| response(Decision::Approve, own)["updatedPermissions"][0]["mode"].clone();
         assert_eq!(

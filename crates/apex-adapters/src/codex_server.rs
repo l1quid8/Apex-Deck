@@ -68,6 +68,7 @@ pub(crate) struct Turn<'a> {
     pub plan: bool,
     pub mcp_disabled: bool,
     pub tools_disabled: bool,
+    pub trusted_computer: bool,
 }
 
 /// Why a turn through the app server did not produce a reply.
@@ -236,6 +237,9 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
     let message = params["message"]
         .as_str()
         .filter(|text| !text.trim().is_empty())?;
+    if crate::mcp::is_computer_server(server) {
+        return Some(ProposedAction {kind:ActionKind::Other,title:"Unified Computer Use asks permission".into(),detail:String::new(),expires_at:None,risky:high_risk(params)});
+    }
     let detail = match app {
         Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
         None => message.to_string(),
@@ -403,9 +407,9 @@ async fn mcp_inventory(
 
 /// Disabled servers can remain in the status response, but none may expose
 /// tools or resources. Missing or unknown inventory shapes fail closed.
-fn isolated_mcp_inventory(servers: &[Value]) -> bool {
+fn isolated_mcp_inventory(servers: &[Value], computer: bool) -> bool {
     servers.iter().all(|server| {
-        server["tools"].as_object().is_some_and(|tools| tools.is_empty())
+        (computer && server["name"].as_str() == Some(crate::computer::SERVER)) || server["tools"].as_object().is_some_and(|tools| tools.is_empty())
             && ["resources", "resourceTemplates"].iter().all(|field| {
                 server.get(*field).is_some_and(|value| value.as_array().is_some_and(|values| values.is_empty()))
             })
@@ -421,7 +425,11 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
         "ephemeral": true,
     });
     if turn.tools_disabled {
-        params["developerInstructions"] = json!("Answer as the assistant defined in the supplied conversation. This is a text-only conversation: no tools or subagents are available. Task execution belongs to the host approval workflow.");
+        params["developerInstructions"] = json!(if turn.trusted_computer {
+            "Answer as the assistant defined in the supplied conversation. The only tools here are the apex-computer MCP tools; no shell, file, web or subagent tools are available. Other task execution belongs to the host approval workflow."
+        } else {
+            "Answer as the assistant defined in the supplied conversation. This is a text-only conversation: no tools or subagents are available. Task execution belongs to the host approval workflow."
+        });
     }
     if let Some(tier) = turn.service_tier {
         params["serviceTier"] = json!(tier);
@@ -655,7 +663,7 @@ pub(crate) async fn run_with_images(
         let (policy, menu, catalog) = mcp_inventory(&mut stdin, &mut lines, turn.mcp_disabled)
             .await
             .map_err(TurnError::Failed)?;
-        if turn.mcp_disabled && !isolated_mcp_inventory(&catalog) {
+        if turn.mcp_disabled && !isolated_mcp_inventory(&catalog, turn.trusted_computer) {
             return Err(TurnError::Failed("Codex still exposes MCP servers after isolation; gateway turn refused.".into()));
         }
         tool_catalog = catalog;
@@ -707,7 +715,7 @@ pub(crate) async fn run_with_images(
     let mut reader = EventReader::new(OutputFormat::CodexServer, turn.cwd.clone());
     reader.own_thread(thread);
     let mut pending_mcp = HashMap::new();
-    let mut gates = Gates::default();
+    let mut gates = Gates::default().with_computer(turn.trusted_computer);
     let mut listening = hook;
     // Set once the reply is written but helper agents it started are still
     // working. The server must stay open for them to finish, and then a
@@ -783,7 +791,8 @@ pub(crate) async fn run_with_images(
         };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
             let item = &message["params"]["item"];
-            if turn.tools_disabled && message["method"] == "item/started" && !matches!(item["type"].as_str(),Some("userMessage"|"agentMessage"|"reasoning"|"contextCompaction")) {
+            let computer_item = turn.trusted_computer && item["type"] == "mcpToolCall" && item["server"].as_str() == Some(crate::computer::SERVER);
+            if turn.tools_disabled && !computer_item && message["method"] == "item/started" && !matches!(item["type"].as_str(),Some("userMessage"|"agentMessage"|"reasoning"|"contextCompaction")) {
                 return Err(TurnError::Failed("A tool was requested during a text-only assistant reply; the turn was stopped.".into()));
             }
             if message["method"] == "item/started" && item["type"] == "mcpToolCall" {
@@ -821,9 +830,13 @@ pub(crate) async fn run_with_images(
                         let params = &message["params"];
                         // Only the fields that decide which buttons the card shows.
                         let meta = &params["_meta"];
-                        eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
-                            params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
-                        let decision = if turn.mcp_disabled || params["threadId"] != thread {
+                        if params["serverName"].as_str().is_some_and(crate::mcp::is_computer_server) {
+                            eprintln!("[apex-deck] computer permission request (private content hidden)");
+                        } else {
+                            eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
+                                params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
+                        }
+                        let decision = if (turn.mcp_disabled && !turn.trusted_computer) || params["threadId"] != thread {
                             Decision::Reject
                         } else if let Some(action) = mcp_question(params) {
                             // App access is a separate decision even if its arguments
@@ -837,7 +850,9 @@ pub(crate) async fn run_with_images(
                             let catalog_approval = crate::mcp::catalog_approval(&tool_catalog, &call.server, &call.tool);
                             // High upstream risk and explicit mutating annotations must
                             // reach the person before either automatic or cached approval.
-                            let automatic = if high_risk(params) || catalog_approval == Some(true) {
+                            let automatic = if turn.trusted_computer && call.server == crate::computer::SERVER {
+                                Some(Decision::Approve)
+                            } else if high_risk(params) || catalog_approval == Some(true) {
                                 None
                             } else if catalog_approval == Some(false) {
                                 Some(Decision::Approve)
@@ -1094,6 +1109,69 @@ pub async fn list_servers(
     path: Option<String>,
 ) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
     use std::process::Stdio;
+    if crate::linux_jail::should_jail(apex_core::Access::Read) {
+        let bwrap = crate::gateway_sandbox::find_bwrap(path.as_deref());
+        match crate::linux_jail::state(bwrap.as_deref()) {
+            crate::linux_jail::JailState::Fails(reason) => {
+                return Err(format!("Couldn’t start codex for tool discovery: {reason}"));
+            }
+            crate::linux_jail::JailState::Works => {}
+        }
+        let _bwrap = bwrap.ok_or_else(|| {
+            format!("Couldn’t start codex for tool discovery: {}: it isn't installed", crate::linux_jail::probe::NEEDS_ADMIN)
+        })?;
+        #[cfg(target_os = "linux")]
+        {
+            let cwd_path = cwd.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let data_dir = home.join(".local/share/apex-deck");
+            let path_os = path.as_ref().map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+            let program = crate::executable::program("codex", path.as_deref());
+            let backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: None };
+            let args: Vec<String> = ARGS.iter().map(|s| s.to_string()).collect();
+
+            let spec = crate::linux_jail::build_spec(
+                std::path::Path::new(&program),
+                &args,
+                &cwd_path,
+                apex_core::Access::Read,
+                Some(&backend),
+                &home,
+                &data_dir,
+                "discovery",
+                "codex",
+                &path_os,
+                &[],
+                &[],
+            ).map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+
+            let registry = Registry::default();
+            let mut jailed = crate::linux_jail::launch::jailed_command(&spec, &_bwrap)
+                .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+            jailed.command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+            let (mut child, control) = jailed.spawn(&registry)
+                .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+            let net = std::sync::Arc::new(crate::linux_jail::proxy::Internet::default());
+            let purposes = std::sync::Arc::new(crate::linux_jail::DaemonPurposes::new(net));
+            tokio::spawn(crate::linux_jail::channel::serve(control, purposes));
+
+            let mut stdin = child.stdin.take().unwrap();
+            let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+            let result = async {
+                initialize(&mut stdin, &mut lines).await?;
+                mcp_inventory(&mut stdin, &mut lines, false)
+                    .await
+                    .and_then(|(_, names, _)| names)
+            }
+            .await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            child.terminate_tree().await?;
+            return result;
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("Couldn’t start codex for tool discovery: Linux bot jail is only available on Linux".into());
+    }
     let mut command = tokio::process::Command::new(crate::executable::program("codex", path.as_deref()));
     if let Some(path) = path {
         command.env("PATH", path);
@@ -1148,7 +1226,7 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: false };
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: false };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         match result {
             Ok(reply) => assert_eq!(reply.text, "Private MCP denied."),
@@ -1177,18 +1255,22 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, tools_disabled: true };
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: true };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         assert!(matches!(result,Err(TurnError::Failed(ref why)) if why.contains("tool was requested")),"assistant mode must stop unexpected tools before accepting any reply");
     }
 
     #[test]
     fn gateway_inventory_requires_no_tools_or_resources() {
-        assert!(super::isolated_mcp_inventory(&[]));
-        assert!(super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [], "resourceTemplates": []})]));
-        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {"post": {}}})]));
-        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [{}]})]));
-        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({})]));
+        assert!(super::isolated_mcp_inventory(&[], false));
+        assert!(super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [], "resourceTemplates": []})], false));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {"post": {}}})], false));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [{}]})], false));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({})], false));
+        let computer = serde_json::json!({"name": "apex-computer", "tools": {"read_screen": {}}});
+        assert!(!super::isolated_mcp_inventory(&[computer.clone()], false), "only a computer turn may expose it");
+        assert!(super::isolated_mcp_inventory(&[computer], true));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"name": "other", "tools": {"post": {}}})], true), "a computer turn exposes nothing else");
     }
 
     #[test]
@@ -1260,6 +1342,16 @@ cat > /dev/null"#;
     }
 
     use super::*;
+
+    #[test]
+    fn computer_elicitation_never_retains_server_supplied_content() {
+        for server in ["apex-computer","apex_computer"] {
+            let question=json!({"serverName":server,"message":"SCREEN_SECRET","requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"app_approval","riskLevel":"high"}});
+            let action=mcp_question(&question).unwrap();
+            assert!(action.detail.is_empty());assert!(action.risky);
+            assert!(!format!("{action:?}").contains("SCREEN_SECRET"));
+        }
+    }
 
     #[test]
     fn mcp_approval_binds_exact_arguments_and_rejects_ambiguous_or_unrelated_forms() {
@@ -1391,7 +1483,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
@@ -1405,7 +1497,7 @@ cat > /dev/null"#;
 
     #[test]
     fn thread_start_sends_the_service_tier_only_when_chosen() {
-        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, tools_disabled: false, plan: false };
+        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, trusted_computer: false, tools_disabled: false, plan: false };
         assert_eq!(thread_start(&turn)["params"]["serviceTier"], "priority");
         turn.service_tier = None;
         assert!(thread_start(&turn)["params"].get("serviceTier").is_none());
@@ -1419,7 +1511,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Edits,
             cwd: Some("/work".into()),
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1434,7 +1526,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Ask,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1447,7 +1539,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Read,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1460,7 +1552,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1576,7 +1668,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
-            mcp_disabled: false, tools_disabled: false,
+            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
             plan: false,
         };
         let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {

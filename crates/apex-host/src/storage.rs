@@ -65,11 +65,19 @@ pub struct ChatMovedTo {
 #[serde(rename_all = "camelCase")]
 pub struct ChatRoomMeta {
     #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_managed: bool,
+    #[serde(default)]
+    pub archive_managed: bool,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub updated_at: u64,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,12 +132,20 @@ fn crash_here(_: PromoteCrash) -> Result<(), String> { Ok(()) }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatListEntry {
+    #[serde(default)]
+    pub metadata_revision: u64,
+    #[serde(default)]
+    pub title_explicit: bool,
+    #[serde(default)]
+    pub archive_explicit: bool,
     pub id: String,
     pub kind: apex_core::RoomKind,
     pub title: String,
     pub participants: Vec<apex_core::ParticipantConfig>,
     pub updated_at: u64,
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trashed_at: Option<u64>,
     pub cwd: Option<String>,
     pub folder_name: Option<String>,
     pub promoted_from: Option<String>,
@@ -302,7 +318,84 @@ impl Store {
     }
 
     pub fn save_session(&self, session: &serde_json::Value) -> Result<(), String> {
-        self.write(&self.root.join("session.json"), session)
+        self.save_session_snapshot(session).map(|_| ())
+    }
+
+    /// Save desktop presentation state while protecting profiles edited by another client.
+    /// Return the accepted snapshot so events never echo stale profile data.
+    pub(crate) fn save_session_snapshot(&self, session: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut next = session.clone();
+        let fields = next.as_object_mut().ok_or("Saved session is not an object")?;
+        let current = self.session()?.unwrap_or(serde_json::json!({}));
+        let revision = current["profileRevision"].as_u64().unwrap_or(0);
+        let expected = fields.get("profileRevision").and_then(|v| v.as_u64()).unwrap_or(0);
+        let profiles_changed = expected == revision && fields.contains_key("profiles") && fields.get("profiles") != current.get("profiles");
+        if profiles_changed {
+            fields.insert("profileSavedBy".into(), fields.get("savedBy").cloned().unwrap_or(serde_json::Value::Null));
+        } else if let Some(source) = current.get("profileSavedBy") {
+            fields.insert("profileSavedBy".into(), source.clone());
+        } else {
+            fields.remove("profileSavedBy");
+        }
+        if expected != revision || !fields.contains_key("profiles") {
+            if let Some(profiles) = current.get("profiles") {
+                fields.insert("profiles".into(), profiles.clone());
+            } else {
+                fields.remove("profiles");
+            }
+        } else if fields.get("profiles") != current.get("profiles") {
+            fields.insert("profileRevision".into(), serde_json::json!(revision.checked_add(1).ok_or("Profile revision overflow")?));
+        }
+        // Even old clients which omit this field must preserve the concurrency token.
+        if !fields.contains_key("profileRevision") || expected != revision {
+            if revision > 0 || current.get("profileRevision").is_some() {
+                fields.insert("profileRevision".into(), serde_json::json!(revision));
+            } else {
+                fields.remove("profileRevision");
+            }
+        }
+        self.write_held(&self.root.join("session.json"), &next)?;
+        Ok(next)
+    }
+
+    /// Change only one profile under the same gate used by all session writers.
+    pub(crate) fn update_agent_profile(&self, profile: serde_json::Value, revision:u64, replace:bool) -> Result<serde_json::Value,String> {
+        let _guard=self.writes.lock().unwrap();
+        let mut session=self.session()?.unwrap_or(serde_json::json!({"version":1}));
+        let fields=session.as_object_mut().ok_or("Saved session is not an object")?;
+        let current=fields.get("profileRevision").and_then(|v|v.as_u64()).unwrap_or(0);
+        if current!=revision { return Err("Saved profiles changed; reopen /agents and try again".into()); }
+        let profiles=fields.entry("profiles").or_insert_with(||serde_json::json!([])).as_array_mut().ok_or("Saved profiles are malformed; refusing to replace them")?;
+        let id=profile["id"].as_str().ok_or("Missing agent handle")?;
+        let existing=profiles.iter().position(|p|p["id"].as_str().is_some_and(|s|s.eq_ignore_ascii_case(id)));
+        let parsed=serde_json::from_value::<apex_core::ParticipantConfig>(profile.clone()).map_err(|e|e.to_string())?;
+        let mention=apex_core::mention_for(&parsed);
+        for (index,saved) in profiles.iter().enumerate() {
+            if Some(index)==existing {continue;}
+            if serde_json::from_value::<apex_core::ParticipantConfig>(saved.clone()).ok().is_some_and(|saved|apex_core::mention_for(&saved)==mention) {
+                return Err(format!("A saved agent already answers to @{mention}; edit that agent or choose a different name"));
+            }
+        }
+        match (existing,replace) {
+            (Some(index),true)=>{
+                // CLI edits expose only this narrow set. Keep the desktop's
+                // immutable identity, appearance, voice and future metadata.
+                let saved=profiles[index].as_object_mut().ok_or("Saved agent is malformed")?;
+                for key in ["display_name","backend","persona","access"] {
+                    saved.insert(key.into(),profile[key].clone());
+                }
+            },
+            (Some(_),false)=>return Err("That agent handle is already saved".into()),
+            (None,true)=>return Err("Agent no longer exists; create it explicitly".into()),
+            (None,false)=>profiles.push(profile),
+        }
+        fields.insert("profileRevision".into(),serde_json::json!(current.checked_add(1).ok_or("Profile revision overflow")?));
+        // Do not inherit a desktop save tag: its renderer must apply these profiles.
+        fields.insert("savedBy".into(), serde_json::json!("agent-profile"));
+        fields.insert("profileSavedBy".into(), serde_json::json!("agent-profile"));
+        self.write_held(&self.root.join("session.json"),&session)?;
+        Ok(session)
     }
 
     /// App-wide settings, beside the session file. The host reads them as `documents::Settings`.
@@ -1001,12 +1094,13 @@ impl Store {
         let mut metas = self.chat_metas_held()?;
         let mut meta = metas.remove(id).unwrap_or_default();
         f(&mut meta);
+        meta.metadata_revision=meta.metadata_revision.checked_add(1).ok_or("Thread metadata revision exhausted.")?;
         metas.insert(id.into(), meta.clone());
         self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
         Ok(meta)
     }
 
-    /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
+    /// Every authority-validated saved chat or Work room. Catalog metadata is optional.
     pub fn chat_list(&self) -> Result<Vec<ChatListEntry>, String> {
         let metas = self.chat_metas_held()?;
         let authorities = self.room_authorities()?;
@@ -1040,9 +1134,6 @@ impl Store {
                 Ok(saved) => saved,
                 Err(_) => continue,
             };
-            if !saved.snapshot.kind.is_chat() && meta.is_none() {
-                continue;
-            }
             let meta = meta.unwrap_or_default();
             let last_msg_at = saved
                 .snapshot
@@ -1052,6 +1143,7 @@ impl Store {
                 .max()
                 .unwrap_or(0);
             let updated_at = meta.updated_at.max(last_msg_at);
+            let title_explicit=meta.title_managed&&!meta.title.trim().is_empty();
             let title = if meta.title.trim().is_empty() {
                 "New chat".to_string()
             } else {
@@ -1078,12 +1170,16 @@ impl Store {
                 })
                 .collect();
             out.push(ChatListEntry {
+                metadata_revision: meta.metadata_revision,
+                title_explicit,
+                archive_explicit: meta.archive_managed,
                 id,
                 kind: saved.snapshot.kind,
                 title,
                 participants,
                 updated_at,
                 archived: meta.archived,
+                trashed_at: meta.trashed_at,
                 cwd: saved.cwd,
                 folder_name,
                 promoted_from: meta.promoted_from,
@@ -1328,6 +1424,30 @@ mod tests {
         assert_eq!(std::fs::read(store.room_path("destination")).unwrap(), bytes);
         drop(host);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_list_includes_native_zero_bot_work_rooms_without_optional_metadata() {
+        let runtime=tokio::runtime::Runtime::new().unwrap();
+        let root=temp();
+        let cwd=root.join("project");std::fs::create_dir_all(&cwd).unwrap();
+        let cwd=cwd.canonicalize().unwrap().to_string_lossy().into_owned();
+        let host=crate::Host::new(crate::HostPaths{data:root.clone(),downloads:None},runtime.handle().clone());
+        let snapshot=host.room_create("native-work".into(),vec![],RoomOptions::default(),Some(cwd.clone())).unwrap();
+        assert_eq!(snapshot.kind,apex_core::RoomKind::Work);assert!(snapshot.participants.is_empty());
+        assert!(host.store().chat_meta("native-work").unwrap().is_none(),"normal native creation does not require catalog metadata");
+        let rows=host.store().chat_list().unwrap();
+        let row=rows.iter().find(|row|row.id=="native-work").expect("the native Work thread must be discoverable before naming it or adding bots");
+        assert_eq!(row.kind,apex_core::RoomKind::Work);assert_eq!(row.cwd.as_deref(),Some(cwd.as_str()));assert!(row.participants.is_empty());
+        assert!(!row.archived);assert!(row.trashed_at.is_none());assert!(!row.title_explicit);
+        host.chat_update_meta("native-work".into(),Some("Native work".into()),Some(true),None).unwrap();
+        host.room_set_trashed("native-work".into(),true).unwrap();
+        let row=host.store().chat_list().unwrap().into_iter().find(|row|row.id=="native-work").unwrap();
+        assert_eq!(row.title,"Native work");assert!(row.archived);assert!(row.trashed_at.is_some());
+        host.room_delete("native-work".into()).unwrap();
+        drop(host);drop(runtime);
+        // Native checkpoint workers may still be finishing in this temp fixture.
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]

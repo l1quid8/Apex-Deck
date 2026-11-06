@@ -462,7 +462,7 @@ index 3ba9d261..e6e4ada3 100644
                  if let Some(plan) = apex_adapters::plan_usage(tool, model.as_deref(), &context).await {
                      // The model rides along so a chat with two models of one
                      // provider shows each its own group.
-@@ -1061,7 +1068,8 @@ impl Host {
+@@ -1061,5 +1068,6 @@ impl Host {
              // changed while the thread was closed isn't this thread's work.
              let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.clone(), snapshot.transcript.len());
              let retired = Arc::clone(&deleted);
@@ -470,8 +470,6 @@ index 3ba9d261..e6e4ada3 100644
 +            let maintenance = self.maintenance.enter()?;
 +            std::thread::spawn(move || { let _maintenance = maintenance; let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
          }
-         self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
-         let stop = room.stop_handle();
 @@ -1269,6 +1277,7 @@ impl Host {
      }
  

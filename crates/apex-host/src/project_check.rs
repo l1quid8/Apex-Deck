@@ -102,7 +102,7 @@ pub async fn run_check_with_env(
 ) -> CheckResult {
     #[cfg(windows)]
     let mut command = {
-        let mut c = tokio::process::Command::new("cmd");
+        let mut c = crate::project_process::tokio_command_in("cmd", dir);
         // This is shell source, so C-runtime argument escaping would corrupt
         // embedded quotes. /S strips only the wrapper around the raw command.
         c.args(["/D", "/S", "/C"]).raw_arg(format!("\"{cmd}\""));
@@ -110,7 +110,7 @@ pub async fn run_check_with_env(
     };
     #[cfg(not(windows))]
     let mut command = {
-        let mut c = tokio::process::Command::new("sh");
+        let mut c = crate::project_process::tokio_command_in("sh", dir);
         c.args(["-c", cmd]);
         c
     };
@@ -397,7 +397,7 @@ mod tests {
         let repo = temp.path().join("repo");
         fs::create_dir_all(&repo).unwrap();
         let run_git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::project_process::git_command()
                 .args(args)
                 .current_dir(&repo)
                 .output()

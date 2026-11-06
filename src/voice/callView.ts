@@ -9,7 +9,7 @@ export const CALL_LOOKS: { id: CallLook; label: string }[] = [
 ];
 export const readCallLook = (raw: unknown): CallLook =>
   raw === "bar" || raw === "pill" || raw === "capsule" ? raw : DEFAULT_CALL_LOOK;
-export type WaveMode = "you" | "bot" | "dots" | "flat";
+export type WaveMode = "mic" | "you" | "bot" | "dots" | "muted" | "flat";
 /** `status` sits beside the bot's name; `hint` is a whole sentence for the chat box. */
 export type CallLine = {
   status: string;
@@ -35,7 +35,7 @@ export function callLine(state: VoiceState, name: string): CallLine {
     return line(
       `Muted · ${name} can still talk`,
       `You're muted · ${name} can still talk`,
-      state.status === "speaking" ? "bot" : "flat",
+      state.status === "speaking" ? "bot" : "muted",
       "muted",
     );
   switch (state.status) {
@@ -46,7 +46,7 @@ export function callLine(state: VoiceState, name: string): CallLine {
     case "speaking":
       return line("Talking · speak to interrupt", `${name} is talking · speak to interrupt`, "bot");
     default:
-      return line("Listening", "Listening… or type here", "flat");
+      return line("Listening", "Listening… or type here", "mic");
   }
 }
 /** The composer's one round button: the mic while the box is empty, Send once it has something.

@@ -262,7 +262,7 @@ impl Invites {
         invitations.retain(|_, i| i.live() || now < i.expires_at.saturating_add(LIFETIME_MS));
         let deadline = Instant::now() + Duration::from_millis(LIFETIME_MS);
         invitations.insert(inv, Invitation { secret, name: host.name.clone(), tier, threads, expires_at, deadline, bad_proofs: 0, state: State::Open });
-        Invite { v: 1, host: host.host, name: host.name, relay: host.relay, addrs: host.addrs, inv, secret, exp: expires_at / 1000 }
+        Invite { v: 1, host: host.host, name: host.name, relay: host.relay, addrs: host.addrs, inv, secret, exp: expires_at / 1000, os: std::env::consts::OS.into() }
     }
 
     /// The secret to check a phone's proof against, if the invitation can

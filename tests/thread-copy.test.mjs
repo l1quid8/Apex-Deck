@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lastReply, folderCopyText, writeClipboard, COPIED } from "../src/threadCopy.ts";
+import { lastReply, folderCopyText, COPIED } from "../src/threadCopy.ts";
 import { threadStatusOf } from "../src/composerStatus.ts";
 
 const msg = (seq, speaker, text) => ({ seq, speaker, text });
@@ -17,12 +17,7 @@ test("a server folder copies with its SSH destination; a Mac folder copies as is
   assert.equal(folderCopyText("", "root@hetzner-eu"), "");
 });
 
-test("a clipboard that refuses, or none at all, means nothing was copied", async () => {
-  const seen = [];
-  assert.equal(await writeClipboard("x", { writeText: async (t) => { seen.push(t); } }), true);
-  assert.deepEqual(seen, ["x"]);
-  assert.equal(await writeClipboard("x", { writeText: async () => { throw new Error("denied"); } }), false);
-  assert.equal(await writeClipboard("x", undefined), false);
+test("the copy labels name what was copied", () => {
   assert.equal(COPIED.markdown, "the thread as Markdown");
   assert.equal(COPIED.path, "the folder path");
 });

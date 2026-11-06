@@ -136,3 +136,22 @@ fn consumed_phone_claim_survives_signed_checkpoint_and_reload() {
     assert!(claim(&mut restarted, 9, command("room_answer"), true, false).is_err());
     assert!(claim(&mut restarted, 10, command("room_create"), true, false).is_ok());
 }
+
+#[test]
+fn task_manager_mutations_require_current_global_full_phone_authority() {
+    for name in ["project_task_lifecycle", "personal_todo", "personal_task_lifecycle"] {
+        let args=match name {
+            "project_task_lifecycle"=>json!({"taskId":"task-1","revision":3,"owner":{"hostId":"h","workspaceId":"p","cwd":"/p","conversationId":"m"},"action":"purge"}),
+            "personal_todo"=>json!({"assistantId":"a","expectedRevision":2,"action":"add","text":"Buy cable"}),
+            _=>json!({"assistantId":"a","expectedRevision":2,"action":"purge","tasks":[{"source":"personal","taskId":"pt-1"}]}),
+        };
+        let cmd=json!({"cmd":name,"args":args});
+        let mut j=Journal::new();
+        grant(&mut j,"chat",json!("all"),false);assert!(claim(&mut j,1,cmd.clone(),true,false).is_err());
+        grant(&mut j,"full",json!(["r"]),false);assert!(claim(&mut j,1,cmd.clone(),true,false).is_err());
+        grant(&mut j,"full",json!("all"),false);
+        let accepted=claim(&mut j,1,cmd.clone(),true,false).unwrap();assert_eq!(accepted["receipt"]["command"]["args"],args);
+        assert!(claim(&mut j,1,cmd.clone(),true,false).is_err());
+        grant(&mut j,"full",json!("all"),true);assert!(claim(&mut j,2,cmd,true,false).is_err());
+    }
+}

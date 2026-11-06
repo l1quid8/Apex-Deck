@@ -5,7 +5,7 @@ import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { FileEditor } from "./FileEditor";
 import { isDirty, saveErrorKind, saveErrorMessage, type EditablePreview } from "./fileEditorModel";
 import { pathBase } from "./paths";
-import { writeClipboard } from "./threadCopy";
+import { copyText } from "./copyText";
 
 /** One editing run for one file: the toolbar, the conflict bar and the editor. It owns the draft text. */
 export function FileEditSession({ root, path, backend, initial, onDirty, onDone, onSaved }: {
@@ -43,7 +43,7 @@ export function FileEditSession({ root, path, backend, initial, onDirty, onDone,
       setLoaded(fresh.text); setGeneration((value) => value + 1); setDraft(fresh.text); setSavedText(fresh.text); setVersion(fresh.version); setConflict(false); setProblem("");
     } catch (error) { setProblem(String(error)); }
   };
-  const copyMine = async () => { const ok = await writeClipboard(draft, navigator.clipboard); setStatus(ok ? "Copied your version" : "Clipboard unavailable"); window.setTimeout(() => setStatus(""), 1500); };
+  const copyMine = async () => { const ok = await copyText(draft); setStatus(ok ? "Copied your version" : "Clipboard unavailable"); window.setTimeout(() => setStatus(""), 1500); };
   const done = () => {
     if (!dirty) { onDone(); return; }
     setAsking({ title: `Discard unsaved changes to ${name}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: onDone });

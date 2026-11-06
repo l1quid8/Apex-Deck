@@ -36,7 +36,7 @@ test("sanitize limits, ignore prototype keys and malformed values", () => {
       y: { voice: 42, aliases: [] },
     },
   });
-  assert.equal(s.silenceMs, 100);
+  assert.equal(s.silenceMs, 700);
   assert.equal(s.preferences.x.aliases.length, 16);
   assert.equal(s.preferences.x.aliases[0].length, 64);
   assert.equal("voice" in s.preferences.y, false, "a bad saved voice falls through instead of pinning Michael");
@@ -88,4 +88,10 @@ test("GPT-Live keeps its own model and voice, apart from the local voices", () =
   assert.equal(readVoiceSettings({ realtimeModel: "gpt-4o" }).realtimeModel, undefined);
   assert.equal(readVoiceSettings({ realtimeModel: "gpt-realtime" }).defaultVoice, undefined);
   assert.ok(!CALL_VOICES.includes("verse"));
+});
+test("the pause default gives a natural pause room, and the old 100 ms default moves up with it", () => {
+  assert.equal(readVoiceSettings(undefined).silenceMs, 700);
+  assert.equal(readVoiceSettings({ silenceMs: 100 }).silenceMs, 700);
+  assert.equal(readVoiceSettings({ silenceMs: 150 }).silenceMs, 300);
+  assert.equal(readVoiceSettings({ silenceMs: 900 }).silenceMs, 900);
 });

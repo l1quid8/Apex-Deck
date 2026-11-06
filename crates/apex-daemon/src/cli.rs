@@ -13,6 +13,7 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
        apex-daemon allow-root <folder>|list|remove … [--data-dir PATH]
        apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--data-dir PATH]
        apex-daemon remote info|advertise … [--data-dir PATH]
+       apex-daemon trust-host [--no-reboot] [--data-dir PATH]
 
   serve            run the host and listen on a localhost WebSocket and a local socket
   --stdio          speak the protocol on stdin/stdout (for SSH); attaches to a running
@@ -43,6 +44,7 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
                    (needs the daemon running with --remote); `apex-daemon pair --help`
   remote           remote access: `remote info`, or `remote advertise host:port…|--clear`
                    to add addresses (a DDNS name, say) that phones may dial
+  trust-host       mark this Linux machine as trusted (writes confined_epoch)
   --data-dir PATH  where chats and settings live (default: the desktop app's folder)";
 
 /// What the daemon was asked to do.
@@ -61,6 +63,7 @@ pub enum Action {
     AllowRoot(crate::promote_cli::AllowRootAction),
     Pair(crate::pair_cli::PairOptions),
     Remote(crate::pair_cli::RemoteAction),
+    TrustHost { no_reboot: bool },
     /// `pair --help` / `remote --help`.
     PairHelp,
     Help,
@@ -69,6 +72,8 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServeOptions {
+    /// Private CLI backend: local IPC only, even when saved remote settings exist.
+    pub local_only: bool,
     /// 0 lets the system pick.
     pub port: u16,
     pub bind: IpAddr,
@@ -88,6 +93,7 @@ pub struct ServeOptions {
 impl Default for ServeOptions {
     fn default() -> Self {
         ServeOptions {
+            local_only: false,
             port: 0,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             insecure_bind: false,
@@ -127,6 +133,13 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     }
     if rest.first().map(String::as_str) == Some("allow-root") {
         return Ok(Cli { action: Action::AllowRoot(crate::promote_cli::parse(&rest[1..])?), data_dir });
+    }
+    if rest.first().map(String::as_str) == Some("trust-host") {
+        let mut no_reboot = false;
+        for a in &rest[1..] {
+            if a == "--no-reboot" { no_reboot = true; } else { return Err(format!("unknown argument {a} for trust-host\n\n{USAGE}")); }
+        }
+        return Ok(Cli { action: Action::TrustHost { no_reboot }, data_dir });
     }
     if matches!(rest.first().map(String::as_str), Some("pair" | "remote")) {
         let action = if rest[1..].iter().any(|a| a == "-h" || a == "--help") {
@@ -175,6 +188,10 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 options.insecure_bind = true;
                 serve_flag.get_or_insert("--insecure-bind");
             }
+            "--local-only" => {
+                options.local_only = true;
+                serve_flag.get_or_insert("--local-only");
+            }
             "--remote" => {
                 options.remote = true;
                 serve_flag.get_or_insert("--remote");
@@ -217,6 +234,9 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         }
         if print_endpoint { Action::Endpoint } else { Action::DataDir }
     } else if serve {
+        if options.local_only && (options.remote || options.gateway_port.is_some() || options.port != 0 || !options.bind.is_loopback()) {
+            return Err("--local-only cannot enable network listeners".into());
+        }
         if attach {
             return Err("--attach goes with --stdio".into());
         }
@@ -324,7 +344,7 @@ mod tests {
     #[test]
     fn pair_and_remote_take_their_own_words_and_the_data_dir() {
         let cli = parse(&["pair", "--tier", "full", "--data-dir", "/d"]).unwrap();
-        assert_eq!(cli, Cli { action: Action::Pair(crate::pair_cli::PairOptions { tier: crate::devices::Tier::Full, threads: None }), data_dir: Some(PathBuf::from("/d")) });
+        assert_eq!(cli, Cli { action: Action::Pair(crate::pair_cli::PairOptions { tier: crate::devices::Tier::Full, threads: None, json: false }), data_dir: Some(PathBuf::from("/d")) });
         assert_eq!(parse(&["remote", "info"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Info));
         assert_eq!(parse(&["remote", "advertise", "--clear"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Advertise(vec![])));
         assert_eq!(parse(&["pair", "--help"]).unwrap().action, Action::PairHelp);

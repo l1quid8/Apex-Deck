@@ -458,6 +458,7 @@ pub fn resolve_model_target(
             model_opt.as_deref().unwrap_or("default")
         );
         let config = ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new("gateway"),
             display_name: "Gateway".to_string(),
             backend: Backend::Agent {
@@ -486,6 +487,7 @@ pub fn resolve_model_target(
         .find(|p| p.prefix == lower_prefix)
     {
         let config = ParticipantConfig {
+            can_read_images: false,
             id: ParticipantId::new("gateway"),
             display_name: "Gateway".to_string(),
             backend: Backend::OpenAiCompatible {
@@ -1029,6 +1031,8 @@ async fn handle_chat_completions(
         media_dir: None,
         attachment_roots: Vec::new(),
         phone: None,
+        data_dir: Some(state.data_dir.clone()),
+        observed_addrs: Vec::new(),
     };
 
     // Ignore legacy allow_mcp fields, including on already-issued keys.
@@ -1042,6 +1046,7 @@ async fn handle_chat_completions(
     };
 
     let turn_request = TurnRequest {
+        computer: None,
         access: Some(Access::Read),
         effort_override: effort,
         system: flattened.system,

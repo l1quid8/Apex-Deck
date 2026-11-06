@@ -7,10 +7,13 @@ import type { ChipParts } from "./botChip";
 import type { DashboardDestination, DashRow } from "./dashboardModel";
 import type { ServerChoice } from "./PreviewPane";
 import type { LandingTextureSettings } from "./settings";
-import type { AppearanceValues } from "./themes";
+import type { AppearanceValues, AppearanceSettings } from "./themes";
 import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./types";
 import type { VoiceSettings } from "./voice/types";
-import type { WorkspaceTaskRow } from "./workspaceTasks.ts";
+import type { TaskDelegationTarget } from "./taskManagerDelegation.ts";
+import type { PersonalTaskSource, WorkspaceTaskRow } from "./workspaceTasks.ts";
+
+import type { AssistantRef, ProjectRef } from "./assistantIdentity.ts";
 
 export type PopoutKind = "pane" | "tab";
 
@@ -88,6 +91,8 @@ export interface PopoutSnapshot {
   /** A dashboard's rows at pop-out time; the owner keeps pushing them. */
   dashboardRows?: DashRow[];
   workspaceTaskRows?: WorkspaceTaskRow[];
+  taskPersonalSources?: PersonalTaskSource[];
+  taskDelegationTargets?: TaskDelegationTarget[];
   workspaceTaskProblems?: string[];
   /** A tasks tab's conversation, so it watches the same project. */
   conversationId?: string;
@@ -96,7 +101,7 @@ export interface PopoutSnapshot {
   /** The focused chat thread at pop-out time, which Files and Details follow. */
   activeChatId?: string | null;
   /** The owner's current skin, so the pop-out wears the same look as Deck. */
-  appearance?: AppearanceValues;
+  appearance?: AppearanceValues | AppearanceSettings;
 }
 
 /** Which side of its neighbour a pane sat on. */
@@ -129,6 +134,10 @@ export type PopoutAction =
   | { type: "restart-terminal" }
   | { type: "start-pane"; id: string }
   | { type: "show-pane"; id: string }
+  | { type: "task-open-project"; project: ProjectRef }
+  | { type: "task-open-thread"; project: ProjectRef; id: string }
+  | { type: "task-keep-thread"; project: ProjectRef; id: string }
+  | { type: "task-create-worker"; project: ProjectRef; profile: ParticipantConfig; assistant: AssistantRef; requestId: string }
   | { type: "dashboard-open"; id: string; destination?: DashboardDestination }
   | { type: "close-pane" }
   | { type: "rename"; title: string }
@@ -170,6 +179,8 @@ export interface PopoutUpdate {
   /** A dashboard's current rows. */
   dashboardRows?: DashRow[];
   workspaceTaskRows?: WorkspaceTaskRow[];
+  taskPersonalSources?: PersonalTaskSource[];
+  taskDelegationTargets?: TaskDelegationTarget[];
   workspaceTaskProblems?: string[];
   /** A preview's source while it is still open. */
   previewSource?: { title: string; kind: "terminal" | "chat"; running: boolean } | null;
@@ -177,8 +188,10 @@ export interface PopoutUpdate {
   chatConfig?: ChatBundle;
   /** The outcome of a fork this pop-out asked for. */
   forkResult?: ForkResult;
+  /** Saved worker thread id (title), or the owner's failure. */
+  taskWorkerResult?: ForkResult;
   /** The owner's skin, resent whenever it changes so open pop-outs change with Deck. */
-  appearance?: AppearanceValues;
+  appearance?: AppearanceValues | AppearanceSettings;
 }
 
 export interface PaneTakeout {

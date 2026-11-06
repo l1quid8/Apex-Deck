@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {createRequire} from 'node:module';
-import {assistantAppearance,createAssistantAppearance,projectIdentityKey} from '../src/assistantIdentity.ts';
+import {assistantAppearance,createAssistantAppearance,projectIdentityKey,tryProjectIdentityKey} from '../src/assistantIdentity.ts';
 import {runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields} from '../src/assistantWorkspaceModel.ts';
 import {providerEnabled,providerForConfig} from '../src/providers.ts';
 import {CALL_VOICES,defaultVoiceOf,readVoiceSettings} from '../src/voice/settings.ts';
@@ -18,6 +18,7 @@ const text=n=>typeof n==='string'||typeof n==='number'?String(n):n?.children?.ma
 const find=(n,p)=>!n||typeof n!=='object'?null:p(n)?n:[...(n.children??[]),n.props?.pixelControls].map(c=>find(c,p)).find(Boolean)??null;
 const all=(n,p)=>!n||typeof n!=='object'?[]:[...(p(n)?[n]:[]),...[...(n.children??[]),n.props?.pixelControls].flatMap(c=>all(c,p))];
 const VoiceSampleButton=()=>null;
+const AssistantCapabilities=()=>null,CALL_ENGINES=[{id:'local',label:'Local'},{id:'realtime',label:'GPT-Live'}],REALTIME_MODELS=[],REALTIME_VOICES=[],DEFAULT_REALTIME_MODEL='',DEFAULT_REALTIME_VOICE='',readRealtimeModel=()=>undefined,readRealtimeVoice=()=>undefined,realtimeVoiceLabel=id=>id;
 const Avatar=()=>null, HexColorPicker=()=>null,PersonalPanels=()=>null,PersonalBrowser=()=>null,AssistantAvatarEditor=()=>null;
 const profile={id:'legacy',display_name:'Legacy',persona:'Legacy metadata retained',backend:{kind:'agent',tool:'claude_code',model:'old'},effort:'high',access:'ask',legacyLabel:'old custom label'};
 const record={id:'a',hostId:'mac',revision:7,name:'Null',style:'Saved legacy style',look:{seed:'saved-seed',color:'#aabbcc',shape:'legacy-shape'},profile,messages:[],tasks:[],projects:[]};
@@ -31,12 +32,12 @@ function mount(overrides={}){
  const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}},useSyncExternalStore(sub,get){return get();}};
  const voiceController={subscribe:()=>()=>{},getState:()=>({status:'off',muted:false})};
  const Clock=()=>null;
- const bindings={assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders,VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel,voiceController,Clock,useSyncExternalStore:hooks.useSyncExternalStore};
+ const bindings={AssistantCapabilities,CALL_ENGINES,REALTIME_MODELS,REALTIME_VOICES,DEFAULT_REALTIME_MODEL,DEFAULT_REALTIME_VOICE,readRealtimeModel,readRealtimeVoice,realtimeVoiceLabel,assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders,VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,tryProjectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel,voiceController,Clock,useSyncExternalStore:hooks.useSyncExternalStore};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
  return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
 const input=(tree,name)=>find(tree,n=>n.props?.['aria-label']===name);
-const chooseFull=h=>{input(h.render(),'Project tools').props.onChange({target:{value:'full'}});find(h.render(),n=>n.type==='button'&&text(n)==='Use Full access').props.onClick();};
+const chooseFull=h=>{input(h.render(),'Assistant access').props.onChange({target:{value:'full'}});find(h.render(),n=>n.type==='button'&&text(n)==='Use Full access').props.onClick();};
 const submit=async h=>{find(h.render(),n=>n.type==='form').props.onSubmit({preventDefault(){}});await new Promise(r=>setImmediate(r));};
 test('settings validates name, saves offered runtime and Full access, preserves legacy metadata and appearance',async()=>{
  const h=mount();let tree=await h.ready();assert.doesNotMatch(text(tree),/Team Member Type|Work brief.*textarea/i);
@@ -44,7 +45,7 @@ test('settings validates name, saves offered runtime and Full access, preserves 
  input(h.render(),'Assistant name').props.onChange({target:{value:'Renamed'}});chooseFull(h);
  input(h.render(),'Assistant model').props.onChange({target:{value:'new'}});assert.equal(input(h.render(),'Assistant reasoning').props.value,'low');
  await submit(h);const saved=h.calls[0];assert.equal(saved.expectedRevision,7);assert.equal(saved.settings.name,'Renamed');assert.equal(saved.profile.backend.model,'new');assert.equal(saved.profile.access,'full');assert.equal(saved.profile.effort,'low');assert.equal(saved.profile.persona,profile.persona);assert.equal(saved.profile.legacyLabel,profile.legacyLabel);assert.deepEqual(saved.settings.look,record.look.kind?record.look:{...record.look,kind:'pixel'});
- const reloaded=mount({lane:{assistant:{...record,revision:8,name:saved.settings.name,profile:saved.profile,look:saved.settings.look}}});tree=await reloaded.ready();assert.equal(input(tree,'Assistant name').props.value,'Renamed');assert.equal(input(tree,'Project tools').props.value,'full');assert.equal(input(tree,'Assistant reasoning').props.value,'low');
+ const reloaded=mount({lane:{assistant:{...record,revision:8,name:saved.settings.name,profile:saved.profile,look:saved.settings.look}}});tree=await reloaded.ready();assert.equal(input(tree,'Assistant name').props.value,'Renamed');assert.equal(input(tree,'Assistant access').props.value,'full');assert.equal(input(tree,'Assistant reasoning').props.value,'low');
 });
 test('invalid hex blocks Save and valid picker change persists color without changing seed',async()=>{
  const h=mount();let tree=await h.ready();const picker=find(tree,n=>n.type===HexColorPicker);picker.props.onValidityChange(false);await submit(h);assert.equal(h.calls.length,0);assert.match(text(h.render()),/six hexadecimal/);
@@ -55,7 +56,7 @@ test('missing credentials and unavailable models block saving the existing recor
  const h=mount({backend:{sessionLoad:async()=>({profiles:[p]}),apiKeyStatus:async()=>['missing'],apiModels:async()=>{throw new Error('must not discover without credential');}},lane:{assistant:{...record,profile:p}}});const tree=await h.ready();assert.match(text(tree),/credential is missing/);await submit(h);assert.equal(h.calls.length,0);
 });
 test('creation and Settings share ordered controls and create durable pixel/runtime fields only on Create',async()=>{
- const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});let tree=await h.ready();assert.ok(text(tree).indexOf('Name')<text(tree).indexOf('Model'));assert.ok(text(tree).indexOf('Model')<text(tree).indexOf('In those projects it may'));assert.equal(created.length,0);
+ const created=[];const h=mount({lane:undefined,onCreate:async value=>created.push(value)});let tree=await h.ready();assert.ok(text(tree).indexOf('Name')<text(tree).indexOf('Model'));assert.ok(text(tree).indexOf('Model')<text(tree).indexOf('Assistant access'));assert.equal(created.length,0);
  input(tree,'Assistant name').props.onChange({target:{value:'Teammate'}});chooseFull(h);await submit(h);assert.equal(created[0].workspaceVersion,4);assert.equal(typeof created[0].avatarDraftId,'string');assert.equal(created[0].avatarGenerationId,undefined);assert.equal(created[0].avatarAssetId,undefined);assert.equal(created[0].profile.access,'full');assert.match(created[0].look.color,/^#[\da-f]{6}$/);assert.ok(created[0].look.seed);
  const current=text(await mount().ready());assert.ok(current.indexOf('Model')<current.indexOf('Projects & access'));assert.ok(current.indexOf('Projects & access')<current.indexOf('Tools & rules'));
 });
@@ -93,7 +94,7 @@ test('creation completion remains durable after navigation without stealing the 
 test('conflict refresh updates only the expected revision and preserves the complete draft for retry',async()=>{
  const requests=[];let conflict=true;const h=mount({backend:{call:async(cmd,args)=>{assert.equal(cmd,'personal_get');assert.equal(args.assistantId,'a');return {...record,revision:9,name:'Remote name'};}},lane:{configureWorkspace:async value=>{requests.push(value);if(conflict)throw new Error('The assistant changed. Refresh before saving this draft.');}}});
  await h.ready();input(h.render(),'Assistant name').props.onChange({target:{value:'Keep my draft'}});chooseFull(h);await submit(h);
- const refresh=find(h.render(),n=>n.type==='button'&&text(n).includes('Refresh revision'));assert.ok(refresh);await refresh.props.onClick();await tick();assert.equal(input(h.render(),'Assistant name').props.value,'Keep my draft');assert.equal(input(h.render(),'Project tools').props.value,'full');conflict=false;await submit(h);assert.equal(requests[1].expectedRevision,9);assert.equal(requests[1].settings.name,'Keep my draft');
+ const refresh=find(h.render(),n=>n.type==='button'&&text(n).includes('Refresh revision'));assert.ok(refresh);await refresh.props.onClick();await tick();assert.equal(input(h.render(),'Assistant name').props.value,'Keep my draft');assert.equal(input(h.render(),'Assistant access').props.value,'full');conflict=false;await submit(h);assert.equal(requests[1].expectedRevision,9);assert.equal(requests[1].settings.name,'Keep my draft');
 });
 test('applied image previews in Settings use the captured owner and generation',async()=>{
  const h=mount();let tree=await h.ready();const editor=find(tree,n=>n.type===AssistantAvatarEditor);const image={assetId:'asset',sha256:'hash',mime:'image/png',width:512,height:512};editor.props.onAppearanceChange({...editor.props.appearance,kind:'image',image});editor.props.onApply({kind:'image',generationId:'gen',assetId:'asset'});tree=h.render();
@@ -161,18 +162,18 @@ test('Settings keeps an unavailable saved provider instead of silently replacing
  let catalogs=0;const h=mount({backend:{sessionLoad:async()=>({profiles:[profile,textApi]}),detectAgents:async()=>[],apiKeyStatus:async()=>['saved'],apiModels:async()=>{catalogs++;return[{id:'configured-text'}];}}});const tree=await h.ready();assert.equal(input(tree,'Assistant provider').props.value,0);assert.match(text(tree),/not installed/);assert.equal(catalogs,0);
 });
 
-test('Project tools offers exact mockup choices and Read only disables every saved and newly assigned project',async()=>{
+test('Assistant access offers exact mockup choices and Read only disables every saved and newly assigned project',async()=>{
  const projectA={hostId:'mac',workspaceId:'a',cwd:'/a'},projectB={hostId:'other',workspaceId:'b',cwd:'/b'};
  const h=mount({lane:{assistant:{...record,allowedFolders:['/c'],projects:[{project:projectA,tools:'full'},{project:projectB,tools:'ask'}]}},projects:[{id:'c',name:'New project',path:'/c'}]});let tree=await h.ready();
- assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);
- input(tree,'Project tools').props.onChange({target:{value:'read'}});tree=h.render();find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.onChange({target:{checked:true}});await submit(h);
+ assert.deepEqual(all(input(tree,'Assistant access'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);
+ input(tree,'Assistant access').props.onChange({target:{value:'read'}});tree=h.render();find(tree,n=>n.type==='input'&&n.props.type==='checkbox').props.onChange({target:{checked:true}});await submit(h);
  assert.equal(h.calls[0].profile.access,'read');assert.equal(h.calls[0].projects.length,3);assert.ok(h.calls[0].projects.every(binding=>binding.tools==='off'));assert.deepEqual(h.calls[0].projects.map(binding=>binding.project),[projectA,projectB,{hostId:'mac',workspaceId:'c',cwd:'/c'}]);
  const reloaded=mount({lane:{assistant:{...record,profile:{...profile,access:'read'},projects:[{project:projectA,tools:'full'}]}}});await reloaded.ready();await submit(reloaded);assert.equal(reloaded.calls[0].projects[0].tools,'off');
 });
 test('legacy edits access stays explicit and is retained until the user chooses a supported mockup setting',async()=>{
  const binding={project:{hostId:'mac',workspaceId:'a',cwd:'/a'},tools:'ask'};
- const h=mount({lane:{assistant:{...record,profile:{...profile,access:'edits'},projects:[binding]}}});let tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'edits');assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only','Allow edits (legacy)']);await submit(h);assert.equal(h.calls[0].profile.access,'edits');assert.deepEqual(h.calls[0].projects,[binding]);
- input(h.render(),'Project tools').props.onChange({target:{value:'ask'}});tree=h.render();assert.deepEqual(all(input(tree,'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
+ const h=mount({lane:{assistant:{...record,profile:{...profile,access:'edits'},projects:[binding]}}});let tree=await h.ready();assert.equal(input(tree,'Assistant access').props.value,'edits');assert.deepEqual(all(input(tree,'Assistant access'),n=>n.type==='option').map(text),['Ask first','Full access','Read only','Allow edits (legacy)']);await submit(h);assert.equal(h.calls[0].profile.access,'edits');assert.deepEqual(h.calls[0].projects,[binding]);
+ input(h.render(),'Assistant access').props.onChange({target:{value:'ask'}});tree=h.render();assert.deepEqual(all(input(tree,'Assistant access'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
 });
 
 test('failed and interrupted delegated work stays visible in the session strip status',()=>{
@@ -184,7 +185,7 @@ test('failed and interrupted delegated work stays visible in the session strip s
 
 test('legacy assistants without project assignments load and save an empty binding list',async()=>{
  const legacy={...record,profile:{...profile,access:'read'}};delete legacy.projects;
- const h=mount({lane:{assistant:legacy}});const tree=await h.ready();assert.equal(input(tree,'Project tools').props.value,'read');await submit(h);assert.equal(h.calls.length,1);assert.deepEqual(h.calls[0].projects,[]);
+ const h=mount({lane:{assistant:legacy}});const tree=await h.ready();assert.equal(input(tree,'Assistant access').props.value,'read');await submit(h);assert.equal(h.calls.length,1);assert.deepEqual(h.calls[0].projects,[]);
 });
 
 
@@ -276,8 +277,8 @@ test('settings is one short column in page order',async()=>{
 test('provider is hidden when only one provider is configured',async()=>{
  assert.equal(input(await settingsMount().ready(),'Assistant provider'),null);
 });
-test('Project tools names read-only access the way the header does',async()=>{
- assert.deepEqual(all(input(await settingsMount().ready(),'Project tools'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);
+test('Assistant access names read-only access the way the header does',async()=>{
+ assert.deepEqual(all(input(await settingsMount().ready(),'Assistant access'),n=>n.type==='option').map(text),['Ask first','Full access','Read only']);
 });
 test('switching on a granted project adds it',async()=>{
  const h=settingsMount();let tree=await h.ready();
@@ -313,7 +314,7 @@ test('settings subview back restores the same unsaved main draft',async()=>{
 
 test('the create form is short: name, model, access, first brief, then more options',async()=>{
  const t=text(await mount({lane:undefined,onCreate:async()=>{},machinePicker:'MACHINE PICKER'}).ready());
- const order=['Name','Model','In those projects it may','First brief','More options'].map(label=>t.indexOf(label));
+ const order=['Name','Model','Assistant access','First brief','More options'].map(label=>t.indexOf(label));
  assert.ok(order.every(i=>i>=0),String(order));assert.deepEqual([...order].sort((a,b)=>a-b),order);
  assert.doesNotMatch(t,/AI generate|Connected context|Each assistant has its own conversation/);
  assert.ok(t.indexOf('MACHINE PICKER')>t.indexOf('More options'),'machine lives under More options');
@@ -362,7 +363,22 @@ test('settings exposes costs, schedules, notices, connections and rules without 
 
 
 test('Full access requires a separate confirmation and cancellation retains existing project access',async()=>{
- for(const lane of [undefined,{assistant:record}]){const h=mount({lane});await h.ready();input(h.render(),'Project tools').props.onChange({target:{value:'full'}});assert.equal(input(h.render(),'Project tools').props.value,'ask');assert.match(text(h.render()),/does not grant.*folders/i);find(h.render(),n=>n.type==='button'&&text(n)==='Keep current access').props.onClick();assert.equal(input(h.render(),'Project tools').props.value,'ask');chooseFull(h);assert.equal(input(h.render(),'Project tools').props.value,'full');assert.equal(h.calls.length,0);}
+ for(const lane of [undefined,{assistant:record}]){const h=mount({lane});await h.ready();input(h.render(),'Assistant access').props.onChange({target:{value:'full'}});assert.equal(input(h.render(),'Assistant access').props.value,'ask');assert.match(text(h.render()),/does not grant.*folders/i);find(h.render(),n=>n.type==='button'&&text(n)==='Keep current access').props.onClick();assert.equal(input(h.render(),'Assistant access').props.value,'ask');chooseFull(h);assert.equal(input(h.render(),'Assistant access').props.value,'full');assert.equal(h.calls.length,0);}
+});
+test('switching Full back to Ask preserves saved capability grants and approval rules',async()=>{
+ const project={hostId:'mac',workspaceId:'w',cwd:'/repo'};
+ const permissions={revision:3,grants:[{id:'g',capability:'commandRun',scope:{kind:'allProjects'},mode:'ask',delegate:false}]};
+ const modes={read:'auto',write:'ask',send:'handOff',spend:'ask'};
+ const rules=[{id:'r',text:'Ask before publishing',class:'send',mode:'ask'}];
+ const savedApprovalSettings=structuredClone({permissions,modes,rules});
+ const assistant={...record,allowedFolders:['/repo'],projects:[{project,tools:'ask'}],permissions,modes,rules};
+ const h=mount({lane:{assistant}});await h.ready();chooseFull(h);await submit(h);
+ assert.equal(h.calls[0].profile.access,'full');assert.equal(h.calls[0].projects[0].tools,'full');
+ input(h.render(),'Assistant access').props.onChange({target:{value:'ask'}});
+ assert.equal(find(h.render(),n=>n.props?.['aria-label']==='Confirm Full access'),null);
+ await submit(h);assert.equal(h.calls[1].profile.access,'ask');assert.equal(h.calls[1].projects[0].tools,'ask');
+ for(const call of h.calls){assert.equal(call.settings.permissions,undefined);assert.equal(call.settings.modes,undefined);assert.equal(call.settings.rules,undefined);}
+ assert.deepEqual({permissions:assistant.permissions,modes:assistant.modes,rules:assistant.rules},savedApprovalSettings);
 });
 test('clearing quiet hours emits explicit null so JSON transport turns the schedule off',async()=>{
  const h=settingsMount({lane:{assistant:{...record,quietHours:{start:'22:00',end:'07:00'}}}});await h.ready();input(h.render(),'Quiet hours start').props.onChange({target:{value:''}});input(h.render(),'Quiet hours end').props.onChange({target:{value:''}});await submit(h);assert.equal(JSON.parse(JSON.stringify(h.calls[0])).settings.quietHours,null);
@@ -400,7 +416,7 @@ test('a clean kept-mounted settings draft follows newer saved runtime while a di
 test('unset shared voice preferences still expose real call defaults and save only explicit edits',async()=>{
  const saved=[];const h=mount({onVoiceSettings:value=>saved.push(value)});const tree=await h.ready();
  assert.ok(input(tree,'Voice for calls'));assert.equal(input(tree,'Voice for calls').props.value,'am_michael');
- assert.equal(input(tree,'Pause before reply').props.value,100);assert.equal(input(tree,'Call controls').props.value,'pill');
+ assert.equal(input(tree,'Pause before reply').props.value,700);assert.equal(input(tree,'Call controls').props.value,'pill');
  await submit(h);assert.deepEqual(saved,[]);
  input(h.render(),'Call controls').props.onChange({target:{value:'bar'}});await submit(h);
  assert.equal(saved.length,1);assert.deepEqual(saved[0],{...readVoiceSettings(undefined),look:'bar'});
@@ -412,4 +428,43 @@ test('creating an assistant with a CLI provider default persists null instead of
  let tree=await h.ready();assert.equal(input(tree,'Assistant model').props.value,'');
  input(tree,'Assistant name').props.onChange({target:{value:'Default provider QA'}});await submit(h);
  assert.equal(created.length,1);assert.equal(created[0].profile.backend.kind,'agent');assert.equal(created[0].profile.backend.model,null);assert.equal(created[0].profile.effort,null);
+});
+
+test('settings safely ignores workspaces with empty or invalid paths without throwing',async()=>{
+ const h=settingsMount({
+  projects:[
+   {id:'ws-valid',name:'Valid Project',path:'/Users/tylercaldwell/code/valid'},
+   {id:'ws-empty',name:'Temp No project',path:''},
+   {id:'ws-spaces',name:'Spaces only',path:'   '},
+  ]
+ });
+ const tree=await h.ready();
+ assert.ok(tree);
+ assert.ok(input(tree,'Use Valid Project'));
+ assert.equal(input(tree,'Use Temp No project'),null);
+ assert.equal(input(tree,'Use Spaces only'),null);
+});
+
+test('existing granted valid projects are preserved and not dropped when projectless workspaces exist',async()=>{
+ const initialProject = { hostId: 'mac', workspaceId: 'ws-valid', cwd: '/Users/tylercaldwell/code/valid' };
+ const h=settingsMount({
+  lane: {
+   assistant: {
+    ...record,
+    allowedFolders: ['/Users/tylercaldwell/code/valid'],
+    projects: [{ project: initialProject, tools: 'ask' }]
+   }
+  },
+  projects:[
+   {id:'ws-valid',name:'Valid Project',path:'/Users/tylercaldwell/code/valid'},
+   {id:'ws-empty',name:'Temp No project',path:''},
+  ]
+ });
+ const tree=await h.ready();
+ const checkbox = input(tree,'Use Valid Project');
+ assert.ok(checkbox);
+ assert.equal(checkbox.props.checked, true);
+ await submit(h);
+ assert.equal(h.calls.length, 1);
+ assert.deepEqual(h.calls[0].projects, [{ project: initialProject, tools: 'ask' }]);
 });

@@ -445,3 +445,72 @@ test('the packaged app and daemon declare the same release version',()=>{
  const version=/\[workspace\.package\]\s*\nversion\s*=\s*"([^"]+)"/.exec(workspace)?.[1];
  assert.equal(version,app.version,'daemon workspace version must match the app to avoid Different builds');
 });
+
+test('upgrade refuses the protected nested computer helper even after the main app quits',()=>python(String.raw`
+helper=str(u.TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp')
+u.app_running=lambda uid=None:False
+u.os.geteuid=lambda:0
+def protected(path): raise RuntimeError('Reached filesystem preflight before checking helper')
+u.protected=protected
+calls=[]
+def run(*args,**kwargs):
+ calls.append(args)
+ return types.SimpleNamespace(returncode=0,stdout=helper+'\n',stderr='')
+u.run=run
+try: u.preflight()
+except RuntimeError as error:
+ assert 'Unified Computer Use' in str(error) and 'sign out' in str(error).lower(),str(error)
+else: raise AssertionError('running helper was accepted')
+assert calls==[('/bin/ps','-axo','comm=')],calls
+`));
+
+test('helper upgrade guard ignores similarly named and development helper executables',()=>python(String.raw`
+helper=str(u.TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp')
+for command in ['/tmp/Unified Computer Use.app/Contents/MacOS/SpikeApp',helper+'Extra','/tmp/SpikeApp']:
+ u.run=lambda *args,**kwargs:types.SimpleNamespace(returncode=0,stdout=command+'\n',stderr='')
+ u.require_helper_stopped()
+`));
+
+test('helper upgrade guard fails closed when process inventory cannot be read',()=>python(String.raw`
+u.run=lambda *args,**kwargs:types.SimpleNamespace(returncode=1,stdout='',stderr='sensitive error')
+try: u.require_helper_stopped()
+except RuntimeError as error:
+ assert 'check' in str(error).lower() and 'sensitive' not in str(error),str(error)
+else: raise AssertionError('unavailable process inventory was accepted')
+`));
+
+test('a helper that appears during staging refuses the swap and restores stopped services',()=>python(accountsFixture+String.raw`
+original=u.run
+checks=[]
+def run(*args,**kwargs):
+ if args==('/bin/ps','-axo','comm='):
+  checks.append(True)
+  helper=u.TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp'
+  return types.SimpleNamespace(returncode=0,stdout=(str(helper)+'\n') if len(checks)==2 else '',stderr='')
+ return original(*args,**kwargs)
+u.run=run
+try:u.install()
+except RuntimeError as error:assert 'Unified Computer Use' in str(error),str(error)
+else:raise AssertionError('helper appeared but install continued')
+assert len(checks)==2,checks
+assert (u.TRUSTED/'version').read_text()=='old'
+assert (u.ROOT/'config.json').read_text()==json.dumps({'uiCdhash':'old','daemonCdhash':'old'})
+assert running=={501:True,502:True},running
+assert [event for event in events if isinstance(event,str)]==['broker down','broker up'],events
+`));
+
+test('optional CLI hash survives manifest rendering and rejects malformed admission',()=>{
+ const withCli={...manifest,cli:'d'.repeat(40)};
+ assert.deepEqual(validateManifest(withCli),withCli);
+ assert.match(upgradeScripts(withCli).worker,/dddddddddddddddddddddddddddddddddddddddd/);
+ for(const cli of ['',null,'bad','a'.repeat(39),'a'.repeat(40)+'\n'])assert.throws(()=>validateManifest({...manifest,cli}));
+});
+test('CLI pin migrates explicitly and absence removes stale admission',()=>python(String.raw`
+with tempfile.TemporaryDirectory() as directory:
+ config=pathlib.Path(directory)/'config.json'
+ config.write_text(json.dumps({'uiCdhash':'old-ui','daemonCdhash':'old-daemon','cliCdhash':'old-cli','future':42}))
+ u.update_config(config,'ui','daemon','d'*40)
+ assert json.loads(config.read_bytes())=={'uiCdhash':'ui','daemonCdhash':'daemon','cliCdhash':'d'*40,'future':42}
+ u.update_config(config,'next-ui','next-daemon')
+ assert json.loads(config.read_bytes())=={'uiCdhash':'next-ui','daemonCdhash':'next-daemon','future':42}
+`));

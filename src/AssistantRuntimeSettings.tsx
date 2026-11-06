@@ -98,10 +98,12 @@ export function AssistantRuntimeSettings({ lane, backend, anchor = null, inline 
     {config.backend.kind === 'agent' && !reason && <p className="muted">CLI installation found. Sign-in cannot be verified here; offered models may come from its cache.</p>}
     {error && <p role="alert" className="danger-text">{error}</p>}
     {confirmation && <div className="assistant-runtime-confirm" role="group" aria-label="Confirm Full access">
-      <p>Allow Full access within existing folder grants? This does not grant any new folders.</p>
+      <p>Full access allows changes, deletion, sending, spending, delegation, commands, browser and computer use without assistant approval prompts. Existing folder, privacy, budget and macOS limits still apply. This does not grant additional folders.</p>
+      <p>Switching to Ask first restores your saved approval settings.</p>
       {record.allowedFolders?.length ? <ul>{record.allowedFolders.map(folder => <li key={folder}>{folder}</li>)}</ul> : <p>No folders are granted. Assign projects through Settings.</p>}
       <button type="button" onClick={() => confirm(true)}>Use Full access</button><button type="button" onClick={() => confirm(false)}>Keep current access</button>
     </div>}
+    <p className="muted">{config.access==='full'?'Full access acts without assistant approval prompts within existing access. Saved approval rules apply again when you switch to Ask first.':config.access==='read'?'Read only keeps actions that change things unavailable.':'Ask first uses your saved approval settings. Routine checks and reversible thread changes you request can run without extra approval.'}</p>
   </div>;
   return <BotSettings key={currentProvider} config={config} anchor={anchor} inline={inline} backend={backend} loadCurrent={session.loadCurrent} save={save} close={close} provider={provider}
     disabledReason={providerBusy ? 'Saving provider…' : confirmation ? 'Confirm Full access above before applying this change.' : reason || undefined} textOnly allowManualModel={false} allowDefaultModel={offeredModels.some(model=>model.id==='')} offeredModels={offeredModels}

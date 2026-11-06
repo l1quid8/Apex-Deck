@@ -5,6 +5,10 @@
 //
 //   node scripts/release-update-manifest.mjs [--notes "What changed"]
 //
+// A Linux server's Deck is installed from the same release: pass each built
+// daemon with --linux arm64=path --linux x86_64=path, and the feed lists its
+// checksum for Add a machine (src/phone/sshRun.ts).
+//
 // Reads release/Apex-Deck-upgrade.pkg (from `npm run desktop:dmg`), refuses an
 // ad hoc build, checks the app inside against the package's own sidecar, and
 // writes both into release/v<version>-assets/. It publishes nothing: the steps
@@ -27,13 +31,13 @@ const ARCH = { arm64: 'arm64', x86_64: 'x64' };
 export const assetName = (version, arch) => `Apex-Deck-${version}-${arch}.pkg`;
 
 /** The feed, checked by the same parser every installed Deck uses. */
-export function buildManifest({ version, notes = '', minimumSystemVersion, archs, name, size, sha256 }) {
+export function buildManifest({ version, notes = '', minimumSystemVersion, archs, name, size, sha256, daemons = [] }) {
   const packages = archs.map((lipo) => {
     const arch = ARCH[lipo];
     if (!arch) throw new Error(`Unsupported architecture ${lipo}`);
     return { arch, minimumSystemVersion, name, size, sha256 };
   });
-  const manifest = { schemaVersion: 1, version, notes, packages };
+  const manifest = { schemaVersion: 1, version, notes, packages, daemons };
   parseManifest(manifest);
   return manifest;
 }
@@ -45,13 +49,25 @@ export function teamOf(details) {
   return team;
 }
 
-export function publishSteps(version, folder, name) {
+/** `--linux arch=path` flags into release asset names, sizes and checksums, copied beside the package. */
+export function linuxDaemons(flags, folder) {
+  return flags.map((flag) => {
+    const [arch, file] = [flag.slice(0, flag.indexOf('=')), flag.slice(flag.indexOf('=') + 1)];
+    if (!['arm64', 'x86_64'].includes(arch) || !file) throw new Error(`--linux takes arm64=path or x86_64=path, not ${flag}`);
+    const bytes = fs.readFileSync(file);
+    const name = `apex-daemon-linux-${arch}`;
+    fs.writeFileSync(path.join(folder, name), bytes);
+    return { arch, name, size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  });
+}
+
+export function publishSteps(version, folder, name, daemons = []) {
   const tag = `v${version}`;
   const pkg = path.join(folder, name);
   const feed = path.join(folder, MANIFEST_NAME);
   return [
     `gh release create ${tag} --repo ${REPO} --draft --title "Apex Deck ${version}" --notes-file <notes.md>`,
-    `gh release upload ${tag} --repo ${REPO} '${pkg}' '${feed}'`,
+    `gh release upload ${tag} --repo ${REPO} '${pkg}' '${feed}'${daemons.map((entry) => ` '${path.join(folder, entry.name)}'`).join('')}`,
     `gh release download ${tag} --repo ${REPO} --dir /tmp/apex-${tag}-check && shasum -a 256 /tmp/apex-${tag}-check/*  # must match the feed`,
     `gh release edit ${tag} --repo ${REPO} --draft=false --latest  # only now does any Deck see it`,
   ];
@@ -67,6 +83,7 @@ function run(command, args) {
 function main(argv) {
   const notesAt = argv.indexOf('--notes');
   const notes = notesAt >= 0 ? String(argv[notesAt + 1] ?? '') : '';
+  const linux = argv.flatMap((arg, at) => (arg === '--linux' ? [String(argv[at + 1] ?? '')] : []));
   const fixed = fixedPackage(RELEASE);
   if (!fs.existsSync(fixed.pkg) || !fs.existsSync(fixed.manifest)) throw new Error(`No built package at ${fixed.pkg}; run npm run desktop:dmg first.`);
   const sidecar = JSON.parse(fs.readFileSync(fixed.manifest, 'utf8'));
@@ -93,17 +110,19 @@ function main(argv) {
   const name = assetName(version, info.archs.length === 1 ? ARCH[info.archs[0]] ?? info.archs[0] : 'universal');
   const target = path.join(folder, name);
   fs.copyFileSync(fixed.pkg, target);
+  const daemons = linuxDaemons(linux, folder);
   const bytes = fs.readFileSync(target);
   const manifest = buildManifest({
     version, notes, name, size: bytes.length,
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     minimumSystemVersion: info.LSMinimumSystemVersion ?? '13.0',
     archs: info.archs,
+    daemons,
   });
   fs.writeFileSync(path.join(folder, MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`release-update-manifest: wrote ${target} and ${MANIFEST_NAME} (${version}, commit ${sidecar.commit || 'unknown'})`);
   console.log('Publish, in this order:');
-  for (const step of publishSteps(version, folder, name)) console.log(`  ${step}`);
+  for (const step of publishSteps(version, folder, name, daemons)) console.log(`  ${step}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

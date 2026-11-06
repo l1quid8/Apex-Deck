@@ -9,6 +9,25 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn committed_post_failure_rolls_back_message_and_routing_without_publication() {
+    block_on(async {
+        let runtime = ConcurrentRoom::new(Room::new(vec![
+            Arc::new(ScriptedParticipant::new("jigga", &[])),
+            Arc::new(ScriptedParticipant::new("null", &[])),
+        ], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat));
+        let before = runtime.room().lock().await.snapshot();
+        let events = Mutex::new(Vec::new());
+        let result = runtime.begin_post_with_commit(Speaker::Human, "@null hello", None,
+            &|_| Err("save failed".into()), &|event| events.lock().unwrap().push(event)).await;
+        assert!(matches!(result, Err(error) if error == "save failed"));
+        assert!(events.lock().unwrap().is_empty());
+        assert!(!runtime.busy());
+        let after = runtime.room().lock().await.snapshot();
+        assert_eq!(serde_json::to_value(after).unwrap(), serde_json::to_value(before).unwrap());
+    });
+}
+
 struct Held {
     config: ParticipantConfig,
     release: Mutex<Option<oneshot::Receiver<()>>>,
@@ -850,6 +869,32 @@ fn targeted_stop_keeps_streamed_text_and_does_not_poison_the_next_turn() {
 }
 
 #[test]
+fn a_bot_restarted_right_after_its_stop_runs_again_and_is_told_why() {
+    block_on(async {
+        let (runtime, _release) = setup();
+        let null = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let stopped = std::sync::atomic::AtomicBool::new(false);
+        let sink = |event: RoomEvent| {
+            if matches!(&event, RoomEvent::Delta { id, .. } if id == &null) && !stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                runtime.stop(Some(&null));
+            }
+            events.lock().unwrap().push(event);
+        };
+        let first = runtime.begin_post("@null first", None, &sink).await.unwrap();
+        let restart = async {
+            while !stopped.load(std::sync::atomic::Ordering::SeqCst) { futures_timer::Delay::new(std::time::Duration::from_millis(1)).await; }
+            let next = runtime.begin_turn(vec![null.clone()], None).await.unwrap().with_runner_context("Your access changed.".into(), false);
+            runtime.run(next, &sink).await;
+        };
+        futures::join!(runtime.run(first, &sink), restart);
+        let seen = events.lock().unwrap();
+        let starts = seen.iter().filter(|e| matches!(e, RoomEvent::TurnStarted { id } if id == &null)).count();
+        assert_eq!(starts, 2, "the restart must not be swallowed by the stop: {seen:?}");
+    });
+}
+
+#[test]
 fn targeted_approval_rejection_leaves_the_other_participant_waiting() {
     let desk = apex_core::ApprovalDesk::default();
     let (_, null) = desk.open_for(ParticipantId::new("null"));
@@ -1347,4 +1392,63 @@ fn read_only_line_never_doubles_the_full_stop() {
         apex_core::read_only_line("Beta", "Alpha", "The folder is not a Git repository."),
         "Beta is read-only this turn: Alpha is editing and Deck couldn't make a separate copy (The folder is not a Git repository)."
     );
+}
+
+#[derive(Clone)]
+struct LifecycleProbe {
+    starts: Arc<Mutex<Vec<apex_core::Access>>>,
+    finishes: Arc<AtomicUsize>,
+}
+struct LifecycleLease(Arc<AtomicUsize>);
+impl Drop for LifecycleLease { fn drop(&mut self) {self.0.fetch_add(1,Ordering::SeqCst);} }
+impl apex_core::TurnLifecycleHook for LifecycleProbe {
+    fn start<'a>(&'a self,_:&'a ParticipantId,_:&'a mut TurnRequest,access:apex_core::Access)->futures::future::BoxFuture<'a,Option<Box<dyn Send>>> {
+        Box::pin(async move {self.starts.lock().unwrap().push(access);Some(Box::new(LifecycleLease(self.finishes.clone())) as Box<dyn Send>)})
+    }
+}
+#[test]
+fn lifecycle_lease_finishes_on_success_failure_stop_and_dropped_future() {
+    use futures::FutureExt;
+    struct Failing(ParticipantConfig);
+    #[async_trait]
+    impl Participant for Failing {
+        fn config(&self)->&ParticipantConfig {&self.0}
+        async fn respond(&self,_:TurnRequest,_:DeltaSink<'_>)->Result<Reply,ParticipantError>{Err(ParticipantError::Failed("fixture".into()))}
+    }
+    block_on(async {
+        let probe=LifecycleProbe {starts:Arc::default(),finishes:Arc::default()};
+        for mode in 0..4 {
+            let (sender,release)=oneshot::channel();
+            let config=ScriptedParticipant::new("null",&[]).config().clone();
+            let bot:Arc<dyn Participant>=match mode {
+                0=>Arc::new(ScriptedParticipant::new("null",&["done"])),
+                1=>Arc::new(Failing(config)),
+                _=>Arc::new(Held {config,release:Mutex::new(Some(release)),started:None,cleanup_error:false})
+            };
+            let runtime=ConcurrentRoom::new(Room::new(vec![bot],RoomOptions::default())).with_turn_lifecycle(Arc::new(probe.clone()));
+            let batch=runtime.begin_post("@null go",None,&|_|{}).await.unwrap();
+            let mut run=Box::pin(runtime.run(batch,&|_|{}));
+            if mode<2 {run.await;} else {
+                assert!(run.as_mut().now_or_never().is_none());
+                if mode==2 {runtime.stop(None);run.await;} else {drop(run);}
+                drop(sender);
+            }
+            assert_eq!(probe.finishes.load(Ordering::SeqCst),mode+1);
+        }
+        assert_eq!(probe.starts.lock().unwrap().len(),4);
+    });
+}
+
+#[test]
+fn lifecycle_receives_read_scope_for_planning_turns_without_a_workspace() {
+    block_on(async {
+        let probe=LifecycleProbe {starts:Arc::default(),finishes:Arc::default()};
+        let mut config=ScriptedParticipant::new("null",&["plan"]).config().clone();config.access=apex_core::Access::Full;
+        let room=Room::new(vec![Arc::new(ScriptedParticipant::from_config(config))],RoomOptions::default());
+        room.plan_handle().store(true,Ordering::SeqCst);
+        let runtime=ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(probe.clone()));
+        let batch=runtime.begin_post("@null plan",None,&|_|{}).await.unwrap();runtime.run(batch,&|_|{}).await;
+        assert_eq!(*probe.starts.lock().unwrap(),vec![apex_core::Access::Read]);
+        assert_eq!(probe.finishes.load(Ordering::SeqCst),1);
+    });
 }

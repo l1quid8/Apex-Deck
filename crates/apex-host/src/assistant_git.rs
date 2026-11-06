@@ -2,13 +2,122 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
-    io::Write,
+    cell::{Cell, RefCell},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    process::{Child, Command, Output, Stdio},
+    rc::Rc,
+    sync::{atomic::{AtomicBool, AtomicU64, Ordering}, mpsc, Arc},
+    time::{Duration, Instant},
 };
 static NEXT: AtomicU64 = AtomicU64::new(1);
 const MAX_NEW_FILE: u64 = 50 * 1024 * 1024;
+/// The longest a snapshot and its review diff may take. A hung Git step would
+/// otherwise hold the task, and in-place jobs its checkout, without end.
+pub(crate) const SAVE_LIMIT: Duration = Duration::from_secs(30 * 60);
+/// Cancel waits 30 seconds, so a stopped job's save must end well inside that.
+/// A healthy save usually fits, and pause and retry want its snapshot.
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
+/// TERM lets Git remove its own lock files before anything is killed.
+const TERM_GRACE: Duration = Duration::from_secs(2);
+const POLL: Duration = Duration::from_millis(20);
+pub(crate) const SAVE_TOO_LONG: &str = "Saving the result took too long, so Deck stopped Git. The work is still in its folder.";
+pub(crate) const SAVE_STOPPED: &str = "The job was stopped before its result finished saving. The work is still in its folder.";
+
+/// When Git must give up: at a deadline, or a grace period after `stop` is set.
+pub(crate) struct GitLimit {
+    deadline: Instant,
+    stop: Option<Arc<AtomicBool>>,
+    stopped_at: Cell<Option<Instant>>,
+}
+
+impl GitLimit {
+    pub(crate) fn new(limit: Duration, stop: Option<Arc<AtomicBool>>) -> Self {
+        Self { deadline: Instant::now() + limit, stop, stopped_at: Cell::new(None) }
+    }
+
+    fn ended(&self) -> bool {
+        if self.stopped_at.get().is_none() && self.stop.as_ref().is_some_and(|stop| stop.load(Ordering::SeqCst)) {
+            self.stopped_at.set(Some(Instant::now()));
+        }
+        Instant::now() >= self.deadline || self.stopped_at.get().is_some_and(|at| at.elapsed() >= STOP_GRACE)
+    }
+
+    fn reason(&self) -> &'static str {
+        if self.stopped_at.get().is_some() { SAVE_STOPPED } else { SAVE_TOO_LONG }
+    }
+}
+
+thread_local! {
+    static GIT_LIMIT: RefCell<Option<Rc<GitLimit>>> = const { RefCell::new(None) };
+}
+
+struct ClearGitLimit;
+impl Drop for ClearGitLimit {
+    fn drop(&mut self) { GIT_LIMIT.with(|limit| *limit.borrow_mut() = None); }
+}
+
+/// Bounds every Git command `work` runs on this thread. Capture's many small
+/// helpers read the limit here, so none of them can forget to pass it on.
+pub(crate) fn within<T>(limit: GitLimit, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let limit = Rc::new(limit);
+    GIT_LIMIT.with(|slot| *slot.borrow_mut() = Some(Rc::clone(&limit)));
+    let _clear = ClearGitLimit;
+    // Any error after the limit is a symptom of it: a killed step can surface
+    // as "the checkout changed".
+    work().map_err(|error| if limit.ended() { limit.reason().to_owned() } else { error })
+}
+
+/// Stops a hung Git and whatever it started, such as a clean filter. A process
+/// stuck in the kernel can outlive even SIGKILL, so this never waits on it for
+/// long. Windows has no process group here, so only Git itself is stopped.
+fn end_git(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGTERM); }
+    let gone_by = Instant::now() + TERM_GRACE;
+    while Instant::now() < gone_by && !matches!(child.try_wait(), Ok(Some(_))) { std::thread::sleep(POLL); }
+    #[cfg(unix)]
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+    let _ = child.kill();
+    let reaped_by = Instant::now() + TERM_GRACE;
+    while Instant::now() < reaped_by && !matches!(child.try_wait(), Ok(Some(_))) { std::thread::sleep(POLL); }
+}
+
+/// `wait_with_output`, except it can give up. Pipes drain on their own threads
+/// so a chatty Git can't block, and a process holding a pipe can't block us.
+fn output_within(mut child: Child, limit: &GitLimit) -> Result<Output, String> {
+    let (sent, outputs) = mpsc::channel();
+    let drain = |pipe: Option<Box<dyn Read + Send>>, slot: usize| {
+        let sent = sent.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe { let _ = pipe.read_to_end(&mut bytes); }
+            let _ = sent.send((slot, bytes));
+        });
+    };
+    drain(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>), 0);
+    drain(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>), 1);
+    drop(sent);
+    let mut pipes = [Vec::new(), Vec::new()];
+    let mut open = 2;
+    let mut status = None;
+    loop {
+        if limit.ended() {
+            end_git(&mut child);
+            return Err(limit.reason().to_owned());
+        }
+        if status.is_none() { status = child.try_wait().map_err(|e| e.to_string())?; }
+        if open == 0 {
+            match status {
+                Some(status) => return Ok(Output { status, stdout: std::mem::take(&mut pipes[0]), stderr: std::mem::take(&mut pipes[1]) }),
+                None => std::thread::sleep(POLL),
+            }
+        } else if let Ok((slot, bytes)) = outputs.recv_timeout(POLL) {
+            pipes[slot] = bytes;
+            open -= 1;
+        }
+    }
+}
 
 /// Git for Windows does not accept Rust's verbatim canonical paths as worktree
 /// arguments. Keep native paths internally and adapt only at the CLI boundary.
@@ -84,11 +193,17 @@ fn run_git(
     args: &[&str],
     input: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0");
+    let limit = GIT_LIMIT.with(|limit| limit.borrow().clone());
+    if let Some(limit) = limit.as_ref().filter(|limit| limit.ended()) {
+        return Err(limit.reason().to_owned());
+    }
+    let mut command = crate::project_process::git_command();
+    #[cfg(unix)]
+    if limit.is_some() {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command.current_dir(root).args(args);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", external_path(index).as_os_str());
     }
@@ -107,7 +222,10 @@ fn run_git(
             .write_all(input)
             .map_err(|e| e.to_string())?;
     }
-    let result = child.wait_with_output().map_err(|e| e.to_string())?;
+    let result = match &limit {
+        Some(limit) => output_within(child, limit)?,
+        None => child.wait_with_output().map_err(|e| e.to_string())?,
+    };
     if result.status.success() {
         Ok(result.stdout)
     } else {
@@ -182,6 +300,11 @@ impl Drop for TemporaryIndex {
 /// files. A separate index leaves the user's staging byte-for-byte intact.
 /// Private refs are retained locally; this module never pushes them.
 pub fn capture(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot, String> {
+    if GIT_LIMIT.with(|limit| limit.borrow().is_some()) { return capture_checkout(cwd, task, purpose) }
+    within(GitLimit::new(SAVE_LIMIT, None), || capture_checkout(cwd, task, purpose))
+}
+
+fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot, String> {
     if !safe_component(task) || !safe_component(purpose) {
         return Err("Invalid task snapshot identity.".into());
     }
@@ -1048,6 +1171,62 @@ mod tests {
         .unwrap();
         root
     }
+    /// The filter gives up by itself so a failing test can't run forever.
+    #[cfg(unix)]
+    fn hang_saves(root: &Path) {
+        std::fs::write(root.join(".git/hang.sh"), "echo $$ > .git/hang-pid\ni=0\nwhile [ $i -lt 300 ]; do sleep 0.05; i=$((i+1)); done\ncat\n").unwrap();
+        git(root, &["config", "filter.hang.clean", "sh .git/hang.sh"]).unwrap();
+        std::fs::write(root.join(".gitattributes"), "tracked.txt filter=hang\n").unwrap();
+        std::fs::write(root.join("tracked.txt"), "edited\n").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_save_ends_at_its_time_limit_and_leaves_nothing_behind() {
+        let root = fixture();
+        hang_saves(&root);
+        let started = std::time::Instant::now();
+        let error = within(GitLimit::new(std::time::Duration::from_millis(500), None), || capture(&root, "hung-save", "result")).unwrap_err();
+        assert_eq!(error, SAVE_TOO_LONG);
+        assert!(started.elapsed() < std::time::Duration::from_secs(8), "took {:?}", started.elapsed());
+        let pid: i32 = std::fs::read_to_string(root.join(".git/hang-pid")).unwrap().trim().parse().unwrap();
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the filter Git started must die with it");
+        let left: Vec<_> = std::fs::read_dir(root.join(".git")).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with("apex-index") || name.ends_with(".lock")).collect();
+        assert!(left.is_empty(), "{left:?}");
+        git(&root, &["config", "--unset", "filter.hang.clean"]).unwrap();
+        capture(&root, "hung-save", "result").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_ends_a_hung_save_after_a_short_grace() {
+        let root = fixture();
+        hang_saves(&root);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let started = std::time::Instant::now();
+        let error = within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(&root, "stopped-save", "result")).unwrap_err();
+        assert_eq!(error, SAVE_STOPPED);
+        assert!(started.elapsed() >= STOP_GRACE, "a save that is merely slow gets its grace");
+        assert!(started.elapsed() < STOP_GRACE + std::time::Duration::from_secs(6), "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_stopped_job_still_saves_when_git_is_healthy() {
+        let root = fixture();
+        std::fs::write(root.join("tracked.txt"), "edited\n").unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(&root, "paused-save", "result")).unwrap();
+    }
+
+    #[test]
+    fn a_limited_git_command_can_return_more_than_a_pipe_holds() {
+        let root = fixture();
+        std::fs::write(root.join("big.txt"), "x".repeat(4 * 1024 * 1024)).unwrap();
+        let blob = git(&root, &["hash-object", "-w", "big.txt"]).unwrap();
+        let text = within(GitLimit::new(SAVE_LIMIT, None), || git(&root, &["cat-file", "blob", blob.trim()])).unwrap();
+        assert_eq!(text.len(), 4 * 1024 * 1024);
+    }
+
     #[test]
     fn empty_committed_repository_captures_runs_and_integrates_without_touching_user_index() {
         let root=empty_fixture();

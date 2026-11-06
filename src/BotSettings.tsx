@@ -3,6 +3,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode 
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { Access, ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
+import { applyNowFirst } from './accessChange';
 import { Segmented } from './AgentPicker';
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from './speed';
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
@@ -13,7 +14,7 @@ import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media
 import { dollars, mediaMenuLine, pictureLine, quoteFor } from './mediaPrice';
 
 /** What a save can carry. */
-type Change = { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings };
+type Change = { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings; can_read_images?: boolean };
 
 interface Props {
   config: ParticipantConfig;
@@ -31,6 +32,9 @@ interface Props {
   meters?: ReactNode;
   talkOnly?: boolean;
   accessPending?: boolean;
+  /** A change made while this bot works, offered Apply now. */
+  accessChange?: { from: Access; to: Access };
+  onApplyAccess?: () => void;
   /** The provider's usage resets, shown under Access. */
   resets?: ReactNode;
   /** Assistant-owned snapshots never create or fetch a room. */
@@ -44,9 +48,10 @@ interface Props {
   /** Owning-host text choices for a scoped assistant; no generic fallback models. */
   offeredModels?: ModelChoice[];
 }
-export function BotSettings({ config, roomId, anchor = null, inline = false, backend, save, close, avatar, meters, accessPending = false, talkOnly = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
+export function BotSettings({ config, roomId, anchor = null, inline = false, backend, save, close, avatar, meters, accessPending = false, accessChange, onApplyAccess, talkOnly = false, resets, loadCurrent, provider, disabledReason, textOnly = false, allowManualModel = true, allowDefaultModel = true, offeredModels }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
+  const [laterChosen, setLaterChosen] = useState(false);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
   const apiUrl = api?.base_url ?? null;
   const apiKeyEnv = api?.api_key_env ?? null;
@@ -241,10 +246,11 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       if (left.speed === sent.speed) delete left.speed;
       if (left.access === sent.access) delete left.access;
       if (left.media === sent.media) delete left.media;
+      if (left.can_read_images === sent.can_read_images) delete left.can_read_images;
       touched.current = left;
       setSettled(n => n + 1);
     }
-    catch (error) { if (version === saveVersion.current) { setError(String(error)); delete touched.current.access; setSettled(n => n + 1); requested.current = { model: '\0', effort: '\0' }; } }
+    catch (error) { if (version === saveVersion.current) { setError(String(error)); delete touched.current.access; delete touched.current.can_read_images; setSettled(n => n + 1); requested.current = { model: '\0', effort: '\0' }; } }
     if (version === saveVersion.current) setSaving(false);
   };
   useEffect(() => {
@@ -334,9 +340,22 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
       {talkOnly ? <div className="bot-access"><span className="model-select-label">Access</span><span>Talk only</span></div> : (tool || api) && <>
         <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
-        {accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
+        {accessPending && accessChange && !laterChosen
+          ? <div className="bot-access-choice" role="group" aria-label="When to apply this access">
+              <p className="muted bot-access-note">Applies after this reply. Apply now stops this bot and restarts it from the chat, so it loses track of its current steps and a running command is cut off.</p>
+              <div>
+                <button type="button" className={applyNowFirst(accessChange.from, accessChange.to) ? "primary" : ""} onClick={onApplyAccess}>Apply now</button>
+                <button type="button" className={applyNowFirst(accessChange.from, accessChange.to) ? "" : "primary"} onClick={() => setLaterChosen(true)}>After this reply</button>
+              </div>
+            </div>
+          : accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
       </>}
       {resets}
+      {api && !mediaType && !talkOnly && <details className="bot-computer">
+        <summary>Advanced</summary>
+        <label className="check-label"><input type="checkbox" checked={touched.current.can_read_images ?? config.can_read_images ?? false} onChange={e => { void apply({ can_read_images: e.target.checked }); }} /> This model can read images</label>
+        <p className="muted">Turn on only if this model accepts images. Screenshots of apps you approve go to your model provider.</p>
+      </details>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}
       {note && <p className="muted">{note}</p>}

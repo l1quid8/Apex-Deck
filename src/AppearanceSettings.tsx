@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { BACKDROP_PATTERNS, BUILTIN_SKINS, CLAY_ACCENT_PRESETS, MAX_GLOWS, MIN_GLOWS, accentHex, backdropLayers, backgroundPatch, colorAppearance, glowColorList, parseSkin, shuffledGlowColors, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
 import type { LandingTextureSettings } from "./settings";
+import { deckClipboard } from "./copyText";
 
 const FILE_LIMIT = 32_000;
 const SLIDERS: { key: "glow" | "blur" | "opacity" | "radius" | "backdrop"; label: string; help: string; min: number; max: number; suffix: string }[] = [
@@ -47,7 +48,7 @@ function normalizeHex(input: string): string | null {
 }
 
 /** One exact glow color: a color picker plus a hex box that commits on blur or Enter. */
-function GlowColorRow({ index, color, onCommit }: { index: number; color: string; onCommit: (hex: string) => void }) {
+export function GlowColorRow({ index, color, onCommit }: { index: number; color: string; onCommit: (hex: string) => void }) {
   const [text, setText] = useState(color);
   const [error, setError] = useState(false);
   useEffect(() => { setText(color); setError(false); }, [color]);
@@ -76,7 +77,7 @@ function GlowColorRow({ index, color, onCommit }: { index: number; color: string
 }
 
 /** Controls for the glyph field behind empty threads. Rendered only where the parent passes them. */
-function LandingTextureControls({ value, onChange }: { value: LandingTextureSettings; onChange: (value: LandingTextureSettings) => void }) {
+export function LandingTextureControls({ value, onChange, switchId }: { value: LandingTextureSettings; onChange: (value: LandingTextureSettings) => void; switchId?: string }) {
   const [hexText, setHexText] = useState(value.color);
   const [hexBad, setHexBad] = useState(false);
   useEffect(() => { setHexText(value.color); setHexBad(false); }, [value.color]);
@@ -94,7 +95,7 @@ function LandingTextureControls({ value, onChange }: { value: LandingTextureSett
     <div className="appearance-controls">
       <label className="appearance-option">
         <span className="appearance-control-copy"><strong>Show the field</strong><small>Behind empty threads only, never behind messages.</small></span>
-        <input type="checkbox" role="switch" checked={value.enabled} onChange={(event) => patch({ enabled: event.currentTarget.checked })} />
+        <input id={switchId} type="checkbox" role="switch" checked={value.enabled} onChange={(event) => patch({ enabled: event.currentTarget.checked })} />
       </label>
       <div className="appearance-option">
         <div className="appearance-control-copy"><strong>Color</strong><small>Rainbow cycles hues across the field, or pick one color.</small></div>
@@ -209,8 +210,7 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
   };
   const copyText = async (text: string, success: string) => {
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable. Check your browser permissions.");
-      await navigator.clipboard.writeText(text);
+      await deckClipboard.writeText(text);
       setNotice({ text: success });
     } catch (error) {
       setNotice({ text: `Could not copy: ${error instanceof Error ? error.message : String(error)}`, error: true });
@@ -316,10 +316,7 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
             <button type="button" aria-pressed={appearance.density === 1} onClick={() => tune({ density: 1 })}>Roomy</button>
           </div>
         </div>
-        <label className="appearance-option">
-          <span className="appearance-control-copy"><strong>Light surfaces</strong><small>Pale panels and dark text.</small></span>
-          <input type="checkbox" role="switch" checked={appearance.light} onChange={(event) => tune({ light: event.currentTarget.checked })} />
-        </label>
+        <p className="appearance-note">Light/Dark/System is now at the top of Appearance, separate from skin styling. The skin's portable light hint is preserved but no longer edited here directly.</p>
         {!isClay && <label className="appearance-option">
           <span className="appearance-control-copy"><strong>Flat surfaces</strong><small>Solid panels without the glass effect.</small></span>
           <input type="checkbox" role="switch" checked={appearance.flat} onChange={(event) => tune({ flat: event.currentTarget.checked })} />

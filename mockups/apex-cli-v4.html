@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apex CLI v4 · background logo, readable turns, busy-thread return</title>
+<style>
+  :root { --page:#05070a; --term:#0d1117; --line:#1f2733; --text:#e2e8f0; --gray:#94a3b8; }
+  html,body { margin:0; background:var(--page); color:var(--text);
+    font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+  main { max-width:1900px; margin:0 auto; padding:24px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  p.lede { color:var(--gray); margin:0 0 18px; max-width:900px; }
+  nav { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+  nav button { background:#111827; color:var(--gray); border:1px solid var(--line);
+    border-radius:8px; padding:6px 12px; font:inherit; cursor:pointer; }
+  nav button[aria-selected=true] { color:#67e8f9; border-color:#67e8f9; }
+  .pair { display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start; }
+  figure { margin:0; }
+  figcaption { color:var(--gray); margin:0 0 6px; font-size:12px; }
+  figcaption b { color:var(--text); }
+  pre.term { margin:0; background:var(--term); border:1px solid var(--line); border-radius:8px;
+    padding:6px 0; font:12px/1.25 ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;
+    white-space:pre; overflow:hidden; }
+  pre.term span { white-space:pre; }
+  ul.notes { color:var(--gray); max-width:1100px; margin:18px 0 0; padding-left:18px; }
+  ul.notes li { margin:3px 0; }
+  ul.notes code { color:var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Apex CLI v4 — background logo, readable turns, returning to busy work</h1>
+  <p class="lede">Design only. Each screen is drawn cell-for-cell at a real terminal size, using the
+  colours in <code>crates/apex-cli/src/ui.rs</code>. Left is today's build, right is the proposal.
+  The conversation text is made-up sample text.</p>
+  <nav role="tablist">
+    <button role="tab" data-tab="empty" aria-selected="true">Empty thread · 120×42</button>
+    <button role="tab" data-tab="busy" aria-selected="false">Busy thread · 120×42</button>
+    <button role="tab" data-tab="return" aria-selected="false">Back to a busy thread · 120×42</button>
+    <button role="tab" data-tab="small" aria-selected="false">Small window · 80×24</button>
+    <button role="tab" data-tab="fit" aria-selected="false">Tight fit · long name, 6 agents, 80×16</button>
+  </nav>
+  <section id="stage" class="pair"></section>
+  <ul class="notes" id="notes"></ul>
+</main>
+<script>
+// ---- colours (same RGB as ui.rs) -------------------------------------------
+var BG=[13,17,23], CYAN=[103,232,249], MINT=[82,243,163], MARK_CYAN=[38,215,239],
+    GRAY=[148,163,184], WHITE=[245,252,248], PURPLE=[167,139,250], GREEN=[110,231,183],
+    AMBER=[251,191,36], CODE=[253,186,116], BAND=[28,34,44], DIMGRAY=[90,101,117];
+function mix(c,a){ return c.map(function(v,i){ return Math.round(BG[i]+(v-BG[i])*a); }); }
+var DIM_MINT=mix(MINT,.30), DIM_CYAN=mix(MARK_CYAN,.30);
+function rgb(c){ return 'rgb('+c.join(',')+')'; }
+var AGENTS={ Jigga:CYAN, Null:PURPLE, Muck:GREEN, Cast:[244,114,182], Twil:[96,165,250], Gronk:[251,146,60] };
+
+// ---- the mark (copied from ui.rs MARK_LARGE / MARK_SMALL) ------------------
+var MARK_LARGE=["            g            ","           ggg           ","          gg gg          ","         gg   gg         ","        gg     gg        ","       gg       gg       ","      gg         gg      ","     gg           gg     ","    gg             gg    ","   gg   gg          gg   ","  gg     gg          gg  "," gg       gg          gg ","cc         gg          cc"," cc       gg          cc ","  cc     gg          cc  ","   cc   gg    ccccc cc   ","    cc             cc    ","     cc           cc     ","      cc         cc      ","       cc       cc       ","        cc     cc        ","         cc   cc         ","          cc cc          ","           ccc           ","            c            "];
+var MARK_SMALL=["        g        ","       g g       ","      g   g      ","     g     g     ","    g       g    ","   g         g   ","  g  g        g  "," g    g        g ","c      g        c"," c    g        c ","  c  g  cccc  c  ","   c         c   ","    c       c    ","     c     c     ","      c   c      ","       c c       ","        c        "];
+
+// Big background mark: one pixel = 2 columns × 1 row (square on screen).
+function bigMark(){ return MARK_LARGE.map(function(r){
+  var segs=[]; for(var i=0;i<r.length;i++){ var c=r[i];
+    segs.push(c==='g'?{t:'██',fg:DIM_MINT}:c==='c'?{t:'██',fg:DIM_CYAN}:{t:'  '}); }
+  return segs; }); }
+// Compact mark: two pixel rows per text row through half blocks (as ui.rs does).
+function halfMark(rows,top,bottom){ var out=[];
+  for(var y=0;y<rows.length;y+=2){ var a=rows[y], b=rows[y+1]||'', segs=[];
+    for(var x=0;x<a.length;x++){ var t=px(a[x]), u=px(b[x]);
+      if(t&&u&&t===u) segs.push({t:'█',fg:t}); else if(t&&u) segs.push({t:'▀',fg:t,bg:u});
+      else if(t) segs.push({t:'▀',fg:t}); else if(u) segs.push({t:'▄',fg:u}); else segs.push({t:' '}); }
+    out.push(segs); }
+  function px(c){ return c==='g'?top:c==='c'?bottom:null; }
+  return out; }
+
+// ---- tiny line model -------------------------------------------------------
+function len(segs){ return segs.reduce(function(n,s){ return n+[...s.t].length; },0); }
+function line(){ return { segs:[].slice.call(arguments) }; }
+function blank(){ return line(); }
+function center(segs,w){ var pad=Math.max(0,Math.floor((w-len(segs))/2)); return [{t:' '.repeat(pad)}].concat(segs); }
+function wrap(text,w){ var out=[]; text.split('\n').forEach(function(p){
+  var cur=''; p.split(' ').forEach(function(word){
+    if(cur && (cur+' '+word).length>w){ out.push(cur); cur=word; } else cur=cur?cur+' '+word:word; });
+  out.push(cur); }); return out; }
+// **bold** and `code` → styled segments (proposal only).
+function md(text,base){ var segs=[], re=/(\*\*[^*]+\*\*|`[^`]+`)/g, last=0, m;
+  while((m=re.exec(text))){ if(m.index>last) segs.push({t:text.slice(last,m.index),fg:base});
+    var s=m[0]; if(s[0]==='*') segs.push({t:s.slice(2,-2),fg:WHITE,b:1}); else segs.push({t:s.slice(1,-1),fg:CODE});
+    last=m.index+s.length; }
+  if(last<text.length) segs.push({t:text.slice(last),fg:base}); return segs; }
+function plainWidth(text){ return text.replace(/\*\*|`/g,'').length; }
+function wrapMd(text,w){ // wrap by visible width, keep markers intact
+  var out=[]; text.split('\n').forEach(function(p){ var cur='';
+    p.split(' ').forEach(function(word){ var next=cur?cur+' '+word:word;
+      if(cur && plainWidth(next)>w){ out.push(cur); cur=word; } else cur=next; });
+    out.push(cur); }); return out; }
+
+// ---- shared chrome ---------------------------------------------------------
+function headerOld(title){ return [
+  line({t:' ◆ ',fg:MINT,b:1},{t:'APEX DECK ',fg:WHITE,b:1},{t:title,fg:GRAY}),
+  line({t:' F1 Welcome   Chat   F3 Threads   F4 Agents   F2 Requests',fg:GRAY}) ]; }
+// Fit rules, applied in order until the line fits the width:
+// 1 folder → last segment (~/apex-deck)  2 agents → first 3 + "+N"
+// 3 thread name → cut with "…" (min 12)  4 drop version  5 drop folder.
+function headerNew(w,thread,agents,folder){
+  var opt={folder:folder,maxAgents:agents.length,thread:thread,version:true,showFolder:true};
+  function build(){
+    var left=[{t:' ◆ ',fg:MINT,b:1},{t:'Apex Deck',fg:WHITE,b:1}];
+    if(opt.version) left.push({t:' 0.9.8',fg:DIMGRAY});
+    left.push({t:'  ·  ',fg:DIMGRAY},{t:opt.thread,fg:WHITE});
+    if(agents.length){ left.push({t:'  ·  ',fg:DIMGRAY});
+      var shown=agents.slice(0,opt.maxAgents);
+      shown.forEach(function(a,i){ left.push({t:a,fg:AGENTS[a]}); if(i<shown.length-1) left.push({t:', ',fg:DIMGRAY}); });
+      if(agents.length>shown.length) left.push({t:' +'+(agents.length-shown.length),fg:GRAY}); }
+    var right=opt.showFolder?[{t:opt.folder+' ',fg:DIMGRAY}]:[];
+    return {left:left,right:right,need:len(left)+len(right)+1}; }
+  var steps=[function(){ opt.folder='~/'+folder.split('/').pop(); },
+    function(){ opt.maxAgents=Math.min(3,agents.length); },
+    function(){ var over=build().need-w; if(over>0){ var keep=Math.max(12,[...thread].length-over-1); opt.thread=[...thread].slice(0,keep).join('')+'…'; } },
+    function(){ opt.version=false; }, function(){ opt.showFolder=false; }];
+  var r=build();
+  for(var i=0;i<steps.length && r.need>w;i++){ steps[i](); r=build(); }
+  var gap=Math.max(1,w-len(r.left)-len(r.right));
+  return [ line.apply(null,r.left.concat([{t:' '.repeat(gap)}],r.right)),
+    line({t:' F1 Welcome   Chat   F3 Threads   F4 Agents   F2 Requests',fg:GRAY}) ]; }
+function composer(w,title,draft,lines){ var out=[], inner=w-2;
+  var top='┌'+title; top+= '─'.repeat(Math.max(0,w-1-[...top].length))+'┐';
+  out.push(line({t:top,fg:CYAN}));
+  for(var i=0;i<lines;i++){ var txt=i===0?draft:''; out.push(line({t:'│',fg:CYAN},{t:txt+' '.repeat(Math.max(0,inner-txt.length))},{t:'│',fg:CYAN})); }
+  out.push(line({t:'└'+'─'.repeat(w-2)+'┘',fg:CYAN})); return out; }
+function status(agents,busy){ return line({t:' connected · '+agents+' agents'+(busy?' · working…':'')+' · Alt+Enter/Ctrl-J newline · Ctrl-C exit',fg:GRAY}); }
+
+// Assemble: header + screen area (fills height) + composer + status
+function frame(w,h,head,screen,comp,stat,opts){
+  opts=opts||{}; var area=h-head.length-comp.length-1, body=screen.slice(0,area);
+  if(opts.bottom){ body=screen.slice(Math.max(0,screen.length-area)); while(body.length<area) body.unshift(blank()); }
+  else while(body.length<area) body.push(blank());
+  return head.concat(body,comp,[stat]); }
+// Each row is a fixed-height block so backgrounds and block characters meet
+// with no seams, the way a terminal draws them. █ ▀ ▄ become painted cells.
+function render(rows,w){ var pre=document.createElement('pre'); pre.className='term';
+  rows.forEach(function(r){ var used=0, row=document.createElement('div');
+    row.style.cssText='height:15px;line-height:15px;'+(r.fill?'background:'+rgb(r.fill)+';':'');
+    r.segs.forEach(function(s){ var cut=[...s.t].slice(0,Math.max(0,w-used)).join(''); used+=[...cut].length;
+      if(!cut) return;
+      var sp=document.createElement('span'), st='display:inline-block;height:15px;vertical-align:top;';
+      var under=s.bg?rgb(s.bg):(r.fill?rgb(r.fill):'transparent');
+      if(/^█+$/.test(cut)){ sp.textContent=' '.repeat([...cut].length); st+='background:'+rgb(s.fg)+';'; }
+      else if(/^▀+$/.test(cut)){ sp.textContent=' '.repeat(cut.length); st+='background:linear-gradient('+rgb(s.fg)+' 50%,'+under+' 50%);'; }
+      else if(/^▄+$/.test(cut)){ sp.textContent=' '.repeat(cut.length); st+='background:linear-gradient('+under+' 50%,'+rgb(s.fg)+' 50%);'; }
+      else { sp.textContent=cut; if(s.fg) st+='color:'+rgb(s.fg)+';'; if(s.bg) st+='background:'+rgb(s.bg)+';'; if(s.b) st+='font-weight:700;'; }
+      sp.style.cssText=st; row.appendChild(sp); });
+    if(!used) row.appendChild(document.createTextNode(' '));
+    pre.appendChild(row); });
+  pre.style.width=w+'ch'; return pre; }
+
+// ---- sample conversation ---------------------------------------------------
+var TURNS=[
+  {who:'user', text:'@null can you sketch a settings page for the sample app?'},
+  {who:'Null', text:"Sure. I'd start with three sections: **Account**, **Notifications** and **Appearance**.\n\nEach section is one card, and the toggles live in `settings.tsx`."},
+  {who:'user', text:'sounds good. keep it to one screen\nand ask muck to check the wording'},
+  {who:'Null', text:"Will do. **One screen**, no tabs. @muck can you check the labels?"},
+  {who:'Muck', text:"On it. Should `Appearance` stay its own section, or fold into Account?"}
+];
+var ACTIVITY={who:'Muck', text:'reading src/settings.tsx'};
+
+// Back to a busy thread: the user left while Null was mid-reply and Muck was
+// running a command, then returned before either sent another update.
+var RETURN_TURNS=[
+  {who:'user', text:'@null @muck write the onboarding copy and check it fits the 80-column layout'}
+];
+var NULL_PARTIAL="Here's a first pass at the onboarding copy:\n\n**Step 1 · Sign in.** Pick a provider with `/login`. Your existing sign-in is reused when one is found.\n\n**Step 2 · Create agents.** Give each one a name, a model and";
+var MUCK_ACTIVITY='running npm run lint';
+
+function busyOld(w){ var out=[];
+  TURNS.forEach(function(t){
+    out.push(line({t:t.who,fg:t.who==='user'?GRAY:AGENTS[t.who],b:1}));
+    t.text.split('\n').forEach(function(l){ wrap(l,w).forEach(function(x){ out.push(line({t:x})); }); });
+    out.push(blank()); });
+  out.push(line({t:'◌ '+ACTIVITY.who+' · '+ACTIVITY.text,fg:[255,255,0]}));
+  return out; }
+function busyNew(w){ var out=turnsNew(TURNS,w);
+  out.push(line({t:' ◌ ',fg:AMBER},{t:ACTIVITY.who,fg:AGENTS[ACTIVITY.who],b:1},{t:' · '+ACTIVITY.text,fg:AMBER}));
+  return out; }
+// Today: the switch wiped the live copy, so after returning there is no
+// partial reply and no working line, though both agents are still busy.
+function returnOld(w){ var out=[];
+  RETURN_TURNS.forEach(function(t){ out.push(line({t:'user',fg:GRAY,b:1}));
+    wrap(t.text,w).forEach(function(x){ out.push(line({t:x})); }); out.push(blank()); });
+  return out; }
+// Proposed (and what the fix now draws): the host's saved partial reply comes
+// back with the thread, the cursor shows text is still arriving, and every
+// busy agent gets its own named working line.
+function returnNew(w){ var out=turnsNew(RETURN_TURNS,w);
+  out.push(line({t:' Null',fg:AGENTS.Null,b:1}));
+  var rows=wrapMd(NULL_PARTIAL,w-5);
+  rows.forEach(function(x,i){ var segs=[{t:'   '}].concat(md(x,[203,213,225]));
+    if(i===rows.length-1) segs.push({t:'▍',fg:AGENTS.Null}); out.push({segs:segs}); });
+  out.push(blank());
+  out.push(line({t:' ◌ ',fg:AMBER},{t:'Null',fg:AGENTS.Null,b:1},{t:' · writing reply',fg:AMBER}));
+  out.push(line({t:' ◌ ',fg:AMBER},{t:'Muck',fg:AGENTS.Muck,b:1},{t:' · '+MUCK_ACTIVITY,fg:AMBER}));
+  return out; }
+function turnsNew(turns,w){ var out=[];
+  turns.forEach(function(t){
+    if(t.who==='user'){ // › marker on a full-width shaded band, no "user" label
+      var rows=wrap(t.text,w-4);
+      out.push({segs:[],fill:BAND});
+      rows.forEach(function(x,i){ out.push({segs:[{t:i===0?' › ':'   ',fg:CYAN,b:1},{t:x,fg:WHITE}],fill:BAND}); });
+      out.push({segs:[],fill:BAND});
+    } else {
+      out.push(line({t:' '+t.who,fg:AGENTS[t.who],b:1}));
+      wrapMd(t.text,w-5).forEach(function(x){ out.push({segs:[{t:'   '}].concat(md(x,[203,213,225]))}); });
+    }
+    out.push(blank()); });
+  return out; }
+
+function emptyOld(){ return [line({t:'Empty thread. /add an agent to start.'})]; }
+// Size rule: big 2×1 mark with 29+ free rows and 54+ columns; half-block
+// mark with 14+ rows; otherwise the hint alone, so nothing is pushed off.
+function emptyNew(w,area,hint){
+  var mark=(area>=29&&w>=54)?bigMark():area>=14?halfMark(MARK_SMALL,DIM_MINT,DIM_CYAN):[];
+  var block=mark.length+3, top=Math.max(0,Math.floor((area-block)/2)), out=[];
+  for(var i=0;i<top;i++) out.push(blank());
+  mark.forEach(function(r){ out.push({segs:center(r,w)}); });
+  if(mark.length) out.push(blank(),blank());
+  out.push({segs:center([{t:hint,fg:GRAY}],w)});
+  return out; }
+
+// ---- screens ---------------------------------------------------------------
+var W=120,H=42;
+function emptyPair(){
+  var T='team-plan', agents=['Jigga','Null'];
+  var titleOld=' Message Jigga · @ to switch · / for commands ';
+  var old=frame(W,H,headerOld(T),emptyOld(),composer(W,titleOld,'',2),status(2));
+  var headN=headerNew(W,T,agents,'~/Downloads/apex-deck'), compN=composer(W,titleOld,'',2);
+  var area=H-headN.length-compN.length-1;
+  var neu=frame(W,H,headN,emptyNew(W,area,'Jigga and Null are here  ·  @ to pick an agent  ·  / for commands'),compN,status(2));
+  return [['Today', 'Empty thread: one plain line at the top, the rest blank.', old,W],
+          ['Proposed', 'Dimmed diamond fills the empty chat area (2×1 cells per pixel = square). The first message replaces it.', neu,W]]; }
+function busyPair(){
+  var T='cli-thread-switch', agents=['Jigga','Null','Muck'];
+  var title=' Message Null, Muck · @ to switch · / for commands ';
+  var old=frame(W,H,headerOld(T),busyOld(W),composer(W,title,'',2),status(3,true),{bottom:true});
+  var neu=frame(W,H,headerNew(W,T,agents,'~/Downloads/apex-deck'),busyNew(W),composer(W,title,'',2),status(3,true),{bottom:true});
+  return [['Today','Your turns and ours are the same plain text; only a gray “user” label tells them apart. ** and ` show raw.',old,W],
+          ['Proposed','Your turns: › on a shaded band, no label. Agent turns: coloured name, text indented under it, bold and code drawn.',neu,W]]; }
+function smallPair(){
+  var w=80,h=24,T='team-plan';
+  var title=' Message Jigga · @ to switch · / for commands ';
+  var old=frame(w,h,headerOld(T),emptyOld(),composer(w,title,'',2),status(2));
+  var headN=headerNew(w,T,['Jigga','Null'],'~/apex-deck'), compN=composer(w,title,'',2);
+  var area=h-headN.length-compN.length-1;
+  var neu=frame(w,h,headN,emptyNew(w,area,'Jigga and Null are here  ·  @ to pick an agent'),compN,status(2));
+  return [['Today','80×24, empty thread.',old,w],
+          ['Proposed','Short windows switch to the half-block mark (9 rows). Under 14 free rows: no mark, hint only.',neu,w]]; }
+function returnPair(){
+  var T='onboarding-copy', agents=['Jigga','Null','Muck'];
+  var title=' Message Null, Muck · @ to switch · / for commands ';
+  var old=frame(W,H,headerOld(T),returnOld(W),composer(W,title,'',2),status(3,true),{bottom:true});
+  var neu=frame(W,H,headerNew(W,T,agents,'~/Downloads/apex-deck'),returnNew(W),composer(W,title,'',2),status(3,true),{bottom:true});
+  return [['Today','Back from another thread while Null and Muck are still working: no partial reply, no working line. Both look idle until their next update.',old,W],
+          ['Proposed','The thread comes back with Null’s reply so far (▍ = still arriving) and a named working line for each busy agent. New text continues from the cursor.',neu,W]]; }
+function fitPair(){
+  var T='cli-thread-switch-and-reconnect-recovery-check', agents=['Jigga','Null','Muck','Cast','Twil','Gronk'];
+  var title=' Message Jigga, Null, Muck +3 · @ to switch ';
+  var w=80;
+  var headA=headerNew(w,T,agents,'~/Downloads/apex-deck'), compA=composer(w,title,'',2);
+  var a=frame(w,24,headA,emptyNew(w,24-headA.length-compA.length-1,'Six agents are here  ·  @ to pick one'),compA,status(6));
+  var compB=composer(w,title,'',2);
+  var b=frame(w,16,headA,emptyNew(w,16-headA.length-compB.length-1,'Six agents are here  ·  @ to pick one'),compB,status(6));
+  return [['80×24','Long thread name and six agents: folder shortens, agents cap at three plus “+3”, the name is cut with “…”.',a,w],
+          ['80×16','Same thread in a short window: under 14 free rows the mark is dropped and only the hint shows.',b,w]]; }
+
+var NOTES={
+  empty:['Background colours are the logo colours blended 30% into the terminal background: mint <code>rgb('+DIM_MINT+')</code>, cyan <code>rgb('+DIM_CYAN+')</code>. Real RGB, no transparency, so it works in any truecolor terminal.',
+    'The mark shows only while the thread has no messages. Welcome screen (F1) stays exactly as approved: full logo, recent threads, hint line.',
+    'Hint names who is in the thread; with no agents it reads <code>Empty thread · /add an agent to start</code>.',
+    'Header: brand + version, thread name, agents in their colours, folder on the right. Tabs line goes dim so it stops competing with the header.'],
+  busy:['Band colour <code>rgb('+BAND+')</code> spans the full width, one blank band row above and below so wrapped messages read as one block.',
+    'Agent names stay coloured — that is how you tell Jigga, Null and Muck apart in a group. Reply text is indented three columns under the name.',
+    'Only two markdown pieces are drawn: <code>**bold**</code> as bold white and <code>`code`</code> in peach. Headings, lists and tables stay as typed for now.',
+    'Working line uses the agent colour for the name and amber for the activity, instead of plain yellow.'],
+  small:['Size rules: 2×1 big mark when the chat area has 29+ free rows and 54+ columns; half-block mark when it has 14+ rows; otherwise the hint alone.',
+    'Header drops to a short folder name when the line would overflow.'],
+  return:['The CLI used to wipe its live copy on switching and ignore that thread’s updates while away, so a busy agent looked idle on return.',
+    'The fix (built, not yet visually checked in a real terminal): the background service now keeps each busy agent’s reply so far and latest activity, and sends them with the thread. The CLI restores them, then applies only updates newer than that copy, so text is never missing or doubled.',
+    'Each busy agent gets its own working line with its name in its colour. If an agent has sent no activity yet, the line reads <code>working…</code>. An older background service without the fix still gets the working lines, just without the partial text.',
+    'The ▍ cursor and the agent-coloured working lines are the proposed look. Today’s build draws the same content in plain yellow.'],
+  fit:['Header fit order, applied until the line fits: 1. folder to its last part, 2. agents to the first three plus <code>+N</code>, 3. thread name cut with <code>…</code> (keeps at least 12 characters), 4. version dropped, 5. folder dropped.',
+    'The mark size is worked out from the free rows each time the window changes size, not fixed per screen. These two screens use the same code path at different heights.',
+    'The composer title uses the same three-names-then-<code>+N</code> rule as the approved desktop mockup.']
+};
+
+function show(tab){
+  document.querySelectorAll('nav button').forEach(function(b){ b.setAttribute('aria-selected', b.dataset.tab===tab); });
+  var stage=document.getElementById('stage'); stage.innerHTML='';
+  var pair=({empty:emptyPair,busy:busyPair,return:returnPair,small:smallPair,fit:fitPair})[tab]();
+  pair.forEach(function(p){ var fig=document.createElement('figure'), cap=document.createElement('figcaption');
+    cap.innerHTML='<b>'+p[0]+'</b> — '+p[1]; fig.appendChild(cap); fig.appendChild(render(p[2],p[3])); stage.appendChild(fig); });
+  document.getElementById('notes').innerHTML=NOTES[tab].map(function(n){ return '<li>'+n+'</li>'; }).join('');
+}
+document.querySelectorAll('nav button').forEach(function(b){ b.onclick=function(){ show(b.dataset.tab); }; });
+show('empty');
+</script>
+</body>
+</html>

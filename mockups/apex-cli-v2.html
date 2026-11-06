@@ -1,0 +1,1209 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Apex Deck CLI · v2</title>
+<style>
+:root{color-scheme:dark;--bg:#000;--panel:#101010;--line:#2a2a2a;--text:#f2f2f2;--muted:#9a9a9a;--mint:#3def91;--cyan:#1ed7ee;--prompt:#b4b7b8;--coral:#f97766;--purple:#a78bfa;--amber:#fbbf24}
+html,body{height:100%;overflow:hidden}
+body{margin:0;background:#080b0c;color:var(--text);font:14px/1.65 ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;display:flex;flex-direction:column}
+button,input,textarea{font:inherit}
+button{cursor:pointer}
+button:focus-visible,textarea:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+
+/* Header & tabs */
+header{width:100%;max-width:1112px;margin:auto;display:flex;align-items:center;justify-content:space-between;padding:10px 12px 0;box-sizing:border-box}
+.brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;letter-spacing:1px;color:var(--text)}
+.brand img{width:20px;height:20px}
+.preview{font-size:12px;color:var(--muted)}
+nav{width:100%;max-width:1112px;margin:auto;display:flex;gap:4px;padding:0 12px 0;box-sizing:border-box}
+nav [role="tab"]{background:none;border:1px solid transparent;color:var(--muted);padding:5px 14px;border-radius:6px;font-size:13px}
+nav [role="tab"][aria-selected="true"]{border-color:var(--line);color:var(--text);background:#1a1d1e}
+nav [role="tab"]:hover:not([aria-selected="true"]){color:var(--text)}
+nav [role="tab"]:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+/* Frame fills the window: only .screen scrolls, composer and status stay pinned */
+.terminal{flex:1 1 auto;min-height:0;width:100%;max-width:1112px;margin:8px auto 0;border:1px solid #343a3c;border-radius:11px;overflow:hidden;background:var(--bg);box-shadow:0 24px 90px #0009;display:flex;flex-direction:column;box-sizing:border-box}
+.terminal>.titlebar{flex:none}
+
+.screen{flex:1 1 auto;min-height:0;padding:30px 38px 12px;overflow-y:auto;scroll-behavior:smooth}
+.intro{display:flex;gap:30px;margin-bottom:26px;align-items:center}
+.terminal-mark{width:104px;height:104px;object-fit:contain;flex:none}
+.ascii{white-space:pre;font-size:14px;line-height:1.2;color:var(--mint);margin:0}
+.ascii span{color:var(--cyan)}
+h1{font-size:20px;letter-spacing:2px;margin:0 0 3px}
+.cyan{color:var(--cyan)}
+.green{color:var(--mint)}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+.line{border-top:1px solid var(--line);margin:20px 0}
+.promptline{color:var(--prompt);margin-bottom:12px}
+.user{color:var(--mint);font-weight:600;margin-bottom:8px;white-space:pre-wrap}
+.agent{margin-top:4px}
+.approval{margin-top:24px}
+.approval button{margin-right:12px;padding:6px 12px;font:500 14px system-ui}
+.block{margin-bottom:14px}
+.block .muted{font-size:12px;margin-top:4px}
+
+/* One row style: command column 16ch, description takes rest */
+.row{display:grid;grid-template-columns:16ch 1fr;gap:0;margin-bottom:14px;font-size:13px;align-items:start}
+.row .menu-cmd,.row .cyan{color:var(--cyan)}
+.row .menu-desc,.row .muted{color:var(--muted)}
+.row .muted.small{font-size:12px}
+.status{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.4}
+.status .cyan{color:var(--cyan)}
+
+/* Composer */
+.composer{position:relative;width:calc(100% - 76px);margin:0 38px;flex:none}
+.composer-box{
+  position:relative;
+  display:flex;
+  align-items:flex-start;
+  border:1px solid #343a3c;
+  border-radius:8px;
+  background:#0c0f10;
+  padding:14px 16px;
+  box-sizing:border-box;
+}
+.composer-box:focus-within{border-color:var(--cyan)}
+.composer-inner{
+  flex:1;
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+}
+.composer-glyph{
+  color:var(--mint);
+  font-size:15px;
+  line-height:1.6;
+  flex:0 0 auto;
+  user-select:none;
+}
+.composer-textarea{
+  flex:1;
+  font-size:15px;
+  line-height:1.6;
+  color:var(--text);
+  background:transparent;
+  border:none;
+  resize:none;
+  padding:0;
+  font-family:inherit;
+  min-height:48px;
+  max-height:192px;
+  overflow-y:hidden;
+}
+.composer-textarea:focus{outline:none}
+.composer-hint{
+  font-size:12px;
+  color:var(--muted);
+  padding:8px 0 0;
+}
+.composer-sep{border-top:1px solid var(--line);margin:0 38px;flex:none}
+
+/* Send button */
+.send-btn{align-self:flex-end;border:none;background:none;color:var(--muted);font-size:16px;padding:4px 8px;cursor:pointer;border-radius:4px;margin-top:4px}
+.send-btn:hover:not(:disabled){color:var(--cyan)}
+.send-btn:disabled{opacity:0.25;cursor:default}
+.send-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+/* Shared menu style (slash + @ + /add picker) */
+.menu{
+  display:none;
+  position:absolute;
+  bottom:calc(100% + 6px);
+  left:0;
+  right:0;
+  background:#0c0f10;
+  border:1px solid #343a3c;
+  border-radius:6px;
+  padding:4px 0;
+  font-size:13px;
+  z-index:10;
+  max-height:200px;
+  overflow-y:auto;
+}
+.menu.open{display:block}
+.menu-item{
+  padding:6px 14px;
+  cursor:pointer;
+  margin-bottom:0;
+  color:var(--muted);
+}
+.menu-item:hover,.menu-item[aria-selected="true"]{
+  background:#1a1d1e;
+  color:var(--text);
+}
+.menu-item[aria-selected="true"] .menu-cmd{color:var(--cyan)}
+.menu-cmd{color:var(--cyan)}
+.menu-desc{color:var(--muted)}
+
+/* Status line */
+.status-line{
+  flex:none;
+  display:flex;
+  justify-content:space-between;
+  padding:10px 38px 14px;
+  font-size:12px;
+  color:var(--muted);
+  border-top:1px solid var(--line);
+  flex-wrap:wrap;
+  gap:4px 16px;
+  align-items:center;
+}
+.status-line .cyan{color:var(--cyan)}
+.status-line .green{color:var(--mint)}
+.status-members{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.status-member{display:flex;align-items:center;gap:5px;cursor:pointer;position:relative}
+.status-member:hover .member-dropdown{display:block}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:0 0 auto}
+.status-dot.hollow{background:none;border:1.5px solid currentColor;border-radius:50%;width:8px;height:8px;display:inline-flex;align-items:center;justify-content:center}
+.status-dot.hollow::after{content:'';width:3px;height:3px;border-radius:50%;background:currentColor}
+.status-add{color:var(--cyan);cursor:pointer;border:1px solid transparent;padding:1px 6px;border-radius:3px;font-size:12px}
+.status-add:hover{border-color:var(--line)}
+.status-add.open{border-color:var(--line)}
+.status-right{display:flex;align-items:center;gap:12px}
+.status-path{white-space:nowrap}
+.status-add-picker{
+  display:none;
+  position:absolute;
+  bottom:calc(100% + 6px);
+  left:0;
+  background:#0c0f10;
+  border:1px solid #343a3c;
+  border-radius:6px;
+  padding:4px 0;
+  font-size:13px;
+  z-index:20;
+  min-width:220px;
+}
+.status-add-picker.open{display:block}
+.status-add-picker .menu-item{padding:6px 14px}
+.status-add-picker .add-name{color:var(--text)}
+.status-add-picker .add-provider{color:var(--muted);font-size:12px}
+.member-dropdown{
+  display:none;
+  position:absolute;
+  bottom:calc(100% + 6px);
+  left:0;
+  background:#0c0f10;
+  border:1px solid #343a3c;
+  border-radius:6px;
+  padding:4px 0;
+  font-size:13px;
+  z-index:20;
+  min-width:140px;
+}
+.member-dropdown button{display:block;width:100%;text-align:left;background:none;border:none;padding:6px 14px;color:var(--muted);font-size:13px;cursor:pointer}
+.member-dropdown button:hover{background:#1a1d1e;color:var(--text)}
+.member-dropdown button:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px}
+.agent-col{display:inline-block;min-width:10ch;padding-right:10px}
+.reply-text{flex:1;white-space:pre-wrap}
+.join-line{color:var(--muted);font-size:13px;margin-top:4px}
+.thread-row{display:grid;grid-template-columns:22ch 1fr;gap:10px;align-items:baseline;width:100%;max-width:640px;background:none;border:1px solid transparent;border-radius:8px;padding:6px 8px;margin:2px 0;color:var(--text);text-align:left}
+.thread-row:hover,.thread-row:focus-visible{border-color:#343a3c;background:#ffffff0a}
+.thread-name{color:var(--cyan)}
+.thread-meta{color:var(--muted)}
+.welcome-heading{color:var(--muted);font-size:13px;margin:14px 0 4px}
+.welcome-tip{color:var(--muted);font-size:13px;margin-top:14px}
+.thinking-label{color:var(--amber)}
+.status-extra{margin-left:4px}
+.dot-inner{width:3px;height:3px;border-radius:50%;background:currentColor;display:inline-block}
+</style>
+
+<header>
+  <div class="brand">
+    <img src="../public/branding/mark.svg" alt="Apex Deck">
+    Apex Deck
+  </div>
+  <div class="preview">Interactive concept · Design only</div>
+</header>
+<nav role="tablist" aria-label="Preview scenarios">
+  <button role="tab" data-view="welcome" aria-selected="true">Welcome</button>
+  <button role="tab" data-view="chat" aria-selected="false">Chat &amp; tools</button>
+  <button role="tab" data-view="team" aria-selected="false">Agent team</button>
+  <button role="tab" data-view="approval" aria-selected="false">Approval</button>
+  <button role="tab" data-view="threads" aria-selected="false">Threads</button>
+</nav>
+<main class="terminal">
+  <div class="titlebar" style="height:43px;background:#191c1d;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:12px;position:relative">
+    <div style="position:absolute;left:17px;display:flex;gap:8px" aria-hidden="true">
+      <i style="width:10px;height:10px;border-radius:50%;background:#ff6059;display:block"></i>
+      <i style="width:10px;height:10px;border-radius:50%;background:#ffbd2e;display:block"></i>
+      <i style="width:10px;height:10px;border-radius:50%;background:#28c840;display:block"></i>
+    </div>
+    apex — ~/Projects/apex-deck
+  </div>
+  <div class="screen">
+    <div class="intro">
+      <img class="terminal-mark" src="../public/branding/mark.svg" alt="Apex Deck mark">
+      <div>
+        <h1>APEX DECK</h1>
+        <div class="cyan">Your agents. One workspace.</div>
+        <div class="muted small">CLI concept v0.2 · Local host</div>
+      </div>
+    </div>
+    <div id="content"></div>
+    <div id="transcript" aria-live="polite"></div>
+  </div>
+
+  <!-- Composer -->
+  <div class="composer-sep"></div>
+  <div class="composer">
+    <!-- Slash / @ / add picker (inside .composer which is position:relative) -->
+    <div class="menu" id="slash-menu" role="listbox" aria-label="Commands">
+      <div id="slash-content"></div>
+    </div>
+
+    <div class="composer-box">
+      <div class="composer-inner">
+        <span class="composer-glyph" aria-hidden="true">❯ </span>
+        <textarea id="composer-textarea" class="composer-textarea" rows="2" placeholder="Message Jigga · @ to switch · / for commands…" spellcheck="false" role="combobox" aria-controls="slash-menu" aria-expanded="false"></textarea>
+      </div>
+      <button type="button" id="send-btn" class="send-btn" aria-label="Send" disabled>⏎</button>
+    </div>
+
+    <!-- Hint row below box, outside -->
+    <div class="composer-hint" id="composer-hint">⏎ send · ⇧⏎ newline · / commands · @ mention · esc stop</div>
+  </div>
+
+  <!-- Status line -->
+  <div class="status-line" id="status-line">
+    <div class="status-members" id="status-members"></div>
+    <div class="status-right">
+      <span class="status-path">~/Projects/apex-deck</span>
+      <span class="green">enabled</span>
+    </div>
+  </div>
+</main>
+
+<script>
+(function() {
+  /* ===== Data ===== */
+  var AGENT_COLORS = {
+    Jigga: 'var(--cyan)',
+    Null: 'var(--mint)',
+    deepgeek: 'var(--coral)',
+    Twil: 'var(--purple)',
+    Cast: 'var(--amber)',
+    Alfred: 'var(--text)'
+  };
+
+  var AGENT_PROVIDERS = {
+    Jigga: 'Codex',
+    Null: 'Sonnet',
+    deepgeek: 'Reasoning',
+    Twil: 'Codex',
+    Cast: 'Claude',
+    Alfred: 'GPT'
+  };
+
+  var members = [
+    { id: 'jigga', name: 'Jigga', provider: 'Codex', color: AGENT_COLORS.Jigga },
+    { id: 'null', name: 'Null', provider: 'Sonnet', color: AGENT_COLORS.Null },
+    { id: 'twil', name: 'Twil', provider: 'Codex', color: AGENT_COLORS.Twil }
+  ];
+
+  /* Who answers a message with no @name. Mirrors the app: naming agents replaces this list. */
+  var responders = ['jigga'];
+  var currentView = 'welcome';
+  /* Bumped whenever the thread changes, so stale reply timers can tell they are obsolete. */
+  var threadSeq = 0;
+  var pendingReplies = 0; // current-thread replies still on a timer; Esc only says "Stopped." when there are some
+  /* Every reply timer captures threadSeq; bumping it drops them all. */
+  function dropPendingReplies() { threadSeq++; pendingReplies = 0; }
+
+  var available = [
+    { id: 'deepgeek', name: 'deepgeek', provider: 'Reasoning', color: AGENT_COLORS.deepgeek },
+    { id: 'cast', name: 'Cast', provider: 'Claude', color: AGENT_COLORS.Cast },
+    { id: 'alfred', name: 'Alfred', provider: 'GPT', color: AGENT_COLORS.Alfred }
+  ];
+
+  /* Sample thread list. Illustrative titles and dates, not live data. */
+  var THREADS = [
+    { id: 'composer-review', name: 'composer-review', provider: '3 agents · 2024-06-01 10:30' },
+    { id: 'team-plan', name: 'team-plan', provider: '2 agents · 2024-06-01 09:15' },
+    { id: 'voice-bugs', name: 'voice-bugs', provider: '1 agent · 2024-05-31 17:40' },
+    { id: 'phone-library', name: 'phone-library', provider: '2 agents · 2024-05-30 11:05' }
+  ];
+
+  var commands = [
+    { cmd: 'add', desc: 'Add an agent to the thread' },
+    { cmd: 'agents', desc: 'Show current thread members' },
+    { cmd: 'clear', desc: 'Empty this thread · every agent stays' },
+    { cmd: 'help', desc: 'Show available commands' },
+    { cmd: 'new', desc: 'Start a new thread' },
+    { cmd: 'remove', desc: 'Remove an agent from the thread' },
+    { cmd: 'team', desc: 'Give your agents a shared task' },
+    { cmd: 'threads', desc: 'Open or list your threads' },
+    { cmd: 'model', desc: 'Preview model output' },
+    { cmd: 'approval', desc: 'Review simulated edits' }
+  ];
+
+  var cmdMap = {
+    '/threads': 'threads', '/team': 'team',
+    '/model': 'chat', '/approval': 'approval'
+  };
+
+  var pickerMode = ''; // 'add' | 'remove' | 'threads' | ''
+  var menuMode = 'slash'; // 'slash', 'at', 'add', 'remove', 'threads'
+
+  var screens = {
+    // Your three newest threads and one tip. The status line already shows folder and team;
+    // the full command list lives only behind "/".
+    welcome: function() {
+      return '<div class="promptline"><b>❯ </b> apex</div>' +
+        '<p class="welcome-heading">Recent threads</p>' +
+        THREADS.slice(0, 3).map(function(t) {
+          return '<button type="button" class="thread-row" data-thread="' + t.id + '">' +
+            '<span class="thread-name">' + t.name + '</span><span class="thread-meta">' + t.provider + '</span></button>';
+        }).join('') +
+        '<p class="welcome-tip">/ for commands · @ to pick an agent · Esc to stop</p>';
+    },
+
+    chat: function() {
+      // Untagged message: answered by whoever answers next, same rule as the app.
+      var who = responderMembers()[0] || members[0] || { name: 'System', color: 'var(--text)' };
+      return '<div class="user">❯ Review the composer changes before we ship.</div>' +
+        '<p class="agent"><span class="agent-col" style="color:' + who.color + '">' + who.name + '</span><span class="reply-text">I\'ll inspect the diff and check how the composer handles history.</span></p>' +
+        '<div class="block"><div><span class="green">✓</span> Read <span class="muted">src/ChatPane.tsx  218 lines</span></div>' +
+        '<div><span class="green">✓</span> Shell <span class="muted">git diff -- src/  0.2s</span></div>' +
+        '<div><span class="green">✓</span> Read <span class="muted">tests/phone-composer-history.test.mjs</span></div></div>' +
+        '<p class="muted">The draft survives navigation. One edge case needs attention:</p>' +
+        '<p class="muted">Pressing ↑ in a multiline draft can replace the current text.</p>' +
+        '<p class="muted">I\'d keep cursor navigation until the caret reaches the first line.</p>' +
+        '<p class="cyan">Want me to prepare that change?</p>';
+    },
+
+    team: '<div class="user">❯ Have the team review the composer. Check behavior and tests.</div>' +
+      '<p class="agent"><span class="agent-col" style="color:var(--purple)"><span class="thinking-label">◌ Twil</span></span><span class="reply-text">Splitting the review across the team.</span></p>' +
+      '<p class="agent"><span class="agent-col" style="color:var(--cyan)">Jigga</span><span class="reply-text">I\'ll take the layout. The box edges line up at 1112px, but at 800px the composer needs tighter padding.</span></p>' +
+      '<p class="agent"><span class="agent-col" style="color:var(--mint)">Null</span><span class="reply-text">Tests: 2 pass, 1 needs a fix in phone-composer-history. I\'ll draft the patch.</span></p>' +
+      '<div class="block"><div><span class="green">✓</span> Alfred <span class="muted">Behavior review · completed</span></div>' +
+      '<div><span class="green">✓</span> Jigga <span class="muted">Code review · in progress</span></div>' +
+      '<div><span class="green">✓</span> deepgeek <span class="muted">Edge cases · queued</span></div></div>' +
+      '<p>All reviewers see the same history. No race conditions in shared state.</p>' +
+      '<p class="cyan">Approve this plan?</p>',
+
+    approval: '<div class="approval">' +
+      '<p class="agent"><span class="agent-col" style="color:var(--cyan)">Jigga</span><span class="reply-text">Simulated edit: src/chat/index.ts line 42  <span class="muted">Add logging for user intent</span></span></p>' +
+      '<p class="muted">Risk: Low (only dev workspace)</p>' +
+      '<p class="muted small">Preview shows diff highlights and affected lines.</p></div>' +
+      '<div class="line"></div>' +
+      '<div class="row"><span class="green">✓</span><span>Review</span><span class="muted">Diff preview loaded</span></div>' +
+      '<button data-answer="allow">Allow edit</button>' +
+      '<button>Deny edit</button>' +
+      '<button data-answer="allow" style="margin-left:12px">Allow with justification</button>',
+
+    threads: function() {
+      // Untagged command, so whoever answers next answers it, same rule as chat.
+      var who = responderMembers()[0] || members[0] || { name: 'System', color: 'var(--text)' };
+      return '<div class="user">❯ threads</div>' +
+        '<p class="agent"><span class="agent-col" style="color:' + who.color + '">' + who.name + '</span><span class="reply-text">Recent threads, newest first:</span></p>' +
+        THREADS.map(function(t) {
+          return '<button type="button" class="thread-row" data-thread="' + t.id + '">' +
+            '<span class="thread-name">' + t.name + '</span><span class="thread-meta">' + t.provider + '</span></button>';
+        }).join('') +
+        '<div class="line"></div>' +
+        '<div class="row"><span class="cyan">/threads</span><span class="muted">Choose a thread to open</span></div>' +
+        '<div class="row"><span class="cyan">/threads name</span><span class="muted">Jump straight to a thread</span></div>' +
+        '<div class="row"><span class="cyan">/new</span><span class="muted">Start a new thread</span></div>';
+    }
+  };
+
+  var cannedReplies = {
+    Jigga: [
+      'I\'ll take a look. The layout at 800px needs tighter padding on the composer.',
+      'Checked. The box edges line up with the transcript text. One edge case at narrow widths.',
+      'The ❯ glyph lines up with the first text line. Everything else looks solid.'
+    ],
+    Null: [
+      'Tests pass on the composer. One history edge case needs a fix.',
+      'I\'ll draft a patch for the phone-composer-history test. Should be quick.',
+      'All green on the layout checks. Ready to ship.'
+    ],
+    deepgeek: [
+      'Edge cases: multiline paste, scroll behavior at 10+ lines, and the slash menu arrow key loop. All handled.',
+      'Thinking through the auto-grow logic — setting height to scrollHeight on input is the right approach.',
+      'The overflow-y toggle at 192px keeps the box from expanding the page.'
+    ],
+    Twil: [
+      'I\'ll inspect the diff and check how the composer handles history.',
+      'The draft survives navigation. One edge case needs attention on the cursor.',
+      'Splitting the review across the team. Jigga on layout, Null on tests.'
+    ],
+    Cast: [
+      'Persona written. The voice is direct, warm, and economical — no jargon, no bloat.',
+      'I\'ll shape the instructions into second person with clear boundaries.',
+      'Done. Delivered a finished persona without inventing powers the team didn\'t ask for.'
+    ],
+    Alfred: [
+      'Ready to help. What do you need?',
+      'I\'ll run with it. Give me the details and I\'ll get moving.',
+      'On it. Expect results shortly.'
+    ]
+  };
+
+  var replyIndex = {};
+  Object.keys(cannedReplies).forEach(function(k) { replyIndex[k] = 0; });
+
+  /* ===== DOM refs ===== */
+  var content = document.getElementById('content');
+  var transcript = document.getElementById('transcript');
+  var screenEl = document.querySelector('.screen');
+  var textarea = document.getElementById('composer-textarea');
+  var sendBtn = document.getElementById('send-btn');
+  var slashMenu = document.getElementById('slash-menu');
+  var slashContent = document.getElementById('slash-content');
+  var statusMembers = document.getElementById('status-members');
+  var slashActiveIndex = -1;
+  var slashVisibleItems = [];
+
+  /* The .screen element is the scroll container now that the frame fills the window. */
+  function scrollDown() {
+    screenEl.scrollTop = screenEl.scrollHeight;
+  }
+
+  /* ===== Tab navigation ===== */
+  function show(view) {
+    currentView = view;
+    if (view === 'team') {
+      renderTeamTab();
+    } else {
+      var s = screens[view];
+      content.innerHTML = typeof s === 'function' ? s() : s;
+    }
+    transcript.replaceChildren();
+    screenEl.scrollTop = 0;
+    document.querySelectorAll('[role="tab"]').forEach(function(b) {
+      b.setAttribute('aria-selected', b.dataset.view === view ? 'true' : 'false');
+    });
+    textarea.value = '';
+    updateTextHeight();
+    sendBtn.disabled = true;
+    hideMenu();
+    renderStatusLine();
+    updatePlaceholder();
+  }
+
+  function renderTeamTab() {
+    var next = responderMembers();
+    var example = next[0] || null;
+    var html = '<div class="user">❯ Have the team review the composer. Check behavior and tests.</div>';
+    // Build sample exchanges from members
+    if (example) {
+      html += '<p class="agent"><span class="agent-col" style="color:' + example.color + '">' + example.name + '</span><span class="reply-text">Untagged message: every agent marked ★ answers this.</span></p>';
+    }
+    // Show one targeted example from the first member who isn't already answering untagged messages
+    var otherMember = members.find(function(m) { return !example || m.id !== example.id; });
+    if (otherMember) {
+      html += '<p class="agent"><span class="agent-col" style="color:' + otherMember.color + '">' + otherMember.name + '</span><span class="reply-text">@' + otherMember.name.toLowerCase() + ' message: only ' + otherMember.name + ' responds.</span></p>';
+    }
+    // Thinking state for members not yet replied
+    members.forEach(function(m) {
+      if ((!example || m.id !== example.id) && (!otherMember || m.id !== otherMember.id)) {
+        html += '<p class="agent"><span class="agent-col" style="color:' + m.color + '">' + m.name + '</span><span class="reply-text thinking-label">◌ thinking…</span></p>';
+      }
+    });
+    content.innerHTML = html;
+  }
+
+  document.querySelector('nav').addEventListener('click', function(e) {
+    var b = e.target.closest('[data-view]');
+    if (b) show(b.dataset.view);
+  });
+
+  /* ===== Textarea grow/shrink ===== */
+  function updateTextHeight() {
+    var el = textarea;
+    el.style.height = 'auto';
+    var h = el.scrollHeight;
+    if (h > 192) {
+      el.style.height = '192px';
+      el.style.overflowY = 'auto';
+    } else {
+      el.style.height = h + 'px';
+      el.style.overflowY = 'hidden';
+    }
+  }
+
+  function syncComposer() {
+    updateTextHeight();
+    sendBtn.disabled = textarea.value.trim() === '';
+  }
+
+  textarea.addEventListener('input', function() {
+    syncComposer();
+    handleMenuInput();
+  });
+
+  /* ===== Unified menu system ===== */
+  function hideMenu() {
+    slashMenu.classList.remove('open');
+    textarea.setAttribute('aria-expanded', 'false');
+    textarea.removeAttribute('aria-activedescendant');
+    slashActiveIndex = -1;
+    slashVisibleItems = [];
+    menuMode = 'slash';
+    closePicker();
+  }
+
+  function showMenu() {
+    slashMenu.classList.add('open');
+    textarea.setAttribute('aria-expanded', 'true');
+    if (slashVisibleItems.length > 0) {
+      slashActiveIndex = 0;
+      highlightItem(0);
+    } else {
+      slashActiveIndex = -1;
+    }
+  }
+
+  function highlightItem(idx) {
+    var items = slashContent.querySelectorAll('.row.menu-item');
+    if (idx < 0) idx = items.length - 1;
+    if (idx >= items.length) idx = 0;
+    slashActiveIndex = idx;
+    items.forEach(function(it, i) {
+      it.setAttribute('aria-selected', i === idx ? 'true' : 'false');
+    });
+    if (items[idx] && items[idx].id) {
+      textarea.setAttribute('aria-activedescendant', items[idx].id);
+    }
+    items[idx].scrollIntoView({ block: 'nearest' });
+  }
+
+  function handleMenuInput() {
+    var v = textarea.value;
+    var sel = textarea.selectionStart;
+    var before = v.substring(0, sel);
+
+    if (pickerMode) return;
+
+    // @ mode
+    var atMatch = before.match(/(^|\s)@(\S*)$/);
+    if (atMatch) {
+      menuMode = 'at';
+      var filter = atMatch[2].toLowerCase();
+      renderAtMenu(filter);
+      showMenu();
+      return;
+    }
+
+    // / mode
+    if (v.startsWith('/') && sel === v.length) {
+      menuMode = 'slash';
+      renderSlashMenu(v.substring(1).toLowerCase());
+      showMenu();
+      return;
+    }
+
+    hideMenu();
+  }
+
+  /* Slash menu */
+  function renderSlashMenu(filter) {
+    if (pickerMode === 'add') {
+      slashVisibleItems = available.filter(function(a) {
+        return !filter || a.name.indexOf(filter) === 0 || a.provider.toLowerCase().indexOf(filter) === 0;
+      });
+    } else {
+      slashVisibleItems = commands.filter(function(c) {
+        return !filter || c.cmd.indexOf(filter) === 0;
+      });
+    }
+    slashContent.innerHTML = '';
+    slashVisibleItems.forEach(function(item, i) {
+      var div = document.createElement('div');
+      div.className = 'row menu-item';
+      div.setAttribute('role', 'option');
+      div.id = 'slash-item-' + i;
+      div.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+      if (pickerMode === 'add') {
+        div.innerHTML = '<span class="menu-cmd">' + item.name + '</span><span class="menu-desc">' + item.provider + '</span>';
+      } else {
+        var cmd = (menuMode === 'slash' && item.cmd) ? '/' + item.cmd : '/' + item;
+        div.innerHTML = '<span class="menu-cmd">' + cmd + '</span><span class="menu-desc">' + (item.desc || '') + '</span>';
+      }
+      slashContent.appendChild(div);
+    });
+  }
+
+  /* @ menu */
+  function renderAtMenu(filter) {
+    slashVisibleItems = members.filter(function(m) {
+      return !filter || m.name.toLowerCase().indexOf(filter) === 0;
+    });
+    // @all sits last, so the first row (and the default highlight) is always a real agent.
+    // Reaching everyone takes a deliberate arrow press.
+    if (!filter || 'all'.indexOf(filter) === 0) {
+      slashVisibleItems.push({ id: 'all', name: 'all', provider: 'every member', isAll: true });
+    }
+    slashContent.innerHTML = '';
+    slashVisibleItems.forEach(function(m, i) {
+      var div = document.createElement('div');
+      div.className = 'row menu-item';
+      div.setAttribute('role', 'option');
+      div.id = 'at-item-' + i;
+      div.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+      div.innerHTML = '<span class="menu-cmd">@' + m.name + '</span><span class="menu-desc">' + m.provider + '</span>';
+      slashContent.appendChild(div);
+    });
+  }
+
+  /* Open a thread. The mockup only has one conversation body, so it reuses it. */
+  function openThread(t) {
+    dropPendingReplies(); // a reply pending in the old thread must not land here
+    show('chat');
+    // Each thread keeps its own answering list; the mockup has one, so start from the first member.
+    resetResponders();
+    ensureResponders();
+    content.insertAdjacentHTML('afterbegin', '<p class="muted">Opened thread <span class="thread-name">' + t.name + '</span> · ' + t.provider + '</p>');
+    screenEl.scrollTop = 0;
+    textarea.focus();
+  }
+
+  /* Picker: add, remove or threads */
+  function openPicker(list, mode) {
+    pickerMode = mode;
+    menuMode = mode;
+    slashActiveIndex = -1;
+    slashVisibleItems = list.slice();
+    slashContent.innerHTML = '';
+    slashVisibleItems.forEach(function(item, i) {
+      var div = document.createElement('div');
+      div.className = 'row menu-item';
+      div.setAttribute('role', 'option');
+      div.id = mode + '-item-' + i;
+      div.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+      div.innerHTML = '<span class="menu-cmd">' + item.name + '</span><span class="menu-desc">' + item.provider + '</span>';
+      slashContent.appendChild(div);
+    });
+    slashMenu.classList.add('open');
+    textarea.setAttribute('aria-expanded', 'true');
+    if (slashVisibleItems.length > 0) {
+      slashActiveIndex = 0;
+      highlightItem(0);
+    }
+  }
+
+  function closePicker() {
+    pickerMode = '';
+    menuMode = 'slash';
+  }
+
+  /* Run the row at idx. Shared by Enter/Tab and by mouse clicks, so both behave the same. */
+  function activateItem(idx) {
+    if (idx < 0 || idx >= slashVisibleItems.length) return;
+    var item = slashVisibleItems[idx];
+    var mode = menuMode;
+    var picker = pickerMode;
+
+    if (mode === 'at') {
+      // Fill @mention, replace only the partial text
+      var sel = textarea.selectionStart;
+      var v = textarea.value;
+      var before = v.substring(0, sel);
+      var atMatch = before.match(/(^|\s)@(\S*)$/);
+      if (atMatch) {
+        var prefix = atMatch[1];
+        var start = sel - atMatch[0].length;
+        var ins = prefix + '@' + item.name + ' ';
+        textarea.value = v.substring(0, start) + ins + v.substring(sel);
+        textarea.selectionStart = textarea.selectionEnd = start + ins.length;
+      }
+      hideMenu();
+      syncComposer();
+      textarea.focus();
+      return;
+    }
+
+    if (picker === 'threads') {
+      hideMenu();
+      openThread(item);
+      return;
+    }
+
+    if (picker === 'add') {
+      hideMenu();
+      addMember(item.id);
+      textarea.focus();
+      return;
+    }
+
+    if (picker === 'remove') {
+      hideMenu();
+      removeMember(item.id);
+      textarea.focus();
+      return;
+    }
+
+    // Slash command rows. Commands that take a name open their list straight away.
+    if (item.cmd === 'add' || item.cmd === 'remove' || item.cmd === 'threads') {
+      textarea.value = '';
+      syncComposer();
+      hideMenu();
+      if (item.cmd === 'threads') openPicker(THREADS, 'threads');
+      else openPicker(item.cmd === 'add' ? available : members, item.cmd);
+      textarea.focus();
+      return;
+    }
+    textarea.value = '/' + item.cmd + ' ';
+    hideMenu();
+    syncComposer();
+    textarea.focus();
+  }
+
+  // Mouse selection inside the popup: same path as Enter.
+  slashContent.addEventListener('click', function(e) {
+    var row = e.target.closest('.row.menu-item');
+    if (!row) return;
+    var rows = Array.prototype.slice.call(slashContent.querySelectorAll('.row.menu-item'));
+    activateItem(rows.indexOf(row));
+  });
+
+  // Close the popup on a click outside it.
+  document.addEventListener('click', function(e) {
+    if (!slashMenu.classList.contains('open')) return;
+    if (e.target.closest('#slash-menu') || e.target.closest('.composer') || e.target.closest('.status-line')) return;
+    hideMenu();
+  });
+
+  // Thread rows in the Threads tab: click opens that thread.
+  content.addEventListener('click', function(e) {
+    var row = e.target.closest('[data-thread]');
+    if (!row) return;
+    var id = row.getAttribute('data-thread');
+    var found = THREADS.filter(function(t) { return t.id === id; })[0];
+    if (found) openThread(found);
+  });
+  // Arrow keys move between thread rows; Enter opens one (rows are buttons).
+  content.addEventListener('keydown', function(e) {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    var rows = Array.prototype.slice.call(content.querySelectorAll('.thread-row'));
+    var i = rows.indexOf(document.activeElement);
+    if (i === -1) return;
+    e.preventDefault();
+    rows[(i + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length].focus();
+  });
+
+  /* ===== Status line ===== */
+  function renderStatusLine() {
+    statusMembers.innerHTML = '';
+    members.forEach(function(m) {
+      var isNext = responders.indexOf(m.id) !== -1;
+      var star = isNext ? ' ★' : '';
+      var span = document.createElement('span');
+      span.className = 'status-member';
+      span.dataset.name = m.name;
+      span.setAttribute('title', m.name + ' — ' + m.provider + (isNext ? ' · answers untagged messages' : ''));
+      span.innerHTML = '<span class="status-dot" style="background:' + m.color + '"></span>' +
+        '<span class="status-name">' + m.name + star + '</span>';
+
+      var dropdown = document.createElement('div');
+      dropdown.className = 'member-dropdown';
+      dropdown.innerHTML = '<button data-action="address">@' + m.name + ' </button><button data-action="remove">Remove</button>';
+      dropdown.querySelector('[data-action="address"]').addEventListener('click', function() {
+        textarea.value += '@' + m.name + ' ';
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+        handleMenuInput();
+      });
+      dropdown.querySelector('[data-action="remove"]').addEventListener('click', function() {
+        removeMember(m.id);
+        dropdown.remove();
+      });
+      span.appendChild(dropdown);
+      statusMembers.appendChild(span);
+    });
+
+    // + add button
+    var addBtn = document.createElement('span');
+    addBtn.className = 'status-add';
+    addBtn.textContent = '+ add';
+    addBtn.setAttribute('title', 'Add an agent to the thread');
+    addBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openPicker(available, 'add');
+    });
+    statusMembers.appendChild(addBtn);
+  }
+
+  /* Members whose ★ is showing: they answer messages with no @name. */
+  function responderMembers() {
+    return responders.map(function(id) {
+      return members.find(function(m) { return m.id === id; });
+    }).filter(Boolean);
+  }
+
+  /* A new or cleared thread starts with the first member answering. */
+  function resetResponders() {
+    responders = members.length ? [members[0].id] : [];
+  }
+
+  /* One place that keeps the responder list valid. Members can change from several paths. */
+  function ensureResponders() {
+    responders = responders.filter(function(id) {
+      return members.some(function(m) { return m.id === id; });
+    });
+    if (!responders.length && members.length) responders = [members[0].id];
+    renderStatusLine();
+    updatePlaceholder();
+  }
+
+  function addMember(id) {
+    var found = available.find(function(a) { return a.id === id; });
+    if (!found) return;
+    var exists = members.find(function(m) { return m.id === id; });
+    if (exists) return;
+    members.push(found);
+    available = available.filter(function(a) { return a.id !== id; });
+    transcript.insertAdjacentHTML('beforeend', '<p class="join-line">── ' + found.name + ' joined ──</p>');
+    ensureResponders();
+    textarea.focus();
+  }
+
+  function removeMember(id) {
+    var idx = members.findIndex(function(m) { return m.id === id; });
+    if (idx === -1) return;
+    var removed = members.splice(idx, 1)[0];
+    available.push(removed);
+    transcript.insertAdjacentHTML('beforeend', '<p class="join-line">── ' + removed.name + ' left ──</p>');
+    // Removing an agent only takes it off the answering list. Nobody is promoted.
+    ensureResponders();
+    scrollDown();
+  }
+
+  function updatePlaceholder() {
+    if (members.length === 0) {
+      textarea.placeholder = '/add an agent first';
+      return;
+    }
+    var names = responderMembers().map(function(m) { return m.name; });
+    if (!names.length) names = [members[0].name];
+    // Keep the hint short even when several agents answer untagged messages.
+    var shown = names.length > 3
+      ? names.slice(0, 3).join(', ') + ' +' + (names.length - 3)
+      : names.join(', ');
+    textarea.placeholder = 'Message ' + shown + ' · @ to switch · / for commands…';
+  }
+
+  /* ===== Send ===== */
+  function send() {
+    var value = textarea.value.trim();
+    if (!value) return;
+
+    textarea.value = '';
+    syncComposer();
+    hideMenu();
+
+    // /add command
+    var addMatch = value.match(/^\/add\s*(\S*)/i);
+    if (addMatch) {
+      var name = addMatch[1].toLowerCase();
+      if (name) {
+        var found = available.find(function(a) { return a.id === name || a.name.toLowerCase() === name; });
+        if (found) {
+          addMember(found.id);
+          return;
+        }
+      }
+      // Show picker
+      openPicker(available, 'add');
+      return;
+    }
+
+    // /remove command
+    var removeMatch = value.match(/^\/remove\s+(\S+)/i);
+    if (removeMatch) {
+      var rName = removeMatch[1].toLowerCase();
+      var rm = members.find(function(m) { return m.id === rName || m.name.toLowerCase() === rName; });
+      if (rm) removeMember(rm.id);
+      return;
+    }
+
+    // /agents command
+    if (value === '/agents') {
+      var agentNames = members.map(function(m) { return m.name + ' (' + m.provider + ')'; });
+      addUserLine('/agents');
+      addAgentLine('System', 'Thread members: ' + agentNames.join(', '));
+      return;
+    }
+
+    // /new command — start a fresh, empty thread. The first member answers again.
+    if (value === '/new') {
+      dropPendingReplies(); // drop any reply still pending in the previous thread
+      show('chat');
+      content.innerHTML = '<p class="muted">Empty thread. /add an agent to start.</p>';
+      resetResponders();
+      ensureResponders();
+      addUserLine('/new');
+      addAgentLine('System', 'New thread started.');
+      return;
+    }
+
+    // /clear command — empties the thread for everyone; every agent and its settings stay.
+    if (/^\/clear\s*$/i.test(value)) {
+      dropPendingReplies();
+      show('chat');
+      content.innerHTML = '<p class="muted">Chat cleared. Every agent and its settings are kept.</p>';
+      resetResponders();
+      ensureResponders();
+      addUserLine('/clear');
+      addAgentLine('System', '── context cleared ──');
+      return;
+    }
+
+    // /threads command — bare opens the thread list, a name jumps straight there
+    var threadsMatch = value.match(/^\/threads\s*(.*)/i);
+    if (threadsMatch) {
+      var tName = threadsMatch[1].trim();
+      if (!tName) {
+        openPicker(THREADS, 'threads');
+        return;
+      }
+      var found = THREADS.filter(function(t) {
+        return t.name.toLowerCase().indexOf(tName.toLowerCase()) === 0;
+      })[0];
+      if (found) {
+        openThread(found);
+        return;
+      }
+      addUserLine(value);
+      addNote('No thread named ' + tName + ' · /threads to list');
+      return;
+    }
+
+    // /help opens the "/" menu: one command list, never a second copy on a screen.
+    if (/^\/help\s*$/i.test(value)) {
+      textarea.value = '/';
+      textarea.setSelectionRange(1, 1);
+      syncComposer();
+      handleMenuInput();
+      return;
+    }
+
+    // Command routing
+    var firstWord = value.split(' ')[0];
+    if (cmdMap[firstWord]) {
+      show(cmdMap[firstWord]);
+      return;
+    }
+
+    // Unknown command: never send it to the agents as chat text.
+    // Only a bare command word counts: "/etc/passwd ..." is a path, not a command.
+    if (/^\/[a-z][a-z-]*(\s|$)/i.test(value)) {
+      if (currentView !== 'chat') show('chat');
+      addUserLine(value);
+      addNote('Unknown command ' + firstWord + ' · type / to see commands');
+      return;
+    }
+
+    // Normal text → chat view. Only switch views when we aren't already there,
+    // so sending a message never wipes the history above it.
+    if (members.length === 0) {
+      addUserLine(value);
+      addAgentLine('System', 'Muted: /add an agent first.');
+      return;
+    }
+    if (currentView !== 'chat') show('chat');
+    addUserLine(value);
+
+    // Parse @mentions. Naming agents makes them the ones who answer untagged messages;
+    // @all makes everyone answer until someone is named again.
+    var names = (value.match(/@(\w+)/g) || []).map(function(m) { return m.slice(1).toLowerCase(); });
+    var targeted;
+    if (names.indexOf('all') !== -1) {
+      targeted = members.slice();
+      responders = members.map(function(m) { return m.id; });
+    } else if (names.length) {
+      targeted = members.filter(function(m) { return names.indexOf(m.name.toLowerCase()) !== -1; });
+      if (!targeted.length) {
+        addNote('No member named ' + names.join(', ') + ' · /agents to list');
+        return;
+      }
+      responders = targeted.map(function(m) { return m.id; });
+    } else {
+      targeted = responderMembers();
+      if (!targeted.length) targeted = members.slice(0, 1);
+    }
+    ensureResponders();
+
+    // Simulate replies
+    simulateReplies(targeted);
+  }
+
+  /* ===== Transcript helpers ===== */
+  function addNote(message) {
+    var p = document.createElement('p');
+    p.className = 'muted small';
+    p.textContent = message;
+    transcript.appendChild(p);
+    scrollDown();
+  }
+
+  function addUserLine(message) {
+    var div = document.createElement('div');
+    div.className = 'user';
+    div.textContent = '❯ ' + message;
+    transcript.appendChild(div);
+    scrollDown();
+  }
+
+  function addAgentLine(agentName, message) {
+    var m = members.find(function(m) { return m.name === agentName; });
+    var color = m ? m.color : 'var(--text)';
+    var p = document.createElement('p');
+    p.className = 'agent';
+    p.innerHTML = '<span class="agent-col" style="color:' + color + '">' + agentName + '</span>' +
+      '<span class="reply-text">' + message + '</span>';
+    transcript.appendChild(p);
+    scrollDown();
+  }
+
+  /* ===== Simulated replies ===== */
+  function simulateReplies(targeted) {
+    // Remember which thread we belong to. If the thread changes, drop the reply entirely.
+    var seq = threadSeq;
+    targeted.forEach(function(agent) {
+      var idx = replyIndex[agent.name] || 0;
+      var reply = cannedReplies[agent.name][idx % cannedReplies[agent.name].length];
+      replyIndex[agent.name] = idx + 1;
+
+      var delay = 600 + Math.floor(Math.random() * 900);
+      pendingReplies++;
+      setTimeout(function() {
+        // Stale: the thread changed while we were waiting. Clear any thinking state and drop it.
+        if (seq !== threadSeq) {
+          updateThinkingState(agent.name, false);
+          return;
+        }
+        updateThinkingState(agent.name, true);
+        setTimeout(function() {
+          if (seq === threadSeq) pendingReplies--;
+          if (seq !== threadSeq) {
+            updateThinkingState(agent.name, false);
+            return;
+          }
+          addAgentLine(agent.name, reply);
+          updateThinkingState(agent.name, false);
+        }, 400);
+      }, delay);
+    });
+  }
+
+  function updateThinkingState(name, thinking) {
+    var memberSpans = statusMembers.querySelectorAll('.status-member');
+    memberSpans.forEach(function(span) {
+      var dot = span.querySelector('.status-dot');
+      var nameEl = span.querySelector('.status-name');
+      // Compare the stored name, not the label: the lead's label carries a ★ suffix.
+      if (!nameEl || span.dataset.name !== name) return;
+      var extraEl = span.querySelector('.status-extra');
+
+      if (thinking) {
+        dot.classList.add('hollow');
+        if (!extraEl) {
+          extraEl = document.createElement('span');
+          extraEl.className = 'status-extra';
+          span.appendChild(extraEl);
+        }
+        extraEl.textContent = ' thinking…';
+      } else {
+        dot.classList.remove('hollow');
+        var m = members.find(function(m) { return m.name === name; });
+        if (m) dot.setAttribute('style', 'background:' + m.color);
+        if (extraEl) extraEl.remove();
+      }
+    });
+  }
+
+  /* ===== Key handling on textarea ===== */
+  textarea.addEventListener('keydown', function(e) {
+    // Shift+Enter always inserts a newline. Close any open menu first so it cannot
+    // hijack the keypress and insert a name instead.
+    if (e.key === 'Enter' && e.shiftKey) {
+      hideMenu();
+      return;
+    }
+    var menuOpen = slashMenu.classList.contains('open') && (pickerMode || menuMode !== 'slash' || commands.length > 0);
+
+    if (menuOpen) {
+      if (e.key === 'Escape') {
+        hideMenu();
+        e.preventDefault();
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (slashVisibleItems.length > 0) {
+          highlightItem(slashActiveIndex + 1);
+        }
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (slashVisibleItems.length > 0) {
+          highlightItem(slashActiveIndex - 1);
+        }
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        if (slashVisibleItems.length > 0 && slashActiveIndex >= 0) {
+          activateItem(slashActiveIndex);
+        } else {
+          // No matching rows: close the menu and let Enter send what was typed.
+          hideMenu();
+          if (e.key === 'Enter') send();
+        }
+        return;
+      }
+      return; // let other keys pass through
+    }
+
+    // Menu closed
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+      return;
+    }
+    // Esc is /stop: drop every pending reply, same mechanism as switching threads.
+    if (e.key === 'Escape') {
+      if (pendingReplies > 0) {
+        dropPendingReplies();
+        members.forEach(function(m) { updateThinkingState(m.name, false); });
+        addNote('Stopped.');
+      }
+      return;
+    }
+  });
+
+  /* ===== Global key shortcut ===== */
+  document.addEventListener('keydown', function(e) {
+    if (e.key === '/' && document.activeElement !== textarea && !slashMenu.classList.contains('open')) {
+      e.preventDefault();
+      textarea.focus();
+      textarea.value = '/';
+      handleMenuInput();
+    }
+  });
+
+  /* ===== Button handlers in approval ===== */
+  content.addEventListener('click', function(e) {
+    if (e.target.tagName === 'BUTTON' && content.querySelector('.approval')) {
+      var btn = e.target.textContent;
+      addUserLine(btn);
+      if (btn.indexOf('Allow') !== -1) {
+        addAgentLine('System', 'Permission granted for this simulated edit.');
+      } else {
+        addAgentLine('System', 'Edit denied. Ask the author to revise.');
+      }
+    }
+  });
+
+  /* ===== Init ===== */
+  sendBtn.onclick = send;
+  renderStatusLine();
+  show('welcome');
+  syncComposer();
+})();
+</script>
+</html>

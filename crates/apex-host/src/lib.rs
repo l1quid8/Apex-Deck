@@ -2,6 +2,8 @@
 //! drive it; neither owns any logic of its own.
 
 mod authority_file;
+mod computer;
+pub mod cursor_overlay;
 mod journal;
 #[cfg(feature="test-support")]
 pub mod test_support;
@@ -22,6 +24,7 @@ pub mod assistant_git;
 pub mod assistant_isolation;
 pub mod assistant_tasks;
 pub mod assistant_delegation;
+mod assistant_watchdog;
 pub mod assistant_conversation;
 pub mod legacy_import;
 mod legacy_personal;
@@ -40,7 +43,10 @@ pub mod project_memory;
 mod memory_lifecycle;
 pub mod project_memory_service;
 pub mod personal_worker;
+pub mod personal_handoff;
+pub mod assistant_handoff_reply;
 mod personal_task_lifecycle;
+mod personal_todos;
 mod personal_archive;
 mod personal_voice;
 mod model_metrics;
@@ -51,6 +57,7 @@ pub mod command;
 #[cfg(test)]
 mod work_post_routing_tests;
 pub mod documents;
+pub mod agent_profiles;
 pub mod folders;
 pub mod project_files;
 pub mod worktrees;
@@ -61,6 +68,8 @@ pub mod phone;
 pub mod lock;
 pub mod private_data;
 pub mod runner;
+pub mod folder_trust;
+pub mod project_process;
 
 /// True only when this build compiled the in-process test fixtures. Production
 /// builds, and `cargo test -p apex-host-production-check`, must see false.

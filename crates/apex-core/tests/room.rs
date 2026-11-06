@@ -103,7 +103,7 @@ fn everyone_policy_answers_in_parallel_without_seeing_each_other() {
     assert_eq!(lines(&room), ["human: compare notes", "opus: opus answer", "grok: grok answer"]);
     let grok_saw = &grok.requests()[0].turns;
     assert_eq!(grok_saw.len(), 1);
-    assert_eq!(grok_saw[0].content, "[Human]: compare notes");
+    assert_eq!(grok_saw[0].content, "[User]: compare notes");
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn round_robin_lets_each_bot_see_the_answers_before_it() {
     let grok_saw = &grok.requests()[0].turns;
     assert_eq!(grok_saw.len(), 1);
     assert_eq!(grok_saw[0].role, Role::User);
-    assert_eq!(grok_saw[0].content, "[Human]: debate\n\n[opus]: opus answer");
+    assert_eq!(grok_saw[0].content, "[User]: debate\n\n[opus]: opus answer");
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn bots_that_keep_pinging_each_other_are_cut_off() {
 
     let events = say(&mut room, "@opus go");
 
-    // One answer to the human, then two rounds of bots answering bots.
+    // One answer to the user, then two rounds of bots answering bots.
     assert_eq!(lines(&room), ["human: @opus go", "opus: @grok 1", "grok: @opus 2", "opus: @grok 3"]);
     assert!(events.contains(&RoomEvent::HopLimitReached { limit: 2, next: vec![ParticipantId::new("grok")] }));
     assert_eq!(events.last(), Some(&RoomEvent::Idle));
@@ -373,6 +373,7 @@ impl Participant for WorkingBot {
 fn activity_and_token_use_are_reported_alongside_the_reply() {
     let id = ParticipantId::new("worker");
     let config = ParticipantConfig {
+        can_read_images: false,
         id: id.clone(),
         display_name: "worker".into(),
         backend: Backend::Scripted { lines: vec![] },
@@ -470,7 +471,7 @@ fn compacting_shows_the_models_a_summary_instead_of_the_older_messages() {
     assert!(events.contains(&RoomEvent::Compacted { id: ParticipantId::new("opus"), summary: "Chose sqlite.".into(), upto: 2 }));
     // The summarizer is shown every message, labelled, and then the ask.
     let asked = &writer.requests()[0];
-    assert!(asked.turns[0].content.contains("[Human]: which database?"));
+    assert!(asked.turns[0].content.contains("[User]: which database?"));
     assert!(asked.turns[0].content.contains("[opus]: sqlite it is"));
     assert!(asked.turns.last().unwrap().content.contains("summary"));
 
@@ -480,7 +481,7 @@ fn compacting_shows_the_models_a_summary_instead_of_the_older_messages() {
     let seen = &opus.requests()[1];
     assert_eq!(seen.turns.len(), 1);
     assert!(seen.turns[0].content.contains("Chose sqlite."));
-    assert!(seen.turns[0].content.ends_with("[Human]: thanks"));
+    assert!(seen.turns[0].content.ends_with("[User]: thanks"));
     assert!(!seen.turns[0].content.contains("which database?"));
     assert_eq!(seen.unseen.len(), 1);
 
@@ -505,7 +506,7 @@ fn compacting_again_folds_the_last_summary_into_the_new_one() {
     let writer = ScriptedParticipant::new("opus", &["second summary"]);
     compact(&mut room, &writer).0.unwrap();
     let shown = &writer.requests()[0].turns[0].content;
-    assert!(shown.contains("first summary") && shown.contains("[Human]: two") && !shown.contains("[Human]: one"));
+    assert!(shown.contains("first summary") && shown.contains("[User]: two") && !shown.contains("[User]: one"));
 }
 
 #[test]
@@ -561,6 +562,7 @@ impl Participant for AskingBot {
 fn asking_room() -> (Room, ParticipantId) {
     let id = ParticipantId::new("asker");
     let config = ParticipantConfig {
+        can_read_images: false,
         id: id.clone(),
         display_name: "asker".into(),
         backend: Backend::Scripted { lines: vec![] },
@@ -785,20 +787,21 @@ fn server_requests_reach_prompt_and_survive_fork_and_restore() {
     let null = bot("null", &["ok", "ok"]);
     let mut chat = room(&[&null], TurnPolicy::Mention, 0);
     say(&mut chat, "@null !x-mcp read posts");
-    assert!(null.requests()[0].system.contains("The human asked you to use these MCP servers, apps, or installed plugins: x-mcp."));
+    assert!(null.requests()[0].system.contains("The user asked you to use these MCP servers, apps, or installed plugins: x-mcp."));
     assert_eq!(chat.transcript()[0].servers, vec!["x-mcp"]);
     let snapshot = chat.snapshot().fork(1);
     let json = serde_json::to_string(&snapshot).unwrap();
     let restored = Room::restore(vec![null.clone()], serde_json::from_str(&json).unwrap());
     assert_eq!(restored.transcript()[0].servers, vec!["x-mcp"]);
     say(&mut chat, "wow! good work");
-    assert!(!null.requests()[1].system.contains("The human asked you to use these MCP servers, apps, or installed plugins:"));
+    assert!(!null.requests()[1].system.contains("The user asked you to use these MCP servers, apps, or installed plugins:"));
 }
 
 #[test]
 fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
     let id = ParticipantId::new("worker");
     let config = ParticipantConfig {
+        can_read_images: false,
         id: id.clone(),
         display_name: "worker".into(),
         backend: Backend::Scripted { lines: vec![] },

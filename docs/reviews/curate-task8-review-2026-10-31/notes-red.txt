@@ -1,0 +1,51 @@
+✔ a live note (0.631417ms)
+✔ an undone note (0.342166ms)
+✔ a sealed note (0.549042ms)
+✖ an undone note becomes historical after compact (3.660208ms)
+✔ several ranges read as a list (0.087667ms)
+✔ one hidden message reads singular (0.085ms)
+✔ a bot that gave no reason leaves no empty reason line (0.065084ms)
+✔ a curation is sealed once a summary covers its position (0.048583ms)
+✔ undo says what happened (0.119416ms)
+✔ one message reads singular (0.095125ms)
+✔ curate says what happened (0.079167ms)
+✔ curate says when part of the chat is still unchecked (0.062375ms)
+✔ a failed job names its command and reads plainly (0.04775ms)
+✔ notes sit before the first message at or after their position (0.138292ms)
+✔ a note with no later message goes last (0.07575ms)
+✔ a note stays above the summary that sealed it, after a reload as well (0.075833ms)
+✔ several notes keep their order (0.082416ms)
+✔ re-applying the list replaces old notes instead of adding more (0.064209ms)
+✔ the curator is told apart by its working step (0.056291ms)
+✔ ChatPane runs the commands, keeps notes current and lets queued edits become either one (0.681916ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 19
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 158.712958
+
+✖ failing tests:
+
+test at tests/curation-notes.test.mjs:38:1
+✖ an undone note becomes historical after compact (3.660208ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+
+    assert.ok(lines.includes('You restored these messages at 10:52 AM.'))
+
+      at TestContext.<anonymous> (file:///Users/tylercaldwell/Downloads/apex-deck/tests/curation-notes.test.mjs:40:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

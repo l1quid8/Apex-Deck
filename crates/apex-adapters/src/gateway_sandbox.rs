@@ -7,6 +7,8 @@ use tokio::process::Command;
 
 pub(crate) struct Isolation {
     root: Staged,
+    /// The host-issued computer relay, when this run may start it.
+    computer: Option<PathBuf>,
     #[cfg(target_os = "linux")]
     bwrap: PathBuf,
 }
@@ -14,6 +16,9 @@ pub(crate) struct Isolation {
 fn failed(message: &str) -> ParticipantError {
     ParticipantError::Failed(format!("Gateway isolation: {message}"))
 }
+
+pub(crate) const GROK_REQUIREMENTS: &str = "allowed_mcp_servers = []\nallow_managed_mcp_servers_only = true\n";
+pub(crate) const GROK_CONFIG: &str = "[cli]\nuse_leader = false\nauto_update = false\n[compat.claude]\nmcps = false\n[compat.cursor]\nmcps = false\n[managed_mcps]\nenabled = false\ngateway_tools_enabled = false\n";
 
 pub(crate) const BWRAP_REQUIRED_MESSAGE: &str =
     "Linux process isolation requires bubblewrap (bwrap). Install bubblewrap or use Claude Code or an API model.";
@@ -52,6 +57,9 @@ pub fn isolation_available(path: Option<&str>) -> Result<(), String> {
 }
 
 impl Isolation {
+    pub(crate) fn stage_images(&self) -> Result<Staged, ParticipantError> {
+        Staged::new_in(&self.root.dir.join("tmp"))
+    }
     #[allow(dead_code)]
     pub fn new(backend: &Backend) -> Result<Self, ParticipantError> {
         Self::new_with_path(backend, None)
@@ -76,6 +84,7 @@ impl Isolation {
             .map_err(|_| failed("cannot bound project discovery"))?;
         let isolation = Self {
             root,
+            computer: None,
             #[cfg(target_os = "linux")]
             bwrap,
         };
@@ -124,13 +133,15 @@ impl Isolation {
                 _ => {}
             }
         }
-        isolation.write(
-            "config/grok/requirements.toml",
-            "allowed_mcp_servers = []\nallow_managed_mcp_servers_only = true\n",
-        )?;
-        isolation.write("config/grok/config.toml", "[cli]\nuse_leader = false\nauto_update = false\n[compat.claude]\nmcps = false\n[compat.cursor]\nmcps = false\n[managed_mcps]\nenabled = false\ngateway_tools_enabled = false\n")?;
+        isolation.write("config/grok/requirements.toml", GROK_REQUIREMENTS)?;
+        isolation.write("config/grok/config.toml", GROK_CONFIG)?;
         isolation.write("gemini-system.json", r#"{"mcp":{"allowed":["__apex_gateway_no_mcp__"]},"mcpServers":{},"tools":{"core":[]},"extensions":{"enabled":false},"security":{"auth":{"selectedType":"oauth-personal"}}}"#)?;
         Ok(isolation)
+    }
+
+    pub(crate) fn with_computer(mut self, relay: Option<PathBuf>) -> Self {
+        self.computer = relay;
+        self
     }
 
     fn write(&self, relative: &str, value: &str) -> Result<(), ParticipantError> {
@@ -258,6 +269,18 @@ impl Isolation {
                     ));
                 }
             }
+            // The signed helper bundle and its one control socket, nothing beside them.
+            // The turn token in the child's environment stays the authority.
+            let mut computer = String::new();
+            if let Some(relay) = &self.computer {
+                let bundle = relay.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
+                    .ok_or_else(|| failed("invalid computer relay"))?;
+                let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| failed("no home folder"))?;
+                let socket = home.join("Library/Application Support/Apex Unified Computer Use/control.sock");
+                let folder = socket.parent().ok_or_else(|| failed("invalid computer socket"))?;
+                read.push_str(&format!(" (subpath {}) (subpath {})", quote(bundle)?, quote(folder)?));
+                computer = format!("(allow network-outbound (literal {}))\n", quote(&socket)?);
+            }
             // Permit runtime libraries and this run's private files only.
             // Absolute paths, symlinks and tool subprocesses
             // remain subject to this kernel boundary. No inherited keychain access.
@@ -277,7 +300,7 @@ impl Isolation {
 (allow network-outbound (remote ip "*:443" "*:80"))
 (deny network-outbound (remote ip "localhost:*"))
 (allow network-outbound (literal "/private/var/run/mDNSResponder"))
-(allow mach-lookup
+{}(allow mach-lookup
  (global-name "com.apple.system.opendirectoryd.libinfo")
  (global-name "com.apple.system.logger")
  (global-name "com.apple.system.notification_center")
@@ -288,7 +311,8 @@ impl Isolation {
 "#,
                 quote(&root)?,
                 read,
-                quote(&root)?
+                quote(&root)?,
+                computer
             );
             self.write("sandbox.sb", &profile)?;
             let mut command = Command::new("/usr/bin/sandbox-exec");
@@ -349,6 +373,21 @@ impl Isolation {
     }
 }
 
+pub(crate) const SYSTEM_RO_PATHS: &[&str] = &[
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/localtime",
+    "/etc/ssl",
+    "/etc/ca-certificates",
+    "/etc/pki",
+];
+
 #[allow(dead_code)]
 pub(crate) fn bwrap_args(
     path_exists: impl Fn(&Path) -> bool,
@@ -358,20 +397,6 @@ pub(crate) fn bwrap_args(
     args: &[String],
 ) -> Result<Vec<std::ffi::OsString>, ParticipantError> {
     use std::ffi::OsString;
-    const SYSTEM_RO_PATHS: &[&str] = &[
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/etc/resolv.conf",
-        "/etc/hosts",
-        "/etc/nsswitch.conf",
-        "/etc/localtime",
-        "/etc/ssl",
-        "/etc/ca-certificates",
-        "/etc/pki",
-    ];
     let mut out: Vec<OsString> = vec![
         "--die-with-parent".into(),
         "--unshare-ipc".into(),
@@ -437,7 +462,7 @@ pub(crate) fn bwrap_args(
 
 /// A private session may use a fresh access credential, never rotate a
 /// refresh token copied from an independently running canonical CLI.
-fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Result<Vec<u8>,ParticipantError> {
+pub(crate) fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Result<Vec<u8>,ParticipantError> {
     fn strip(value:&mut serde_json::Value,now:u64,provider:&str,require_fresh:bool)->Result<(),ParticipantError> {
         match value {
             serde_json::Value::Object(object)=>{
@@ -470,7 +495,7 @@ fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Result<Vec<u8>
 /// A disposable Codex process never receives the canonical refresh credential.
 /// The original Codex installation remains the sole refresh owner. Its JWT
 /// must outlive our 300s turn, Codex's 5min proactive-refresh window and startup.
-fn codex_auth_document(input:&[u8],now:u64)->Result<Vec<u8>,ParticipantError> {
+pub(crate) fn codex_auth_document(input:&[u8],now:u64)->Result<Vec<u8>,ParticipantError> {
     use base64::Engine;
     let refresh=||failed("Codex’s connection needs refreshing. Refresh its sign-in in Codex, then retry. Apex Deck has not changed the existing login.");
     let source:serde_json::Value=serde_json::from_slice(input).map_err(|_|refresh())?;
@@ -545,7 +570,7 @@ fn muse_meta_secret() -> Result<Vec<u8>, ParticipantError> {
 
 // Resolve exactly Muse's model sign-in in the trusted parent. Never grant the
 // child Keychain access or copy MCP credential slots alongside the model login.
-fn muse_auth_document(
+pub(crate) fn muse_auth_document(
     bytes: &[u8],
     read_meta_secret: impl FnOnce() -> Result<Vec<u8>, ParticipantError>,
 ) -> Result<Vec<u8>, ParticipantError> {
@@ -609,6 +634,19 @@ mod tests {
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),input);
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "live: needs the installed Unified Computer Use helper; status only, no turn"]
+    async fn computer_relay_reaches_the_helper_inside_the_sandbox() {
+        let relay = PathBuf::from("/Applications/Apex Deck.app/Contents/Resources/Unified Computer Use.app/Contents/Helpers/SpikeMCP");
+        let closed = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap();
+        let refused = closed.command(relay.to_str().unwrap(), &["--status".into()], None).unwrap().output().await.unwrap();
+        assert!(!String::from_utf8_lossy(&refused.stdout).contains("accessibilityTrusted"), "no grant, no helper");
+        let open = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap().with_computer(Some(relay.clone()));
+        let output = open.command(relay.to_str().unwrap(), &["--status".into()], None).unwrap().output().await.unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("accessibilityTrusted"), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
     #[cfg(target_os="macos")]
     #[test]
     fn staged_grok_and_gemini_credentials_cannot_rotate_the_original_login() {
@@ -667,6 +705,22 @@ mod tests {
         let output=command.output().await.unwrap();
         assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),serde_json::json!([]));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn assistant_sandbox_can_read_its_staged_image_input() {
+        let isolation = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap();
+        let files = isolation.stage_images().unwrap();
+        let input = files.dir.join("screen.png");
+        std::fs::write(&input, b"validated image bytes").unwrap();
+        let output = isolation.command("/bin/cat", &[input.to_string_lossy().into_owned()], None)
+            .unwrap().output().await.unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(output.stdout, b"validated image bytes");
+        let dir = files.dir.clone();
+        drop(files);
+        assert!(!dir.exists());
     }
 
 

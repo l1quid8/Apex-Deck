@@ -10,6 +10,7 @@ import { promoteWait } from './chatPromote';
 import { type ChatEntry, type ChatProfile } from './chatCatalog';
 import type { AgentInfo, ParticipantConfig, RoomSnapshot, RoomState } from './types';
 import type { AppSettings } from './settings';
+import { deckClipboard } from "./copyText";
 
 interface Props {
   row: ChatEntry; chats: DesktopChats; settings: AppSettings; agents: AgentInfo[];
@@ -85,6 +86,7 @@ export function TalkOnlyChat(props: Props) {
     {key:'pdf',label:'Share as PDF…',onSelect:()=>command('share_pdf')},
     {key:'copy',label:'Copy',submenu:[{key:'markdown',label:'Markdown',onSelect:()=>command('copy_markdown')},{key:'reply',label:'Last reply',onSelect:()=>command('copy_reply')}]},
     {key:'archive',label:row.archived?'Unarchive':'Archive',separated:true,disabled:!online,onSelect:()=>act(chats.updateMeta(row,{archived:!row.archived}))},
+    ...(raw?.supports?.('room_trash_v1')===true ? [{key:'trash',label:'Move to Trash',separated:true,disabled:!online,onSelect:()=>act(chats.setTrashed(row,true).then(onClose))}] : []),
     {key:'close',label:'Close',onSelect:onClose},
   ];
   const pending = chats.delivery?.snapshot().chats[key];
@@ -107,13 +109,14 @@ export function TalkOnlyChat(props: Props) {
     {row.promotedTo && <p className="desktop-chat-banner">Moved to a Work thread. This chat is kept as it was. <button className="ghost" onClick={()=>onOpenWork(row,row.promotedTo!)}>Open the Work thread</button></p>}
     {!row.promotedTo && ticket && <p className="desktop-chat-banner">A move to a Work thread wasn't confirmed. <button className="ghost" onClick={()=>setMoving(true)}>Finish or start over</button></p>}
     {!online && <p className="desktop-chat-banner">Reconnecting to {machine.name}. Messages wait here and go when it's back.</p>}
+    {chats.deliveryHeld(row) && !row.trashedAt && <p className="desktop-chat-banner">Queued messages stay paused after Trash. Sending a new message also resumes delivery. <button type="button" className="ghost" disabled={!online} onClick={()=>act(chats.resumeDelivery(row))}>Resume queued messages</button></p>}
     {moving && <MoveToWorkDialog row={row} bots={bots} chats={chats} onClose={()=>setMoving(false)} onMoved={work=>{setMoving(false);onOpenWork(row,work.id,work);}} />}
     {adding && <div className="desktop-chat-banner">{adding.length ? adding.map(item=><button key={item.profile.id} onClick={()=>{setAdding(null);act(chats.addBot(row,item.profile.id));}}>{item.profile.display_name}</button>) : 'No other saved bots on this machine.'}<button className="ghost" onClick={()=>setAdding(null)}>Cancel</button></div>}
     {problem && <p className="chat-problem" role="status">{problem}</p>}
     <div className="pane-body">{backend ? <ChatPane key={key} talkOnly attach pane={{id:row.id,kind:'chat',workspaceId:'',title:row.title}} cwd="" backend={backend}
       chatDraft={props.draft} onChatDraft={props.onDraft} onChatSend={send} chatBlocked={blocked} chatReadOnly={!!row.promotedTo || !!ticket || moving} onChatAddBot={online?addBot:undefined} chatDelivery={delivery} onChatParticipants={setBots}
       agents={props.agents} profiles={props.profiles} onProfilesChange={props.onProfilesChange} disabledProviders={settings.disabledProviders} focused onActivity={()=>{}} onStatus={(_id,s)=>setStatus(s.text)}
-      onFork={fork} menuRequest={request} onMenuDone={()=>setRequest(undefined)} onCopy={text=>act(navigator.clipboard.writeText(text))}
+      onFork={fork} menuRequest={request} onMenuDone={()=>setRequest(undefined)} onCopy={text=>act(deckClipboard.writeText(text))}
       chipParts={settings.botChips} confirmSteer={settings.confirmSteer} landingTexture={settings.landingTexture} codeRunButtons={false} /> : <p role="status">The chat's machine is unavailable.</p>}</div>
   </section>;
 }

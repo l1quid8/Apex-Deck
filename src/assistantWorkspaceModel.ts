@@ -126,7 +126,7 @@ export function assistantWorkerThreadDestination(workspace:Workspace,threadId:st
 }
 
 export type SettingsSnapshot = { name:string; model:string; effort:string|null; access:string; projects:string[]; look:{seed:string;color:string;kind?:string;image?:unknown} };
-export type SettingsField = 'Name'|'Avatar'|'Model'|'Reasoning'|'Project tools'|'Projects';
+export type SettingsField = 'Name'|'Avatar'|'Model'|'Reasoning'|'Assistant access'|'Projects';
 /** What the Settings save bar counts, in the order the page shows them. */
 export function dirtyFields(saved:SettingsSnapshot,draft:SettingsSnapshot):SettingsField[] {
  const changed:SettingsField[]=[];
@@ -134,7 +134,7 @@ export function dirtyFields(saved:SettingsSnapshot,draft:SettingsSnapshot):Setti
  if(saved.look.seed!==draft.look.seed||saved.look.color!==draft.look.color||(saved.look.kind??'pixel')!==(draft.look.kind??'pixel')||JSON.stringify(saved.look.image??null)!==JSON.stringify(draft.look.image??null))changed.push('Avatar');
  if(saved.model!==draft.model)changed.push('Model');
  if((saved.effort??null)!==(draft.effort??null))changed.push('Reasoning');
- if(saved.access!==draft.access)changed.push('Project tools');
+ if(saved.access!==draft.access)changed.push('Assistant access');
  const a=[...saved.projects].sort(),b=[...draft.projects].sort();
  if(a.length!==b.length||a.some((key,i)=>key!==b[i]))changed.push('Projects');
  return changed;

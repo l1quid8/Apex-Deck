@@ -1,4 +1,4 @@
-//! The human's direct controls for a personal assistant: identity and
+//! The user's direct controls for a personal assistant: identity and
 //! style, rules, budget, privacy, memory, notices, push devices, linked
 //! machines, connected apps and the browser's Take over. Each one is a
 //! client command from a Full-access device, never something text can do.
@@ -40,7 +40,12 @@ fn hhmm(text: &str) -> bool {
 /// What a settings command answers: the assistant as it is now.
 #[derive(Serialize)]
 pub struct Changed {
+    #[serde(serialize_with="serialize_assistant_view")]
     pub assistant: PersonalAssistant,
+}
+
+fn serialize_assistant_view<S: serde::Serializer>(assistant: &PersonalAssistant, serializer: S) -> Result<S::Ok,S::Error> {
+    crate::personal::PersonalAssistantView::from(assistant).serialize(serializer)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,7 +129,17 @@ impl crate::Host {
                 }
             }
             apply_settings(assistant, settings)
+        }).inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
+    }
+
+    pub fn personal_conversation_new(&self, id: &str) -> Result<Changed, String> {
+        self.changed(id, |assistant| {
+            assistant.conversation_from = now();
+            // New-conversation clears unresolved routing drafts without deleting task history.
+            assistant.pending_handoffs.clear();
+            Ok(())
         })
+            .inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 
     /// A standing rule only ever makes the assistant more careful.
@@ -137,7 +152,7 @@ impl crate::Host {
             let rule_id = assistant.next_rule_id();
             assistant.rules.push(StandingRule { id: rule_id, text: text.to_owned(), class, mode, created_at: now() });
             Ok(())
-        })
+        }).inspect(|_| self.computer.revoke(Some(&crate::personal_worker::computer_thread(id)), None))
     }
 
     pub fn personal_rule_remove(&self, id: &str, rule_id: &str) -> Result<Changed, String> {
@@ -162,7 +177,7 @@ impl crate::Host {
         })
     }
 
-    /// Something the human tells it to remember, so it's explicit.
+    /// Something the user tells it to remember, so it's explicit.
     pub fn personal_memory_add(&self, id: &str, text: &str) -> Result<Changed, String> {
         self.personal_memory_add_at_revision(id, text, None)
     }
@@ -303,6 +318,63 @@ impl crate::Host {
 
     pub async fn personal_browser_input(&self, input: browser::Input) -> Result<browser::View, String> {
         browser::input(input).await
+    }
+
+    pub async fn browser_tabs(&self) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_list().await
+    }
+
+    pub async fn browser_tab_open(&self, url: Option<String>) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_open(url).await
+    }
+
+    pub async fn browser_tab_close(&self, tab: String) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_close(&tab).await
+    }
+
+    pub async fn browser_tab_control(&self, tab: String, take: bool) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_control(&tab, take).await
+    }
+
+    pub async fn browser_tab_share(&self, tab: String, thread: String, share: bool) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        self.handle(&thread)?;
+        browser::tab_share(&tab, &thread, share).await
+    }
+
+    pub async fn browser_tab_frame(&self, tab: String, after: u64) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_frame(&tab, after).await
+    }
+
+    pub async fn browser_tab_input(&self, tab: String, events: Vec<browser::Event>) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_input(&tab, events).await
+    }
+
+    pub async fn browser_tab_resize(&self, tab: String, width: u32, height: u32, scale: f64) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        browser::tab_resize(&tab, width, height, scale).await
+    }
+
+    pub async fn browser_tab_upload(&self, tab: String, name: String, data: String) -> Result<serde_json::Value, String> {
+        use base64::Engine;
+        self.use_assistant_browser();
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| "That file couldn't be read.".to_owned())?;
+        browser::tab_upload(&tab, &name, &bytes).await
+    }
+
+    /// Stops only the bot holding this tab; other tabs and rooms keep working.
+    pub async fn browser_tab_stop(&self, tab: String) -> Result<serde_json::Value, String> {
+        self.use_assistant_browser();
+        if let Some((thread, participant)) = browser::tab_holder(&tab)? {
+            self.room_stop(thread, Some(apex_core::ParticipantId::new(participant)));
+        }
+        browser::tab_control(&tab, false).await
     }
 }
 

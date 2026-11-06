@@ -1,0 +1,80 @@
+[
+  {
+    "kind": "goal",
+    "arg": "",
+    "expected": {
+      "action": "show"
+    }
+  },
+  {
+    "kind": "goal",
+    "arg": "PAUSE",
+    "expected": {
+      "action": "pause"
+    }
+  },
+  {
+    "kind": "goal",
+    "arg": "start\tpause",
+    "expected": {
+      "objective": "pause"
+    }
+  },
+  {
+    "kind": "goal",
+    "arg": "start\nship it",
+    "expected": {
+      "objective": "ship it"
+    }
+  },
+  {
+    "kind": "goal",
+    "arg": "start",
+    "error": "Goal objective required after \"start\""
+  },
+  {
+    "kind": "loop",
+    "arg": "start",
+    "error": "Loop interval and prompt required, e.g. /loop 10m check build"
+  },
+  {
+    "kind": "loop",
+    "arg": "10M check build",
+    "expected": {
+      "prompt": "check build",
+      "intervalSeconds": 600
+    }
+  },
+  {
+    "kind": "loop",
+    "arg": "10m",
+    "error": "Loop prompt required after interval, e.g. /loop 10m check build"
+  },
+  {
+    "kind": "loop",
+    "arg": "0m check",
+    "error": "Invalid interval \"0m\": must be positive integer"
+  },
+  {
+    "kind": "loop",
+    "arg": "9s check",
+    "error": "Interval \"9s\" too short: minimum 10s"
+  },
+  {
+    "kind": "loop",
+    "arg": "25h check",
+    "error": "Interval \"25h\" too long: maximum 24h"
+  },
+  {
+    "kind": "loop",
+    "arg": "1.5m check",
+    "error": "Invalid interval \"1.5m\": expected <number><s|m|h>, e.g. 10m"
+  },
+  {
+    "kind": "loop",
+    "arg": "clear",
+    "expected": {
+      "action": "clear"
+    }
+  }
+]

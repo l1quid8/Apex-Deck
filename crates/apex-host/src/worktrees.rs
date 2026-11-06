@@ -45,11 +45,10 @@ pub struct AddRequest {
 }
 
 fn git(project: &Path, args: &[String]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = crate::project_process::git_command()
         .arg("-C")
         .arg(crate::assistant_git::external_path(project).as_os_str())
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -476,7 +475,7 @@ mod tests {
         let root = temp.path().join("repo");
         fs::create_dir(&root).unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
+            let out = crate::project_process::git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
