@@ -53,6 +53,8 @@ fn bot(access: Access, cwd: &Path) -> Arc<dyn Participant> {
         media_dir: None,
         attachment_roots: vec![],
         phone: None,
+        data_dir: None,
+        observed_addrs: vec![],
     })
 }
 
