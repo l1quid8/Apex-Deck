@@ -33,6 +33,27 @@ final class TurnRegistryTests: XCTestCase {
     XCTAssertThrowsError(try registry.register(args("e", "read", true), control: -1))
   }
 
+  func testUntetheredWorkRoomFullSkipsConsentOnlyAtFull() throws {
+    let registry = TurnRegistry()
+    let app = AppIdentity(bundle: "com.example.app", path: "/Applications/Example.app", executable: "/x", signature: Data([1]))
+    func args(_ token: Character, _ access: String, _ untethered: Bool, assistant: Bool = false) -> [String: Any] {
+      ["threadId": "work-thread", "participantId": "p", "turnToken": String(repeating: token, count: 64), "effectiveAccess": access,
+       "enabled": true, "grantScope": "s", "untethered": untethered, "assistantFullAccess": assistant]
+    }
+    let free = try registry.register(args("a", "full", true), control: -1)
+    var asked = 0
+    try registry.authorizeApp(app, token: free) { asked += 1; return .denied }
+    XCTAssertEqual(asked, 0, "an untethered Full turn opens apps without the native card")
+    XCTAssertTrue(registry.isUntethered(free))
+    XCTAssertThrowsError(try registry.register(args("b", "edits", true), control: -1), "untethered requires Full")
+    XCTAssertThrowsError(try registry.register(args("c", "full", true, assistant: true), control: -1), "the two stamps never combine")
+    let tethered = try registry.register(args("d", "full", false), control: -1)
+    XCTAssertFalse(registry.isUntethered(tethered))
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: tethered), "an untethered grant ends with its turn")
+    _ = registry.stopAll()
+    XCTAssertFalse(registry.isUntethered(free), "Stop ends untethered authority")
+  }
+
   func testNativeConsentRechecksTurnAfterTheHumanAnswers() throws {
     let registry = TurnRegistry()
     let token = String(repeating: "a", count: 64)

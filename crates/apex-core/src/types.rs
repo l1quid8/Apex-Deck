@@ -100,6 +100,11 @@ pub struct ParticipantConfig {
     /// Whether this bot's model accepts computer screenshots. Opt in explicitly.
     #[serde(default)]
     pub can_read_images: bool,
+    /// Untethered Unified Computer Use: with Full access, this bot uses Mac
+    /// apps without the helper's per-app approval prompt and with relaxed
+    /// reliability guards. Protected apps, password fields and Stop still apply.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untethered_computer: bool,
     /// How hard the model should think, in the backend's own words (for
     /// example "low" or "high"). `None` leaves the backend's default.
     #[serde(default)]

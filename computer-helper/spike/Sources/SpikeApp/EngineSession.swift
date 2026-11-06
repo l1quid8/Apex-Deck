@@ -112,7 +112,16 @@ final class EngineSession {
       output += "last_action: " + Self.actionSummary(action) + "\n"
     }
     lastAction = nil
-    guard output.utf8.count <= 24_000 else { current = nil; throw Refusal("engine_output_too_large") }
+    if output.utf8.count > 24_000 {
+      // Keep the snapshot and its controls; cut the text at a line boundary.
+      var kept = "", size = 0
+      for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
+        let bytes = line.utf8.count + 1
+        if size + bytes > 23_800 { break }
+        kept += line + "\n"; size += bytes
+      }
+      output = kept + "reading: truncated; reveal or read a smaller area for more\n"
+    }
     return Snapshot(id: captured.id, app: native.app, launch: native.launch,
       window: native.window, document: native.document, focus: native.focus,
       value: native.value, range: native.range, epoch: native.epoch,

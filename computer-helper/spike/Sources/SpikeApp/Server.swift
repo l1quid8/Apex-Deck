@@ -236,10 +236,19 @@ final class Server {
       let brokered = BrowserBroker.routes(tool, toolArguments, active: state.usingBrowser)
       self.activeLock.unlock()
       if brokered { DispatchQueue.global().async { self.browserCall(id, tool, toolArguments, state: state, client: client) }; return }
-      self.activeLock.lock()
-      let busy = self.activeID != nil
-      if !busy { self.activeID = String(describing: id) }
-      self.activeLock.unlock()
+      // One action runs at a time. A second call waits briefly for its turn
+      // instead of failing at once, which bots read as a broken tool.
+      DispatchQueue.global().async {
+      var busy = true
+      let until = ProcessInfo.processInfo.systemUptime + 8
+      while true {
+        self.activeLock.lock()
+        busy = self.activeID != nil
+        if !busy { self.activeID = String(describing: id) }
+        self.activeLock.unlock()
+        if !busy || ProcessInfo.processInfo.systemUptime >= until { break }
+        Thread.sleep(forTimeInterval: 0.05)
+      }
       if busy { self.queue.async { self.fail(id, "action_busy", client) }; return }
       self.queue.async {
         self.activeState = state
@@ -283,6 +292,7 @@ final class Server {
           CursorOverlayIntegration.cleanupOnStop()
           self.fail(id, "internal_error", client)
         }
+      }
       }
     }
   }
@@ -485,7 +495,7 @@ final class Server {
       guard Set(args.keys) == ["snapshot", "key"], let key = args["key"] as? String else { throw Refusal("invalid_arguments") }
       // Generic label for key, show at focus only as fallback before validation
       CursorOverlayIntegration.showForFocus(snapshot: s, label: key == "" ? "Key" : key, action: .generic)
-      try input.key(key, s: s, id: id)
+      try input.key(key, s: s, id: id, untethered: turns.isUntethered(activeState.token))
       engineSession.recordUnverifiedInput()
     case "scroll":
       guard Set(args.keys) == ["snapshot", "element", "direction", "amount"], let number = args["element"] as? Int,
@@ -523,7 +533,7 @@ final class Server {
       tool("click", "Press one retained numbered control in a fresh snapshot, in the background. The pointer never moves. A disabled control returns element_disabled.", snap.merging(["element": element]) { $1 }, ["snapshot", "element"]),
       tool("click_point", "Press the control under a point in the current screenshot. x/y are image pixels; requires its image_snapshot and a writable session. The pointer never moves, so pixel_target_has_no_control is returned where nothing pressable is under the point, such as a canvas.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
       tool("type_text", "Type into a numbered text control, or the app's focused field if element is omitted. Works in the background and is verified by reading the field back. Password fields are refused.", snap.merging(["text": ["type": "string", "maxLength": 65536], "element": element]) { $1 }, ["snapshot", "text"]),
-      tool("press_key", "Press a named key, such as Return, Tab, Space, PageDown or Shift-Tab, on the app's focused control. Delivery is not verified, so read the screen and never repeat it blindly. Cmd- and Control- shortcuts return shortcut_needs_foreground; use a control instead. Minimized windows return key_needs_visible_window. Return in a browser's own controls, such as the address bar, returns browser_control_needs_visible_window while the window is fully covered.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
+      tool("press_key", "Press a named key, such as Return, Tab, Space, PageDown or Shift-Tab, on the app's focused control. Delivery is not verified, so read the screen and never repeat it blindly. Cmd- and Control- shortcuts return shortcut_needs_foreground unless this bot is untethered, which brings the app to the front first; quit and force-quit shortcuts are always blocked. Minimized windows return key_needs_visible_window. Return in a browser's own controls, such as the address bar, returns browser_control_needs_visible_window while the window is fully covered.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
       tool("scroll", "Scroll one retained native control by accessibility. Web pages usually return scroll_not_supported_use_reveal.", snap.merging(["element": element, "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"]),
       tool("reveal", "Scroll a retained numbered control into view. This is the way to scroll a web page.", snap.merging(["element": element]) { $1 }, ["snapshot", "element"])]
   }

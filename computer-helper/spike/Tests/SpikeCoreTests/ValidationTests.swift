@@ -225,4 +225,14 @@ final class ValidationTests: XCTestCase {
     let nodes = [1: Node(window: false, press: false, parent: nil)]
     XCTAssertThrowsError(try nearest(1, nodes)) { XCTAssertEqual(($0 as? Refusal)?.code, "point_window_mismatch") }
   }
+
+  func testUntetheredShortcutsStillBlockQuitAndForceQuit() {
+    let cmd = Policy.key("Cmd-Q")!, shiftQuit = Policy.key("Cmd-Shift-Q")!, force = Policy.key("Cmd-Alt-Escape")!
+    XCTAssertTrue(Policy.blockedShortcut(code: cmd.0, flags: cmd.1))
+    XCTAssertTrue(Policy.blockedShortcut(code: shiftQuit.0, flags: shiftQuit.1))
+    XCTAssertTrue(Policy.blockedShortcut(code: force.0, flags: force.1))
+    let save = Policy.key("Cmd-S")!, newTab = Policy.key("Cmd-T")!
+    XCTAssertFalse(Policy.blockedShortcut(code: save.0, flags: save.1))
+    XCTAssertFalse(Policy.blockedShortcut(code: newTab.0, flags: newTab.1))
+  }
 }

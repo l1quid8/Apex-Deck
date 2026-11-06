@@ -133,9 +133,24 @@ final class Input {
       up.postToPid(pid)
     })
   }
-  func key(_ key: String, s: Snapshot, id: String) throws {
+  /// Untethered shortcuts only: activate the granted app and wait until it is frontmost.
+  private func bringToFront(_ app: NSRunningApplication) throws {
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return }
+    _ = app.activate()
+    let until = ProcessInfo.processInfo.systemUptime + 1.5
+    while ProcessInfo.processInfo.systemUptime < until {
+      if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return }
+      Thread.sleep(forTimeInterval: 0.03)
+    }
+    throw Refusal("shortcut_needs_foreground")
+  }
+  func key(_ key: String, s: Snapshot, id: String, untethered: Bool = false) throws {
     guard let (code, flags) = Policy.key(key) else { throw Refusal("unsupported_key") }
-    guard !Policy.needsForeground(flags: flags) else { throw Refusal("shortcut_needs_foreground") }
+    if Policy.needsForeground(flags: flags) {
+      guard untethered else { throw Refusal("shortcut_needs_foreground") }
+      guard !Policy.blockedShortcut(code: code, flags: flags) else { throw Refusal("shortcut_blocked") }
+      try bringToFront(s.app)
+    }
     guard !(s.window.map(BackgroundSupport.isMinimized) ?? false) else { throw Refusal("key_needs_visible_window") }
     let deadline = ProcessInfo.processInfo.systemUptime + 2
     Thread.current.threadDictionary["axDeadline"] = deadline

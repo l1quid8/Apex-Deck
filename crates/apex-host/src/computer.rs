@@ -21,6 +21,13 @@ fn assistant_full_access(assistant: &crate::personal::PersonalAssistant, thread:
         && crate::personal::permissions::full_access(assistant)
 }
 
+/// Untethered turns skip the helper's app prompt. Only a Work-room bot whose
+/// saved config says so, at Full access for this very turn, gets the stamp;
+/// Plan and Read turns never do, and assistant replies use their own stamp.
+fn untethered_turn(access: Access, assistant_reply: bool, saved: impl FnOnce() -> bool) -> bool {
+    access == Access::Full && !assistant_reply && saved()
+}
+
 fn instance_id() -> String {
     use ring::rand::{SecureRandom, SystemRandom};
     let mut random = [0u8; 16];
@@ -420,7 +427,8 @@ impl TurnHook {
                     let assistant = crate::personal_worker::computer_thread_assistant(&self.thread)?;
                     host.personal_get(assistant).ok()
                 }).is_some_and(|assistant| assistant_full_access(&assistant, &self.thread, id, access, self.ended.is_some()));
-                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
+                let untethered = untethered_turn(access, self.ended.is_some(), || self.host.upgrade().is_some_and(|host| host.computer_participant_untethered(&self.thread, id)));
+                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"untethered":untethered,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
                 if !self.computer.ready(&self.thread, generation) { return Err(TurnStartFailure::AuthorityChanged); }
                 let shutdown = duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?;
                 let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?).map_err(|_| TurnStartFailure::Session)?;
@@ -775,6 +783,11 @@ mod tests {
     #[test]
     fn trusted_full_stamp_requires_the_saved_assistant_owner_and_current_profile() {
         let mut assistant: crate::personal::PersonalAssistant = serde_json::from_value(json!({"id":"a","name":"A","style":"","hostId":"h","profile":{"id":"p","display_name":"P","backend":{"kind":"agent","tool":"claude_code"},"access":"full"},"workspaceConfigVersion":4,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        assert!(untethered_turn(Access::Full, false, || true));
+        assert!(!untethered_turn(Access::Edits, false, || true), "only Full access carries the stamp");
+        assert!(!untethered_turn(Access::Read, false, || true), "Plan and Read turns never carry it");
+        assert!(!untethered_turn(Access::Full, false, || false), "an unsaved bot never carries it");
+        assert!(!untethered_turn(Access::Full, true, || true), "assistant replies keep their own stamp");
         assert!(assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, true));
         assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, false), "an ordinary room never receives the stamp, even if its ID resembles the assistant namespace");
         assert!(!assistant_full_access(&assistant, "work-room", &ParticipantId::new("p"), Access::Full, true));

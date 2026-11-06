@@ -20,7 +20,7 @@ use apex_core::{
 
 fn config() -> ParticipantConfig {
     ParticipantConfig {
-        can_read_images: false,
+        can_read_images: false, untethered_computer: false,
         id: ParticipantId::new("deepseek"),
         display_name: "DeepSeek".into(),
         backend: Backend::OpenAiCompatible {

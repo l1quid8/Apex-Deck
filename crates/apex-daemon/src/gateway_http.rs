@@ -465,7 +465,7 @@ pub fn resolve_model_target(
             model_opt.as_deref().unwrap_or("default")
         );
         let config = ParticipantConfig {
-            can_read_images: false,
+            can_read_images: false, untethered_computer: false,
             id: ParticipantId::new("gateway"),
             display_name: "Gateway".to_string(),
             backend: Backend::Agent {
@@ -494,7 +494,7 @@ pub fn resolve_model_target(
         .find(|p| p.prefix == lower_prefix)
     {
         let config = ParticipantConfig {
-            can_read_images: false,
+            can_read_images: false, untethered_computer: false,
             id: ParticipantId::new("gateway"),
             display_name: "Gateway".to_string(),
             backend: Backend::OpenAiCompatible {

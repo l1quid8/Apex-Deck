@@ -15,6 +15,17 @@ The helper asks before a bot first uses an app. **Allow Once** ends with that bo
 
 The helper ships inside `Apex Deck.app/Contents/Resources/Unified Computer Use.app`. Approve the copy inside the installed Deck application, rather than an older prototype or a source-tree build. The macOS permission-list name is **Unified Computer Use**. Changing from the earlier Spike app requires new grants; the old app's grants do not establish permission for this one.
 
+## Untethered computer use
+
+For a bot you trust, open its settings and turn on **Untethered computer use**. It needs Full access and asks you to confirm once. An untethered bot:
+
+- opens and controls any Mac app without the helper's per-app approval card, in every Work thread it joins;
+- can send Cmd and Control shortcuts: the helper brings the app to the front first. Quit (Cmd-Q and variants) and Force Quit stay blocked.
+
+These still apply: protected apps (System Settings, Keychain, Passwords, sign-in and security windows), password fields, app identity checks, Stop (Deck and the menu bar), Plan staying read-only, and macOS's own Accessibility and Screen Recording permissions. Lowering the bot's access or turning the switch off ends the current authority at once. Personal assistants keep their own Full-trust setting.
+
+Every bot also benefits from two reliability changes: a call that arrives while another bot's action is running now waits up to eight seconds instead of failing with `action_busy`, and a screen reading that is too large is cut at a line boundary instead of failing with `engine_output_too_large`.
+
 ## Request it with !
 
 In a Work thread, type `!` and select **Unified Computer Use**, or send
@@ -26,7 +37,7 @@ The older `!apex-computer` spelling is also recognized.
 
 ## Models and apps
 
-The native engine is model-neutral. API models need reliable tool calling, and screenshot use needs image input. Claude Code and Codex receive the same tool server through their existing Deck adapters. Gemini, Grok, Muse and custom CLI bots do not receive the native capability in this release. Talk-only Chat rooms and personal-assistant text-only inference also do not receive it.
+The native engine is model-neutral. API models need reliable tool calling, and screenshot use needs image input. Claude Code and Codex receive the same tool server through their existing Deck adapters. Gemini, Grok and custom CLI bots do not receive the native capability in this release. Talk-only Chat rooms and personal-assistant text-only inference also do not receive it.
 
 `apex-computer` and `apex_computer` are reserved server names. An existing HTTP MCP server with either name can prevent Codex from starting; rename that external server if Codex reports a transport conflict. Deck does not fall back to trusting that server.
 
