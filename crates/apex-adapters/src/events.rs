@@ -66,6 +66,7 @@ pub(crate) struct Outcome {
     pub error: Option<String>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
     /// Cost reported by the tool, in millionths of a US dollar.
     pub cost_micros: Option<u64>,
 }
@@ -102,6 +103,7 @@ pub(crate) struct EventReader {
     last_error: Option<String>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    cached_input_tokens: Option<u64>,
     cost_micros: Option<u64>,
     /// Claude Code: the input of the turn's latest request and the model
     /// that took it. The context window is only named at the end.
@@ -157,6 +159,7 @@ impl EventReader {
             last_error: None,
             input_tokens: None,
             output_tokens: None,
+            cached_input_tokens: None,
             cost_micros: None,
             last_request: None,
             images: Vec::new(),
@@ -219,6 +222,7 @@ impl EventReader {
             text,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
+            cached_input_tokens: self.cached_input_tokens,
             cost_micros: self.cost_micros,
         }
     }
@@ -473,6 +477,7 @@ impl EventReader {
                     self.input_tokens = Some(input + cached);
                 }
                 self.output_tokens = count("output_tokens").or(self.output_tokens);
+                self.cached_input_tokens = count("cache_read_input_tokens").or(self.cached_input_tokens);
                 // Each result reports the cumulative estimated cost for this CLI
                 // conversation. A helper follow-up may emit another result;
                 // retain its newer total rather than adding totals together.
@@ -657,7 +662,7 @@ impl EventReader {
             }
         })?;
         let window = entry["contextWindow"].as_u64().filter(|w| *w > 0)?;
-        Some(ContextUse {
+        Some(ContextUse { estimated: false,
             used_tokens: *used,
             window_tokens: window,
         })
@@ -817,6 +822,7 @@ impl EventReader {
             }
             ("turn.completed", _) => {
                 let usage = &event["usage"];
+                self.cached_input_tokens = usage["cached_input_tokens"].as_u64().or(self.cached_input_tokens);
                 self.input_tokens = usage["input_tokens"].as_u64().or(self.input_tokens);
                 self.output_tokens = usage["output_tokens"].as_u64().or(self.output_tokens);
             }
@@ -984,6 +990,7 @@ impl EventReader {
                 // turn's total.
                 let usage = &params["tokenUsage"];
                 let total = &usage["total"];
+                self.cached_input_tokens = total["cachedInputTokens"].as_u64().or(self.cached_input_tokens);
                 self.input_tokens = total["inputTokens"].as_u64().or(self.input_tokens);
                 self.output_tokens = total["outputTokens"].as_u64().or(self.output_tokens);
                 // How full the window is comes from the latest request, not the total.
@@ -995,7 +1002,7 @@ impl EventReader {
                     used,
                     usage["modelContextWindow"].as_u64().filter(|w| *w > 0),
                 ) {
-                    steps.push(Step::Context(ContextUse {
+                    steps.push(Step::Context(ContextUse { estimated: false,
                         used_tokens: used,
                         window_tokens: window,
                     }));
@@ -1211,7 +1218,7 @@ impl EventReader {
                     }
                     let used = self.last_request.as_ref().map(|(t, _)| *t).or(self.input_tokens);
                     if let Some(used) = used {
-                        steps.push(Step::Context(ContextUse {
+                        steps.push(Step::Context(ContextUse { estimated: false,
                             used_tokens: used,
                             window_tokens: 1_000_000,
                         }));
@@ -1515,6 +1522,7 @@ mod tests {
                 error: None,
                 input_tokens: Some(1104),
                 output_tokens: Some(12),
+                cached_input_tokens: Some(1000),
                 cost_micros: None
             }
         );
@@ -1649,6 +1657,7 @@ mod tests {
                 error: None,
                 input_tokens: Some(900),
                 output_tokens: Some(40),
+                cached_input_tokens: Some(300),
                 cost_micros: None
             }
         );
@@ -1712,6 +1721,7 @@ mod tests {
                 error: None,
                 input_tokens: Some(700),
                 output_tokens: Some(30),
+                cached_input_tokens: Some(200),
                 cost_micros: None
             }
         );
@@ -2055,7 +2065,7 @@ mod tests {
         let (context, _) = meters(&steps);
         assert_eq!(
             context,
-            [ContextUse {
+            [ContextUse { estimated: false,
                 used_tokens: 26_560,
                 window_tokens: 200_000
             }]
@@ -2090,7 +2100,7 @@ mod tests {
 "#;
         assert_eq!(
             meters(&read(OutputFormat::ClaudeStream, &[renamed]).0).0,
-            [ContextUse {
+            [ContextUse { estimated: false,
                 used_tokens: 10,
                 window_tokens: 1_000_000
             }]
@@ -2188,11 +2198,11 @@ mod tests {
         assert_eq!(
             context,
             [
-                ContextUse {
+                ContextUse { estimated: false,
                     used_tokens: 31_400,
                     window_tokens: 258_400
                 },
-                ContextUse {
+                ContextUse { estimated: false,
                     used_tokens: 520,
                     window_tokens: 1000
                 }
@@ -2226,7 +2236,7 @@ mod tests {
         let (contexts, _) = meters(&steps);
         assert_eq!(
             contexts,
-            vec![ContextUse {
+            vec![ContextUse { estimated: false,
                 used_tokens: 15_000,
                 window_tokens: 1_000_000,
             }]

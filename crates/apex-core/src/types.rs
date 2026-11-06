@@ -206,6 +206,8 @@ pub struct Message {
 /// tokens the model was given against the most it can take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextUse {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
     pub used_tokens: u64,
     pub window_tokens: u64,
 }
@@ -271,6 +273,12 @@ pub struct ResetCredit {
 /// reported a count. Saved with the thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TokenTotals {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_reported_turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_reported_turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input: Option<u64>,
     pub input: u64,
     pub output: u64,
     /// Turns that reported a count.
@@ -295,6 +303,8 @@ impl TokenTotals {
     /// Count one turn. A side the backend didn't report adds nothing to the
     /// tokens. A missing cost is counted as unknown, never as $0.
     pub fn add(&mut self, input: Option<u64>, output: Option<u64>, cost_micros: Option<u64>) {
+        self.input_reported_turns = Some(self.input_reported_turns.unwrap_or(self.turns) + u64::from(input.is_some()));
+        self.output_reported_turns = Some(self.output_reported_turns.unwrap_or(self.turns) + u64::from(output.is_some()));
         self.input = self.input.saturating_add(input.unwrap_or(0));
         self.output = self.output.saturating_add(output.unwrap_or(0));
         match cost_micros {
@@ -306,6 +316,8 @@ impl TokenTotals {
 
     /// Count one turn whose cost is an estimate rather than a reported figure.
     pub fn add_estimate(&mut self, input: Option<u64>, output: Option<u64>, estimated_micros: u64) {
+        self.input_reported_turns = Some(self.input_reported_turns.unwrap_or(self.turns) + u64::from(input.is_some()));
+        self.output_reported_turns = Some(self.output_reported_turns.unwrap_or(self.turns) + u64::from(output.is_some()));
         self.input = self.input.saturating_add(input.unwrap_or(0));
         self.output = self.output.saturating_add(output.unwrap_or(0));
         self.estimated_cost_micros = self.estimated_cost_micros.saturating_add(estimated_micros);
@@ -324,6 +336,17 @@ impl TokenTotals {
 #[cfg(test)]
 mod token_totals_tests {
     use super::TokenTotals;
+
+    #[test]
+    fn token_totals_distinguish_missing_sides_from_zero() {
+        let mut use_ = TokenTotals::default();
+        use_.add(None, Some(4), None);
+        assert_eq!(use_.input_reported_turns, Some(0));
+        assert_eq!(use_.output_reported_turns, Some(1));
+        use_.add(Some(0), None, None);
+        assert_eq!(use_.input_reported_turns, Some(1));
+        assert_eq!(use_.output_reported_turns, Some(1));
+    }
 
     #[test]
     fn unknown_cost_is_counted_not_zeroed() {
