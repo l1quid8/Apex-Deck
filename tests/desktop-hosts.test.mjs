@@ -68,7 +68,9 @@ test('hosts.json keeps what it does not know, drops hosts it cannot use, and fal
     assert.equal(again.last, 'h-1');
     assert.deepEqual(again.future, { keep: true });
     assert.equal(again.hosts[0].color, 'teal');
-    assert.equal(fs.statSync(t.file).mode & 0o777, 0o600);
+    // Windows has no POSIX mode bits: fs.chmod there only toggles the read-only
+    // flag, so 0o600 is not what a saved file reports back.
+    if (process.platform !== 'win32') assert.equal(fs.statSync(t.file).mode & 0o777, 0o600);
   } finally { t.done(); }
 });
 

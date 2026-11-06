@@ -243,6 +243,8 @@ type Started = (OwnedChild, Arc<Mutex<Output>>, tokio::task::JoinHandle<()>);
 
 /// Start `script`, with both output streams copied into one buffer.
 fn start(env: &Env, registry: &Registry, script: &str) -> Result<Started, String> {
+    // The bot jail is Linux-only; Windows always takes the plain path below.
+    #[cfg(unix)]
     if let Some(access) = env.access {
         if crate::linux_jail::should_jail(access) {
             let bwrap = crate::gateway_sandbox::find_bwrap(env.path.as_deref());
@@ -536,6 +538,7 @@ mod tests {
         assert_eq!(to, output.total);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn jailed_shell_refuses_when_jail_fails() {
         let _lock = crate::linux_jail::TEST_LOCK.lock().unwrap();

@@ -4,10 +4,16 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, developmentHostDataDir, waitForSocket, localDaemon } from '../desktop/sidecar.mjs';
+import os from 'node:os';
 
 test('waitForSocket resolves once something listens, and again once it has stopped', async () => {
-  const dir = fs.mkdtempSync('/tmp/deck-wait-');
-  const socket = path.join(dir, 'daemon.sock');
+  // A Unix socket path is capped at ~104 bytes, and os.tmpdir() is already too
+  // long for one on macOS, so POSIX keeps the short /tmp. Windows has no socket
+  // files: the daemon listens on a named pipe there, and so does this check.
+  const dir = fs.mkdtempSync(process.platform === 'win32' ? path.join(os.tmpdir(), 'deck-wait-') : '/tmp/deck-wait-');
+  const socket = process.platform === 'win32'
+    ? `\\\\.\\pipe\\apex-deck-wait-${process.pid}-${Math.random().toString(16).slice(2)}`
+    : path.join(dir, 'daemon.sock');
   try {
     assert.equal(await waitForSocket(socket, { timeout: 150 }), false, 'nothing listening yet');
     const server = net.createServer((c) => c.end()).listen(socket);
@@ -23,10 +29,14 @@ test('waitForSocket resolves once something listens, and again once it has stopp
 
 test('the daemon binary: the environment, then the bundled one, then the dev build', () => {
   const repo = '/src/apex-deck';
-  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: { APEX_DAEMON_BIN: '/x/apex-daemon' } }), '/x/apex-daemon');
-  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: {} }), '/App/Resources/bin/apex-daemon');
-  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: {} }), '/src/apex-deck/target/debug/apex-daemon');
-  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: { APEX_DAEMON_BIN: '' } }), '/src/apex-deck/target/debug/apex-daemon');
+  // The bundled and dev binaries carry the platform's executable name, so this
+  // asserts Windows' apex-daemon.exe when the suite runs there.
+  const name = process.platform === 'win32' ? 'apex-daemon.exe' : 'apex-daemon';
+  const dev = path.join(repo, 'target', 'debug', name);
+  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: { APEX_DAEMON_BIN: '/x/' + name } }), '/x/' + name);
+  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: {} }), path.join('/App/Resources', 'bin', name));
+  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: {} }), dev);
+  assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: { APEX_DAEMON_BIN: '' } }), dev);
 });
 
 test('serve survives the app, and names a data folder only when one is set', () => {
@@ -42,7 +52,8 @@ test('development data is stable per checkout and the host data folder is isolat
   const a = developmentDataDir('/work/deck-a', env, '/users/tester');
   assert.equal(a, developmentDataDir('/work/deck-a/.', env, '/users/tester'));
   assert.notEqual(a, developmentDataDir('/other/deck-a', env, '/users/tester'));
-  assert.match(a, /^\/users\/tester\/\.apex-deck\/dev\/deck-a-[a-f0-9]{12}$/);
+  // The folder is built with path.join, so accept either separator.
+  assert.match(a, /^[\\/]users[\\/]tester[\\/]\.apex-deck[\\/]dev[\\/]deck-a-[a-f0-9]{12}$/);
   assert.equal(developmentDataDir('/work/deck-a', { APEX_DECK_DATA_DIR: '/tmp/shared' }, '/users/tester'), '/tmp/shared');
   assert.equal(developmentHostDataDir('/tmp/shared'), '/tmp/shared-checkout-host');
 });
@@ -68,7 +79,8 @@ test('every script that builds the daemon for the desktop builds it with remote 
 });
 
 
-test('desktop exit leaves its shared daemon alive and simultaneous startup reuses the winner', async () => {
+// The fake serves a UNIX socket path; Windows uses a named pipe instead.
+test('desktop exit leaves its shared daemon alive and simultaneous startup reuses the winner', { skip: process.platform === 'win32' }, async () => {
   const dir = fs.mkdtempSync('/tmp/deck-shared-');
   const fixture = path.join(dir, 'fake-daemon.cjs');
   fs.writeFileSync(fixture, `#!/usr/bin/env node
@@ -77,6 +89,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const folder = process.argv[process.argv.indexOf('--data-dir') + 1];
 if (process.argv[2] === 'data-dir') { console.log(folder); process.exit(0); }
+if (process.argv[2] === 'endpoint') { console.log(path.join(folder, 'daemon.sock')); process.exit(0); }
 try { fs.writeFileSync(path.join(folder, 'owner.lock'), String(process.pid), { flag: 'wx' }); } catch { process.exit(1); }
 const server = net.createServer(c => c.end());
 server.on('error', () => process.exit(1));

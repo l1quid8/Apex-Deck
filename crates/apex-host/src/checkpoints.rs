@@ -861,7 +861,7 @@ mod tests {
         // Simulate an old checkpoint serialized without `raw`
         let old_json = format!(
             r#"{{
-            "cwd": "{}",
+            "cwd": {},
             "checkpoints": [
                 {{
                     "seq": 0,
@@ -872,7 +872,7 @@ mod tests {
             ],
             "effects": []
         }}"#,
-            cwd.to_string_lossy()
+            serde_json::to_string(&cwd.to_string_lossy()).unwrap()
         );
         let thread_path = snaps.thread_path("old-thread");
         std::fs::create_dir_all(thread_path.parent().unwrap()).unwrap();
@@ -946,6 +946,7 @@ mod tests {
         assert_eq!(inherited_git_vars(keys.into_iter()), ["GIT_CONFIG_PARAMETERS", "GIT_DIR"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn snapshots_run_nothing_from_project_or_environment() {
         let (cwd, snaps) = folder("isolation-safety");

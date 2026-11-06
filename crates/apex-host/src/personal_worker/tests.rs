@@ -341,6 +341,7 @@ async fn full_access_scheduled_tasks_recheck_authority_and_schedule_cancellation
     }
 }
 
+#[cfg(unix)] // runs `sh -c`
 #[tokio::test]
 async fn full_access_uncertain_command_blocks_without_replay_or_card_while_ask_keeps_one_decision() {
     for full in [true,false] {

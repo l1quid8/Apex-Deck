@@ -48,7 +48,7 @@ export function socketLink(socketPath, { onLine, onClose }) {
  * (publickey)." or "Host key verification failed.", or the daemon's own words.
  */
 export function childLink(program, args, { onLine, onClose }) {
-  const child = spawn(program, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(program, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   let stderr = '';
   let problem = '';
   let closed = false;

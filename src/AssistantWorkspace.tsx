@@ -8,6 +8,7 @@ import type { AssistantSection } from './assistantWorkspaceModel';
 import { Avatar } from './Avatar';
 import { createAssistantAvatarApi } from './assistantAvatar';
 import { PersonalPanels } from './PersonalPanels';
+import { isWindows } from './paths';
 import { voiceController } from './voice/coordinator';
 import { Clock } from './voice/VoiceCallControls';
 export { AssistantEditor } from './AssistantEditor';
@@ -60,7 +61,7 @@ export function AssistantWorkspace({lane,backend,section,onNavigate,chat,project
     {callControls&&<div className="assistant-session-call">{callControls}</div>}
    </div>
    <div className="assistant-strip-right">
-    {!inCall&&<button type="button" className="assistant-strip-button assistant-strip-phone" aria-label={`Call ${lane.name}`} title={`Call ${lane.name}`} onClick={()=>onStartCall?.()}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg></button>}
+    {!inCall&&!isWindows&&<button type="button" className="assistant-strip-button assistant-strip-phone" aria-label={`Call ${lane.name}`} title={`Call ${lane.name}`} onClick={()=>onStartCall?.()}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg></button>}
     <details className="assistant-workspace-menu"><summary aria-label="Projects, memory and settings">⋯</summary><div role="menu">
      {lane.newConversation&&<button type="button" role="menuitem" disabled={lane.offline} onClick={event=>{closeMenu(event.currentTarget);void lane.newConversation!().catch(cause=>setError(String(cause instanceof Error?cause.message:cause)));}}>New conversation</button>}
      {onPopOut&&<button type="button" role="menuitem" onClick={event=>{closeMenu(event.currentTarget);onPopOut();}}>Pop out</button>}

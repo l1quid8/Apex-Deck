@@ -1,4 +1,5 @@
 import { createAppearance, legacyAppearance, type AgentAppearance } from "./identicon.ts";
+import "./paths.ts";
 
 /** The durable assistant owner. Display names and legacy labels are never identity. */
 export type AssistantRef = { hostId: string; assistantId: string };

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { videoType } from "./attachments";
+import { pathBase } from "./paths";
 
 interface Props {
   paths: string[];
@@ -29,7 +30,7 @@ function Picture({ path, read, onOpen, onLoad }: { path: string } & Omit<Props, 
     return () => { live = false; if (made) URL.revokeObjectURL(made); };
   }, [path, read]);
   if (!url) return null;
-  const name = path.split("/").pop() ?? path;
+  const name = pathBase(path);
   return <button type="button" className="attached-image" title={path} onClick={() => onOpen(path)}><img src={url} alt={name} onLoad={onLoad} /></button>;
 }
 
@@ -53,7 +54,7 @@ function Video({ path, read, onOpen, onLoad }: { path: string } & Omit<Props, "p
   }, [path, read]);
   if (!url) return null;
   return <div className="attached-video">
-    <video src={url} controls preload="metadata" playsInline onLoadedMetadata={onLoad} aria-label={path.split("/").pop() ?? path} />
+    <video src={url} controls preload="metadata" playsInline onLoadedMetadata={onLoad} aria-label={pathBase(path)} />
     <button type="button" className="attached-video-open" title={path} onClick={() => onOpen(path)}>Show in folder</button>
   </div>;
 }

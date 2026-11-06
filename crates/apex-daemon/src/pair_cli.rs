@@ -536,6 +536,7 @@ mod tests {
             serde_json::from_str(&line).unwrap()
         }
 
+        #[cfg(unix)]
         #[tokio::test(flavor = "multi_thread")]
         async fn json_mode_approves_only_the_code_it_is_given() {
             for (answer, paired) in [("right", true), ("approve 000000\n", false), ("", false)] {

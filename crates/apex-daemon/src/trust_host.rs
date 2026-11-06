@@ -43,20 +43,11 @@ fn now_ms() -> u64 {
 }
 
 fn random_epoch() -> Result<String, String> {
-    // 32 random bytes from /dev/urandom, must fail if unreadable per Task 3
+    // 32 bytes from the OS random source; fails rather than falling back.
     let mut buf = [0u8; 32];
-    #[cfg(unix)]
-    {
-        let mut f = std::fs::File::open("/dev/urandom").map_err(|e| format!("could not read /dev/urandom: {e}"))?;
-        use std::io::Read;
-        f.read_exact(&mut buf).map_err(|e| format!("could not read /dev/urandom: {e}"))?;
-    }
-    #[cfg(not(unix))]
-    {
-        return Err("random epoch requires /dev/urandom".into());
-    }
+    getrandom::fill(&mut buf).map_err(|e| format!("OS random generator failed: {e}"))?;
     if buf.iter().all(|&b| b == 0) {
-        return Err("random epoch read zeros from /dev/urandom".into());
+        return Err("random epoch read only zeros".into());
     }
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }

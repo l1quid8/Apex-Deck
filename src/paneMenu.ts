@@ -2,6 +2,7 @@
 // Which items they have, in what order, and when each one is turned off.
 // App and the sidebar draw them and run the chosen action.
 
+import { revealInFileManagerLabel } from "./paths.ts";
 import type { PaneKind } from "./types";
 import { threadKeys } from "./shortcuts.ts";
 
@@ -110,7 +111,7 @@ export interface ProjectMenuItem {
 }
 
 /** A project's ⋯ menu. A server's connection is fixed from its project, not from Settings. */
-export function projectMenuItems(project: { pinned?: boolean; remote: boolean; path: string; threads: number }): ProjectMenuItem[] {
+export function projectMenuItems(project: { pinned?: boolean; remote: boolean; path: string; threads: number; windows?: boolean }): ProjectMenuItem[] {
   const row = (action: ProjectMenuAction, label: string, extra: Partial<ProjectMenuItem> = {}): ProjectMenuItem =>
     ({ action, label, disabled: false, reason: "", danger: false, separated: false, ...extra });
   return [
@@ -118,7 +119,7 @@ export function projectMenuItems(project: { pinned?: boolean; remote: boolean; p
     row("edit", "Edit…"),
     project.remote
       ? row("connection", "Edit connection…", { separated: true })
-      : row("reveal", "Reveal in Finder", { separated: true, disabled: !project.path, reason: project.path ? "" : "This project has no folder." }),
+      : row("reveal", revealInFileManagerLabel(project.windows), { separated: true, disabled: !project.path, reason: project.path ? "" : "This project has no folder." }),
     row("archive", "Archive threads", { separated: true, disabled: project.threads === 0, reason: project.threads ? "" : "No threads to archive." }),
     row("remove", "Remove project…", { separated: true, danger: true }),
   ];

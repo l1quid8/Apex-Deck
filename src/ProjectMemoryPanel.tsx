@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { PersonalLane } from './personalAssistant.ts';
 import { assistantIdentityKey, projectIdentityKey } from './assistantIdentity.ts';
+import { pathBase } from './paths.ts';
 import type { ProjectMemoryRead, ProjectNote, ProjectNoteKind } from './projectMemory.ts';
 
 type ReadState = { scope: string; read?: ProjectMemoryRead; loading?: boolean; error?: string };
@@ -137,7 +138,7 @@ export function ProjectMemoryPanel({ lane, embedded = false, selectedProject, in
                 }}>Save correction</button>
                 <button type="button" disabled={busy} onClick={() => setEditing(null)}>Cancel correction</button>
               </div> : <div className="personal-panels-rowmain assistant-memory-title">{embedded && <span aria-hidden="true">▤</span>}<span className="personal-panels-goal">{embedded ? note.kind[0].toUpperCase() + note.kind.slice(1) : note.text}</span>{embedded && <button type="button" disabled={locked} onClick={() => setEditing({ id: note.id, text: note.text, kind: note.kind, version: note.version, expiresAt: note.expiresAt })}>Edit</button>}</div>}
-              {embedded && <><p className="assistant-memory-text">{note.text}</p><div className="assistant-memory-meta"><span>Shared · {project.cwd.split('/').filter(Boolean).pop()}</span><span>Version {note.version} · {new Date(note.updatedAt).toLocaleDateString()}</span></div></>}
+              {embedded && <><p className="assistant-memory-text">{note.text}</p><div className="assistant-memory-meta"><span>Shared · {pathBase(project.cwd)}</span><span>Version {note.version} · {new Date(note.updatedAt).toLocaleDateString()}</span></div></>}
               <details className="assistant-memory-record" open={!embedded}><summary>Record and source</summary>{metadata(note)}</details>
               {editing?.id !== note.id && <div className="personal-panels-actions">
                 {!embedded && <button type="button" disabled={locked} onClick={() => setEditing({ id: note.id, text: note.text, kind: note.kind, version: note.version, expiresAt: note.expiresAt })}>Correct</button>}
