@@ -9,12 +9,18 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 pub const CYAN: Color = Color::Rgb(103, 232, 249);
 pub const MINT: Color = Color::Rgb(82, 243, 163);
 pub const GRAY: Color = Color::Rgb(148, 163, 184);
 const MARK_CYAN: Color = Color::Rgb(38, 215, 239);
 const WORD_WHITE: Color = Color::Rgb(245, 252, 248);
+const DIM_GRAY: Color = Color::Rgb(90, 101, 117);
+const BAND: Color = Color::Rgb(28, 34, 44);
+const CODE: Color = Color::Rgb(253, 186, 116);
+const AMBER: Color = Color::Rgb(251, 191, 36);
+const DIM_MINT: Color = Color::Rgb(34, 85, 65);
+const DIM_CYAN: Color = Color::Rgb(21, 76, 88);
 
 // Pixel copies of public/branding/mark.svg (diamond, mint top, cyan bottom,
 // `>_` prompt) and the logo-horizontal.svg wordmark. g = mint, c = cyan,
@@ -217,6 +223,364 @@ fn color(id: &str) -> Color {
     ];
     colors[id.bytes().fold(0usize, |s, b| s + usize::from(b)) % colors.len()]
 }
+
+fn truncate(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.into();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let n = c.width().unwrap_or(0);
+        if used + n > width - 1 {
+            break;
+        }
+        out.push(c);
+        used += n;
+    }
+    out.push('…');
+    out
+}
+
+fn header(s: &AppState, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let title = safe(&s.title()).replace(['\n', '\t'], " ");
+    let members = s.members();
+    let mut folder = s
+        .current()
+        .and_then(|v| v["cwd"].as_str())
+        .map(safe)
+        .unwrap_or_default()
+        .replace(['\n', '\t'], " ");
+    if let Ok(home) = std::env::var("HOME") {
+        if let Some(rest) = folder.strip_prefix(&format!("{home}/")) {
+            folder = format!("~/{rest}");
+        }
+    }
+    let mut count = members.len();
+    let mut thread = title.clone();
+    let mut version = true;
+    let mut show_folder = !folder.is_empty();
+    let build = |thread: &str, count: usize, version: bool| {
+        let mut spans = vec![
+            Span::styled(
+                " ◆ ",
+                Style::default().fg(MINT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Apex Deck",
+                Style::default().fg(WORD_WHITE).add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if version {
+            spans.push(Span::styled(
+                format!(" {}", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(DIM_GRAY),
+            ));
+        }
+        spans.push(Span::styled("  ·  ", Style::default().fg(DIM_GRAY)));
+        spans.push(Span::styled(
+            thread.to_string(),
+            Style::default().fg(WORD_WHITE),
+        ));
+        if !members.is_empty() {
+            spans.push(Span::styled("  ·  ", Style::default().fg(DIM_GRAY)));
+            for (i, p) in members.iter().take(count).enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(", ", Style::default().fg(DIM_GRAY)));
+                }
+                let id = p["id"].as_str().unwrap_or("");
+                spans.push(Span::styled(
+                    safe(p["display_name"].as_str().unwrap_or(id)).replace(['\n', '\t'], " "),
+                    Style::default().fg(color(id)),
+                ));
+            }
+            if members.len() > count {
+                spans.push(Span::styled(
+                    format!(" +{}", members.len() - count),
+                    Style::default().fg(GRAY),
+                ));
+            }
+        }
+        Line::from(spans)
+    };
+    for step in 0..5 {
+        let need = build(&thread, count, version).width()
+            + if show_folder { folder.width() + 2 } else { 0 };
+        if need <= width {
+            break;
+        }
+        match step {
+            0 => {
+                folder = format!(
+                    "…/{}",
+                    folder
+                        .trim_end_matches('/')
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                );
+            }
+            1 => count = count.min(3),
+            2 => version = false,
+            3 => thread = truncate(&title, title.width().saturating_sub(need - width).max(12)),
+            _ => show_folder = false,
+        }
+    }
+    let mut line = build(&thread, count, version);
+    if show_folder && line.width() + folder.width() + 2 <= width {
+        line.spans.push(Span::raw(
+            " ".repeat(width - line.width() - folder.width() - 1),
+        ));
+        line.spans.push(Span::styled(
+            format!("{folder} "),
+            Style::default().fg(DIM_GRAY),
+        ));
+    }
+    line
+}
+
+/// Small inline Markdown subset from the approved mockup. Incomplete markers
+/// remain literal while streaming; fenced code is handled by reply_lines.
+fn markdown(text: &str) -> Vec<Span<'static>> {
+    let base = Style::default().fg(Color::Rgb(203, 213, 225));
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let token = rest
+            .find("**")
+            .map(|i| (i, "**"))
+            .into_iter()
+            .chain(rest.find('`').map(|i| (i, "`")))
+            .min_by_key(|v| v.0);
+        let Some((i, marker)) = token else {
+            spans.push(Span::styled(rest.to_string(), base));
+            break;
+        };
+        if i > 0 {
+            spans.push(Span::styled(rest[..i].to_string(), base));
+        }
+        let after = &rest[i + marker.len()..];
+        if let Some(end) = after.find(marker) {
+            let style = if marker == "**" {
+                Style::default().fg(WORD_WHITE).add_modifier(Modifier::BOLD)
+            } else {
+                base.fg(CODE)
+            };
+            spans.push(Span::styled(after[..end].to_string(), style));
+            rest = &after[end + marker.len()..];
+        } else {
+            spans.push(Span::styled(marker.to_string(), base));
+            rest = after;
+        }
+    }
+    spans
+}
+
+/// Wrap styled content before adding prefixes, so every visual continuation
+/// retains its indentation. Widths are terminal cells, not UTF-8 bytes.
+fn wrapped(spans: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(2);
+    let chars: Vec<_> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+        .collect();
+    if chars.is_empty() {
+        return vec![Line::default()];
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let (mut end, mut used, mut space) = (start, 0, None);
+        while end < chars.len() {
+            let n = chars[end].0.width().unwrap_or(0);
+            if used + n > width {
+                break;
+            }
+            if chars[end].0 == ' ' && end > start {
+                space = Some(end);
+            }
+            used += n;
+            end += 1;
+        }
+        let cut = if end < chars.len() {
+            space.unwrap_or(end)
+        } else {
+            end
+        };
+        let mut row: Vec<Span<'static>> = Vec::new();
+        for &(c, style) in &chars[start..cut] {
+            if let Some(last) = row.last_mut().filter(|last| last.style == style) {
+                last.content.to_mut().push(c);
+            } else {
+                row.push(Span::styled(c.to_string(), style));
+            }
+        }
+        out.push(Line::from(row));
+        start = cut;
+        if end < chars.len() {
+            while start < chars.len() && chars[start].0 == ' ' {
+                start += 1;
+            }
+        }
+    }
+    out
+}
+
+fn reply_lines(
+    name: &str,
+    id: &str,
+    text: &str,
+    width: u16,
+    streaming: bool,
+) -> Vec<Line<'static>> {
+    let mut out = vec![Line::from(Span::styled(
+        format!(" {}", safe(name)),
+        Style::default().fg(color(id)).add_modifier(Modifier::BOLD),
+    ))];
+    let mut code = false;
+    let text = safe(text).replace('\t', "    ");
+    for raw in text.split('\n') {
+        if raw.trim_start().starts_with("```") {
+            code = !code;
+            continue;
+        }
+        let spans = if code {
+            vec![Span::styled(raw.to_string(), Style::default().fg(CODE))]
+        } else {
+            markdown(raw)
+        };
+        for mut line in wrapped(spans, usize::from(width.saturating_sub(5))) {
+            line.spans.insert(0, Span::raw("   "));
+            out.push(line);
+        }
+    }
+    if streaming {
+        if let Some(last) = out.last_mut() {
+            last.spans
+                .push(Span::styled("▍", Style::default().fg(color(id))));
+        }
+    }
+    out.push(Line::default());
+    out
+}
+
+fn human_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().bg(BAND);
+    let blank = || Line::from(" ".repeat(usize::from(width))).style(style);
+    let mut out = vec![blank()];
+    let mut first = true;
+    for raw in safe(text).replace('\t', "    ").split('\n') {
+        for mut line in wrapped(
+            vec![Span::styled(
+                raw.to_string(),
+                Style::default().fg(WORD_WHITE),
+            )],
+            usize::from(width.saturating_sub(4)),
+        ) {
+            line.spans.insert(
+                0,
+                Span::styled(
+                    if first { " › " } else { "   " },
+                    Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+                ),
+            );
+            first = false;
+            line.spans.push(Span::raw(
+                " ".repeat(usize::from(width).saturating_sub(line.width())),
+            ));
+            out.push(line.style(style));
+        }
+    }
+    out.push(blank());
+    out.push(Line::default());
+    out
+}
+
+fn empty_lines(s: &AppState, screen: Rect) -> Vec<Line<'static>> {
+    let mut mark: Vec<Line<'static>> = if screen.height >= 29 && screen.width >= 54 {
+        MARK_LARGE
+            .iter()
+            .map(|r| {
+                Line::from(
+                    r.bytes()
+                        .map(|c| {
+                            if c == b' ' {
+                                Span::raw("  ")
+                            } else {
+                                Span::styled(
+                                    "██",
+                                    Style::default().fg(if c == b'g' {
+                                        DIM_MINT
+                                    } else {
+                                        DIM_CYAN
+                                    }),
+                                )
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect()
+    } else if screen.height >= 14 && screen.width >= 17 {
+        half_blocks(&MARK_SMALL)
+            .into_iter()
+            .map(|spans| {
+                Line::from(
+                    spans
+                        .into_iter()
+                        .map(|mut span| {
+                            let dim = |c| {
+                                if c == MINT {
+                                    DIM_MINT
+                                } else if c == MARK_CYAN {
+                                    DIM_CYAN
+                                } else {
+                                    c
+                                }
+                            };
+                            span.style.fg = span.style.fg.map(dim);
+                            span.style.bg = span.style.bg.map(dim);
+                            span
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    let names: Vec<_> = s
+        .members()
+        .iter()
+        .take(3)
+        .map(|p| safe(p["display_name"].as_str().unwrap_or("Agent")))
+        .collect();
+    let hint = if names.is_empty() {
+        "/add an agent to start · @ to pick an agent".into()
+    } else {
+        format!(
+            "{} {} here · @ to pick an agent",
+            names.join(", "),
+            if names.len() == 1 { "is" } else { "are" }
+        )
+    };
+    if !mark.is_empty() {
+        mark.extend([Line::default(), Line::default()]);
+    }
+    // Wrap hints too, so small windows keep useful text visible.
+    mark.extend(wrapped(
+        vec![Span::styled(hint, Style::default().fg(GRAY))],
+        usize::from(screen.width),
+    ));
+    let top = usize::from(screen.height).saturating_sub(mark.len()) / 2;
+    let mut out = vec![Line::default(); top];
+    out.extend(mark.into_iter().map(|line| line.centered()));
+    out
+}
 pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
     let area = f.area();
     let width = area.width.saturating_sub(2).max(1);
@@ -233,22 +597,10 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         Constraint::Length(1),
     ])
     .split(area);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" ◆ ", Style::default().fg(MINT).add_modifier(Modifier::BOLD)),
-            Span::styled(
-                "APEX DECK ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(safe(&s.title()), Style::default().fg(GRAY)),
-        ])),
-        rows[0],
-    );
+    f.render_widget(Paragraph::new(header(s, area.width)), rows[0]);
     f.render_widget(
         Paragraph::new(" F1 Welcome   Chat   F3 Threads   F4 Agents   F2 Requests")
-            .style(Style::default().fg(GRAY)),
+            .style(Style::default().fg(DIM_GRAY)),
         rows[1],
     );
     let screen = rows[2];
@@ -293,6 +645,7 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), screen);
     } else {
         let mut lines: Vec<Line<'static>> = vec![];
+        let mut empty_chat = false;
         if s.view == 3 {
             lines.push(Line::from("Agents · ★ answers untagged messages next"));
             let stars = s
@@ -315,7 +668,11 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
                         mention(&p),
                         safe(p["backend"]["model"].as_str().unwrap_or("default model")),
                         safe(s.activity.get(id).map(String::as_str).unwrap_or(
-                            if s.working().iter().any(|w| w == id) { "working…" } else { "idle" }
+                            if s.working().iter().any(|w| w == id) {
+                                "working…"
+                            } else {
+                                "idle"
+                            }
                         ))
                     ),
                     Style::default().fg(color(id)),
@@ -335,55 +692,70 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
                         .unwrap_or(id)
                         .to_string()
                 };
-                lines.push(Line::from(Span::styled(
-                    safe(&name),
-                    Style::default()
-                        .fg(if id == "user" { GRAY } else { color(id) })
-                        .add_modifier(Modifier::BOLD),
-                )));
-                for line in safe(message["text"].as_str().unwrap_or("")).lines() {
-                    lines.push(Line::from(line.to_string()));
+                let text = message["text"].as_str().unwrap_or("");
+                if message["speaker"]["kind"] == "human" {
+                    lines.extend(human_lines(text, screen.width));
+                } else {
+                    lines.extend(reply_lines(&name, id, text, screen.width, false));
                 }
-                lines.push(Line::from(""));
             }
             let working = s.working();
             for p in s.members() {
                 let id = p["id"].as_str().unwrap_or("");
                 if let Some(stream) = s.streams.get(id) {
-                    lines.push(Line::from(Span::styled(
-                        safe(p["display_name"].as_str().unwrap_or(id)),
-                        Style::default().fg(color(id)),
-                    )));
-                    for line in safe(stream).lines() {
-                        lines.push(Line::from(line.to_string()));
-                    }
+                    lines.extend(reply_lines(
+                        p["display_name"].as_str().unwrap_or(id),
+                        id,
+                        stream,
+                        screen.width,
+                        working.iter().any(|w| w == id),
+                    ));
                 }
                 if working.iter().any(|w| w == id) {
                     let activity = s.activity.get(id).map(String::as_str).unwrap_or("working…");
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "◌ {} · {}",
+                    let activity = vec![
+                        Span::styled(" ◌ ", Style::default().fg(AMBER)),
+                        Span::styled(
                             safe(p["display_name"].as_str().unwrap_or(id)),
-                            safe(activity)
+                            Style::default().fg(color(id)).add_modifier(Modifier::BOLD),
                         ),
-                        Style::default().fg(Color::Yellow),
-                    )));
+                        Span::styled(
+                            format!(" · {}", safe(activity).replace('\t', "    ")),
+                            Style::default().fg(AMBER),
+                        ),
+                    ];
+                    lines.extend(wrapped(activity, usize::from(screen.width)));
                 }
             }
             if lines.is_empty() {
-                lines.push(Line::from("Empty thread. /add an agent to start."));
+                empty_chat = true;
+                lines.extend(empty_lines(s, screen));
             }
         }
         if !s.notice.is_empty() {
             lines.push(Line::from(""));
             for line in safe(&s.notice).lines() {
-                lines.push(Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(GRAY),
-                )));
+                lines.extend(wrapped(
+                    vec![Span::styled(
+                        line.replace('\t', "    "),
+                        Style::default().fg(GRAY),
+                    )],
+                    usize::from(screen.width),
+                ));
             }
         }
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        if s.view != 3 && !empty_chat && lines.len() < usize::from(screen.height) {
+            let mut padding = vec![Line::default(); usize::from(screen.height) - lines.len()];
+            padding.append(&mut lines);
+            lines = padding;
+        }
+        // Transcript rows are already wrapped with their continuation prefixes.
+        // WordWrapper drops whitespace-only bands and may introduce extra rows.
+        let paragraph = if s.view == 3 {
+            Paragraph::new(lines).wrap(Wrap { trim: false })
+        } else {
+            Paragraph::new(lines)
+        };
         let total = paragraph.line_count(screen.width);
         let end = total.saturating_sub(usize::from(screen.height));
         let start = s.history.borrow_mut().start(end).min(u16::MAX as usize) as u16;
