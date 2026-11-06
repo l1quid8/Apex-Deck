@@ -223,3 +223,26 @@ test('handoff selections and controls attest one stable request and reject chang
     await assert.rejects(mod.attestFrame(frame,{...options,issue:async r=>response({...r.command,args:{...r.command.args,assistantId:'other'}})}),/does not match/);
   }
 });
+
+
+test('shared agent, provider setup, and backend lifecycle intents bind exact protected submissions', async () => {
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  for (const [cmd,args] of [
+    ['agent_profile_save',{handle:'null',name:'Null',provider:'codex',instructions:'shared agent',access:'ask',expectedRevision:2}],
+    ['provider_setup_begin',{provider:'codex',method:'reuse'}],
+    ['backend_stop',{bootId:'shared-boot'}],
+  ]) {
+    assert.equal(mod.needsAttestation(cmd,false),true,cmd);
+    const frame={id:51,cmd,args};
+    const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
+      assert.equal(request.command.cmd,cmd);
+      assert.deepEqual(request.command.args,args);
+      assert.match(request.command.provenanceRequestId,/^[a-f0-9-]{36}$/);
+      return response(request.command);
+    }});
+    assert.equal(result.cmd,'provenance_execute');
+    await assert.rejects(mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response({...request.command,args:{...args,substituted:true}})}),/Receipt does not match/);
+  }
+});

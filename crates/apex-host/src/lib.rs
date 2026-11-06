@@ -57,6 +57,7 @@ pub mod command;
 #[cfg(test)]
 mod work_post_routing_tests;
 pub mod documents;
+pub mod agent_profiles;
 pub mod folders;
 pub mod project_files;
 pub mod worktrees;

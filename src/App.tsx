@@ -101,7 +101,7 @@ import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidt
 import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestions, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning, assistantsRunning } from "./closing";
-import { remoteSessionEdit } from "./sessionSync";
+import { remoteProfileEdit, remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
@@ -236,6 +236,8 @@ export function App() {
     return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
   }, []);
   const [profiles, setProfiles] = useState<ParticipantConfig[]>([]);
+  const [profileRevision, setProfileRevision] = useState(0);
+  const profileRevisionRef = useRef(0);
   const [storageError, setStorageError] = useState("");
   const saveQueue = useRef(Promise.resolve());
   const [backend, setBackend] = useState<Backend | null>(null);
@@ -631,6 +633,8 @@ export function App() {
       restored.current = new Set(loaded.filter((p) => p.kind === "terminal").map((p) => p.id));
       setPanes(loaded);
       setProfiles(saved?.profiles ?? []);
+      profileRevisionRef.current = saved?.profileRevision ?? 0;
+      setProfileRevision(profileRevisionRef.current);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
       setLayoutPreset(saved?.layout ?? "top");
@@ -659,7 +663,7 @@ export function App() {
     };
   }, []);
 
-  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(withPoppedOut(layouts, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
+  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, profileRevision, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(withPoppedOut(layouts, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
   sessionRef.current = currentSession;
   useEffect(() => {
     if (!backend?.machines || !backend.hosts) return;
@@ -688,7 +692,7 @@ export function App() {
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions]);
+  }, [backend, workspaces, panes, profiles, profileRevision, activeWorkspace, focusedPane, section, layout, layouts, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions]);
 
   // The phone saves threads straight to the Mac's session. Take its edits in
   // before the next save here writes over them.
@@ -697,6 +701,14 @@ export function App() {
     let off: (() => void) | undefined;
     let alive = true;
     backend.onSessionChanged((remote) => {
+      const profileEdit = remoteProfileEdit(profileRevisionRef.current, remote, saveTag.current);
+      if (profileEdit) {
+        profileRevisionRef.current = profileEdit.revision;
+        setProfileRevision(profileEdit.revision);
+        // Acknowledging our save must not undo edits made while it was queued.
+        // The new revision triggers another save of the latest local state.
+        if (!profileEdit.ownSave) setProfiles(profileEdit.profiles);
+      }
       const edit = remoteSessionEdit({ workspaces: latest.current.workspaces, panes: savedPanes(latest.current.panes) }, remote, { tag: saveTag.current, seq: saveSeq.current });
       if (!edit) return;
       const known = normalizeWorkspaces(edit.workspaces);

@@ -72,6 +72,8 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServeOptions {
+    /// Private CLI backend: local IPC only, even when saved remote settings exist.
+    pub local_only: bool,
     /// 0 lets the system pick.
     pub port: u16,
     pub bind: IpAddr,
@@ -91,6 +93,7 @@ pub struct ServeOptions {
 impl Default for ServeOptions {
     fn default() -> Self {
         ServeOptions {
+            local_only: false,
             port: 0,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             insecure_bind: false,
@@ -185,6 +188,10 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 options.insecure_bind = true;
                 serve_flag.get_or_insert("--insecure-bind");
             }
+            "--local-only" => {
+                options.local_only = true;
+                serve_flag.get_or_insert("--local-only");
+            }
             "--remote" => {
                 options.remote = true;
                 serve_flag.get_or_insert("--remote");
@@ -227,6 +234,9 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         }
         if print_endpoint { Action::Endpoint } else { Action::DataDir }
     } else if serve {
+        if options.local_only && (options.remote || options.gateway_port.is_some() || options.port != 0 || !options.bind.is_loopback()) {
+            return Err("--local-only cannot enable network listeners".into());
+        }
         if attach {
             return Err("--attach goes with --stdio".into());
         }

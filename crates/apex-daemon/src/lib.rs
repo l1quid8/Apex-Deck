@@ -20,6 +20,7 @@ pub mod log_time;
 pub mod pair_cli;
 pub mod pair_commands;
 pub mod paths;
+pub mod shared_store;
 #[cfg(feature = "remote")]
 pub mod pairing;
 pub mod phone_cli;

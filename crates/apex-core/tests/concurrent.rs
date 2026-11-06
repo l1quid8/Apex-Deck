@@ -9,6 +9,25 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn committed_post_failure_rolls_back_message_and_routing_without_publication() {
+    block_on(async {
+        let runtime = ConcurrentRoom::new(Room::new(vec![
+            Arc::new(ScriptedParticipant::new("jigga", &[])),
+            Arc::new(ScriptedParticipant::new("null", &[])),
+        ], RoomOptions::default()).with_kind(apex_core::RoomKind::Chat));
+        let before = runtime.room().lock().await.snapshot();
+        let events = Mutex::new(Vec::new());
+        let result = runtime.begin_post_with_commit(Speaker::Human, "@null hello", None,
+            &|_| Err("save failed".into()), &|event| events.lock().unwrap().push(event)).await;
+        assert!(matches!(result, Err(error) if error == "save failed"));
+        assert!(events.lock().unwrap().is_empty());
+        assert!(!runtime.busy());
+        let after = runtime.room().lock().await.snapshot();
+        assert_eq!(serde_json::to_value(after).unwrap(), serde_json::to_value(before).unwrap());
+    });
+}
+
 struct Held {
     config: ParticipantConfig,
     release: Mutex<Option<oneshot::Receiver<()>>>,

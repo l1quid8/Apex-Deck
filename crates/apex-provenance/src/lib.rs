@@ -654,6 +654,9 @@ pub fn protected(name: &str) -> bool {
     matches!(
         name,
         "computer_setup" | "computer_set_enabled" | "computer_set_action_labels"
+            // Shared desktop/terminal intents use the same exact receipt and
+            // replay boundary. Peer admission still validates app/CLI identity.
+            | "agent_profile_save" | "provider_setup_begin" | "backend_stop"
             | "assistant_message"
             | "assistant_task_action"
             | "personal_send"
@@ -1651,6 +1654,28 @@ mod tests {
         assert!(journal
             .claim(501, "/data", &changed, "0123456789abcdef0123456789abcdef")
             .is_err());
+    }
+
+    #[test]
+    fn shared_cli_intents_require_trust_and_bind_exact_content_and_replay() {
+        for (name, args) in [
+            ("agent_profile_save", json!({"handle":"null","name":"Null","provider":"codex","instructions":"shared agent","access":"ask","expectedRevision":2})),
+            ("provider_setup_begin", json!({"provider":"codex","method":"reuse"})),
+            ("backend_stop", json!({"bootId":"shared-boot"})),
+        ] {
+            let mut journal=Journal::new();
+            let command=json!({"cmd":name,"args":args,"provenanceRequestId":"shared-delivery"});
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(receipt.command,command);
+            let mut changed=command.clone();
+            changed["args"]["substituted"]=json!(true);
+            assert!(journal.issue(501,"/data",changed,true).is_err());
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+            let mut reopened=Journal::open(&serde_json::to_vec(&journal).unwrap(),new_key().unwrap().public_key().as_ref()).unwrap();
+            assert!(reopened.claim(501,"/data",&receipt,NONCE).is_err());
+        }
     }
 
     #[test]

@@ -230,3 +230,23 @@ test_mv() {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
 });
+
+
+test('candidate CLI verification requires its exact hash, identifier and a regular file', () => {
+  const dir = mkdtempSync('/tmp/apex-cli-bundle-test-');
+  try {
+    const app = fakeBundle(dir, 'Apex Deck.app');
+    const cli = path.join(app, 'Contents/Resources/bin/apex'); writeFileSync(cli, 'cli');
+    const broker = path.join(dir, 'apex-provenance'); writeFileSync(broker, 'broker');
+    const effect = signatureEffect.replace('*/apex-daemon)', '*/apex) hash="$CLI_HASH" ;; */apex-daemon)');
+    const run = expected => spawnSync('/bin/bash', ['-s', '--', app, hashes.ui, hashes.daemon, broker, hashes.broker, expected], {
+      input: effect + verifier.replaceAll('/usr/bin/codesign', 'test_codesign'), encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin', UI_HASH: hashes.ui, DAEMON_HASH: hashes.daemon, BROKER_HASH: hashes.broker, CLI_HASH: 'd'.repeat(40) },
+    });
+    assert.equal(run('d'.repeat(40)).status, 0);
+    assert.equal(run('e'.repeat(40)).status, 1);
+    rmSync(cli);
+    assert.equal(run('d'.repeat(40)).status, 1);
+    assert.match(verifier, /identifier "dev\.apexdeck\.cli"/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

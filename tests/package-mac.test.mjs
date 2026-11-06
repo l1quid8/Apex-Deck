@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pickIdentity, signingMessage, releaseBuildCommands } from '../scripts/package-mac.mjs';
+import { pickIdentity, signingMessage, releaseBuildCommands, cliSigningArgs } from '../scripts/package-mac.mjs';
 const a = 'A'.repeat(40), b = 'B'.repeat(40);
 const line = (hash, type = 'Developer ID Application') => `  1) ${hash} "${type}: Made Up Person (FAKETEAM)"`;
 test('one Developer ID selects its hash without exposing the name', () => {
@@ -27,6 +27,15 @@ test('packaging rebuilds the daemon and broker as plain release builds', () => {
   assert.deepEqual(lines, [
     'cargo build --release -p apex-daemon --features remote',
     'cargo build --release -p apex-provenance',
+    'cargo build --release -p apex-cli',
   ]);
   assert.ok(lines.every(line => !line.includes('test-support') && !line.includes('--tests')));
+});
+
+test('CLI signing uses its separate hardened identity', () => {
+  const args = cliSigningArgs(a);
+  assert.equal(args[args.indexOf('--identifier') + 1], 'dev.apexdeck.cli');
+  assert.equal(args[args.indexOf('--options') + 1], 'runtime');
+  assert.ok(args.includes('--timestamp'));
+  assert.ok(!cliSigningArgs('-').includes('--timestamp'));
 });

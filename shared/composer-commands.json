@@ -1,0 +1,355 @@
+[
+  {
+    "key": "goal",
+    "label": "/goal",
+    "detail": "Keep working toward an outcome",
+    "surfaces": [
+      "app",
+      "cli"
+    ],
+    "handler": "goal",
+    "argumentMode": "required",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
+    "key": "loop",
+    "label": "/loop",
+    "detail": "Repeat a prompt: /loop 10m check build",
+    "surfaces": [
+      "app",
+      "cli"
+    ],
+    "handler": "loop",
+    "argumentMode": "required",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
+    "key": "compact",
+    "label": "/compact",
+    "detail": "Summarize earlier turns and free up context",
+    "surfaces": [
+      "app",
+      "cli"
+    ],
+    "handler": "compact",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "compact"
+    }
+  },
+  {
+    "key": "curate",
+    "label": "/curate",
+    "detail": "Hide old messages from bots; nothing is deleted",
+    "surfaces": [
+      "app",
+      "cli"
+    ],
+    "handler": "curate",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "curate"
+    }
+  },
+  {
+    "key": "curate undo",
+    "label": "/curate undo",
+    "detail": "Bring back messages /curate hid",
+    "surfaces": [
+      "app",
+      "cli"
+    ],
+    "handler": "curate_undo",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "curate_undo"
+    }
+  },
+  {
+    "key": "clear",
+    "label": "/clear",
+    "detail": "Empty the chat; keep the models",
+    "surfaces": [
+      "app",
+      "cli"
+    ],
+    "handler": "clear",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "clear"
+    }
+  },
+  {
+    "key": "diff",
+    "label": "/diff",
+    "detail": "Show what changed in the folder",
+    "surfaces": [
+      "app"
+    ],
+    "handler": "diff",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "diff"
+    }
+  },
+  {
+    "key": "fork",
+    "label": "/fork",
+    "detail": "Copy this chat into a new thread",
+    "surfaces": [
+      "app"
+    ],
+    "handler": "fork",
+    "argumentMode": "required",
+    "scope": "thread",
+    "appCommand": {
+      "name": "fork",
+      "title": ""
+    }
+  },
+  {
+    "key": "export",
+    "label": "/export",
+    "detail": "Save the chat as Markdown",
+    "surfaces": [
+      "app"
+    ],
+    "handler": "export",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "export",
+      "format": "markdown"
+    }
+  },
+  {
+    "key": "image",
+    "label": "/image",
+    "detail": "Make a picture: /image [chatgpt|grok|venice] prompt",
+    "surfaces": [
+      "app"
+    ],
+    "handler": "image",
+    "argumentMode": "required",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
+    "key": "export json",
+    "label": "/export json",
+    "detail": "Save the raw transcript as JSON",
+    "surfaces": [
+      "app"
+    ],
+    "handler": "export_json",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "export",
+      "format": "json"
+    }
+  },
+  {
+    "key": "plan",
+    "label": "/plan",
+    "detail": "Bots plan and ask; nothing gets changed (again to stop)",
+    "surfaces": [
+      "app",
+      "cli"
+    ],
+    "handler": "plan",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": {
+      "name": "plan"
+    }
+  },
+  {
+    "key": "threads",
+    "label": "/threads",
+    "detail": "Open a shared thread",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "threads",
+    "argumentMode": "picker",
+    "scope": "client"
+  },
+  {
+    "key": "new",
+    "label": "/new",
+    "detail": "Create Talk, or /new work to choose a workspace",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "new",
+    "argumentMode": "optional",
+    "scope": "client"
+  },
+  {
+    "key": "rename",
+    "label": "/rename",
+    "detail": "Rename this thread",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "rename",
+    "argumentMode": "required",
+    "scope": "thread"
+  },
+  {
+    "key": "add",
+    "label": "/add",
+    "detail": "Add a saved agent profile",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "add",
+    "argumentMode": "picker",
+    "scope": "thread"
+  },
+  {
+    "key": "remove",
+    "label": "/remove",
+    "detail": "Remove an agent",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "remove",
+    "argumentMode": "picker",
+    "scope": "participant"
+  },
+  {
+    "key": "agents",
+    "label": "/agents",
+    "detail": "Members, models, activity and responders",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "agents",
+    "argumentMode": "none",
+    "scope": "thread"
+  },
+  {
+    "key": "stop",
+    "label": "/stop",
+    "detail": "Stop all agents or @name",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "stop",
+    "argumentMode": "picker",
+    "scope": "participant"
+  },
+  {
+    "key": "model",
+    "label": "/model",
+    "detail": "Choose a model for @name",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "model",
+    "argumentMode": "picker",
+    "scope": "participant"
+  },
+  {
+    "key": "access",
+    "label": "/access",
+    "detail": "Choose access for a Work agent",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "access",
+    "argumentMode": "picker",
+    "scope": "participant"
+  },
+  {
+    "key": "usage",
+    "label": "/usage",
+    "detail": "Per-agent token usage",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "usage",
+    "argumentMode": "none",
+    "scope": "thread"
+  },
+  {
+    "key": "help",
+    "label": "/help",
+    "detail": "Show commands",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "help",
+    "argumentMode": "none",
+    "scope": "client"
+  },
+  {
+    "key": "login",
+    "label": "/login",
+    "detail": "Attach Codex or Claude",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "setup",
+    "argumentMode": "optional",
+    "scope": "client",
+    "appCommand": null
+  },
+  {
+    "key": "agents create",
+    "label": "/agents create",
+    "detail": "Create a saved agent",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "setup",
+    "argumentMode": "optional",
+    "scope": "client",
+    "appCommand": null
+  },
+  {
+    "key": "agents saved",
+    "label": "/agents saved",
+    "detail": "List saved agent profiles",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "setup",
+    "argumentMode": "optional",
+    "scope": "client",
+    "appCommand": null
+  },
+  {
+    "key": "agents edit",
+    "label": "/agents edit",
+    "detail": "Edit a saved agent",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "setup",
+    "argumentMode": "optional",
+    "scope": "client",
+    "appCommand": null
+  },
+  {
+    "key": "agents import",
+    "label": "/agents import",
+    "detail": "Import selected agent profiles",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "setup",
+    "argumentMode": "optional",
+    "scope": "client",
+    "appCommand": null
+  }
+]

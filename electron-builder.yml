@@ -36,6 +36,8 @@ extraResources:
     to: bin/apex-daemon
   - from: target/release/apex-provenance
     to: bin/apex-provenance
+  - from: target/release/apex
+    to: bin/apex
   # The upgrade transaction and its bundle check, run as root by the update job
   # from the protected copy (scripts/upgrade.py). Sealed by the app's signature.
   - from: scripts/upgrade.py

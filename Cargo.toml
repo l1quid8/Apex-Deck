@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 # apex-host-production-check must run alone (feature unification), so a bare `cargo test` skips it.
-default-members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "crates/apex-pairing", "crates/apex-provenance"]
-members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "crates/apex-pairing", "crates/apex-provenance", "crates/apex-host-production-check", "crates/apex-ipc-check"]
+default-members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "crates/apex-pairing", "crates/apex-provenance", "crates/apex-cli"]
+members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "crates/apex-pairing", "crates/apex-provenance", "crates/apex-host-production-check", "crates/apex-ipc-check", "crates/apex-cli"]
 
 [workspace.package]
 version = "0.9.8"

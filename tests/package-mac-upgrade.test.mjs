@@ -492,3 +492,19 @@ assert (u.ROOT/'config.json').read_text()==json.dumps({'uiCdhash':'old','daemonC
 assert running=={501:True,502:True},running
 assert [event for event in events if isinstance(event,str)]==['broker down','broker up'],events
 `));
+
+test('optional CLI hash survives manifest rendering and rejects malformed admission',()=>{
+ const withCli={...manifest,cli:'d'.repeat(40)};
+ assert.deepEqual(validateManifest(withCli),withCli);
+ assert.match(upgradeScripts(withCli).worker,/dddddddddddddddddddddddddddddddddddddddd/);
+ for(const cli of ['',null,'bad','a'.repeat(39),'a'.repeat(40)+'\n'])assert.throws(()=>validateManifest({...manifest,cli}));
+});
+test('CLI pin migrates explicitly and absence removes stale admission',()=>python(String.raw`
+with tempfile.TemporaryDirectory() as directory:
+ config=pathlib.Path(directory)/'config.json'
+ config.write_text(json.dumps({'uiCdhash':'old-ui','daemonCdhash':'old-daemon','cliCdhash':'old-cli','future':42}))
+ u.update_config(config,'ui','daemon','d'*40)
+ assert json.loads(config.read_bytes())=={'uiCdhash':'ui','daemonCdhash':'daemon','cliCdhash':'d'*40,'future':42}
+ u.update_config(config,'next-ui','next-daemon')
+ assert json.loads(config.read_bytes())=={'uiCdhash':'next-ui','daemonCdhash':'next-daemon','future':42}
+`));

@@ -26,6 +26,10 @@ pub enum Command {
     /// Exact root-attested command; never an arbitrary nested command.
     ProvenanceExecute { receipt: apex_provenance::Signed },
     SessionLoad {},
+    AgentProfileList {},
+    ProviderSetupBegin { provider: String, method: String },
+    BackendStop { boot_id: String },
+    AgentProfileSave { #[serde(flatten)] input: crate::agent_profiles::SaveProfile },
     SessionSave { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
@@ -308,6 +312,7 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
+        if matches!(self, Self::AgentProfileSave { .. } | Self::ProviderSetupBegin { .. } | Self::BackendStop { .. }) { return true; }
         matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalProjectProposeUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalTodo { .. } | Self::ProjectTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. } | Self::PersonalHandoffSelect { .. } | Self::PersonalHandoffControl { .. })
     }
 
@@ -430,6 +435,13 @@ impl Host {
             ProvenanceExecute { .. } => return Err("Nested provenance commands are forbidden".into()),
             SessionLoad {} => reply(self.session_load()?),
             SessionSave { session } => reply(self.session_save(session)?),
+            AgentProfileList {} => self.agent_profile_list(),
+            BackendStop { .. } => Err("Backend stop receipts are accepted only on standalone backend control".into()),
+            ProviderSetupBegin { provider,method } => {
+                if !matches!((provider.as_str(),method.as_str()),("codex","reuse"|"browser"|"device")|("claude","reuse"|"subscription")) {return Err("Unsupported provider sign-in method".into());}
+                Ok(serde_json::json!({"provider":provider,"method":method,"authorized":true}))
+            },
+            AgentProfileSave { input } => self.agent_profile_save(input),
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
@@ -987,7 +999,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 233);
+        assert_eq!(names.len(), 237);
         for name in [
             "personal_handoff_select",
             "personal_handoff_control",
@@ -998,6 +1010,9 @@ mod tests {
             "room_curate",
             "room_curate_undo",
             "chat_profiles",
+            "agent_profile_list",
+            "agent_profile_save",
+            "provider_setup_begin",
             "chat_list",
             "chat_create",
             "chat_update_meta",

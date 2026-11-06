@@ -62,6 +62,8 @@ clear, step-by-step plan.";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomEvent {
+    /// A full checkpoint is available. Clients should reload room_state.
+    StateChanged,
     /// Request-scoped companion event. Ordinary room events remain unchanged.
     VoiceEvent { client_turn_id: String, id: ParticipantId, event: Box<RoomEvent> },
     /// Settings saved by any connected client. Applies to the next turn.
@@ -509,6 +511,12 @@ pub struct RoomSnapshot {
     /// them; a fork starts without them.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage: HashMap<ParticipantId, TokenTotals>,
+    /// The effective untagged responders at the time the snapshot was taken.
+    /// Derived from `last_targets` plus policy; mirrors what
+    /// `resolve_targets` would return for an untagged message. Available for
+    /// clients that read state but cannot run routing themselves (e.g. the CLI).
+    #[serde(default)]
+    pub untagged_responders: Vec<ParticipantId>,
     /// The thread's Plan switch: every bot plans and changes nothing.
     #[serde(default)]
     pub plan: bool,
@@ -569,6 +577,7 @@ impl RoomSnapshot {
             baseline: self.baseline.clone(),
             allowed: Vec::new(),
             usage: HashMap::new(),
+            untagged_responders: if upto == self.transcript.len() { self.untagged_responders.clone() } else { Vec::new() },
             plan: self.plan,
             checklists: self.checklists.iter().filter(|(_, list)| list.seq < upto).map(|(id, list)| (id.clone(), list.clone())).collect(),
             plan_runs: Vec::new(),
@@ -652,6 +661,7 @@ impl Room {
             baseline: self.baseline.clone(),
             allowed: self.desk.allowed(),
             usage: self.usage.clone(),
+            untagged_responders: self.untagged_responders(),
             plan: self.plan.load(Ordering::SeqCst),
             checklists: self.checklists.lock().unwrap().clone(),
             plan_runs: self.plan_runs.lock().unwrap().clone(),
@@ -1192,6 +1202,27 @@ impl Room {
 
     pub(crate) fn client_message(&self, id: &str) -> Option<&ClientMessageRecord> { self.client_messages.get(id) }
 
+    /// Save a legacy post before publishing it, restoring admission state if
+    /// storage refuses the complete snapshot.
+    pub(crate) fn accept_post(
+        &mut self, speaker: Speaker, text: &str, targets: Vec<ParticipantId>,
+        commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync),
+    ) -> Result<Message, String> {
+        let previous_targets = std::mem::replace(&mut self.last_targets, targets);
+        let previous_origin = self.next_origin_seq;
+        let reply_record = self.reply_client_message_id.as_ref()
+            .and_then(|id| self.client_messages.get(id).map(|record| (id.clone(), record.clone())));
+        self.push(speaker, text.into(), &|_| {});
+        if let Err(error) = commit(&self.snapshot()) {
+            self.transcript.pop();
+            self.last_targets = previous_targets;
+            self.next_origin_seq = previous_origin;
+            if let Some((id, record)) = reply_record { self.client_messages.insert(id, record); }
+            return Err(error);
+        }
+        Ok(self.transcript.last().unwrap().clone())
+    }
+
     pub(crate) fn set_reply_client_message(&mut self, id: Option<String>) { self.reply_client_message_id = id; }
 
     pub fn finish_client_message(&mut self, id: &str) {
@@ -1272,18 +1303,26 @@ impl Room {
         match parse_mentions(text, &configs) {
             MentionTarget::Everyone => configs.iter().filter(|c| !self.named_only(&c.id) || crate::names(text, c)).map(|c| c.id.clone()).collect(),
             MentionTarget::Some(ids) => ids,
-            MentionTarget::None => match self.options.policy {
-                TurnPolicy::Everyone | TurnPolicy::RoundRobin => self.unnamed_ids(),
-                TurnPolicy::Mention => {
-                    let sticky: Vec<ParticipantId> =
-                        self.last_targets.iter().filter(|id| self.has(id) && !self.named_only(id)).cloned().collect();
-                    if sticky.is_empty() {
-                        self.unnamed_ids().into_iter().take(1).collect()
-                    } else {
-                        sticky
-                    }
+            MentionTarget::None => self.untagged_responders(),
+        }
+    }
+
+    /// The effective untagged responders for this room, computed from the same
+    /// room state that `resolve_targets` uses during routing. This returns the
+    /// exact list an untagged message would target, without actually sending
+    /// anything or mutating state.
+    pub fn untagged_responders(&self) -> Vec<ParticipantId> {
+        match self.options.policy {
+            TurnPolicy::Everyone | TurnPolicy::RoundRobin => self.unnamed_ids(),
+            TurnPolicy::Mention => {
+                let sticky: Vec<ParticipantId> =
+                    self.last_targets.iter().filter(|id| self.has(id) && !self.named_only(id)).cloned().collect();
+                if sticky.is_empty() {
+                    self.unnamed_ids().into_iter().take(1).collect()
+                } else {
+                    sticky
                 }
-            },
+            }
         }
     }
 
@@ -1930,5 +1969,148 @@ mod approver_tests {
         let events = events.into_inner().unwrap();
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
             RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
+    }
+    // --- Untagged responders tests ---
+
+    #[test]
+    fn initial_reset_untagged_responders_returns_first_eligible() {
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["hi"]));
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["hey"]));
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // Initial: first unnamed participant answers.
+        let responders = room.untagged_responders();
+        assert_eq!(responders, vec![ParticipantId::new("jigga")]);
+        // resolve_targets for untagged text must match.
+        assert_eq!(room.resolve_targets("hello"), responders);
+    }
+
+    #[test]
+    fn sticky_mention_untagged_responders_follows_targets() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a", "b"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["c", "d"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // Initial: jigga is first.
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga")]);
+        // Address null explicitly: untagged should now stick to null.
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("null")]);
+    }
+
+    #[test]
+    fn multiple_sticky_untagged_responders_via_at_all() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a", "b"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["c", "d"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // @all selects everyone.
+        futures::executor::block_on(room.post_human("@all hi", &|_| {}));
+        let responders = room.untagged_responders();
+        assert_eq!(responders.len(), 2);
+        assert!(responders.contains(&ParticipantId::new("jigga")));
+        assert!(responders.contains(&ParticipantId::new("null")));
+    }
+
+    #[test]
+    fn removed_members_excluded_from_untagged_responders() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // After @null, sticky is null.
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("null")]);
+        // Remove null: the responder list should drop the removed member.
+        assert!(room.remove_participant(&ParticipantId::new("null")));
+        let responders = room.untagged_responders();
+        assert_eq!(responders, vec![ParticipantId::new("jigga")], "fallback to first when sticky removed");
+    }
+
+    #[test]
+    fn named_only_excluded_from_untagged_responders() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]).named_only());
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // null is named-only; untagged goes to jigga.
+        let responders = room.untagged_responders();
+        assert_eq!(responders, vec![ParticipantId::new("jigga")]);
+    }
+
+    #[test]
+    fn empty_roster_untagged_responders_returns_empty() {
+        let room = Room::new(vec![], RoomOptions::default());
+        assert!(room.untagged_responders().is_empty());
+    }
+
+    #[test]
+    fn everyone_policy_untagged_responders_returns_all_unnamed() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions { policy: TurnPolicy::Everyone, ..RoomOptions::default() });
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga"), ParticipantId::new("null")]);
+    }
+
+    #[test]
+    fn round_robin_policy_untagged_responders_returns_all_unnamed() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions { policy: TurnPolicy::RoundRobin, ..RoomOptions::default() });
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga"), ParticipantId::new("null")]);
+    }
+
+    #[test]
+    fn snapshot_untagged_responders_matches_resolve_targets() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a", "b"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["c", "d"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        // After @all, snapshot should carry the multi-responder list.
+        futures::executor::block_on(room.post_human("@all hi", &|_| {}));
+        let snap = room.snapshot();
+        let expected = room.untagged_responders();
+        assert_eq!(snap.untagged_responders, expected, "snapshot responders match live computation");
+        // The snapshot carries the same responders the room computed.
+    }
+
+    #[test]
+    fn snapshot_serialization_includes_untagged_responders() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a"]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["b"]));
+        let mut room = Room::new(vec![jigga.clone(), null.clone()], RoomOptions::default());
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        let snap = room.snapshot();
+        let json = serde_json::to_value(&snap).unwrap();
+        let responders = json["untagged_responders"].as_array().unwrap();
+        assert_eq!(responders.len(), 1);
+        assert_eq!(responders[0].as_str().unwrap(), "null");
+    }
+
+    #[test]
+    fn untagged_projection_is_read_only_and_restore_recomputes_old_or_stale_values() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &[]));
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &[]).named_only());
+        let mut room = Room::new(vec![null.clone(), jigga.clone()], RoomOptions::default());
+        room.targets_for_human("@null hello");
+        let before = serde_json::to_value(room.snapshot()).unwrap();
+        assert_eq!(room.untagged_responders(), vec![ParticipantId::new("jigga")]);
+        assert_eq!(serde_json::to_value(room.snapshot()).unwrap(), before, "reading does not change routing or scheduling");
+        let mut legacy = before;
+        legacy.as_object_mut().unwrap().remove("untagged_responders");
+        let mut snapshot: RoomSnapshot = serde_json::from_value(legacy).unwrap();
+        snapshot.untagged_responders = vec![ParticipantId::new("removed")];
+        let restored = Room::restore(vec![null, jigga], snapshot);
+        assert_eq!(restored.snapshot().untagged_responders, vec![ParticipantId::new("jigga")]);
+        room.clear();
+        assert_eq!(room.snapshot().untagged_responders, vec![ParticipantId::new("jigga")]);
+        assert_eq!(serde_json::to_value(Room::new(vec![], RoomOptions::default()).snapshot()).unwrap()["untagged_responders"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn multiple_explicit_mentions_project_the_same_targets_without_sending() {
+        let mut room = Room::new(vec![
+            Arc::new(crate::testing::ScriptedParticipant::new("jigga", &[])),
+            Arc::new(crate::testing::ScriptedParticipant::new("null", &[])),
+            Arc::new(crate::testing::ScriptedParticipant::new("cast", &[])),
+        ], RoomOptions::default());
+        let targets = room.targets_for_human("@null @cast hello");
+        assert_eq!(targets, vec![ParticipantId::new("null"), ParticipantId::new("cast")]);
+        assert_eq!(room.snapshot().untagged_responders, targets);
+        assert_eq!(room.resolve_targets("follow up"), targets);
     }
 }

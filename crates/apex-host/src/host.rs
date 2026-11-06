@@ -157,7 +157,15 @@ struct LiveRoomState {
     /// The watchdog's view of the worker. Only worker activity moves it.
     last_activity_ms: u64,
     running_commands: std::collections::HashSet<String>,
+    /// Reply text streamed so far by each working agent, so a client that
+    /// switches back or reconnects can redraw it instead of a blank turn.
+    streams: std::collections::BTreeMap<String, String>,
+    /// The latest activity line per working agent.
+    activity: std::collections::BTreeMap<String, String>,
 }
+
+/// Streamed text kept per agent is capped like the clients' own buffers.
+const LIVE_STREAM_CAP: usize = 1024 * 1024;
 
 /// Where the host keeps its files.
 #[derive(Debug, Clone)]
@@ -535,7 +543,7 @@ impl Host {
         &self.events
     }
 
-    fn emit(&self, event: HostEvent) {
+    pub(crate) fn emit(&self, event: HostEvent) {
         self.events.emit(event);
     }
 
@@ -613,6 +621,20 @@ impl Host {
             }
             if let RoomEvent::TurnStarted { id } = &event { let own = format!("{id}:"); live.running_commands.retain(|key| !key.starts_with(&own)); }
             if matches!(event, RoomEvent::Idle | RoomEvent::Stopped) { live.running_commands.clear(); }
+            match &event {
+                RoomEvent::TurnStarted { id } => { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
+                RoomEvent::Delta { id, text } => {
+                    let stream = live.streams.entry(id.as_str().to_string()).or_default();
+                    if stream.len() + text.len() < LIVE_STREAM_CAP { stream.push_str(text); }
+                }
+                RoomEvent::Activity { id, text } => { live.activity.insert(id.as_str().to_string(), text.clone()); }
+                RoomEvent::MessageAdded { message } => {
+                    if let apex_core::Speaker::Bot(id) = &message.speaker { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
+                }
+                RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
+                RoomEvent::Idle | RoomEvent::Stopped => { live.streams.clear(); live.activity.clear(); }
+                _ => {}
+            }
             match &event {
                 RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); live.next_steps = None; }
                 RoomEvent::QuestionRequested { id, request, questions } => {
@@ -1328,10 +1350,13 @@ impl Host {
         let saved = handle.checkpoint.lock().unwrap().clone();
         let mut snapshot = saved.snapshot;
         snapshot.plan_runs = handle.plan_runs.lock().unwrap().clone();
+        // untagged_responders is populated by Room::snapshot() from authoritative
+        // room state. It is read from the snapshot to avoid acquiring the async
+        // room lock in this synchronous function.
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
         let runner = self.runner_service.lock().unwrap().state(&id).ok().flatten();
-        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
+        Ok(serde_json::json!({"untagged_responders":snapshot.untagged_responders,"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"streams":live.streams,"activity":live.activity,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
 
     }
 
@@ -1472,10 +1497,26 @@ impl Host {
                 if !unknown.is_empty() { return Err(format!("No tool server called \"{}\" for the addressed models", unknown[0])); }
             }
         }
-        let error = Mutex::new(None);
-        let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
-        if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        self.checkpoint_room(handle, id).await?;
+        // Publish only after the complete snapshot (including routing) is
+        // committed. A client refreshing on MessageAdded must not see the new
+        // transcript paired with the previous message's responders.
+        let batch = handle.runtime.begin_post_with_commit(
+            apex_core::Speaker::Human, text, targets,
+            &|snapshot| self.commit_client_snapshot(id, handle, snapshot),
+            &|event| {
+                // The human message is already durable. Do not abandon an
+                // accepted batch because of a redundant second save.
+                if let RoomEvent::MessageAdded { message } = &event {
+                    update_chat_message_meta(&self.store, id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message);
+                }
+                self.room_event(id, event);
+            },
+        ).await?;
+        // Admission is already durable. Journal refresh must not discard the
+        // accepted batch if its follow-up save fails.
+        if let Err(error) = self.checkpoint_room(handle, id).await {
+            self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
+        }
         Ok(batch)
     }
 
@@ -2205,7 +2246,9 @@ impl Host {
         let built = apex_adapters::participant_for_room(room.kind(), participant, &context);
         if room.add_participant(built) {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
-            self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
+            self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+            self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
+            Ok(())
         } else {
             Err(format!("a participant with the id `{name}` is already in this chat"))
         }
@@ -2316,10 +2359,11 @@ impl Host {
         } else { room.replace_participant(replacement); }
         self.invalidate_room_runner(&id)?;
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
-        if access_moved { self.persist_and_emit(&id, &handle, RoomEvent::AccessChanged { id: name.clone(), access: next.access })?; }
         // Save and broadcast under the same room lock as the merge so concurrent
         // devices cannot emit older settings after newer ones.
-        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantChanged { participant: next.clone() })?;
+        self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+        if access_moved { self.room_event(&id, RoomEvent::AccessChanged { id: name.clone(), access: next.access }); }
+        self.room_event(&id, RoomEvent::ParticipantChanged { participant: next.clone() });
         self.read_plans(&id, std::slice::from_ref(&next), &context);
         Ok(next)
     }
@@ -2382,7 +2426,9 @@ impl Host {
         self.require_idle(&id)?;
         room.remove_participant(&participant);
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
-        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
+        self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+        self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
+        Ok(())
     }
 
     pub async fn chat_remove_participant(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
@@ -2934,7 +2980,7 @@ impl Host {
     /// Replace the whole session and tell every client.
     pub fn session_save(&self, session: serde_json::Value) -> Result<(), String> {
         let session = Session::from_value(session)?.to_value();
-        self.store.save_session(&session)?;
+        let session = self.store.save_session_snapshot(&session)?;
         self.emit(HostEvent::SessionChanged(session));
         Ok(())
     }
@@ -3459,6 +3505,7 @@ impl Host {
         if let Some(error) = checkpoint_room(handle, &self.store, id).await? {
             self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
         }
+        self.room_event_for(id, handle, RoomEvent::StateChanged);
         Ok(())
     }
 
@@ -4484,6 +4531,58 @@ mod host_tests {
     use super::*;
     use apex_core::Participant;
 
+    #[test]
+    fn untagged_responders_follow_membership_options_and_clear_before_replies() {
+        let (host, runtime, data) = host("untagged-state");
+        let config = |name| apex_core::testing::ScriptedParticipant::new(name, &[]).config().clone();
+        host.room_create("r".into(), vec![config("jigga"), config("null")], RoomOptions::default(), None).unwrap();
+        let read = || host.room_state("r".into()).unwrap()["snapshot"]["untagged_responders"].clone();
+        assert_eq!(read(), serde_json::json!(["jigga"]));
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&published);
+        let checkpoint = Arc::clone(&host.handle("r").unwrap().checkpoint);
+        host.events().listen(move |envelope| {
+            if let HostEvent::Room { event: RoomEvent::MessageAdded { message }, .. } = &envelope.event {
+                if matches!(message.speaker, apex_core::Speaker::Human) {
+                    let saved = checkpoint.lock().unwrap();
+                    observed.lock().unwrap().push((saved.snapshot.last_targets.clone(), saved.snapshot.untagged_responders.clone()));
+                }
+            }
+        });
+        runtime.block_on(async {
+            let handle = host.handle("r").unwrap();
+            // Prepare without running a provider: a second reader must already
+            // see the new selection, even while the room lock is unavailable.
+            let _batch = host.prepare_post("r", &handle, "@null hello", None).await.unwrap();
+            let _room_lock = handle.room.lock().await;
+            assert_eq!(read(), serde_json::json!(["null"]));
+            assert_eq!(published.lock().unwrap()[0], (vec![ParticipantId::new("null")], vec![ParticipantId::new("null")]));
+            drop(_room_lock);
+            drop(_batch);
+            host.room_add_participant("r".into(), config("cast")).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["null"]));
+            host.room_remove_participant("r".into(), ParticipantId::new("null")).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["jigga"]));
+            let mut events = host.events().subscribe();
+            host.room_set_options("r".into(), RoomOptions { policy: apex_core::TurnPolicy::Everyone, ..RoomOptions::default() }).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["jigga", "cast"]));
+            assert!(matches!(events.try_recv().unwrap().event, HostEvent::Room { event: RoomEvent::StateChanged, .. }), "another client must be notified to refresh after options change");
+            assert_eq!(host.room_state("r".into()).unwrap()["untagged_responders"], read());
+            host.room_set_options("r".into(), RoomOptions::default()).await.unwrap();
+            let _batch = host.prepare_post("r", &handle, "@cast hello", None).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["cast"]));
+            drop(_batch);
+            host.room_clear("r".into()).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["jigga"]));
+            let _batch = host.prepare_post("r", &handle, "@cast restored", None).await.unwrap();
+        });
+        host.shutdown(); drop(host);
+        let reopened = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        assert_eq!(reopened.room_state("r".into()).unwrap()["snapshot"]["untagged_responders"], serde_json::json!(["cast"]));
+        reopened.shutdown(); drop(reopened);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     fn host(name: &str) -> (Arc<Host>, tokio::runtime::Runtime, PathBuf) {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let data = std::env::temp_dir().join(format!("apex-host-{name}-{}", std::process::id()));
@@ -5070,6 +5169,37 @@ done
         let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
         assert_eq!(saved.access, Access::Read);
 
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn room_state_carries_partial_replies_so_returning_clients_can_redraw_them() {
+        let (host, _runtime, data) = host("live-streams");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let null = apex_core::ParticipantId::new("null");
+        let muck = apex_core::ParticipantId::new("muck");
+        host.room_event("r", RoomEvent::TurnStarted { id: null.clone() });
+        host.room_event("r", RoomEvent::TurnStarted { id: muck.clone() });
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "Half ".into() });
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "done".into() });
+        host.room_event("r", RoomEvent::Activity { id: muck.clone(), text: "Running cargo test".into() });
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["streams"], serde_json::json!({"null":"Half done"}));
+        assert_eq!(state["activity"], serde_json::json!({"muck":"Running cargo test"}));
+        let seq = state["recovery_seq"].as_u64().unwrap();
+        host.room_event("r", RoomEvent::ParticipantIdle { id: muck.clone() });
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "!".into() });
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["recovery_seq"].as_u64().unwrap(), seq + 2, "each live change is numbered once");
+        assert_eq!(state["streams"], serde_json::json!({"null":"Half done!"}));
+        assert_eq!(state["activity"], serde_json::json!({}));
+        host.room_event("r", RoomEvent::TurnStarted { id: null.clone() });
+        assert_eq!(host.room_state("r".into()).unwrap()["streams"], serde_json::json!({}), "a new turn starts blank");
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "x".into() });
+        host.room_event("r", RoomEvent::Stopped);
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["streams"], serde_json::json!({}));
+        assert_eq!(state["active"], serde_json::json!([]));
         let _ = std::fs::remove_dir_all(data);
     }
 
@@ -6180,7 +6310,7 @@ done
         bot2.access = Access::Edits;
         bot2.backend = apex_core::Backend::Scripted { lines: vec!["hi".into()] };
         profiles.push(serde_json::to_value(&bot2).unwrap());
-        host.session_save(json!({ "version": 1, "profiles": profiles })).unwrap();
+        host.session_save(json!({ "version": 1, "profileRevision": host.session_load().unwrap().unwrap()["profileRevision"], "profiles": profiles })).unwrap();
 
         let snapshot = host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("First chat".into()), vec![ask("bot", None)], RoomOptions::default()).unwrap();
         assert_eq!(snapshot.kind, apex_core::RoomKind::Chat);

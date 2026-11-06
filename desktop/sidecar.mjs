@@ -31,11 +31,11 @@ export function developmentDataDir(repo, env = process.env, home = os.homedir())
 export const developmentHostDataDir = (dataDir) => `${dataDir}-checkout-host`;
 
 /**
- * `serve` that stops when the app does; `--remote` when Remote access is on,
+ * Shared `serve` survives desktop exit; `--remote` when Remote access is on,
  * so paired phones can reach it from anywhere; a data folder only when one is set.
  */
 export const serveArgs = (dataDir, { remote = false } = {}) =>
-  withDataDir(['serve', '--exit-on-stdin-close', ...(remote ? ['--remote'] : [])], dataDir);
+  withDataDir(['serve', ...(remote ? ['--remote'] : [])], dataDir);
 export const dataDirArgs = (dataDir) => withDataDir(['data-dir'], dataDir);
 
 /** The folder the daemon would use. */
@@ -74,30 +74,39 @@ export async function waitForSocket(socket, { wanted = true, timeout = 15_000 } 
 
 /**
  * A daemon on this Mac's data folder: the one already running there (left
- * running when the app quits), or a `serve` started now that ends with the
- * app. Rejects with the daemon's own words when it won't start.
+ * running when the app quits), or a persistent `serve` started now. CLI clients
+ * share its rooms, so closing the desktop must not interrupt it.
+ * Rejects with the daemon's own words when it won't start.
  */
 export async function localDaemon({ bin, dataDir, remote = false, log = () => {} }) {
   const folder = await dataFolder(bin, dataDir);
   const socket = path.join(folder, 'daemon.sock');
   if (await answers(socket)) return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
 
-  const child = spawn(bin, serveArgs(dataDir, { remote }), { stdio: ['pipe', 'ignore', 'pipe'] });
-  let stderr = '';
+  // A detached service cannot keep Electron's pipes open or receive SIGHUP
+  // when the desktop exits. Keep diagnostics available without owning its life.
+  const logPath = path.join(folder, 'desktop-daemon.log');
+  fs.mkdirSync(folder, { recursive: true });
+  const logFd = fs.openSync(logPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+  let child;
+  try {
+    child = spawn(bin, serveArgs(dataDir, { remote }), { detached: true, stdio: ['ignore', 'ignore', logFd] });
+  } finally { fs.closeSync(logFd); }
+  child.unref();
   let exited = null;
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (text) => {
-    stderr = (stderr + text).slice(-4096);
-    log(text);
-  });
-  const gone = new Promise((resolve) => child.once('exit', (code, signal) => { exited = { code, signal }; resolve(); }));
-  child.once('error', (e) => { exited ??= { code: null, signal: null }; stderr ||= e.message; });
-  // A write to a daemon that has left must not take the app down.
-  child.stdin.on('error', () => {});
+  let spawnError = '';
+  child.once('exit', (code, signal) => { exited = { code, signal }; });
+  child.once('error', (error) => { exited ??= { code: null, signal: null }; spawnError = error.message; });
 
   const started = Date.now();
   for (;;) {
     if (exited) {
+      // CLI or another desktop may have won the startup lock after our probe.
+      if (!spawnError && await waitForSocket(socket, { timeout: Math.max(0, 15_000 - (Date.now() - started)) })) {
+        return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
+      }
+      const stderr = spawnError || fs.readFileSync(logPath, 'utf8').slice(-4096);
+      log(stderr);
       const words = stderr.trim().split('\n').filter(Boolean).at(-1)?.replace(/^apex-daemon: /, '');
       throw new Error(words || `apex-daemon stopped as it started (${exited.code ?? exited.signal}).`);
     }
@@ -113,13 +122,7 @@ export async function localDaemon({ bin, dataDir, remote = false, log = () => {}
     owned: true,
     child,
     alive: () => exited === null,
-    /** Close its stdin and give it 15 s to wind down, then kill it. */
-    stop: async () => {
-      if (exited) return;
-      child.stdin.end();
-      const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
-      await gone;
-      clearTimeout(timer);
-    },
+    /** The daemon belongs to all connected clients, even if we started it. */
+    stop: async () => {},
   };
 }

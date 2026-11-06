@@ -295,6 +295,19 @@ impl ConcurrentRoom {
         targets: Option<Vec<ParticipantId>>,
         sink: Sink<'_>,
     ) -> Result<TurnBatch, String> {
+        self.begin_post_with_commit(speaker, text, targets, &|_| Ok(()), sink).await
+    }
+
+    /// Commit the complete routing/transcript revision before publishing its
+    /// human event, without releasing the room lock to another running chain.
+    pub async fn begin_post_with_commit(
+        &self,
+        speaker: Speaker,
+        text: &str,
+        targets: Option<Vec<ParticipantId>>,
+        commit: &(dyn Fn(&crate::RoomSnapshot) -> Result<(), String> + Send + Sync),
+        sink: Sink<'_>,
+    ) -> Result<TurnBatch, String> {
         let mut room = self.room.lock().await;
         self.check_open()?;
         let resolved = room.resolve_targets(text);
@@ -305,8 +318,8 @@ impl ConcurrentRoom {
         let mut unique = Vec::new();
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         let targets = unique;
-        room.remember_targets(targets.clone());
-        room.push(speaker, text.to_string(), sink);
+        let message = room.accept_post(speaker, text, targets.clone(), commit)?;
+        sink(RoomEvent::MessageAdded { message });
         Ok(self.batch(
             targets,
             room.options().policy == TurnPolicy::RoundRobin,
