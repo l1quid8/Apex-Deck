@@ -703,19 +703,26 @@ struct ScratchDir(PathBuf);
 impl ScratchDir {
     fn new() -> Result<Self, String> {
         static N: AtomicU64 = AtomicU64::new(0);
-        let seq = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "apex-gateway-scratch-{}-{seq}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("could not create gateway scratch folder: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        // Owner-only from the moment it exists: mode 0700 on Unix, a protected
+        // current-user-only ACL on Windows. An existing path is never reused,
+        // so a folder planted at a predictable name is skipped, not trusted.
+        let mut last = None;
+        for _ in 0..8 {
+            let seq = N.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "apex-gateway-scratch-{}-{seq}",
+                std::process::id()
+            ));
+            match apex_host::private_data::create_private_dir(&dir) {
+                Ok(()) => return Ok(Self(dir)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+                Err(e) => return Err(format!("could not create gateway scratch folder: {e}")),
+            }
         }
-        Ok(Self(dir))
+        Err(format!(
+            "could not create gateway scratch folder: {}",
+            last.map(|e| e.to_string()).unwrap_or_default()
+        ))
     }
 
     fn path(&self) -> &Path {
@@ -1345,6 +1352,38 @@ mod tests {
     /// Exercise an actual HTTP listener with a pre-policy key file and a CLI
     /// fixture that deliberately ignores the MCP-disable overrides. No live
     /// account or private MCP server is contacted by this test.
+    #[test]
+    fn scratch_dir_is_private_skips_planted_names_and_is_removed_on_drop() {
+        let first = ScratchDir::new().unwrap();
+        let path = first.path().to_path_buf();
+        assert!(path.is_dir());
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode & 0o077, 0, "scratch folder must be owner-only, got {mode:o}");
+        }
+        // Plant the next predictable names; the gateway must not reuse them.
+        // Other tests may take a number first, so only count names we made.
+        let seq: u64 = path.file_name().unwrap().to_str().unwrap()
+            .rsplit('-').next().unwrap().parse().unwrap();
+        let planted: Vec<PathBuf> = (seq + 1..=seq + 3)
+            .map(|n| std::env::temp_dir().join(format!(
+                "apex-gateway-scratch-{}-{n}", std::process::id()
+            )))
+            .filter(|p| std::fs::create_dir(p).is_ok())
+            .collect();
+        let second = ScratchDir::new().unwrap();
+        assert!(!planted.iter().any(|p| p == second.path()));
+        assert_eq!(std::fs::read_dir(second.path()).unwrap().count(), 0);
+        for p in &planted {
+            std::fs::remove_dir(p).unwrap();
+        }
+        drop(first);
+        assert!(!path.exists());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn stopping_listener_closes_accepted_connections() {

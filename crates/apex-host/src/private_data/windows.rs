@@ -20,7 +20,7 @@ use windows_sys::Win32::Security::{
     TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, CREATE_NEW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+    CreateDirectoryW, CreateFileW, CREATE_NEW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, READ_CONTROL,
 };
@@ -94,6 +94,37 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
     // the requested owner, protected DACL, and sole current-user allow ACE.
     verify_private(file.as_raw_handle(), &sid, false)?;
     Ok(file)
+}
+
+/// Create a new directory with an explicit owner-only, inheritable ACL, even in
+/// a shared parent such as C:\\Windows\\Temp. The ACL is applied atomically at
+/// creation, and an existing file, directory or junction at the path is refused.
+pub fn create_private_dir(path: &Path) -> io::Result<()> {
+    let sid = current_user_sid()?;
+    let descriptor = descriptor(&sid, true)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let wide = wide_path(path)?;
+    // SAFETY: path and descriptor stay alive for the call, which copies the
+    // descriptor into the new directory object.
+    if unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let verified = OpenOptions::new()
+        .access_mode(READ_CONTROL)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .and_then(|directory| verify_private(directory.as_raw_handle(), &sid, true));
+    if let Err(error) = verified {
+        // Never hand back a directory whose ACL did not take.
+        let _ = std::fs::remove_dir(path);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn denied(message: &str) -> io::Error {
@@ -467,6 +498,38 @@ mod tests {
         );
         drop(file);
         assert_eq!(std::fs::read(path).unwrap(), b"token");
+    }
+
+    #[test]
+    fn new_private_dir_is_owner_only_in_a_public_parent_and_refuses_existing_paths() {
+        let dir = TestDir::new();
+        dir.make_public();
+        let path = dir.0.join("scratch");
+        create_private_dir(&path).unwrap();
+        let sid = current_user_sid().unwrap();
+        verify_private(open_directory(&path).as_raw_handle(), &sid, true).unwrap();
+        // Files written inside inherit only the current user's ACE.
+        let inner = path.join("prompt.txt");
+        std::fs::write(&inner, "private").unwrap();
+        let file = File::open(&inner).unwrap();
+        let (_descriptor, _, dacl) = security(file.as_raw_handle()).unwrap();
+        assert_eq!(unsafe { (*dacl).AceCount }, 1);
+        let mut ace = ptr::null_mut();
+        assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+        let allow = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        assert_eq!(
+            sid_string(ptr::addr_of!(allow.SidStart).cast_mut().cast()).unwrap(),
+            sid
+        );
+        drop(file);
+        assert_eq!(
+            create_private_dir(&path).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        // A planted file at the name is refused, not reused.
+        let planted = dir.0.join("planted");
+        std::fs::write(&planted, "x").unwrap();
+        assert!(create_private_dir(&planted).is_err());
     }
 
     #[test]
