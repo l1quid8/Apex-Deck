@@ -6,6 +6,40 @@ first; the desktop and iOS apps remain optional. On macOS, new installations use
 `~/Library/Application Support/dev.apexdeck.app/`. Provider subscription sign-in stays inside the official
 Codex and Claude Code runtimes; install those runtimes before provider setup.
 
+### npm install (recommended)
+
+```sh
+npm i -g @apex-deck/cli
+apex
+```
+
+On first run, `apex` prints a one-time setup command:
+
+```sh
+sudo "<path-it-prints>/@apex-deck/cli/bin/apex" setup
+```
+
+Enter your administrator password once. This installs the root-owned authority
+service and enrolls exact binary identities. After that, `apex` opens directly.
+Upgrades via `npm i -g @apex-deck/cli` print the same `sudo … setup` hint when
+the installed standalone build is older; run it once per new version. To remove
+the standalone installation while keeping chat data:
+
+```sh
+sudo "$(npm root -g)/@apex-deck/cli/bin/apex" uninstall
+```
+
+Data, keys, journal and authority roots are preserved across install →
+uninstall → reinstall; only the product binaries and service plist are removed
+and recreated.
+
+`@apex-deck/cli` depends on `@apex-deck/cli-darwin-arm64` (Apple Silicon). The
+`apex` launcher in `@apex-deck/cli` always execs
+`/Library/Application Support/Apex Deck Provenance/Standalone/apex` — never a
+copy inside `node_modules`.
+
+### Direct archive install
+
 The macOS Apple Silicon test archive contains signed `apex`, `apex-daemon`, and
 `apex-provenance` binaries, with a CLI-only authority installer. From the extracted
 archive directory:
@@ -18,10 +52,11 @@ apex
 The explicit administrator step installs the root-owned authority service and
 enrolls exact binary identities. It needs no Electron application. When Deck's
 authority already exists, the installer preserves its keys, journal and existing
-pins, adding separate standalone pins. It restarts that service. It refuses an
-existing standalone installation or `/usr/local/bin/apex`; upgrades remain work.
-The archive is signed, **not notarized**; installed acceptance is recorded
-separately in `docs/apex-cli-standalone-results.md`.
+pins, adding separate standalone pins. It restarts that service. It supports
+upgrades (same version identical = no-op, rebuilt same version = replaces when
+fingerprints differ, older = refused), refuses while `apex` or its backend is
+running, and rolls back on failure. The archive is signed, **not notarized**;
+installed acceptance is recorded separately in `docs/apex-cli-standalone-results.md`.
 
 From the repository root, the development binary is:
 
