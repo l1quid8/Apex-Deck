@@ -104,6 +104,9 @@ async fn run_text(
         data_dir: Some(state.data_dir.clone()),
         ..Default::default()
     }).with_tools_disabled();
+    let participant = if matches!(target.config.backend, Backend::Agent {tool:AgentTool::Muse,..}) {
+        participant.with_response_schema(schema(body))
+    } else { participant };
     let context_use = std::sync::Mutex::new(None);
     let reply = participant.respond_with_approvals(text_request(body)?, &|update| {
         if let Progress::Plan(plan) = update { let model = match &target.config.backend { Backend::Agent {model,..} => model.as_deref(), _ => None };

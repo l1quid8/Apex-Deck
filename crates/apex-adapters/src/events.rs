@@ -36,6 +36,8 @@ pub(crate) enum OutputFormat {
     CodexServer,
     /// Google Antigravity (`agy`) with `--output-format stream-json`.
     AntigravityStream,
+    /// Muse's schema-constrained headless event records.
+    MuseExecJson,
 }
 
 /// Something to show while a turn is running.
@@ -367,7 +369,39 @@ impl EventReader {
             OutputFormat::CodexJson => self.codex(&event, steps),
             OutputFormat::CodexServer => self.codex_server(&event, steps),
             OutputFormat::AntigravityStream => self.antigravity(&event, steps),
+            OutputFormat::MuseExecJson => self.muse_exec(&event, steps),
             OutputFormat::Text => {}
+        }
+    }
+
+    fn muse_exec(&mut self, event: &Value, steps: &mut Vec<Step>) {
+        let payload = &event["payload"];
+        match event["payload_type"].as_str() {
+            Some("run.usage") => {
+                let models = payload["models"].as_array();
+                let sum = |field: &str| {
+                    models.into_iter().flatten().filter_map(|m| m[field].as_u64())
+                        .fold(None, |total, n| Some(total.unwrap_or(0u64).saturating_add(n)))
+                };
+                self.input_tokens = sum("input_tokens");
+                self.output_tokens = sum("output_tokens");
+                self.cached_input_tokens = sum("cached_tokens");
+                if let Some(plan) = crate::muse_server::plan(&payload["allowance"]) {
+                    steps.push(Step::Plan(plan));
+                }
+            }
+            Some("run.terminal.completed") if payload["terminal"] == "completed" => {
+                self.final_text = payload["text"].as_str().map(str::to_owned);
+            }
+            Some("run.terminal.failed" | "run.terminal.cancelled") => {
+                self.failure = Some(payload["reason"].as_str().unwrap_or("Muse structured turn failed").into());
+            }
+            Some("task.lifecycle.side_effect_intent") if !matches!(payload["event"]["operation"].as_str(),
+                Some("model.meta.response" | "model.openai.response" | "model.anthropic.response" | "model.openrouter.response" | "model.local.response" | "model.unknown.response")) => {
+                self.native_action = true;
+            }
+            Some(kind) if kind.starts_with("tool.") => self.native_action = true,
+            _ => {}
         }
     }
 
@@ -1496,6 +1530,45 @@ mod tests {
         }
         steps.extend(reader.finish());
         (steps, reader.outcome())
+    }
+
+    #[test]
+    fn muse_schema_exec_uses_only_the_terminal_answer_and_preserves_reported_tokens() {
+        let records = concat!(
+            "{\"payload_type\":\"turn.input.user\",\"payload\":{\"prompt\":\"PRIVATE_PROMPT\"}}\n",
+            "{\"payload_type\":\"run.usage\",\"payload\":{\"models\":[{\"input_tokens\":100,\"output_tokens\":12,\"cached_tokens\":80},{\"input_tokens\":20,\"output_tokens\":0,\"cached_tokens\":0}]}}\n",
+            "{\"payload_type\":\"run.terminal.completed\",\"payload\":{\"terminal\":\"completed\",\"text\":\"{\\\"content\\\":\\\"ok\\\",\\\"tool_calls\\\":[]}\"}}\n"
+        );
+        let (_, outcome) = read(OutputFormat::MuseExecJson, &[records]);
+        assert_eq!(outcome.text, r#"{"content":"ok","tool_calls":[]}"#);
+        assert_eq!(outcome.input_tokens, Some(120));
+        assert_eq!(outcome.output_tokens, Some(12));
+        assert_eq!(outcome.cached_input_tokens, Some(80));
+        assert_eq!(outcome.error, None);
+    }
+
+    #[test]
+    fn muse_schema_exec_failure_never_becomes_a_successful_partial_answer() {
+        let records = concat!(
+            "{\"payload_type\":\"run.terminal.failed\",\"payload\":{\"terminal\":\"failed\",\"reason\":\"schema refused\",\"text\":\"partial\"}}\n"
+        );
+        let (_, outcome) = read(OutputFormat::MuseExecJson, &[records]);
+        assert_eq!(outcome.error.as_deref(), Some("schema refused"));
+        assert!(outcome.text.is_empty());
+    }
+
+    #[test]
+    fn muse_schema_exec_flags_native_tools_and_reminder_children() {
+        for operation in ["tool.run", "reminder.child_run"] {
+            let mut reader = EventReader::new(OutputFormat::MuseExecJson, None);
+            reader.push(&format!("{}\n", json!({"payload_type":"task.lifecycle.side_effect_intent","payload":{"event":{"operation":operation}}})));
+            assert!(reader.has_native_action(), "{operation}");
+        }
+        for operation in ["model.meta.response", "model.openai.response", "model.anthropic.response", "model.openrouter.response", "model.local.response", "model.unknown.response"] {
+            let mut reader = EventReader::new(OutputFormat::MuseExecJson, None);
+            reader.push(&format!("{}\n", json!({"payload_type":"task.lifecycle.side_effect_intent","payload":{"event":{"operation":operation}}})));
+            assert!(!reader.has_native_action(), "legitimate model operation: {operation}");
+        }
     }
 
     fn text(steps: &[Step]) -> String {

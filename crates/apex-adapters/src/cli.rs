@@ -105,6 +105,7 @@ pub struct CliParticipant {
     plan: Option<Access>,
     /// Disable every tool for a text-only monitor turn.
     tools_disabled: bool,
+    response_schema: Option<serde_json::Value>,
     /// Set only by the progress/approval guard around a model-only turn.
     native_guarded: bool,
     mcp_disabled: bool,
@@ -125,7 +126,13 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
+        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, response_schema: None, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
+    }
+
+    /// A schema for a verified model-only gateway turn.
+    pub fn with_response_schema(mut self, schema: serde_json::Value) -> Self {
+        self.response_schema = Some(schema);
+        self
     }
 
     /// Start a conversation turn with tools disabled at both the CLI and
@@ -917,6 +924,9 @@ impl Participant for CliParticipant {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
+        if self.response_schema.is_some() && (!self.tools_disabled || self.computer_only || !matches!(self.config.backend, Backend::Agent { tool: AgentTool::Muse, .. })) {
+            return Err(ParticipantError::Failed("Response schemas require a model-only Muse gateway turn".into()));
+        }
         if self.tools_disabled && (request.access.is_some_and(|access| access != Access::Read) || request.plan) {
             return Err(ParticipantError::Failed("Text-only turns cannot request workspace access or planning tools.".into()));
         }
@@ -1082,6 +1092,23 @@ impl Participant for CliParticipant {
                 return self.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await;
             }
             if let Backend::Agent { tool: AgentTool::Muse, model } = &self.config.backend {
+                if let Some(schema) = &self.response_schema {
+                    let isolation = self.isolation.as_ref().ok_or_else(|| ParticipantError::Failed("Structured Muse output requires process isolation".into()))?;
+                    let schema_path = isolation.stage_response_schema(schema)?;
+                    let prompt_path = isolation.stage_model_prompt(&prompt)?;
+                    let mut args = args.clone();
+                    if args.first().map(String::as_str) != Some("serve") {
+                        return Err(ParticipantError::Failed("Unexpected Muse gateway command".into()));
+                    }
+                    args[0] = "exec".into();
+                    if let Some(effort) = clean_effort(self.config.effort.as_deref()) {
+                        args.extend(["--reasoning-effort".into(), effort]);
+                    }
+                    args.extend(["--json", "--disable-reminders", "--disable-web-tools", "--disable-request-user-input", "--no-foreign-personal-context", "--max-model-steps", "1", "--output-schema"].into_iter().map(str::to_owned));
+                    args.push(schema_path.to_string_lossy().into_owned());
+                    args.extend(["--prompt-file".into(), prompt_path.to_string_lossy().into_owned()]);
+                    return self.run(program, &args, OutputFormat::MuseExecJson, String::new(), on_progress).await;
+                }
                 return self.run_muse_server(program, &args, model.as_deref(), &prompt, &images, on_progress, &approver).await;
             }
             if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
@@ -1147,6 +1174,43 @@ impl Participant for CliParticipant {
 #[cfg(test)]
 mod tests {
     use apex_core::AgentTool;
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn muse_gateway_schema_uses_isolated_exec_and_keeps_usage() {
+        use apex_core::{Backend, Participant};
+        use std::os::unix::fs::PermissionsExt;
+        let files = crate::attachments::Staged::new().unwrap();
+        let script = files.dir.join("muse");
+        std::fs::write(&script, r#"#!/bin/sh
+test "$1" = exec || { echo 'schema exec required' >&2; exit 71; }
+schema=''
+prompt=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output-schema ]; then shift; schema="$1"; fi
+  if [ "$1" = --prompt-file ]; then shift; prompt="$1"; fi
+  shift
+done
+test -f "$schema" || exit 72
+/usr/bin/grep -q 'tool_calls' "$schema" || exit 73
+test -f "$prompt" || exit 74
+/usr/bin/grep -q 'Return an envelope' "$prompt" || exit 75
+/bin/cat >/dev/null
+printf '%s\n' '{"payload_type":"task.lifecycle.side_effect_intent","payload":{"event":{"operation":"model.meta.response"}}}'
+printf '%s\n' '{"payload_type":"run.usage","payload":{"models":[{"input_tokens":12,"output_tokens":3,"cached_tokens":8}]}}'
+printf '%s\n' '{"payload_type":"run.terminal.completed","payload":{"terminal":"completed","text":"{\"content\":\"ok\",\"tool_calls\":[]}"}}'
+"#).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = serde_json::from_value(serde_json::json!({"id":"m","display_name":"Muse","backend":{"kind":"agent","tool":"muse"}})).unwrap();
+        let mut bot = super::CliParticipant::new(config)
+            .with_context(&crate::BuildContext { path: files.dir.to_str().map(str::to_owned), ..Default::default() })
+            .with_tools_disabled()
+            .with_response_schema(serde_json::json!({"type":"object","properties":{"tool_calls":{"type":"array"}}}));
+        bot.isolation = Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap()));
+        let reply = bot.respond(apex_core::TurnRequest { system:"Return an envelope".into(), ..Default::default() }, &|_|{}).await.unwrap();
+        assert_eq!(reply.text, r#"{"content":"ok","tool_calls":[]}"#);
+        assert_eq!((reply.input_tokens, reply.output_tokens, reply.cached_input_tokens), (Some(12), Some(3), Some(8)));
+    }
 
     #[cfg(unix)]
     #[tokio::test]

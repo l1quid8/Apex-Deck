@@ -57,6 +57,17 @@ pub fn isolation_available(path: Option<&str>) -> Result<(), String> {
 }
 
 impl Isolation {
+    pub(crate) fn stage_response_schema(&self, schema: &serde_json::Value) -> Result<PathBuf, ParticipantError> {
+        let serialized = serde_json::to_string(schema).map_err(|_| failed("cannot encode response schema"))?;
+        self.write("response-schema.json", &serialized)?;
+        Ok(self.root.dir.join("response-schema.json"))
+    }
+
+    pub(crate) fn stage_model_prompt(&self, prompt: &str) -> Result<PathBuf, ParticipantError> {
+        self.write("model-prompt.txt", prompt)?;
+        Ok(self.root.dir.join("model-prompt.txt"))
+    }
+
     pub(crate) fn stage_images(&self) -> Result<Staged, ParticipantError> {
         Staged::new_in(&self.root.dir.join("tmp"))
     }
