@@ -79,7 +79,8 @@ test('every script that builds the daemon for the desktop builds it with remote 
 });
 
 
-test('desktop exit leaves its shared daemon alive and simultaneous startup reuses the winner', async () => {
+// The fake serves a UNIX socket path; Windows uses a named pipe instead.
+test('desktop exit leaves its shared daemon alive and simultaneous startup reuses the winner', { skip: process.platform === 'win32' }, async () => {
   const dir = fs.mkdtempSync('/tmp/deck-shared-');
   const fixture = path.join(dir, 'fake-daemon.cjs');
   fs.writeFileSync(fixture, `#!/usr/bin/env node
@@ -88,6 +89,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const folder = process.argv[process.argv.indexOf('--data-dir') + 1];
 if (process.argv[2] === 'data-dir') { console.log(folder); process.exit(0); }
+if (process.argv[2] === 'endpoint') { console.log(path.join(folder, 'daemon.sock')); process.exit(0); }
 try { fs.writeFileSync(path.join(folder, 'owner.lock'), String(process.pid), { flag: 'wx' }); } catch { process.exit(1); }
 const server = net.createServer(c => c.end());
 server.on('error', () => process.exit(1));
