@@ -129,6 +129,7 @@ export const CATALOG_ENTRIES: CatalogEntry[] = [
   // Unified Computer Use
   { id: 'ucu-enable', section: 'computer', label: 'Enable Unified Computer Use', keywords: ['computer','use','enable','desktop','tools'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-enable' },
   { id: 'ucu-status', section: 'computer', label: 'Computer use status, refresh, setup', keywords: ['status','refresh','setup','permissions','accessibility','screen','recording','input','monitoring'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-status' },
+  { id: 'ucu-away', section: 'computer', label: "Keep working while I'm away", keywords: ['away','lock','locked','idle','sleep','awake','shield','unattended','untethered'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-away' },
   { id: 'thread-grants', section: 'computer', label: 'Approval per Work thread', keywords: ['thread','grants','approval','allow','apps','permissions'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'thread-grants' },
   { id: 'cursor', section: 'computer', label: 'Cursor indicator and labels', keywords: ['cursor','pointer','mouse','labels','bubble','duration','indicator'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
   { id: 'cursor-style', section: 'computer', label: 'Cursor style presets', keywords: ['cursor','style','preset','default','simple','ring','pointer','custom'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },

@@ -68,6 +68,7 @@ final class Server {
       "cursorOverlayEnabled": CursorOverlaySettings.isEnabled,
       "cursorOverlayLabelsEnabled": CursorOverlaySettings.showLabel,
       "cursorOverlay": cursorOverlayDict,
+      "awayMode": AwayMode.shared.status(),
       "pid": ProcessInfo.processInfo.processIdentifier]
   }
   func send(_ value: [String: Any], _ client: Int32) { output.lock(); defer { output.unlock() }; Wire.send(value, fd: client) }

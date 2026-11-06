@@ -572,6 +572,7 @@ impl Host {
                         "screenCaptureAccess",
                         "tapHealthy",
                         "cursorOverlayLabelsEnabled",
+                        "awayMode",
                     ] {
                         if !helper[key].is_null() {
                             status[key] = helper[key].clone();

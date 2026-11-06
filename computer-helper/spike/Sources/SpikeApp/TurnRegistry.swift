@@ -130,6 +130,11 @@ final class TurnRegistry {
     guard let turn = turns[token], !turn.stopped else { return false }
     return turn.untethered && turn.access == "full"
   }
+  /// Away mode holds the Mac awake only while such a turn is live.
+  func hasActiveUntethered() -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    return !globallyStopped && turns.values.contains { $0.untethered && $0.access == "full" && !$0.stopped }
+  }
   func stopAll() -> [[String: Any]] {
     lock.lock(); defer { lock.unlock() }
     globallyStopped = true
