@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {deriveHandoffPill,deriveHandoffPopover} from '../src/assistantHandoffModel.ts';
+import {deriveHandoffPill,deriveHandoffPopover,handoffQuestionKey,startLabel} from '../src/assistantHandoffModel.ts';
 const task={id:'t',revision:1,status:'running',workers:['Hyke','Muck'],attempts:[{runId:'new',finishedAtMs:null}],destination:null};
 const progress={taskId:'t',runId:'new',participantId:'Hyke',workerStarted:true,todos:[{text:'first',status:'done'},{text:'second',status:'cancelled'},{text:'third',status:'open'}]};
 test('late checklist from an old attempt is excluded in pill and popover',()=>{
@@ -41,4 +41,18 @@ test('saved display names and a failed attempt stay truthful',()=>{
  assert.match(pill.label,/Alex \+ Sam/);
  assert.match(pill.label,/couldn.t finish/);
  assert.doesNotMatch(pill.label,/couldn.t start/);
+});
+test('a follow-up question at the same task revision refreshes the paused controls',()=>{
+ // Installed 6d0061c9: ask-2 arrived while task stayed needs_you at one revision, so Alfred's chat kept ask-1's stale state.
+ const asked={...task,status:'needs_you',conversationEvents:[{id:'r:7:question',taskId:'t',kind:'question',text:'Waiting for your answer',atMs:1}]};
+ const answered={...asked,conversationEvents:[...asked.conversationEvents,{id:'r:8:question_resolved',taskId:'t',kind:'question_resolved',text:'Question ask-1 answered',atMs:2}]};
+ const followUp={...answered,conversationEvents:[...answered.conversationEvents,{id:'r:13:question',taskId:'t',kind:'question',text:'Waiting for your answer',atMs:3}]};
+ const keys=[asked,answered,followUp].map(handoffQuestionKey);
+ assert.equal(new Set(keys).size,3);
+ assert.equal(handoffQuestionKey({...followUp,conversationEvents:[...followUp.conversationEvents,{id:'r:14:milestone',taskId:'t',kind:'milestone',text:'Working',atMs:4}]}),keys[2],'ordinary progress does not refetch the question');
+});
+test('the worker picker never offers to start with an agent nobody ticked',()=>{
+ assert.equal(startLabel(0),'Tick an agent to start');
+ assert.equal(startLabel(1),'Start with 1 agent');
+ assert.equal(startLabel(2),'Start with 2 agents');
 });

@@ -58,12 +58,13 @@
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 .assistant-handoff-popover {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 6px);
-  left: 0;
-  min-width: 280px;
-  max-width: min(360px, 90vw);
+  position: fixed;
+  z-index: 10000;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 16px));
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  color: var(--text);
   padding: 10px;
   border: 1px solid var(--aa-line, var(--line));
   border-radius: 12px;

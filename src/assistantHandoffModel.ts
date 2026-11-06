@@ -37,8 +37,20 @@ export interface TaskConversationEvent {
   runId?: string;
   workerId?: string;
   atMs: number;
-  kind: 'milestone' | 'question' | 'watchdog' | 'result';
+  kind: 'milestone' | 'question' | 'question_resolved' | 'watchdog' | 'result';
   text: string;
+}
+
+/** The Start button's text; with nothing ticked it says what's needed. */
+export function startLabel(count: number): string {
+  return count ? `Start with ${count} agent${count === 1 ? '' : 's'}` : 'Tick an agent to start';
+}
+
+/** Changes whenever the worker asks or settles a question. A follow-up question
+ *  can arrive without a task revision change, so the revision alone goes stale. */
+export function handoffQuestionKey(task: AssistantTask): string {
+  const latest = [...(task.conversationEvents ?? [])].reverse().find(event => event.kind === 'question' || event.kind === 'question_resolved');
+  return `${task.id}:${task.revision}:${task.status}:${latest?.id ?? ''}`;
 }
 
 export interface HandoffPill {

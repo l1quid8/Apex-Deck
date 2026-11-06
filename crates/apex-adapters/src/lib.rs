@@ -87,6 +87,8 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
 /// Where and how command-line participants run.
 #[derive(Debug, Clone, Default)]
 pub struct BuildContext {
+    /// Host watchdog owns silence recovery for this delegated execution room.
+    pub watchdog_managed: bool,
     /// Deck's own executable, which Codex runs as an approval hook before
     /// each MCP call (`--codex-hook`). `None` leaves Codex on the slower
     /// MCP inventory policy.
@@ -208,6 +210,7 @@ pub fn participant_for_room(
             config.access = Access::Read;
             config.media = None;
             let chat_context = BuildContext {
+                watchdog_managed: false,
                 codex_hook: None,
                 cwd: None,
                 path: context.path.clone(),

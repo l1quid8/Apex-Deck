@@ -1,3 +1,5 @@
+import { WorkspaceTaskDetails } from '../WorkspaceTaskDetails';
+import { projectTaskKey } from '../apexAgentTaskView.ts';
 import { RunnerWork } from "../runner/RunnerWork.tsx";
 import { useRunner } from '../runner/useRunner.ts';
 import { runnerCommand, runnerAction } from '../runner/client.ts';
@@ -27,7 +29,7 @@ import type { PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
 import { usePersonalAssistants } from "../usePersonalAssistants.ts";
 import { PhoneTasks } from "./PhoneTasks";
-import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phoneTaskFullAccess, phonePersonalTaskSources } from "./taskFeed.ts";
+import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phoneTaskFullAccess, phonePersonalTaskSources, phoneHandoffTasks } from "./taskFeed.ts";
 import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState, type AssistantVisiblePane } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { SPEED_OPTIONS, speedHint } from "../speed";
@@ -801,6 +803,14 @@ export function PhoneApp() {
   const taskRows = collectPhoneTasks({ assistants: personalCollection.assistants, registry: assistantRegistry, projects: assistantProjects, hosts, problems: assistantRegistryErrors });
   const phoneTaskSources = phonePersonalTaskSources(personalCollection.assistants, hosts);
   const taskAttention = phoneTasksNeedAttention(taskRows);
+  const handoffTasks = phoneHandoffTasks(taskRows, visibleAssistantRegistry, personal?.assistant ? {hostId:personal.assistant.hostId,assistantId:personal.assistant.id} : null);
+  const [handoffDetailKey, setHandoffDetailKey] = useState<string | null>(null);
+  const handoffDetail = taskRows.find(row => row.key === handoffDetailKey);
+  const openHandoffTask = (key: string) => {
+    const row = taskRows.find(row => row.source === 'project' && row.owner && projectTaskKey(row.owner.hostId,row.owner.workspaceId,row.taskId) === key && row.assistant?.hostId === personal?.assistant?.hostId && row.assistant?.assistantId === personal?.assistant?.id);
+    if (!row) return false;
+    setHandoffDetailKey(row.key); return true;
+  };
   const taskHosts = useCallback(() => hostsRef.current, []);
   const taskBackend = (row: import('../workspaceTasks.ts').WorkspaceTaskRow) => phoneTaskBackend(row, taskHosts);
   const assistantWorkspaceHost = assistantWorkspace ? phoneHost(workspaceHost(assistantWorkspace)) : null;
@@ -2523,10 +2533,13 @@ export function PhoneApp() {
           </div>
         )}
         {personalOpen && (personal?.assistant || personal?.problem) && <div className="apex-agent-backdrop">
-          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That assistant lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
+          <ApexAgentAll key={personal?.draftKey ?? 'legacy'} draftKey={personal?.draftKey} workspaces={workspaces} delegatedTasks={handoffTasks} onOpenProjectTask={openHandoffTask} offlineWorkspaceIds={assistantProjects.filter(project => project.link?.status !== 'online' || !project.allowed || !!assistantRegistryErrors[project.workspace.id]).map(project => project.workspace.id)} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That assistant lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
             if (laneId !== 'personal' || !personal?.assistant || personal.offline) throw new Error('The personal assistant host is unavailable.');
             return personal.saveAttachment(name, bytes);
           }} pickFolderUnavailableReason="Folder selection is unavailable on this phone." onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
+        {handoffDetail && <Sheet title={handoffDetail.title} onClose={() => setHandoffDetailKey(null)}>
+          <WorkspaceTaskDetails row={handoffDetail} backend={taskBackend(handoffDetail)} profiles={session?.profiles ?? []} panes={panes} onOpenThread={id => { setOpenHost(handoffDetail.routeHostId); setOpenId(id); setTab("threads"); setPersonalOpen(false); setHandoffDetailKey(null); }} />
+        </Sheet>}
         </div>}
         {assistantWorkspace && assistantWorkspaceHost && (canSeeNewThread(assistantWorkspaceHost.access())
           ? <div className="apex-agent-backdrop"><ApexAgentSources

@@ -29,6 +29,20 @@ pub enum PlainReply {
 const STOP: &[&str] = &["stop", "stop here", "cancel", "cancel that", "no stop here"];
 const CONTINUE: &[&str] = &["yes", "yes please", "keep going", "carry on", "continue", "go ahead"];
 
+/// Host-only whole messages that drop a handoff still being set up. They never touch a running
+/// worker, so they stay out of the shared Stop table (and the client mirror).
+const DRAFT_CANCEL: &[&str] = &[
+    "cancel the handoff", "cancel the pending handoff", "cancel this handoff", "cancel that handoff",
+    "cancel the request", "cancel it", "never mind", "nevermind", "forget it", "forget that",
+    "don't hand it off", "dont hand it off", "don\u{2019}t hand it off", "don't start it", "dont start it",
+];
+
+/// A whole-message Stop, or one of the fixed draft-cancel phrases.
+pub fn cancels_pending_handoff(text: &str) -> bool {
+    let normalized = normalize(text);
+    classify_plain_reply(text) == PlainReply::Stop || DRAFT_CANCEL.iter().any(|phrase| normalize(phrase) == normalized)
+}
+
 /// Lowercase, drop commas, collapse whitespace, strip trailing sentence punctuation.
 ///
 /// A trailing `?` is *kept on purpose*: "stop?" is a question about stopping, not a stop.
@@ -135,6 +149,20 @@ mod tests {
     fn blank_and_whitespace_never_change_work() {
         for text in ["", " ", "\t", "\n", "   ", ",,,"] {
             assert_eq!(classify_plain_reply(text), PlainReply::Other, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn draft_cancel_phrases_never_become_worker_stops() {
+        use super::cancels_pending_handoff;
+        for text in ["Cancel that", "cancel", "Cancel the pending handoff", "Never mind.", "forget it", "Don't hand it off"] {
+            assert!(cancels_pending_handoff(text), "{text}");
+        }
+        for text in ["Cancel the pending handoff", "never mind", "forget it"] {
+            assert_eq!(classify_plain_reply(text), PlainReply::Other, "{text} must not stop a running worker");
+        }
+        for text in ["cancel?", "don't cancel", "cancel the tests run then report"] {
+            assert!(!cancels_pending_handoff(text), "{text}");
         }
     }
 }

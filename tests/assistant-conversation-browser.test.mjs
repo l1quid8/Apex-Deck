@@ -113,6 +113,18 @@ test('round 1 handoff pill, popover, agent picker, and paused replies work in th
     assert.ok(ready,'handoff fixture mounted');await frame();
     const failures=await run('runHandoffChecks()');
     assert.deepEqual(failures,[]);
+    await run("window.setScenario('no_total')"); await frame();
+    await run("document.querySelector('.assistant-handoff-pill').click()"); await frame();
+    assert.equal(await run("document.activeElement?.className"),'assistant-handoff-close','opening details moves focus into the popover');
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Tab'});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'Tab'}); await frame();
+    assert.equal(await run("document.activeElement?.textContent"),'Open task','Tab reaches Open task without crossing application controls');
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
+    win.webContents.sendInputEvent({type:'char',keyCode:'Enter'});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'}); await frame();
+    assert.equal(await run("window.calls.some(c=>c.type==='open' && c.args[0]==='at-409')"),true);
+    win.setSize(390,844); await frame();
+    assert.deepEqual(await run('runNarrowHandoffCheck()'),{visible:true,hit:true,opened:true,closed:true});
     app.exit(0);
   }catch(error){console.error(error.stack||error);app.exit(1)}});`);
   try { const result = await runElectronScenario(electron, main, temp, { timeoutMs: 120000, attempts: 1 }); assert.equal(result.code, 0, result.output); }

@@ -74,7 +74,7 @@ fn request(turns: Vec<ViewTurn>) -> TurnRequest {
 fn user(text: &str) -> ViewTurn { ViewTurn { role: Role::User, content: format!("[User]: {text}") } }
 
 fn still_running() -> bool {
-    Command::new("pgrep").args(["-f", &format!("sleep {MARK}")]).output().is_ok_and(|out| !out.stdout.is_empty())
+    Command::new("pgrep").args([&format!("sleep {MARK}")]).output().is_ok_and(|out| !out.stdout.is_empty())
 }
 
 #[tokio::test]

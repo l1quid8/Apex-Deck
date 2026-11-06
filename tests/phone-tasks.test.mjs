@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention } from '../src/phone/taskFeed.ts';
+import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phoneHandoffTasks } from '../src/phone/taskFeed.ts';
 const owner = {hostId:'local',workspaceId:'p',cwd:'/p',conversationId:'c'};
 const task = {id:'t',owner,workspaceId:'p',status:'ready_for_review',revision:2,originalRequest:'Review result',updatedAtMs:10};
 function fixture(tier='full') {
@@ -91,4 +91,17 @@ test('standalone personal schedules keep owner-qualified routes and Full access 
  const row=collectPhoneTasks(f.input).find(row=>row.source==='schedule');
  assert.equal(row.group,'scheduled');assert.equal(row.routeHostId,'local');assert.equal(row.verifiedHostId,'real-host');
  assert.ok(phoneTaskBackend(row,()=>f.input.hosts));f.revoke();assert.equal(phoneTaskBackend(row,()=>f.input.hosts),null);
+});
+
+test('phone conversation projects only its selected assistant tasks and wires shared controls', async()=>{
+ const f=fixture(); const ref={hostId:'real-host',assistantId:'a'};
+ f.input.registry.owners.one.snapshot.tasks[0]={...task,lineage:{assistant:ref,project:{hostId:'real-host',workspaceId:'p',cwd:'/p'},sourceEventId:'e',delegationId:'d'}};
+ const rows=collectPhoneTasks(f.input);
+ assert.deepEqual(phoneHandoffTasks(rows,f.input.registry,ref).map(t=>t.id),['t']);
+ assert.deepEqual(phoneHandoffTasks(rows,f.input.registry,{...ref,assistantId:'other'}),[]);
+ const app=await (await import('node:fs/promises')).readFile(new URL('../src/phone/PhoneApp.tsx',import.meta.url),'utf8');
+ assert.match(app,/delegatedTasks=\{handoffTasks\}/);
+ assert.match(app,/onOpenProjectTask=\{openHandoffTask\}/);
+ assert.match(app,/WorkspaceTaskDetails row=\{handoffDetail\}/);
+ assert.match(app, /<\/Sheet>\}\s*<\/div>\}\s*\{assistantWorkspace/, "task sheet must share the conversation stacking context");
 });

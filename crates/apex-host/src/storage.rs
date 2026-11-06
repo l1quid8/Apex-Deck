@@ -452,6 +452,12 @@ impl Store {
         self.apply_room_authority(id, room, &self.room_authorities()?).map(Some)
     }
 
+    /// Many rooms against one protected manifest read. On macOS each manifest
+    /// read is a ledger round trip, so per-room reads made catalogs slow.
+    pub(crate) fn room_reader(&self) -> Result<RoomReader<'_>, String> {
+        Ok(RoomReader { store: self, authority: self.room_authorities()?, metas: self.chat_metas_held()? })
+    }
+
     /// Restore permission-bearing fields only from the protected manifest.
     /// A catalog request shares one freshly read manifest across its rooms.
     fn apply_room_authority(&self, id: &str, mut room: SavedRoom, authority: &serde_json::Map<String, serde_json::Value>) -> Result<SavedRoom, String> {
@@ -1251,6 +1257,24 @@ pub(crate) fn plan_legacy_room(id: &str, bytes: &[u8]) -> Result<(LegacyRoom, us
 }
 
 /// The room id a saved room file belongs to: "<hex id>.json".
+
+/// One consistent read of the room manifest and chat metadata.
+pub(crate) struct RoomReader<'a> {
+    store: &'a Store,
+    authority: serde_json::Map<String, serde_json::Value>,
+    metas: std::collections::BTreeMap<String, ChatRoomMeta>,
+}
+
+impl RoomReader<'_> {
+    /// Same result as `Store::room`, without rereading the manifest.
+    pub(crate) fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
+        let Some(room): Option<SavedRoom> = self.store.read(&self.store.room_path(id))? else { return Ok(None) };
+        self.store.apply_room_authority(id, room, &self.authority).map(Some)
+    }
+
+    pub(crate) fn meta(&self, id: &str) -> Option<&ChatRoomMeta> { self.metas.get(id) }
+}
+
 pub(crate) fn room_id_from_file(name: &str) -> Option<String> {
     let stem = name.strip_suffix(".json")?;
     if stem.is_empty() || stem.len() % 2 != 0 || !stem.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
