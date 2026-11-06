@@ -53,8 +53,10 @@ Free it with `ad_free_string`. On an infrastructure error `*out` stays null
 | Allocates                                                                              | Frees with                              |
 |----------------------------------------------------------------------------------------|-----------------------------------------|
 | `ad_get_tree_exact(adapter, win, opts, &out)`                                          | `ad_free_tree(&out)`                    |
-| `ad_resolve_element_exact(adapter, entry, &handle)`                                    | `ad_free_handle(adapter, &handle)`: zeroes `handle.ptr` so a follow-up call is a no-op |
-| `ad_find_exact(adapter, win, query, &handle)`                                          | same as `ad_resolve_element_exact`      |
+| `ad_find_exact(adapter, win, query, &handle)`                                          | `ad_free_handle(adapter, &handle)`: zeroes `handle.ptr` so a follow-up call is a no-op |
+
+`ad_resolve_element_exact` allocates nothing: it always fails with
+`AD_RESULT_ERR_ACTION_NOT_SUPPORTED` and leaves `handle.ptr` null.
 
 ### Action results
 
@@ -62,8 +64,10 @@ Free it with `ad_free_string`. On an infrastructure error `*out` stays null
 |----------------------------------------------------------------------------------------|------------------------------|
 | `ad_execute_action(adapter, handle, action, &out)`                                     | `ad_free_action_result(&out)` |
 | `ad_execute_action_with_policy(adapter, handle, action, policy, &out)`                 | `ad_free_action_result(&out)` |
-| `ad_execute_ref_action_exact_with_policy(adapter, entry, action, policy, &out)`        | `ad_free_action_result(&out)` |
 | `ad_notification_action(adapter, &request, &out)`: set `request.identity` from `ad_list_notifications` and choose an explicit non-headless policy; reorder mismatches fail closed | `ad_free_action_result(&out)` |
+
+`ad_execute_ref_action_exact_with_policy` allocates nothing: it always fails with
+`AD_RESULT_ERR_ACTION_NOT_SUPPORTED` and leaves `out` zeroed.
 
 ### Clipboard and image buffers
 
@@ -130,5 +134,5 @@ In particular:
   `*out = NULL` before any guard, so on
   infrastructure failures no allocation is made and `ad_free_string(NULL)`
   is a safe no-op.
-- `ad_*_list` and `ad_resolve_element_exact` / `ad_find_exact` all apply the same
+- `ad_*_list` and `ad_find_exact` all apply the same
   pattern to their handle / list out-params.

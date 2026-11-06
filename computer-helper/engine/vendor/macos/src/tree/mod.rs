@@ -15,6 +15,7 @@ pub(crate) mod read_recovery;
 pub(crate) mod renderer_probe;
 pub(crate) mod resolve;
 pub(crate) mod roles;
+pub(crate) mod shell_surface;
 pub(crate) mod state_reader;
 pub(crate) mod surface_inventory;
 pub(crate) mod surface_read;

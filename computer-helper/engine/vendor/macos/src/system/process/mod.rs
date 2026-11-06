@@ -324,6 +324,7 @@ fn output_limit_error(label: &str, stdout: &DrainResult, stderr: &DrainResult) -
     }))
 }
 
+pub(crate) mod legacy_host;
 pub(crate) mod process_apps;
 pub(crate) mod process_identity;
 pub(crate) mod process_state;

@@ -4,7 +4,7 @@ use crate::tree::AXElement;
 
 pub(crate) struct PreparedPhysicalTarget {
     identity: crate::system::process::process_identity::ProcessIdentity,
-    window: AXElement,
+    window: Option<AXElement>,
 }
 
 impl PreparedPhysicalTarget {
@@ -23,10 +23,20 @@ impl PreparedPhysicalTarget {
                     "Physical input target process exited before input preparation",
                 )
             })?;
-        let window = target_window(element, deadline)?;
-        crate::system::focus::verify_app_focused(pid, deadline)?;
-        crate::system::focus::verify_window_main(&window, deadline)?;
-        Ok(Self { identity, window })
+        let window = target_window(element, pid, deadline)?;
+        let prepared = Self { identity, window };
+        prepared.verify_focus(deadline)?;
+        Ok(prepared)
+    }
+
+    /// Requires the app to be frontmost and the window main whenever the
+    /// target has a window that focus applies to.
+    fn verify_focus(&self, deadline: Deadline) -> Result<(), AdapterError> {
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        crate::system::focus::verify_app_focused(self.identity.pid(), deadline)?;
+        crate::system::focus::verify_window_main(window, deadline)
     }
 
     pub(crate) fn verify_pointer(
@@ -35,8 +45,7 @@ impl PreparedPhysicalTarget {
         point: &Point,
         deadline: Deadline,
     ) -> Result<(), AdapterError> {
-        crate::system::focus::verify_app_focused(self.identity.pid(), deadline)?;
-        crate::system::focus::verify_window_main(&self.window, deadline)?;
+        self.verify_focus(deadline)?;
         match crate::tree::hit_test::hit_test_ax_element(element, point.clone(), deadline)? {
             agent_desktop_core::adapter::hit_test::HitTestResult::ReachesTarget => {}
             agent_desktop_core::adapter::hit_test::HitTestResult::InterceptedBy {
@@ -73,7 +82,19 @@ impl PreparedPhysicalTarget {
     }
 }
 
-fn target_window(element: &AXElement, deadline: Deadline) -> Result<AXElement, AdapterError> {
+/// The window that must stay main during input, or `None` when focus cannot
+/// apply: a background app (a menu bar app, the Dock, a system panel) never
+/// becomes frontmost, and a status item has no window. The hit test still
+/// gates delivery. Any other target without a verified window is refused.
+fn target_window(
+    element: &AXElement,
+    pid: i32,
+    deadline: Deadline,
+) -> Result<Option<AXElement>, AdapterError> {
+    let instant = crate::tree::locator_deadline::from_operation(deadline)?;
+    if is_background_app(pid, instant) {
+        return Ok(None);
+    }
     crate::tree::properties::attributes::set_messaging_timeout(element, deadline)?;
     let result = crate::tree::properties::attributes::copy_element_attr_result(
         element, "AXWindow", deadline,
@@ -82,7 +103,8 @@ fn target_window(element: &AXElement, deadline: Deadline) -> Result<AXElement, A
         return Err(deadline.timeout_error());
     }
     match result {
-        Ok(Some(window)) => Ok(window),
+        Ok(Some(window)) => Ok(Some(window)),
+        Ok(None) if crate::tree::shell_surface::is_status_item(element, instant) => Ok(None),
         Ok(None) => Err(AdapterError::new(
             ErrorCode::ActionFailed,
             "Physical input target has no verified owning window",
@@ -97,4 +119,14 @@ fn target_window(element: &AXElement, deadline: Deadline) -> Result<AXElement, A
             "physical_delivery_started": false,
         }))),
     }
+}
+
+/// Whether `pid` is an app AppKit runs without a regular activation policy. A
+/// failed inventory read answers false, which keeps every focus check.
+fn is_background_app(pid: i32, deadline: std::time::Instant) -> bool {
+    crate::system::app::workspace_apps::window_owner_snapshot_until(deadline).is_ok_and(|owners| {
+        owners.owner(pid).is_some_and(|owner| {
+            owner.activation_policy != crate::system::app::workspace_apps::ActivationPolicy::Regular
+        })
+    })
 }

@@ -231,6 +231,12 @@ mod imp {
             "AXRole",
             operation_deadline,
         ) {
+            Ok(Some(role))
+                if role == "AXMenuBarItem"
+                    && crate::tree::shell_surface::is_status_item(element, operation_deadline) =>
+            {
+                Ok(None)
+            }
             Err(error) if error.code == ErrorCode::AppUnresponsive => Ok(None),
             result => result,
         }

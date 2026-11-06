@@ -22,7 +22,7 @@ fn rectangle(scrolled: bool) -> crate::Rect {
 }
 
 fn entry() -> RefEntry {
-    let mut entry = crate::adapter::minimal_ref_entry("incrementor", None);
+    let mut entry = crate::adapter::minimal_ref_entry("incrementor", Some("Value"));
     entry.identity.retained_object = Some("/spin".into());
     let bounds = rectangle(false);
     entry.geometry = RefGeometry {
@@ -40,9 +40,15 @@ impl ObservationOps for Incrementor {
         entry: &RefEntry,
         _: crate::Deadline,
     ) -> Result<NativeHandle, AdapterError> {
-        if entry.identity.retained_object.as_deref() != Some("/spin")
-            || (self.replace_on_scroll && self.scrolled.load(Ordering::SeqCst))
-            || entry.geometry.bounds != Some(rectangle(self.scrolled.load(Ordering::SeqCst)))
+        if self.replace_on_scroll && self.scrolled.load(Ordering::SeqCst) {
+            return Err(AdapterError::stale_ref_because(
+                "the retained rectangle changed",
+            ));
+        }
+        if entry
+            .geometry
+            .bounds
+            .is_some_and(|bounds| bounds != rectangle(self.scrolled.load(Ordering::SeqCst)))
         {
             return Err(AdapterError::stale_ref_because(
                 "the retained rectangle changed",
@@ -57,7 +63,7 @@ impl ObservationOps for Incrementor {
         _: crate::Deadline,
     ) -> Result<LiveElement, AdapterError> {
         let scrolled = self.scrolled.load(Ordering::SeqCst);
-        let mut identity = crate::adapter::live_identity("");
+        let mut identity = crate::adapter::live_identity("Value");
         identity.identifiers = identity.identifiers.with_retained_object("/spin".into());
         Ok(LiveElement {
             identity,
@@ -74,6 +80,7 @@ impl ObservationOps for Incrementor {
             available_actions: vec![capability::SET_VALUE.into()],
         })
     }
+    crate::adapter::saved_ref_scope!("incrementor", Some("Value"));
 }
 
 impl ActionOps for Incrementor {

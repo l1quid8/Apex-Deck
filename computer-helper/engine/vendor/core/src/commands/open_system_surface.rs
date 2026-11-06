@@ -10,7 +10,8 @@ pub struct OpenSystemSurfaceArgs {
 }
 
 /// Opens a shell surface and answers with the identity of the window the
-/// surface actually presents: the same `w-<hwnd>` identity the observation
+/// surface actually presents, left out when a process with no window presents
+/// it: the same `w-<hwnd>` identity the observation
 /// stack roots, so `snapshot --surface <kind>` consumes it with no second
 /// lookup. The answer comes from the adapter's kind
 /// table, never from `supported_surfaces()`: that list says which kinds a
@@ -33,10 +34,11 @@ pub fn execute(
     let policy = context.physical_input_policy();
     let lease = adapter.acquire_interaction_lease(deadline)?;
     let window = adapter.open_system_surface(args.surface, policy, &lease)?;
-    Ok(json!({
-        "surface": args.surface.as_str(),
-        "window": window,
-    }))
+    let mut data = json!({ "surface": args.surface.as_str() });
+    if !window.is_process_owner() {
+        data["window"] = json!(window);
+    }
+    Ok(data)
 }
 
 #[cfg(test)]

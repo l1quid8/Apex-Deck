@@ -137,7 +137,7 @@ fn role_only_selected_hydration_anchors_before_hydrating_without_rewalking_large
     assert_eq!(matched.data.name, "Primary action");
     assert_eq!(matched.data.ref_id.as_deref(), Some("@e1"));
     let entry = resolution.refmap.as_ref().unwrap().get("@e1").unwrap();
-    assert_eq!(entry.identity.name.as_deref(), Some("Primary action"));
+    assert_eq!(entry.identity.name, None);
     assert_eq!(
         entry
             .identity

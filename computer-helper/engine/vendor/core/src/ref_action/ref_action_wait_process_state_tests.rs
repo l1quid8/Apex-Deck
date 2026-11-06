@@ -26,6 +26,7 @@ fn entry() -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -42,6 +43,7 @@ fn entry() -> RefEntry {
             source_window_title: None,
             source_window_bounds_hash: None,
             source_surface: crate::snapshot::snapshot_surface::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,
@@ -69,6 +71,7 @@ impl ObservationOps for UnresponsiveProcessAdapter {
     ) -> Result<NativeHandle, AdapterError> {
         Err(AdapterError::stale_ref("@e1"))
     }
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 fn app(name: &str) -> AppInfo {
@@ -122,7 +125,7 @@ fn terminal_stale_ref_against_unresponsive_process_surfaces_app_unresponsive() {
             context: &CommandContext::default(),
         },
         ActionRequest::headless(Action::Click),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .unwrap_err();
 
@@ -163,6 +166,7 @@ impl ObservationOps for RecycledPidAdapter {
     ) -> Result<NativeHandle, AdapterError> {
         Err(AdapterError::stale_ref("@e1"))
     }
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for RecycledPidAdapter {}
@@ -196,7 +200,7 @@ fn recycled_pid_never_upgrades_stale_ref_to_app_unresponsive() {
             context: &CommandContext::default(),
         },
         ActionRequest::headless(Action::Click),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .unwrap_err();
 
@@ -241,6 +245,7 @@ impl ObservationOps for TerminatedProcessAdapter {
     ) -> Result<NativeHandle, AdapterError> {
         Err(AdapterError::stale_ref("@e1"))
     }
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for TerminatedProcessAdapter {}
@@ -278,7 +283,7 @@ fn terminal_stale_ref_preserves_exited_and_crashed_process_details() {
                 context: &CommandContext::default(),
             },
             ActionRequest::headless(Action::Click),
-            crate::ref_action::dispatch_resolved,
+            crate::ref_action::ref_action_single::dispatch_resolved,
         )
         .unwrap_err();
 

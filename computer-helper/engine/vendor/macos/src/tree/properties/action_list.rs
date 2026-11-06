@@ -33,6 +33,9 @@ impl Default for AvailableActionsRead {
     }
 }
 
+/// Reads the capabilities `el` publishes. The flag is true when the only
+/// reason it is clickable is an enabled container that selects it, which
+/// makes it enabled whatever its own `AXEnabled` says.
 #[cfg(target_os = "macos")]
 pub(crate) fn read_platform_available_actions(
     el: &AXElement,
@@ -40,12 +43,12 @@ pub(crate) fn read_platform_available_actions(
     attrs: &crate::tree::NodeAttrs,
     deadline: std::time::Instant,
     usage: &mut crate::tree::observation_usage::ObservationUsage,
-) -> AvailableActionsRead {
+) -> (AvailableActionsRead, bool) {
     let mut read = AvailableActionsRead::default();
     if crate::tree::locator_deadline::remaining(deadline).is_err() {
         read.complete = false;
         read.deadline_exhausted = true;
-        return read;
+        return (read, false);
     }
     let native_actions = copy_action_names_with_status(el, deadline, usage);
     if let Some(error) = native_actions.error {
@@ -55,21 +58,30 @@ pub(crate) fn read_platform_available_actions(
     let has = |name: &str| ax_actions.iter().any(|a| a == name);
 
     let publishes_activation = PRIMARY_ACTIVATION_ACTIONS.iter().any(|name| has(name));
+    let mut enabled_by_container = false;
     if publishes_activation {
         push_unique(&mut read.actions, capability::CLICK);
         if crate::tree::roles::is_toggleable_role(role) {
             push_unique(&mut read.actions, capability::TOGGLE);
         }
-    } else if crate::actions::select::container_select::role_activates_by_selection(role)
-        && read_settable(
+    } else if crate::actions::select::container_select::role_activates_by_selection(role) {
+        let own = read_settable(
             el,
             crate::actions::select::container_select::SELECTED,
             deadline,
             &mut read,
         )
-        .unwrap_or(false)
-    {
-        push_unique(&mut read.actions, capability::CLICK);
+        .unwrap_or(false);
+        enabled_by_container = !own
+            && super::selection_owner::container_selection(
+                el,
+                deadline,
+                &mut read,
+                &mut usage.selection_verdicts,
+            ) == Some(true);
+        if own || enabled_by_container {
+            push_unique(&mut read.actions, capability::CLICK);
+        }
     }
     if has("AXShowMenu") && role_allows_context_menu_action(role) {
         push_unique(&mut read.actions, capability::RIGHT_CLICK);
@@ -107,11 +119,11 @@ pub(crate) fn read_platform_available_actions(
         push_unique(&mut read.actions, capability::COLLAPSE);
     }
 
-    read
+    (read, enabled_by_container)
 }
 
 #[cfg(target_os = "macos")]
-fn read_settable(
+pub(super) fn read_settable(
     element: &AXElement,
     attribute: &str,
     deadline: std::time::Instant,
@@ -131,7 +143,7 @@ fn read_settable(
 }
 
 #[cfg(target_os = "macos")]
-fn record_error(read: &mut AvailableActionsRead, error: i32) {
+pub(super) fn record_error(read: &mut AvailableActionsRead, error: i32) {
     if is_definitive_absence(error) {
         return;
     }
@@ -203,11 +215,14 @@ pub(crate) fn read_platform_available_actions(
     _attrs: &crate::tree::NodeAttrs,
     _deadline: std::time::Instant,
     _usage: &mut crate::tree::observation_usage::ObservationUsage,
-) -> AvailableActionsRead {
-    AvailableActionsRead {
-        complete: false,
-        ..AvailableActionsRead::default()
-    }
+) -> (AvailableActionsRead, bool) {
+    (
+        AvailableActionsRead {
+            complete: false,
+            ..AvailableActionsRead::default()
+        },
+        false,
+    )
 }
 
 fn push_unique(actions: &mut Vec<String>, action: &str) {

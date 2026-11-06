@@ -23,6 +23,26 @@ pub fn identity_unknown_error(entry: &RefEntry) -> AdapterError {
     }))
 }
 
+/// A tokenless ref that was not proven unique when it was captured.
+pub(crate) fn identity_not_unique(entry: &RefEntry) -> AdapterError {
+    AdapterError::new(
+        ErrorCode::AmbiguousTarget,
+        "Saved ref was not proven unique when it was captured, so it cannot be re-identified safely",
+    )
+    .with_suggestion(
+        "Either another element in the window matched it, or the window could not be read \
+         whole within the snapshot timeout. For a large window, retake the snapshot with a \
+         larger --timeout-ms. Identical twins are refused again by every snapshot; where \
+         headed pointer input is available, an explicit --headed coordinate click can pick one.",
+    )
+    .with_details(json!({
+        "kind": "identity_not_unique",
+        "retryable": false,
+        "role": entry.identity.role,
+    }))
+    .with_disposition(crate::DeliverySemantics::not_delivered())
+}
+
 /// Stamps the final incomplete diagnosis with `deadline_elapsed` so the
 /// caller sees why the retries ran out, preserving the incomplete's own
 /// details rather than discarding them for a bare `TIMEOUT`. Shared by both

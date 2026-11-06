@@ -16,6 +16,7 @@ pub(crate) struct ResolvedPoint {
     pub focused: bool,
     pub source_entry: Option<crate::RefEntry>,
     pub bounds_hash: Option<u64>,
+    pub handle: Option<crate::NativeHandle>,
 }
 
 pub(crate) fn require_cursor_policy(
@@ -64,6 +65,7 @@ pub(crate) fn resolve_point_from_ref_or_xy_with_context(
             focused: false,
             source_entry: Some(entry),
             bounds_hash: bounds.bounds_hash(),
+            handle: Some(handle),
         });
     }
     if let Some((x, y)) = args.xy {
@@ -72,6 +74,7 @@ pub(crate) fn resolve_point_from_ref_or_xy_with_context(
             focused: false,
             source_entry: None,
             bounds_hash: None,
+            handle: None,
         });
     }
     Err(AppError::invalid_input(args.missing_input_message))
@@ -87,8 +90,7 @@ pub(crate) fn focus_for_physical_input(
     if !context.physical_input_policy().allow_focus_steal {
         return Ok(false);
     }
-    crate::actions::headed_focus::focus_entry_window(entry, adapter, context, lease)?;
-    Ok(true)
+    crate::actions::headed_focus::focus_entry_window(entry, adapter, context, lease)
 }
 
 #[cfg(test)]

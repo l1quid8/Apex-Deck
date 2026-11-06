@@ -5,6 +5,27 @@ use crate::{
     adapter::{PlatformAdapter, WindowFilter},
 };
 
+/// Owner for a named app that lists no window. A background app is observed
+/// through its process; any other app has not presented a window yet. Failures
+/// of the app lookup propagate, except an adapter without an app inventory,
+/// which keeps the window error.
+pub(crate) fn windowless_app_owner(
+    adapter: &dyn PlatformAdapter,
+    app: &str,
+    deadline: Deadline,
+) -> Result<WindowInfo, AppError> {
+    match resolve_app(Some(app), adapter, deadline) {
+        Ok(info) if info.presentation == Some(crate::AppPresentation::Background) => {
+            Ok(WindowInfo::for_process(&info))
+        }
+        Ok(_) => Err(AdapterError::app_has_no_window(app).into()),
+        Err(AppError::Adapter(error)) if error.code == ErrorCode::PlatformNotSupported => {
+            Err(AdapterError::app_has_no_window(app).into())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn resolve_app(
     app: Option<&str>,
     adapter: &dyn PlatformAdapter,
@@ -146,6 +167,36 @@ pub(crate) fn process_identity(app: &AppInfo) -> Result<ProcessIdentity, AppErro
             )
         })?;
     Ok(ProcessIdentity::new(app.pid, instance))
+}
+
+/// The live process a process-owned ref was captured from, revalidated by pid,
+/// process instance and name; a replaced or exited process is stale.
+pub(crate) fn live_process_owner(
+    adapter: &dyn PlatformAdapter,
+    entry: &crate::RefEntry,
+    deadline: Deadline,
+) -> Result<WindowInfo, AppError> {
+    let stale = |reason| AppError::Adapter(AdapterError::stale_ref_because(reason));
+    let expected = AppInfo {
+        name: entry
+            .source
+            .source_app
+            .clone()
+            .ok_or_else(|| stale("ref has no source app"))?,
+        pid: entry.process.pid,
+        bundle_id: None,
+        process_instance: Some(
+            entry
+                .process
+                .process_instance
+                .clone()
+                .ok_or_else(|| stale("ref has no process instance"))?,
+        ),
+        presentation: None,
+    };
+    Ok(WindowInfo::for_process(&revalidate_app_for_mutation(
+        adapter, &expected, deadline,
+    )?))
 }
 
 pub(crate) fn revalidate_app_for_mutation(

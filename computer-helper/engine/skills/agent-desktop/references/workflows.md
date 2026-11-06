@@ -29,7 +29,7 @@ agent-desktop click @s8f3k2p9:e18
 agent-desktop snapshot --root @s8f3k2p9:e2 -i --compact
 ```
 
-- Re-drilling a root replaces only that root's refs. Refs from the skeleton and from other drills stay valid.
+- Re-drilling a root replaces that root's refs and the refs of drills made under it. Skeleton refs elsewhere, and drills in other regions, stay valid.
 - Interactive elements inside skeleton depth already have normal refs.
 - If you know the role or exact name, skip the map and run `find` with `--role --name --exact`.
 

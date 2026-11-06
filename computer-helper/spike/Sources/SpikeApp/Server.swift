@@ -503,6 +503,10 @@ final class Server {
         ["up", "down", "left", "right"].contains(direction), (1...20).contains(amount) else { throw Refusal("invalid_arguments") }
       // Blocker 2: overlay is shown in EngineCheck at actual resolved target.
       try engineSession.scroll(element: number, direction: direction, amount: amount, s: s, id: id, latch: latch, ax: ax)
+    case "control":
+      guard Set(args.keys).subtracting(["value"]) == ["snapshot", "element", "action"], let number = args["element"] as? Int,
+        let action = args["action"] as? String, args["value"] == nil || args["value"] is String else { throw Refusal("invalid_arguments") }
+      try engineSession.control(element: number, action: action, value: args["value"] as? String, s: s, id: id, latch: latch, ax: ax)
     case "reveal":
       guard Set(args.keys) == ["snapshot", "element"], let number = args["element"] as? Int else { throw Refusal("invalid_arguments") }
       try engineSession.reveal(element: number, s: s, id: id, latch: latch, ax: ax)
@@ -531,6 +535,7 @@ final class Server {
       tool("list_windows", "List windows of the granted app with minimized/focused state.", [:], [], true),
       ScreenshotPolicy.tool,
       tool("click", "Press one retained numbered control in a fresh snapshot, in the background. The pointer never moves. A disabled control returns element_disabled.", snap.merging(["element": element]) { $1 }, ["snapshot", "element"]),
+      tool("control", "Operate one retained numbered control in a fresh snapshot without the pointer or keyboard. action is toggle, check, uncheck, expand, collapse, select (value = the option's label, for pop-up menus, lists and tabs) or set_value (value = the field's full new text; prefer type_text for typing). More reliable than click for checkboxes, switches, disclosure triangles, pop-ups and sliders. Password fields are refused.", snap.merging(["element": element, "action": ["type": "string", "enum": ["toggle", "check", "uncheck", "expand", "collapse", "select", "set_value"]], "value": ["type": "string", "maxLength": 16384]]) { $1 }, ["snapshot", "element", "action"]),
       tool("click_point", "Press the control under a point in the current screenshot. x/y are image pixels; requires its image_snapshot and a writable session. The pointer never moves, so pixel_target_has_no_control is returned where nothing pressable is under the point, such as a canvas.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
       tool("type_text", "Type into a numbered text control, or the app's focused field if element is omitted. Works in the background and is verified by reading the field back. Password fields are refused.", snap.merging(["text": ["type": "string", "maxLength": 65536], "element": element]) { $1 }, ["snapshot", "text"]),
       tool("press_key", "Press a named key, such as Return, Tab, Space, PageDown or Shift-Tab, on the app's focused control. Delivery is not verified, so read the screen and never repeat it blindly. Cmd- and Control- shortcuts return shortcut_needs_foreground unless this bot is untethered, which brings the app to the front first; quit and force-quit shortcuts are always blocked. Minimized windows return key_needs_visible_window. Return in a browser's own controls, such as the address bar, returns browser_control_needs_visible_window while the window is fully covered.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),

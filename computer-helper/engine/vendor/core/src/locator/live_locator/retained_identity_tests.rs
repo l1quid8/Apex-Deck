@@ -40,10 +40,29 @@ fn matches(entry: &RefEntry, token: Option<&str>, value: &str) -> IdentityMatch 
 }
 
 #[test]
-fn retained_identity_rejects_replacements_without_freezing_control_values() {
+fn a_positional_retained_object_never_decides_identity() {
     let entry = saved();
+    for token in [
+        Some("host-generation:object-1"),
+        Some("host-generation:object-2"),
+        None,
+    ] {
+        assert_eq!(
+            matches(&entry, token, "Alpha"),
+            IdentityMatch::Match,
+            "a positional retained object must not decide identity: {token:?}"
+        );
+    }
+    assert!(crate::refs::ref_identity::has_meaningful_identity(&entry));
+}
+
+#[test]
+fn an_element_token_decides_identity_on_its_own() {
+    let mut entry = saved();
+    entry.identity.retained_object = Some("axtok1:7f3a".into());
+
     assert_eq!(
-        matches(&entry, Some("host-generation:object-1"), "Edited"),
+        matches(&entry, Some("axtok1:7f3a"), "Edited"),
         IdentityMatch::Match
     );
     assert_eq!(
@@ -86,9 +105,10 @@ fn snapshot_and_find_preserve_identical_private_identity_evidence() {
 }
 
 #[test]
-fn empty_retained_token_cannot_downgrade_to_native_id_matching() {
+fn an_empty_retained_object_is_not_an_element_token() {
     let mut entry = saved();
     entry.identity.retained_object = Some(String::new());
-    assert_eq!(matches(&entry, Some(""), "Alpha"), IdentityMatch::Unknown);
-    assert_eq!(matches(&entry, None, "Alpha"), IdentityMatch::Unknown);
+    assert!(crate::refs::ref_identity::element_token(&entry).is_none());
+    assert_eq!(matches(&entry, Some(""), "Alpha"), IdentityMatch::Match);
+    assert_eq!(matches(&entry, None, "Alpha"), IdentityMatch::Match);
 }

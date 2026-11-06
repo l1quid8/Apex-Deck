@@ -35,6 +35,7 @@ impl ObservationOps for SlowFirstKeystroke {
             offscreen: Some(false),
         }
     );
+    crate::adapter::saved_ref_scope!("textfield", Some("Target"));
 }
 
 impl ActionOps for SlowFirstKeystroke {

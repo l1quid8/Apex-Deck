@@ -56,6 +56,7 @@ impl ObservationOps for OccludedTargetAdapter {
             bounds: None,
         })
     }
+    crate::adapter::saved_ref_scope!("button", Some("Target"));
 }
 
 impl ActionOps for OccludedTargetAdapter {}
@@ -226,6 +227,7 @@ impl ObservationOps for BackgroundTargetAdapter {
             })
         }
     }
+    crate::adapter::saved_ref_scope!("button", Some("Target"));
 }
 
 impl ActionOps for BackgroundTargetAdapter {}

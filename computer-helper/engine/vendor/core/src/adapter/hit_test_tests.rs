@@ -48,6 +48,7 @@ impl ObservationOps for HitTestAdapter {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.outcome.clone()
     }
+    crate::adapter::saved_ref_scope!("button", Some("Save"));
 }
 
 impl ActionOps for HitTestAdapter {}
@@ -130,6 +131,7 @@ fn clickable_entry() -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -146,6 +148,7 @@ fn clickable_entry() -> RefEntry {
             source_window_title: None,
             source_window_bounds_hash: None,
             source_surface: crate::adapter::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,

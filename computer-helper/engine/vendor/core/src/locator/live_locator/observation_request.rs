@@ -33,6 +33,9 @@ pub struct ObservationMode {
     /// (via the `--force-electron-a11y` CLI flag), so the adapter should not
     /// guess at guidance; it returns the tree it observed.
     pub force_renderer_accessibility: bool,
+    /// The read only resolves a saved ref: it needs identity evidence and the
+    /// child structure, never geometry or actions, so an adapter may skip them.
+    pub identity_only: bool,
 }
 
 impl ObservationRequest {
@@ -71,18 +74,25 @@ impl ObservationRequest {
         Self {
             deadline,
             max_raw_depth: 50,
-            max_logical_depth: if options.skeleton {
-                options.max_depth.min(3)
-            } else {
-                options.max_depth
-            },
+            max_logical_depth: Self::snapshot_logical_depth(options),
             surface: options.surface,
             evidence_plan: EvidencePlan::uniform(EvidenceRequirements::snapshot()),
             budget: ObservationBudget::default(),
             observation_mode: ObservationMode {
                 skeleton: options.skeleton,
                 force_renderer_accessibility: options.force_renderer_accessibility,
+                identity_only: false,
             },
+        }
+    }
+
+    /// The logical depth a snapshot request presents for these options: a
+    /// skeleton is an overview, so it never presents more than three levels.
+    pub fn snapshot_logical_depth(options: &TreeOptions) -> u8 {
+        if options.skeleton {
+            options.max_depth.min(3)
+        } else {
+            options.max_depth
         }
     }
 

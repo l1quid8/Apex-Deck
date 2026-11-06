@@ -16,6 +16,7 @@ pub(crate) fn live_tree(
         ObservationSource::Window {
             window: fixture.window.clone(),
             surface: agent_desktop_core::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         requirements,
     )

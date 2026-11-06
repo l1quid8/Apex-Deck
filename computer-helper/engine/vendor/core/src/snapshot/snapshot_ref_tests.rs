@@ -6,18 +6,6 @@ use crate::adapter::{ActionOps, InputOps, NativeHandle, ObservationOps, SystemOp
 use crate::refs::ref_alloc::ref_entry_from_node;
 use crate::refs::refs_test_support::HomeGuard;
 use crate::{refs::RefMap, refs::refs_store::RefStore};
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
-};
-
-struct DropProbe(Arc<AtomicU32>);
-
-impl Drop for DropProbe {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-    }
-}
 
 fn node(role: &str) -> AccessibilityNode {
     AccessibilityNode {
@@ -37,6 +25,12 @@ fn named(role: &str, name: &str) -> AccessibilityNode {
     n
 }
 
+fn drilled(role: &str, name: &str) -> AccessibilityNode {
+    let mut n = named(role, name);
+    n.identity.retained_object = Some(format!("axtok1:{role}-{name}"));
+    n
+}
+
 fn source(app: &'static str) -> crate::refs::ref_alloc_source::RefAllocSource<'static> {
     crate::refs::ref_alloc_source::RefAllocSource {
         pid: crate::ProcessId::new(42),
@@ -52,30 +46,21 @@ fn source(app: &'static str) -> crate::refs::ref_alloc_source::RefAllocSource<'s
 struct StubAdapter {
     subtree: AccessibilityNode,
     subtree_error: Option<AdapterError>,
-    resolve_calls: AtomicU32,
-    drops: Arc<AtomicU32>,
+    token: String,
     windows: Vec<crate::WindowInfo>,
     expected_app: Option<String>,
 }
 
 impl StubAdapter {
     fn new(subtree: AccessibilityNode) -> Self {
-        Self {
-            subtree,
-            subtree_error: None,
-            resolve_calls: AtomicU32::new(0),
-            drops: Arc::new(AtomicU32::new(0)),
-            windows: vec![window_info("w-42", true)],
-            expected_app: None,
-        }
+        Self::with_windows(subtree, vec![window_info("w-42", true)])
     }
 
     fn with_windows(subtree: AccessibilityNode, windows: Vec<crate::WindowInfo>) -> Self {
         Self {
             subtree,
             subtree_error: None,
-            resolve_calls: AtomicU32::new(0),
-            drops: Arc::new(AtomicU32::new(0)),
+            token: "axtok1:group-Sidebar".into(),
             windows,
             expected_app: None,
         }
@@ -83,13 +68,14 @@ impl StubAdapter {
 
     fn with_subtree_error(error: AdapterError) -> Self {
         Self {
-            subtree: node("group"),
             subtree_error: Some(error),
-            resolve_calls: AtomicU32::new(0),
-            drops: Arc::new(AtomicU32::new(0)),
-            windows: vec![window_info("w-42", true)],
-            expected_app: None,
+            ..Self::new(node("group"))
         }
+    }
+
+    fn with_token(mut self, token: &str) -> Self {
+        self.token = token.into();
+        self
     }
 }
 
@@ -117,7 +103,27 @@ impl ObservationOps for StubAdapter {
         if let Some(error) = &self.subtree_error {
             return Err(error.clone());
         }
-        crate::adapter::observed_tree(&root, self.subtree.clone())
+        if matches!(
+            root,
+            crate::locator::live_locator::ObservationRoot::Element { .. }
+        ) {
+            return crate::adapter::observed_tree(&root, self.subtree.clone());
+        }
+        let mut drilled = self.subtree.clone();
+        drilled.identity.retained_object = Some(self.token.clone());
+        let mut window = node("window");
+        window.children = vec![drilled];
+        crate::adapter::observed_tree(&root, window)
+    }
+
+    fn list_apps(&self, _deadline: crate::Deadline) -> Result<Vec<crate::AppInfo>, AdapterError> {
+        Ok(vec![crate::AppInfo {
+            name: "TestApp".into(),
+            pid: crate::ProcessId::new(42),
+            bundle_id: None,
+            process_instance: Some("test-instance".into()),
+            presentation: Some(crate::AppPresentation::Background),
+        }])
     }
 
     fn list_windows(
@@ -136,8 +142,7 @@ impl ObservationOps for StubAdapter {
         _entry: &crate::refs::RefEntry,
         _deadline: crate::Deadline,
     ) -> Result<NativeHandle, AdapterError> {
-        self.resolve_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(NativeHandle::new(DropProbe(Arc::clone(&self.drops))))
+        Ok(NativeHandle::null())
     }
 }
 
@@ -192,9 +197,14 @@ fn local_ref(ref_id: &str) -> String {
 
 fn seed_skeleton_refmap() -> RefMap {
     let mut map = RefMap::new();
-    let anchor = ref_entry_from_node(&named("group", "Sidebar"), &source("TestApp"), None, &[0]);
+    let anchor = ref_entry_from_node(&drilled("group", "Sidebar"), &source("TestApp"), None, &[0]);
     let _ = map.allocate(anchor);
-    let other = ref_entry_from_node(&named("button", "Toolbar"), &source("TestApp"), None, &[1]);
+    let other = ref_entry_from_node(
+        &drilled("button", "Toolbar"),
+        &source("TestApp"),
+        None,
+        &[1],
+    );
     let _ = map.allocate(other);
     map
 }
@@ -242,8 +252,7 @@ fn test_run_from_ref_returns_subtree_and_persists_refs() {
         "drilled refs must retain an absolute path for fast, scoped resolution"
     );
     assert_eq!(drill_entry.scope.path.as_slice(), [0, 0]);
-    assert_eq!(adapter.resolve_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(adapter.drops.load(Ordering::SeqCst), 1);
+    assert!(drill_entry.identity.unique_at_capture);
 }
 
 #[test]
@@ -280,7 +289,7 @@ fn test_run_from_ref_explicit_session_snapshot_with_matching_context() {
 }
 
 #[test]
-fn test_run_from_ref_drops_handle_when_subtree_read_fails() {
+fn test_run_from_ref_leaves_stored_refs_when_subtree_read_fails() {
     let _guard = HomeGuard::new();
     let snapshot_id = save_latest(seed_skeleton_refmap());
 
@@ -291,8 +300,11 @@ fn test_run_from_ref_drops_handle_when_subtree_read_fails() {
     let result = run_from_ref(&adapter, &drill_opts(), "@e1", Some(&snapshot_id));
 
     assert!(result.is_err());
-    assert_eq!(adapter.resolve_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(adapter.drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        load_latest().len(),
+        2,
+        "a failed drill must not persist refs"
+    );
 }
 
 #[test]
@@ -349,6 +361,35 @@ fn test_run_from_ref_re_drill_replaces_drill_refs_only() {
     assert!(
         on_disk.get(&local_ref(&first_button_ref)).is_none(),
         "first drill ref must be invalidated by remove_by_root_ref"
+    );
+}
+
+#[test]
+fn a_tokenless_drill_refuses_a_depth_no_walk_supports() {
+    use crate::snapshot::tokenless_capture_support as tokenless;
+
+    let _guard = HomeGuard::new();
+    let adapter = tokenless::CaptureAdapter::new(tokenless::anchored_window());
+    let captured = tokenless::snapshot(&adapter);
+    let (anchor_ref, _) = tokenless::named(&captured.refmap, "Sidebar");
+    let snapshot_id = tokenless::save(&captured.refmap);
+    let too_deep = TreeOptions {
+        max_depth: 51,
+        ..drill_opts()
+    };
+    let walks_before = adapter.captures();
+
+    let drill = run_from_ref(&adapter, &too_deep, &anchor_ref, Some(&snapshot_id));
+
+    match drill {
+        Ok(_) => panic!("a depth no snapshotted walk reaches must be refused"),
+        Err(AppError::Adapter(error)) => assert_eq!(error.code, crate::ErrorCode::InvalidArgs),
+        Err(other) => panic!("expected Adapter(InvalidArgs), got {other:?}"),
+    }
+    assert_eq!(
+        adapter.captures(),
+        walks_before,
+        "the refusal must land before the drill observes anything"
     );
 }
 

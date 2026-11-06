@@ -118,10 +118,10 @@ fn confirm_receiver(
     deadline: crate::Deadline,
     adapter: &dyn PlatformAdapter,
 ) -> Result<(), AppError> {
-    let Some(entry) = resolved.source_entry.as_ref() else {
+    let Some(handle) = resolved.handle.as_ref() else {
         return Ok(());
     };
-    adapter.confirm_pointer_receiver(entry, resolved.point.clone(), deadline)?;
+    adapter.confirm_pointer_receiver(handle, resolved.point.clone(), deadline)?;
     Ok(())
 }
 

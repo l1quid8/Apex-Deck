@@ -94,7 +94,7 @@ fn activation_lease_is_dropped_before_observation_retry() {
         .validate()
         .unwrap();
 
-    observe_tree(&adapter, ObservationRoot::Window(&window), &request).unwrap();
+    observe_tree(&adapter, ObservationRoot::Window(&window), &request, None).unwrap();
 
     assert_eq!(adapter.observations.load(Ordering::SeqCst), 2);
     assert_eq!(adapter.activations.load(Ordering::SeqCst), 1);
@@ -159,7 +159,7 @@ fn a_renderer_that_never_activates_is_not_re_walked_continuously() {
         .validate()
         .unwrap();
 
-    observe_tree(&adapter, ObservationRoot::Window(&window), &request)
+    observe_tree(&adapter, ObservationRoot::Window(&window), &request, None)
         .expect_err("a renderer that never activates must still fail at the deadline");
 
     let attempts = adapter.observations.load(Ordering::SeqCst);
@@ -175,6 +175,7 @@ struct SwitchAdapter {
     takes: std::time::Duration,
     switched: AtomicBool,
     offered_ms: std::sync::atomic::AtomicU64,
+    acquisitions: AtomicU32,
     walks: std::sync::Mutex<Vec<Walk>>,
 }
 
@@ -231,6 +232,7 @@ impl SystemOps for SwitchAdapter {
         &self,
         deadline: crate::Deadline,
     ) -> Result<crate::InteractionLease, crate::AdapterError> {
+        self.acquisitions.fetch_add(1, Ordering::SeqCst);
         crate::InteractionLease::guarded(deadline, ())
     }
 
@@ -256,6 +258,7 @@ fn switch(needs_ms: u64, takes_ms: u64) -> SwitchAdapter {
         takes: std::time::Duration::from_millis(takes_ms),
         switched: AtomicBool::new(false),
         offered_ms: std::sync::atomic::AtomicU64::new(0),
+        acquisitions: AtomicU32::new(0),
         walks: std::sync::Mutex::new(Vec::new()),
     }
 }
@@ -279,12 +282,35 @@ fn snapshot_request(deadline: crate::Deadline) -> ObservationRequest {
 }
 
 #[test]
+fn a_held_lease_is_reused_instead_of_acquired_again() {
+    let adapter = switch(0, 0);
+    let window = renderer_window();
+    let deadline = crate::Deadline::after(60_000).unwrap();
+    let held = crate::InteractionLease::guarded(deadline, ()).unwrap();
+
+    observe_tree(
+        &adapter,
+        ObservationRoot::Window(&window),
+        &snapshot_request(deadline),
+        Some(&held),
+    )
+    .expect("the switch runs under the lease the caller holds");
+
+    assert!(adapter.switched.load(Ordering::SeqCst));
+    assert_eq!(
+        adapter.acquisitions.load(Ordering::SeqCst),
+        0,
+        "re-acquiring the lease it is already under would queue until the deadline"
+    );
+}
+
+#[test]
 fn time_spent_switching_is_given_back_to_the_observation() {
     let adapter = switch(0, 300);
     let window = renderer_window();
     let request = snapshot_request(crate::Deadline::after(60_000).unwrap());
 
-    observe_tree(&adapter, ObservationRoot::Window(&window), &request)
+    observe_tree(&adapter, ObservationRoot::Window(&window), &request, None)
         .expect("the walk after the switch has the budget the first walk left");
 
     let walks = adapter.walks.lock().unwrap();
@@ -318,6 +344,7 @@ fn a_spent_observation_still_switches_so_the_next_one_is_ready() {
         &adapter,
         ObservationRoot::Window(&window),
         &snapshot_request(spent),
+        None,
     )
     .expect_err("an observation with nothing left does not walk again");
 
@@ -339,7 +366,7 @@ fn a_refused_switch_reports_the_operation_budget_and_is_not_retried() {
     let window = renderer_window();
     let request = snapshot_request(crate::Deadline::after(3_000).unwrap());
 
-    let error = observe_tree(&adapter, ObservationRoot::Window(&window), &request)
+    let error = observe_tree(&adapter, ObservationRoot::Window(&window), &request, None)
         .expect_err("a switch that cannot run fails the observation");
 
     let AppError::Adapter(error) = error else {
@@ -361,7 +388,7 @@ fn the_credit_for_switch_time_stays_inside_an_inherited_deadline() {
     let parent = crate::Deadline::detached_after(1_000).unwrap();
     let _scope = crate::wait::deadline::enter_scope(Some(parent));
 
-    observe_tree(&adapter, ObservationRoot::Window(&window), &request)
+    observe_tree(&adapter, ObservationRoot::Window(&window), &request, None)
         .expect("the walk after the switch still fits the inherited deadline");
 
     let walks = adapter.walks.lock().unwrap();

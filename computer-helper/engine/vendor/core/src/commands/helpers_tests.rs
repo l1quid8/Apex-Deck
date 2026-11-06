@@ -33,6 +33,7 @@ impl ObservationOps for DropCountingAdapter {
     ) -> Result<NativeHandle, AdapterError> {
         Ok(NativeHandle::new(DropProbe(Arc::clone(&self.drops))))
     }
+    crate::adapter::saved_ref_scope!("button", Some("OK"));
 }
 
 impl ActionOps for DropCountingAdapter {}

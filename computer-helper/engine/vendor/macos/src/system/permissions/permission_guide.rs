@@ -16,11 +16,6 @@ const ACCESSIBILITY: u8 = 1;
 const SCREEN_RECORDING: u8 = 2;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_ANCESTORS: usize = 64;
-const COMMAND_HOST_ENVS: [&str; 3] = [
-    "AGENT_DESKTOP_INTERNAL_COMMAND_HOST",
-    "AGENT_DESKTOP_INTERNAL_HOST_SOCKET",
-    "AGENT_DESKTOP_INTERNAL_HOST_CLIENT",
-];
 
 pub(crate) fn start() -> Result<&'static str, AdapterError> {
     let steps = missing_steps(
@@ -46,9 +41,6 @@ pub(crate) fn start() -> Result<&'static str, AdapterError> {
     })?;
     let host = host_app().unwrap_or_else(|| executable.clone());
     let mut command = Command::new(&executable);
-    for name in COMMAND_HOST_ENVS {
-        command.env_remove(name);
-    }
     hand_over(&mut command, &lock);
     let mut child = command
         .env(STEPS_ENV, steps.to_string())
@@ -91,9 +83,8 @@ fn run_child(steps: &str) -> bool {
     unsafe { agent_desktop_permission_guide_run(steps, host.as_ptr(), granted) == 0 }
 }
 
-/// Each poll runs in a fresh process: a long-lived process keeps the Screen
-/// Recording answer it read at launch, and the command host may belong to
-/// another terminal app.
+/// Each poll runs in a fresh process, because a long-lived process keeps the
+/// Screen Recording answer it read at launch.
 extern "C" fn granted(step: u8) -> bool {
     let Ok(executable) = std::env::current_exe() else {
         return false;

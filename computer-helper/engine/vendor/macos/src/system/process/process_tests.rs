@@ -80,7 +80,7 @@ fn zombie_only_group_does_not_turn_sigkill_eperm_into_cleanup_failure() {
     let process_group = i32::try_from(child.id()).expect("child pid fits macOS pid_t");
     std::thread::sleep(Duration::from_millis(25));
     let mut signals = Vec::new();
-    let deadline = Instant::now() + Duration::from_millis(100);
+    let deadline = Instant::now() + Duration::from_secs(5);
     let failures =
         terminate_process_group_with(&mut child, process_group, deadline, |group, signal| {
             signals.push(signal);

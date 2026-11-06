@@ -37,6 +37,7 @@ mod observation_request;
 mod observation_root;
 mod observation_source;
 mod observed_node;
+mod observed_observation;
 mod observed_subtree;
 mod observed_tree;
 mod predicate;
@@ -71,16 +72,20 @@ pub use locator_selection::LocatorSelection;
 pub use locator_semantic_read_stats::LocatorSemanticReadStats;
 pub use locator_stats::LocatorStats;
 pub use locator_traversal_stats::LocatorTraversalStats;
+pub(crate) use materialize::ref_entry as materialize_ref_entry;
+pub(crate) use materialize::selects_tokenless_entry;
 pub use observation_budget::ObservationBudget;
 pub(crate) use observation_completeness::ObservationCompleteness;
 pub use observation_request::{ObservationMode, ObservationRequest};
 pub use observation_root::ObservationRoot;
 pub use observation_source::ObservationSource;
 pub use observed_node::ObservedNode;
+pub(crate) use observed_observation::ObservedObservation;
 pub use observed_subtree::ObservedSubtree;
 pub use observed_tree::ObservedTree;
 pub use ref_evidence_requirements::RefEvidenceRequirements;
 pub use resolve::resolve_query;
+pub(crate) use resolve::resolve_query_from;
 pub use validate::{validate_query, validate_request};
 
 #[cfg(test)]

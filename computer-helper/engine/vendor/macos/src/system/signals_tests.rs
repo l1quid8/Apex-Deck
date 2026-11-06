@@ -12,6 +12,8 @@ fn supported_surfaces_are_only_the_implemented_macos_contract() {
             SnapshotSurface::Sheet,
             SnapshotSurface::Popover,
             SnapshotSurface::Alert,
+            SnapshotSurface::Dock,
+            SnapshotSurface::MenuBarExtras,
         ]
     );
 }

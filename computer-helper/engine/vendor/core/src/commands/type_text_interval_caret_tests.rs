@@ -51,6 +51,7 @@ impl ObservationOps for CaretField {
             offscreen: Some(false),
         }
     );
+    crate::adapter::saved_ref_scope!("textfield", Some("Name"));
 }
 
 impl ActionOps for CaretField {
@@ -92,7 +93,7 @@ fn field_in_session(session: &str) -> String {
     entry.capabilities.available_actions =
         vec![capability::CLICK.into(), capability::TYPE_TEXT.into()];
     entry.source.source_app = Some("Fixture".into());
-    entry.source.source_window_id = Some("w-42".into());
+    entry.source.source_window_id = Some("w-1".into());
     entry.source.source_window_title = Some("Fixture".into());
     let mut refmap = crate::refs::RefMap::new();
     refmap.allocate(entry);

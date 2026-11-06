@@ -13,10 +13,12 @@ mod imp {
     /// unsupported code to the action that navigates it, and moves its
     /// selection rather than the focus. Selection is therefore read as well,
     /// on every element, because an attribute an element does not publish reads
-    /// as absent and the rule simply never fires for it.
+    /// as absent and the rule simply never fires for it. The focused editor's
+    /// value is read because a press can replace what that editor shows.
     #[derive(Default)]
     pub(crate) struct FocusState {
         focused_element: Option<AXElement>,
+        focused_value: Option<String>,
         selected: Option<bool>,
         menu_open: Option<bool>,
     }
@@ -44,13 +46,17 @@ mod imp {
     pub(crate) fn focus_state(element: &AXElement, deadline: Deadline) -> Option<FocusState> {
         let app = crate::system::app::app_ops::pid_from_element(element, deadline)
             .map(crate::tree::element_for_pid)?;
+        let focused_element = crate::tree::properties::attributes::copy_element_attr_result(
+            &app,
+            "AXFocusedUIElement",
+            deadline,
+        )
+        .ok()?;
         Some(FocusState {
-            focused_element: crate::tree::properties::attributes::copy_element_attr_result(
-                &app,
-                "AXFocusedUIElement",
-                deadline,
-            )
-            .ok()?,
+            focused_value: focused_element
+                .as_ref()
+                .and_then(|focused| crate::tree::copy_value_typed(focused, deadline)),
+            focused_element,
             selected: crate::tree::properties::attributes::copy_bool_attr_result(
                 element,
                 crate::actions::select::container_select::SELECTED,
@@ -111,11 +117,15 @@ mod imp {
         deadline: Deadline,
     ) -> bool {
         let after = focus_state(element, deadline);
-        let target_focused = after
+        let focused = after
             .as_ref()
-            .and_then(|state| state.focused_element.as_ref())
-            .is_some_and(|focused| focus_reached(focused, element, deadline));
+            .and_then(|state| state.focused_element.as_ref());
+        let target_focused =
+            focused.is_some_and(|focused| focus_reached(focused, element, deadline));
         observed_change(before, &after, target_focused)
+            || focus_changed_in_target_window(before, &after, || {
+                focused.and_then(|focused| shares_window(focused, element, deadline)) == Some(true)
+            })
     }
 
     /// A control that owns an editor hands focus to the editor, not to itself:
@@ -184,6 +194,28 @@ mod imp {
             )
     }
 
+    /// Focus moved, or the focused element shows new content, in the target's window.
+    fn focus_changed_in_target_window(
+        before: &Option<FocusState>,
+        after: &Option<FocusState>,
+        focused_in_target_window: impl FnOnce() -> bool,
+    ) -> bool {
+        matches!((before, after), (Some(before), Some(after))
+            if after.focused_element.is_some() && (before != after
+                || matches!((&before.focused_value, &after.focused_value), (Some(old), Some(new)) if old != new)))
+            && focused_in_target_window()
+    }
+
+    fn shares_window(focused: &AXElement, element: &AXElement, deadline: Deadline) -> Option<bool> {
+        let window = |el| {
+            crate::tree::properties::attributes::copy_element_attr_result(el, "AXWindow", deadline)
+        };
+        Some(crate::tree::same_element(
+            &window(focused).ok()??,
+            &window(element).ok()??,
+        ))
+    }
+
     /// An element that was not selected and now is has been acted on, whatever
     /// return code the application chose. The reverse is not evidence: a
     /// selection that was already true says nothing about this action.
@@ -204,17 +236,33 @@ mod imp {
         fn focused(pid: i32) -> Option<FocusState> {
             Some(FocusState {
                 focused_element: Some(crate::tree::element_for_pid(pid)),
-                selected: None,
-                menu_open: None,
+                ..FocusState::default()
             })
         }
 
         fn selected(value: Option<bool>) -> Option<FocusState> {
             Some(FocusState {
-                focused_element: None,
                 selected: value,
-                menu_open: None,
+                ..FocusState::default()
             })
+        }
+
+        #[test]
+        fn a_focus_change_counts_only_inside_the_pressed_elements_window() {
+            let editor = |pid, value: &str| {
+                Some(FocusState {
+                    focused_value: Some(value.into()),
+                    ..focused(pid).unwrap_or_default()
+                })
+            };
+            let changed =
+                |old, new, in_window| focus_changed_in_target_window(&old, &new, || in_window);
+            assert!(changed(editor(1, "old note"), editor(1, ""), true));
+            assert!(changed(focused(1), editor(2, ""), true));
+            assert!(!changed(editor(1, "old note"), editor(1, ""), false));
+            assert!(!changed(focused(1), editor(2, ""), false));
+            assert!(!changed(editor(1, "same"), editor(1, "same"), true));
+            assert!(!changed(editor(1, "old note"), focused(1), true));
         }
 
         #[test]

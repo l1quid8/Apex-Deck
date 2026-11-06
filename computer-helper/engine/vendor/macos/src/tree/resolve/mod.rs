@@ -1,27 +1,33 @@
 #[cfg(target_os = "macos")]
-use agent_desktop_core::refs::ref_identity::has_meaningful_identity;
+use agent_desktop_core::refs::ref_identity::element_token;
 use agent_desktop_core::{AdapterError, ErrorCode, NativeHandle, RefEntry, SnapshotSurface};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use super::resolve::resolve_classify::identity_summary_for_message;
 #[cfg(target_os = "macos")]
+use super::resolve::resolve_errors::element_token_required;
+#[cfg(target_os = "macos")]
 use super::resolve::resolve_read_context::ResolveReadContext;
 #[cfg(target_os = "macos")]
 use super::resolve::resolve_roots::{candidate_roots, source_window_scope_required};
 #[cfg(target_os = "macos")]
-use super::resolve::resolve_search::{find_entry_by_path, find_entry_in_roots};
+use super::resolve::resolve_search::find_entry_by_path;
 
-const MAX_RESOLVE_DEPTH: u8 = 50;
-
+/// Re-identifies a saved ref by the element token captured with it, and refuses
+/// any ref that carries none: a token names the exact element, so no path or
+/// search can stand in for it.
 #[cfg(target_os = "macos")]
 pub(crate) fn resolve_element_with_deadline(
     entry: &RefEntry,
     operation_deadline: agent_desktop_core::Deadline,
 ) -> Result<NativeHandle, AdapterError> {
     verify_process_instance(entry)?;
+    if element_token(entry).is_none() {
+        return Err(element_token_required(entry));
+    }
     let deadline = crate::tree::locator_deadline::from_operation(operation_deadline)?;
-    let result = retry_incomplete_until(deadline, || resolve_once(entry, deadline));
+    let result = retry_incomplete_until(deadline, || resolve_token_once(entry, deadline));
     match result {
         Err(error) if error.code == ErrorCode::ElementNotFound => {
             Err(stale_ref_error(entry, &error))
@@ -48,7 +54,6 @@ pub(crate) fn resolve_locator_anchor_with_deadline(
 
 #[cfg(target_os = "macos")]
 fn verify_process_instance(entry: &RefEntry) -> Result<(), AdapterError> {
-    super::resolve::retained::validate(entry.identity.retained_object.as_deref())?;
     let Some(instance) = entry.process.process_instance.as_deref() else {
         return Err(AdapterError::stale_ref_because(
             "Saved target has no process instance identity",
@@ -68,70 +73,14 @@ fn verify_process_instance(entry: &RefEntry) -> Result<(), AdapterError> {
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_once(entry: &RefEntry, deadline: Instant) -> Result<NativeHandle, AdapterError> {
+fn resolve_token_once(entry: &RefEntry, deadline: Instant) -> Result<NativeHandle, AdapterError> {
     let started = Instant::now();
     crate::tree::locator_deadline::remaining(deadline)?;
     let mut read_context = ResolveReadContext::new(deadline);
-    if can_use_path_fast_path(entry) {
-        let roots = match candidate_roots(entry, &mut read_context) {
-            Ok(roots) => roots,
-            Err(error) => {
-                return finish_resolution(
-                    Err(error),
-                    &mut read_context,
-                    started,
-                    "path_roots",
-                    true,
-                );
-            }
-        };
-        match find_entry_by_path(&roots.roots, entry, roots.scope_verified, &mut read_context) {
-            Ok(handle) => {
-                return finish_resolution(
-                    Ok(handle),
-                    &mut read_context,
-                    started,
-                    "path_success",
-                    true,
-                );
-            }
-            Err(error) if error.code == ErrorCode::ElementNotFound => {
-                tracing::debug!(stats = ?read_context.stats, "strict resolution path fast-path fell back to broad search");
-            }
-            Err(error) => {
-                return finish_resolution(
-                    Err(error),
-                    &mut read_context,
-                    started,
-                    "path_error",
-                    true,
-                );
-            }
-        }
+    match token_resolution(entry, deadline, &mut read_context, started) {
+        Some(result) => result,
+        None => Err(element_token_required(entry)),
     }
-    if !can_use_broad_search(entry) {
-        return finish_resolution(
-            Err(AdapterError::element_not_found("element")),
-            &mut read_context,
-            started,
-            "identity_insufficient",
-            false,
-        );
-    }
-    let roots = match candidate_roots(entry, &mut read_context) {
-        Ok(roots) => roots,
-        Err(error) => {
-            return finish_resolution(Err(error), &mut read_context, started, "broad_roots", false);
-        }
-    };
-    let result = find_entry_in_roots(
-        &roots.roots,
-        entry,
-        MAX_RESOLVE_DEPTH,
-        roots.scope_verified,
-        &mut read_context,
-    );
-    finish_resolution(result, &mut read_context, started, "broad_search", false)
 }
 
 #[cfg(target_os = "macos")]
@@ -142,6 +91,9 @@ fn resolve_locator_anchor_once(
     let started = Instant::now();
     crate::tree::locator_deadline::remaining(deadline)?;
     let mut read_context = ResolveReadContext::new(deadline);
+    if let Some(result) = token_resolution(entry, deadline, &mut read_context, started) {
+        return result;
+    }
     if !can_use_locator_anchor_path(entry) {
         return finish_resolution(
             Err(AdapterError::element_not_found("locator anchor")),
@@ -163,7 +115,7 @@ fn resolve_locator_anchor_once(
             );
         }
     };
-    let result = find_entry_by_path(&roots.roots, entry, roots.scope_verified, &mut read_context);
+    let result = find_entry_by_path(&roots, entry, &mut read_context);
     finish_resolution(
         result,
         &mut read_context,
@@ -171,6 +123,35 @@ fn resolve_locator_anchor_once(
         "locator_anchor_path",
         true,
     )
+}
+
+/// The token answer a resolution pass shares: `Some` when the saved ref carries
+/// a retained object, whether it resolved or was refused, and `None` when the
+/// entry has no token, which only the locator-anchor pass answers with a path.
+#[cfg(target_os = "macos")]
+fn token_resolution(
+    entry: &RefEntry,
+    deadline: Instant,
+    context: &mut ResolveReadContext,
+    started: Instant,
+) -> Option<Result<NativeHandle, AdapterError>> {
+    match super::resolve::retained_resolve::resolve_saved_token(entry, deadline) {
+        Ok(Some(handle)) => Some(finish_resolution(
+            Ok(handle),
+            context,
+            started,
+            "remote_token",
+            true,
+        )),
+        Ok(None) => None,
+        Err(error) => Some(finish_resolution(
+            Err(error),
+            context,
+            started,
+            "remote_token",
+            true,
+        )),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -265,38 +246,19 @@ fn is_retryable_resolution_error(error: &AdapterError) -> bool {
     error.is_transient_incomplete_read()
 }
 
-#[cfg(target_os = "macos")]
-fn can_use_path_fast_path(entry: &RefEntry) -> bool {
-    let source_scoped = if entry.source.source_surface == SnapshotSurface::Window {
-        source_window_scope_required(entry)
-    } else {
-        true
-    };
-    source_scoped
-        && (entry.scope.root_ref.is_none() || entry.scope.path_is_absolute)
-        && !entry.scope.path.is_empty()
-        && (entry.geometry.bounds_hash.is_some() || has_meaningful_identity(entry))
-}
-
+/// A tokenless anchor lands by position, so the gate asks only that its path be
+/// anchored to a recorded window or surface; core confirms identity after landing.
 #[cfg(target_os = "macos")]
 fn can_use_locator_anchor_path(entry: &RefEntry) -> bool {
     let source_scoped = if entry.source.source_surface == SnapshotSurface::Window {
-        source_window_scope_required(entry)
+        source_window_scope_required(entry) || entry.source.is_process_rooted()
     } else {
         true
     };
-    source_scoped
-        && (entry.scope.root_ref.is_none() || entry.scope.path_is_absolute)
-        && (entry.geometry.bounds_hash.is_some() || has_meaningful_identity(entry))
-}
-
-#[cfg(target_os = "macos")]
-fn can_use_broad_search(entry: &RefEntry) -> bool {
-    entry.geometry.bounds_hash.is_some() || has_meaningful_identity(entry)
+    source_scoped && (entry.scope.root_ref.is_none() || entry.scope.path_is_absolute)
 }
 
 pub(crate) mod resolve_ax_read;
-pub(super) mod resolve_bounds;
 pub(super) mod resolve_classify;
 pub(super) mod resolve_errors;
 pub(super) mod resolve_read_context;
@@ -304,7 +266,7 @@ pub(super) mod resolve_roots;
 pub(super) mod resolve_search;
 pub(super) mod resolve_source_app;
 pub(crate) mod retained;
-pub(super) mod retained_store;
+pub(super) mod retained_resolve;
 #[cfg(test)]
 #[path = "resolve_tests.rs"]
 mod tests;

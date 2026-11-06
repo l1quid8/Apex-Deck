@@ -144,6 +144,7 @@ fn element_root_derives_surface_with_relative_depth_budgets() {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -160,6 +161,7 @@ fn element_root_derives_surface_with_relative_depth_budgets() {
             source_window_title: Some("Fixture".into()),
             source_window_bounds_hash: None,
             source_surface: crate::SnapshotSurface::Menu,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,

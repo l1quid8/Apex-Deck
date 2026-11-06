@@ -1,15 +1,27 @@
 use crate::{
-    AppError,
-    adapter::{PlatformAdapter, TreeOptions, WindowFilter},
+    AccessibilityNode, AppError, WindowInfo,
+    adapter::{PlatformAdapter, TreeOptions},
     context::CommandContext,
     locator::live_locator::{ObservationRequest, ObservationRoot},
     refs::ref_alloc::{self, RefAllocConfig},
     refs::ref_alloc_options::RefAllocOptions,
     refs::ref_alloc_scope::RefAllocScope,
     refs::ref_alloc_source::RefAllocSource,
+    refs::ref_root_read::{RootRead, read_saved_root},
     refs::refs_store::RefStore,
     snapshot::SnapshotResult,
 };
+
+/// What one drill-down presents: the window it reports, the subtree that
+/// replaces the stored refs, the path coordinates its refs are recorded in, and
+/// the whole-window observation that proves them.
+struct DrillCapture {
+    window: WindowInfo,
+    tree: AccessibilityNode,
+    nodes_observed: usize,
+    path_prefix: crate::refs::RefPath,
+    observed: crate::locator::live_locator::ObservedTree,
+}
 
 #[cfg(test)]
 pub fn run_from_ref(
@@ -35,6 +47,14 @@ pub fn run_from_ref(
 /// A drill-down replaces refs inside an existing snapshot, so it must observe
 /// its whole subtree or leave the stored map untouched. Partial projection is
 /// only safe for a full snapshot, which writes a fresh map and destroys nothing.
+///
+/// A root with an element token is read as its subtree alone when every ref
+/// that subtree holds carries a token too, since a token re-identifies itself.
+/// Any other drill locates its root in one complete observation of its window,
+/// by its token or by its recorded predicate, and projects the subtree from that
+/// same observation: the refs it writes were counted against the window they
+/// will be resolved in, and the walk that located the root doubles as their
+/// evidence.
 pub fn run_from_ref_with_context(
     adapter: &dyn PlatformAdapter,
     opts: &TreeOptions,
@@ -53,31 +73,26 @@ pub fn run_from_ref_with_context(
         .clone();
 
     let deadline = crate::Deadline::after(timeout_ms)?;
-    let window = resolve_result_window(&entry, adapter, deadline)?;
-    let handle = adapter.resolve_element_strict(&entry, deadline)?;
-
-    let observation_options = opts.with_ref_identity_bounds();
-    let raw_tree = crate::tree::renderer_accessibility::observe_tree(
-        adapter,
-        ObservationRoot::Element {
-            handle: &handle,
-            entry: &entry,
-            root_ref: Some(&local_root_ref),
-        },
-        &ObservationRequest::snapshot(&observation_options, deadline).validate()?,
-    )?
-    .into_accessibility_tree()?;
-    let nodes_observed = count_nodes(&raw_tree);
+    let capture = drill_capture(adapter, opts, &entry, deadline)?;
+    let DrillCapture {
+        window,
+        tree: raw_tree,
+        nodes_observed,
+        path_prefix,
+        observed,
+    } = capture;
+    let capture_proof =
+        crate::refs::ref_capture_proof::CaptureProof::new(&observed).rooted_at(&path_prefix);
 
     let source_app = entry.source.source_app.as_deref();
     let source_window_id = entry.source.source_window_id.as_deref();
     let source_window_title = entry.source.source_window_title.as_deref();
-    let path_prefix = entry.scope.path.clone();
     let config = RefAllocConfig {
         options: RefAllocOptions {
             include_bounds: opts.include_bounds,
             interactive_only: opts.interactive_only,
             compact: opts.compact,
+            force_renderer_accessibility: entry.source.renderer_accessibility_forced,
         },
         source: RefAllocSource {
             pid: entry.process.pid,
@@ -92,6 +107,7 @@ pub fn run_from_ref_with_context(
             root_ref_id: Some(&local_root_ref),
             path_prefix: path_prefix.as_slice(),
         },
+        capture: Some(&capture_proof),
     };
 
     let (mut tree, refmap) = store.update_existing_snapshot(
@@ -127,53 +143,97 @@ pub fn run_from_ref_with_context(
         snapshot_id: Some(active_snapshot_id),
         complete: true,
         nodes_observed,
+        identity_unproven: None,
     })
 }
 
-/// The drill result reports the window the ref was captured from, so it must
-/// resolve that exact window — not any window of the process. Resolving before
-/// observation keeps a failed drill from persisting refs it never returns.
-fn resolve_result_window(
-    entry: &crate::refs::RefEntry,
+fn drill_capture(
     adapter: &dyn PlatformAdapter,
+    opts: &TreeOptions,
+    entry: &crate::refs::RefEntry,
     deadline: crate::Deadline,
-) -> Result<crate::WindowInfo, AppError> {
-    let Some(window_id) = entry.source.source_window_id.as_deref() else {
-        let instance = entry.process.process_instance.as_deref().ok_or_else(|| {
-            AppError::Adapter(crate::AdapterError::stale_ref_because(
-                "root ref has no process-instance identity",
+) -> Result<DrillCapture, AppError> {
+    ObservationRequest::snapshot(opts, deadline).validate()?;
+    let (window, mut observed, index) = match read_saved_root(
+        adapter,
+        entry,
+        deadline,
+        |window, handle| read_token_subtree(adapter, opts, entry, window, handle, deadline),
+        |subtree| !ref_alloc::selects_tokenless_entry(&subtree.tree),
+    )? {
+        RootRead::Subtree(subtree) => return Ok(subtree),
+        RootRead::Window(window_read) => *window_read,
+    };
+    if !observed.is_exhaustive() {
+        return Err(drill_incomplete(observed.nodes.len()));
+    }
+    let path_prefix = observed
+        .nodes
+        .get(index)
+        .map(|node| node.path.clone())
+        .ok_or_else(|| {
+            AppError::Adapter(crate::AdapterError::internal(
+                "saved ref match is missing from the observation",
             ))
         })?;
-        return crate::system::window_lookup::find_window_for_process(
-            crate::ProcessIdentity::new(entry.process.pid, instance),
-            adapter,
-            deadline,
-        );
-    };
-    let candidates = adapter
-        .list_windows(
-            &WindowFilter {
-                focused_only: false,
-                app: entry.source.source_app.clone(),
-            },
-            deadline,
-        )?
-        .into_iter()
-        .filter(|window| window.id == window_id && window.pid == entry.process.pid)
-        .collect();
-    crate::system::window_lookup::select_window(
-        candidates,
-        crate::AdapterError::new(
-            crate::ErrorCode::WindowNotFound,
-            format!("Source window '{window_id}' was not found"),
-        )
-        .with_suggestion("Run 'snapshot' to refresh, then retry with an updated ref"),
-        "Multiple windows matched the source window ID",
-    )
+    let nodes_observed = observed.nodes.len();
+    let tree = observed.project_subtree(index, ObservationRequest::snapshot_logical_depth(opts))?;
+    Ok(DrillCapture {
+        window,
+        tree,
+        nodes_observed,
+        path_prefix,
+        observed,
+    })
 }
 
-fn count_nodes(node: &crate::AccessibilityNode) -> usize {
-    1 + node.children.iter().map(count_nodes).sum::<usize>()
+/// A token root's subtree read alone, through the adapter that owns the
+/// token. It proves nothing, so it stands only for a drill whose refs all carry
+/// tokens.
+fn read_token_subtree(
+    adapter: &dyn PlatformAdapter,
+    opts: &TreeOptions,
+    entry: &crate::refs::RefEntry,
+    window: &WindowInfo,
+    handle: &crate::adapter::NativeHandle,
+    deadline: crate::Deadline,
+) -> Result<DrillCapture, AppError> {
+    let options = opts.with_ref_identity_bounds();
+    let mut observed = crate::tree::renderer_accessibility::observe_tree(
+        adapter,
+        ObservationRoot::Element {
+            handle,
+            entry,
+            root_ref: None,
+        },
+        &ObservationRequest::snapshot(&options, deadline).validate()?,
+        None,
+    )?;
+    let (tree, complete, nodes_observed) = observed.project_partial()?;
+    if !complete {
+        return Err(drill_incomplete(nodes_observed));
+    }
+    Ok(DrillCapture {
+        window: window.clone(),
+        tree,
+        nodes_observed,
+        path_prefix: entry.scope.path.clone(),
+        observed,
+    })
+}
+
+fn drill_incomplete(nodes_observed: usize) -> AppError {
+    AppError::Adapter(
+        crate::AdapterError::new(
+            crate::ErrorCode::Timeout,
+            "The drill-down observation was incomplete, so no refs were replaced",
+        )
+        .with_suggestion("Retry with a larger --timeout-ms, or drill a narrower subtree")
+        .with_details(serde_json::json!({
+            "kind": "observation_incomplete",
+            "nodes_observed": nodes_observed,
+        })),
+    )
 }
 
 #[cfg(test)]

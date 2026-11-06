@@ -20,7 +20,6 @@ pub use wait_selector::WaitSelector;
 #[derive(Debug, Clone, Default)]
 pub struct CommandContext {
     session: Option<SessionScope>,
-    pinned_session_namespace: bool,
     inherited_deadline: Option<crate::Deadline>,
     trace: TraceConfig,
     artifacts_full: bool,
@@ -97,7 +96,6 @@ impl CommandContext {
             session::cursor_overlay_for_session(session.as_ref().map(|scope| scope.id.as_str()))?;
         Ok(Self {
             session,
-            pinned_session_namespace: false,
             inherited_deadline: None,
             trace: TraceConfig::build(trace_path, segment_dir, trace_strict)?,
             artifacts_full,
@@ -156,15 +154,6 @@ impl CommandContext {
         });
         self.options.cursor_overlay = cursor_overlay;
         self
-    }
-
-    pub fn with_pinned_session_namespace(mut self) -> Self {
-        self.pinned_session_namespace = true;
-        self
-    }
-
-    pub fn session_namespace_is_pinned(&self) -> bool {
-        self.pinned_session_namespace
     }
 
     pub fn is_headed(&self) -> bool {
@@ -248,11 +237,6 @@ impl CommandContext {
 
     pub fn for_batch_item(&self, session_id: Option<String>) -> Result<Self, AppError> {
         let session_id = session_id.or_else(|| self.session_id().map(str::to_owned));
-        if self.pinned_session_namespace && session_id.as_deref() != self.session_id() {
-            return Err(AppError::invalid_input(
-                "A command host cannot switch snapshot namespaces",
-            ));
-        }
         if let Some(id) = session_id.as_deref() {
             validate_session_id(id)?;
         }
@@ -283,7 +267,6 @@ impl CommandContext {
         };
         Ok(Self {
             session,
-            pinned_session_namespace: self.pinned_session_namespace,
             inherited_deadline: self.inherited_deadline,
             trace,
             artifacts_full,

@@ -4,6 +4,15 @@ use crate::{
     ref_action::ref_action_wait_context::RefActionWaitContext,
 };
 
+/// The plain dispatch: the handle the action landed on is dropped.
+pub(crate) fn dispatch_resolved(
+    target: RefActionContext<'_>,
+    request: ActionRequest,
+    lease: &crate::InteractionLease,
+) -> Result<ActionResult, crate::AppError> {
+    crate::ref_action::dispatch_resolved_landing(target, request, lease).map(|(result, _)| result)
+}
+
 pub(crate) fn execute_single_shot(
     context: RefActionWaitContext<'_>,
     request: ActionRequest,

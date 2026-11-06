@@ -21,6 +21,7 @@ impl ObservationOps for CompleteNoCandidateAdapter {
     }
 
     crate::adapter::complete_live_observation!("menubutton", "Advanced", [capability::EXPAND]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for CompleteNoCandidateAdapter {}
@@ -41,12 +42,16 @@ fn expand_complete_no_candidate_fails_immediately_with_stale_ref() {
             context: &CommandContext::default(),
         },
         ActionRequest::headless(Action::Expand).with_timeout_ms(Some(5_000)),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .unwrap_err();
 
     assert_eq!(error.code, ErrorCode::StaleRef);
-    assert_eq!(adapter.resolve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        adapter.resolve_calls.load(Ordering::SeqCst),
+        2,
+        "one provisional landing and one full resolution, then no retry"
+    );
     assert!(started.elapsed() < std::time::Duration::from_millis(500));
 }
 
@@ -63,7 +68,7 @@ fn incomplete_resolution_still_polls_until_success() {
             context: &CommandContext::default(),
         },
         request_with_timeout(5_000),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .unwrap();
 

@@ -28,12 +28,21 @@ impl SystemOps for SurfaceAdapter {
         _lease: &InteractionLease,
     ) -> Result<WindowInfo, AdapterError> {
         self.opens.lock().unwrap().push((surface, policy));
+        if surface == SnapshotSurface::Dock {
+            return Ok(WindowInfo::for_process(&crate::AppInfo {
+                name: "Dock".into(),
+                pid: crate::ProcessId::new(7),
+                bundle_id: None,
+                process_instance: Some("instance-7".into()),
+                presentation: None,
+            }));
+        }
         Ok(shell_window())
     }
 }
 
-/// An adapter that keeps the trait default for the open seam - the macOS
-/// shape today - but still grants the lease, so the `not_supported` the
+/// An adapter that keeps the trait default for the open seam, as an adapter
+/// without the seam does, but still grants the lease, so the `not_supported` the
 /// command surfaces is provably the open seam's own answer and not the
 /// lease acquisition failing.
 struct LeaseOnlyAdapter {
@@ -194,4 +203,18 @@ fn the_trait_default_answers_not_supported_for_adapters_without_the_surface() {
     };
     assert!(inner.is_default_not_supported("open_system_surface"));
     assert_eq!(error.code(), "PLATFORM_NOT_SUPPORTED");
+}
+
+#[test]
+fn a_surface_no_window_presents_leaves_the_window_out() {
+    let value = execute(
+        OpenSystemSurfaceArgs {
+            surface: SnapshotSurface::Dock,
+        },
+        &adapter(),
+        &headed(),
+    )
+    .unwrap();
+
+    assert_eq!(value, serde_json::json!({ "surface": "dock" }));
 }

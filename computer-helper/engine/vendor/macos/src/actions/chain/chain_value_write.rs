@@ -93,17 +93,22 @@ mod imp {
             }
             delivered = true;
             delivery.mark_delivered();
-            match read_number(element, deadline).map_err(|error| delivery.annotate(error))? {
+            match read_after_step(element, &current_text, deadline)
+                .map_err(|error| delivery.annotate(error))?
+            {
                 Some((next, text)) => {
-                    let progressed = increment_progressed(&current_text, &text, requested);
+                    if !increment_progressed(&current_text, &text, requested) {
+                        return Err(delivery.annotate(
+                            AdapterError::new(
+                                agent_desktop_core::ErrorCode::ActionFailed,
+                                format!("Native steps cannot reach {requested}: the last step moved the value from {current_text} to {text}"),
+                            )
+                            .with_suggestion("Read the current value and set one the control's steps reach.")
+                            .with_details(serde_json::json!({ "before_step": current_text, "after_step": text })),
+                        ));
+                    }
                     current = next;
                     current_text = text;
-                    if !progressed {
-                        return Err(delivery.annotate(AdapterError::new(
-                            agent_desktop_core::ErrorCode::ActionFailed,
-                            "Native increments stopped progressing toward the requested value",
-                        ).with_suggestion("Read the current value; choose a target supported by the control's native step size.")));
-                    }
                 }
                 _ => break,
             }
@@ -195,6 +200,23 @@ mod imp {
             || (direction.is_some()
                 && increment_action(before, after) == direction
                 && increment_action(after, target) == direction)
+    }
+
+    /// An increment is applied asynchronously by some controls, so the value
+    /// read right after the action can still be the previous one.
+    fn read_after_step(
+        element: &AXElement,
+        previous: &str,
+        deadline: Deadline,
+    ) -> Result<Option<(f64, String)>, AdapterError> {
+        let settle = deadline.capped(std::time::Duration::from_millis(400));
+        loop {
+            let read = read_number(element, deadline)?;
+            if settle.is_expired() || read.as_ref().is_none_or(|(_, text)| text != previous) {
+                return Ok(read);
+            }
+            std::thread::sleep(settle.remaining().min(std::time::Duration::from_millis(20)));
+        }
     }
 
     pub(crate) fn increment_target_reached(current: &str, target: &str) -> bool {

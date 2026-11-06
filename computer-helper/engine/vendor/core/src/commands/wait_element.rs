@@ -32,7 +32,7 @@ pub(crate) fn wait_for_element(
     let mut last_observed = json!(null);
     let mut expected_bounds_hash = None;
     loop {
-        match resolve_within_deadline(adapter, &entry, deadline) {
+        match resolve_within_deadline(adapter, &entry, deadline, None) {
             ResolveAttemptOutcome::DeadlinePassed => {
                 return wait_timeout::element(ref_id, predicate, timeout_ms, last_observed);
             }

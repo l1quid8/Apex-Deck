@@ -55,15 +55,11 @@ Take a new snapshot, so the adapter resolves from a new handle. Retrying the sam
 read cannot fix it. After you launch a WPF application, use
 `wait --event window-opened` or a short `wait` before the first snapshot.
 
-## Unnamed Web Content Resolves When Its Bounds Are Its Only Identity
+## Unnamed Web Content
 
-A web content element with **no accessible name** resolves through strict ref
-resolution when its rectangle has positive area: the ref keeps its bounds as its
-identity, and resolution accepts the single live candidate whose bounds hash and
-role match. Named elements resolve normally. Two cases still need headed
-coordinate input from a parent's bounds, or a CDP client (`launch --cdp`):
-
-- an unnamed element with a zero-area rectangle (offscreen or virtualized
-  content shares zero-extent bounds, which cannot be unique);
-- an unnamed element whose geometry matches two or more live candidates, which
-  returns `AMBIGUOUS_TARGET` instead of guessing.
+A ref to web content with **no accessible name** is identified by its role plus
+any AutomationId or description it carries, and resolves only if that
+combination was unique in the window when you took it and still is. Bounds are
+never identity. A ref to one of several unnamed elements that share role,
+AutomationId and description returns `AMBIGUOUS_TARGET`; use headed coordinate
+input from a parent's bounds, or a CDP client (`launch --cdp`).

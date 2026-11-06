@@ -71,8 +71,10 @@ mod imp {
             std::time::Instant::now() + deadline.remaining(),
             &mut usage,
         );
+        let absent = crate::tree::properties::ax_absence::is_absent_action_error;
         read.value
             .map(|actions| actions.iter().any(|action| action == name))
+            .or_else(|| read.error.filter(|error| absent(*error)).map(|_| false))
     }
 }
 

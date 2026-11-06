@@ -1,7 +1,7 @@
 #import "cursor_overlay_chrome.h"
 
 const CGFloat ADRippleSize = 108.0;
-static const NSWindowLevel ADEffectLevel = 24;
+static const NSWindowLevel ADEffectLevel = NSPopUpMenuWindowLevel + 1;
 static const NSUInteger ADRippleRings = 2;
 // Room around the highlight for its glow and the pop it starts with, both of
 // which draw outside the outline and would be clipped at the window's edge.
@@ -92,7 +92,7 @@ NSWindow *ADWindow(NSRect frame) {
     window.ignoresMouseEvents = YES;
     window.releasedWhenClosed = NO;
     window.hidesOnDeactivate = NO;
-    window.level = 25;
+    window.level = NSPopUpMenuWindowLevel + 2;
     window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
                                 NSWindowCollectionBehaviorFullScreenAuxiliary;
     NSView *view = [[NSView alloc]

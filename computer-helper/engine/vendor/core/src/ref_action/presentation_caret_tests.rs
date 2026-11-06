@@ -65,6 +65,7 @@ impl ObservationOps for CaretAdapter {
             offscreen: Some(false),
         }
     );
+    crate::adapter::saved_ref_scope!("textfield", Some("Name"));
 }
 
 impl ActionOps for CaretAdapter {
@@ -109,7 +110,7 @@ fn field() -> RefEntry {
         capability::SET_VALUE.into(),
     ];
     entry.source.source_app = Some("Fixture".into());
-    entry.source.source_window_id = Some("w-42".into());
+    entry.source.source_window_id = Some("w-1".into());
     entry.source.source_window_title = Some("Fixture".into());
     entry
 }

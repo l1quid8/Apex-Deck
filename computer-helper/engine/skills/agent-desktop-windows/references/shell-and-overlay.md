@@ -17,7 +17,7 @@ windows.
 - **`snapshot --surface <kind>` needs no `--app` and works headless.** A closed
   surface returns `WINDOW_NOT_FOUND` with a suggestion that names
   `open-system-surface`.
-- **`quick-settings` returns `PLATFORM_NOT_SUPPORTED`** and names
+- **`quick-settings` returns `INVALID_ARGS`** and names
   `action-center`, where the quick actions live.
 - **`start-menu` is whatever the Win key raises.** Before Windows 11 that is a
   search overlay whose root holds a `SearchTextBox`, not a tile grid. Drive it

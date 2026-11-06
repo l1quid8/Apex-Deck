@@ -61,7 +61,7 @@ App content is still sent to the model you chose, including its cloud provider. 
 
 ## Dependency and optional decisions helper
 
-The embedded Agent Desktop core/macOS engine is pinned at `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc`. Its Apache-2.0 license and provenance ship inside the helper. Deck retains its own capture, permissions, turn isolation, privacy and cancellation controls. See `computer-helper/engine/PROVENANCE.md` for adaptations.
+The embedded Agent Desktop core/macOS engine is pinned at `2b0a7334fc111730454b726e6800aa41cdafc093` (1.2.0). Since 1.1 a reference follows its own element: a removed row returns a stale reference instead of acting on its neighbour, Chromium and Electron apps expose their web content automatically, and the Dock, menu bar extras and system panels can be read. Bots also get a `control` tool for checkboxes, switches, disclosure triangles, pop-up menus, tabs and fields (toggle, check, uncheck, expand, collapse, select, set_value), which works without the pointer or keyboard and is more reliable than clicking. Its Apache-2.0 license and provenance ship inside the helper. Deck retains its own capture, permissions, turn isolation, privacy and cancellation controls. See `computer-helper/engine/PROVENANCE.md` for adaptations.
 
 Upstream JEV/CLEF decision automation is optional and is not enabled in this release. Its `scripts/jev/policy.mjs` accepts `TYPESAFE_BASE_URL` and `TYPESAFE_MODEL`, but sends a structured decisions protocol. A generic OpenAI-compatible chat endpoint does not imply compatibility. The normal Deck tools require no extra decisions connector or credentials.
 

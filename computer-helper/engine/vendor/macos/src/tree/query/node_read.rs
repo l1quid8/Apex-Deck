@@ -56,7 +56,7 @@ pub(crate) fn read_node(
             child_read: ChildRead::empty(false),
         });
     }
-    let attrs = read.attrs;
+    let mut attrs = read.attrs;
     let role = attrs
         .role
         .as_deref()
@@ -66,15 +66,17 @@ pub(crate) fn read_node(
     let secure = attrs.role.as_deref() == Some("AXSecureTextField")
         || attrs.subrole.as_deref() == Some("AXSecureTextField");
     let value = (!secure).then(|| attrs.value.clone()).flatten();
-    let actions = if let Some(actions) = requirements.ref_evidence.actions.then(|| {
-        crate::tree::properties::action_list::read_platform_available_actions(
-            element, &role, &attrs, deadline, usage,
-        )
-    }) {
+    let actions = if let Some((actions, enabled_by_container)) =
+        requirements.ref_evidence.actions.then(|| {
+            crate::tree::properties::action_list::read_platform_available_actions(
+                element, &role, &attrs, deadline, usage,
+            )
+        }) {
         stats.reads.counts.action_reads += 1;
         stats.reads.health.cannot_complete += u64::from(actions.cannot_complete);
         stats.reads.health.deadline_exhausted += u64::from(actions.deadline_exhausted);
         stats.semantic_reads.settable_reads += actions.settable_reads;
+        attrs.states.enabled |= enabled_by_container;
         if actions.api_disabled {
             return Err(permission_error("actions"));
         }

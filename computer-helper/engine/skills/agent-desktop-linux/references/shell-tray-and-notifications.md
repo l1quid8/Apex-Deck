@@ -271,8 +271,8 @@ two can work:
 | `system-tray` | Needs `org.kde.StatusNotifierWatcher`. Without it: `PLATFORM_NOT_SUPPORTED`, `watcher: absent`, the same refusal as `snapshot --surface system-tray`. No window is returned |
 | `action-center` | Opens the GNOME message list when its container and opener are proven; otherwise `ACTION_NOT_SUPPORTED`, `shell_container_unproven` |
 | `quick-settings` | `ACTION_NOT_SUPPORTED`, `shell_container_unproven`, before any input |
-| `taskbar` | `PLATFORM_NOT_SUPPORTED`: no stock shell shows a dock |
-| `start-menu`, `system-tray-overflow`, other values | `PLATFORM_NOT_SUPPORTED`, not supported on this platform |
+| `taskbar` | `INVALID_ARGS`: no stock shell shows a dock |
+| `start-menu`, `system-tray-overflow`, other values | `INVALID_ARGS`, naming `system-tray`, `action-center` and `quick-settings` |
 
 Retrying an unsupported value gives the same refusal.
 

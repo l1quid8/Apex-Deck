@@ -70,6 +70,7 @@ impl ObservationOps for HitTestOutcomeAdapter {
     ) -> Result<HitTestResult, AdapterError> {
         self.outcome.clone()
     }
+    crate::adapter::saved_ref_scope!("button", Some("Target"));
 }
 
 impl ActionOps for HitTestOutcomeAdapter {}
@@ -91,6 +92,7 @@ fn ref_snapshot(pid: u32) -> String {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -107,6 +109,7 @@ fn ref_snapshot(pid: u32) -> String {
             source_window_title: None,
             source_window_bounds_hash: None,
             source_surface: crate::adapter::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,
@@ -253,6 +256,7 @@ fn focus_ref_entry() -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -269,6 +273,7 @@ fn focus_ref_entry() -> RefEntry {
             source_window_title: Some("Fixture".into()),
             source_window_bounds_hash: None,
             source_surface: crate::adapter::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,
@@ -278,6 +283,7 @@ fn focus_ref_entry() -> RefEntry {
     }
 }
 
+#[derive(Default)]
 struct FocusFailureAdapter {
     resolve_error: Option<AdapterError>,
     focus_error: Option<AdapterError>,
@@ -321,8 +327,7 @@ fn focus_test_lease() -> crate::InteractionLease {
 fn transient_window_resolution_failure_blocks_headed_input() {
     let adapter = FocusFailureAdapter {
         resolve_error: Some(AdapterError::app_unresponsive("Fixture")),
-        focus_error: None,
-        focus_calls: AtomicU32::new(0),
+        ..Default::default()
     };
 
     let error = focus_for_physical_input(
@@ -338,14 +343,29 @@ fn transient_window_resolution_failure_blocks_headed_input() {
 }
 
 #[test]
+fn windowless_ref_skips_focus_only_when_process_owned() {
+    let adapter = FocusFailureAdapter::default();
+    let context = CommandContext::default().with_headed(true);
+    let lease = focus_test_lease();
+    let mut entry = focus_ref_entry();
+    entry.source.source_window_id = None;
+    entry.source.source_window_title = Some(String::new());
+    let skipped = focus_for_physical_input(Some(&entry), &adapter, &context, &lease);
+    assert_eq!(skipped.ok(), Some(false));
+    entry.source.source_window_title = Some("Fixture".into());
+    let refused = focus_for_physical_input(Some(&entry), &adapter, &context, &lease);
+    assert_eq!(refused.unwrap_err().code(), "ACTION_NOT_SUPPORTED");
+    assert_eq!(adapter.focus_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn transient_focus_failure_blocks_headed_input() {
     let adapter = FocusFailureAdapter {
-        resolve_error: None,
         focus_error: Some(AdapterError::new(
             ErrorCode::ActionFailed,
             "window could not be raised",
         )),
-        focus_calls: AtomicU32::new(0),
+        ..Default::default()
     };
 
     let error = focus_for_physical_input(
@@ -363,9 +383,8 @@ fn transient_focus_failure_blocks_headed_input() {
 #[test]
 fn permission_failure_during_focus_is_preserved() {
     let adapter = FocusFailureAdapter {
-        resolve_error: None,
         focus_error: Some(AdapterError::permission_denied()),
-        focus_calls: AtomicU32::new(0),
+        ..Default::default()
     };
 
     let err = focus_for_physical_input(

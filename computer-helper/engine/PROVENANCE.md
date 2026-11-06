@@ -2,8 +2,9 @@
 
 Unified Computer Use embeds the native Rust core and macOS adapter from
 [vercel-labs/agent-desktop](https://github.com/vercel-labs/agent-desktop), pinned to
-commit `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc` (version 1.0.2), copied on
-2026-10-31. Upstream files retain their copyright notices. The Apache-2.0
+commit `2b0a7334fc111730454b726e6800aa41cdafc093` (version 1.2.0), copied on
+2026-11-06. It was first copied at `5261b52` (1.0.2) on 2026-10-31; the Apex
+changes below were carried forward unchanged except where noted. Upstream files retain their copyright notices. The Apache-2.0
 license is included at `vendor/LICENSE-agent-desktop` and is copied into the
 signed helper bundle's Resources by `spike/scripts/build-spike.sh`.
 
@@ -20,9 +21,12 @@ Apex changes to vendored source:
   callback scope, including optional exact AX target address at mutation time.
 - `core/src/wait/deadline.rs`: check revocation before bounded wait slices and
   deadline preflight.
-- `core/src/snapshot/mod.rs`: `build_with_budget`, preserving the same
-  memory-only snapshot builder while allowing the host to bound native reads.
-  The original `build` behavior is preserved.
+- `core/src/snapshot/mod.rs` and `core/src/snapshot/window_capture.rs`:
+  `build_with_budget`, preserving the same memory-only snapshot builder while
+  allowing the host to bound native reads. Upstream 1.1 moved window capture
+  into `window_capture.rs`, so the budget is threaded through
+  `capture_window`/`observe_window`. The original `build` behavior is
+  preserved, and the whole-window identity read keeps upstream's budget.
 - `macos/src/tree/properties/ax_ipc.rs`: check before AX reads, and check the
   actual target again immediately before `AXUIElementPerformAction` or
   `AXUIElementSetAttributeValue`; mutation IPC is capped at 250 ms. The
@@ -34,10 +38,13 @@ Apex changes to vendored source:
 
 Runtime boundary:
 
-- Only `capture`, retained-ref `click`, `type`, and `scroll` JSON requests are accepted by the C bridge; unknown fields/operations
-  are rejected. Reset drops in-memory observations and retained objects.
-- `RetainedRefSession`, adapter operations and RefMaps remain on one dedicated
-  `std::thread`; Swift Dispatch queues do not own Rust native identity.
+- Only `capture` and retained-ref `click`, `focus`, `reveal`, `scroll` and
+  `control` JSON requests are accepted by the C bridge; unknown fields/operations
+  are rejected. `control` maps only to headless semantic actions: toggle, check,
+  uncheck, expand, collapse, select and set_value (16 KiB value cap). Reset drops in-memory observations and retained objects.
+- Since 1.1, refs carry their own accessibility element token, so the bridge
+  no longer holds an upstream `RetainedRefSession` (removed upstream). Adapter
+  operations and RefMaps remain on one dedicated `std::thread`; Swift Dispatch queues do not own Rust native identity.
 - Capture enumerates the explicitly granted app bundle's windows only, checks the exact PID
   and window number, uses a 2-second read budget, and retains only surfaced
   safe refs. Observation reads are bounded to 2,000 nodes, 4,000 edges,

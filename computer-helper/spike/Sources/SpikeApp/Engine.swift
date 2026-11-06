@@ -140,6 +140,17 @@ final class NativeEngine {
     guard let target = target else { throw Refusal("engine_focus_target_unavailable") }
     return target
   }
+  /// Headless semantic control. The bridge accepts only toggle, check, uncheck,
+  /// expand, collapse, select (with a label) and set_value (with text).
+  @discardableResult
+  func control(observation: String, ref: String, action: String, value: String?, overlayLabel: String? = nil,
+    check: @escaping () throws -> Void) throws -> [String: Any] {
+    try check()
+    guard let snapshot = snapshots.removeValue(forKey: observation), snapshot.refs.contains(ref) else { throw Refusal("stale_observation") }
+    var request: [String: Any] = ["op": "control", "pid": snapshot.pid, "observation": observation, "ref": ref, "action": action]
+    if let value = value { request["value"] = value }
+    return try invoke(request, pid: snapshot.pid, overlayLabel: overlayLabel, overlayAction: .click, check: check)
+  }
   @discardableResult
   func reveal(observation: String, ref: String, overlayLabel: String? = nil,
     check: @escaping () throws -> Void) throws -> [String: Any] {

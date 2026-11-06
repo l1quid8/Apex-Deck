@@ -61,6 +61,7 @@ impl ObservationOps for UnknownHitCursorAdapter {
     ) -> Result<crate::adapter::hit_test::HitTestResult, AdapterError> {
         Ok(crate::adapter::hit_test::HitTestResult::Unknown)
     }
+    crate::adapter::saved_ref_scope!("textfield", Some("Run"));
 }
 
 impl ActionOps for UnknownHitCursorAdapter {

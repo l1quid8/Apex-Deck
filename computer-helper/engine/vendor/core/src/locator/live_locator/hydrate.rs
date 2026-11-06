@@ -19,13 +19,21 @@ pub(super) fn retryable_error(error: &AdapterError) -> bool {
     )
 }
 
+/// Resolves each selected match to the entry it is published under.
+///
+/// The saved entry keeps the identity the whole-window read recorded and proved
+/// unique, and the landing is checked against it. Fields hydration read beyond
+/// that identity describe the match in the response only: a proof is never
+/// carried onto a predicate wider than the one it was measured for.
 pub(super) fn selected_matches(
     adapter: &dyn PlatformAdapter,
     query: &LocatorQuery,
     request: &super::LocatorResolveRequest,
     resolution: &mut LocatorResolution,
+    observed: &ObservedTree,
 ) -> Result<(), AppError> {
     let deadline = request.deadline;
+    let proof = crate::refs::ref_capture_proof::CaptureProof::new(observed);
     let mut refmap = RefMap::new();
     for matched in &mut resolution.matches {
         ensure_remaining(deadline)?;
@@ -33,6 +41,8 @@ pub(super) fn selected_matches(
         let bounds_space = preliminary.geometry.bounds_space.unwrap_or_default();
         let has_identity = crate::refs::ref_identity::has_meaningful_identity(&preliminary);
         let has_bounds = preliminary.geometry.bounds_hash.is_some();
+        let index = matched.document_order as usize;
+        let proven = proof.proves_node(&preliminary, index);
         tracing::debug!(
             role = preliminary.identity.role,
             path_len = preliminary.scope.path.len(),
@@ -40,7 +50,7 @@ pub(super) fn selected_matches(
             has_bounds,
             "hydrating selected locator anchor"
         );
-        if !has_identity && !has_bounds {
+        if !proven && !has_identity && !has_bounds {
             return Err(anchor_missing(&preliminary).into());
         }
         if matched.fully_observed {
@@ -61,6 +71,7 @@ pub(super) fn selected_matches(
             hydration_root,
             &ObservationRequest::selected_hydration(query, request, hydration_root, deadline)
                 .validate()?,
+            None,
         )?;
         hydrated.stats.reads.counts.observation_attempts =
             hydrated.stats.reads.counts.observation_attempts.max(1);
@@ -79,22 +90,19 @@ pub(super) fn selected_matches(
             }
             if node.evidence.role.known().map(String::as_str)
                 != Some(preliminary.identity.role.as_str())
-                || !anchor_matches(&preliminary, node)
+                || !anchor_matches(&preliminary, node, proven)
             {
                 return Err(changed_during_hydration().into());
             }
-            let mut entry = super::materialize::ref_entry(node, &hydrated.source, query);
-            preserve_verified_identity(&preliminary, node, &mut entry);
+            let entry = RefEntry {
+                identity: preliminary.identity.clone(),
+                ..super::materialize::ref_entry(node, &hydrated.source, query)
+            };
             let name = node.evidence.name.meaningful_string().unwrap_or_default();
             let value = node.evidence.value.meaningful_string();
             let screen_bounds = super::materialize::screen_bounds(&node.evidence);
             (entry, name, value, node.document_order, screen_bounds)
         };
-        if !crate::refs::ref_identity::has_meaningful_identity(&entry)
-            && entry.geometry.bounds_hash.is_none()
-        {
-            return Err(anchor_missing(&entry).into());
-        }
         let validation = super::evaluate_locator_tree(
             hydrated,
             query,
@@ -179,7 +187,14 @@ pub(super) fn geometry_complete(
     }
 }
 
-fn anchor_matches(preliminary: &RefEntry, node: &ObservedNode) -> bool {
+/// Whether the landed element is the one the anchored entry names.
+///
+/// An entry the whole-window read proved unique must match the full predicate
+/// it was proven with, the same comparison a saved ref resolves under. A proof
+/// that records no text identity and no geometry anchors on that predicate
+/// alone. Every other entry, and a proven one that also records identity or
+/// geometry, keeps those comparisons too.
+fn anchor_matches(preliminary: &RefEntry, node: &ObservedNode, proven: bool) -> bool {
     let geometry = &node.evidence.ref_evidence;
     let actual_bounds_hash = match preliminary.geometry.bounds_space.unwrap_or_default() {
         crate::BoundsSpace::Window => &geometry.window_bounds,
@@ -187,7 +202,19 @@ fn anchor_matches(preliminary: &RefEntry, node: &ObservedNode) -> bool {
     }
     .known()
     .and_then(crate::Rect::bounds_hash);
-    if crate::refs::ref_identity::has_meaningful_identity(preliminary) {
+    let has_identity = crate::refs::ref_identity::has_meaningful_identity(preliminary);
+    if proven {
+        let landed = crate::refs::ref_full_predicate::FullPredicate::of_entry(preliminary).compare(
+            &crate::refs::ref_live_predicate::LivePredicate::observed(&node.evidence),
+        );
+        if landed != IdentityMatch::Match {
+            return false;
+        }
+        if !has_identity && preliminary.geometry.bounds_hash.is_none() {
+            return true;
+        }
+    }
+    if has_identity {
         return match crate::refs::ref_identity::identity_match(
             preliminary,
             &node.evidence.name,
@@ -206,29 +233,6 @@ fn anchor_matches(preliminary: &RefEntry, node: &ObservedNode) -> bool {
     }
     preliminary.geometry.bounds_hash.is_some()
         && preliminary.geometry.bounds_hash == actual_bounds_hash
-}
-
-fn preserve_verified_identity(preliminary: &RefEntry, node: &ObservedNode, entry: &mut RefEntry) {
-    if node.evidence.name.is_unknown() {
-        entry.identity.name.clone_from(&preliminary.identity.name);
-    }
-    if node.evidence.description.is_unknown() {
-        entry
-            .identity
-            .description
-            .clone_from(&preliminary.identity.description);
-    }
-    if node.evidence.value.is_unknown()
-        && !crate::tree::roles::is_mutable_value_role(&entry.identity.role)
-    {
-        entry.identity.value.clone_from(&preliminary.identity.value);
-    }
-    if !node.evidence.identifiers.is_complete() {
-        entry
-            .identity
-            .native_id
-            .clone_from(&preliminary.identity.native_id);
-    }
 }
 
 fn anchor_missing(entry: &RefEntry) -> AdapterError {
@@ -312,63 +316,5 @@ fn evidence_incomplete(
 }
 
 #[cfg(test)]
-mod retained_tests {
-    use super::*;
-    use crate::locator::live_locator::test_support::{evidence, node, tree};
-
-    #[test]
-    fn selected_hydration_preserves_window_geometry_and_refuses_unread_or_mixed_frames() {
-        use crate::{BoundsSpace, LocatorField, Rect};
-        let bounds = Rect {
-            x: 10.0,
-            y: 20.0,
-            width: 80.0,
-            height: 30.0,
-        };
-        let query = LocatorQuery::default();
-        let mut observed = node(0, evidence("button", None), vec![], &[]);
-        observed.evidence.ref_evidence.bounds = LocatorField::Unknown;
-        observed.evidence.ref_evidence.window_bounds = LocatorField::Known(bounds);
-        let source = tree(vec![observed.clone()], vec![0], true).source;
-        let mut entry = super::super::materialize::ref_entry(&observed, &source, &query);
-        assert_eq!(entry.geometry.bounds_space, Some(BoundsSpace::Window));
-        assert!(evidence_complete(&query, &observed, BoundsSpace::Window));
-        assert!(anchor_matches(&entry, &observed));
-
-        observed.evidence.ref_evidence.window_bounds =
-            LocatorField::Known(Rect { x: 110.0, ..bounds });
-        observed.evidence.ref_evidence.bounds = LocatorField::Known(bounds);
-        assert!(!anchor_matches(&entry, &observed));
-        observed.evidence.ref_evidence.bounds = LocatorField::Unknown;
-        for window in [LocatorField::Unknown, LocatorField::Absent] {
-            observed.evidence.ref_evidence.window_bounds = window;
-            assert!(!evidence_complete(&query, &observed, BoundsSpace::Window));
-            assert!(!anchor_matches(&entry, &observed));
-        }
-        observed.evidence.ref_evidence.window_bounds = LocatorField::Unknown;
-        observed.evidence.ref_evidence.bounds = LocatorField::Known(bounds);
-        assert!(!evidence_complete(&query, &observed, BoundsSpace::Window));
-        observed.evidence.ref_evidence.window_bounds = LocatorField::Known(bounds);
-        observed.evidence.ref_evidence.bounds = LocatorField::Unknown;
-        entry.geometry.bounds_space = Some(BoundsSpace::Screen);
-        assert!(!evidence_complete(&query, &observed, BoundsSpace::Screen));
-        assert!(!anchor_matches(&entry, &observed));
-    }
-
-    #[test]
-    fn missing_retained_identity_cannot_pass_hydration_through_geometry() {
-        let mut observed = evidence("textfield", None);
-        observed.identifiers = observed.identifiers.with_retained_object("host:1".into());
-        let observed = node(0, observed, vec![], &[]);
-        let tree = tree(vec![observed.clone()], vec![0], true);
-        let entry =
-            super::super::materialize::ref_entry(&observed, &tree.source, &LocatorQuery::default());
-        assert!(anchor_matches(&entry, &observed));
-        let mut replacement = observed;
-        replacement.evidence.identifiers = crate::IdentifierEvidence::absent();
-        assert!(!anchor_matches(&entry, &replacement));
-        replacement.evidence.identifiers =
-            crate::IdentifierEvidence::absent().with_retained_object("host:2".into());
-        assert!(!anchor_matches(&entry, &replacement));
-    }
-}
+#[path = "hydrate_tests.rs"]
+mod tests;

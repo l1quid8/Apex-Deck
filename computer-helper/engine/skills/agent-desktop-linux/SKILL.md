@@ -17,8 +17,8 @@ description: >
 
 # agent-desktop-linux
 
-The observe-act loop, refs, JSON envelope, sessions and tracing match every
-platform. This file covers only what differs on Linux.
+This file covers only what differs on Linux. The observe-act loop, refs, JSON
+envelope, sessions and tracing are the same on every platform.
 
 Needs Ubuntu 24.04+ (x86_64 or aarch64), a graphical session of the signed-in
 user and a running AT-SPI bus. Other distributions need the at-spi2-core bridge
@@ -81,14 +81,21 @@ Observation and semantic actions need no helper tool.
   requested depth cut. A shell with no document yet stays incomplete when the
   budget ends. A `--timeout` shorter than the first read returns `TIMEOUT`,
   never a partial tree.
-- **Geometry-only refs require unchanged geometry.** Position and size must
-  both match, in the ref's recorded coordinate frame; a one-pixel change breaks
-  identity. After a layout change or a window move, take a fresh snapshot
-  instead of retrying the old ref. Indistinguishable siblings stay
-  `AMBIGUOUS_TARGET`: in a Text Editor window with three tabs, the text views
-  share one rectangle and one state, so a ref to any of them answers
-  `AMBIGUOUS_TARGET` with `candidate_count` 3 until the extra tabs close. A ref
-  belongs to the window it was taken in, so two windows with the same title each
+- **A ref must have been unique.** Linux stores no element address, so a ref
+  resolves only when it was the only element in the window its snapshot
+  captured with its role, native id, name and description, and exactly one live
+  element still matches. Uniqueness is counted over the whole window, not over
+  the shallow tree a `--skeleton` or `--max-depth` snapshot presents, so a twin
+  the shallow tree never showed still refuses the ref.
+  Position, size and value never count as identity, so a layout change does not
+  by itself stale a ref, but a twin does: identical buttons, or views that share
+  a role and carry no other field, refuse with `AMBIGUOUS_TARGET`,
+  `details.kind: identity_not_unique`, before anything reaches the app, and an
+  element that is gone is `STALE_REF`, `saved_ref_absent`. Take a
+  fresh snapshot after a list changes. To pick one of two identical controls on
+  X11, use `--headed mouse-click --xy`; a Wayland session refuses headed pointer
+  input, so there the twin has neither a ref nor a pointer path. A ref belongs
+  to the window it was taken in, so two windows with the same title each
   resolve their own refs.
 - **Chromium and Qt apps need a launch flag or variable** to appear on the bus;
   Electron apps need none, only `--no-sandbox` where `chrome-sandbox` is not
@@ -205,9 +212,17 @@ cursor; on Wayland none is drawn.
   an X11 session. Headless scoped `press` requires live target focus on either
   display server. Focusing a window on another workspace can switch the user's
   current desktop.
-- Linux exact FFI refs carrying bounds or a bounds hash require window-relative
-  geometry, even when the ref also carries a name or identifier. Geometry-free
-  identity refs are supported.
+- The exact FFI ref calls (`ad_resolve_element_exact` and
+  `ad_execute_ref_action_exact_with_policy`) fail with `ACTION_NOT_SUPPORTED` on every
+  platform; their bounds rule applies first: bounds must be window-relative.
+- A ref re-identifies a unique element, not a widget instance. A toolkit that
+  destroys and recreates its rows (GTK4, Qt6) resolves a ref with a unique name
+  onto the replacement, so the action lands on the new element. Identical
+  controls are refused as `AMBIGUOUS_TARGET` instead.
+- A toolkit that keeps a removed widget listed (GTK4 unparented, Qt6
+  `setParent(None)`) lets a ref resolve onto a control the user can no longer
+  see. GTK4 then answers `ok` with `delivered_unverified` and no effect. No
+  identity rule reaches this; check the application's own effect.
 
 ## References
 

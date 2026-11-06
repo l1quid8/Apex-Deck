@@ -105,6 +105,7 @@ impl ObservationOps for FailedLiveRead {
     ) -> Result<Option<Rect>, AdapterError> {
         Err(AdapterError::timeout("live read failed"))
     }
+    crate::adapter::saved_ref_scope!("checkbox", Some("Target"));
 }
 
 impl ActionOps for FailedLiveRead {}

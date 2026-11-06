@@ -7,7 +7,7 @@ resolver = "2"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
-version = "1.0.2"
+version = "1.2.0"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }

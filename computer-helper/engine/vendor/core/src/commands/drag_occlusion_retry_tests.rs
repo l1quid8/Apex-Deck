@@ -66,6 +66,7 @@ impl ObservationOps for TransientOcclusionAdapter {
             Ok(HitTestResult::ReachesTarget)
         }
     }
+    crate::adapter::saved_ref_scope!("button", Some("Item"));
 }
 
 impl ActionOps for TransientOcclusionAdapter {}

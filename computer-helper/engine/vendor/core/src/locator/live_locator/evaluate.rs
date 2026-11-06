@@ -10,14 +10,27 @@ use super::{
     selection_completeness::first_is_authoritative,
     validate::{validate_query, validate_request},
 };
-use crate::{AdapterError, locator::LocatorQuery};
+use crate::{AdapterError, locator::LocatorQuery, refs::RefPath};
 use std::collections::BTreeSet;
 
 pub fn evaluate_locator_tree(
-    mut tree: ObservedTree,
+    tree: ObservedTree,
     query: &LocatorQuery,
     request: &LocatorResolveRequest,
 ) -> Result<LocatorResolution, AdapterError> {
+    evaluate_locator_tree_in(tree, None, query, request).map(|(resolution, _)| resolution)
+}
+
+/// `evaluate_locator_tree` over one complete observation, with the matches drawn
+/// from the subtree at `scope` alone. The observation comes back with the
+/// resolution, because a hydrated match is proven against the same read its
+/// query was answered from.
+pub(super) fn evaluate_locator_tree_in(
+    mut tree: ObservedTree,
+    scope: Option<&RefPath>,
+    query: &LocatorQuery,
+    request: &LocatorResolveRequest,
+) -> Result<(LocatorResolution, ObservedTree), AdapterError> {
     validate_query(query)?;
     validate_request(request)?;
     let normalized = normalize_query(query);
@@ -59,6 +72,9 @@ pub fn evaluate_locator_tree(
     let mut matched_indices = Vec::new();
     let mut unknown = false;
     for index in 0..tree.nodes.len() {
+        if !in_scope(&tree.nodes[index].path, scope) {
+            continue;
+        }
         match matches[cell(index, root_clause, clauses.len())] {
             MatchVerdict::Match => matched_indices.push(index),
             MatchVerdict::Unknown => unknown = true,
@@ -83,6 +99,7 @@ pub fn evaluate_locator_tree(
             Some(refmap)
         }
     };
+    let proof = crate::refs::ref_capture_proof::CaptureProof::new(&tree);
     let mut selected_matches = Vec::with_capacity(selected.len());
     for index in selected {
         let data = match_data(&tree, index, &parents)
@@ -91,7 +108,8 @@ pub fn evaluate_locator_tree(
             .nodes
             .get(index)
             .ok_or_else(|| AdapterError::internal("selected locator node is out of bounds"))?;
-        let entry = ref_entry(node, &tree.source, &normalized);
+        let mut entry = ref_entry(node, &tree.source, &normalized);
+        entry.identity.unique_at_capture = proof.proves_node(&entry, index);
         selected_matches.push(LocatorMatch {
             data,
             document_order: node.document_order,
@@ -106,6 +124,7 @@ pub fn evaluate_locator_tree(
     let roles_present = if matched_indices.is_empty() {
         tree.nodes
             .iter()
+            .filter(|node| in_scope(&node.path, scope))
             .filter_map(|node| match &node.evidence.role {
                 LocatorField::Known(role) => Some(role.clone()),
                 LocatorField::Absent | LocatorField::Unknown => None,
@@ -132,18 +151,21 @@ pub fn evaluate_locator_tree(
                 )
             })
     };
-    Ok(LocatorResolution {
-        matches: selected_matches,
-        refmap,
-        stats,
-        meta: LocatorResolutionMeta {
-            total_matches,
-            complete,
-            selection_complete,
-            truncated,
-            roles_present,
+    Ok((
+        LocatorResolution {
+            matches: selected_matches,
+            refmap,
+            stats,
+            meta: LocatorResolutionMeta {
+                total_matches,
+                complete,
+                selection_complete,
+                truncated,
+                roles_present,
+            },
         },
-    })
+        tree,
+    ))
 }
 
 fn evaluate_node(
@@ -260,4 +282,11 @@ fn aggregate_subtree(
 
 fn cell(node: usize, clause: usize, clause_count: usize) -> usize {
     node * clause_count + clause
+}
+
+/// Whether a node sits inside the subtree a rooted query is scoped to. The scope
+/// is the matched root's own path in the same observation, so the root itself and
+/// its descendants are in and nothing else is.
+fn in_scope(path: &RefPath, scope: Option<&RefPath>) -> bool {
+    scope.is_none_or(|scope| path.starts_with(scope.as_slice()))
 }
