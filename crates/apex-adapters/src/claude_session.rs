@@ -288,7 +288,11 @@ pub(crate) async fn run_with_computer(
         };
         let Some(line) = next else { break };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
-            if message["type"] == "system" && message["subtype"] == "init" && message["mcp_servers"].is_array() {
+            if message["type"] == "system" && message["subtype"] == "init" {
+                if tools_disabled && !trusted_computer && ["mcp_servers", "tools"].iter().any(|key| message[*key].as_array().is_some_and(|items| !items.is_empty())) {
+                    child.terminate_tree().await.map_err(std::io::Error::other)?;
+                    return Err(std::io::Error::other("Model-only Claude advertised native tools or MCP connections; turn refused"));
+                }
                 on_progress(Progress::ToolServers(&crate::mcp::claude_init_servers(&message)));
             }
             if message["type"] == "control_request" {

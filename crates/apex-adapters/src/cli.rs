@@ -928,7 +928,9 @@ impl Participant for CliParticipant {
                 let native=match event {
                     Progress::Work(step)=>step.kind!=apex_core::work_steps::StepKind::Thinking,
                     Progress::Change(_) | Progress::Todo(_)=>true,
-                    Progress::ToolServers(servers)=>!servers.is_empty(),
+                    // Claude includes inert built-in plugin metadata in this UI list.
+                    // Its raw init frame verifies actual tools/MCP separately.
+                    Progress::ToolServers(servers)=>!servers.is_empty() && !matches!(self.config.backend, Backend::Agent { tool:AgentTool::ClaudeCode, .. }),
                     _=>false,
                 };
                 if native { refusal.block(); } else { on_progress(event); }
@@ -1532,6 +1534,31 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 #[cfg(all(test, target_os = "macos"))]
 mod model_only_native_regressions {
     use super::*;
+    #[tokio::test]
+    async fn tool_free_claude_allows_builtin_plugin_metadata_without_native_tools() {
+        use std::os::unix::fs::PermissionsExt;
+        let files=crate::attachments::Staged::new().unwrap();
+        let program=files.dir.join("claude");
+        std::fs::write(&program,r#"#!/bin/sh
+IFS= read -r line
+printf '%s\n' '{"type":"system","subtype":"init","mcp_servers":[],"tools":[],"plugins":[{"name":"cc-plugin-agents-md","path":"builtin","source":"cc-plugin-agents-md@builtin"}]}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"GATEWAY_PONG"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"GATEWAY_PONG"}'
+"#).unwrap();
+        std::fs::set_permissions(&program,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"fixture","display_name":"Fixture","backend":{"kind":"agent","tool":"claude_code"}})).unwrap();
+        let bot=CliParticipant::new(config).with_context(&BuildContext {path:Some(format!("{}:/usr/bin:/bin",files.dir.display())),..Default::default()}).with_tools_disabled();
+        assert_eq!(bot.respond(TurnRequest::default(), &|_|{}).await.unwrap().text,"GATEWAY_PONG");
+        let script=std::fs::read_to_string(&program).unwrap();
+        for (field, value) in [("mcp_servers", "[{\"name\":\"unexpected\"}]"), ("tools", "[\"Bash\"]")] {
+            std::fs::write(&program,script.replace(&format!("\"{field}\":[]"),&format!("\"{field}\":{value}"))).unwrap();
+            let error=bot.respond(TurnRequest::default(), &|_|{}).await.unwrap_err();
+            assert!(error.to_string().contains("advertised native tools"),"{error}");
+            assert!(!bot.cancel_active_turn().await.unwrap());
+        }
+        std::fs::write(&program,script.replace("\"mcp_servers\":[],", "").replace("\"tools\":[]", "\"tools\":[\"Bash\"]")).unwrap();
+        assert!(bot.respond(TurnRequest::default(), &|_|{}).await.unwrap_err().to_string().contains("advertised native tools"));
+    }
     async fn refuses(tool: AgentTool, script: &str) {
         use std::os::unix::fs::PermissionsExt;
         let files=crate::attachments::Staged::new().unwrap();
