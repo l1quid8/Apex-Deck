@@ -5,7 +5,7 @@ use apex_core::{AgentTool, Backend, ParticipantError};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-pub(crate) struct Isolation {
+pub struct Isolation {
     root: Staged,
     /// The host-issued computer relay, when this run may start it.
     computer: Option<PathBuf>,
@@ -121,13 +121,18 @@ impl Isolation {
                     tool: AgentTool::Gemini,
                     ..
                 } => {
-                    // Google CLI only. Antigravity's background service is a
-                    // separate trust boundary and must not be reused here.
+                    // Gateway Antigravity runs a fresh process in this private home;
+                    // never attach the operator's agent service or copy its config.
+                    if let Some(original) = std::env::var_os("APEX_GATEWAY_AGY_HOME") {
+                        isolation.copy_auth(&PathBuf::from(original).join(".gemini/antigravity-cli/antigravity-oauth-token"),
+                            "home/.gemini/antigravity-cli/antigravity-oauth-token")?;
+                    } else {
                     for name in ["oauth_creds.json", "google_accounts.json"] {
                         isolation.copy_auth(
                             &home.join(".gemini").join(name),
                             &format!("home/.gemini/{name}"),
                         )?;
+                    }
                     }
                 }
                 _ => {}
@@ -157,6 +162,10 @@ impl Isolation {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(_) => return Err(failed("cannot read model sign-in file")),
         };
+        if relative == "home/.gemini/antigravity-cli/antigravity-oauth-token" {
+            let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|failed("cannot verify credential lifetime"))?.as_secs();
+            bytes=antigravity_auth_document(&bytes,now)?;
+        }
         if relative == "home/.codex/auth.json" {
             let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|failed("cannot verify Codex credential lifetime"))?.as_secs();
             bytes=codex_auth_document(&bytes,now)?;
@@ -460,6 +469,19 @@ pub(crate) fn bwrap_args(
     Ok(out)
 }
 
+/// A private Antigravity run cannot rotate the authoritative VPS login.
+fn antigravity_auth_document(input: &[u8], now: u64) -> Result<Vec<u8>, ParticipantError> {
+    let doc:serde_json::Value=serde_json::from_slice(input).map_err(|_|failed("invalid Antigravity sign-in"))?;
+    let token=&doc["token"];
+    let expiry=crate::grok_usage::expiry_unix(&token["expiry"]);
+    if !expiry.and_then(|expiry|expiry.checked_sub(now)).is_some_and(|remaining|remaining>1200) {
+        return Err(failed("Antigravity connection needs refreshing in its gateway-owned login home"));
+    }
+    let access=token["access_token"].as_str().filter(|s|!s.is_empty()).ok_or_else(||failed("missing Antigravity access credential"))?;
+    serde_json::to_vec(&serde_json::json!({"token":{"access_token":access,"token_type":"Bearer","expiry":token["expiry"]},
+        "auth_method":doc["auth_method"],"id_token_email":doc["id_token_email"]})).map_err(|_|failed("cannot stage Antigravity sign-in"))
+}
+
 /// A private session may use a fresh access credential, never rotate a
 /// refresh token copied from an independently running canonical CLI.
 pub(crate) fn access_only_oauth_document(input:&[u8],now:u64,provider:&str)->Result<Vec<u8>,ParticipantError> {
@@ -576,7 +598,7 @@ pub(crate) fn muse_auth_document(
 ) -> Result<Vec<u8>, ParticipantError> {
     let doc: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| failed("invalid Muse sign-in document"))?;
-    if doc["schema_version"] != 2 {
+    if doc["schema_version"] != 2 && doc["schema_version"] != 1 {
         return Err(failed("unsupported Muse sign-in schema"));
     }
     let meta = &doc["providers"]["meta"];
@@ -608,6 +630,7 @@ pub(crate) fn muse_auth_document(
             secret
         }
         Some("file") => meta.clone(),
+        None if doc["schema_version"] == 1 => meta.clone(),
         _ => return Err(failed("unsupported Muse sign-in storage")),
     };
     let token = secret["access_token"]
@@ -616,7 +639,7 @@ pub(crate) fn muse_auth_document(
         .ok_or_else(|| failed("Muse subscription sign-in has no access token"))?;
     staged.insert("access_token".into(), token.into());
     staged.insert("storage".into(), "file".into());
-    serde_json::to_vec(&serde_json::json!({"schema_version":2,"providers":{"meta":staged}}))
+    serde_json::to_vec(&serde_json::json!({"schema_version":doc["schema_version"],"providers":{"meta":staged}}))
         .map_err(|_| failed("cannot encode private Muse sign-in"))
 }
 
@@ -844,6 +867,27 @@ printf 'DIRECTORIES_OK_PRIVATE_MCP_AND_KEYCHAIN_BLOCKED'
             String::from_utf8_lossy(&output.stdout),
             "DIRECTORIES_OK_PRIVATE_MCP_AND_KEYCHAIN_BLOCKED"
         );
+    }
+
+    #[test]
+    fn antigravity_stages_access_without_refresh_or_unrelated_secrets() {
+        let input=br#"{"token":{"access_token":"access","refresh_token":"NEVER_COPY","expiry":"2099-01-01T00:00:00Z","token_type":"Bearer"},"auth_method":"google","id_token_email":"owner@example.test","private_mcp":"NEVER_COPY"}"#;
+        let bytes=antigravity_auth_document(input, 100).unwrap();
+        let doc:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(doc["token"]["access_token"],"access");
+        assert!(!String::from_utf8(bytes).unwrap().contains("NEVER_COPY"));
+        assert!(antigravity_auth_document(input,u64::MAX).is_err());
+    }
+
+    #[test]
+    fn legacy_muse_file_login_stages_only_subscription_access() {
+        let input=br#"{"schema_version":1,"providers":{"meta":{"mechanism":"oauth","access_token":"subscription-only","api_key":"NEVER_COPY"},"mcp_oauth:private":{"access_token":"PRIVATE"}}}"#;
+        let staged=muse_auth_document(input, || panic!("file login must not read Keychain")).unwrap();
+        let staged:serde_json::Value=serde_json::from_slice(&staged).unwrap();
+        assert_eq!(staged["schema_version"],1);
+        assert_eq!(staged["providers"].as_object().unwrap().len(),1);
+        assert_eq!(staged["providers"]["meta"]["access_token"],"subscription-only");
+        assert!(staged["providers"]["meta"].get("api_key").is_none());
     }
 
     #[test]

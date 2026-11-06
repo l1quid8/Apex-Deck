@@ -679,3 +679,23 @@ async fn api_final_usage_is_charged_before_done_even_if_client_closes() {
     server.abort();
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn linux_subscription_client_envelopes_preserve_tool_result_history() {
+    for tool in [AgentTool::Muse, AgentTool::Grok, AgentTool::Gemini] {
+        let request = json!({"tools":[self::tool()],"messages":[
+            {"role":"assistant","tool_calls":[{"id":"client-call","type":"function","function":{"name":"add","arguments":"{\"a\":19,\"b\":23}"}}]},
+            {"role":"tool","tool_call_id":"client-call","content":"42 RECEIPT_UNPREDICTABLE"}
+        ]});
+        let turn = emulation::text_request(&request).unwrap();
+        assert!(turn.system.contains("Never run"));
+        let serialized = serde_json::to_string(&turn.turns).unwrap();
+        assert!(serialized.contains("client-call"));
+        assert!(serialized.contains("RECEIPT_UNPREDICTABLE"));
+        let reply = Reply::text(r#"{"content":"42 RECEIPT_UNPREDICTABLE","tool_calls":[]}"#);
+        let (message, _) = emulation::text_result(&request, &reply).unwrap();
+        assert_eq!(message["content"], "42 RECEIPT_UNPREDICTABLE", "{tool:?}");
+        assert!(emulation::text_result(&request, &Reply::text("not JSON")).is_err());
+        assert!(emulation::text_result(&request, &Reply::text(r#"{"content":"","tool_calls":[{"name":"unknown","arguments":"{}"}]}"#)).is_err());
+    }
+}

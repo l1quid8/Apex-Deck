@@ -51,7 +51,7 @@ use apex_core::testing::ScriptedParticipant;
 use apex_core::{Access, AgentTool, Backend, Participant, ParticipantConfig, PlanUsage, RoomKind};
 
 pub use catalog::{codex_models_from_cache, installed_models};
-pub use gateway_sandbox::isolation_available;
+pub use gateway_sandbox::{isolation_available, Isolation as GatewayIsolation};
 pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_ARG as CODEX_HOOK_ARG};
 
 pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSpec, ModelKind};

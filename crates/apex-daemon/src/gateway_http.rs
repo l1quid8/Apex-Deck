@@ -28,6 +28,7 @@ use crate::gateway_keys::{AuthError, GatewayKey, GatewayKeys, KeyScope};
 use crate::identity;
 
 mod codex;
+mod gemini;
 mod tools;
 mod emulation;
 #[cfg(test)]
@@ -594,7 +595,7 @@ pub fn provider_readiness(data: &Path) -> Value {
         let isolation = gateway_isolation_error(&backend);
         let installed = if tool == AgentTool::Gemini {
             let path = apex_host::agents::login_path().unwrap_or_default();
-            std::env::split_paths(&path).any(|p| p.join("gemini").is_file())
+            std::env::split_paths(&path).any(|p| p.join("gemini").is_file() || (gemini::configured(&backend) && p.join("agy").is_file()))
         } else { agents.iter().any(|a| a.key == key && a.found) };
         rows.push(json!({ "id": key, "name": key, "kind": "Subscription CLI", "available": installed && isolation.is_none(),
             "detail": isolation.unwrap_or_else(|| if installed { "Installed; login and completion not checked.".into() } else { "Not installed.".into() }) }));
@@ -650,7 +651,7 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
             // Antigravity's already-running service with its own MCP config.
             if tool == AgentTool::Gemini {
                 let path = state.login_path.clone().unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
-                if !std::env::split_paths(&path).any(|p| p.join("gemini").is_file()) { continue; }
+                if !std::env::split_paths(&path).any(|p| p.join("gemini").is_file() || (gemini::configured(&Backend::Agent { tool, model: None }) && p.join("agy").is_file())) { continue; }
             }
             let reported = installed_models(tool);
             if is_found(detect_key) || !reported.is_empty() {
@@ -966,8 +967,10 @@ pub(crate) fn gateway_isolation_error(backend: &Backend) -> Option<String> {
         Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }
         | Backend::OpenAiCompatible { .. }
         | Backend::Scripted { .. } => None,
-        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. }
-        | Backend::Cli { .. } if cfg!(target_os = "macos") => None,
+        Backend::Agent { tool: AgentTool::Gemini, .. } if cfg!(target_os="linux") && !gemini::configured(backend) =>
+            Some("Linux Gemini gateway support requires the isolated Antigravity route and its gateway-owned login (APEX_GATEWAY_AGY_HOME).".into()),
+        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. } => apex_adapters::isolation_available(None).err(),
+        Backend::Cli { .. } if cfg!(target_os = "macos") => None,
         _ => Some("This backend has no verified MCP isolation and is unavailable to gateway clients. Private MCP tools are never shared.".into()),
     }
 }
@@ -1038,7 +1041,7 @@ async fn handle_chat_completions(
     }
 
     if tools::has_tools(&wire) && !matches!(resolved.config.backend,
-        Backend::OpenAiCompatible { .. } | Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+        Backend::OpenAiCompatible { .. } | Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex | AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. }) {
         write_openai_error(stream,409,"invalid_request_error","This provider has no verified client-only tool mode").await;
         return;
     }
@@ -1057,7 +1060,7 @@ async fn handle_chat_completions(
         return;
     }
 
-    if tools::has_tools(&wire) {
+    if tools::has_tools(&wire) || gemini::configured(&resolved.config.backend) {
         emulation::respond(stream, state, &reserved_key, &resolved, wire).await;
         return;
     }
@@ -1088,10 +1091,11 @@ async fn handle_chat_completions(
 
     // Ignore legacy allow_mcp fields, including on already-issued keys.
     let participant: Arc<dyn apex_core::Participant> = match &resolved.config.backend {
+        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. } => Arc::new(
+            CliParticipant::new(resolved.config.clone()).with_context(&context).with_tools_disabled(),
+        ),
         Backend::Agent { .. } | Backend::Cli { .. } => Arc::new(
-            CliParticipant::new(resolved.config.clone())
-                .with_context(&context)
-                .with_mcp_disabled(),
+            CliParticipant::new(resolved.config.clone()).with_context(&context).with_mcp_disabled(),
         ),
         _ => build_without_tools(resolved.config.clone(), &context),
     };
@@ -1631,9 +1635,11 @@ esac
 
     #[test]
     fn gateway_requires_platform_isolation_for_muse_and_other_clis() {
-        assert_eq!(gateway_isolation_error(&agent(AgentTool::Muse)).is_none(), cfg!(target_os = "macos"));
+        assert_eq!(gateway_isolation_error(&agent(AgentTool::Muse)), apex_adapters::isolation_available(None).err());
         for tool in [AgentTool::Gemini, AgentTool::Grok] {
-            assert_eq!(gateway_isolation_error(&agent(tool)).is_none(), cfg!(target_os = "macos"));
+            if tool==AgentTool::Gemini && cfg!(target_os="linux") && !gemini::configured(&agent(tool)) {
+                assert!(gateway_isolation_error(&agent(tool)).is_some());
+            } else { assert_eq!(gateway_isolation_error(&agent(tool)), apex_adapters::isolation_available(None).err()); }
         }
         for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
             assert!(gateway_isolation_error(&agent(tool)).is_none());

@@ -74,6 +74,7 @@ pub(crate) struct Outcome {
 const MAX_ACTIVITY: usize = 120;
 
 pub(crate) struct EventReader {
+    native_action: bool,
     format: OutputFormat,
     /// The workspace folder, so file paths can be shown relative to it.
     cwd: Option<String>,
@@ -144,6 +145,7 @@ pub(crate) struct EventReader {
 impl EventReader {
     pub(crate) fn new(format: OutputFormat, cwd: Option<String>) -> Self {
         Self {
+            native_action: false,
             format,
             cwd,
             partial: String::new(),
@@ -287,6 +289,7 @@ impl EventReader {
 
     /// Everything shown as reply text so far.
     pub(crate) fn has_computer_content(&self)->bool {self.computer_content}
+    pub(crate) fn has_native_action(&self)->bool {self.native_action}
 
     pub(crate) fn streamed(&self) -> &str {
         &self.streamed
@@ -575,6 +578,7 @@ impl EventReader {
         input: &Value,
         steps: &mut Vec<Step>,
     ) {
+        self.native_action=true;
         if crate::mcp::computer_tool(name).is_some() {
             self.computer_content=true;self.computer_calls.insert(id.into());
         }
