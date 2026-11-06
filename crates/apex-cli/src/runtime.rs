@@ -538,6 +538,14 @@ async fn setup_agents(command:&str,s:&mut AppState,client:Option<&Client>,data:&
     Ok(())
 }
 
+pub const OLD_DECK_LOGIN_NOTICE: &str = "Update Apex Deck to use /login — this Deck version does not support provider setup.";
+
+/// An older Deck service rejects commands it doesn't know with serde's
+/// "unknown variant `provider_setup_begin`, expected one of …" error.
+pub fn host_lacks_provider_setup(error: &str) -> bool {
+    error.contains("unknown variant") && error.contains("provider_setup_begin")
+}
+
 pub async fn run(args: Args) -> Result<(), String> {
     let old = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -569,7 +577,10 @@ pub async fn run(args: Args) -> Result<(), String> {
                 let words:Vec<_>=command.split_whitespace().collect();
                 let provider=words.get(1).copied().unwrap_or("");let method=words.get(2).copied().unwrap_or("reuse");
                 let authorization=match client.as_ref(){Some(client)=>controller::execute(client,&args.data,"provider_setup_begin",json!({"provider":provider,"method":method})).await,None=>Err("Backend disconnected; login was not started".into())};
-                if let Err(error)=authorization {s.notice=error;continue;}
+                if let Err(error)=authorization {
+                    s.notice=if host_lacks_provider_setup(&error){OLD_DECK_LOGIN_NOTICE.into()}else{error};
+                    continue;
+                }
                 // Release the event reader as well as raw mode so the official
                 // provider process is the sole owner of terminal input.
                 drop(events.take());

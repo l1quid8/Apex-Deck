@@ -347,10 +347,26 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
                 json!({"profiles":session["profiles"].as_array().into_iter().flatten().map(|profile|json!({"profile":profile,"chatOk":true})).collect::<Vec<_>>()})
             };
             let prefix = arg.trim_start_matches('@').to_lowercase();
+            let existing_ids: std::collections::HashSet<String> = members(c)
+                .iter()
+                .filter_map(|p| p["id"].as_str().map(String::from))
+                .collect();
+            let existing_mentions: std::collections::HashSet<String> = members(c)
+                .iter()
+                .map(|p| mention(p))
+                .collect();
             let mut choices = vec![];
             let mut status=std::collections::HashMap::new();
             for row in profiles["profiles"].as_array().into_iter().flatten() {
                 let p = &row["profile"];
+                if let Some(pid) = p["id"].as_str() {
+                    if existing_ids.contains(pid) {
+                        continue;
+                    }
+                }
+                if existing_mentions.contains(&mention(p)) {
+                    continue;
+                }
                 let provider=match p["backend"]["tool"].as_str(){Some("codex")=>Some("codex"),Some("claude_code")=>Some("claude"),_=>None};
                 if let Some(provider)=provider {
                     if !status.contains_key(provider) {let ready=crate::provider_setup::status(provider).await.is_ok_and(|v|v["loggedIn"]==true&&v["method"]=="subscription");status.insert(provider,ready);}
