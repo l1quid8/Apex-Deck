@@ -52,9 +52,9 @@ pub fn set_forced_for_test(forced: bool) {
 }
 
 /// The jail's first program is this executable (see `build_spec`), so only a
-/// program that answers INIT_ARG can jail bots. The daemon calls this before
-/// anything else; test programs never do, so their bots run unjailed unless a
-/// test forces the jail on.
+/// program that answers INIT_ARG can jail bots. The shipped daemon's main
+/// calls this before anything else; test programs (including the daemon test
+/// fixture) never do, so their bots run unjailed unless a test forces it on.
 pub fn this_program_is_the_jail_init() {
     INIT_READY.store(true, std::sync::atomic::Ordering::SeqCst);
 }
