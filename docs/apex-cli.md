@@ -111,8 +111,8 @@ an older desktop is not upgraded by installing the CLI archive.
    `save` after reviewing the summary. Escape or `/cancel` discards the wizard.
 3. Create Jigga and Null independently, or repeat with several agents on one
    provider. `/agents saved` lists profiles; `/agents edit <handle>` edits them.
-4. `/new` creates Talk; `/new work` asks for an absolute workspace folder and
-   creates Work through the protected command path. `/add` selects a saved agent.
+4. `/new` asks Work or Chat; `/new chat [title]` creates Talk; `/new work` creates Work in the folder your terminal is
+   in (or `/new work <folder>`, relative to it) through the protected command path. `/add` selects a saved agent.
 
 API-key entry/Keychain storage and automatic provider runtime installation are
 unfinished; this test build exposes subscription methods only. Model entry can
@@ -165,7 +165,7 @@ remain typed Rust code. `/help` opens the same command choices.
 | `/agents create`, `/agents saved`, `/agents edit <handle>` | Manage persistent standalone profiles. |
 | `/agents import <absolute-path>` | Preview and import one supported profile with Ask access. |
 | `/threads [prefix]` | Open the picker; a unique title/ID prefix opens directly. |
-| `/new [title]`, `/new work [absolute-folder]` | Create Talk, or explicitly select a Work workspace. |
+| `/new`, `/new chat [title]`, `/new work [folder]` | Pick Work or Chat, or create Talk, or Work in the terminal's folder (or the given one). |
 | `/rename <title>` | Save shared thread metadata. |
 | `/add [profile]` | Pick a usable saved agent profile; no fabricated credentials. |
 | `/remove [@name]` | Pick and confirm removal. The last member may be removed. |

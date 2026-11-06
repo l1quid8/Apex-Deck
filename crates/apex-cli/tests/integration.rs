@@ -288,7 +288,11 @@ async fn controller_commands_reach_shared_daemon_and_require_real_decisions() {
     let (observer, _other_events, _) = fixture.connect().await;
     client.request("session_save",json!({"session":{"version":1,"profiles":[{"id":"fixture","display_name":"Fixture","persona":"","access":"read","backend":{"kind":"scripted","lines":["fixture reply"]}}]}})).await.unwrap();
     let empty = context(&fixture, &client, None).await;
-    let created = dispatch("/new", &empty).await.unwrap();
+    let picker = dispatch("/new", &empty).await.unwrap().menu.expect("bare /new asks Work or Chat");
+    let picks: Vec<_> = picker.choices.iter().map(|c| c.action.clone()).collect();
+    assert!(matches!(&picks[0], Action::Submit(t) if t == "/new work"));
+    assert!(matches!(&picks[1], Action::Submit(t) if t == "/new chat"));
+    let created = dispatch("/new chat", &empty).await.unwrap();
     let room = created.open.unwrap();
     let mut c = context(&fixture, &client, Some(room.clone())).await;
     assert!(c.state["snapshot"]["participants"]
@@ -338,7 +342,7 @@ async fn controller_commands_reach_shared_daemon_and_require_real_decisions() {
         .await
         .unwrap_err()
         .contains("No thread named missing"));
-    let other = dispatch("/new", &c).await.unwrap().open.unwrap();
+    let other = dispatch("/new chat Second", &c).await.unwrap().open.unwrap();
     let other_context = context(&fixture, &client, Some(other)).await;
     dispatch("/rename Shared second", &other_context)
         .await
@@ -369,6 +373,17 @@ async fn controller_commands_reach_shared_daemon_and_require_real_decisions() {
             "invalid command was accepted: {invalid}"
         );
     }
+    // Relative folders resolve against the terminal's folder, not an absolute-only prompt.
+    let here = std::env::current_dir().unwrap();
+    let missing = dispatch("/new work relative", &c).await.unwrap_err();
+    assert!(
+        missing.contains(&here.join("relative").display().to_string()),
+        "{missing}"
+    );
+    // Bare /new work reaches the protected create call (refused here only
+    // because tests have no interactive terminal), so it no longer prompts.
+    let bare = dispatch("/new work", &c).await.unwrap_err();
+    assert!(bare.contains("interactive terminal"), "{bare}");
     assert!(
         dispatch("/model @fixture", &c).await.is_err(),
         "scripted backend has no selectable models"

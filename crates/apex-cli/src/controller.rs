@@ -304,13 +304,24 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
             ));
         }
         HandlerId::New => {
-            if arg=="work" {return Ok(menu("Create Work thread",vec![choice("Choose workspace","An absolute existing folder is required; default access is Ask",Action::Setup("new work".into())),choice("Cancel","No thread created",Action::Dismiss)]));}
-            if let Some(folder)=arg.strip_prefix("work ") {
-                let path=Path::new(folder.trim());if !path.is_absolute()||!path.is_dir(){return Err("Work needs an absolute existing workspace folder".into());}
+            if arg.is_empty() {
+                let here=std::env::current_dir().map(|p|p.display().to_string()).unwrap_or_else(|_|"this terminal's folder".into());
+                return Ok(menu("New thread",vec![
+                    choice("Work",format!("Agents work in {here}"),Action::Submit("/new work".into())),
+                    choice("Chat","Talk only, no folder",Action::Submit("/new chat".into())),
+                    choice("Cancel","No thread created",Action::Dismiss),
+                ]));
+            }
+            let arg=if arg=="chat"{String::new()}else{arg.strip_prefix("chat ").map(|t|t.trim().to_string()).unwrap_or(arg)};
+            if arg=="work" || arg.starts_with("work ") {
+                let here=std::env::current_dir().map_err(|e|format!("Can't read this terminal's folder: {e}"))?;
+                let folder=arg.strip_prefix("work").unwrap_or("").trim();
+                let path=if folder.is_empty(){here}else{here.join(folder)};
+                if !path.is_dir(){return Err(format!("No folder at {}",path.display()));}
                 let path=path.canonicalize().map_err(|e|e.to_string())?;
                 let id=format!("work-{}",uuid::Uuid::new_v4().simple());
                 execute(&c.client,&c.data,"room_create",json!({"id":id,"participants":[],"options":{"policy":"mention","max_bot_hops":0},"cwd":path})).await?;
-                out.open=Some(id);out.notice="Work thread created. /add a saved agent; /access reviews permissions.".into();return Ok(out);
+                out.notice=format!("Work thread in {}. /add a saved agent; /access reviews permissions.",path.display());out.open=Some(id);return Ok(out);
             }
             let id = format!("chat-{}", uuid::Uuid::new_v4().simple());
             execute(&c.client,&c.data,"chat_create",json!({"id":id,"title":if arg.is_empty(){"New chat"}else{&arg},"participants":[],"options":{"policy":"mention","max_bot_hops":0}})).await?;
