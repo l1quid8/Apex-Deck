@@ -5,6 +5,7 @@ use crate::{devices_cli, gateway_cli, pair_cli, promote_cli, serve, stdio};
 
 pub fn run() {
     // The first thing in a Linux bot jail; see the adapters' linux_jail/init.rs.
+    #[cfg(unix)]
     if std::env::args_os().nth(1).is_some_and(|arg| arg == apex_adapters::linux_jail::INIT_ARG) {
         apex_adapters::linux_jail::init::main();
     }
@@ -19,6 +20,7 @@ pub fn run() {
         std::process::exit(apex_adapters::codex_hook_main());
     }
     // When invoked from inside a bot jail via INIT_PATH, refuse other commands.
+    #[cfg(unix)]
     if std::env::args().next().as_deref() == Some(apex_adapters::linux_jail::INIT_PATH) {
         eprintln!("apex-daemon: command refused inside sandbox");
         std::process::exit(1);

@@ -392,6 +392,7 @@ pub async fn list_servers(
     cwd: Option<String>,
     path: Option<String>,
 ) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    #[cfg(unix)]
     if crate::linux_jail::should_jail(apex_core::Access::Read) {
         let bwrap = crate::gateway_sandbox::find_bwrap(path.as_deref());
         match crate::linux_jail::state(bwrap.as_deref()) {

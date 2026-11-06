@@ -51,7 +51,9 @@ pub fn set_forced_for_test(forced: bool) {
 }
 
 pub fn should_jail(access: apex_core::Access) -> bool {
-    (cfg!(target_os = "linux") || FORCE_JAIL.load(std::sync::atomic::Ordering::SeqCst))
+    // The jail's first program is this executable (see `build_spec`), and a
+    // unit-test binary can't answer INIT_ARG; tests that want it force it.
+    (cfg!(all(target_os = "linux", not(test))) || FORCE_JAIL.load(std::sync::atomic::Ordering::SeqCst))
         && !matches!(access, apex_core::Access::Full)
 }
 

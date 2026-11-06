@@ -946,6 +946,7 @@ mod tests {
         assert_eq!(inherited_git_vars(keys.into_iter()), ["GIT_CONFIG_PARAMETERS", "GIT_DIR"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn snapshots_run_nothing_from_project_or_environment() {
         let (cwd, snaps) = folder("isolation-safety");

@@ -267,6 +267,7 @@ impl CliParticipant {
         env: &[(&str, std::ffi::OsString)],
         hook: Option<&codex_hook::Hook>,
     ) -> Result<OwnedChild, ParticipantError> {
+        #[cfg(unix)]
         if crate::linux_jail::should_jail(self.config.access) {
             let bwrap = crate::gateway_sandbox::find_bwrap(self.path.as_deref());
             match crate::linux_jail::state(bwrap.as_deref()) {
@@ -279,6 +280,7 @@ impl CliParticipant {
             return self.start_jailed(program, args, env, &bwrap, hook);
         }
         // Full gate: even unjailed Full bots are refused in tainted folders
+        #[cfg(unix)]
         if matches!(self.config.access, apex_core::Access::Full) {
             if let Some(cwd) = &self.cwd {
                 if let Some(data_dir) = &self.data_dir {
@@ -351,6 +353,7 @@ impl CliParticipant {
             })
     }
 
+    #[cfg(unix)]
     fn start_jailed(
         &self,
         program: &str,
@@ -478,13 +481,13 @@ fn random_token() -> String {
         // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
         // has gone would make Codex run every tool unasked, so check first.
         let hook = self.codex_hook.as_deref().filter(|helper| !self.mcp_disabled && helper.is_file()).and_then(|helper| {
+            #[cfg(unix)]
             if crate::linux_jail::should_jail(self.config.access) {
                 let token = Self::random_token();
                 let helper_path = Path::new(crate::linux_jail::INIT_PATH);
-                Some(codex_hook::Hook::bind_jailed(helper_path, token))
-            } else {
-                codex_hook::Hook::bind(helper).map_err(|e| eprintln!("[apex-deck] Codex approval hook unavailable: {e}")).ok()
+                return Some(codex_hook::Hook::bind_jailed(helper_path, token));
             }
+            codex_hook::Hook::bind(helper).map_err(|e| eprintln!("[apex-deck] Codex approval hook unavailable: {e}")).ok()
         });
         let mut env = Vec::new();
         if let Some(hook) = &hook {
@@ -493,6 +496,7 @@ fn random_token() -> String {
                 env.push((codex_hook::SOCKET_ENV, socket.into_os_string()));
             }
         }
+        #[cfg(unix)]
         if crate::linux_jail::should_jail(self.config.access) {
             if let Some(data_dir) = &self.data_dir {
                 let program_path = crate::executable::program("codex", self.path.as_deref());
@@ -958,6 +962,7 @@ impl Participant for CliParticipant {
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
+        #[cfg(unix)]
         if crate::linux_jail::should_jail(self.config.access) {
             if let Some(data_dir) = &self.data_dir {
                 if let Backend::Agent { tool, .. } = &self.config.backend {
