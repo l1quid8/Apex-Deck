@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+const UNIX_ONLY = process.platform === 'win32' ? { skip: 'Unix-only: runs the /bin/sh installer and launcher' } : {};
 
 const SCRIPT = readFileSync(join(process.cwd(), 'scripts/install-cli-provenance.sh'), 'utf8');
 const sha = (s) => createHash('sha256').update(s).digest('hex');
@@ -101,14 +102,14 @@ async function withHarness(fn) {
 const ok = (r) => assert.equal(r.status, 0, r.stdout + r.stderr);
 const fails = (r) => assert.notEqual(r.status, 0, r.stdout + r.stderr);
 
-test('fresh install creates Standalone and pins its hashes', () => withHarness(async (h) => {
+test('fresh install creates Standalone and pins its hashes', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   assert.equal(h.installedBuild(), 'echo apex 0.9.8 A');
   assert.match(h.config().cliCdhash, /^[0-9a-f]{40}$/);
   assert.equal(h.lockHeld(), false);
 }));
 
-test('same version with identical build is a no-op', () => withHarness(async (h) => {
+test('same version with identical build is a no-op', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   const before = h.read(join(h.root, 'config.json'));
   const r = h.run('--no-path-link', h.payload('b', '0.9.8', 'A'));
@@ -118,7 +119,7 @@ test('same version with identical build is a no-op', () => withHarness(async (h)
   assert.equal(h.lockHeld(), false);
 }));
 
-test('same version with a rebuilt payload replaces binaries and pins', () => withHarness(async (h) => {
+test('same version with a rebuilt payload replaces binaries and pins', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   const oldPin = h.config().cliStandaloneCdhash;
   const r = h.run('--no-path-link', h.payload('b', '0.9.8', 'B'));
@@ -129,7 +130,7 @@ test('same version with a rebuilt payload replaces binaries and pins', () => wit
   assert.equal(h.read(join(h.root, 'apex-provenance')).split('\n')[1], 'echo apex-provenance 0.9.8 B');
 }));
 
-test('upgrade refuses while the installed CLI or backend is running, and changes nothing', () => withHarness(async (h) => {
+test('upgrade refuses while the installed CLI or backend is running, and changes nothing', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   const before = h.read(join(h.root, 'config.json'));
   for (const proc of ['apex-daemon', 'apex']) {
@@ -146,7 +147,7 @@ test('upgrade refuses while the installed CLI or backend is running, and changes
   ok(h.run('--no-path-link', h.payload('c', '0.9.9', 'C')));
 }));
 
-test('upgrade that fails after commit restores the previous product, config and broker', () => withHarness(async (h) => {
+test('upgrade that fails after commit restores the previous product, config and broker', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   const before = h.read(join(h.root, 'config.json'));
   h.flag('fail-bootstrap');
@@ -159,7 +160,7 @@ test('upgrade that fails after commit restores the previous product, config and 
   h.unflag('fail-bootstrap');
 }));
 
-test('downgrade is refused and releases the lock', () => withHarness(async (h) => {
+test('downgrade is refused and releases the lock', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   const r = h.run('--no-path-link', h.payload('b', '0.9.7', 'B'));
   fails(r);
@@ -168,7 +169,7 @@ test('downgrade is refused and releases the lock', () => withHarness(async (h) =
   ok(h.run('--no-path-link', h.payload('c', '0.9.9', 'C')));
 }));
 
-test('uninstall refuses while running, then removes Standalone and keeps keys and data', () => withHarness(async (h) => {
+test('uninstall refuses while running, then removes Standalone and keeps keys and data', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   writeFileSync(join(h.root, 'private-key'), 'k');
   h.flag('ps.txt', `${h.product}/apex\n`);
@@ -181,7 +182,7 @@ test('uninstall refuses while running, then removes Standalone and keeps keys an
   assert.equal(h.read(join(h.root, 'private-key')), 'k');
 }));
 
-test('uninstall that fails after commit restores the product and pins', () => withHarness(async (h) => {
+test('uninstall that fails after commit restores the product and pins', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   // Desktop pins present -> the remove-pins path, which restarts the broker.
   const c = h.config(); c.uiCdhash = 'f'.repeat(40);
@@ -197,7 +198,7 @@ test('uninstall that fails after commit restores the product and pins', () => wi
   assert.equal(existsSync(h.plist), true);
 }));
 
-test('fresh install → uninstall (fresh-only) → reinstall succeeds and preserves keys', () => withHarness(async (h) => {
+test('fresh install → uninstall (fresh-only) → reinstall succeeds and preserves keys', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('fresh', '0.9.8', 'A')));
   writeFileSync(join(h.root, 'private-key'), 'keep-me');
   writeFileSync(join(h.root, 'journal.json'), '{"kept":true}');
@@ -217,7 +218,7 @@ test('fresh install → uninstall (fresh-only) → reinstall succeeds and preser
   assert.equal(h.lockHeld(), false);
 }));
 
-test('reinstall of the identical build after uninstall still restores the service', () => withHarness(async (h) => {
+test('reinstall of the identical build after uninstall still restores the service', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   ok(h.run('--uninstall'));
   ok(h.run('--no-path-link', h.payload('b', '0.9.8', 'A')));
@@ -225,7 +226,7 @@ test('reinstall of the identical build after uninstall still restores the servic
   assert.equal(h.installedBuild(), 'echo apex 0.9.8 A');
 }));
 
-test('failed reinstall after uninstall removes the service file it wrote', () => withHarness(async (h) => {
+test('failed reinstall after uninstall removes the service file it wrote', UNIX_ONLY, () => withHarness(async (h) => {
   ok(h.run('--no-path-link', h.payload('a', '0.9.8', 'A')));
   ok(h.run('--uninstall'));
   h.flag('fail-bootstrap');

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, chmodSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+const UNIX_ONLY = process.platform === 'win32' ? { skip: 'Unix-only: runs the /bin/sh installer and launcher' } : {};
 
 function runLauncher({ standaloneDir, platformDir, args = [], env = {} }) {
   const launcher = join(process.cwd(), 'npm/cli/bin/apex');
@@ -41,7 +42,7 @@ function makeFakeApex(dir) {
   chmodSync(p, 0o755);
 }
 
-test('launcher prints setup hint when nothing installed', () => {
+test('launcher prints setup hint when nothing installed', UNIX_ONLY, () => {
   const tmp = mkdtempSync(join(tmpdir(), 'apex-npm-'));
   const plat = mkdtempSync(join(tmpdir(), 'apex-npm-plat-'));
   const standalone = join(tmp, 'Prov');
@@ -56,7 +57,7 @@ test('launcher prints setup hint when nothing installed', () => {
   rmSync(plat, { recursive: true, force: true });
 });
 
-test('launcher detects older installed and asks for update', () => {
+test('launcher detects older installed and asks for update', UNIX_ONLY, () => {
   const tmp = mkdtempSync(join(tmpdir(), 'apex-npm-'));
   const plat = mkdtempSync(join(tmpdir(), 'apex-npm-plat-'));
   const standaloneRoot = join(tmp, 'Prov');
@@ -77,7 +78,7 @@ test('launcher detects older installed and asks for update', () => {
   rmSync(plat, { recursive: true, force: true });
 });
 
-test('launcher refuses when installed newer than package', () => {
+test('launcher refuses when installed newer than package', UNIX_ONLY, () => {
   const tmp = mkdtempSync(join(tmpdir(), 'apex-npm-'));
   const plat = mkdtempSync(join(tmpdir(), 'apex-npm-plat-'));
   const provRoot = join(tmp, 'Prov');
@@ -93,7 +94,7 @@ test('launcher refuses when installed newer than package', () => {
   rmSync(plat, { recursive: true, force: true });
 });
 
-test('launcher execs trusted binary when versions match', () => {
+test('launcher execs trusted binary when versions match', UNIX_ONLY, () => {
   const tmp = mkdtempSync(join(tmpdir(), 'apex-npm-'));
   const plat = mkdtempSync(join(tmpdir(), 'apex-npm-plat-'));
   const provRoot = join(tmp, 'Prov');
@@ -120,7 +121,7 @@ test('launcher execs trusted binary when versions match', () => {
   rmSync(plat, { recursive: true, force: true });
 });
 
-test('launcher finds platform dir via sibling layout', () => {
+test('launcher finds platform dir via sibling layout', UNIX_ONLY, () => {
   const tmp = mkdtempSync(join(tmpdir(), 'apex-npm-'));
   // Simulate npm global layout: node_modules/@apex-deck/cli and cli-darwin-arm64
   const nodeModules = join(tmp, 'node_modules', '@apex-deck');
@@ -162,7 +163,7 @@ test('launcher finds platform dir via sibling layout', () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test('installer flags --no-path-link and --uninstall are recognized', () => {
+test('installer flags --no-path-link and --uninstall are recognized', UNIX_ONLY, () => {
   const src = join(process.cwd(), 'scripts/install-cli-provenance.sh');
   const content = readFileSync(src, 'utf8');
   assert.match(content, /--no-path-link/);
@@ -171,7 +172,7 @@ test('installer flags --no-path-link and --uninstall are recognized', () => {
   assert.match(content, /already at version/i);
 });
 
-test('launcher asks for update when same version but different build (hash mismatch)', () => {
+test('launcher asks for update when same version but different build (hash mismatch)', UNIX_ONLY, () => {
   const tmp = mkdtempSync(join(tmpdir(), 'apex-npm-'));
   const plat = mkdtempSync(join(tmpdir(), 'apex-npm-plat-'));
   const provRoot = join(tmp, 'Prov');
@@ -195,7 +196,7 @@ test('launcher asks for update when same version but different build (hash misma
   rmSync(plat, { recursive: true, force: true });
 });
 
-test('platform package contains required files in manifest contract and npm files list includes apex-provenance', () => {
+test('platform package contains required files in manifest contract and npm files list includes apex-provenance', UNIX_ONLY, () => {
   const releaseDir = join(process.cwd(), 'release');
   const platPkg = join(process.cwd(), 'npm/cli-darwin-arm64/package.json');
   const pkg = JSON.parse(readFileSync(platPkg, 'utf8'));

@@ -237,7 +237,7 @@ test_mv() {
 });
 
 
-test('candidate CLI verification requires its exact hash, identifier and a regular file', () => {
+test('candidate CLI verification requires its exact hash, identifier and a regular file', MAC_ONLY, () => {
   const dir = mkdtempSync('/tmp/apex-cli-bundle-test-');
   try {
     const app = fakeBundle(dir, 'Apex Deck.app');

@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 static OVERRIDE_STATE: std::sync::RwLock<Option<probe::JailState>> = std::sync::RwLock::new(None);
 static FORCE_JAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static INIT_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn state(bwrap_path: Option<&Path>) -> probe::JailState {
@@ -50,11 +51,17 @@ pub fn set_forced_for_test(forced: bool) {
     FORCE_JAIL.store(forced, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// The jail's first program is this executable (see `build_spec`), so only a
+/// program that answers INIT_ARG can jail bots. The daemon calls this before
+/// anything else; test programs never do, so their bots run unjailed unless a
+/// test forces the jail on.
+pub fn this_program_is_the_jail_init() {
+    INIT_READY.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn should_jail(access: apex_core::Access) -> bool {
-    // The jail's first program is this executable (see `build_spec`), and a
-    // unit-test binary can't answer INIT_ARG; tests that want it force it.
-    (cfg!(all(target_os = "linux", not(test))) || FORCE_JAIL.load(std::sync::atomic::Ordering::SeqCst))
-        && !matches!(access, apex_core::Access::Full)
+    let init_ready = cfg!(target_os = "linux") && INIT_READY.load(std::sync::atomic::Ordering::SeqCst);
+    (init_ready || FORCE_JAIL.load(std::sync::atomic::Ordering::SeqCst)) && !matches!(access, apex_core::Access::Full)
 }
 
 pub struct DaemonPurposes {

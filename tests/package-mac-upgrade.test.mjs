@@ -446,7 +446,7 @@ test('the packaged app and daemon declare the same release version',()=>{
  assert.equal(version,app.version,'daemon workspace version must match the app to avoid Different builds');
 });
 
-test('upgrade refuses the protected nested computer helper even after the main app quits',()=>python(String.raw`
+test('upgrade refuses the protected nested computer helper even after the main app quits', MAC_ONLY,()=>python(String.raw`
 helper=str(u.TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp')
 u.app_running=lambda uid=None:False
 u.os.geteuid=lambda:0
@@ -464,14 +464,14 @@ else: raise AssertionError('running helper was accepted')
 assert calls==[('/bin/ps','-axo','comm=')],calls
 `));
 
-test('helper upgrade guard ignores similarly named and development helper executables',()=>python(String.raw`
+test('helper upgrade guard ignores similarly named and development helper executables', MAC_ONLY,()=>python(String.raw`
 helper=str(u.TRUSTED/'Contents/Resources/Unified Computer Use.app/Contents/MacOS/SpikeApp')
 for command in ['/tmp/Unified Computer Use.app/Contents/MacOS/SpikeApp',helper+'Extra','/tmp/SpikeApp']:
  u.run=lambda *args,**kwargs:types.SimpleNamespace(returncode=0,stdout=command+'\n',stderr='')
  u.require_helper_stopped()
 `));
 
-test('helper upgrade guard fails closed when process inventory cannot be read',()=>python(String.raw`
+test('helper upgrade guard fails closed when process inventory cannot be read', MAC_ONLY,()=>python(String.raw`
 u.run=lambda *args,**kwargs:types.SimpleNamespace(returncode=1,stdout='',stderr='sensitive error')
 try: u.require_helper_stopped()
 except RuntimeError as error:
@@ -479,7 +479,7 @@ except RuntimeError as error:
 else: raise AssertionError('unavailable process inventory was accepted')
 `));
 
-test('a helper that appears during staging refuses the swap and restores stopped services',()=>python(accountsFixture+String.raw`
+test('a helper that appears during staging refuses the swap and restores stopped services', MAC_ONLY,()=>python(accountsFixture+String.raw`
 original=u.run
 checks=[]
 def run(*args,**kwargs):
@@ -505,7 +505,7 @@ test('optional CLI hash survives manifest rendering and rejects malformed admiss
  assert.match(upgradeScripts(withCli).worker,/dddddddddddddddddddddddddddddddddddddddd/);
  for(const cli of ['',null,'bad','a'.repeat(39),'a'.repeat(40)+'\n'])assert.throws(()=>validateManifest({...manifest,cli}));
 });
-test('CLI pin migrates explicitly and absence removes stale admission',()=>python(String.raw`
+test('CLI pin migrates explicitly and absence removes stale admission', MAC_ONLY,()=>python(String.raw`
 with tempfile.TemporaryDirectory() as directory:
  config=pathlib.Path(directory)/'config.json'
  config.write_text(json.dumps({'uiCdhash':'old-ui','daemonCdhash':'old-daemon','cliCdhash':'old-cli','future':42}))
