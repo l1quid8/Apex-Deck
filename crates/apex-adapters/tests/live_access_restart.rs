@@ -55,6 +55,7 @@ fn bot(access: Access, cwd: &Path) -> Arc<dyn Participant> {
         phone: None,
         data_dir: None,
         observed_addrs: vec![],
+        ..BuildContext::default()
     })
 }
 

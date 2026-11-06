@@ -38,6 +38,7 @@ reqwest = { version = "0.13", features = ["stream"] }
 async-trait.workspace = true
 # The QR in `apex-daemon pair`: Unicode blocks only.
 qrcode = { version = "0.14", default-features = false, optional = true }
+jsonschema = { version = "0.33", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

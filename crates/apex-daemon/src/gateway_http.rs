@@ -3,8 +3,9 @@
 //!
 //! Authenticates bearer tokens (`apx_sk_...`) against [`GatewayKeys`], enforces
 //! per-key model family scopes (`sub`, `api`, `cli`) and daily/monthly caps, and
-//! routes requests through [`apex_adapters::build_without_tools`] in an isolated
-//! read-only scratch folder.
+//! proxies API wire messages directly. Claude function tools use a validated JSON
+//! envelope with native tools disabled; other chat turns use CLI adapters in a
+//! private scratch folder. The gateway never executes client function calls.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,12 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::gateway_keys::{AuthError, GatewayKey, GatewayKeys, KeyScope};
 use crate::identity;
+
+mod codex;
+mod tools;
+mod emulation;
+#[cfg(test)]
+mod tool_tests;
 
 /// Maximum HTTP request body size (4 MiB).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -752,6 +759,7 @@ struct ParsedHttpRequest {
     method: String,
     path: String,
     authorization: Option<String>,
+    headers: std::collections::BTreeMap<String,String>,
     body: Vec<u8>,
 }
 
@@ -775,6 +783,7 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<Option<ParsedHttpRe
 
     let mut content_length: usize = 0;
     let mut authorization: Option<String> = None;
+    let mut headers=std::collections::BTreeMap::new();
 
     for _ in 0..MAX_HEADER_LINES {
         let mut line = String::new();
@@ -792,6 +801,7 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<Option<ParsedHttpRe
         if let Some((name, val)) = trimmed.split_once(':') {
             let name_lower = name.trim().to_ascii_lowercase();
             let val_trimmed = val.trim();
+            headers.insert(name_lower.clone(),val_trimmed.to_owned());
             if name_lower == "content-length" {
                 content_length = val_trimmed
                     .parse::<usize>()
@@ -817,6 +827,7 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<Option<ParsedHttpRe
         method,
         path,
         authorization,
+        headers,
         body,
     }))
 }
@@ -983,14 +994,6 @@ async fn handle_chat_completions(
         }
     };
 
-    let flattened = match flatten_openai_messages(&parsed.messages) {
-        Ok(f) => f,
-        Err(why) => {
-            write_openai_error(stream, 400, "invalid_request_error", &why).await;
-            return;
-        }
-    };
-
     let effort = parsed
         .reasoning_effort
         .or(parsed.effort)
@@ -1010,6 +1013,36 @@ async fn handle_chat_completions(
         return;
     }
 
+    // API payloads may contain only image/audio parts. Flatten only the
+    // legacy CLI chat route; the API provider validates its own wire content.
+    let flattened = if matches!(resolved.config.backend, Backend::OpenAiCompatible { .. }) {
+        if parsed.messages.is_empty() {
+            write_openai_error(stream, 400, "invalid_request_error", "messages array must not be empty").await;
+            return;
+        }
+        None
+    } else {
+        match flatten_openai_messages(&parsed.messages) {
+            Ok(f) => Some(f),
+            Err(why) => {
+                write_openai_error(stream, 400, "invalid_request_error", &why).await;
+                return;
+            }
+        }
+    };
+
+    let wire: Value = serde_json::from_slice(raw_body).expect("validated JSON");
+    if let Err(why) = tools::validate(&wire) {
+        write_openai_error(stream, 400, "invalid_request_error", &why).await;
+        return;
+    }
+
+    if tools::has_tools(&wire) && !matches!(resolved.config.backend,
+        Backend::OpenAiCompatible { .. } | Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+        write_openai_error(stream,409,"invalid_request_error","This provider has no verified client-only tool mode").await;
+        return;
+    }
+
     // Reserve 1 turn against the key's scope and daily/monthly caps.
     let reserved_key = match state.keys.reserve_turn(&authed_key.id, resolved.scope) {
         Ok(k) => k,
@@ -1018,6 +1051,16 @@ async fn handle_chat_completions(
             return;
         }
     };
+
+    if matches!(resolved.config.backend, Backend::OpenAiCompatible { .. }) {
+        tools::proxy(stream, state, &reserved_key, &resolved, wire).await;
+        return;
+    }
+
+    if tools::has_tools(&wire) {
+        emulation::respond(stream, state, &reserved_key, &resolved, wire).await;
+        return;
+    }
 
     let scratch = match ScratchDir::new() {
         Ok(s) => s,
@@ -1053,6 +1096,7 @@ async fn handle_chat_completions(
         _ => build_without_tools(resolved.config.clone(), &context),
     };
 
+    let flattened = flattened.expect("legacy CLI messages were validated");
     let turn_request = TurnRequest {
         computer: None,
         access: Some(Access::Read),

@@ -640,6 +640,8 @@ pub struct Pool {
     live: tokio::sync::Mutex<HashMap<PoolKey, Arc<Connection>>>,
     registry: Registry,
     known: Mutex<Option<(Stamp, Vec<ServerSpec>)>>,
+    #[cfg(test)]
+    fixture_servers: Option<Vec<ServerSpec>>,
 }
 
 impl Pool {
@@ -647,6 +649,10 @@ impl Pool {
     /// settings file has changed. When access is below Full, HTTP MCP servers
     /// are omitted.
     pub fn servers(&self, cwd: Option<&Path>, access: Option<apex_core::Access>) -> Vec<ServerSpec> {
+        #[cfg(test)]
+        if let Some(servers) = &self.fixture_servers {
+            return servers.iter().filter(|s| access == Some(apex_core::Access::Full) || !matches!(s.transport, Transport::Http { .. })).cloned().collect();
+        }
         let user_path = claude_config_path();
         let project_path = cwd.map(|c| c.join(".mcp.json"));
         let mut cwds: Vec<String> = Vec::new();
@@ -746,14 +752,11 @@ impl Pool {
     }
 }
 
-/// Test fixture at the configuration boundary: cache supplied servers without
-/// reading or changing the person's config contents or environment.
+/// Fixed configuration for HTTP/stdio boundary tests. Never consult live user
+/// settings: a concurrent CLI can rewrite them between fixture creation and use.
 #[cfg(test)]
 pub(crate) fn fixture_pool(servers: Vec<ServerSpec>) -> Pool {
-    let pool = Pool::default();
-    let stamp = Stamp { cwds: vec![], user: claude_config_path().as_deref().and_then(modified), project: None };
-    *pool.known.lock().unwrap() = Some((stamp, servers));
-    pool
+    Pool { fixture_servers: Some(servers), ..Pool::default() }
 }
 
 #[cfg(test)]
