@@ -602,6 +602,7 @@ impl Participant for MeteredCurator {
             output_tokens: Some(12),
             cost_micros: Some(7),
             cost_estimated: false,
+            cached_input_tokens: None,
         })
     }
 }

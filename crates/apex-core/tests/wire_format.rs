@@ -143,7 +143,7 @@ fn room_event_shapes() {
         json!({ "type": "activity", "id": "opus", "text": "Reading a.rs" })
     );
     assert_eq!(
-        to_value(RoomEvent::Usage { id: id.clone(), input_tokens: Some(10), output_tokens: None, cost_micros: None, cost_estimated: false }).unwrap(),
+        to_value(RoomEvent::Usage { id: id.clone(), input_tokens: Some(10), output_tokens: None, cost_micros: None, cost_estimated: false, cached_input_tokens: None }).unwrap(),
         json!({ "type": "usage", "id": "opus", "input_tokens": 10, "output_tokens": null })
     );
     let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into(), expires_at: None, risky: false };
@@ -180,7 +180,7 @@ fn room_event_shapes() {
         json!({ "type": "compacted", "id": "opus", "summary": "s", "upto": 4 })
     );
     assert_eq!(
-        to_value(RoomEvent::ContextUsage { id: ParticipantId::new("opus"), used_tokens: 36_000, window_tokens: 200_000 }).unwrap(),
+        to_value(RoomEvent::ContextUsage { id: ParticipantId::new("opus"), used_tokens: 36_000, window_tokens: 200_000, estimated: false }).unwrap(),
         json!({ "type": "context_usage", "id": "opus", "used_tokens": 36000, "window_tokens": 200000 })
     );
     let plan = apex_core::PlanUsage {
@@ -331,10 +331,10 @@ fn token_totals_are_saved_per_bot() {
     totals.add(Some(1840), None, None);
     snapshot.usage.insert(ParticipantId::new("opus"), totals);
     // No reported cost field yet; the turn is counted as unknown cost instead of $0.
-    assert_eq!(to_value(&snapshot).unwrap()["usage"], json!({ "opus": { "input": 1840, "output": 0, "turns": 1, "unknown_cost_turns": 1 } }));
+    assert_eq!(to_value(&snapshot).unwrap()["usage"], json!({ "opus": { "input": 1840, "output": 0, "turns": 1, "unknown_cost_turns": 1, "input_reported_turns": 1, "output_reported_turns": 0 } }));
     let mut paid = apex_core::TokenTotals::default();
     paid.add(Some(10), Some(2), Some(423));
-    assert_eq!(to_value(paid).unwrap(), json!({ "input": 10, "output": 2, "turns": 1, "cost_micros": 423 }));
+    assert_eq!(to_value(paid).unwrap(), json!({ "input": 10, "output": 2, "turns": 1, "cost_micros": 423, "input_reported_turns": 1, "output_reported_turns": 1 }));
 }
 
 #[test]

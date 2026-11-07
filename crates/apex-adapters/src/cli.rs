@@ -472,6 +472,7 @@ impl CliParticipant {
             return Err(ParticipantError::Failed(format!("`{program}` {how}: {summary}{hint}")));
         }
         Ok(Reply {
+            cached_input_tokens: outcome.cached_input_tokens,
             text: outcome.text.trim().to_string(),
             input_tokens: outcome.input_tokens,
             output_tokens: outcome.output_tokens,

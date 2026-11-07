@@ -314,7 +314,7 @@ export function reportsContext(provider: AgentTool | null): boolean {
 /** Context and plan as bars for the sheet a held bot opens: context first, then each plan window, shortest first, as on the desktop's meters. */
 export function botMeters(
   provider: AgentTool | null,
-  fill: { used: number; window: number } | undefined,
+  fill: { used: number; window: number; estimated?: boolean } | undefined,
   windows: PlanWindow[] | undefined,
   now: Date,
   /** Dollars left on an API bot's account, when its provider reports them. */
@@ -326,17 +326,16 @@ export function botMeters(
     key: "context",
     label: "Context",
     left: context,
-    value: context === null ? "—" : `${percent(context)}%`,
-    detail: fill ? `${shortCount(Math.max(0, fill.window - fill.used))} of ${shortCount(fill.window)} tokens left` : reportsContext(provider) ? "Shows after its next reply" : "Not reported by this provider",
+    value: context === null ? "Not reported" : `${percent(context)}%`,
+    detail: fill ? `${fill.estimated ? "Estimated · " : ""}${shortCount(Math.max(0, fill.window - fill.used))} of ${shortCount(fill.window)} tokens left` : "Not reported",
     low: isLow(context),
   }];
   if (balance !== null && Number.isFinite(balance)) {
     rows.push({ key: "balance", label: "Balance", left: null, value: `$${balance.toFixed(2)}`, detail: "Prepaid balance on this provider account", low: false });
-    return rows;
   }
   const live = provider ? liveWindows(windows ?? [], nowSeconds) : [];
   if (live.length === 0) {
-    rows.push({ key: "plan", label: "Plan", left: null, value: "—", detail: provider ? "Shows after its next reply" : "Not reported by this provider", low: false });
+    rows.push({ key: "plan", label: "Plan", left: null, value: "Not reported", detail: "Not reported", low: false });
     return rows;
   }
   for (const w of [...live].sort((a, b) => (a.window_minutes ?? Infinity) - (b.window_minutes ?? Infinity))) {
@@ -357,7 +356,7 @@ export function botMeters(
 /** What a bot's pill in the bar shows: a hairline for context left, and a dot when its plan is nearly used up. */
 export function pillMeter(
   provider: AgentTool | null,
-  fill: { used: number; window: number } | undefined,
+  fill: { used: number; window: number; estimated?: boolean } | undefined,
   windows: PlanWindow[] | undefined,
   now: Date,
 ): { context: number | null; low: boolean; planLow: boolean } {
@@ -366,9 +365,9 @@ export function pillMeter(
 }
 
 /** "12k in · 3.1k out · 4 turns in this thread": what a bot has used here, from the totals saved with the thread. */
-export function tokenWords(use: { input: number; output: number; turns: number } | undefined): string {
-  if (!use || use.turns === 0) return "No tokens used in this thread yet";
-  return `${shortCount(use.input)} in · ${shortCount(use.output)} out · ${use.turns === 1 ? "1 turn" : `${use.turns} turns`} in this thread`;
+export function tokenWords(use: { input: number; output: number; turns: number; input_reported_turns?: number; output_reported_turns?: number; cached_input?: number } | undefined): string {
+  if (!use || use.turns === 0) return "Not reported";
+  return `${use.input_reported_turns === 0 ? "Not reported" : shortCount(use.input)} in · ${use.output_reported_turns === 0 ? "Not reported" : shortCount(use.output)} out · ${use.turns === 1 ? "1 turn" : `${use.turns} turns`} in this thread · cached input: ${use.cached_input == null ? "Not reported" : shortCount(use.cached_input)}${(use.input_reported_turns ?? use.turns) < use.turns || (use.output_reported_turns ?? use.turns) < use.turns ? " · partial totals" : ""}`;
 }
 
 const TOOL_LABELS: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Antigravity", grok: "Grok", muse: "Muse Code" };

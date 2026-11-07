@@ -3069,7 +3069,11 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         // The room adds these up too; a full checkpoint replaces this copy
         // with the room's, so nothing is counted twice. Saving each one now
         // keeps the totals if the app quits before the chain ends.
-        RoomEvent::Usage { id, input_tokens, output_tokens, cost_micros, cost_estimated } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add_turn(*input_tokens, *output_tokens, *cost_micros, *cost_estimated),
+        RoomEvent::Usage { id, input_tokens, output_tokens, cached_input_tokens, cost_micros, cost_estimated } => {
+            let totals = checkpoint.snapshot.usage.entry(id.clone()).or_default();
+            totals.add_turn(*input_tokens, *output_tokens, *cost_micros, *cost_estimated);
+            if let Some(cached) = cached_input_tokens { totals.cached_input = Some(totals.cached_input.unwrap_or(0).saturating_add(*cached)); }
+        },
         _ => {}
     }
     store.save_room(id, &checkpoint)?;
@@ -3727,11 +3731,11 @@ mod tests {
     fn token_totals_are_saved_as_each_turn_reports_them() {
         let (handle, store, path) = checkpoint_fixture("usage");
         let null = ParticipantId::new("null");
-        for (input, output, cost) in [(Some(100), Some(5), Some(420)), (Some(20), None, None)] {
-            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output, cost_micros: cost, cost_estimated: false }).unwrap();
+        for (input, output, cost, cached) in [(Some(100), Some(5), Some(420), Some(80)), (Some(20), None, None, None)] {
+            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output, cost_micros: cost, cost_estimated: false, cached_input_tokens: cached }).unwrap();
         }
         let saved = store.room("room").unwrap().unwrap().snapshot;
-        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { input: 120, output: 5, turns: 2, cost_micros: 420, unknown_cost_turns: 1, ..Default::default() }));
+        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { cached_input: Some(80), input_reported_turns: Some(2), output_reported_turns: Some(1), input: 120, output: 5, turns: 2, cost_micros: 420, unknown_cost_turns: 1, ..Default::default() }));
         std::fs::remove_dir_all(path).unwrap();
     }
 

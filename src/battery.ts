@@ -129,16 +129,20 @@ export function shortCount(n: number): string {
 }
 
 /** "18% left · 36k of 200k tokens" */
-export function contextLine(use: { used: number; window: number }): string {
+export function contextLine(use: { used: number; window: number; estimated?: boolean }): string {
   const level = contextLevel(use) ?? 0;
-  return `${percent(level)}% left · ${shortCount(Math.max(0, use.window - use.used))} of ${shortCount(use.window)} tokens`;
+  return `${use.estimated ? "Estimated · " : ""}${percent(level)}% left · ${shortCount(Math.max(0, use.window - use.used))} of ${shortCount(use.window)} tokens`;
 }
 
 /** The usage card's token sentence for one bot. The totals are saved with the thread. */
 export function tokenLine(use: TokenTotals | undefined): string {
-  if (!use || use.turns === 0) return "No tokens used in this thread yet.";
+  if (!use || use.turns === 0) return "Not reported";
   const turns = use.turns === 1 ? "1 turn" : `${use.turns} turns`;
-  return `${use.input.toLocaleString()} in, ${use.output.toLocaleString()} out over ${turns} in this thread. Input includes the conversation and files the tool re-read from its cache.`;
+  const input = use.input_reported_turns === 0 ? "Not reported" : use.input.toLocaleString();
+  const output = use.output_reported_turns === 0 ? "Not reported" : use.output.toLocaleString();
+  const partial = (use.input_reported_turns ?? use.turns) < use.turns || (use.output_reported_turns ?? use.turns) < use.turns;
+  const cached = use.cached_input == null ? "Cached input: Not reported." : `Cached input: ${use.cached_input.toLocaleString()} tokens.`;
+  return `${input} in, ${output} out over ${turns} in this thread. Input includes the conversation and files the tool re-read from its cache. ${cached}${partial ? " Partial totals: some token counts were not reported." : ""}`;
 }
 
 /** A chat's spend as the usage card words it: "$1.20", "$1.20 + $0.05 est.", "$1.20 + 2 unknown". Undefined when there is nothing to show. */
