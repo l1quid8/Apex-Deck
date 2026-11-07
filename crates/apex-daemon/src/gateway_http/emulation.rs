@@ -3,6 +3,8 @@ use super::*;
 use std::process::Stdio;
 use tokio::process::Command;
 
+mod text_retry;
+
 pub(super) fn schema(body: &Value) -> Value {
     let mut names: Vec<_> = body["tools"]
         .as_array()
@@ -87,8 +89,10 @@ pub(super) fn text_request(body: &Value) -> Result<TurnRequest, String> {
     })
 }
 
+const INVALID_ENVELOPE_JSON: &str = "Provider returned invalid envelope JSON";
+
 pub(super) fn text_result(body: &Value, reply: &Reply) -> Result<(Value, Value), String> {
-    let envelope: Value = serde_json::from_str(reply.text.trim()).map_err(|_| "Provider returned invalid envelope JSON")?;
+    let envelope: Value = serde_json::from_str(reply.text.trim()).map_err(|_| INVALID_ENVELOPE_JSON)?;
     let message = translate(body, &envelope)?;
     let usage = super::telemetry::reply_usage(reply);
     Ok((message, usage))
@@ -105,15 +109,22 @@ async fn run_text(
         ..Default::default()
     }).with_tools_disabled();
     let context_use = std::sync::Mutex::new(None);
-    let reply = participant.respond_with_approvals(text_request(body)?, &|update| {
-        if let Progress::Plan(plan) = update { let model = match &target.config.backend { Backend::Agent {model,..} => model.as_deref(), _ => None };
-            apex_adapters::remember_gateway_plan_usage(plan, model, &BuildContext {data_dir:Some(state.data_dir.clone()), ..Default::default()}); }
-        if let Progress::Context(value) = update { *context_use.lock().unwrap() = Some(value); }
-    }, &GatewayApprover).await
-        .map_err(|e| e.to_string())?;
-    completed.store(true, Ordering::Relaxed);
-    if let Some(cost) = reply.cost_micros { state.keys.record_spend(&key.id, cost); }
-    let (message, mut usage) = text_result(body, &reply)?;
+    let retry_muse = matches!(target.config.backend, Backend::Agent {tool:AgentTool::Muse,..});
+    let (message, mut usage) = text_retry::run(body, retry_muse, |request| {
+        let participant = &participant;
+        let context_use = &context_use;
+        async move {
+            *context_use.lock().unwrap() = None;
+            let reply = participant.respond_with_approvals(request, &|update| {
+                if let Progress::Plan(plan) = update { let model = match &target.config.backend { Backend::Agent {model,..} => model.as_deref(), _ => None };
+                    apex_adapters::remember_gateway_plan_usage(plan, model, &BuildContext {data_dir:Some(state.data_dir.clone()), ..Default::default()}); }
+                if let Progress::Context(value) = update { *context_use.lock().unwrap() = Some(value); }
+            }, &GatewayApprover).await.map_err(|e| e.to_string())?;
+            completed.store(true, Ordering::Relaxed);
+            if let Some(cost) = reply.cost_micros { state.keys.record_spend(&key.id, cost); }
+            Ok(reply)
+        }
+    }).await?;
     usage["context"] = json!(*context_use.lock().unwrap());
     Ok((message, usage))
 }
