@@ -679,15 +679,20 @@ test('with a log file the daemon runs under cmd.exe and appends its output and e
 });
 
 test('Windows Task Scheduler registers real taskXml, launches apex-daemon via headless conhost and cmd, logs, and answers on the pipe', { skip: process.platform !== 'win32' }, async () => {
-  const bin = daemonBinary({ packaged: false, repo, env: process.env });
-  if (!fs.existsSync(bin)) {
+  const built = daemonBinary({ packaged: false, repo, env: process.env });
+  if (!fs.existsSync(built)) {
     execFileSync('cargo', ['build', '--locked', '-p', 'apex-daemon'], { cwd: repo, stdio: 'inherit' });
   }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-win-sched-'));
-  const dataDir = path.join(dir, 'data');
+  // Every path has spaces, like a real install (C:\Program Files\Apex Deck\...):
+  // the VM's sign-in task failed on exactly that, and paths without spaces hid it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck win sched '));
+  const bin = path.join(dir, 'Apex Deck', 'resources', 'bin', 'apex-daemon.exe');
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.copyFileSync(built, bin);
+  const dataDir = path.join(dir, 'Deck Data');
   const stampFile = path.join(dir, 'logon-task.stamp');
   const infoFile = path.join(dataDir, 'daemon.json');
-  const logFile = path.join(dir, 'logs', 'apex-daemon.log');
+  const logFile = path.join(dir, 'Roaming Apex', 'logs', 'apex-daemon.log');
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const taskName = `ApexDeckDaemonTest-${process.pid}`;
   let socket = '';
@@ -745,7 +750,8 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
     if (socket) {
       await waitForSocket(socket, { wanted: false, timeout: 5_000 }).catch(() => {});
     }
-    fs.rmSync(dir, { recursive: true, force: true });
+    // The copied apex-daemon.exe can stay locked for a moment after its kill.
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   }
 });
 
