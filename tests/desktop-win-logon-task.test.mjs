@@ -14,7 +14,7 @@ import {
   installLogonTask,
   removeLogonTask,
   schtasks,
-  startLogonTaskDaemon,
+  startLogonTaskDaemon as startReal,
   cmdCommand,
   taskArguments,
   taskPresence,
@@ -24,6 +24,15 @@ import {
   taskCommand,
   taskXml,
   usesLogonTask,
+  killTaskDaemon,
+  daemonExited,
+  endLogonTaskDaemon,
+  daemonProcesses,
+  listDaemonProcesses,
+  parseDaemonList,
+  processPath,
+  processPathScript,
+  DAEMON_LIST_SCRIPT,
 } from '../desktop/winLogonTask.mjs';
 import { daemonBuild } from '../desktop/launchAgent.mjs';
 import { answers, daemonBinary, daemonEndpoint, waitForSocket } from '../desktop/sidecar.mjs';
@@ -63,6 +72,13 @@ function fakeSchtasks({ loaded = false, fail = {}, running = () => false, code =
   };
   return { calls, run, state };
 }
+
+/**
+ * startLogonTaskDaemon with an injected process list, so no unit test runs the
+ * real Get-Process. By default Windows lists no apex-daemon; tests that model a
+ * daemon outliving its task pass their own `listDaemons`.
+ */
+const startLogonTaskDaemon = (options) => startReal({ listDaemons: async () => [], ...options });
 
 /** A clock that moves `step` ms each time it is read. */
 function fakeClock(step) {
@@ -282,16 +298,141 @@ test('a slow start is waited for past 15 seconds while the task is still running
 
 test('a task still running at the long limit is ended, not deleted, and a fallback is allowed once it is confirmed stopped', async () => {
   let ended = false;
+  let killed = false;
+  const bin = 'C:\\Apex\\apex-daemon.exe';
   const { run, calls, state } = fakeSchtasks({ loaded: true, running: () => !ended, onEnd: () => { ended = true; } });
   const error = await startLogonTaskDaemon({
-    socket: 'p', infoFile: 'i', run, queryState: state, timeout: 15_000, slowTimeout: 120_000,
-    answers: async () => false, install: async () => {}, readInfo: () => null,
+    socket: 'p', infoFile: 'i', bin, run, queryState: state, timeout: 15_000, slowTimeout: 120_000,
+    answers: async () => false, install: async () => {}, readInfo: () => ({ pid: 4242 }),
+    pathOf: async () => (killed ? null : bin), kill: async () => { killed = true; },
     wait: async () => {}, now: fakeClock(1_000),
   }).catch((e) => e);
   assert.match(error.message, /didn't start within 120 seconds$/);
   assert.notEqual(error.fallback, false, 'confirmed stopped: the fallback daemon may start');
   assert.ok(calls.includes('/End /TN ApexDeckDaemon'));
   assert.ok(!calls.some((c) => c.startsWith('/Delete')));
+});
+
+test('killTaskDaemon kills the daemon.json process tree only when Windows says it is apex-daemon', async () => {
+  const bin = 'C:\\Program Files\\Apex Deck\\apex-daemon.exe';
+  const run = async (over) => {
+    const killed = [];
+    const got = await killTaskDaemon({
+      infoFile: 'i', bin, readInfo: () => ({ pid: 4242 }), pathOf: async () => bin,
+      kill: async (pid) => { killed.push(pid); }, ...over,
+    });
+    return { got, killed };
+  };
+  assert.deepEqual(await run({}), { got: 'killed', killed: [4242] });
+  // Same program, different case and a redundant segment.
+  assert.deepEqual(await run({ pathOf: async () => 'c:\\program files\\APEX DECK\\.\\APEX-DAEMON.EXE\r\n' }), { got: 'killed', killed: [4242] });
+  // No usable process ID in daemon.json.
+  for (const info of [null, {}, { pid: 0 }, { pid: -1 }, { pid: '4242' }, { pid: 1.5 }]) {
+    assert.deepEqual(await run({ readInfo: () => info }), { got: 'no-pid', killed: [] }, JSON.stringify(info));
+  }
+  // A stale ID now used by another program, an apex-daemon from elsewhere, a gone process, or no answer.
+  assert.deepEqual(await run({ pathOf: async () => 'C:\\Windows\\notepad.exe' }), { got: 'not-daemon', killed: [] });
+  assert.deepEqual(await run({ pathOf: async () => 'D:\\Other\\apex-daemon.exe' }), { got: 'not-daemon', killed: [] });
+  assert.deepEqual(await run({ pathOf: async () => { throw new Error('Cannot find a process with the process identifier 4242.'); } }), { got: 'not-daemon', killed: [] });
+  assert.deepEqual(await run({ pathOf: async () => '' }), { got: 'not-daemon', killed: [] });
+  // Without bin, the program name alone must still be apex-daemon.exe.
+  assert.deepEqual(await run({ bin: '', pathOf: async () => 'D:\\Other\\apex-daemon.exe' }), { got: 'killed', killed: [4242] });
+  assert.deepEqual(await run({ bin: '', pathOf: async () => 'D:\\Other\\apex-daemon-helper.exe' }), { got: 'not-daemon', killed: [] });
+  // taskkill failing is reported, not thrown.
+  assert.deepEqual(await run({ kill: async () => { throw new Error('ERROR: Access is denied.'); } }), { got: 'failed', killed: [] });
+});
+
+test('endLogonTaskDaemon ends the task first, then kills the daemon under it, even when /End fails', async () => {
+  const order = [];
+  const got = await endLogonTaskDaemon({
+    taskName: 'T', run: async (args) => { order.push(args.join(' ')); throw new Error('ERROR: Access is denied.'); },
+    infoFile: 'i', readInfo: () => ({ pid: 7 }), pathOf: async () => 'C:\\x\\apex-daemon.exe',
+    kill: async (pid) => { order.push(`kill ${pid}`); },
+  });
+  assert.equal(got, 'killed');
+  assert.deepEqual(order, ['/End /TN T', 'kill 7']);
+});
+
+test('at the slow limit the daemon under the task is killed by its daemon.json ID before a fallback is allowed', async () => {
+  // The daemon wrote daemon.json, then hung: it never answers. /End stops only the task.
+  const { run, calls, state } = fakeSchtasks({ loaded: true, running: () => !calls.includes('/End /TN ApexDeckDaemon') });
+  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const error = await startLogonTaskDaemon({
+    socket: 'p', infoFile: 'i', bin, run, queryState: state, timeout: 15_000, slowTimeout: 120_000,
+    answers: async () => false, install: async () => {}, readInfo: () => ({ pid: 4242 }),
+    pathOf: async (pid) => { calls.push(`PATH ${pid}`); return calls.includes(`KILL ${pid}`) ? null : bin; },
+    kill: async (pid) => { calls.push(`KILL ${pid}`); },
+    wait: async () => {}, now: fakeClock(1_000),
+  }).catch((e) => e);
+  assert.notEqual(error.fallback, false, 'killed, confirmed exited and quiet: the fallback may start');
+  const end = calls.indexOf('/End /TN ApexDeckDaemon');
+  assert.ok(end >= 0 && calls.indexOf('KILL 4242') > end, 'the daemon is killed after /End');
+  // A daemon.json ID that now belongs to another program is never killed.
+  const other = fakeSchtasks({ loaded: true, running: () => !other.calls.includes('/End /TN ApexDeckDaemon') });
+  let killed = false;
+  await startLogonTaskDaemon({
+    socket: 'p', infoFile: 'i', bin, run: other.run, queryState: other.state, timeout: 15_000, slowTimeout: 120_000,
+    answers: async () => false, install: async () => {}, readInfo: () => ({ pid: 4242 }),
+    pathOf: async () => 'C:\\Windows\\notepad.exe', kill: async () => { killed = true; },
+    wait: async () => {}, now: fakeClock(1_000),
+  }).catch(() => {});
+  assert.equal(killed, false);
+});
+
+test('daemonExited needs Windows to confirm the process is gone or now another program', async () => {
+  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const exited = (pathOf, pid = 4242, over = {}) => daemonExited(pid, { bin, pathOf, ...over });
+  assert.equal(await exited(async () => null), true, 'no process with that ID');
+  assert.equal(await exited(async () => 'C:\\Windows\\notepad.exe'), true, 'the ID now belongs to another program');
+  assert.equal(await exited(async () => 'D:\\Other\\apex-daemon.exe'), true, 'an apex-daemon somewhere else is not ours');
+  assert.equal(await exited(async () => bin), false, 'still our daemon');
+  assert.equal(await exited(async () => 'c:\\apex\\APEX-DAEMON.EXE\r\n'), false, 'capital letters and line ends do not matter');
+  assert.equal(await exited(async () => ''), false, 'a process whose path cannot be read may still be ours');
+  assert.equal(await exited(async () => { throw new Error('Access is denied.'); }), false, 'a failed query proves nothing');
+  assert.equal(await exited(async () => 'D:\\Other\\apex-daemon.exe', 4242, { bin: '' }), false, 'without bin, any apex-daemon may be ours');
+  for (const pid of [undefined, null, 0, -1, 1.5, '4242']) {
+    assert.equal(await daemonExited(pid, { bin, pathOf: async () => null }), false, `no usable ID: ${pid}`);
+  }
+});
+
+test('at the slow limit a daemon that was not killed, or did not exit, forbids the fallback', async () => {
+  const bin = 'C:\\Apex\\apex-daemon.exe';
+  // In every case /End works and the task reads as stopped with nothing answering:
+  // only the process check stands between the hung daemon and a second one.
+  const attempt = async (over) => {
+    const fake = fakeSchtasks({ loaded: true, running: () => !fake.calls.includes('/End /TN ApexDeckDaemon') });
+    const error = await startLogonTaskDaemon({
+      socket: 'p', infoFile: 'i', bin, run: fake.run, queryState: fake.state, timeout: 15_000, slowTimeout: 120_000,
+      answers: async () => false, install: async () => {}, readInfo: () => ({ pid: 4242 }),
+      pathOf: async () => bin, kill: async () => {},
+      wait: async () => {}, now: fakeClock(1_000), ...over,
+    }).catch((e) => e);
+    assert.ok(error instanceof Error, 'never answered: an error');
+    return error;
+  };
+  // daemon.json has no process ID yet: nothing to kill.
+  const noPid = await attempt({ readInfo: () => null });
+  assert.equal(noPid.fallback, false);
+  assert.match(noPid.message, /hasn't recorded its process ID/);
+  // taskkill refused: the daemon stays alive.
+  const denied = await attempt({ kill: async () => { throw new Error('ERROR: Access is denied.'); } });
+  assert.equal(denied.fallback, false);
+  assert.match(denied.message, /couldn't be stopped/);
+  // The recorded ID isn't our daemon (a stale daemon.json): the hung one is unidentified.
+  const stale = await attempt({ pathOf: async () => null });
+  assert.equal(stale.fallback, false);
+  assert.match(stale.message, /isn't a running apex-daemon/);
+  // taskkill reported success, but Windows still shows the daemon running.
+  const alive = await attempt({});
+  assert.equal(alive.fallback, false);
+  assert.match(alive.message, /couldn't be confirmed stopped/);
+  // Windows can't be asked after the kill: not confirmed.
+  let killed = false;
+  const unasked = await attempt({
+    pathOf: async () => { if (killed) throw new Error('powershell failed'); return bin; },
+    kill: async () => { killed = true; },
+  });
+  assert.equal(unasked.fallback, false);
 });
 
 test('a failed /End that leaves the task running forbids the fallback daemon', async () => {
@@ -552,7 +693,7 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
   let socket = '';
   try {
     socket = await daemonEndpoint(bin, dataDir);
-    const got = await startLogonTaskDaemon({
+    const got = await startReal({
       socket,
       infoFile,
       taskName,
@@ -570,13 +711,26 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
     const listOnly = (args) => (args[0] === '/Query' && args.includes('/TN') ? Promise.reject(new Error('forced')) : schtasks(args));
     assert.equal(await taskPresence(listOnly, taskName), 'present', 'taskPresence finds the task in the real task list');
     assert.equal(await taskPresence(listOnly, `${taskName}-missing`), 'absent', 'taskPresence reads the real task list');
-    // /End must take the daemon under conhost and cmd down with it, or Deck refuses its fallback.
-    await schtasks(['/End', '/TN', taskName]);
+    // Ending must take the daemon under conhost and cmd down too, or Deck refuses its fallback.
+    // Real Get-Process and taskkill: /End alone leaves apex-daemon running under the task.
+    const daemonPid = JSON.parse(fs.readFileSync(infoFile, 'utf8')).pid;
+    assert.equal(await daemonExited(daemonPid, { bin }), false, 'real Get-Process: the running daemon has not exited');
+    assert.ok((await listDaemonProcesses()).some((p) => p.pid === daemonPid), 'real Get-Process lists the running daemon');
+    assert.equal(await daemonProcesses({ bins: [bin] }), 'running', 'a daemon at bin counts as running');
+    assert.equal(await endLogonTaskDaemon({ taskName, infoFile, bin }), 'killed', 'the daemon.json ID is a running apex-daemon at bin');
     assert.equal(
       await waitForSocket(socket, { wanted: false, timeout: 10_000 }),
       true,
-      '/End stops the daemon under the task: nothing answers within 10 s',
+      'ending the task and killing its daemon: nothing answers within 10 s',
     );
+    let gone = false;
+    for (let i = 0; i < 40 && !gone; i += 1) {
+      gone = await daemonExited(daemonPid, { bin });
+      if (!gone) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert.equal(gone, true, 'real Get-Process: the killed daemon reads as exited within 10 s');
+    // Other test files may run their own daemons from the same build, so only this one is checked.
+    assert.ok(!(await listDaemonProcesses()).some((p) => p.pid === daemonPid), 'real Get-Process no longer lists the killed daemon');
     assert.equal(await taskState(scheduledTaskState, taskName), 'stopped', 'an ended task reads as Ready (stopped)');
     assert.equal(await taskState(scheduledTaskState, `${taskName}-missing`), 'unknown', 'a missing task is unknown, not stopped');
   } finally {
@@ -592,5 +746,139 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
       await waitForSocket(socket, { wanted: false, timeout: 5_000 }).catch(() => {});
     }
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a stopped task whose daemon is still running is not taken as exited: no fallback before the guarded kill', async () => {
+  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const failing = async () => { throw new Error("The background service didn't start: ERROR: Access is denied."); };
+  // The task reads Ready, nothing answers, but apex-daemon 4242 outlived it (as on Windows CI).
+  const scenario = (over = {}) => {
+    const fake = fakeSchtasks({ loaded: true, running: () => false });
+    const seen = { lists: 0, kills: [], paths: 0 };
+    let alive = true;
+    const options = {
+      socket: 'p', infoFile: 'i', bin, run: fake.run, queryState: fake.state, timeout: 15_000, slowTimeout: 120_000,
+      answers: async () => false, install: async () => {}, readInfo: () => ({ pid: 4242 }),
+      listDaemons: async () => { seen.lists += 1; return alive ? [{ pid: 4242, path: bin }] : []; },
+      pathOf: async () => { seen.paths += 1; return alive ? bin : null; },
+      kill: async (pid) => { seen.kills.push(pid); },
+      wait: async () => {}, now: fakeClock(1_000),
+      ...over,
+    };
+    return { fake, seen, options, die: () => { alive = false; } };
+  };
+
+  // During startup: the stopped task alone no longer allows the fallback at 15 s.
+  const during = scenario();
+  const a = await startReal(during.options).catch((e) => e);
+  assert.ok(during.seen.lists > 0, 'Windows was asked which apex-daemon processes run');
+  assert.deepEqual(during.seen.kills, [4242], 'it went through the guarded kill at the long limit');
+  assert.doesNotMatch(a.message, /stopped before it answered/);
+  assert.equal(a.fallback, false, 'the kill never took effect: no second daemon');
+
+  // After a failed install: same, no immediate fallback.
+  const install = scenario({ install: failing });
+  const b = await startReal(install.options).catch((e) => e);
+  assert.ok(install.seen.lists > 0);
+  assert.deepEqual(install.seen.kills, [4242]);
+  assert.equal(b.fallback, false);
+
+  // The guarded kill works: then, and only then, the fallback is allowed.
+  const works = scenario();
+  works.options.kill = async (pid) => { works.seen.kills.push(pid); works.die(); };
+  const c = await startReal(works.options).catch((e) => e);
+  assert.deepEqual(works.seen.kills, [4242]);
+  assert.match(c.message, /didn't start within 120 seconds$/);
+  assert.notEqual(c.fallback, false);
+
+  // Windows can't list processes: unknown never allows a fallback.
+  const blind = scenario({ listDaemons: async () => { throw new Error('powershell failed'); } });
+  blind.options.kill = async (pid) => { blind.seen.kills.push(pid); blind.die(); };
+  const d = await startReal(blind.options).catch((e) => e);
+  assert.equal(d.fallback, false, 'process list unreadable: never confirmed gone');
+  const blindInstall = scenario({ install: failing, listDaemons: async () => { throw new Error('powershell failed'); } });
+  assert.equal((await startReal(blindInstall.options).catch((e) => e)).fallback, false);
+});
+
+test('a stopped task with no daemon left still falls back at once', async () => {
+  const fake = fakeSchtasks({ loaded: true, running: () => false });
+  let lists = 0;
+  const error = await startReal({
+    socket: 'p', infoFile: 'i', bin: 'C:\\Apex\\apex-daemon.exe', run: fake.run, queryState: fake.state,
+    timeout: 15_000, slowTimeout: 120_000, answers: async () => false, install: async () => {}, readInfo: () => null,
+    listDaemons: async () => { lists += 1; return [{ pid: 9, path: 'D:\\Other\\apex-daemon.exe' }]; },
+    wait: async () => {}, now: fakeClock(1_000),
+  }).catch((e) => e);
+  assert.match(error.message, /stopped before it answered/);
+  assert.notEqual(error.fallback, false);
+  assert.ok(lists > 0);
+  assert.ok(!fake.calls.some((c) => c.startsWith('/End')));
+});
+
+test('daemonProcesses counts apex-daemon at Deck\'s paths or with a hidden path, and only a real list is none', async () => {
+  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const other = 'C:\\Users\\u\\AppData\\Local\\Apex Deck\\apex-daemon.exe';
+  const at = (found, bins = [bin, other]) => daemonProcesses({ bins, list: async () => found });
+  assert.equal(await at([]), 'none');
+  assert.equal(await at([{ pid: 1, path: 'c:\\apex\\APEX-DAEMON.EXE' }]), 'running');
+  assert.equal(await at([{ pid: 1, path: other }]), 'running', 'the fallback copy counts too');
+  assert.equal(await at([{ pid: 1, path: '' }]), 'running', 'a path Windows hides counts as ours');
+  assert.equal(await at([{ pid: 1, path: 'D:\\Other\\apex-daemon.exe' }]), 'none');
+  assert.equal(await at([{ pid: 1, path: 'D:\\Other\\apex-daemon.exe' }], ['', '']), 'running', 'no known path: any apex-daemon counts');
+  assert.equal(await daemonProcesses({ bins: [bin], list: async () => { throw new Error('denied'); } }), 'unknown');
+  assert.equal(await daemonProcesses({ bins: [bin], list: async () => null }), 'unknown');
+});
+
+// A PowerShell run that exits non-zero, the way the scripts do when Get-Process fails.
+const failedPowerShell = (stdout = '') => (_file, _args, _opts, cb) => {
+  const error = Object.assign(new Error('Command failed'), { code: 3 });
+  queueMicrotask(() => cb(error, stdout, ''));
+};
+const okPowerShell = (stdout) => (_file, _args, _opts, cb) => queueMicrotask(() => cb(null, stdout, ''));
+
+test('the process lookups fail on any Get-Process error and print markers only after a full list', async () => {
+  for (const script of [DAEMON_LIST_SCRIPT, processPathScript(4242)]) {
+    assert.doesNotMatch(script, /SilentlyContinue/, 'errors must not be suppressed');
+    assert.match(script, /^try \{ \$all = @\(Get-Process -ErrorAction Stop\) \} catch \{ exit 3 \}; /, 'enumerate everything first; a failure exits non-zero');
+    assert.doesNotMatch(script.slice(0, script.indexOf('}; ') + 3), /'BEGIN'|'NO-PROCESS'|'PATH:'/, 'no marker before the lookup succeeds');
+    assert.doesNotMatch(script, /Get-Process -Name|Get-Process -Id/, 'filter after listing, not in the lookup');
+  }
+  // The command boundary: a failed run rejects even if it printed valid-looking markers.
+  await assert.rejects(listDaemonProcesses({}, failedPowerShell('BEGIN\r\nEND\r\n')));
+  await assert.rejects(processPath(4242, {}, failedPowerShell('NO-PROCESS\r\n')));
+  assert.deepEqual(await listDaemonProcesses({}, okPowerShell('BEGIN\r\nEND\r\n')), []);
+  assert.equal(await processPath(4242, {}, okPowerShell('NO-PROCESS\r\n')), null);
+  // And that failure never reads as "no daemon left" or "daemon exited".
+  assert.equal(await daemonProcesses({ list: () => listDaemonProcesses({}, failedPowerShell('BEGIN\r\nEND\r\n')) }), 'unknown');
+  assert.equal(await daemonExited(4242, { pathOf: (pid) => processPath(pid, {}, failedPowerShell('NO-PROCESS\r\n')) }), false);
+});
+
+test('real PowerShell: a failing Get-Process makes both lookups exit non-zero with no markers', { skip: process.platform !== 'win32' }, () => {
+  const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  // Shadow Get-Process with one that reports a non-terminating error, like access denied.
+  const failing = "function Get-Process { [CmdletBinding()] param() Write-Error 'lookup failed' }; ";
+  for (const script of [DAEMON_LIST_SCRIPT, processPathScript(4242)]) {
+    let status = 0;
+    let stdout = '';
+    try {
+      stdout = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', failing + script], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) {
+      status = error.status;
+      stdout = String(error.stdout ?? '');
+    }
+    assert.equal(status, 3, 'exits 3 when Get-Process fails');
+    assert.doesNotMatch(stdout, /BEGIN|END|NO-PROCESS|PATH:/, 'prints no success marker');
+  }
+});
+
+test('parseDaemonList accepts only the marked Get-Process output', () => {
+  assert.deepEqual(parseDaemonList('BEGIN\r\nEND\r\n'), []);
+  assert.deepEqual(
+    parseDaemonList('BEGIN\r\nP:4242:C:\\Apex Deck\\apex-daemon.exe\r\nP:7:\r\nEND\r\n'),
+    [{ pid: 4242, path: 'C:\\Apex Deck\\apex-daemon.exe' }, { pid: 7, path: '' }],
+  );
+  for (const bad of ['', 'END', 'BEGIN', 'BEGIN\r\nEND garbage', 'BEGIN\r\nWarnung: Zugriff verweigert\r\nEND', 'BEGIN\r\nP:x:C:\\a.exe\r\nEND', 'Zugriff verweigert']) {
+    assert.equal(parseDaemonList(bad), null, JSON.stringify(bad));
   }
 });

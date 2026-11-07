@@ -116,6 +116,8 @@ async function startAgent() {
       const got = await startLogonTaskDaemon({
         socket,
         infoFile,
+        bin: agentBin,
+        fallbackBin: bin,
         answers,
         install: () => installLogonTask({ bin: agentBin, dataDir, logFile, build: daemonBuild(agentBin), stampFile }),
       });

@@ -246,6 +246,165 @@ export const taskState = (query = scheduledTaskState, taskName = TASK_NAME) =>
       () => 'unknown',
     );
 
+/**
+ * Lists every process, or exits 3 if Windows can't. `-ErrorAction Stop` turns
+ * any lookup error into a failure; `SilentlyContinue` would hide it and leave
+ * a short list that reads like "no such process". Filtering happens after a
+ * complete list, so a success marker only ever follows a successful lookup.
+ */
+const ALL_PROCESSES = 'try { $all = @(Get-Process -ErrorAction Stop) } catch { exit 3 }';
+
+/** `NO-PROCESS` or `PATH:<path>` for `pid`, only after the full list loaded. */
+export const processPathScript = (pid) =>
+  `${ALL_PROCESSES}; $p = $all | Where-Object { $_.Id -eq ${Number(pid)} } | Select-Object -First 1; if ($null -eq $p) { 'NO-PROCESS' } else { 'PATH:' + $p.Path }`;
+
+/** `BEGIN`, `P:<pid>:<path>` per apex-daemon, `END`, only after the full list loaded. */
+export const DAEMON_LIST_SCRIPT =
+  `${ALL_PROCESSES}; 'BEGIN'; foreach ($p in $all) { if ($p.ProcessName -eq 'apex-daemon') { 'P:' + $p.Id + ':' + $p.Path } }; 'END'`;
+
+/** Runs `script` in Windows PowerShell; rejects on any non-zero exit. */
+function runPowerShell(script, env = process.env, run = execFile) {
+  const powershell = path.win32.join(env?.SystemRoot || env?.windir || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return new Promise((resolve, reject) => {
+    run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { windowsHide: true, timeout: 15_000 }, (error, stdout, stderr) => {
+        if (error) reject(new Error(String(stderr ?? '').trim() || error.message));
+        else resolve(stdout);
+      });
+  });
+}
+
+/**
+ * The full path of the program running as `pid`, from `Get-Process`. Resolves
+ * `null` when Windows has no process with that ID, `''` when the process exists
+ * but its path can't be read, and rejects when Windows can't be asked.
+ */
+export function processPath(pid, env = process.env, run = execFile) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return Promise.reject(new Error(`Unexpected process ID: ${pid}`));
+  return runPowerShell(processPathScript(pid), env, run).then((stdout) => {
+    const out = String(stdout).trim();
+    if (out === 'NO-PROCESS') return null;
+    if (out.startsWith('PATH:')) return out.slice(5).trim();
+    throw new Error(`Unexpected Get-Process output: ${out.slice(0, 200)}`);
+  });
+}
+
+/** `taskkill /PID pid /T /F`: end `pid` and every process it started. */
+export function killProcessTree(pid) {
+  return new Promise((resolve, reject) => {
+    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 15_000 }, (error, stdout, stderr) => {
+      if (error) reject(new Error(String(stderr).trim() || String(stdout).trim() || error.message));
+      else resolve(stdout);
+    });
+  });
+}
+
+const samePath = (a, b) => path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase();
+const isDaemonPath = (running, bin) =>
+  Boolean(running) && path.win32.basename(running).toLowerCase() === 'apex-daemon.exe' && (!bin || samePath(running, bin));
+
+/**
+ * Whether the daemon that ran as `pid` has exited: Windows has no process
+ * with that ID, or the ID now belongs to a program that isn't apex-daemon at
+ * `bin`. A process whose path can't be read, or a failed query, is not exited.
+ */
+export async function daemonExited(pid, { bin = '', pathOf = processPath } = {}) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  let running;
+  try {
+    running = await pathOf(pid);
+  } catch {
+    return false;
+  }
+  if (running === null) return true;
+  running = String(running).trim();
+  return running !== '' && !isDaemonPath(running, bin);
+}
+
+/**
+ * Every running `apex-daemon` process as `{ pid, path }`, from `Get-Process`.
+ * `path` is `''` when Windows won't show it (another user's or an elevated
+ * process). Fixed markers, never localized error text; rejects when Windows
+ * can't be asked or the output isn't recognized.
+ */
+export function listDaemonProcesses(env = process.env, run = execFile) {
+  return runPowerShell(DAEMON_LIST_SCRIPT, env, run).then((stdout) => {
+    const parsed = parseDaemonList(stdout);
+    if (!parsed) throw new Error(`Unexpected Get-Process output: ${String(stdout).trim().slice(0, 200)}`);
+    return parsed;
+  });
+}
+
+/** `BEGIN`, then `P:<pid>:<path>` lines, then `END`; anything else is `null`. */
+export function parseDaemonList(out) {
+  const lines = String(out ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines[0] !== 'BEGIN' || lines[lines.length - 1] !== 'END' || lines.length < 2) return null;
+  const found = [];
+  for (const line of lines.slice(1, -1)) {
+    const match = /^P:(\d+):(.*)$/.exec(line);
+    if (!match) return null;
+    found.push({ pid: Number(match[1]), path: match[2].trim() });
+  }
+  return found;
+}
+
+/**
+ * Whether no apex-daemon that could share Deck's data folder is running:
+ * `'none'`, `'running'` or `'unknown'`. A process counts when its path is one
+ * of `bins` (any apex-daemon.exe when `bins` is empty) or Windows won't show
+ * its path. Only a list Windows actually returned can give `'none'`.
+ */
+export async function daemonProcesses({ bins = [], list = listDaemonProcesses } = {}) {
+  let found;
+  try {
+    found = await list();
+  } catch {
+    return 'unknown';
+  }
+  if (!Array.isArray(found)) return 'unknown';
+  const wanted = bins.filter(Boolean);
+  const ours = (p) => p === '' || (wanted.length === 0
+    ? path.win32.basename(p).toLowerCase() === 'apex-daemon.exe'
+    : wanted.some((b) => isDaemonPath(p, b)));
+  return found.some((proc) => ours(String(proc?.path ?? '').trim())) ? 'running' : 'none';
+}
+
+/**
+ * Kill the daemon whose process ID `daemon.json` records, with everything it
+ * started. Ending the task stops only conhost.exe, the program the task
+ * launched, and leaves apex-daemon under it running. The ID is used only
+ * when Windows says it is running `apex-daemon.exe` (at `bin`, when given),
+ * so a stale file whose ID now belongs to another program kills nothing.
+ * Resolves `'killed'`, `'no-pid'`, `'not-daemon'` or `'failed'`; never throws.
+ */
+export async function killTaskDaemon({ infoFile, bin = '', readInfo = readJson, pathOf = processPath, kill = killProcessTree }) {
+  const pid = readInfo(infoFile)?.pid;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return 'no-pid';
+  let running;
+  try {
+    running = await pathOf(pid);
+  } catch {
+    return 'not-daemon';
+  }
+  if (running === null || !isDaemonPath(String(running).trim(), bin)) return 'not-daemon';
+  try {
+    await kill(pid);
+    return 'killed';
+  } catch {
+    return 'failed';
+  }
+}
+
+/**
+ * End the logon task and the daemon running under it: `/End`, then
+ * {@link killTaskDaemon}. Failures are left for the caller to confirm by
+ * checking that the task reads as stopped and nothing answers.
+ */
+export async function endLogonTaskDaemon({ taskName = TASK_NAME, run = schtasks, ...kill }) {
+  await run(['/End', '/TN', taskName]).catch(() => { /* confirmed by the caller */ });
+  return killTaskDaemon(kill);
+}
+
 const readJson = (file) => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
 };
@@ -321,8 +480,11 @@ export async function removeLogonTask({
  * sign-in, and Task Scheduler does not retry it in a loop the way launchd
  * would. A slow start (a first run scanned by antivirus, a busy sign-in) is
  * waited for until `slowTimeout` unless Task Scheduler confirms the program
- * stopped. At `slowTimeout` the program is ended, and the error allows a
- * fallback daemon only once the end is confirmed. Otherwise the error has
+ * stopped and Windows lists no apex-daemon at `bin` or `fallbackBin`
+ * ({@link daemonProcesses}). At `slowTimeout` the task is ended and the daemon under it killed
+ * by the process ID in `infoFile` ({@link killTaskDaemon}), and the error allows a
+ * fallback daemon only once Windows confirms that process exited, the task
+ * stopped and nothing answers ({@link daemonExited}). Otherwise the error has
  * `fallback: false`, so no second daemon shares the data folder.
  */
 export async function startLogonTaskDaemon({
@@ -334,6 +496,11 @@ export async function startLogonTaskDaemon({
   run = schtasks,
   queryState = scheduledTaskState,
   readInfo = readJson,
+  bin = '',
+  pathOf = processPath,
+  kill = killProcessTree,
+  fallbackBin = '',
+  listDaemons = listDaemonProcesses,
   timeout = 15_000,
   slowTimeout = 120_000,
   endTimeout = 10_000,
@@ -349,6 +516,11 @@ export async function startLogonTaskDaemon({
     const info = readInfo(infoFile);
     return (await answers(socket)) && typeof info?.pid === 'number' && info.pid > 0;
   };
+  // A stopped (or missing) task doesn't prove its daemon exited: apex-daemon
+  // outlives the conhost.exe the task launched. Windows must also list no
+  // apex-daemon at Deck's paths, and nothing may answer.
+  const noDaemonLeft = async () =>
+    (await daemonProcesses({ bins: [bin, fallbackBin], list: listDaemons })) === 'none' && !(await answers(socket));
   let installError = null;
   try {
     await install();
@@ -356,8 +528,8 @@ export async function startLogonTaskDaemon({
     // Registration or /Run failed, but a daemon the task started at sign-in
     // may still be starting. Fall back at once only when no task daemon can
     // be running; otherwise wait for it like any slow start.
-    const noTaskDaemon = registered === 'absent' && (await taskPresence(run, taskName)) === 'absent';
-    if (noTaskDaemon || (await taskState(queryState, taskName)) === 'stopped') {
+    const noTask = registered === 'absent' && (await taskPresence(run, taskName)) === 'absent';
+    if ((noTask || (await taskState(queryState, taskName)) === 'stopped') && (await noDaemonLeft())) {
       if (await ready()) return 'agent';
       throw error;
     }
@@ -370,14 +542,19 @@ export async function startLogonTaskDaemon({
     const elapsed = now() - started;
     if (elapsed > limit) {
       const state = await taskState(queryState, taskName);
-      if (state === 'stopped') {
+      // Stopped with its daemon still running is a slow start, not an exit.
+      if (state === 'stopped' && (await noDaemonLeft())) {
         const why = installError ? ` (${installError.message})` : '';
         throw new Error(`The background apex-daemon stopped before it answered, after ${Math.round(elapsed / 1000)} seconds${why}`);
       }
       if (elapsed > slowTimeout) {
         // It may have become ready while Task Scheduler was being asked.
         if (await ready()) return 'agent';
-        return endSlowTask({ run, queryState, taskName, socket, answers, ready, endTimeout, slowTimeout, wait, now });
+        // One ID for both the kill and the exit check, even if daemon.json changes in between.
+        const pid = readInfo(infoFile)?.pid;
+        const end = () => endLogonTaskDaemon({ taskName, run, infoFile, bin, readInfo: () => ({ pid }), pathOf, kill });
+        const exited = () => daemonExited(pid, { bin, pathOf });
+        return endSlowTask({ end, exited, noDaemonLeft, queryState, taskName, socket, answers, ready, endTimeout, slowTimeout, wait, now });
       }
       // Still starting, queued, or Task Scheduler didn't say: check again in a few seconds.
       limit = elapsed + 5_000;
@@ -388,24 +565,33 @@ export async function startLogonTaskDaemon({
 
 /**
  * End a task whose daemon never answered. Resolves `'agent'` if it answers
- * after all; otherwise throws, with `fallback: false` unless Task Scheduler
- * confirmed the program stopped and nothing answers on `socket`.
+ * after all; otherwise throws, with `fallback: false` unless the daemon was
+ * killed by its ID, Windows confirms that process exited, Task Scheduler
+ * confirms the task stopped, and nothing answers on `socket`. A stopped task
+ * and a quiet socket alone don't prove it: the daemon outlives `/End`.
  */
-async function endSlowTask({ run, queryState, taskName, socket, answers, ready, endTimeout, slowTimeout, wait, now }) {
+async function endSlowTask({ end, exited, noDaemonLeft, queryState, taskName, socket, answers, ready, endTimeout, slowTimeout, wait, now }) {
   const reason = `The background apex-daemon didn't start within ${Math.round(slowTimeout / 1000)} seconds`;
-  await run(['/End', '/TN', taskName]).catch(() => { /* confirmed below */ });
+  const refuse = (why) => Object.assign(
+    new Error(`${reason}, and ${why}, so Deck won't start a second one`),
+    { fallback: false },
+  );
+  const outcome = await end();
+  if (outcome !== 'killed') {
+    if (await ready()) return 'agent';
+    throw refuse({
+      'no-pid': "it hasn't recorded its process ID to stop it by",
+      'not-daemon': "its recorded process ID isn't a running apex-daemon",
+      failed: "it couldn't be stopped",
+    }[outcome] || "it couldn't be stopped");
+  }
   const ending = now();
   for (;;) {
     if (await ready()) return 'agent';
-    if ((await taskState(queryState, taskName)) === 'stopped' && !(await answers(socket))) {
+    if ((await exited()) && (await taskState(queryState, taskName)) === 'stopped' && (await noDaemonLeft())) {
       throw new Error(reason);
     }
-    if (now() - ending > endTimeout) {
-      throw Object.assign(
-        new Error(`${reason}, and it couldn't be confirmed stopped, so Deck won't start a second one`),
-        { fallback: false },
-      );
-    }
+    if (now() - ending > endTimeout) throw refuse("it couldn't be confirmed stopped");
     await wait(250);
   }
 }
