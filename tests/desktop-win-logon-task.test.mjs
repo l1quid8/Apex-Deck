@@ -16,6 +16,10 @@ import {
   schtasks,
   startLogonTaskDaemon as startReal,
   cmdCommand,
+  LAUNCHER_NAME,
+  launcherFile,
+  launcherScript,
+  launcherUsable,
   taskArguments,
   taskPresence,
   taskState,
@@ -662,20 +666,97 @@ test('when every query and the install fail, a starting login daemon is waited f
   assert.equal(got, 'agent');
 });
 
-test('with a log file the daemon runs under cmd.exe and appends its output and errors to that file', () => {
+test('with a log file the task runs cmd.exe on one quoted launcher path, never quotes nested in quotes', () => {
   const env = { SystemRoot: 'C:\\Windows' };
-  const args = taskArguments({
-    bin: 'C:\\Program Files\\Apex Deck\\apex-daemon.exe',
-    logFile: 'C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\apex-daemon.log',
-    env,
-  });
+  const logFile = 'C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\apex-daemon.log';
+  const args = taskArguments({ bin: 'C:\\Program Files\\Apex Deck\\apex-daemon.exe', logFile, env });
   assert.equal(
     args,
-    '--headless "C:\\Windows\\System32\\cmd.exe" /d /s /c ""C:\\Program Files\\Apex Deck\\apex-daemon.exe" serve >>"C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\apex-daemon.log" 2>&1"',
+    '--headless "C:\\Windows\\System32\\cmd.exe" /d /c "C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\apex-daemon-launch.cmd"',
   );
+  // conhost.exe broke the nested ""bin" serve >>"log"" form at a real sign-in.
+  assert.doesNotMatch(args, /""/);
+  assert.equal((args.match(/"/g) || []).length, 4, 'two quoted paths: cmd.exe and the launcher');
+  assert.equal(launcherFile(logFile), `C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\${LAUNCHER_NAME}`);
   assert.equal(cmdCommand({ windir: 'D:\\Win' }), 'D:\\Win\\System32\\cmd.exe');
-  const xmlText = taskXml({ bin: 'C:\\a.exe', logFile: 'C:\\l.log', env: { ...env, USERNAME: 'u' } });
-  assert.match(xmlText, /\/d \/s \/c &quot;&quot;C:\\a\.exe&quot; serve &gt;&gt;&quot;C:\\l\.log&quot; 2&gt;&amp;1&quot;/);
+  const xmlText = taskXml({ bin: 'C:\\a.exe', logFile: 'C:\\l\\l.log', env: { ...env, USERNAME: 'u' } });
+  assert.match(xmlText, /<Arguments>--headless &quot;C:\\Windows\\System32\\cmd\.exe&quot; \/d \/c &quot;C:\\l\\apex-daemon-launch\.cmd&quot;<\/Arguments>/);
+  // Without a log file the task keeps the original single-path form.
+  assert.equal(taskArguments({ bin: 'C:\\Program Files\\a.exe', env }), '--headless "C:\\Program Files\\a.exe" serve');
+});
+
+test('a launcher folder with %, &, ^ or other cmd syntax keeps the plain unlogged task line and writes no launcher', async () => {
+  const env = { SystemRoot: 'C:\\Windows', USERDOMAIN: 'PC', USERNAME: 'me' };
+  const bin = 'C:\\Program Files\\Apex Deck\\apex-daemon.exe';
+  assert.equal(launcherUsable('C:\\Users\\a b\\logs\\apex-daemon.log'), true);
+  assert.equal(launcherUsable(''), false);
+  for (const folder of ['%TEMP%', 'a&b', 'a^b', '50%', 'a(b)', 'a@b', 'a!b', 'a|b', 'a<b>']) {
+    const logFile = `C:\\Users\\${folder}\\logs\\apex-daemon.log`;
+    assert.equal(launcherUsable(logFile), false, folder);
+    const args = taskArguments({ bin, logFile, env });
+    assert.equal(args, `--headless "${bin}" serve`, `${folder}: no cmd.exe line for Task Scheduler or cmd to reparse`);
+    assert.doesNotMatch(args, /cmd\.exe|apex-daemon-launch/);
+  }
+  const written = [];
+  const files = {
+    mkdirSync: () => {},
+    writeFileSync: (file) => { written.push(String(file)); },
+    readFileSync: () => { throw new Error('none'); },
+    rmSync: () => {},
+  };
+  const { run } = fakeSchtasks({ loaded: false });
+  await installLogonTask({ bin, logFile: 'C:\\Users\\a&b\\logs\\apex-daemon.log', build: 'b', env, run, fs: files });
+  assert.ok(!written.some((file) => file.endsWith(LAUNCHER_NAME)), 'no launcher is written for a folder the task line cannot hold');
+});
+
+test('launcherScript runs the daemon and appends output and errors to the log beside it', () => {
+  const script = launcherScript({
+    bin: 'C:\\Program Files\\Apex Deck\\resources\\bin\\apex-daemon.exe',
+    dataDir: 'D:\\Deck Data',
+    logFile: 'C:\\Users\\a b\\logs\\apex-daemon.log',
+  });
+  assert.equal(
+    script,
+    '@echo off\r\n"C:\\Program Files\\Apex Deck\\resources\\bin\\apex-daemon.exe" serve --data-dir "D:\\Deck Data" >>"%~dp0apex-daemon.log" 2>&1\r\n',
+  );
+  // cmd expands %NAME% inside a batch file, so a literal % in a path is doubled.
+  assert.match(launcherScript({ bin: 'C:\\100%\\d.exe', logFile: 'C:\\l\\x.log' }), /"C:\\100%%\\d\.exe" serve >>"%~dp0x\.log" 2>&1/);
+  // A non-ASCII daemon or data path is read as UTF-8; an ASCII one leaves the code page alone.
+  assert.match(launcherScript({ bin: 'C:\\Jos\u00e9\\d.exe', logFile: 'C:\\l\\x.log' }), /^@echo off\r\nchcp 65001 >nul\r\n/);
+  assert.doesNotMatch(script, /chcp/);
+});
+
+test('installLogonTask rewrites the launcher on every registration, even when the task is unchanged', async () => {
+  const { dir, stampFile } = scratchStamp();
+  try {
+    const logFile = path.join(dir, 'logs', 'apex-daemon.log');
+    const launcher = launcherFile(logFile, path);
+    const env = { USERDOMAIN: 'PC', USERNAME: 'me' };
+    const { run } = fakeSchtasks({ loaded: false });
+    assert.equal(await installLogonTask({ bin: 'C:\\v1\\apex-daemon.exe', logFile, build: 'b', stampFile, env, run }), 'installed');
+    assert.equal(fs.readFileSync(launcher, 'utf8'), launcherScript({ bin: 'C:\\v1\\apex-daemon.exe', logFile }));
+    fs.writeFileSync(launcher, 'stale');
+    assert.equal(await installLogonTask({ bin: 'C:\\v1\\apex-daemon.exe', logFile, build: 'b', stampFile, env, run }), 'unchanged');
+    assert.equal(fs.readFileSync(launcher, 'utf8'), launcherScript({ bin: 'C:\\v1\\apex-daemon.exe', logFile }));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a launcher that cannot be written is an install failure, before the task is registered or run', async () => {
+  const calls = [];
+  const run = async (args) => { calls.push(args[0]); return ''; };
+  const files = {
+    mkdirSync: () => {},
+    writeFileSync: (file) => { if (String(file).endsWith(LAUNCHER_NAME)) throw new Error('EACCES'); },
+    readFileSync: () => { throw new Error('none'); },
+    rmSync: () => {},
+  };
+  await assert.rejects(
+    installLogonTask({ bin: 'C:\\a.exe', logFile: 'C:\\l\\apex-daemon.log', stampFile: 'C:\\s.stamp', env: { USERNAME: 'u' }, run, fs: files }),
+    /The background service didn't start: couldn't write .*apex-daemon-launch\.cmd: EACCES/,
+  );
+  assert.deepEqual(calls, []);
 });
 
 test('Windows Task Scheduler registers real taskXml, launches apex-daemon via headless conhost and cmd, logs, and answers on the pipe', { skip: process.platform !== 'win32' }, async () => {
@@ -708,6 +789,8 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
     assert.equal(got, 'agent');
     assert.equal(await answers(socket), true);
     assert.equal(fs.existsSync(logFile), true, 'the task writes the daemon output to its log file');
+    assert.equal(fs.readFileSync(launcherFile(logFile, path), 'utf8'), launcherScript({ bin, dataDir, logFile }), 'the launcher sits beside the log');
+    assert.match(fs.readFileSync(logFile, 'utf8'), /\S/, 'the log holds the daemon output');
     // Real Get-ScheduledTask: the numeric TASK_STATE of a running task.
     assert.equal(await taskState(scheduledTaskState, taskName), 'running', 'taskState reads the real TASK_STATE');
     // Real task list: the registered task is found, a missing one is confirmed absent.
@@ -752,6 +835,51 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
     }
     // The copied apex-daemon.exe can stay locked for a moment after its kill.
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  }
+});
+
+test('Windows: a log folder named %TEMP%, with & or with ^ still starts the daemon through the real task, unlogged', { skip: process.platform !== 'win32' }, async () => {
+  const built = daemonBinary({ packaged: false, repo, env: process.env });
+  if (!fs.existsSync(built)) {
+    execFileSync('cargo', ['build', '--locked', '-p', 'apex-daemon'], { cwd: repo, stdio: 'inherit' });
+  }
+  for (const [i, folder] of ['%TEMP%', 'a & b', 'a ^ b'].entries()) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck win special '));
+    const bin = path.join(dir, 'Apex Deck', 'resources', 'bin', 'apex-daemon.exe');
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.copyFileSync(built, bin);
+    const dataDir = path.join(dir, 'Deck Data');
+    const infoFile = path.join(dataDir, 'daemon.json');
+    const logFile = path.join(dir, folder, 'logs', 'apex-daemon.log');
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const taskName = `ApexDeckDaemonSpecial-${process.pid}-${i}`;
+    let socket = '';
+    try {
+      socket = await daemonEndpoint(bin, dataDir);
+      const got = await startReal({
+        socket,
+        infoFile,
+        taskName,
+        answers,
+        install: () => installLogonTask({ bin, dataDir, logFile, build: daemonBuild(bin), stampFile: path.join(dir, 'logon-task.stamp'), taskName }),
+      });
+      assert.equal(got, 'agent', `${folder}: the real task started the daemon`);
+      assert.equal(await answers(socket), true, `${folder}: the daemon answers`);
+      assert.equal(fs.existsSync(launcherFile(logFile, path)), false, `${folder}: no launcher is written`);
+      assert.equal(await endLogonTaskDaemon({ taskName, infoFile, bin }), 'killed');
+      assert.equal(await waitForSocket(socket, { wanted: false, timeout: 10_000 }), true, `${folder}: the daemon stops`);
+    } finally {
+      const info = (() => {
+        try { return JSON.parse(fs.readFileSync(infoFile, 'utf8')); } catch { return null; }
+      })();
+      await schtasks(['/End', '/TN', taskName]).catch(() => {});
+      await schtasks(['/Delete', '/TN', taskName, '/F']).catch(() => {});
+      if (typeof info?.pid === 'number' && info.pid > 0) {
+        try { process.kill(info.pid); } catch { /* already exited */ }
+      }
+      if (socket) await waitForSocket(socket, { wanted: false, timeout: 5_000 }).catch(() => {});
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
   }
 });
 

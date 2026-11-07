@@ -59,17 +59,61 @@ export function decodeTaskXml(raw) {
   return null;
 }
 
+/** The launcher Deck writes next to the daemon log; the logon task runs it. */
+export const LAUNCHER_NAME = 'apex-daemon-launch.cmd';
+/** `paths` defaults to Windows paths for the task line; installLogonTask writes with the platform's own. */
+export const launcherFile = (logFile, paths = path.win32) => paths.join(paths.dirname(logFile), LAUNCHER_NAME);
+
+/**
+ * Whether the launcher path can go on the task's `cmd.exe /d /c` line as is.
+ * That line can't protect every character: Task Scheduler and cmd expand
+ * `%NAME%`, and cmd's `/c` rules drop the quotes around a path holding any
+ * of `& < > ( ) @ ^ |`, which then run as command syntax. `!` and `"` are
+ * refused too. With such a folder the task keeps the plain, unlogged
+ * command, which needs no cmd.exe and is known to start at sign-in.
+ */
+export function launcherUsable(logFile) {
+  return Boolean(logFile) && !/[%&<>()@^|!"]/.test(launcherFile(logFile));
+}
+
+/** A path quoted for a batch file line: `%` is doubled so cmd doesn't expand it. */
+const batchPath = (value) => `"${String(value).replace(/%/g, '%%')}"`;
+
+/**
+ * The batch file that runs `apex-daemon serve` and appends its output and
+ * errors to the log beside it. The log is named through `%~dp0` (the
+ * launcher's own folder, which cmd knows exactly), so a user folder with
+ * accents works. A non-ASCII daemon or data path switches cmd to UTF-8 first,
+ * since cmd reads batch lines in the console code page.
+ */
+export function launcherScript({ bin, dataDir, logFile }) {
+  const serve = [batchPath(bin), 'serve', ...(dataDir ? ['--data-dir', batchPath(dataDir)] : [])].join(' ');
+  const log = `"%~dp0${path.win32.basename(logFile).replace(/%/g, '%%')}"`;
+  const nonAscii = /[^\x00-\x7f]/.test(`${bin}${dataDir || ''}`);
+  return [
+    '@echo off',
+    ...(nonAscii ? ['chcp 65001 >nul'] : []),
+    `${serve} >>${log} 2>&1`,
+    '',
+  ].join('\r\n');
+}
+
 /**
  * Arguments passed to `conhost.exe` to start `apex-daemon serve` with no
- * console window. With `logFile`, the daemon runs under `cmd.exe /d /s /c` so
- * its output and errors are appended to that file, like the Mac LaunchAgent's
- * log: a start that fails at sign-in then leaves a record. `/s` makes cmd strip
- * exactly the outer pair of quotes, so quoted paths with spaces survive.
+ * console window. With `logFile`, the task runs `cmd.exe /d /c` on the
+ * launcher ({@link launcherScript}) so the daemon's output and errors are
+ * appended to that file, like the Mac LaunchAgent's log: a start that fails
+ * at sign-in then leaves a record. The arguments hold only single quoted
+ * paths, never quotes nested in quotes: conhost.exe breaks a nested command
+ * line before cmd.exe sees it (a real sign-in on Windows 11 never got as far
+ * as creating the log).
  */
 export function taskArguments({ bin, dataDir, logFile = '', env = process.env }) {
-  const serve = [quoteArg(bin), 'serve', ...(dataDir ? ['--data-dir', quoteArg(dataDir)] : [])].join(' ');
-  if (!logFile) return `--headless ${serve}`;
-  return `--headless ${quoteArg(cmdCommand(env))} /d /s /c "${serve} >>${quoteArg(logFile)} 2>&1"`;
+  if (!launcherUsable(logFile)) {
+    const serve = [quoteArg(bin), 'serve', ...(dataDir ? ['--data-dir', quoteArg(dataDir)] : [])].join(' ');
+    return `--headless ${serve}`;
+  }
+  return `--headless ${quoteArg(cmdCommand(env))} /d /c ${quoteArg(launcherFile(logFile))}`;
 }
 
 /** The full command line for starting the headless logon task. */
@@ -427,6 +471,16 @@ export async function installLogonTask({
   fs: files = fs,
 }) {
   const xmlText = taskXml({ bin, dataDir, logFile, build, userId, env });
+  if (launcherUsable(logFile)) {
+    // Rewritten on every registration, so it always runs the current daemon.
+    const launcher = launcherFile(logFile, path);
+    try {
+      files.mkdirSync(path.dirname(launcher), { recursive: true });
+      files.writeFileSync(launcher, launcherScript({ bin, dataDir, logFile }));
+    } catch (error) {
+      throw new Error(`The background service didn't start: couldn't write ${launcher}: ${error.message}`);
+    }
+  }
   let current = null;
   if (stampFile) {
     try { current = decodeTaskXml(files.readFileSync(stampFile)); } catch { /* not written yet */ }
