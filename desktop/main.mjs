@@ -22,7 +22,7 @@ import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verified
 import { QuitGate, editsElsewhere, unsavedFile } from './quit.mjs';
 import { answers, daemonBinary, daemonEndpoint, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
-import { installLogonTask, removeLogonTask, startLogonTaskDaemon, usesLogonTask } from './winLogonTask.mjs';
+import { installLogonTask, startLogonTaskDaemon, usesLogonTask } from './winLogonTask.mjs';
 import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
@@ -106,25 +106,28 @@ async function startAgent() {
   const socket = await socketFile();
   const folder = await dataFolder(bin, dataDir);
   const infoFile = path.join(folder, 'daemon.json');
+  const logFile = agentLogFile();
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
   if (process.platform === 'win32') {
     const stampFile = path.join(app.getPath('userData'), 'logon-task.stamp');
     try {
+      // The task stays registered even when this start fails, so the next
+      // sign-in still starts the daemon; its output goes to logFile.
       const got = await startLogonTaskDaemon({
         socket,
         infoFile,
         answers,
-        install: () => installLogonTask({ bin: agentBin, dataDir, build: daemonBuild(agentBin), stampFile }),
-        remove: () => removeLogonTask({ stampFile }),
+        install: () => installLogonTask({ bin: agentBin, dataDir, logFile, build: daemonBuild(agentBin), stampFile }),
       });
       if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
       return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
     } catch (error) {
+      // The task's daemon may still be running: a second one would share its data folder.
+      if (error?.fallback === false) throw error;
       console.warn(`apex-daemon: Windows logon task unavailable (${error instanceof Error ? error.message : error}); running daemon as child process.`);
       return localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) });
     }
   }
-  const logFile = agentLogFile();
-  fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const plistPath = agentPlistPath();
   const uid = process.getuid();
   const got = await startAgentDaemon({

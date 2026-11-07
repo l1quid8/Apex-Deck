@@ -224,7 +224,7 @@ function fakeMac({ loaded = false, pid = null, serving = false, info = null, onI
   });
 }
 
-const start = (mac, timeout = 5) => startAgentDaemon({ socket: '/s', infoFile: '/i', uid: UID, timeout, ...mac });
+const start = (mac, timeout = 5, slowTimeout = 20) => startAgentDaemon({ socket: '/s', infoFile: '/i', uid: UID, timeout, slowTimeout, ...mac });
 const remoteOn = { endpoint_id: 'cb'.repeat(32), port: 41641 };
 
 test('agentState reads the pid launchd prints, and none while the agent waits to start again', async () => {
@@ -267,6 +267,28 @@ test('a stale daemon.json from an earlier daemon does not count as the agent bei
   const mac = fakeMac({ info: { pid: 12, remote: remoteOn }, onInstall: (m) => { m.pid = 700; } });
   await assert.rejects(start(mac), /didn't start within/);
   assert.equal(mac.removes, 1);
+});
+
+test('a slow agent daemon that launchd still has running is waited for past the first timeout, not removed', async () => {
+  let reads = 0;
+  const mac = fakeMac({ onInstall: (m) => { m.pid = 700; } });
+  mac.readInfo = () => { reads += 1; if (reads > 40) { mac.serving = true; return { pid: 700 }; } return null; };
+  let t = 0;
+  const got = await startAgentDaemon({ socket: '/s', infoFile: '/i', uid: UID, timeout: 15_000, slowTimeout: 120_000, now: () => (t += 1_000), ...mac });
+  assert.equal(got, 'agent');
+  assert.equal(mac.removes, 0);
+});
+
+test('an agent with no running daemon at the first timeout is still removed, so launchd stops retrying', async () => {
+  const mac = fakeMac({ onInstall: () => {} });
+  mac.install = async () => { mac.installs += 1; mac.loaded = true; };
+  let t = 0;
+  await assert.rejects(
+    startAgentDaemon({ socket: '/s', infoFile: '/i', uid: UID, timeout: 15_000, slowTimeout: 120_000, now: () => (t += 1_000), ...mac, install: mac.install }),
+    /didn't start within 15 seconds/,
+  );
+  assert.equal(mac.removes, 1);
+  assert.ok(t < 30_000, 'gave up at the first timeout');
 });
 
 test('replacement bootstrap retries launchd removal-in-progress instead of entering a 15-second wait', async () => {
