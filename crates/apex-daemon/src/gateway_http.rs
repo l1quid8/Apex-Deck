@@ -1008,6 +1008,14 @@ async fn handle_chat_completions(
         }
     };
 
+    // Reject malformed tool definitions consistently on every platform, even
+    // when the selected backend cannot provide isolation on this host.
+    let wire: Value = serde_json::from_slice(raw_body).expect("validated JSON");
+    if let Err(why) = tools::validate(&wire) {
+        write_openai_error(stream, 400, "invalid_request_error", &why).await;
+        return;
+    }
+
     if let Some(why) = gateway_isolation_error(&resolved.config.backend) {
         write_openai_error(stream, 409, "invalid_request_error", &why).await;
         return;
@@ -1030,12 +1038,6 @@ async fn handle_chat_completions(
             }
         }
     };
-
-    let wire: Value = serde_json::from_slice(raw_body).expect("validated JSON");
-    if let Err(why) = tools::validate(&wire) {
-        write_openai_error(stream, 400, "invalid_request_error", &why).await;
-        return;
-    }
 
     if tools::has_tools(&wire) && !matches!(resolved.config.backend,
         Backend::OpenAiCompatible { .. } | Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {

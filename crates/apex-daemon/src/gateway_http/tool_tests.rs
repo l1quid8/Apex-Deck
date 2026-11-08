@@ -279,7 +279,14 @@ async fn invalid_tools_and_uncontained_cli_are_rejected_before_reservation() {
         ),
     ] {
         let response=reqwest::Client::new().post(format!("http://{address}/v1/chat/completions")).bearer_auth(&issued.token).json(&json!({"model":"profile/fixture","messages":[{"role":"user","content":"hello"}],"tools":tools})).send().await.unwrap();
-        assert_eq!(response.status(), status);
+        let actual_status = response.status();
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(actual_status, status, "{body}");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        if status == 400 {
+            assert_eq!(body["error"]["message"], "invalid or duplicate function tool");
+        }
+        assert_eq!(keys.list()[0].turns_today, 0);
     }
     assert_eq!(keys.list()[0].turns_today, 0);
     server.abort();
