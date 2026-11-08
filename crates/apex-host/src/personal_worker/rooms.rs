@@ -157,7 +157,7 @@ pub fn catalog(rooms: &[Value]) -> Result<String, String> {
          Management: room.create [anchorThread,newId,title]; room.rename [thread,title]; room.archive [thread]; room.trash [thread]; room.restore [thread]; room.delete [thread] PERMANENTLY; room.addParticipant [thread,existingProjectWorker]; room.removeParticipant [thread,worker]. New threads have no agents. Archive, Trash and permanent deletion are distinct.\n\
          Bulk permanent deletion: room.deleteMany [anchorThread,JSON([explicitThreadId,...])], at most 20 unique IDs in one permitted project, including the anchor. Select exact IDs from the catalog; never sweep by title. One batch uses one Ask approval; Full access runs the bound batch.\n\
          room.approve [thread,request,binding] needs exact approvalRequests and saved Full access or underlying/delegation grants; unknown/plan/privilege expansion stays human. room.assign [thread,workerIds,message] assigns via native delivery; room.readFile [thread,path] returns versioned text; room.editFile [thread,JSON({{path,text,expected}})] requires that exact version.\n\
-         Coding: optional delegations:[{{project:{{hostId,workspaceId,cwd}},brief,destination:{{threadId,workers,newThread:false}},mode:\"isolated\",reviewCriteria:[]}}], max3, listed identities only, follows saved access: Full supported actions run without a card; Ask requests approval. Research helpers cannot code.\n\
+         Coding: optional delegations:[{{project:{{hostId,workspaceId,cwd}},brief,destination:{{threadId,workers,newThread:false}},mode:\"isolated\"|\"read_only\",reviewCriteria:[]}}], max3, listed identities only, follows saved access: Full supported actions run without a card; Ask requests approval. User-named new thread: destination {{threadId:null,workers,newThread:true,newThreadTitle}}, first worker leads; never hand off via task or room.create. Research helpers cannot code.\n\
          Mutations require an explicit human action request, never a question, hypothetical or quoted instruction. If ambiguous, ask. Never claim execution: app receipts establish results.\n"
     ))
 }
@@ -195,6 +195,9 @@ impl Host {
         let archived: std::collections::BTreeSet<String> = session.as_ref().and_then(|s| s["panes"].as_array()).into_iter().flatten()
             .filter(|p| p["archived"] == true).filter_map(|p| p["id"].as_str().map(str::to_owned)).collect();
         let saved_ids = self.store().room_ids()?;
+        let store = self.store();
+        let reader = store.room_reader()?;
+        let mut loaded: HashMap<String, Option<crate::storage::SavedRoom>> = HashMap::new();
         for binding in assistant.projects.iter().filter(|b| b.tools != ProjectTools::Off) {
             let Ok(checked) = self.validate_project_binding(assistant, binding.clone()) else { continue };
             let mut threads: std::collections::BTreeSet<String> = self.monitor_get(&checked.project.workspace_id)?.into_iter().flat_map(|monitor| monitor.threads).collect();
@@ -207,9 +210,10 @@ impl Host {
             threads.extend(saved_ids.iter().filter(|id| !archived.contains(*id)).cloned());
             for thread in threads {
                 if archived.contains(&thread) { continue; }
-                let meta=self.store().chat_meta(&thread)?;
-                if meta.as_ref().is_some_and(|m|m.archived) {continue}
-                let Some(saved) = self.store().room(&thread)? else { continue };
+                let meta=reader.meta(&thread);
+                if meta.is_some_and(|m|m.archived) {continue}
+                if !loaded.contains_key(&thread) { let room = reader.room(&thread)?; loaded.insert(thread.clone(), room); }
+                let Some(saved) = loaded.get(&thread).and_then(Option::as_ref) else { continue };
                 // Trash remains discoverable for explicit restore/delete, but no
                 // ordinary operation may touch it until restoration.
 
@@ -218,7 +222,7 @@ impl Host {
                 let workers: Vec<_> = saved.snapshot.participants.iter().filter(|p| crate::assistant_service::task_worker_eligible(p))
                     .map(|p| (p.id.to_string(), p.display_name.clone())).collect();
 
-                let title = self.store().chat_meta(&thread)?.map(|m|m.title).filter(|t|!t.trim().is_empty()).or_else(|| titles.get(&thread).cloned()).unwrap_or_else(|| thread.clone());
+                let title = meta.map(|m|m.title.clone()).filter(|t|!t.trim().is_empty()).or_else(|| titles.get(&thread).cloned()).unwrap_or_else(|| thread.clone());
                 out.push(Target { project: checked.project.clone(), thread, title, workers, tools: checked.tools });
             }
         }

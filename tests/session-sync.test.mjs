@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergePhoneSessionChange, remoteSessionEdit } from "../src/sessionSync.ts";
+import { mergePhoneSessionChange, remoteProfileEdit, remoteSessionEdit } from "../src/sessionSync.ts";
 
 const ws = [{ id: "w", name: "apex-deck", path: "/p" }];
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
@@ -55,4 +55,21 @@ test("a delayed echo from this phone cannot undo its newer registry edit", () =>
     focusedPane: "a", section: "threads", layout: "tabs", savedBy: "phone-current:5",
   };
   assert.equal(mergePhoneSessionChange(current, session([chat("a")], "phone-current:4"), { tag: "phone-current", seq: 5 }), current);
+});
+
+
+test("CLI profile events apply independently of unchanged threads", () => {
+  const profiles = [{ id: "null" }];
+  assert.deepEqual(remoteProfileEdit(1, { profiles, profileRevision: 2, savedBy: "agent-profile" }, "mac"), { profiles, revision: 2, ownSave: false });
+  assert.equal(remoteProfileEdit(2, { profiles: [], profileRevision: 1 }, "mac"), null);
+  assert.equal(remoteProfileEdit(2, { profiles: [] }, "mac"), null);
+});
+
+test("a profile acknowledgement advances the token while retaining newer local edits", () => {
+  assert.equal(remoteProfileEdit(1, { profiles: [], profileRevision: 2, profileSavedBy: "mac:2", savedBy: "mac:2" }, "mac").ownSave, true);
+});
+
+
+test("stale layout echo keeps the CLI profile author even when savedBy is ours", () => {
+  assert.equal(remoteProfileEdit(1, { profiles: [{ id: "cli" }], profileRevision: 2, profileSavedBy: "agent-profile", savedBy: "mac:3" }, "mac").ownSave, false);
 });

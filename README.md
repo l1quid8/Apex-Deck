@@ -73,14 +73,27 @@ included, follows the theme you pick.
 
 ## Install
 
-Download the DMG from the latest
+**Desktop app:** Download the DMG from the latest
 [release](https://github.com/l1quid8/Apex-Deck/releases), move **Apex Deck**
 to Applications and open it. The app is Developer ID signed but not
 notarized; if macOS blocks it, use System Settings → Privacy & Security →
 **Open Anyway**.
 
-To run the daemon on a Linux server and use it from your Mac or phone, take
-the Linux binary from the same release and follow
+**Standalone CLI (Apple Silicon):**
+
+```sh
+npm i -g @apex-deck/cli
+apex
+```
+
+On first launch, `apex` prints a one-time setup command — run the
+`sudo "<path>" setup` line it shows and enter your admin password. After that,
+`apex` opens directly and shares agents/threads with the desktop app. See
+[docs/apex-cli.md](docs/apex-cli.md) for upgrade (`npm i -g @apex-deck/cli`
+then `sudo … setup`), uninstall, and direct-archive install.
+
+**Linux daemon:** To run the daemon on a Linux server and use it from your Mac
+or phone, take the Linux binary from the same release and follow
 [docs/daemon-ubuntu.md](docs/daemon-ubuntu.md).
 
 ## Build from source

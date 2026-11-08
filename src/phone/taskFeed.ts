@@ -1,3 +1,5 @@
+import { assistantTasksForOwner, type AssistantTask } from '../assistantTaskModel.ts';
+import type { AssistantRef } from '../assistantIdentity.ts';
 import type { Backend } from '../backend.ts';
 import type { PhoneHost } from '../phoneBackend.ts';
 import type { AssistantRegistryState } from '../assistantRegistry.ts';
@@ -70,4 +72,14 @@ export function phoneTaskBackend(row: Pick<WorkspaceTaskRow, 'routeHostId' | 've
   } });
   owners.set(cacheKey, guarded);
   return guarded;
+}
+
+/** Use the same current owner and verified assistant identity as the phone task list. */
+export function phoneHandoffTasks(rows: readonly WorkspaceTaskRow[], registry: AssistantRegistryState, assistant: AssistantRef | null | undefined): AssistantTask[] {
+  if (!assistant) return [];
+  return rows.flatMap(row => {
+    if (row.source !== 'project' || !row.owner || row.assistant?.hostId !== assistant.hostId || row.assistant.assistantId !== assistant.assistantId) return [];
+    const entry = Object.values(registry.owners).find(entry => entry.owner.workspaceId === row.owner!.workspaceId && entry.owner.cwd === row.owner!.cwd && entry.owner.hostId === row.owner!.hostId && entry.owner.conversationId === row.owner!.conversationId);
+    return entry?.snapshot ? assistantTasksForOwner(entry.snapshot, row.owner).filter(task => task.id === row.taskId) : [];
+  });
 }

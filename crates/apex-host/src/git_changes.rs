@@ -163,7 +163,7 @@ pub fn status(project_data: &Path, cwd: &Path) -> Result<State, String> {
     };
     // Build from HEAD rather than the real index: assume-unchanged and
     // skip-worktree flags must never conceal changed bytes from this review.
-    let snapshot = private_index(&root);
+    let snapshot = private_index(project_data, &root)?;
     git(project_data, &root, Some(&snapshot.0), &["read-tree", &head])?;
     git(project_data, &root, Some(&snapshot.0), &["add", "-A", "--", "."])?;
     let tree = git(project_data, &root, Some(&snapshot.0), &["write-tree"])?
@@ -419,10 +419,13 @@ impl Drop for HeadCheckout {
     }
 }
 struct PrivateIndex(PathBuf);
-fn private_index(root: &Path) -> PrivateIndex {
+fn private_index(project_data: &Path, root: &Path) -> Result<PrivateIndex, String> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    PrivateIndex(
-        std::env::temp_dir().join(format!(
+    // Each jail has a private /tmp. Keep the index in Git's own directory so
+    // successive commands see the same reviewed tree, including in worktrees.
+    let git_dir = git(project_data, root, None, &["rev-parse", "--absolute-git-dir"])?;
+    Ok(PrivateIndex(
+        Path::new(git_dir.trim()).join(format!(
             "apex-menu-index-{}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -431,7 +434,7 @@ fn private_index(root: &Path) -> PrivateIndex {
                 .unwrap()
                 .as_nanos()
         )),
-    )
+    ))
 }
 impl Drop for PrivateIndex {
     fn drop(&mut self) {
@@ -465,7 +468,7 @@ fn commit(project_data: &Path, cwd: &Path, expected: &State, paths: &[String], m
         return Err("Select current changed files from this repository.".into());
     }
     let root = Path::new(&now.root);
-    let index = private_index(root);
+    let index = private_index(project_data, root)?;
     git(project_data, root, Some(&index.0), &["read-tree", &now.head])?;
     // Copy the reviewed blobs, not another read of working files. A concurrent
     // edit after validation can stay dirty but cannot enter this commit.
@@ -764,6 +767,19 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn jailed_git_menu_preserves_private_index_between_commands() {
+        let repo = Repo::new();
+        let data = repo.0.with_extension("data");
+        repo.write("one.txt", "changed\n");
+        let before = std::fs::read(repo.0.join(".git/index")).unwrap();
+        let state = status(&data, &repo.0).unwrap();
+        assert!(state.files.iter().any(|file| file.path == "one.txt" && file.patch.contains("+changed")), "jailed Git lost its private index: {state:?}");
+        assert_eq!(std::fs::read(repo.0.join(".git/index")).unwrap(), before);
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]

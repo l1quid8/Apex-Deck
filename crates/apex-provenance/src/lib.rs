@@ -1,18 +1,28 @@
 //! Root-owned submission authority. No shell execution and no general file API;
 //! updates are one queued request file that launchd hands to the update job.
+#[cfg(any(windows, test))]
+pub mod broker;
 #[cfg(unix)]
 pub mod io;
 #[cfg(unix)]
 pub mod update;
+#[cfg(windows)]
+#[path="io_windows.rs"]
+pub mod io;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+#[path="ownership_windows.rs"]
+mod ownership;
 mod phone;
 pub use phone::phone_command;
 #[cfg(unix)]
 mod ownership;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use ownership::{HostOwnership, HostOwnershipError, prepare_host_lock};
-#[cfg(any(not(unix), test))]
+#[cfg(any(not(any(unix, windows)), test))]
 mod unavailable;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub use unavailable::{io, prepare_host_lock, HostOwnership, HostOwnershipError};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use ring::{
@@ -493,7 +503,7 @@ impl Journal {
         if self.version != 1 {
             return Err("Unsupported provenance journal version".into());
         }
-        if !data_dir.starts_with('/') || data_dir.len() > 4096 || data_dir.contains('\0') {
+        if !absolute_scope(data_dir) || data_dir.len() > 4096 || data_dir.contains('\0') {
             return Err("Invalid data directory".into());
         }
         // Old task-action receipts used one key for every action at a task
@@ -629,8 +639,14 @@ fn now_ms() -> u64 {
         .as_millis()
         .min(u64::MAX as u128) as u64
 }
+fn absolute_scope(folder: &str) -> bool {
+    // Service admission separately requires the exact canonical filesystem path.
+    // Receipts also need to round-trip on other hosts for audit and verification.
+    folder.starts_with('/') || (folder.as_bytes().get(0).is_some_and(u8::is_ascii_alphabetic)
+        && folder.as_bytes().get(1)==Some(&b':') && folder.as_bytes().get(2)==Some(&b'/'))
+}
 fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> {
-    if !data_dir.starts_with('/')
+    if !absolute_scope(data_dir)
         || !matches!(
             name,
             "personal-assistants.json"
@@ -654,6 +670,9 @@ pub fn protected(name: &str) -> bool {
     matches!(
         name,
         "computer_setup" | "computer_set_enabled" | "computer_set_action_labels"
+            // Shared desktop/terminal intents use the same exact receipt and
+            // replay boundary. Peer admission still validates app/CLI identity.
+            | "agent_profile_save" | "provider_setup_begin" | "backend_stop"
             | "assistant_message"
             | "assistant_task_action"
             | "personal_send"
@@ -669,6 +688,8 @@ pub fn protected(name: &str) -> bool {
             | "personal_workspace_configure"
             | "personal_avatar_generate"
             | "personal_avatar_cancel"
+            | "personal_handoff_select"
+            | "personal_handoff_control"
             | "personal_project_delegate"
             | "personal_project_delegate_ui"
             | "personal_project_propose_ui"
@@ -738,7 +759,7 @@ fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, Stri
     let id = if name.starts_with("room_")
         || !matches!(
             name,
-            "assistant_message" | "personal_send" | "personal_decide" | "personal_decide_always" | "assistant_task_action"
+            "assistant_message" | "personal_send" | "personal_decide" | "personal_decide_always" | "assistant_task_action" | "personal_handoff_select" | "personal_handoff_control"
         ) {
         json!(command["provenanceRequestId"]
             .as_str()
@@ -1443,6 +1464,23 @@ mod tests {
     }
 
     #[test]
+    fn handoff_controls_bind_request_and_exact_scope() {
+        for name in ["personal_handoff_select","personal_handoff_control"] {
+            let mut journal=Journal::new();
+            let command=json!({"cmd":name,"args":{"assistantId":"a","requestId":"handoff-1","taskId":"t","expectedTaskRevision":7,"action":"stop"}});
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(journal.issue(501,"/data",command.clone(),true).unwrap(),receipt);
+            for (field,value) in [("assistantId",json!("other")),("taskId",json!("t2")),("expectedTaskRevision",json!(8)),("action",json!("continue"))] {
+                let mut changed=command.clone();changed["args"][field]=value;
+                assert!(journal.issue(501,"/data",changed,true).is_err());
+            }
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+        }
+    }
+
+    #[test]
     fn atomic_always_approval_binds_request_scope_revision_and_decision() {
         let mut journal=Journal::new();
         let command=json!({"cmd":"personal_decide_always","args":{"assistantId":"alfred","requestId":"always-1","decisionId":"decision-1","paramsHash":"hash","expectedRevision":7,"capability":"commandRun","scope":{"kind":"project","host":"mac","cwd":"/project"}}});
@@ -1632,6 +1670,28 @@ mod tests {
         assert!(journal
             .claim(501, "/data", &changed, "0123456789abcdef0123456789abcdef")
             .is_err());
+    }
+
+    #[test]
+    fn shared_cli_intents_require_trust_and_bind_exact_content_and_replay() {
+        for (name, args) in [
+            ("agent_profile_save", json!({"handle":"null","name":"Null","provider":"codex","instructions":"shared agent","access":"ask","expectedRevision":2})),
+            ("provider_setup_begin", json!({"provider":"codex","method":"reuse"})),
+            ("backend_stop", json!({"bootId":"shared-boot"})),
+        ] {
+            let mut journal=Journal::new();
+            let command=json!({"cmd":name,"args":args,"provenanceRequestId":"shared-delivery"});
+            assert!(journal.issue(501,"/data",command.clone(),false).is_err());
+            let receipt=journal.issue(501,"/data",command.clone(),true).unwrap();
+            assert_eq!(receipt.command,command);
+            let mut changed=command.clone();
+            changed["args"]["substituted"]=json!(true);
+            assert!(journal.issue(501,"/data",changed,true).is_err());
+            journal.claim(501,"/data",&receipt,NONCE).unwrap();
+            assert!(journal.claim(501,"/data",&receipt,NONCE).is_err());
+            let mut reopened=Journal::open(&serde_json::to_vec(&journal).unwrap(),new_key().unwrap().public_key().as_ref()).unwrap();
+            assert!(reopened.claim(501,"/data",&receipt,NONCE).is_err());
+        }
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { appCommandName } from './composerCommandRegistry.ts';
 /** A slash command typed in the composer. Commands never reach the models. */
 export type Command =
   | { name: "clear" }
@@ -28,6 +29,7 @@ export function parseComposer(body: string): Parsed {
   const match = /^\/([A-Za-z]+)(?:\s+([\s\S]*))?$/.exec(body);
   if (!match) return { text: body };
   const name = match[1].toLowerCase();
+  if (!appCommandName(name)) return { command: { name: "unknown", typed: `/${match[1]}` } };
   const arg = (match[2] ?? "").trim();
   switch (name) {
     case "clear":

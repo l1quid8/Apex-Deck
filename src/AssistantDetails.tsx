@@ -15,6 +15,7 @@ import { AssistantRuntimeSettings } from './AssistantRuntimeSettings';
 import { AssistantReview } from './AssistantReview';
 import { OUTPUT_LABEL, OUTPUT_MARK, outputsLine, previewSource, type AssistantOutput } from './assistantOutputs';
 import type { AssistantSection } from './assistantWorkspaceModel';
+import { isWindows } from './paths.ts';
 import type { ParticipantConfig } from './types';
 import './assistant-details.css';
 
@@ -232,9 +233,9 @@ export function AssistantDetails({ lane, backend, profiles = [], tasks = [], out
           </section>
         ) : (
           <>
-            <div className="assistant-details-row">
+            {!(typeof isWindows !== 'undefined' && isWindows) && <div className="assistant-details-row">
               <button type="button" className="assistant-details-action" disabled={!onStartCall} title={onStartCall ? undefined : 'Calling needs this machine connected.'} onClick={() => onStartCall?.()}>Call</button>
-            </div>
+            </div>}
 
             <section className="assistant-details-card">
               <h3 className="assistant-details-card-title">Browser</h3>

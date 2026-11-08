@@ -1,0 +1,71 @@
+# Canonical plain Stop/Continue table for the handoff control boundary (Round 1, Task 2/4a).
+# Format: <expected>\t<message>   where expected is one of: stop | continue | other
+# Consumed by BOTH:
+#   - tests/assistant-handoff-replies.test.mjs  (pins src/assistantHandoffModel.ts)
+#   - crates/apex-host/src/assistant_handoff_reply.rs (host authority)
+# A blank message is written as "other\t" (empty third field on purpose).
+# Rule: only a whole message from this list changes what the worker is doing.
+# Anything else is "other" and must leave the job exactly as it was.
+
+# --- plain stops: change the job ---
+stop	stop
+stop	Stop
+stop	STOP
+stop	stop.
+stop	stop!
+stop	stop...
+stop	  stop  
+stop	stop here
+stop	Stop here.
+stop	stop   here
+stop	cancel
+stop	Cancel.
+stop	cancel that
+stop	Cancel that.
+stop	no, stop here
+
+# --- plain continues: resume paused work ---
+continue	yes
+continue	Yes.
+continue	yes please
+continue	yes, please
+continue	keep going
+continue	Keep going.
+continue	carry on
+continue	continue
+continue	Continue!
+continue	go ahead
+
+# --- everything else: must not act ---
+other	no
+other	No.
+other	no thanks
+other	no, wait for me
+other	No, wait for me.
+other	wait
+other	wait for me
+other	ok
+other	sure
+other	stop?
+other	yes?
+other	"stop"
+other	"yes"
+other	don't stop
+other	do not stop
+other	Also check stderr and don't stop on warnings.
+other	Don't give it to Muck
+other	no, don't use Hyke, give it to Muck
+other	Give it to Muck
+other	Wait, put it in Follow-up checks
+other	What did step 12 do?
+other	Why did you stop?
+other	hmm
+other	keep going but skip step 12
+other	stop before step 12
+other	yes, but wait
+other	cancel it
+other	abort
+other	please stop the other job
+other	stop, don't start it
+other	
+other	   

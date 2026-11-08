@@ -101,6 +101,22 @@ mod device_access_updates {
     }
 
     #[tokio::test]
+    async fn linux_local_update_cannot_bypass_raise_gate_with_a_forged_old_level() {
+        for trust in [Trust::Local, Trust::Token] {
+            let (daemon, _data, bot, folder) = fixture(true, Ok(()));
+            let mut client = connect_to(&daemon, trust);
+            client.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret"}})).await;
+            assert!(client.next().await.unwrap().get("ok").is_some());
+            // This claims Full -> Full, but the saved participant is Read.
+            // Only the device path checks that binding under the room lock.
+            client.send(update(&bot, Some("full"), Some(&folder))).await;
+            let reply = client.until_reply(1).await.pop().unwrap();
+            assert!(reply["err"].as_str().is_some_and(|why| why.contains("only allowed from a paired device")), "local raise must fail at the Linux gate, independently of desktop provenance: {reply}");
+            assert_eq!(saved_access(&daemon), json!("read"));
+        }
+    }
+
+    #[tokio::test]
     async fn current_confined_linux_device_can_raise_with_bound_old_level_and_folder() {
         let (daemon, _data, bot, folder) = fixture(true, Ok(()));
         let phone = add(&daemon, 72, Tier::Full, Threads::ALL);

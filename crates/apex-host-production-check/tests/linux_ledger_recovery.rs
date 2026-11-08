@@ -43,7 +43,7 @@ async fn linux_startup_must_recover_a_never_started_queued_task() {
     let root = root("queued");
     let path = root.join("assistant-tasks-v1.json");
     let owner = TaskOwner { workspace_id: "ws".into(), host_id: "local".into(), cwd: root.to_string_lossy().into_owned(), conversation_id: "parent".into() };
-    let destination = TaskDestination { thread_id: Some("missing-destination".into()), workers: vec!["worker".into()], new_thread: false };
+    let destination = TaskDestination { thread_id: Some("missing-destination".into()), workers: vec!["worker".into()], new_thread: false, new_thread_title: None };
     let store = AssistantTasks::open(&path).unwrap();
     let task = store.submit_human_request(HumanRequest { request_id: "queued-before-restart".into(), owner: owner.clone(), text: "work".into(), destination: Some(destination.clone()) }, "work".into(), Some(destination)).unwrap();
     assert_eq!(task.status, TaskStatus::Queued);

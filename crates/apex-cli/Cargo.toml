@@ -1,0 +1,30 @@
+[package]
+name = "apex-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "apex"
+path = "src/main.rs"
+
+[dependencies]
+apex-daemon = { path = "../apex-daemon" }
+apex-host = { path = "../apex-host" }
+apex-core = { path = "../apex-core" }
+apex-provenance = { path = "../apex-provenance" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+futures.workspace = true
+tokio-util = { version = "0.7", features = ["codec"] }
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+uuid = { version = "1", features = ["v4"] }
+unicode-width = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+ring = "0.17"

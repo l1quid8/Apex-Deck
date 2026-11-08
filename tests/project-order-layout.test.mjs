@@ -83,7 +83,7 @@ test('projects group by host; saved drag, keyboard and menu order respects hosts
           await run('document.querySelector(".rail").style.width="'+width+'px"');await frame();
           assert.equal(await run('document.querySelector(".rail").scrollWidth>document.querySelector(".rail").clientWidth'),false,'no rail overflow at '+width);
         }
-        const image=await win.webContents.capturePage();require('node:fs').writeFileSync('${temp}/sidebar.png',image.toPNG());
+        const image=await win.webContents.capturePage();require('node:fs').writeFileSync(${JSON.stringify(path.join(temp, 'sidebar.png'))},image.toPNG());
         console.log('Host grouping, collapse, drag boundaries, keyboard/menu pinned areas, pin transitions and reload passed');app.exit(0);
       }catch(e){console.error(e.stack);app.exit(1);}
     });

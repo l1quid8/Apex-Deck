@@ -126,6 +126,8 @@ pub(crate) struct RoomHandle {
 }
 
 impl RoomHandle {
+    #[cfg(test)]
+    pub(crate) fn test_approvals(&self) -> Arc<apex_core::ApprovalDesk> {self.approvals.clone()}
     async fn lock_checkout(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, String> {
         let guard = self.checkout_action.read().await;
         if self.deleted.load(Ordering::SeqCst) { return Err("The chat folder changed. Reopen the chat.".into()); }
@@ -155,7 +157,15 @@ struct LiveRoomState {
     /// The watchdog's view of the worker. Only worker activity moves it.
     last_activity_ms: u64,
     running_commands: std::collections::HashSet<String>,
+    /// Reply text streamed so far by each working agent, so a client that
+    /// switches back or reconnects can redraw it instead of a blank turn.
+    streams: std::collections::BTreeMap<String, String>,
+    /// The latest activity line per working agent.
+    activity: std::collections::BTreeMap<String, String>,
 }
+
+/// Streamed text kept per agent is capped like the clients' own buffers.
+const LIVE_STREAM_CAP: usize = 1024 * 1024;
 
 /// Where the host keeps its files.
 #[derive(Debug, Clone)]
@@ -465,6 +475,7 @@ impl Host {
         // Degraded startup retains empty, write-closed ledgers. Reconciliation
         // reads protected state and must wait for an admitted host restart.
         if protected_ledgers_available {
+            host.reconcile_personal_handoff_announcements()?;
             host.redispatch_recovered_queued()?;
             // Runner recovery: unfinished runners become paused with reason recovery, no auto-replay
             let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
@@ -532,7 +543,7 @@ impl Host {
         &self.events
     }
 
-    fn emit(&self, event: HostEvent) {
+    pub(crate) fn emit(&self, event: HostEvent) {
         self.events.emit(event);
     }
 
@@ -611,6 +622,20 @@ impl Host {
             if let RoomEvent::TurnStarted { id } = &event { let own = format!("{id}:"); live.running_commands.retain(|key| !key.starts_with(&own)); }
             if matches!(event, RoomEvent::Idle | RoomEvent::Stopped) { live.running_commands.clear(); }
             match &event {
+                RoomEvent::TurnStarted { id } => { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
+                RoomEvent::Delta { id, text } => {
+                    let stream = live.streams.entry(id.as_str().to_string()).or_default();
+                    if stream.len() + text.len() < LIVE_STREAM_CAP { stream.push_str(text); }
+                }
+                RoomEvent::Activity { id, text } => { live.activity.insert(id.as_str().to_string(), text.clone()); }
+                RoomEvent::MessageAdded { message } => {
+                    if let apex_core::Speaker::Bot(id) = &message.speaker { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
+                }
+                RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
+                RoomEvent::Idle | RoomEvent::Stopped => { live.streams.clear(); live.activity.clear(); }
+                _ => {}
+            }
+            match &event {
                 RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); live.next_steps = None; }
                 RoomEvent::QuestionRequested { id, request, questions } => {
                     live.questions.retain(|q| q["request"].as_str() != Some(request.as_str()));
@@ -638,7 +663,7 @@ impl Host {
                 _ => {}
             }
         }
-        if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event); }
+        if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event, recovery_seq.unwrap_or(0)); }
         let plan_changes = handle.map(|handle| track_plan_runs(handle, &event, plan_off)).unwrap_or_default();
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
         if let Some(handle) = handle { self.publish_plan_runs(room, handle, plan_changes); }
@@ -680,12 +705,38 @@ impl Host {
         self.emit(HostEvent::AssistantTasksChanged { workspace_id: workspace_id.into(), revision: self.assistant_tasks.snapshot_revision() });
     }
 
-    fn observe_assistant_event(&self, room: &str, handle: &RoomHandle, event: &RoomEvent) {
+    /// Only host-observed actions are advertised; handlers recheck admission.
+    pub(crate) fn task_conversation_view(&self, task: &crate::assistant_tasks::AssistantTask) -> serde_json::Value {
+        use crate::assistant_tasks::{TaskStatus as S, DesiredState};
+        let active = self.assistant_runs.lock().unwrap().get(&task.id)
+            .is_some_and(|run| !run.finished.load(Ordering::SeqCst));
+        let unsettled = task.attempts.last().is_some_and(|a| a.finished_at_ms.is_none());
+        let hazardous = task.result_data.as_ref().is_some_and(|d| d["applyJournal"].is_string() || d["integrationPlan"].is_object() || d["leaseHeld"]==true);
+        let mut actions=vec!["open"];
+        if matches!(task.status,S::Proposed|S::Queued|S::Running|S::NeedsYou)
+            && task.control.desired_state != DesiredState::Cancelled { actions.insert(0,"stop"); }
+        if !active && !unsettled && !hazardous && task.status==S::Cancelled && task.control.desired_state==DesiredState::Cancelled {
+            actions.insert(0,"retry");
+        }
+        let profiles=task.result_data.as_ref().and_then(|d|d["workerProfiles"].as_array()).cloned().unwrap_or_default();
+        let room=task.execution_thread_id.as_deref().or_else(||task.destination.as_ref().and_then(|d|d.thread_id.as_deref())).and_then(|id|self.store().room(id).ok().flatten());
+        let names=task.workers.iter().map(|id| {
+            let name=profiles.iter().find(|p|p["id"].as_str()==Some(id)).and_then(|p|p["display_name"].as_str()).map(str::to_owned)
+                .or_else(||room.as_ref().and_then(|r|r.snapshot.participants.iter().find(|p|p.id.as_str()==id).map(|p|p.display_name.clone())))
+                .unwrap_or_else(||id.clone());
+            (id.clone(),name)
+        }).collect::<std::collections::BTreeMap<_,_>>();
+        let mut view=serde_json::to_value(task).unwrap_or(serde_json::Value::Null);
+        if let Some(object)=view.as_object_mut() { object.insert("availableHandoffActions".into(),serde_json::json!(actions)); object.insert("workerNames".into(),serde_json::json!(names)); }
+        view
+    }
+
+    fn observe_assistant_event(&self, room: &str, handle: &RoomHandle, event: &RoomEvent, sequence: u64) {
         let Some(entry) = self.assistant_tasks.execution(room).ok().flatten() else { return; };
         let Some(run_id) = handle.task_run_id.lock().unwrap().clone() else { return; };
         let Some(task) = self.assistant_tasks.get(&entry.task_id).ok().flatten() else { return; };
         if task.attempts.last().is_none_or(|a| a.run_id != run_id) { return; }
-        let mut changed = false;
+        let mut changed = self.assistant_tasks.observe_conversation_event(&entry.task_id, &run_id, event, sequence, crate::personal::now()).unwrap_or(false);
         match event {
             RoomEvent::Failed { error, .. } => {
                 *handle.task_error.lock().unwrap() = Some(error.clone());
@@ -1176,6 +1227,9 @@ impl Host {
             self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from))
         };
         let context = BuildContext {
+            watchdog_managed: !kind.is_chat() && self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?
+                .and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten())
+                .is_some_and(|task|task.lineage.is_some() && task.execution_thread_id.as_deref()==Some(id.as_str())),
             codex_hook: if !kind.is_chat() && cfg!(unix) { std::env::current_exe().ok() } else { None },
 
             cwd: cwd.filter(|c| !c.is_empty()).map(PathBuf::from),
@@ -1299,10 +1353,13 @@ impl Host {
         let saved = handle.checkpoint.lock().unwrap().clone();
         let mut snapshot = saved.snapshot;
         snapshot.plan_runs = handle.plan_runs.lock().unwrap().clone();
+        // untagged_responders is populated by Room::snapshot() from authoritative
+        // room state. It is read from the snapshot to avoid acquiring the async
+        // room lock in this synchronous function.
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
         let runner = self.runner_service.lock().unwrap().state(&id).ok().flatten();
-        Ok(serde_json::json!({"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
+        Ok(serde_json::json!({"untagged_responders":snapshot.untagged_responders,"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"streams":live.streams,"activity":live.activity,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
 
     }
 
@@ -1443,10 +1500,26 @@ impl Host {
                 if !unknown.is_empty() { return Err(format!("No tool server called \"{}\" for the addressed models", unknown[0])); }
             }
         }
-        let error = Mutex::new(None);
-        let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
-        if let Some(why) = error.into_inner().unwrap() { return Err(why); }
-        self.checkpoint_room(handle, id).await?;
+        // Publish only after the complete snapshot (including routing) is
+        // committed. A client refreshing on MessageAdded must not see the new
+        // transcript paired with the previous message's responders.
+        let batch = handle.runtime.begin_post_with_commit(
+            apex_core::Speaker::Human, text, targets,
+            &|snapshot| self.commit_client_snapshot(id, handle, snapshot),
+            &|event| {
+                // The human message is already durable. Do not abandon an
+                // accepted batch because of a redundant second save.
+                if let RoomEvent::MessageAdded { message } = &event {
+                    update_chat_message_meta(&self.store, id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message);
+                }
+                self.room_event(id, event);
+            },
+        ).await?;
+        // Admission is already durable. Journal refresh must not discard the
+        // accepted batch if its follow-up save fails.
+        if let Err(error) = self.checkpoint_room(handle, id).await {
+            self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
+        }
         Ok(batch)
     }
 
@@ -2176,7 +2249,9 @@ impl Host {
         let built = apex_adapters::participant_for_room(room.kind(), participant, &context);
         if room.add_participant(built) {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
-            self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
+            self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+            self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
+            Ok(())
         } else {
             Err(format!("a participant with the id `{name}` is already in this chat"))
         }
@@ -2325,10 +2400,11 @@ impl Host {
         } else { room.replace_participant(replacement); }
         self.invalidate_room_runner(&id)?;
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
-        if access_moved { self.persist_and_emit(&id, &handle, RoomEvent::AccessChanged { id: name.clone(), access: next.access })?; }
         // Save and broadcast under the same room lock as the merge so concurrent
         // devices cannot emit older settings after newer ones.
-        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantChanged { participant: next.clone() })?;
+        self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+        if access_moved { self.room_event(&id, RoomEvent::AccessChanged { id: name.clone(), access: next.access }); }
+        self.room_event(&id, RoomEvent::ParticipantChanged { participant: next.clone() });
         self.read_plans(&id, std::slice::from_ref(&next), &context);
         Ok(next)
     }
@@ -2391,7 +2467,9 @@ impl Host {
         self.require_idle(&id)?;
         room.remove_participant(&participant);
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
-        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
+        self.commit_client_snapshot(&id, &handle, &room.snapshot())?;
+        self.room_event(&id, RoomEvent::ParticipantsChanged { participants: room.configs() });
+        Ok(())
     }
 
     pub async fn chat_remove_participant(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
@@ -2947,7 +3025,7 @@ impl Host {
     /// Replace the whole session and tell every client.
     pub fn session_save(&self, session: serde_json::Value) -> Result<(), String> {
         let session = Session::from_value(session)?.to_value();
-        self.store.save_session(&session)?;
+        let session = self.store.save_session_snapshot(&session)?;
         self.emit(HostEvent::SessionChanged(session));
         Ok(())
     }
@@ -3474,6 +3552,7 @@ impl Host {
         if let Some(error) = checkpoint_room(handle, &self.store, id).await? {
             self.room_event_for(id, handle, RoomEvent::JournalWarning { error });
         }
+        self.room_event_for(id, handle, RoomEvent::StateChanged);
         Ok(())
     }
 
@@ -4499,6 +4578,58 @@ mod host_tests {
     use super::*;
     use apex_core::Participant;
 
+    #[test]
+    fn untagged_responders_follow_membership_options_and_clear_before_replies() {
+        let (host, runtime, data) = host("untagged-state");
+        let config = |name| apex_core::testing::ScriptedParticipant::new(name, &[]).config().clone();
+        host.room_create("r".into(), vec![config("jigga"), config("null")], RoomOptions::default(), None).unwrap();
+        let read = || host.room_state("r".into()).unwrap()["snapshot"]["untagged_responders"].clone();
+        assert_eq!(read(), serde_json::json!(["jigga"]));
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&published);
+        let checkpoint = Arc::clone(&host.handle("r").unwrap().checkpoint);
+        host.events().listen(move |envelope| {
+            if let HostEvent::Room { event: RoomEvent::MessageAdded { message }, .. } = &envelope.event {
+                if matches!(message.speaker, apex_core::Speaker::Human) {
+                    let saved = checkpoint.lock().unwrap();
+                    observed.lock().unwrap().push((saved.snapshot.last_targets.clone(), saved.snapshot.untagged_responders.clone()));
+                }
+            }
+        });
+        runtime.block_on(async {
+            let handle = host.handle("r").unwrap();
+            // Prepare without running a provider: a second reader must already
+            // see the new selection, even while the room lock is unavailable.
+            let _batch = host.prepare_post("r", &handle, "@null hello", None).await.unwrap();
+            let _room_lock = handle.room.lock().await;
+            assert_eq!(read(), serde_json::json!(["null"]));
+            assert_eq!(published.lock().unwrap()[0], (vec![ParticipantId::new("null")], vec![ParticipantId::new("null")]));
+            drop(_room_lock);
+            drop(_batch);
+            host.room_add_participant("r".into(), config("cast")).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["null"]));
+            host.room_remove_participant("r".into(), ParticipantId::new("null")).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["jigga"]));
+            let mut events = host.events().subscribe();
+            host.room_set_options("r".into(), RoomOptions { policy: apex_core::TurnPolicy::Everyone, ..RoomOptions::default() }).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["jigga", "cast"]));
+            assert!(matches!(events.try_recv().unwrap().event, HostEvent::Room { event: RoomEvent::StateChanged, .. }), "another client must be notified to refresh after options change");
+            assert_eq!(host.room_state("r".into()).unwrap()["untagged_responders"], read());
+            host.room_set_options("r".into(), RoomOptions::default()).await.unwrap();
+            let _batch = host.prepare_post("r", &handle, "@cast hello", None).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["cast"]));
+            drop(_batch);
+            host.room_clear("r".into()).await.unwrap();
+            assert_eq!(read(), serde_json::json!(["jigga"]));
+            let _batch = host.prepare_post("r", &handle, "@cast restored", None).await.unwrap();
+        });
+        host.shutdown(); drop(host);
+        let reopened = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        assert_eq!(reopened.room_state("r".into()).unwrap()["snapshot"]["untagged_responders"], serde_json::json!(["cast"]));
+        reopened.shutdown(); drop(reopened);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     fn host(name: &str) -> (Arc<Host>, tokio::runtime::Runtime, PathBuf) {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let data = std::env::temp_dir().join(format!("apex-host-{name}-{}", std::process::id()));
@@ -4548,7 +4679,9 @@ mod host_tests {
         std::fs::create_dir_all(&entry).unwrap();
         let started = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         assert!(entry.is_dir());
-        let host = started.expect("an empty orphaned registry entry must not stop the daemon from starting");
+        // Windows keeps no process records of its own (a worker's Job dies
+        // with the host), so there too a stray entry is kept and startup goes on.
+        let host = started.expect("an orphaned registry entry must not stop the daemon from starting");
         host.shutdown();
         drop(host);
         let _ = std::fs::remove_dir_all(data);
@@ -5085,6 +5218,37 @@ done
         let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
         assert_eq!(saved.access, Access::Read);
 
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn room_state_carries_partial_replies_so_returning_clients_can_redraw_them() {
+        let (host, _runtime, data) = host("live-streams");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let null = apex_core::ParticipantId::new("null");
+        let muck = apex_core::ParticipantId::new("muck");
+        host.room_event("r", RoomEvent::TurnStarted { id: null.clone() });
+        host.room_event("r", RoomEvent::TurnStarted { id: muck.clone() });
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "Half ".into() });
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "done".into() });
+        host.room_event("r", RoomEvent::Activity { id: muck.clone(), text: "Running cargo test".into() });
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["streams"], serde_json::json!({"null":"Half done"}));
+        assert_eq!(state["activity"], serde_json::json!({"muck":"Running cargo test"}));
+        let seq = state["recovery_seq"].as_u64().unwrap();
+        host.room_event("r", RoomEvent::ParticipantIdle { id: muck.clone() });
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "!".into() });
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["recovery_seq"].as_u64().unwrap(), seq + 2, "each live change is numbered once");
+        assert_eq!(state["streams"], serde_json::json!({"null":"Half done!"}));
+        assert_eq!(state["activity"], serde_json::json!({}));
+        host.room_event("r", RoomEvent::TurnStarted { id: null.clone() });
+        assert_eq!(host.room_state("r".into()).unwrap()["streams"], serde_json::json!({}), "a new turn starts blank");
+        host.room_event("r", RoomEvent::Delta { id: null.clone(), text: "x".into() });
+        host.room_event("r", RoomEvent::Stopped);
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["streams"], serde_json::json!({}));
+        assert_eq!(state["active"], serde_json::json!([]));
         let _ = std::fs::remove_dir_all(data);
     }
 
@@ -6062,6 +6226,7 @@ done
             cwd: None,
         };
         let context = apex_adapters::BuildContext {
+            watchdog_managed: false,
             cwd: saved.cwd.as_ref().map(PathBuf::from),
             path: Some(format!("{}:/usr/bin:/bin", bin.display())),
             codex_hook: None,
@@ -6195,7 +6360,7 @@ done
         bot2.access = Access::Edits;
         bot2.backend = apex_core::Backend::Scripted { lines: vec!["hi".into()] };
         profiles.push(serde_json::to_value(&bot2).unwrap());
-        host.session_save(json!({ "version": 1, "profiles": profiles })).unwrap();
+        host.session_save(json!({ "version": 1, "profileRevision": host.session_load().unwrap().unwrap()["profileRevision"], "profiles": profiles })).unwrap();
 
         let snapshot = host.chat_create("11111111-1111-1111-1111-111111111111".into(), Some("First chat".into()), vec![ask("bot", None)], RoomOptions::default()).unwrap();
         assert_eq!(snapshot.kind, apex_core::RoomKind::Chat);
@@ -6460,7 +6625,7 @@ mod assistant_permission_delivery_tests {
                 host.change_assistant("a",|a|{a.events.iter_mut().find(|event|event.id==source.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
                 let receipt=host.prepare_personal_delegation(crate::assistant_delegation::DelegationInput {
                     assistant_id:"a".into(),project:crate::personal_workspace::ProjectRef{host_id:"h".into(),workspace_id:"w".into(),cwd:cwd.clone()},source_event_id:source.event_id,delegation_id:"reserved-budget".into(),brief:"Research the assigned project".into(),
-                    destination:crate::assistant_tasks::TaskDestination{thread_id:Some("r".into()),workers:vec!["worker".into()],new_thread:false},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],expected_revision:host.personal_get("a").unwrap().revision,
+                    destination:crate::assistant_tasks::TaskDestination{thread_id:Some("r".into()),workers:vec!["worker".into()],new_thread: false, new_thread_title: None},mode:crate::assistant_tasks::TaskMode::ReadOnly,review_criteria:vec![],expected_revision:host.personal_get("a").unwrap().revision,
                 }).unwrap();assert_eq!(receipt["standingTrust"],true);
             }
             let result=host.personal_room_approve("a","pt-1",&operation);

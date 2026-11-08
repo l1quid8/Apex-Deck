@@ -56,7 +56,7 @@ pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_A
 
 pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSpec, ModelKind};
 pub use cli::CliParticipant;
-pub use openai::{list_models, OpenAiCompatParticipant};
+pub use openai::{cost_micros as api_cost_micros, list_models, OpenAiCompatParticipant};
 pub use phone_env::{PhoneEnv, DAEMON_SOCKET, PHONE_HINT};
 pub use presets::{agent_command, allow_reading};
 pub use owned_process::{OwnedChild as OwnedProcessChild, Registry as OwnedProcessRegistry};
@@ -87,6 +87,8 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
 /// Where and how command-line participants run.
 #[derive(Debug, Clone, Default)]
 pub struct BuildContext {
+    /// Host watchdog owns silence recovery for this delegated execution room.
+    pub watchdog_managed: bool,
     /// Deck's own executable, which Codex runs as an approval hook before
     /// each MCP call (`--codex-hook`). `None` leaves Codex on the slower
     /// MCP inventory policy.
@@ -208,6 +210,7 @@ pub fn participant_for_room(
             config.access = Access::Read;
             config.media = None;
             let chat_context = BuildContext {
+                watchdog_managed: false,
                 codex_hook: None,
                 cwd: None,
                 path: context.path.clone(),

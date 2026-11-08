@@ -46,6 +46,7 @@ mod tests {
                     options: RoomOptions::default(),
                     cursors: Default::default(),
                     last_targets: vec![],
+                    untagged_responders: vec![],
                     compaction: None,
                 curations: Vec::new(),
                     pins: vec![],
@@ -294,7 +295,7 @@ mod tests {
         request.destination = Some(TaskDestination {
             thread_id: None,
             workers: vec!["null".into()],
-            new_thread: true,
+            new_thread: true, new_thread_title: None,
         });
         request.new_worker_profiles = vec![profile("null", false)];
         let intent = ConversationIntent::Handoff {
@@ -710,6 +711,7 @@ mod tests {
                 options: RoomOptions::default(),
                 cursors: Default::default(),
                 last_targets: vec![],
+                untagged_responders: vec![],
                 compaction: None,
                 curations: Vec::new(),
                 pins: vec![],
@@ -1497,7 +1499,7 @@ fn eligible(thread: &ThreadChoice, config: &ParticipantConfig) -> bool {
             .any(|id| id == config.id.as_str())
 }
 
-fn direct_imperative(text: &str) -> bool {
+pub(crate) fn direct_imperative(text: &str) -> bool {
     let text = text.trim().to_ascii_lowercase();
     [
         "please ",

@@ -33,41 +33,41 @@
 **Files:** `crates/apex-host/src/project_process.rs` and its callers (`bot_copies.rs`, `git_changes.rs`, `project_check.rs`, `runner/checks.rs`, and other existing callers as needed).
 **Interface:** All project command construction receives the data and folder context needed to check taint. Return a refusal rather than an ordinary command when confinement cannot be established. Snapshots retain their separate isolated-Git implementation.
 
-- [ ] Add actual bot-copy fsmonitor and protected-marker project-check regressions; show failures before fixing.
-- [ ] Enforce taint/jail-or-refuse at every wrapper and migrate callers; apply the documented Git hardening in the wrapper itself.
-- [ ] Run the covering host tests, including untainted project operations, and report exact commands/results.
+- [x] Add actual bot-copy fsmonitor and protected-marker project-check regressions; show failures before fixing.
+- [x] Enforce taint/jail-or-refuse at every wrapper and migrate callers; apply the documented Git hardening in the wrapper itself.
+- [x] Run the covering host tests, including untainted project operations, and report exact commands/results.
 
 ### Task 2: Trust reset and reboot
 
 **Files:** `crates/apex-daemon/src/trust_host.rs`, `remote.rs`, and the `Guard`/session code and relevant tests in `protocol.rs` only. The host-command access-effect block in protocol belongs to Task 4.
 **Interface:** Existing `is_trusted`/`epoch` callers remain supported. Device session validity rechecks current Linux epoch and trust before every command/frame. Trust shutdown targets only the daemon for this data folder and returns an error unless it has stopped.
 
-- [ ] Add unchanged/changed/missing boot-ID, scoped shutdown, and already-connected old-device `pty_spawn` regressions; capture red results.
-- [ ] Implement durable pending state, strict reboot transition, scoped waited shutdown, and active-session invalidation.
-- [ ] Run covering daemon tests with remote support and report native/Linux-specific validation limits.
+- [x] Add unchanged/changed/missing boot-ID, scoped shutdown, and already-connected old-device `pty_spawn` regressions; capture red results.
+- [x] Implement durable pending state, strict reboot transition, scoped waited shutdown, and active-session invalidation.
+- [x] Run covering daemon tests with remote support and report native/Linux-specific validation limits.
 
 ### Task 3: Phone biometric transport
 
 **Files:** `src/phone/biometric.ts`, `src/phoneBackend.ts`, a focused phone command guard module if useful, `iphone/ApexRemote/Sources/ApexRemote/ApexSshPlugin.swift` and focused tests. Do not edit `commandBackend.ts` or the backend participant API; Task 4 owns those.
 **Interface:** Expose a dedicated native biometric authentication operation without retrieving a secret. Wrap `Transport` before `commandBackend`, covering raw calls and typed methods. Mirror the daemon's conservative access-effect classification and test it for drift.
 
-- [ ] Add transport tests demonstrating success waits for biometrics and cancel/failure/unavailable send nothing, including typed and raw raising routes; capture red.
-- [ ] Implement the native operation and fail-closed guard with no confirmation fallback.
-- [ ] Run focused frontend tests and available native compile checks; state any remaining device acceptance.
+- [x] Add transport tests demonstrating success waits for biometrics and cancel/failure/unavailable send nothing, including typed and raw raising routes; capture red.
+- [x] Implement the native operation and fail-closed guard with no confirmation fallback.
+- [x] Run focused frontend tests and available native compile checks; state any remaining device acceptance.
 
 ### Task 4: Folder coverage and atomic device raises
 
 **Files:** `crates/apex-core/src/folder_trust.rs`, `crates/apex-host/src/command.rs`, `host.rs`, `crates/apex-daemon/src/authority.rs`, the Host-command dispatch/gate in `protocol.rs`, and participant call sites in `src/backend.ts`/`commandBackend.ts` and related UI as necessary.
 **Interface:** Extend participant update requests with optional `old_level` and `folder`; device updates that change access on Linux require those bindings. Keep existing local APIs compatible. Use verified device context from the daemon, never an intent-supplied authentication flag.
 
-- [ ] Add parent/sibling/alias folder acceptance regressions and run red, then implement directional coverage.
-- [ ] Exercise actual device protocol commands for missing/stale old level, wrong Full folder, confinement failure, and current authorized Linux raise; ensure no unauthorized saved mutation.
-- [ ] Keep local/SSH refusal and Mac/Windows supported device behavior; preserve stop/reap/MCP invalidation before saving access.
-- [ ] Update phone/typed request payloads and run covering Rust and TypeScript tests.
+- [x] Add parent/sibling/alias folder acceptance regressions and run red, then implement directional coverage.
+- [x] Exercise actual device protocol commands for missing/stale old level, wrong Full folder, confinement failure, and current authorized Linux raise; ensure no unauthorized saved mutation.
+- [x] Keep local/SSH refusal and Mac/Windows supported device behavior; preserve stop/reap/MCP invalidation before saving access.
+- [x] Update phone/typed request payloads and run covering Rust and TypeScript tests.
 
 ### Task 5: Integration and record
 
-- [ ] Read all diffs and run `npx tsc --noEmit`, `npm test`, `TMPDIR=/tmp cargo check --locked -p apex-daemon --features remote`, and the core/adapters/host/daemon Rust library suites with remote support.
-- [ ] Run a fresh review of the six fixes and resolve material findings with focused regressions.
-- [ ] Update the six-finding review with exact evidence and residual Linux/native acceptance limits; retain outstanding release/infra items in the original plan.
+- [x] Read all diffs and run `npx tsc --noEmit`, `npm test`, `TMPDIR=/tmp cargo check --locked -p apex-daemon --features remote`, and the core/adapters/host/daemon Rust library suites with remote support.
+- [x] Run a fresh review of the six fixes and resolve material findings with focused regressions.
+- [x] Update the six-finding review with exact evidence and residual Linux/native acceptance limits; retain outstanding release/infra items in the original plan.
 - [ ] Commit scoped fixes and merge to main under the existing merge authorization only after passing TypeScript and relevant checks; delete the merged task branch.

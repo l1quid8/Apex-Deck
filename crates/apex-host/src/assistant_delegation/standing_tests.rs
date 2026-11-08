@@ -3,6 +3,9 @@ use crate::{assistant_tasks::{AssistantTask, DesiredState, TaskStatus}, host::{H
 use apex_core::{Access, Backend, ParticipantConfig, RoomOptions};
 use std::{path::PathBuf, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{Duration, Instant}};
 
+#[path = "new_thread_tests.rs"]
+mod new_thread_tests;
+
 struct Fixture {
     host: Arc<Host>,
     _runtime: tokio::runtime::Runtime,
@@ -40,7 +43,7 @@ fn fixture(access: Access, tools: ProjectTools, version: Option<u32>) -> Fixture
     let accepted=host.personal_send(&assistant.id,"source","Please fix login in this project").unwrap();
     host.change_assistant(&assistant.id,|a| {a.events.iter_mut().find(|e|e.id==accepted.event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
     let current=host.personal_get(&assistant.id).unwrap();
-    let input=DelegationInput {assistant_id:assistant.id,project,source_event_id:accepted.event_id,delegation_id:"coding-handoff".into(),brief:"Fix login".into(),destination:TaskDestination {thread_id:Some("worker-chat".into()),workers:vec!["coder".into()],new_thread:false},mode:TaskMode::Isolated,review_criteria:vec!["Login works".into()],expected_revision:current.revision};
+    let input=DelegationInput {assistant_id:assistant.id,project,source_event_id:accepted.event_id,delegation_id:"coding-handoff".into(),brief:"Fix login".into(),destination:TaskDestination {thread_id:Some("worker-chat".into()),workers:vec!["coder".into()],new_thread: false, new_thread_title: None},mode:TaskMode::Isolated,review_criteria:vec!["Login works".into()],expected_revision:current.revision};
     Fixture {host,_runtime:runtime,base,input}
 }
 
@@ -339,6 +342,6 @@ fn proposal_command_refuses_reusing_executable_standing_receipt() {
     // Save ordinary Full authority without redispatch, then retry proposal-only admission.
     let receipt=f.host.prepare_personal_delegation(f.input.clone()).unwrap();
     assert_eq!(receipt["standingTrust"],true);
-    assert!(f.host.prepare_personal_delegation_internal(f.input.clone(),None,true).unwrap_err().contains("executable"));
+    assert!(f.host.prepare_personal_delegation_internal(f.input.clone(),None,true,None).unwrap_err().contains("executable"));
     let queued=task(&f,&receipt);assert_eq!(queued.status,TaskStatus::Queued);assert!(queued.attempts.is_empty());
 }

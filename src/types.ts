@@ -220,6 +220,9 @@ export interface RoomSnapshot {
   allowed?: AllowedRule[];
   /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
   usage?: Record<string, TokenTotals>;
+  /** The effective untagged responders at the time the snapshot was taken.
+   *  Missing means unavailable; never locally guessed stars. */
+  untagged_responders?: string[];
   /** The thread's Plan switch: every bot plans and changes nothing. */
   plan?: boolean;
 }
@@ -275,6 +278,8 @@ export type CurateReply = { by: string; unchecked?: number } & (
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  /** Effective responders from the same checkpoint as snapshot. */
+  untagged_responders?: string[];
   roomRevision?: number;
   hostNow?: number;
   /** From the protected room manifest; editable transcript files cannot set this. */
@@ -301,6 +306,10 @@ export interface AppSession {
    *  tool). Terminals come back Stopped: nothing is started on launch. */
   panes: Pane[];
   profiles: ParticipantConfig[];
+  /** Host-issued revision for saved agents shared with CLI clients. */
+  profileRevision?: number;
+  /** Author of the accepted profile revision, independent of layout saves. */
+  profileSavedBy?: string;
   disabledProviders?: string[];
   activeWorkspace: string | null;
   focusedPane: string | null;
@@ -356,6 +365,7 @@ export interface PlanRun {
 }
 
 export type RoomEvent = { recovery_seq?: number } & (
+  | { type: "state_changed" }
   | { type: "voice_event"; client_turn_id: string; id:string; event:RoomEvent }
   | { type: "participant_changed"; participant: ParticipantConfig }
   | { type: "participants_changed"; participants: ParticipantConfig[] }

@@ -451,8 +451,8 @@ impl Hook {
         Err(std::io::ErrorKind::Unsupported.into())
     }
 
-    pub(crate) fn socket(&self) -> PathBuf {
-        PathBuf::new()
+    pub(crate) fn socket(&self) -> Option<PathBuf> {
+        None
     }
 
     pub(crate) fn flag(&self) -> String {

@@ -147,7 +147,7 @@ fn assert_work_task_ownership(command: &str) {
     use crate::assistant_tasks::{HumanRequest, TaskDestination, TaskMode, TaskOwner};
     let f = Fixture::new(&format!("task-{command}"), false);
     let owner = TaskOwner { workspace_id: "workspace".into(), cwd: f.data.to_string_lossy().into_owned(), host_id: "host".into(), conversation_id: "parent".into() };
-    let destination = TaskDestination { thread_id: Some("r".into()), workers: vec!["bot".into()], new_thread: false };
+    let destination = TaskDestination { thread_id: Some("r".into()), workers: vec!["bot".into()], new_thread: false, new_thread_title: None };
     let task = f.host.assistant_tasks.submit_human_request(HumanRequest { request_id: "task-request".into(), owner: owner.clone(), text: "work".into(), destination: Some(destination.clone()) }, "work".into(), Some(destination)).unwrap();
     let task = f.host.assistant_tasks.bind_execution(&task.id, task.revision, &owner, "r".into(), TaskMode::ReadOnly, None).unwrap();
     f.host.assistant_tasks.begin_attempt(&task.id, task.revision, &owner).unwrap();

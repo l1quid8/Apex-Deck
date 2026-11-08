@@ -223,6 +223,21 @@ test('blocked startup checks a revised worker plan before a separate explicit ap
  assert.ok(!h.calls.some(call=>call.args?.action==='approve'),'checking the plan must not approve or start it');
 });
 
+for(const [status,resultData] of [
+ ['needs_you',{startup:{message:'Unsupported worker'}}],
+ ['proposed',{startupPreflight:{configuration:'validated'}}],
+])test(`new-thread ${status} task withholds unsupported startup revision options`,async()=>{
+ const h=harness({taskScopes:[{project,owner}],onCreateWorkerThread:async()=>{assert.fail('new-thread startup revision must not create a saved chat');}},{...baseTask,status,attempts:[],destination:{threadId:null,workers:['worker'],newThread:true,newThreadTitle:'Delegated work'},resultData});
+ h.backend.supports=cap=>cap==='assistant_task_revise_startup_v1';
+ h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();
+ assert.equal(find(tree,node=>node.type==='select'&&node.props['aria-label']==='Revised task worker'),null);
+ assert.equal(button(tree,'Check revised plan'),null);
+ assert.doesNotMatch(text(tree),/Choose a configured worker and check the revised plan/);
+ assert.ok(find(tree,node=>node.type==='summary'&&text(node)==='Startup diagnostics'));
+ assert.ok(button(tree,'Cancel task'));
+ assert.equal(h.calls.some(call=>call.cmd==='assistant_task_action'),false);
+});
+
 test('editable acceptance requires separate Changes and Checks inspection and exact revision confirmation',async()=>{
  const h=harness({taskScopes:[{project,owner}]},{...baseTask,status:'ready_for_review',mode:'isolated',result:'Code result',reviewCriteria:[],resultData:{reviewDiff:'diff',checkResults:[{success:true}]}});
  h.render();await tick();let tree=h.render();find(tree,node=>node.type==='button'&&node.props.className==='assistant-project-task').props.onClick();tree=h.render();

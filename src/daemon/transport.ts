@@ -22,6 +22,8 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
   return {
     supports: capability => client.hasCapability?.(capability) === true,
     call: (cmd, args) => {
+      if (cmd.startsWith("personal_handoff_") && client.hasCapability?.("assistant_conversation_handoff_v1") !== true)
+        throw new Error("Update the assistant machine's service to use conversational handoffs.");
       if (cmd.startsWith("personal_avatar_") && client.hasCapability?.("assistant_avatar_generation_v1") !== true)
         throw new Error("This host does not support assistant avatar generation. Update the service, then reconnect.");
       if (cmd === "personal_project_delegate" && client.hasCapability?.("assistant_workspace_v4") !== true)

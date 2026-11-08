@@ -22,6 +22,7 @@ import { transform } from 'sucrase';
 import * as assistantWorkspaceModel from '../src/assistantWorkspaceModel.ts';
 import * as attention from '../src/attention.ts';
 import { loadStartupState } from '../src/startupState.ts';
+import { remoteProfileEdit } from '../src/sessionSync.ts';
 import * as monitorAttention from '../src/monitorAttention.ts';
 import * as canvasPanes from '../src/canvasPanes.ts';
 import * as layout from '../src/layout.ts';
@@ -163,7 +164,7 @@ function appHarness(options = {}) {
     startHub: async () => () => {},
     approvalSnapshot: () => ({}), subscribeApprovals: () => () => {},
     openCards: () => [], dueEscalations: () => [], escalationKey: () => '',
-    remoteSessionEdit: (_local, remote) => remote,
+    remoteSessionEdit: (_local, remote) => remote, remoteProfileEdit,
     normalizeWorkspaces: ws => ws ?? [], loadedPanes: ps => ps ?? [], migrateCanvasLayouts: value => ({ layouts: value.layouts ?? {} }),
     restoredLayouts: () => ({}), savedLayouts: () => ({}), savedPanes: ps => ps,
     shownWorkspaces: ws => ws, listedPanes: (ps, ws) => ps.filter(p => ws.some(w => w.id === p.workspaceId)),
@@ -232,7 +233,7 @@ function appHarness(options = {}) {
     popoutRecords,voiceCalls,route:backendForHost,
     setVoice(next){Object.assign(voiceState,next);},
     emitFloat(action){for(const fn of floatActions)fn('companion-token',action);},
-    emitSession(workspaces) { sessionChanged?.({ ...session, workspaces, panes: session.panes }); },
+    emitSession(workspaces, changes = {}) { sessionChanged?.({ ...session, workspaces, panes: session.panes, ...changes }); },
     setConnection(status, hostId = 'host-a') {
       const previous = connectionStates.get(hostId) ?? { status: { kind: 'connected' }, revision: 1 };
       connectionStates.set(hostId, { status: status.kind === 'connected' && !status.hostId ? { ...status, hostId } : status, revision: previous.revision + 1 });
@@ -1049,5 +1050,24 @@ test('actual App companion lists a legacy zero-agent Work row without explicit m
   const payload=h.personalOptions().viewContext('local','host-a',h.assistantRef);
   assert.equal(payload.focusedThreadId,'thread-a');assert.deepEqual(payload.openThreadIds,['thread-a']);
   assert.deepEqual(h.popoutRecords.updates.at(-1).patch.float.context,context);
+  h.unmount();
+});
+
+
+test('actual App receives CLI agents even when project and thread registries are unchanged', async () => {
+  const h = appHarness();
+  h.session.section = 'agents';
+  const saves = [];
+  h.backend.sessionSave = async session => { saves.push(session); };
+  h.render(); await tick(); h.render(); await tick();
+  const profiles = [{ id: 'null', display_name: 'Null', persona: 'from CLI', access: 'ask', backend: { kind: 'agent', tool: 'codex' } }];
+  h.emitSession([project], { profiles, profileRevision: 2, profileSavedBy: 'agent-profile', savedBy: 'agent-profile' });
+  let tree = h.render(); await tick();
+  assert.deepEqual(child(tree, 'AgentsSection').props.profiles, profiles);
+  assert.equal(saves.at(-1).profileRevision, 2);
+  assert.deepEqual(saves.at(-1).profiles, profiles);
+  h.emitSession([project], { profiles: [], profileRevision: 1, profileSavedBy: 'agent-profile' });
+  tree = h.render();
+  assert.deepEqual(child(tree, 'AgentsSection').props.profiles, profiles, 'late events must not regress profiles');
   h.unmount();
 });

@@ -293,16 +293,27 @@ impl Connection {
                 })
             }
             Transport::Stdio { command, args, env } => {
-                let child = if access.map(crate::linux_jail::should_jail).unwrap_or(false) {
+                // The bot jail is Linux-only; Windows never takes this branch.
+                #[cfg(unix)]
+                let jail = access.map(crate::linux_jail::should_jail).unwrap_or(false);
+                #[cfg(not(unix))]
+                let jail = false;
+                let child = if jail {
+                    #[cfg(not(unix))]
+                    unreachable!("no bot jail on Windows");
+                    #[cfg(unix)]
                     let executable_path = env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
                         .map(|(_, value)| value.as_str()).or(path);
+                    #[cfg(unix)]
                     let bwrap = crate::gateway_sandbox::find_bwrap(executable_path);
+                    #[cfg(unix)]
                     match crate::linux_jail::state(bwrap.as_deref()) {
                         crate::linux_jail::JailState::Fails(reason) => {
                             return Err(format!("The MCP server `{}` couldn't start: {reason}", spec.name));
                         }
                         crate::linux_jail::JailState::Works => {}
                     }
+                    #[cfg(unix)]
                     let _bwrap = bwrap.ok_or_else(|| {
                         format!("The MCP server `{}` couldn't start: {}: it isn't installed", spec.name, crate::linux_jail::probe::NEEDS_ADMIN)
                     })?;
@@ -340,7 +351,7 @@ impl Connection {
                         tokio::spawn(crate::linux_jail::channel::serve(control, purposes));
                         child
                     }
-                    #[cfg(not(target_os = "linux"))]
+                    #[cfg(all(unix, not(target_os = "linux")))]
                     return Err(format!("The MCP server `{}` couldn't start: Linux bot jail is only available on Linux", spec.name));
                 } else {
                     let executable_path = env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
@@ -629,6 +640,8 @@ pub struct Pool {
     live: tokio::sync::Mutex<HashMap<PoolKey, Arc<Connection>>>,
     registry: Registry,
     known: Mutex<Option<(Stamp, Vec<ServerSpec>)>>,
+    #[cfg(test)]
+    fixture_servers: Option<Vec<ServerSpec>>,
 }
 
 impl Pool {
@@ -636,6 +649,10 @@ impl Pool {
     /// settings file has changed. When access is below Full, HTTP MCP servers
     /// are omitted.
     pub fn servers(&self, cwd: Option<&Path>, access: Option<apex_core::Access>) -> Vec<ServerSpec> {
+        #[cfg(test)]
+        if let Some(servers) = &self.fixture_servers {
+            return servers.iter().filter(|s| access == Some(apex_core::Access::Full) || !matches!(s.transport, Transport::Http { .. })).cloned().collect();
+        }
         let user_path = claude_config_path();
         let project_path = cwd.map(|c| c.join(".mcp.json"));
         let mut cwds: Vec<String> = Vec::new();
@@ -735,14 +752,11 @@ impl Pool {
     }
 }
 
-/// Test fixture at the configuration boundary: cache supplied servers without
-/// reading or changing the person's config contents or environment.
+/// Fixed configuration for HTTP/stdio boundary tests. Never consult live user
+/// settings: a concurrent CLI can rewrite them between fixture creation and use.
 #[cfg(test)]
 pub(crate) fn fixture_pool(servers: Vec<ServerSpec>) -> Pool {
-    let pool = Pool::default();
-    let stamp = Stamp { cwds: vec![], user: claude_config_path().as_deref().and_then(modified), project: None };
-    *pool.known.lock().unwrap() = Some((stamp, servers));
-    pool
+    Pool { fixture_servers: Some(servers), ..Pool::default() }
 }
 
 #[cfg(test)]
@@ -956,6 +970,7 @@ done
         assert!(!none_access.iter().any(|s| matches!(s.transport, Transport::Http { .. })));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn jailed_mcp_refuses_when_jail_fails_or_http_below_full() {
         let _lock = crate::linux_jail::TEST_LOCK.lock().unwrap();

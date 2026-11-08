@@ -125,7 +125,7 @@ run /bin/bash "$VERIFIER" || VERIFY_STATUS=$?
 # thing this script exists to change: that the pin matches the app you will run.
 PIN_STATUS=0
 if (( DRY )); then
-  say '  would check: config.json uiCdhash/daemonCdhash match the installed app,'
+  say '  would check: config.json uiCdhash/daemonCdhash/optional cliCdhash match the installed app,'
   say '               LaunchDaemon loaded, and the broker socket present'
 else
   say ''
@@ -138,6 +138,16 @@ else
     actual_daemon=$(cdhash "$APP/Contents/Resources/bin/apex-daemon" | /usr/bin/tr 'A-Z' 'a-z')
     pinned_ui=$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["uiCdhash"].lower())' "$ROOT/config.json")
     pinned_daemon=$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["daemonCdhash"].lower())' "$ROOT/config.json")
+    pinned_cli=$(/usr/bin/python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("cliCdhash", ""))' "$ROOT/config.json")
+    if [[ -n "$pinned_cli" ]]; then
+      cli="$APP/Contents/Resources/bin/apex"
+      if [[ -f "$cli" && ! -L "$cli" ]] && /usr/bin/codesign --verify --strict -R='anchor apple generic and identifier "dev.apexdeck.cli"' "$cli" 2>/dev/null && [[ "$(cdhash "$cli")" == "$pinned_cli" ]]; then
+        say '  OK: pinned CLI identity and CDHash'
+      else
+        say '  FAIL: pinned CLI is missing or differs from installed binary'
+        PIN_STATUS=1
+      fi
+    fi
     if [[ "$actual_ui" == "$pinned_ui" ]]; then
       say "  OK: pinned UI CDHash ${pinned_ui:0:16}..."
     else

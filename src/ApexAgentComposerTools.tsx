@@ -5,6 +5,7 @@ import type { Command } from './commands';
 import { ComposerMenu, type ComposerMenuHandle } from './ComposerTools';
 import { insertAt, type MenuItem, type MenuPerson, type Trigger } from './composerMenu';
 import { attachmentName, isImage, withAttachments } from './attachments';
+import { pathBase } from './paths';
 import './apex-agent-composer.css';
 import { assistantComposerDraftFor, useAssistantComposerDraftState } from './assistantComposerDrafts.ts';
 
@@ -125,7 +126,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
     try {
       const path = await picker?.();
       setAttachments(previous => path
-        ? previous.map(item => item.id === id ? { ...item, name: `${path.split('/').filter(Boolean).at(-1) ?? path}/`, path, folder: true, pickFolder: picker, busy: false } : item)
+        ? previous.map(item => item.id === id ? { ...item, name: `${pathBase(path)}/`, path, folder: true, pickFolder: picker, busy: false } : item)
         : existingId
           ? previous.map(item => item.id === id ? { ...item, name: 'Folder', error: 'Folder selection canceled.', busy: false } : item)
           : previous.filter(item => item.id !== id));

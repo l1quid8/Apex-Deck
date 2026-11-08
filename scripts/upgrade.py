@@ -77,14 +77,18 @@ def validate_bundle(app):
     bundle_links(app)
     for image in (Path(app),Path(app)/'Contents/Resources/bin/apex-daemon',Path(app)/'Contents/Resources/bin/apex-provenance'):
         run('/usr/bin/codesign','--verify','--strict','-R='+REQUIREMENT,image)
-    run('/bin/bash',VERIFIER,app,M['ui'],M['daemon'],Path(app)/'Contents/Resources/bin/apex-provenance',M['broker'])
+    run('/bin/bash',VERIFIER,app,M['ui'],M['daemon'],Path(app)/'Contents/Resources/bin/apex-provenance',M['broker'],*([M['cli']] if 'cli' in M else []))
 
-def update_config(config_path,ui,daemon):
+def update_config(config_path,ui,daemon,cli=None):
     regular(config_path)
     original = json.loads(Path(config_path).read_bytes())
     if not isinstance(original,dict) or not isinstance(original.get('uiCdhash'),str) or not isinstance(original.get('daemonCdhash'),str):
         raise RuntimeError('Invalid existing authority config')
     updated = dict(original,uiCdhash=ui,daemonCdhash=daemon)
+    updated.pop('cliCdhash',None)
+    if cli is not None:
+        if not isinstance(cli,str) or not re.fullmatch(r'[a-f0-9]{40}',cli): raise RuntimeError('Invalid CLI CDHash')
+        updated['cliCdhash']=cli
     temporary = Path(str(config_path)+'.upgrade-new')
     with temporary.open('xb') as f:
         f.write((json.dumps(updated)+'\n').encode()); f.flush(); os.fsync(f.fileno())
@@ -260,7 +264,7 @@ def install(notes=None):
         swap(TRUSTED,candidate,backup/'previous-trusted.app')
         swap(ROOT/'apex-provenance',broker_candidate,backup/'previous-broker')
         swap(APPLICATION,applications_candidate,backup/'previous-applications.app')
-        update_config(ROOT/'config.json',M['ui'],M['daemon']); config_changed=True
+        update_config(ROOT/'config.json',M['ui'],M['daemon'],M.get('cli')); config_changed=True
         for name,want in records.items():
             if authority_digest(name)!=want: raise RuntimeError('Authority changed during installation')
         validate_bundle(TRUSTED); validate_bundle(APPLICATION)
@@ -369,11 +373,11 @@ def version_key(value):
 
 def validate_manifest(value):
     # The same shape scripts/package-mac-upgrade.mjs renders into a package.
-    for key in ('ui','daemon','broker'):
+    for key in ('ui','daemon','broker',*(('cli',) if 'cli' in value else ())):
         if not isinstance(value.get(key),str) or not re.match(r'^[a-f0-9]{40}$',value[key]): raise RuntimeError('Invalid '+key+' CDHash')
     if not isinstance(value.get('id'),str) or not UUID.match(value['id']): raise RuntimeError('Invalid upgrade id')
     version_key(value.get('version'))
-    return {key:value[key] for key in ('id','version','ui','daemon','broker')}
+    return {key:value[key] for key in ('id','version','ui','daemon','broker',*(('cli',) if 'cli' in value else ()))}
 
 def read_request(path):
     path=Path(path); protected(path); regular(path)
@@ -455,6 +459,12 @@ def identify(app,request):
     run('/usr/bin/codesign','--verify','--deep','--strict','-R=identifier "dev.apexdeck.app" and '+REQUIREMENT,app)
     for image in (app/'Contents/Resources/bin/apex-daemon',app/'Contents/Resources/bin/apex-provenance'):
         run('/usr/bin/codesign','--verify','--strict','-R='+REQUIREMENT,image)
+    cli=app/'Contents/Resources/bin/apex'
+    cli_identity={}
+    if cli.exists() or cli.is_symlink():
+        if cli.is_symlink() or not cli.is_file(): raise RuntimeError('Invalid CLI executable')
+        run('/usr/bin/codesign','--verify','--strict','-R=identifier \"dev.apexdeck.cli\" and '+REQUIREMENT,cli)
+        cli_identity={'cli':cdhash(cli)}
     info=bundle_info(app)
     version=info.get('CFBundleShortVersionString')
     if info.get('CFBundleIdentifier')!='dev.apexdeck.app': raise RuntimeError('The update is not Apex Deck')
@@ -464,7 +474,7 @@ def identify(app,request):
     minimum=info.get('LSMinimumSystemVersion')
     if minimum and version_key(minimum)>version_key(macos_version()): raise RuntimeError('Version '+version+' needs macOS '+minimum+' or later')
     if platform.machine() not in run('/usr/bin/lipo','-archs',app/'Contents/MacOS/Apex Deck').stdout.split(): raise RuntimeError('The update is not built for this Mac ('+platform.machine()+')')
-    return validate_manifest({'id':request['id'],'version':version,'ui':cdhash(app),'daemon':cdhash(app/'Contents/Resources/bin/apex-daemon'),'broker':cdhash(app/'Contents/Resources/bin/apex-provenance')})
+    return validate_manifest({**cli_identity,'id':request['id'],'version':version,'ui':cdhash(app),'daemon':cdhash(app/'Contents/Resources/bin/apex-daemon'),'broker':cdhash(app/'Contents/Resources/bin/apex-provenance')})
 
 def use_manifest(manifest,staged):
     global M,STAGED

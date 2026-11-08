@@ -92,7 +92,15 @@ fn data_dir_from_env(
 /// or the environment, and the Downloads folder when it exists (headless
 /// servers usually have none, and exports then say so).
 pub fn host_paths(flag: Option<PathBuf>) -> Result<apex_host::HostPaths, String> {
-    let data = data_dir_from_env(flag, Os::current(), |key| std::env::var_os(key))?;
+    let explicit = flag.is_some();
+    let mut data = data_dir_from_env(flag, Os::current(), |key| std::env::var_os(key))?;
+    if !explicit {
+        let home = std::env::var_os("HOME").filter(|h| !h.is_empty())
+            .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()));
+        if let Some(home) = home {
+            data = crate::shared_store::select(&data, &PathBuf::from(home).join(".apex"))?;
+        }
+    }
     let downloads = dirs::download_dir().filter(|d| d.is_dir());
     Ok(apex_host::HostPaths { data, downloads })
 }

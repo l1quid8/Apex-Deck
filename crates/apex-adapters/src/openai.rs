@@ -219,7 +219,7 @@ pub(crate) fn parse_sse_line(line: &str) -> Vec<SseLine> {
 
 /// What a turn cost in millionths of a dollar: the server's own figure when
 /// it gives one, otherwise worked out from the model's listed prices.
-pub(crate) fn cost_micros(
+pub fn cost_micros(
     reported_usd: Option<f64>,
     model: Option<&crate::ApiModel>,
     input: Option<u64>,
@@ -916,7 +916,7 @@ done
     #[tokio::test]
     async fn images_from_other_servers_stay_text_stubs() {
         let (bodies,_,_) = screenshot_roundtrip(true,"weather").await;
-        assert!(bodies[3].to_string().contains("[image (image/png, 3 bytes) not shown]"));
+        assert!(bodies[3].to_string().contains("[image (image/png, 3 bytes) not shown]"), "{}", bodies[3]);
         let messages = bodies[3]["messages"].as_array().unwrap();
         assert_eq!(messages.iter().filter_map(|m|m["content"].as_array()).flatten().filter(|p|p["type"]=="image_url").count(),1);
     }

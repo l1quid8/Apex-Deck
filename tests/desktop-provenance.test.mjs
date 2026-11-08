@@ -70,11 +70,16 @@ test('provenance wrapper binds actual command and rejects a substituted signed r
 test('ordinary commands retain Full access transport and are not signed',async()=>{
   assert.equal(typeof mod.attestFrame,'function');
   const frame={id:2,cmd:'mod_process_run',args:{argv:['git','status']}};
-  assert.deepEqual(await mod.attestFrame(frame,{issue:()=>assert.fail('not a human intent')}),frame);
+  // uid is explicit: attestFrame's default reads process.getuid(), which Windows
+  // does not have. A command that is not a human intent never reaches the receipt.
+  assert.deepEqual(await mod.attestFrame(frame,{uid:501,issue:()=>assert.fail('not a human intent')}),frame);
 });
 test('packaged provenance refuses code injection switches and development URLs',()=>{
   assert.equal(typeof mod.assertTrustedStartup,'function');
   assert.throws(()=>mod.assertTrustedStartup(true,['app','--remote-debugging-port=9222'],{}));
+  assert.throws(()=>mod.assertTrustedStartup(true,['app','-remote-debugging-port=9222'],{},'win32'));
+  assert.throws(()=>mod.assertTrustedStartup(true,['app','/remote-debugging-port=9222'],{},'win32'));
+  assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app','C:\\work\\project'],{},'win32'));
   assert.throws(()=>mod.assertTrustedStartup(true,['app'],{APEX_DECK_DEV_URL:'http://localhost:5173'}));
   assert.throws(()=>mod.assertTrustedStartup(true,['app'],{NODE_OPTIONS:'--require=/tmp/x'}));
   assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app'],{APEX_DECK_DATA_DIR:'/tmp/isolated-apex'}));
@@ -113,7 +118,7 @@ test('legacy import apply is a protected UI intent; its preview and history are 
   assert.deepEqual(issued.args,frame.args);
   assert.match(issued.provenanceRequestId,/^[a-f0-9-]{36}$/);
   const preview={id:10,cmd:'legacy_import_preview',args:{}};
-  assert.deepEqual(await mod.attestFrame(preview,{issue:()=>assert.fail('preview is read-only')}),preview);
+  assert.deepEqual(await mod.attestFrame(preview,{uid:501,issue:()=>assert.fail('preview is read-only')}),preview);
 });
 
 test('explicit project delegation is signed with its exact brief, worker and project',async()=>{
@@ -181,6 +186,66 @@ test('malformed remote commands cannot crash the desktop admission route', () =>
   for (const cmd of [undefined, null, {}, []]) assert.equal(mod.needsAttestation(cmd, true), false);
 });
 
+test('Windows receipt admission uses native authority identity without a POSIX UID', async () => {
+  const {publicKey, privateKey} = generateKeyPairSync('ed25519');
+  const raw = publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const frame = {id:81,cmd:'personal_send',args:{assistantId:'a',requestId:'windows-1',text:'hello'}};
+  const options = {platform:'win32', uid:undefined, dataDir:'C:\\Users\\test\\AppData\\Roaming\\Apex Deck',
+    identity:async () => ({uid:0, dataDir:'C:/Users/test/AppData/Roaming/Apex Deck', publicKey:raw.toString('base64')}),
+    issue:async request => {
+      const payload = JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}});
+      return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+    }};
+  const result = await mod.attestFrame(frame, options);
+  assert.equal(result.cmd,'provenance_execute');
+  const payload = JSON.parse(result.args.receipt.payload);
+  assert.equal(payload.receipt.dataDir,'C:/Users/test/AppData/Roaming/Apex Deck');
+  await assert.rejects(mod.attestFrame(frame,{...options,identity:async()=>{throw new Error('untrusted authority key');}}),/untrusted authority key/);
+});
+
+test('Windows transport does not disclose a submission to an unauthenticated pipe', async () => {
+  const net = await import('node:net');
+  const {tmpdir} = await import('node:os');
+  const path = await import('node:path');
+  const endpoint = process.platform==='win32' ? `\\\\.\\pipe\\apex-auth-test-${process.pid}` : path.join('/tmp',`apex-auth-${process.pid}.sock`);
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const received=[];
+  const server=net.createServer(socket=>socket.on('data',data=>{
+    received.push(JSON.parse(data.toString()));
+    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'hello',nonce:'wrong-challenge'});
+    socket.write(JSON.stringify({payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')})+'\n');
+  }));
+  await new Promise(resolve=>server.listen(endpoint,resolve));
+  try{
+    await assert.rejects(mod.issue({op:'issue',command:{text:'private human text'}},{endpoint,platform:'win32',publicKey:raw}),/challenge|authentication/i);
+    assert.equal(received.length,1);
+    assert.equal(received[0].op,'hello');
+    assert.equal(received[0].command,undefined);
+  }finally{await new Promise(resolve=>server.close(resolve));}
+});
+
+test('Windows transport authenticates the pipe before delivering an exactly bound receipt', async () => {
+  const net=await import('node:net');const {tmpdir}=await import('node:os');const path=await import('node:path');
+  const endpoint=process.platform==='win32'?`\\\\.\\pipe\\apex-auth-success-${process.pid}`:path.join('/tmp',`apex-auth-ok-${process.pid}.sock`);
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const seen=[];
+  const server=net.createServer(socket=>{
+    let buffer='';socket.on('data',data=>{buffer+=data;while(buffer.includes('\n')){
+      const end=buffer.indexOf('\n');const request=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);seen.push(request.op);
+      const value=request.op==='hello'?{domain:'apex-provenance-v1',kind:'hello',nonce:request.nonce}:{domain:'apex-provenance-v1',kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}};
+      const payload=JSON.stringify(value);socket.write(JSON.stringify({payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')})+'\n');
+    }});
+  });
+  await new Promise(resolve=>server.listen(endpoint,resolve));
+  try{
+    const frame={id:82,cmd:'personal_send',args:{assistantId:'a',requestId:'win-2',text:'hello'}};
+    const result=await mod.attestFrame(frame,{platform:'win32',dataDir:'C:/data',identity:async()=>({uid:0,dataDir:'C:/data',publicKey:raw.toString('base64')}),issue:(request,options)=>mod.issue(request,{...options,endpoint})});
+    assert.deepEqual(seen,['hello','issue']);assert.equal(result.cmd,'provenance_execute');
+    assert.deepEqual(JSON.parse(result.args.receipt.payload).receipt.command,{cmd:'personal_send',args:frame.args});
+  }finally{await new Promise(resolve=>server.close(resolve));}
+});
+
 test('update requests carry only the package facts and accept only a matching signed receipt', async () => {
   const {publicKey,privateKey}=generateKeyPairSync('ed25519');
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
@@ -205,4 +270,44 @@ test('permanent project task deletion requires exact UI attestation',()=>{
 
 test('human todo edits require protected UI attestation',()=>{
   assert.equal(mod.needsAttestation('personal_todo'),true);
+});
+
+test('handoff selections and controls attest one stable request and reject changed signed bindings',async()=>{
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  for(const cmd of ['personal_handoff_select','personal_handoff_control']){
+    const frame={id:91,cmd,args:{assistantId:'a',requestId:'handoff-1',taskId:'task-1',expectedTaskRevision:7,action:'stop'}};
+    const issued=[];
+    const options={dataDir:'/data',uid:501,publicKey:raw,issue:async r=>{issued.push(r.command);return response(r.command);}};
+    const first=await mod.attestFrame(frame,options),second=await mod.attestFrame(frame,options);
+    assert.equal(first.cmd,'provenance_execute');
+    assert.deepEqual(issued[0],issued[1],'retry uses same signed request identity');
+    assert.equal(issued[0].provenanceRequestId,undefined);
+    assert.deepEqual(first,second);
+    await assert.rejects(mod.attestFrame(frame,{...options,issue:async r=>response({...r.command,args:{...r.command.args,assistantId:'other'}})}),/does not match/);
+  }
+});
+
+
+test('shared agent, provider setup, and backend lifecycle intents bind exact protected submissions', async () => {
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  for (const [cmd,args] of [
+    ['agent_profile_save',{handle:'null',name:'Null',provider:'codex',instructions:'shared agent',access:'ask',expectedRevision:2}],
+    ['provider_setup_begin',{provider:'codex',method:'reuse'}],
+    ['backend_stop',{bootId:'shared-boot'}],
+  ]) {
+    assert.equal(mod.needsAttestation(cmd,false),true,cmd);
+    const frame={id:51,cmd,args};
+    const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
+      assert.equal(request.command.cmd,cmd);
+      assert.deepEqual(request.command.args,args);
+      assert.match(request.command.provenanceRequestId,/^[a-f0-9-]{36}$/);
+      return response(request.command);
+    }});
+    assert.equal(result.cmd,'provenance_execute');
+    await assert.rejects(mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response({...request.command,args:{...args,substituted:true}})}),/Receipt does not match/);
+  }
 });

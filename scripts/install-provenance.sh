@@ -57,6 +57,18 @@ ui_hash=$(/usr/bin/codesign -d --verbose=4 "$app" 2>&1 | /usr/bin/awk -F= '/^CDH
 daemon_hash=$(/usr/bin/codesign -d --verbose=4 "$daemon" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2}')
 [[ "$ui_hash" =~ ^[0-9a-fA-F]{40}$ && "$daemon_hash" =~ ^[0-9a-fA-F]{40}$ ]] || exit 1
 /usr/bin/printf '{"uiCdhash":"%s","daemonCdhash":"%s"}\n' "$ui_hash" "$daemon_hash" > "$root/config.json"
+# Optional third exact pin comes only from the already copied, root-protected
+# bundle. A release without the CLI leaves admission disabled.
+cli="$app/Contents/Resources/bin/apex"
+if [[ -e "$cli" || -L "$cli" ]]; then
+  [[ -f "$cli" && ! -L "$cli" ]] || exit 1
+  /usr/bin/codesign --verify --strict -R='anchor apple generic and identifier "dev.apexdeck.cli"' "$cli"
+  details=$(/usr/bin/codesign -d --verbose=4 "$cli" 2>&1)
+  [[ "$details" == *'(runtime)'* ]] || { echo 'CLI hardened runtime is required.' >&2; exit 1; }
+  cli_hash=$(/usr/bin/codesign -d --verbose=4 "$cli" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2}')
+  [[ "$cli_hash" =~ ^[0-9a-fA-F]{40}$ ]] || exit 1
+  /usr/bin/printf '{"uiCdhash":"%s","daemonCdhash":"%s","cliCdhash":"%s"}\n' "$ui_hash" "$daemon_hash" "$cli_hash" > "$root/config.json"
+fi
 /bin/chmod 600 "$root/config.json"
 plist='/Library/LaunchDaemons/dev.apexdeck.provenance.plist'
 [[ ! -e "$plist" && ! -L "$plist" ]] || { echo 'LaunchDaemon already exists; leaving it intact.' >&2; exit 1; }

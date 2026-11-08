@@ -2,6 +2,8 @@
 // version. Saved beside the thread in rooms/<id>.artifacts.json; the desktop
 // side treats the file as opaque JSON. See the spec, section 2.
 
+import "./paths.ts";
+
 export type ArtifactKind = "html" | "svg" | "markdown";
 
 export interface ArtifactVersion {

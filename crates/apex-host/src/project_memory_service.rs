@@ -881,7 +881,7 @@ mod tests {
         let destination = TaskDestination {
             thread_id: Some("worker-thread".into()),
             workers: vec!["worker".into()],
-            new_thread: false,
+            new_thread: false, new_thread_title: None,
         };
         let task = f
             .host

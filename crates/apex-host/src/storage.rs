@@ -318,7 +318,84 @@ impl Store {
     }
 
     pub fn save_session(&self, session: &serde_json::Value) -> Result<(), String> {
-        self.write(&self.root.join("session.json"), session)
+        self.save_session_snapshot(session).map(|_| ())
+    }
+
+    /// Save desktop presentation state while protecting profiles edited by another client.
+    /// Return the accepted snapshot so events never echo stale profile data.
+    pub(crate) fn save_session_snapshot(&self, session: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let _guard = self.writes.lock().unwrap();
+        let mut next = session.clone();
+        let fields = next.as_object_mut().ok_or("Saved session is not an object")?;
+        let current = self.session()?.unwrap_or(serde_json::json!({}));
+        let revision = current["profileRevision"].as_u64().unwrap_or(0);
+        let expected = fields.get("profileRevision").and_then(|v| v.as_u64()).unwrap_or(0);
+        let profiles_changed = expected == revision && fields.contains_key("profiles") && fields.get("profiles") != current.get("profiles");
+        if profiles_changed {
+            fields.insert("profileSavedBy".into(), fields.get("savedBy").cloned().unwrap_or(serde_json::Value::Null));
+        } else if let Some(source) = current.get("profileSavedBy") {
+            fields.insert("profileSavedBy".into(), source.clone());
+        } else {
+            fields.remove("profileSavedBy");
+        }
+        if expected != revision || !fields.contains_key("profiles") {
+            if let Some(profiles) = current.get("profiles") {
+                fields.insert("profiles".into(), profiles.clone());
+            } else {
+                fields.remove("profiles");
+            }
+        } else if fields.get("profiles") != current.get("profiles") {
+            fields.insert("profileRevision".into(), serde_json::json!(revision.checked_add(1).ok_or("Profile revision overflow")?));
+        }
+        // Even old clients which omit this field must preserve the concurrency token.
+        if !fields.contains_key("profileRevision") || expected != revision {
+            if revision > 0 || current.get("profileRevision").is_some() {
+                fields.insert("profileRevision".into(), serde_json::json!(revision));
+            } else {
+                fields.remove("profileRevision");
+            }
+        }
+        self.write_held(&self.root.join("session.json"), &next)?;
+        Ok(next)
+    }
+
+    /// Change only one profile under the same gate used by all session writers.
+    pub(crate) fn update_agent_profile(&self, profile: serde_json::Value, revision:u64, replace:bool) -> Result<serde_json::Value,String> {
+        let _guard=self.writes.lock().unwrap();
+        let mut session=self.session()?.unwrap_or(serde_json::json!({"version":1}));
+        let fields=session.as_object_mut().ok_or("Saved session is not an object")?;
+        let current=fields.get("profileRevision").and_then(|v|v.as_u64()).unwrap_or(0);
+        if current!=revision { return Err("Saved profiles changed; reopen /agents and try again".into()); }
+        let profiles=fields.entry("profiles").or_insert_with(||serde_json::json!([])).as_array_mut().ok_or("Saved profiles are malformed; refusing to replace them")?;
+        let id=profile["id"].as_str().ok_or("Missing agent handle")?;
+        let existing=profiles.iter().position(|p|p["id"].as_str().is_some_and(|s|s.eq_ignore_ascii_case(id)));
+        let parsed=serde_json::from_value::<apex_core::ParticipantConfig>(profile.clone()).map_err(|e|e.to_string())?;
+        let mention=apex_core::mention_for(&parsed);
+        for (index,saved) in profiles.iter().enumerate() {
+            if Some(index)==existing {continue;}
+            if serde_json::from_value::<apex_core::ParticipantConfig>(saved.clone()).ok().is_some_and(|saved|apex_core::mention_for(&saved)==mention) {
+                return Err(format!("A saved agent already answers to @{mention}; edit that agent or choose a different name"));
+            }
+        }
+        match (existing,replace) {
+            (Some(index),true)=>{
+                // CLI edits expose only this narrow set. Keep the desktop's
+                // immutable identity, appearance, voice and future metadata.
+                let saved=profiles[index].as_object_mut().ok_or("Saved agent is malformed")?;
+                for key in ["display_name","backend","persona","access"] {
+                    saved.insert(key.into(),profile[key].clone());
+                }
+            },
+            (Some(_),false)=>return Err("That agent handle is already saved".into()),
+            (None,true)=>return Err("Agent no longer exists; create it explicitly".into()),
+            (None,false)=>profiles.push(profile),
+        }
+        fields.insert("profileRevision".into(),serde_json::json!(current.checked_add(1).ok_or("Profile revision overflow")?));
+        // Do not inherit a desktop save tag: its renderer must apply these profiles.
+        fields.insert("savedBy".into(), serde_json::json!("agent-profile"));
+        fields.insert("profileSavedBy".into(), serde_json::json!("agent-profile"));
+        self.write_held(&self.root.join("session.json"),&session)?;
+        Ok(session)
     }
 
     /// App-wide settings, beside the session file. The host reads them as `documents::Settings`.
@@ -373,6 +450,12 @@ impl Store {
     pub fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
         let Some(room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
         self.apply_room_authority(id, room, &self.room_authorities()?).map(Some)
+    }
+
+    /// Many rooms against one protected manifest read. On macOS each manifest
+    /// read is a ledger round trip, so per-room reads made catalogs slow.
+    pub(crate) fn room_reader(&self) -> Result<RoomReader<'_>, String> {
+        Ok(RoomReader { store: self, authority: self.room_authorities()?, metas: self.chat_metas_held()? })
     }
 
     /// Restore permission-bearing fields only from the protected manifest.
@@ -1174,6 +1257,24 @@ pub(crate) fn plan_legacy_room(id: &str, bytes: &[u8]) -> Result<(LegacyRoom, us
 }
 
 /// The room id a saved room file belongs to: "<hex id>.json".
+
+/// One consistent read of the room manifest and chat metadata.
+pub(crate) struct RoomReader<'a> {
+    store: &'a Store,
+    authority: serde_json::Map<String, serde_json::Value>,
+    metas: std::collections::BTreeMap<String, ChatRoomMeta>,
+}
+
+impl RoomReader<'_> {
+    /// Same result as `Store::room`, without rereading the manifest.
+    pub(crate) fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
+        let Some(room): Option<SavedRoom> = self.store.read(&self.store.room_path(id))? else { return Ok(None) };
+        self.store.apply_room_authority(id, room, &self.authority).map(Some)
+    }
+
+    pub(crate) fn meta(&self, id: &str) -> Option<&ChatRoomMeta> { self.metas.get(id) }
+}
+
 pub(crate) fn room_id_from_file(name: &str) -> Option<String> {
     let stem = name.strip_suffix(".json")?;
     if stem.is_empty() || stem.len() % 2 != 0 || !stem.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }

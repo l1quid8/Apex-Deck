@@ -28,9 +28,13 @@ export function releaseBuildCommands() {
   return [
     ['cargo', ['build', '--release', '-p', 'apex-daemon', '--features', 'remote']],
     ['cargo', ['build', '--release', '-p', 'apex-provenance']],
+    ['cargo', ['build', '--release', '-p', 'apex-cli']],
   ];
 }
 
+export function cliSigningArgs(identity) {
+  return ['--force', '--sign', identity, '--identifier', 'dev.apexdeck.cli', '--options', 'runtime', ...(identity === '-' ? [] : ['--timestamp']), resolve('target/release/apex')];
+}
 function buildRelease() {
   for (const [command, args] of releaseBuildCommands()) {
     const built = spawnSync(command, args, { stdio: 'inherit' });
@@ -45,6 +49,11 @@ function main() {
     ? null : spawnSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
   const identity = pickIdentity(discovery?.status === 0 ? discovery.stdout : '', process.env);
   console.log(signingMessage(identity));
+  // Establish a separate CLI identity before electron-builder signs the outer
+  // bundle. codesign re-signing preserves this explicit binary identifier.
+  const cliSigned = spawnSync('/usr/bin/codesign', cliSigningArgs(identity), { stdio: 'inherit' });
+  if (cliSigned.error) throw cliSigned.error;
+  if (cliSigned.status !== 0) throw new Error('CLI signing failed; refusing to package');
   // The native engine is statically linked into the signed permission holder.
   // Build it here so a DMG cannot silently contain an obsolete external spike.
   mkdirSync(resolve('build'), { recursive: true });

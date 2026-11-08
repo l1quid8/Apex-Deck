@@ -8,6 +8,7 @@ const raisingCommands = new Set([
   "room_add_participant", "room_update_participant", "room_create", "room_import",
   "room_fork", "chat_promote", "room_mount", "folder_accept", "session_save",
   "settings_save", "monitor_watch_save",
+  "agent_profile_save",
 ]);
 
 /** Guard the shared command path so typed methods and raw calls obey one rule. */

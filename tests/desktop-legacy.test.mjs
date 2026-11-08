@@ -6,6 +6,10 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openTauriApps, tauriStorage } from '../desktop/legacy.mjs';
 
+// macOS-only: the old Tauri WebKit storage. Windows has no such API, and the app refuses
+// protected records there instead of pretending the check passed.
+const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the old Tauri WebKit storage' };
+
 /** A WebKit localStorage database for `origin` under a fake home, the way the Tauri window left it. */
 function webkitStorage(home, folder, origin, items, { wal = false } = {}) {
   const dir = path.join(home, 'Library/WebKit/dev.apexdeck.app/WebsiteData/Default', folder, folder);
@@ -50,7 +54,7 @@ test('no Tauri storage, or storage that cannot be read, gives nothing', () => {
   fs.rmSync(home, { recursive: true });
 });
 
-test('an open Tauri build of Apex Deck is found by its bundle id, and nothing else is', () => {
+test('an open Tauri build of Apex Deck is found by its bundle id, and nothing else is', MAC_ONLY, () => {
   const ids = {
     '/Applications/Apex Deck.app/Contents/Info.plist': 'dev.apexdeck.app',
     '/tmp/Preview Deck.app/Contents/Info.plist': 'dev.apexdeck.preview',

@@ -3,8 +3,9 @@
 //!
 //! Authenticates bearer tokens (`apx_sk_...`) against [`GatewayKeys`], enforces
 //! per-key model family scopes (`sub`, `api`, `cli`) and daily/monthly caps, and
-//! routes requests through [`apex_adapters::build_without_tools`] in an isolated
-//! read-only scratch folder.
+//! proxies API wire messages directly. Claude function tools use a validated JSON
+//! envelope with native tools disabled; other chat turns use CLI adapters in a
+//! private scratch folder. The gateway never executes client function calls.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,12 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::gateway_keys::{AuthError, GatewayKey, GatewayKeys, KeyScope};
 use crate::identity;
+
+mod codex;
+mod tools;
+mod emulation;
+#[cfg(test)]
+mod tool_tests;
 
 /// Maximum HTTP request body size (4 MiB).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -703,19 +710,26 @@ struct ScratchDir(PathBuf);
 impl ScratchDir {
     fn new() -> Result<Self, String> {
         static N: AtomicU64 = AtomicU64::new(0);
-        let seq = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "apex-gateway-scratch-{}-{seq}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("could not create gateway scratch folder: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        // Owner-only from the moment it exists: mode 0700 on Unix, a protected
+        // current-user-only ACL on Windows. An existing path is never reused,
+        // so a folder planted at a predictable name is skipped, not trusted.
+        let mut last = None;
+        for _ in 0..8 {
+            let seq = N.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "apex-gateway-scratch-{}-{seq}",
+                std::process::id()
+            ));
+            match apex_host::private_data::create_private_dir(&dir) {
+                Ok(()) => return Ok(Self(dir)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+                Err(e) => return Err(format!("could not create gateway scratch folder: {e}")),
+            }
         }
-        Ok(Self(dir))
+        Err(format!(
+            "could not create gateway scratch folder: {}",
+            last.map(|e| e.to_string()).unwrap_or_default()
+        ))
     }
 
     fn path(&self) -> &Path {
@@ -745,6 +759,7 @@ struct ParsedHttpRequest {
     method: String,
     path: String,
     authorization: Option<String>,
+    headers: std::collections::BTreeMap<String,String>,
     body: Vec<u8>,
 }
 
@@ -768,6 +783,7 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<Option<ParsedHttpRe
 
     let mut content_length: usize = 0;
     let mut authorization: Option<String> = None;
+    let mut headers=std::collections::BTreeMap::new();
 
     for _ in 0..MAX_HEADER_LINES {
         let mut line = String::new();
@@ -785,6 +801,7 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<Option<ParsedHttpRe
         if let Some((name, val)) = trimmed.split_once(':') {
             let name_lower = name.trim().to_ascii_lowercase();
             let val_trimmed = val.trim();
+            headers.insert(name_lower.clone(),val_trimmed.to_owned());
             if name_lower == "content-length" {
                 content_length = val_trimmed
                     .parse::<usize>()
@@ -810,6 +827,7 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<Option<ParsedHttpRe
         method,
         path,
         authorization,
+        headers,
         body,
     }))
 }
@@ -976,14 +994,6 @@ async fn handle_chat_completions(
         }
     };
 
-    let flattened = match flatten_openai_messages(&parsed.messages) {
-        Ok(f) => f,
-        Err(why) => {
-            write_openai_error(stream, 400, "invalid_request_error", &why).await;
-            return;
-        }
-    };
-
     let effort = parsed
         .reasoning_effort
         .or(parsed.effort)
@@ -1003,6 +1013,36 @@ async fn handle_chat_completions(
         return;
     }
 
+    // API payloads may contain only image/audio parts. Flatten only the
+    // legacy CLI chat route; the API provider validates its own wire content.
+    let flattened = if matches!(resolved.config.backend, Backend::OpenAiCompatible { .. }) {
+        if parsed.messages.is_empty() {
+            write_openai_error(stream, 400, "invalid_request_error", "messages array must not be empty").await;
+            return;
+        }
+        None
+    } else {
+        match flatten_openai_messages(&parsed.messages) {
+            Ok(f) => Some(f),
+            Err(why) => {
+                write_openai_error(stream, 400, "invalid_request_error", &why).await;
+                return;
+            }
+        }
+    };
+
+    let wire: Value = serde_json::from_slice(raw_body).expect("validated JSON");
+    if let Err(why) = tools::validate(&wire) {
+        write_openai_error(stream, 400, "invalid_request_error", &why).await;
+        return;
+    }
+
+    if tools::has_tools(&wire) && !matches!(resolved.config.backend,
+        Backend::OpenAiCompatible { .. } | Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+        write_openai_error(stream,409,"invalid_request_error","This provider has no verified client-only tool mode").await;
+        return;
+    }
+
     // Reserve 1 turn against the key's scope and daily/monthly caps.
     let reserved_key = match state.keys.reserve_turn(&authed_key.id, resolved.scope) {
         Ok(k) => k,
@@ -1011,6 +1051,16 @@ async fn handle_chat_completions(
             return;
         }
     };
+
+    if matches!(resolved.config.backend, Backend::OpenAiCompatible { .. }) {
+        tools::proxy(stream, state, &reserved_key, &resolved, wire).await;
+        return;
+    }
+
+    if tools::has_tools(&wire) {
+        emulation::respond(stream, state, &reserved_key, &resolved, wire).await;
+        return;
+    }
 
     let scratch = match ScratchDir::new() {
         Ok(s) => s,
@@ -1022,6 +1072,7 @@ async fn handle_chat_completions(
     };
 
     let context = BuildContext {
+        watchdog_managed: false,
         codex_hook: None,
         cwd: Some(scratch.path().to_path_buf()),
         path: state.login_path.clone(),
@@ -1045,6 +1096,7 @@ async fn handle_chat_completions(
         _ => build_without_tools(resolved.config.clone(), &context),
     };
 
+    let flattened = flattened.expect("legacy CLI messages were validated");
     let turn_request = TurnRequest {
         computer: None,
         access: Some(Access::Read),
@@ -1345,6 +1397,38 @@ mod tests {
     /// Exercise an actual HTTP listener with a pre-policy key file and a CLI
     /// fixture that deliberately ignores the MCP-disable overrides. No live
     /// account or private MCP server is contacted by this test.
+    #[test]
+    fn scratch_dir_is_private_skips_planted_names_and_is_removed_on_drop() {
+        let first = ScratchDir::new().unwrap();
+        let path = first.path().to_path_buf();
+        assert!(path.is_dir());
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode & 0o077, 0, "scratch folder must be owner-only, got {mode:o}");
+        }
+        // Plant the next predictable names; the gateway must not reuse them.
+        // Other tests may take a number first, so only count names we made.
+        let seq: u64 = path.file_name().unwrap().to_str().unwrap()
+            .rsplit('-').next().unwrap().parse().unwrap();
+        let planted: Vec<PathBuf> = (seq + 1..=seq + 3)
+            .map(|n| std::env::temp_dir().join(format!(
+                "apex-gateway-scratch-{}-{n}", std::process::id()
+            )))
+            .filter(|p| std::fs::create_dir(p).is_ok())
+            .collect();
+        let second = ScratchDir::new().unwrap();
+        assert!(!planted.iter().any(|p| p == second.path()));
+        assert_eq!(std::fs::read_dir(second.path()).unwrap().count(), 0);
+        for p in &planted {
+            std::fs::remove_dir(p).unwrap();
+        }
+        drop(first);
+        assert!(!path.exists());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn stopping_listener_closes_accepted_connections() {

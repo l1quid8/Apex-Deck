@@ -10,7 +10,7 @@
 #
 # Usage:
 #   /bin/bash scripts/verify-protected-bundle.sh '/path/to/Apex Deck.app' \
-#       <expected-ui-cdhash> <expected-daemon-cdhash> [broker-binary expected-broker-cdhash]
+#       <expected-ui-cdhash> <expected-daemon-cdhash> [broker-binary expected-broker-cdhash [expected-cli-cdhash]]
 #
 # Exit 0: every check passed and both CDHashes matched. Exit 1: something is
 # wrong, reported on the line above. It writes nothing and needs no root; it
@@ -22,12 +22,13 @@ APP="${1:-}"
 EXPECT_UI="$(/usr/bin/printf '%s' "${2:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 EXPECT_DAEMON="$(/usr/bin/printf '%s' "${3:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 BROKER="${4:-}"
+EXPECT_CLI="${6:-}"
 EXPECT_BROKER="$(/usr/bin/printf '%s' "${5:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 
 case "${1:-}" in
   -h|--help) /usr/bin/sed -n '2,17p' "${BASH_SOURCE[0]}" | /usr/bin/cut -c3-; exit 0 ;;
 esac
-[[ $# == 3 || $# == 5 ]] || {
+[[ $# == 3 || $# == 5 || $# == 6 ]] || {
   echo 'FAIL expected app/UI/daemon hashes, optionally followed by broker path and its expected hash' >&2; exit 1; }
 
 [[ -d "$APP" ]] || { echo "FAIL no bundle at: $APP" >&2; exit 1; }
@@ -35,7 +36,7 @@ esac
   echo 'FAIL expected UI CDHash must be 40 hex digits' >&2; exit 1; }
 [[ "$EXPECT_DAEMON" =~ ^[0-9a-f]{40}$ ]] || {
   echo 'FAIL expected daemon CDHash must be 40 hex digits' >&2; exit 1; }
-if [[ $# == 5 ]]; then
+if [[ $# -ge 5 ]]; then
   [[ -n "$BROKER" && "$EXPECT_BROKER" =~ ^[0-9a-f]{40}$ ]] || {
     echo 'FAIL expected broker path and a 40 hex digit broker CDHash' >&2; exit 1; }
 fi
@@ -122,6 +123,19 @@ if [[ -n "$BROKER" ]]; then
     echo "FAIL broker CDHash $actual_broker is not the selected candidate $EXPECT_BROKER" >&2
     status=1
   fi
+fi
+
+if [[ -n "$EXPECT_CLI" ]]; then
+  CLI="$APP/Contents/Resources/bin/apex"
+  [[ "$EXPECT_CLI" =~ ^[0-9a-f]{40}$ && -f "$CLI" && ! -L "$CLI" ]] || {
+    echo 'FAIL CLI pin requires a regular binary and 40 hex digit hash' >&2; exit 1; }
+  /usr/bin/codesign --verify --strict -R='anchor apple generic and identifier "dev.apexdeck.cli"' "$CLI" 2>/dev/null || {
+    echo 'FAIL CLI signature or identifier is invalid' >&2; exit 1; }
+  cli_details=$(/usr/bin/codesign -d --verbose=4 "$CLI" 2>&1)
+  [[ "$cli_details" == *'(runtime)'* ]] || { echo 'FAIL CLI hardened runtime absent' >&2; exit 1; }
+  actual_cli=$(cdhash "$CLI")
+  [[ "$actual_cli" == "$EXPECT_CLI" ]] || { echo 'FAIL CLI CDHash differs from the selected candidate' >&2; exit 1; }
+  echo "OK   CLI CDHash ${actual_cli}"
 fi
 
 version=$(/usr/bin/python3 -I - "$APP" <<'PY'

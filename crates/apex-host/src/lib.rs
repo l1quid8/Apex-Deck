@@ -43,6 +43,8 @@ pub mod project_memory;
 mod memory_lifecycle;
 pub mod project_memory_service;
 pub mod personal_worker;
+pub mod personal_handoff;
+pub mod assistant_handoff_reply;
 mod personal_task_lifecycle;
 mod personal_todos;
 mod personal_archive;
@@ -55,6 +57,7 @@ pub mod command;
 #[cfg(test)]
 mod work_post_routing_tests;
 pub mod documents;
+pub mod agent_profiles;
 pub mod folders;
 pub mod project_files;
 pub mod worktrees;

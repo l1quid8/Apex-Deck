@@ -26,6 +26,10 @@ pub enum Command {
     /// Exact root-attested command; never an arbitrary nested command.
     ProvenanceExecute { receipt: apex_provenance::Signed },
     SessionLoad {},
+    AgentProfileList {},
+    ProviderSetupBegin { provider: String, method: String },
+    BackendStop { boot_id: String },
+    AgentProfileSave { #[serde(flatten)] input: crate::agent_profiles::SaveProfile },
     SessionSave { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
@@ -75,6 +79,10 @@ pub enum Command {
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
     PersonalConversationNew { assistant_id: String },
     PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
+    PersonalHandoffOptions { assistant_id: String, draft_id: String },
+    PersonalHandoffQuestion { assistant_id: String, task_id: String },
+    PersonalHandoffSelect { #[serde(flatten)] input: crate::personal_handoff::HandoffSelectInput },
+    PersonalHandoffControl { #[serde(flatten)] input: crate::personal_handoff::HandoffControlInput },
     PersonalAvatarOptions { owner: crate::assistant_avatar::Owner },
     PersonalAvatarGenerate { #[serde(flatten)] input: crate::assistant_avatar::Generate },
     PersonalAvatarStatus { owner: crate::assistant_avatar::Owner, generation_id: String },
@@ -310,7 +318,8 @@ pub enum Command {
 
 impl Command {
     pub fn requires_provenance(&self) -> bool {
-        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalProjectProposeUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalTodo { .. } | Self::ProjectTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. })
+        if matches!(self, Self::AgentProfileSave { .. } | Self::ProviderSetupBegin { .. } | Self::BackendStop { .. }) { return true; }
+        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalProjectProposeUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalTodo { .. } | Self::ProjectTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. } | Self::PersonalHandoffSelect { .. } | Self::PersonalHandoffControl { .. })
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -461,6 +470,13 @@ impl Host {
             ProvenanceExecute { .. } => return Err("Nested provenance commands are forbidden".into()),
             SessionLoad {} => reply(self.session_load()?),
             SessionSave { session } => reply(self.session_save(session)?),
+            AgentProfileList {} => self.agent_profile_list(),
+            BackendStop { .. } => Err("Backend stop receipts are accepted only on standalone backend control".into()),
+            ProviderSetupBegin { provider,method } => {
+                if !matches!((provider.as_str(),method.as_str()),("codex","reuse"|"browser"|"device")|("claude","reuse"|"subscription")) {return Err("Unsupported provider sign-in method".into());}
+                Ok(serde_json::json!({"provider":provider,"method":method,"authorized":true}))
+            },
+            AgentProfileSave { input } => self.agent_profile_save(input),
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
@@ -491,8 +507,15 @@ impl Host {
                 let host = Arc::clone(self);
                 reply(blocking(move || host.legacy_import_history(snapshot, request_id)).await?)
             }
-            PersonalList {} => reply(self.personal_list()?),
-            PersonalGet { assistant_id } => reply(self.personal_get(&assistant_id)?),
+            PersonalList {} => {
+                let list = self.personal_list()?;
+                let views: Vec<crate::personal::PersonalAssistantView> = list.iter().map(crate::personal::PersonalAssistantView::from).collect();
+                reply(views)
+            },
+            PersonalGet { assistant_id } => {
+                let a = self.personal_get(&assistant_id)?;
+                reply(crate::personal::PersonalAssistantView::from(&a))
+            },
             PersonalCreate { mut input } => {
                 if input.workspace_version == Some(4) {
                     // Validate the complete runtime selection before any durable insertion.
@@ -500,13 +523,17 @@ impl Host {
                     input.profile=self.workspace_profile(&snapshot,crate::personal_workspace::parse_profile(serde_json::to_value(input.profile).map_err(|e|e.to_string())?)?).await?;
                 }
                 let host = Arc::clone(self);
-                reply(blocking(move || host.personal_create(input)).await?)
+                let created = blocking(move || host.personal_create(input)).await?;
+                reply(crate::personal::PersonalAssistantView::from(&created))
             }
             PersonalProjectDelegate { input } => reply(self.personal_project_delegate(input).await?),
             PersonalProjectDelegateUi { input } => reply(self.personal_project_delegate_ui(input)?),
             PersonalProjectProposeUi { input } => reply(self.personal_project_propose_ui(input)?),
             PersonalSend { assistant_id, request_id, text, view_context } => reply(self.personal_send_with_context(&assistant_id, &request_id, &text, view_context)?),
-            PersonalReact { assistant_id, message_id, emoji, enabled } => reply(serde_json::json!({"assistant": self.personal_react(&assistant_id, &message_id, &emoji, enabled)?})),
+            PersonalReact { assistant_id, message_id, emoji, enabled } => {
+                let a = self.personal_react(&assistant_id, &message_id, &emoji, enabled)?;
+                reply(serde_json::json!({"assistant": crate::personal::PersonalAssistantView::from(&a)}))
+            },
             PersonalApprovalOptions { assistant_id, decision_id, params_hash } => reply(self.personal_approval_options(&assistant_id,&decision_id,&params_hash)?),
             PersonalDecideAlways { assistant_id, request_id, decision_id, params_hash, expected_revision, capability, scope } => reply(self.personal_decide_always(&assistant_id,&request_id,&decision_id,&params_hash,expected_revision,capability,scope)?),
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
@@ -519,6 +546,10 @@ impl Host {
             PersonalConversationNew { assistant_id } => reply(self.personal_conversation_new(&assistant_id)?),
             PersonalPause { assistant_id, request_id, paused } => { let accepted = self.personal_pause(&assistant_id, &request_id, paused)?; if !paused { self.redispatch_recovered_queued()?; } reply(accepted) },
             PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
+            PersonalHandoffOptions { assistant_id, draft_id } => reply(self.personal_handoff_options_impl(&assistant_id,&draft_id)?),
+            PersonalHandoffQuestion { assistant_id, task_id } => reply(self.personal_handoff_question_impl(&assistant_id,&task_id)?),
+            PersonalHandoffSelect { input } => reply(self.personal_handoff_select_impl(input)?),
+            PersonalHandoffControl { input } => reply(self.personal_handoff_control_impl(input).await?),
             ProjectMemoryList { input } => reply(self.project_memory_list(input)?),
             ProjectMemorySave { input } => reply(self.project_memory_save(input)?),
             ProjectMemoryForget { input } => reply(self.project_memory_forget(input)?),
@@ -1003,13 +1034,20 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 229);
+        assert_eq!(names.len(), 237);
         for name in [
+            "personal_handoff_select",
+            "personal_handoff_control",
+            "personal_handoff_options",
+            "personal_handoff_question",
             "room_refresh_plans",
             "room_apply_access",
             "room_curate",
             "room_curate_undo",
             "chat_profiles",
+            "agent_profile_list",
+            "agent_profile_save",
+            "provider_setup_begin",
             "chat_list",
             "chat_create",
             "chat_update_meta",

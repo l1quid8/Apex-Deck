@@ -21,7 +21,7 @@ test('an ad hoc build is never published as an update', () => {
   assert.throws(() => teamOf('Signature=adhoc\nTeamIdentifier=not set\n'), /ad hoc/);
 });
 
-test('publishing uploads to a draft and checks it before any Deck can see the feed', () => {
+test('publishing uploads to a draft and checks it before any Deck can see the feed', { skip: process.platform === 'win32' && 'releases are published from a Mac' }, () => {
   const steps = publishSteps('0.9.1', '/r/v0.9.1-assets', 'Apex-Deck-0.9.1-arm64.pkg');
   assert.match(steps[0], /--draft/);
   assert.match(steps[1], /Apex-Deck-0\.9\.1-arm64\.pkg' '\/r\/v0\.9\.1-assets\/apex-deck-update\.json'/);

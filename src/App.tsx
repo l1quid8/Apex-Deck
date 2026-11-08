@@ -101,7 +101,7 @@ import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidt
 import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestions, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning, assistantsRunning } from "./closing";
-import { remoteSessionEdit } from "./sessionSync";
+import { remoteProfileEdit, remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
@@ -117,6 +117,7 @@ import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
 import { RightTerminalTab } from "./RightTerminal";
+import { isWindows, pathBase, pathParts } from "./paths";
 import { activate, closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 import { restartQuestions, updateActions, useUpdates } from "./updates.ts";
@@ -159,7 +160,7 @@ function saveWorkspaces(workspaces: Workspace[]) {
 
 /** The last part of a folder path, for display. */
 export function folderName(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
+  const parts = pathParts(path);
   return parts[parts.length - 1] ?? path;
 }
 
@@ -236,6 +237,8 @@ export function App() {
     return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
   }, []);
   const [profiles, setProfiles] = useState<ParticipantConfig[]>([]);
+  const [profileRevision, setProfileRevision] = useState(0);
+  const profileRevisionRef = useRef(0);
   const [storageError, setStorageError] = useState("");
   const saveQueue = useRef(Promise.resolve());
   const [backend, setBackend] = useState<Backend | null>(null);
@@ -631,6 +634,8 @@ export function App() {
       restored.current = new Set(loaded.filter((p) => p.kind === "terminal").map((p) => p.id));
       setPanes(loaded);
       setProfiles(saved?.profiles ?? []);
+      profileRevisionRef.current = saved?.profileRevision ?? 0;
+      setProfileRevision(profileRevisionRef.current);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
       setLayoutPreset(saved?.layout ?? "top");
@@ -659,7 +664,7 @@ export function App() {
     };
   }, []);
 
-  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(withPoppedOut(layouts, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
+  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, profileRevision, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(withPoppedOut(layouts, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
   sessionRef.current = currentSession;
   useEffect(() => {
     if (!backend?.machines || !backend.hosts) return;
@@ -688,7 +693,7 @@ export function App() {
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions]);
+  }, [backend, workspaces, panes, profiles, profileRevision, activeWorkspace, focusedPane, section, layout, layouts, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions]);
 
   // The phone saves threads straight to the Mac's session. Take its edits in
   // before the next save here writes over them.
@@ -697,6 +702,14 @@ export function App() {
     let off: (() => void) | undefined;
     let alive = true;
     backend.onSessionChanged((remote) => {
+      const profileEdit = remoteProfileEdit(profileRevisionRef.current, remote, saveTag.current);
+      if (profileEdit) {
+        profileRevisionRef.current = profileEdit.revision;
+        setProfileRevision(profileEdit.revision);
+        // Acknowledging our save must not undo edits made while it was queued.
+        // The new revision triggers another save of the latest local state.
+        if (!profileEdit.ownSave) setProfiles(profileEdit.profiles);
+      }
       const edit = remoteSessionEdit({ workspaces: latest.current.workspaces, panes: savedPanes(latest.current.panes) }, remote, { tag: saveTag.current, seq: saveSeq.current });
       if (!edit) return;
       const known = normalizeWorkspaces(edit.workspaces);
@@ -2157,7 +2170,7 @@ export function App() {
   const workFocusOwner=mainView.kind==='assistant'?assistantIdentityKey(mainView.assistant):'';
   const [chatFocus,setChatFocus]=useState<{key:string;nonce:number;origin?:'chat'|'work'}|null>(null);
   useEffect(()=>{setWorkFocus(null);setChatFocus(null);setWorkDetailOrigin('work');setAssistantBrowser('closed');},[workFocusOwner]);
-  const assistantProjectName=(project:ProjectRef)=>workspaces.find(workspace=>workspace.id===project.workspaceId)?.name??project.cwd.split('/').filter(Boolean).at(-1)??project.cwd;
+  const assistantProjectName=(project:ProjectRef)=>workspaces.find(workspace=>workspace.id===project.workspaceId)?.name??pathBase(project.cwd);
   /** Work opens delegated tasks in their project card and personal tasks in Chat's task details. */
   const openWorkItem=(item:WorkItem,origin:'chat'|'work'='work')=>{setWorkDetailOrigin(origin);if(item.source==='delegated'&&item.project){setWorkFocus({project:item.project,taskId:item.taskId,nonce:Date.now()});navigateAssistant('projects');return;}const owner=selectedAssistant?.assistant;if(owner)setChatFocus({key:personalTaskKey(owner.hostId,item.taskId,selectedAssistant?.ref?.assistantId),nonce:Date.now(),origin});navigateAssistant('chat');};
   const navigateAssistant = (section:AssistantSection) => {setMainView(before=>assistantNavigation({mainView:before},{kind:'section',section}).mainView);};
@@ -3040,7 +3053,7 @@ export function App() {
                 setPanes(list=>[...list,{id:threadId,workspaceId:workspace.id,kind:'chat',assistantDraftFor:selectedAssistant.ref,title:`${profile.display_name} · ${selectedAssistant.name}`,started:true,participants:[profile],options:settings.newThread}]);
                 return threadId;
               }}
-              projects={assignedProjects.map(binding=>({project:binding.project,name:workspaces.find(workspace=>workspace.id===binding.project.workspaceId)?.name??binding.project.cwd.split('/').at(-1)??'Project',unavailable:projectUnavailable(binding.project)}))}
+              projects={assignedProjects.map(binding=>({project:binding.project,name:workspaces.find(workspace=>workspace.id===binding.project.workspaceId)?.name??(pathBase(binding.project.cwd)||'Project'),unavailable:projectUnavailable(binding.project)}))}
               availableProjects={assignmentWorkspaces.flatMap(workspace=>{const project=canonicalProjectForWorkspace(workspace);return project?[{project,name:workspace.name}]:[];})}
               unavailableProjects={assignmentWorkspaces.filter(workspace=>!canonicalProjectForWorkspace(workspace)).map(workspace=>({id:workspace.id,name:workspace.name,path:workspace.path,problem:authenticatedProjectHost(workspaceHost(workspace))!==assignmentHostId?'Reconnect this project’s owning machine.':assistantProjectDiscoveryProblems[projectAliasKey(workspace,assignmentHostId!)]??'Verifying this folder with its owning machine…'}))}
               taskScopes={Object.values(currentAssistantRegistry.owners).flatMap(entry=>entry.snapshot?.project&&assignedProjects.some(binding=>binding.project.hostId===entry.snapshot?.project?.hostId&&binding.project.workspaceId===entry.snapshot?.project?.workspaceId&&binding.project.cwd===entry.snapshot?.project?.cwd)?[{project:entry.snapshot.project,owner:entry.owner,snapshot:entry.snapshot}]:[])}
@@ -3142,7 +3155,7 @@ export function App() {
               plan: () => { const feed = focusedPane ? planFeeds[focusedPane] : undefined; return feed?.runs.length
                 ? <PlanTab key={focusedPane} runs={feed.runs} want={planWant?.pane === focusedPane ? planWant : null} onDecide={feed.decide} onStop={feed.stop} onClose={closeDetails} expanded={sidePanelFull} onExpand={() => setSidePanelFull(!sidePanelFull)} />
                 : <p className="muted right-panel-empty">No plan in this thread yet.</p>; },
-              phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
+              ...(isWindows ? {} : { phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} /> }),
               terminal: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;

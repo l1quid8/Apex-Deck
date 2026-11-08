@@ -10,6 +10,7 @@ use std::sync::Arc;
 use apex_host::lock::DataLock;
 use apex_host::HostPaths;
 use serde_json::json;
+use futures::{SinkExt,StreamExt};
 use tokio::net::TcpListener;
 
 use crate::cli::ServeOptions;
@@ -80,10 +81,10 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
         eprintln!("apex-daemon: Linux device access is unavailable: {why}");
     }
 
-    let listener = TcpListener::bind((options.bind, options.port)).await.map_err(|e| format!("could not listen on {}:{}: {e}", options.bind, options.port))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let remote = start_remote(&daemon, &paths.data, &options).await?;
-    let gateway = crate::gateway_admin::start(&daemon, options.gateway_port, options.gateway_bind).await?;
+    let listener = if options.local_only { None } else { Some(TcpListener::bind((options.bind, options.port)).await.map_err(|e| format!("could not listen on {}:{}: {e}", options.bind, options.port))?) };
+    let port = listener.as_ref().map(|l| l.local_addr().map(|a| a.port())).transpose().map_err(|e|e.to_string())?;
+    let remote = if options.local_only { serde_json::Value::Null } else { start_remote(&daemon, &paths.data, &options).await? };
+    let gateway = if options.local_only { json!({"enabled":false}) } else { crate::gateway_admin::start(&daemon, options.gateway_port, options.gateway_bind).await? };
     // Holding the lock means no live daemon is using a socket left here.
     #[cfg(unix)]
     let _ = std::fs::remove_file(&socket);
@@ -94,14 +95,19 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
         }
         format!("could not listen on {}: {e}", socket.display())
     })?;
+    let control_path=socket.with_file_name("ctl.sock");
+    let mut control=if options.local_only {
+        #[cfg(unix)] let _=std::fs::remove_file(&control_path);
+        Some(ipc::listen(&control_path).map_err(|e|format!("Cannot listen on backend control: {e}"))?)
+    } else {None};
     // Written last: once it exists, the daemon is ready.
     let info = json!({
         "pid": std::process::id(), "port": port, "bind": options.bind.to_string(), "socket": socket.to_string_lossy(),
-        "protocol": PROTOCOL, "host_id": daemon.host_id, "boot_id": daemon.boot_id, "remote": remote, "gateway": gateway,
+        "protocol": PROTOCOL, "host_id": daemon.host_id, "boot_id": daemon.boot_id, "remote": remote, "gateway": gateway, "localOnly":options.local_only,
     });
     let info_path = paths.data.join("daemon.json");
     files::write_private(&info_path, &info.to_string())?;
-    eprintln!("apex-daemon: listening on ws://{}:{port} and {}", options.bind, socket.display());
+    eprintln!("apex-daemon: listening on {} (network port: {port:?})", socket.display());
     if !remote.is_null() {
         eprintln!("apex-daemon: remote access on as endpoint {} (UDP port {})", remote["endpoint_id"].as_str().unwrap_or_default(), remote["port"]);
     }
@@ -112,7 +118,24 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     loop {
         tokio::select! {
             _ = &mut stop => break,
-            accepted = listener.accept() => match accepted {
+            accepted=async {match &mut control {Some(listener)=>listener.accept().await,None=>std::future::pending().await}}=>{
+                if let Ok(stream)=accepted {
+                    let (r,w)=ipc::split(stream);let(mut input,mut output)=protocol::lines(r,w);
+                    if let Ok(Some(Ok(line)))=tokio::time::timeout(std::time::Duration::from_secs(2),input.next()).await {
+                        let value:serde_json::Value=serde_json::from_str(&line).unwrap_or_default();
+                        let data=paths.data.clone();let boot=daemon.boot_id.clone();
+                        let verified=tokio::task::spawn_blocking(move || -> Result<(),String>{
+                            if value["op"]!="stop" {return Err("Unknown backend control operation".into());}
+                            let signed:apex_provenance::Signed=serde_json::from_value(value["receipt"].clone()).map_err(|_|"Stopping requires an installed CLI provenance receipt")?;
+                            let receipt=apex_provenance::io::consume(&signed,&data)?;
+                            if receipt.command["cmd"]!="backend_stop" || receipt.command["args"]["bootId"]!=boot {return Err("Stop receipt does not match this backend boot".into());}
+                            Ok(())
+                        }).await.map_err(|e|e.to_string()).and_then(|v|v);
+                        match verified {Ok(())=>{let _=output.send(json!({"ok":true}).to_string()).await;break;},Err(error)=>{let _=output.send(json!({"err":error}).to_string()).await;}}
+                    }
+                }
+            },
+            accepted = async { match &listener { Some(l) => l.accept().await, None => std::future::pending().await } } => match accepted {
                 Ok((stream, _)) => { tokio::spawn(websocket::serve(Arc::clone(&daemon), stream)); }
                 Err(e) => accept_failed("a WebSocket connection", e).await,
             },
@@ -124,9 +147,11 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     }
     eprintln!("apex-daemon: stopping");
     crate::gateway_admin::stop(&daemon).await;
-    drop((listener, local));
+    drop((listener, local, control));
     #[cfg(unix)]
     let _ = std::fs::remove_file(&socket);
+    #[cfg(unix)]
+    if options.local_only {let _=std::fs::remove_file(&control_path);}
     let _ = std::fs::remove_file(&info_path);
     daemon.host.wind_down(signals::WIND_DOWN).await;
     Ok(())

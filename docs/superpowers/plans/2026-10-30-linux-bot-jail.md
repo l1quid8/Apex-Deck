@@ -125,7 +125,7 @@
 **Files:** Create `crates/apex-host/src/folder_trust.rs`, `crates/apex-host/src/project_process.rs`. Modify `project_check.rs`, `runner/checks.rs`, `bot_copies.rs`, `git_changes.rs`, the desktop and phone card.
 
 - [ ] Complete the design's Lower-writable and Alternate paths regression tests. Existing source scans do not prove confinement; see Null's 2026-11-03 review.
-- [ ] Complete implementation. The current project-process wrappers do not jail tainted operations, and folder acceptance can authorize a parent of the accepted folder.
+- [x] Complete implementation: opaque project-command wrappers enforce jail-or-refuse at execution; acceptance covers only the selected folder and descendants. See the 2026-11-07 integration review for the Linux Git-index correction and remaining validation matrix.
 - [x] Commit (`3975b88d`).
 
 ### Task 9: Snapshot isolation
@@ -143,16 +143,16 @@
 
 **Files:** Create `crates/apex-daemon/src/trust_host.rs`. Modify `devices.rs`, `crates/apex-daemon/src/cli.rs`, `src/phone/sshRun.ts`, `src/phone/RemoteSsh.tsx`, Settings on Mac and phone.
 
-- [ ] Complete the design's Host trust regression tests, including shutdown, existing device sessions, and unchanged-boot refusal.
-- [ ] Complete implementation. Partial work committed (`7624f150`, UI `6a97ab4f`); Null's review found shutdown and reboot-gate defects.
+- [x] Complete the design's Host trust regression tests, including shutdown, existing device sessions, and unchanged-boot refusal. Unit, live-iroh and scoped subprocess coverage is recorded in the integration review.
+- [x] Complete implementation: scoped waited daemon shutdown, live-session epoch invalidation and a durable pending reboot baseline close the reviewed defects.
 
 ### Task 11: `access_effect` and device rules
 
 **Files:** Modify `crates/apex-daemon/src/authority.rs`, `call_from_device`, `Command`, phone settings screens.
 
 - [ ] Complete behavioral proof for every "must be proven" row; classification assertions alone do not exercise real device mutations.
-- [ ] Complete the real-device-route whole-class regression: a limited device runs every command with `"access":"full"` fixtures and no level rises.
-- [ ] Complete the five atomic daemon checks and native phone Face ID guard. The exhaustive classification exists, but the required old-level/folder bindings and phone guard are incomplete.
+- [x] Complete the real-device-route whole-class regression: a limited device runs every command with `"access":"full"` fixtures and no level rises. This uses the real protocol route with a test Linux policy, not physical-device acceptance.
+- [x] Complete the five atomic daemon checks and native phone Face ID guard. Bound old-level/folder checks run under the room lock; the native biometric transport boundary is verified in the isolated simulator harness. Fully paired-phone acceptance remains in Task 12.
 - [x] Commit (`02258231`); step 3 sent to Null: pending review.
 
 ## Step 4 and 5: proof and release

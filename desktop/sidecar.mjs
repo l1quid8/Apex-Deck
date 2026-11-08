@@ -9,10 +9,11 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 
 /** `APEX_DAEMON_BIN`, else the copy bundled with the app, else the dev build. */
-export function daemonBinary({ packaged, resourcesPath, repo, env }) {
+export function daemonBinary({ packaged, resourcesPath, repo, env, platform = process.platform }) {
   if (env.APEX_DAEMON_BIN) return env.APEX_DAEMON_BIN;
-  if (packaged) return path.join(resourcesPath, 'bin', 'apex-daemon');
-  return path.join(repo, 'target', 'debug', 'apex-daemon');
+  const name = platform === 'win32' ? 'apex-daemon.exe' : 'apex-daemon';
+  if (packaged) return path.join(resourcesPath, 'bin', name);
+  return path.join(repo, 'target', 'debug', name);
 }
 
 const withDataDir = (args, dataDir) => (dataDir ? [...args, '--data-dir', dataDir] : args);
@@ -31,17 +32,28 @@ export function developmentDataDir(repo, env = process.env, home = os.homedir())
 export const developmentHostDataDir = (dataDir) => `${dataDir}-checkout-host`;
 
 /**
- * `serve` that stops when the app does; `--remote` when Remote access is on,
+ * Shared `serve` survives desktop exit; `--remote` when Remote access is on,
  * so paired phones can reach it from anywhere; a data folder only when one is set.
  */
 export const serveArgs = (dataDir, { remote = false } = {}) =>
-  withDataDir(['serve', '--exit-on-stdin-close', ...(remote ? ['--remote'] : [])], dataDir);
+  withDataDir(['serve', ...(remote ? ['--remote'] : [])], dataDir);
 export const dataDirArgs = (dataDir) => withDataDir(['data-dir'], dataDir);
+export const endpointArgs = (dataDir) => withDataDir(['endpoint'], dataDir);
 
 /** The folder the daemon would use. */
 export function dataFolder(bin, dataDir) {
   return new Promise((resolve, reject) => {
-    execFile(bin, dataDirArgs(dataDir), (error, stdout, stderr) => {
+    execFile(bin, dataDirArgs(dataDir), { windowsHide: true }, (error, stdout, stderr) => {
+      if (error) reject(new Error(error.code === 'ENOENT' ? `There is no apex-daemon at ${bin}.` : (stderr.trim() || error.message)));
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+/** The connection address (`apex-daemon endpoint`): the UNIX socket path or Windows named pipe. */
+export function daemonEndpoint(bin, dataDir) {
+  return new Promise((resolve, reject) => {
+    execFile(bin, endpointArgs(dataDir), { windowsHide: true }, (error, stdout, stderr) => {
       if (error) reject(new Error(error.code === 'ENOENT' ? `There is no apex-daemon at ${bin}.` : (stderr.trim() || error.message)));
       else resolve(stdout.trim());
     });
@@ -74,30 +86,39 @@ export async function waitForSocket(socket, { wanted = true, timeout = 15_000 } 
 
 /**
  * A daemon on this Mac's data folder: the one already running there (left
- * running when the app quits), or a `serve` started now that ends with the
- * app. Rejects with the daemon's own words when it won't start.
+ * running when the app quits), or a persistent `serve` started now. CLI clients
+ * share its rooms, so closing the desktop must not interrupt it.
+ * Rejects with the daemon's own words when it won't start.
  */
 export async function localDaemon({ bin, dataDir, remote = false, log = () => {} }) {
-  const folder = await dataFolder(bin, dataDir);
-  const socket = path.join(folder, 'daemon.sock');
+  const socket = await daemonEndpoint(bin, dataDir);
   if (await answers(socket)) return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
 
-  const child = spawn(bin, serveArgs(dataDir, { remote }), { stdio: ['pipe', 'ignore', 'pipe'] });
-  let stderr = '';
+  // A detached service cannot keep Electron's pipes open or receive SIGHUP
+  // when the desktop exits. Keep diagnostics available without owning its life.
+  const folder = await dataFolder(bin, dataDir);
+  const logPath = path.join(folder, 'desktop-daemon.log');
+  fs.mkdirSync(folder, { recursive: true });
+  const logFd = fs.openSync(logPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+  let child;
+  try {
+    child = spawn(bin, serveArgs(dataDir, { remote }), { detached: true, stdio: ['ignore', 'ignore', logFd], windowsHide: true });
+  } finally { fs.closeSync(logFd); }
+  child.unref();
   let exited = null;
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (text) => {
-    stderr = (stderr + text).slice(-4096);
-    log(text);
-  });
-  const gone = new Promise((resolve) => child.once('exit', (code, signal) => { exited = { code, signal }; resolve(); }));
-  child.once('error', (e) => { exited ??= { code: null, signal: null }; stderr ||= e.message; });
-  // A write to a daemon that has left must not take the app down.
-  child.stdin.on('error', () => {});
+  let spawnError = '';
+  child.once('exit', (code, signal) => { exited = { code, signal }; });
+  child.once('error', (error) => { exited ??= { code: null, signal: null }; spawnError = error.message; });
 
   const started = Date.now();
   for (;;) {
     if (exited) {
+      // CLI or another desktop may have won the startup lock after our probe.
+      if (!spawnError && await waitForSocket(socket, { timeout: Math.max(0, 15_000 - (Date.now() - started)) })) {
+        return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
+      }
+      const stderr = spawnError || fs.readFileSync(logPath, 'utf8').slice(-4096);
+      log(stderr);
       const words = stderr.trim().split('\n').filter(Boolean).at(-1)?.replace(/^apex-daemon: /, '');
       throw new Error(words || `apex-daemon stopped as it started (${exited.code ?? exited.signal}).`);
     }
@@ -113,13 +134,7 @@ export async function localDaemon({ bin, dataDir, remote = false, log = () => {}
     owned: true,
     child,
     alive: () => exited === null,
-    /** Close its stdin and give it 15 s to wind down, then kill it. */
-    stop: async () => {
-      if (exited) return;
-      child.stdin.end();
-      const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
-      await gone;
-      clearTimeout(timer);
-    },
+    /** The daemon belongs to all connected clients, even if we started it. */
+    stop: async () => {},
   };
 }

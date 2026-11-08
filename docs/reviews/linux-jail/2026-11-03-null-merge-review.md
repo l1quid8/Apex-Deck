@@ -310,3 +310,87 @@ Fresh combined verification on this branch:
 worktree's `7dc89342` base. The final combined review, reconciliation against
 current main, post-integration checks, commit and merge are still required.
 These passes must not be presented as validation of the newer main tree.
+
+## Current-main integration review, 2026-11-07
+
+Committed the scoped security changes as `59598e4f`, excluding the local
+`node_modules` symlink. Integrated main `5bd8772b` on the task branch without
+textual conflicts. The shared main checkout's untracked mockups remain intact.
+The integration review is a Null self-review, not another model's sign-off.
+
+The review and fresh combined checks identified these additional corrections:
+
+- Two new handoff recovery calls and one new test on main needed the protected
+  data-folder argument added to `WorkerTools::real`. The initial macOS/Linux
+  builds failed with E0061; those callers now pass the host's data folder.
+- Main added `AgentProfileSave` to the raising-command classification. The
+  phone wire-boundary drift regression failed because it was not authenticated.
+  Added `agent_profile_save` to the same native biometric guard. Focused phone
+  transport tests passed all 35 tests; the full frontend rerun passed 3,460,
+  with five skipped and zero failures. Logs:
+  `/tmp/apex-ssh-current-main-phone.log` and
+  `/tmp/apex-ssh-current-main-frontend-final.log`.
+- A forged `old_level: full` classified a local Read-to-Full mutation as a
+  non-raise, bypassing the Linux paired-device gate. A real protocol regression
+  reproduced a successful saved raise. Local/token participant updates now
+  retain their conservative refusal; only the device mutation route can use
+  the downgrade exemption, with saved-level validation under its room lock.
+  The unchanged regression passed after correction. Red/green logs:
+  `/tmp/apex-ssh-forged-old-red.log` and
+  `/tmp/apex-ssh-forged-old-green.log`.
+- Linux Git menu snapshots kept their index in private `/tmp`, so each jailed
+  invocation lost the previous command's index. A real jailed regression
+  reproduced an empty tree and false deletions instead of a modified file.
+  Keep that private index in the repository's actual Git directory, preserving
+  the real staging index and respecting linked worktrees. Red log:
+  `/tmp/apex-ssh-linux-index-red.log`; post-fix verification is pending below.
+
+Fresh `npx tsc --noEmit` and `git diff --check` passed. The current-main Linux
+kernel suite reported 32 passes (arm64 privileged Docker); signed-in provider
+tests were not enabled. Log: `/tmp/apex-ssh-current-main-linux.log`.
+Combined Rust suites, fresh trust-reset integration, post-fix Linux Git-menu
+verification and the final integration commit remain pending at this checkpoint.
+No merge to main, installer or release is claimed by this checkpoint.
+
+### Integration verification results
+
+- Combined current-main Cargo library run passed: core 113; adapters 475
+  with three ignored; daemon (remote enabled) 283 with four ignored; host
+  1,158 with 14 ignored. Zero failures. This run compiled before the final
+  private-index correction, whose focused Linux checks are recorded next.
+  Command: `TMPDIR=/tmp CARGO_BUILD_JOBS=1 cargo test --locked -p apex-core
+  -p apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote
+  --lib -- --test-threads=2`.
+  Log: `/tmp/apex-ssh-current-main-rust-final.log`.
+- Fresh subprocess trust-reset integration passed one test.
+  Command: `TMPDIR=/tmp CARGO_BUILD_JOBS=1 cargo test --locked -p apex-daemon
+  --features remote --test trust_reset -- --test-threads=1`.
+  Log: `/tmp/apex-ssh-current-main-trust-reset.log`.
+- `cargo check --locked -p apex-daemon --features remote` passed natively
+  and in Ubuntu arm64 Docker (one build job). Logs:
+  `/tmp/apex-ssh-current-main-check.log` and
+  `/tmp/apex-ssh-current-main-linux-remote-check.log`.
+- Rebuilt Linux host tests after the private-index correction and ran them
+  in the privileged jail image with `APEX_JAIL_INIT=/tmp/apex-daemon`.
+  Git-menu regression: one passed; project-process regressions: five passed;
+  protected-data marker project check: one passed. The unchanged Git-menu
+  regression now sees `+changed`, and the real staging index stays identical.
+  Log: `/tmp/apex-ssh-linux-index-green.log`; build log:
+  `/tmp/apex-ssh-current-main-linux-host-build-final.log`.
+  The source scanner cannot inspect source in the runtime image; its real
+  source scan is covered by the native host suite.
+
+Validation limits remain: privileged arm64 Docker is not an AppArmor-enabled
+Ubuntu VM, x86_64/x32, Windows CI, Git-version matrix, or signed-in provider
+acceptance. Native biometric acceptance above used a counting transport,
+not a fully paired settings UI or a physical iPhone. No installer was built,
+installed or released. The original plan's release/recipe gates remain open.
+
+The final native host rerun, rebuilt after the Git-index correction, passed
+1,158 tests with 14 ignored and zero failures (189.55 seconds):
+`TMPDIR=/tmp CARGO_BUILD_JOBS=1 cargo test --locked -p apex-host --lib
+-- --test-threads=2`. Log: `/tmp/apex-ssh-current-main-host-final.log`.
+A final production remote daemon check also passed, log:
+`/tmp/apex-ssh-post-review-check.log`. All six reviewed implementation findings
+are resolved at this scope; the earlier security implementation merge hold is
+lifted. The authorized local main merge is the next repository operation.
