@@ -13,6 +13,7 @@ export function assertLinuxHost(platform = process.platform, arch = process.arch
 }
 
 export const builderArgs = (arch = process.arch) => ['--linux', 'AppImage', `--${arch}`, '--publish', 'never'];
+export const artifactName = (version, arch = process.arch) => `Apex-Deck_${version}_${arch === 'x64' ? 'x86_64' : arch}.AppImage`;
 
 function main() {
   assertLinuxHost();
@@ -30,7 +31,7 @@ function main() {
     throw new Error('The checkout changed during packaging; do not use this AppImage.');
   }
   const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
-  const name = `Apex-Deck_${version}_${process.arch}.AppImage`;
+  const name = artifactName(version);
   const artifact = resolve('release', name);
   const hash = createHash('sha256').update(readFileSync(artifact)).digest('hex');
   writeFileSync(`${artifact}.sha256`, `${hash}  ${name}\n`);
