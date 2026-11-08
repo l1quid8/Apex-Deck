@@ -82,12 +82,15 @@ test('the keyboard reaches the bar and focus always lands somewhere', { timeout:
     assert.equal(await run(focused),'Resume');
     await press('Tab'); assert.equal(await run(focused),'Apply');
     await press('Tab'); assert.equal(await run(focused),'Discard');
-    await press('Space'); await sleep(120);
+    await press('Space');
+    await until("!document.querySelector('.appearance-draft-bar') && "+focused,'visible focus after Discard');
     assert.ok(await run(focused),'after Discard focus is visible');
     await undo();
+    await until(focused,'visible focus after Undo');
     assert.ok(await run(focused),'after Undo focus is visible');
     await run(${JSON.stringify("document.querySelectorAll('.appearance-draft-bar button')[1].focus()")});
-    await press('Space'); await sleep(120);
+    await press('Space');
+    await until("!document.querySelector('.appearance-draft-bar') && "+focused,'visible focus after Apply');
     assert.ok(await run(focused),'after Apply focus is visible');
   `, { timeoutMs: 90000 });
 });
