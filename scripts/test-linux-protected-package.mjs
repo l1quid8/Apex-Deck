@@ -31,6 +31,12 @@ try {
     // This is a disposable CI runner. No registration, authority state,
     // active descriptor or systemd service is created by this test.
     execFileSync('sudo', ['install', '-d', '-m', '0755', '/opt/apex-deck', staging]);
+    execFileSync('sudo', ['namei', '-l', '/opt/apex-deck', staging], { stdio: 'inherit' });
+    // Hosted runners may make /opt writable to the runner for tool caching.
+    // Establish the production precondition on this disposable runner; never
+    // weaken the verifier to accept writable installation ancestors.
+    execFileSync('sudo', ['chown', 'root:root', '/opt']);
+    execFileSync('sudo', ['chmod', 'go-w', '/opt']);
     for (const suffix of ['.manifest.json', '.sig', '.tar']) execFileSync('sudo', ['install', '-m', '0644', `${prefix}${suffix}`, `${staging}/release${suffix}`]);
     let tree;
     try {

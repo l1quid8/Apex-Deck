@@ -242,10 +242,7 @@ pub fn protected_path(path: &std::path::Path) -> Result<(), String> {
     for part in path.ancestors() {
         let meta = std::fs::symlink_metadata(part).map_err(|e| e.to_string())?;
         if meta.file_type().is_symlink() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
-            return Err(
-                "Protected path requires root ownership without symlinks or writable ancestors"
-                    .into(),
-            );
+            return Err(format!("Protected path requires root ownership without symlinks or writable ancestors: {} (uid {}, mode {:o})", part.display(), meta.uid(), meta.mode() & 0o7777));
         }
     }
     Ok(())
@@ -262,7 +259,9 @@ pub fn stage_release(
     if unsafe { libc::geteuid() } != 0 {
         return Err("Staging requires explicit administrator installation".into());
     }
-    if !cfg!(target_os = "linux") { return Err("Protected Linux staging requires a native Linux host".into()); }
+    if !cfg!(target_os = "linux") {
+        return Err("Protected Linux staging requires a native Linux host".into());
+    }
     for path in [manifest_path, signature_path, archive_path] {
         protected_path(path)?;
     }

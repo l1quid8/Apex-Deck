@@ -6,6 +6,8 @@ pub mod broker;
 pub mod io;
 #[cfg(unix)]
 pub mod linux_install;
+#[cfg(any(target_os = "linux", all(unix, test)))]
+pub mod linux;
 #[cfg(unix)]
 pub mod update;
 #[cfg(windows)]
