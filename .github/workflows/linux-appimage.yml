@@ -1,0 +1,60 @@
+name: linux-appimage
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/linux-appimage]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: node --test tests/package-linux.test.mjs
+      - name: Build the AppImage with the production Linux daemon
+        run: npm run desktop:linux
+      - name: Inspect the portable payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum --check *.AppImage.sha256
+          chmod +x *.AppImage
+          ./*.AppImage --appimage-extract >/dev/null
+          test -s squashfs-root/resources/app.asar
+          test -x squashfs-root/resources/bin/apex-daemon
+          file squashfs-root/apex-deck squashfs-root/resources/bin/apex-daemon
+          squashfs-root/resources/bin/apex-daemon --version
+          test ! -e 'squashfs-root/resources/Unified Computer Use.app'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Apex-Deck-AppImage-linux-${{ matrix.arch }}
+          path: |
+            release/*.AppImage
+            release/*.AppImage.sha256
+            release/*.AppImage.json
+          if-no-files-found: error
+          retention-days: 30

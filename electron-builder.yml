@@ -31,8 +31,6 @@ files:
 # Copied into the app's resources on every platform. The service binary is not
 # here because its file name differs per platform: see `mac:` and `win:` below.
 extraResources:
-  - from: build/unified-computer-use/Unified Computer Use.app
-    to: Unified Computer Use.app
   - from: voice-sidecar
     to: voice-sidecar
     filter: ["**/*", "!**/__pycache__/**", "!tests/**", "!.venv/**"]
@@ -52,6 +50,8 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extraResources:
+    - from: build/unified-computer-use/Unified Computer Use.app
+      to: Unified Computer Use.app
     - from: target/release/apex-daemon
       to: bin/apex-daemon
     - from: target/release/apex-provenance
@@ -81,6 +81,18 @@ win:
       to: bin/apex-daemon.exe
     - from: target/release/apex-provenance.exe
       to: bin/apex-provenance.exe
+linux:
+  executableName: apex-deck
+  icon: build/icons/icon.png
+  category: Development
+  target: AppImage
+  artifactName: Apex-Deck_${version}_${arch}.${ext}
+  extraResources:
+    - from: target/release/apex-daemon
+      to: bin/apex-daemon
+appImage:
+  # Keep Chromium sandboxing enabled; do not ship the builder's legacy default.
+  executableArgs: []
 nsis:
   # A real installer window, not a silent one-click drop into AppData: the
   # Human picks the folder and can find the app afterwards.
