@@ -330,13 +330,19 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn socket_child_fixture() {
-        use std::{io::Write, os::unix::net::UnixStream};
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+        };
         let Some(path) = std::env::var_os("APEX_TEST_PEER_SOCKET") else {
             return;
         };
         let mut stream = UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
         stream.write_all(b"{}\n").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        stream.read_exact(&mut [0u8; 1]).unwrap();
     }
     #[test]
     #[cfg(target_os = "linux")]
@@ -356,6 +362,7 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         let peer = KernelPeer::capture(&stream).unwrap();
         assert_ne!(peer.identity().0, std::process::id() as i32);
+        std::io::Write::write_all(&mut &stream, b"x").unwrap();
         assert!(child.wait().unwrap().success());
         let error = peer.validate().unwrap_err();
         std::fs::remove_file(&path).unwrap();

@@ -6,6 +6,8 @@ pub mod broker;
 pub mod io;
 #[cfg(unix)]
 pub mod linux_install;
+#[cfg(any(target_os="linux",all(unix,test)))]
+pub mod linux_registration;
 #[cfg(any(target_os = "linux", all(unix, test)))]
 pub mod linux;
 #[cfg(unix)]
@@ -64,6 +66,8 @@ pub struct Receipt {
     // renewal after expiry cannot revive an older signed receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_epoch: Option<u64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,6 +155,26 @@ pub struct ProtectedDocument {
     pub value: Value,
 }
 impl Journal {
+    /// Linux dispatcher entry point; installation epochs are independent of
+    /// journal compaction generations. Mac/Windows keep the existing methods.
+    pub fn issue_at_epoch(&mut self, uid:u32, data_dir:&str, command:Value, trusted:bool, epoch:u64) -> Result<Receipt,String> {
+        if epoch==0 {return Err("Invalid Linux installation epoch".into());}
+        let id=command_key(uid,data_dir,&command)?;
+        if self.entries.get(&id).is_some_and(|entry|entry.receipt.installation_epoch!=Some(epoch)) {
+            return Err("Submission belongs to another installation epoch; create a fresh UI intent".into());
+        }
+        let mut receipt=self.issue(uid,data_dir,command,trusted)?;
+        if receipt.installation_epoch!=Some(epoch) {
+            self.touch_entry(&id);
+            receipt.installation_epoch=Some(epoch);
+            self.entries.get_mut(&id).ok_or("Missing epoch issuance entry")?.receipt=receipt.clone();
+        }
+        Ok(receipt)
+    }
+    pub fn claim_at_epoch(&mut self,uid:u32,data_dir:&str,receipt:&Receipt,nonce:&str,epoch:u64)->Result<Value,String> {
+        if epoch==0 || receipt.installation_epoch!=Some(epoch) {return Err("Receipt installation epoch is stale or absent".into());}
+        self.claim(uid,data_dir,receipt,nonce)
+    }
     pub fn new() -> Self {
         Self {
             version: 1,
@@ -583,6 +607,7 @@ impl Journal {
             command,
             key: key.clone(),
             issuance_id: Some(B64.encode(token)),
+            installation_epoch: None,
         };
         self.touch_entry(&key);
         self.entries.insert(
