@@ -1,0 +1,221 @@
+{
+  "verifiedAt": "2026-11-08T07:12:32.806Z",
+  "url": "http://127.0.0.1:8767/",
+  "browser": "Chromium headless via playwright-core",
+  "screenshots": [
+    {
+      "name": "1440x900",
+      "file": "screenshots/1440x900.png"
+    },
+    {
+      "name": "1100x700",
+      "file": "screenshots/1100x700.png"
+    },
+    {
+      "name": "800x600",
+      "file": "screenshots/800x600.png"
+    },
+    {
+      "name": "390x844",
+      "file": "screenshots/390x844.png"
+    },
+    {
+      "name": "1600x440",
+      "file": "screenshots/wide-shallow.png"
+    }
+  ],
+  "checks": [
+    {
+      "name": "snapshot identity and 14/4 counts",
+      "status": "passed",
+      "details": {
+        "threadIds": [
+          "pane-mv5vv0fh-0",
+          "pane-mw7h99uz-0",
+          "pane-mvyq6vew-0",
+          "pane-mw4i8x2s-0",
+          "pane-mw33zwrj-0",
+          "pane-mw3d992a-0",
+          "pane-mv8099yy-3",
+          "pane-mvby6u96-2",
+          "pane-mvfn2enl-1",
+          "pane-mvoc54c2-0",
+          "pane-mvoutowg-e",
+          "pane-mw28ua5r-0",
+          "pane-mw4rlbx6-1",
+          "pane-mvlkp17u-0"
+        ],
+        "titles": [
+          "t3 code",
+          "Multiple thread pane management",
+          "Delegate Refactor",
+          "Linux Desktop App",
+          "AI Agent Dungeon",
+          "Apex Deck CLI",
+          "Intelligent UI Fix",
+          "Real time stream",
+          "Local Chat Session IOS",
+          "Local Chat",
+          "MCP for ALL (fork)",
+          "Building Procedure",
+          "Agent Badge",
+          "Null · Apex Assistant"
+        ],
+        "historyCount": 14,
+        "openCount": 4,
+        "focusedId": "pane-mw7h99uz-0"
+      }
+    },
+    {
+      "name": "closed threads visibly distinguished as archived",
+      "status": "passed",
+      "details": {
+        "archivedCount": 10,
+        "visibleArchived": 10,
+        "archivedPanes": 10
+      }
+    },
+    {
+      "name": "draft remains attached to its thread through selection, modes, filter, dataset and layout",
+      "status": "passed",
+      "details": {
+        "selectedDuringFilteredDataset": "Multiple thread pane management",
+        "draftsRestored": [
+          "A",
+          "B"
+        ]
+      }
+    },
+    {
+      "name": "preview send is local-only and does not issue requests",
+      "status": "passed",
+      "details": {
+        "requestsBefore": 4,
+        "requestsAfter": 4,
+        "localPreviewFound": true
+      }
+    },
+    {
+      "name": "layout uses discrete columns and focus spans",
+      "status": "passed",
+      "details": {
+        "gridState": {
+          "columns": "379px 379px 379px",
+          "requested": "3",
+          "actual": "3"
+        },
+        "focusGridColumn": "span 2",
+        "oneColumnTracks": 1
+      }
+    },
+    {
+      "name": "Escape cancels drag without changing pane order",
+      "status": "passed",
+      "details": {
+        "orderPreserved": true,
+        "ghostRemoved": true
+      }
+    },
+    {
+      "name": "dropping outside the grid cancels the drag",
+      "status": "passed",
+      "details": {
+        "orderPreserved": true
+      }
+    },
+    {
+      "name": "keyboard movement reorders the pane and leaves focus in its controls",
+      "status": "passed",
+      "details": {
+        "movedId": "pane-mv5vv0fh-0",
+        "active": {
+          "tag": "BUTTON",
+          "aria": "Move t3 code"
+        }
+      }
+    },
+    {
+      "name": "pointer drag reorders panes when dropped on a valid target",
+      "status": "passed",
+      "details": {
+        "before": [
+          "pane-mv5vv0fh-0",
+          "pane-mw7h99uz-0",
+          "pane-mvyq6vew-0",
+          "pane-mw4i8x2s-0"
+        ],
+        "after": [
+          "pane-mw7h99uz-0",
+          "pane-mv5vv0fh-0",
+          "pane-mvyq6vew-0",
+          "pane-mw4i8x2s-0"
+        ]
+      }
+    },
+    {
+      "name": "responsive viewports have no horizontal page overflow",
+      "status": "passed",
+      "details": [
+        {
+          "name": "1440x900",
+          "innerWidth": 1440,
+          "clientWidth": 1440,
+          "scrollWidth": 1440,
+          "bodyScrollWidth": 1440
+        },
+        {
+          "name": "1100x700",
+          "innerWidth": 1100,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "bodyScrollWidth": 1100
+        },
+        {
+          "name": "800x600",
+          "innerWidth": 800,
+          "clientWidth": 800,
+          "scrollWidth": 800,
+          "bodyScrollWidth": 800
+        },
+        {
+          "name": "390x844",
+          "innerWidth": 390,
+          "clientWidth": 390,
+          "scrollWidth": 390,
+          "bodyScrollWidth": 390
+        },
+        {
+          "name": "wide-shallow",
+          "innerWidth": 1600,
+          "clientWidth": 1600,
+          "scrollWidth": 1600,
+          "bodyScrollWidth": 1600
+        }
+      ]
+    },
+    {
+      "name": "local static requests only; no page or console errors",
+      "status": "passed",
+      "details": {
+        "requestUrls": [
+          "http://127.0.0.1:8767/",
+          "http://127.0.0.1:8767/styles.css",
+          "http://127.0.0.1:8767/data.js",
+          "http://127.0.0.1:8767/app.js"
+        ],
+        "errors": []
+      }
+    }
+  ],
+  "networkRequests": [
+    "http://127.0.0.1:8767/",
+    "http://127.0.0.1:8767/styles.css",
+    "http://127.0.0.1:8767/data.js",
+    "http://127.0.0.1:8767/app.js"
+  ],
+  "runtimeErrors": [],
+  "summary": {
+    "passed": 11,
+    "failed": 0
+  }
+}

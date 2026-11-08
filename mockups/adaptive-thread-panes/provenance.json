@@ -1,0 +1,22 @@
+{
+  "capturedAt": "2026-11-08T07:06:50Z",
+  "source": "Local saved chats snapshot",
+  "workspace": "apex-deck",
+  "counts": {
+    "threads": 14,
+    "open": 4,
+    "closed": 10,
+    "members": 47,
+    "messages": 39
+  },
+  "extractionRules": [
+    "Current open order follows layouts[\":threads\"] leaf order, then remaining open panes.",
+    "The density study includes up to fourteen active-workspace chats; requested historic titles are prioritized and archived chats retain closed=true and open=false.",
+    "Each record contains only thread ID, title, workspace label, closed/open flags, participant IDs and display names, plus up to the last three nonempty human or assistant transcript excerpts.",
+    "Transcript excerpts are trimmed to 600 characters; excerpts matching credential, token, private-key, path, or tool-data patterns are omitted.",
+    "Backend configuration, personas, credentials, tool records, attachments, permissions, environment, filesystem paths, and composer drafts are excluded."
+  ],
+  "notes": [
+    "The source snapshot contained four open chats in the active workspace at capture time."
+  ]
+}

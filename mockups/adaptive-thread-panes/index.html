@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Threads · Apex Deck design study</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="data.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail" aria-label="Workspace navigation">
+        <a class="brand-mark" href="#workspace" aria-label="Apex Deck workspace">
+          <span class="brand-glyph" aria-hidden="true">A</span>
+          <span class="brand-name">Apex Deck</span>
+        </a>
+
+        <div class="rail-workspace">
+          <span class="workspace-avatar" aria-hidden="true">A</span>
+          <span class="workspace-copy"><strong>Personal</strong><small>Workspace</small></span>
+          <span class="chevron" aria-hidden="true">⌄</span>
+        </div>
+
+        <nav class="primary-nav" aria-label="Main navigation">
+          <span class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>Agents</span>
+          <span class="nav-item"><span class="nav-icon" aria-hidden="true">⌘</span>Code</span>
+          <span class="nav-item is-current" aria-current="page"><span class="nav-icon" aria-hidden="true">▤</span>Threads</span>
+          <span class="nav-item"><span class="nav-icon" aria-hidden="true">▧</span>Library</span>
+        </nav>
+
+        <div class="rail-divider"></div>
+        <div class="rail-section-heading"><span>THREADS</span></div>
+        <div class="thread-list" id="thread-list" aria-label="Threads"></div>
+        <div class="rail-bottom">
+          <div class="user-avatar" aria-hidden="true">A</div>
+          <div class="user-copy"><strong>Workspace</strong><small>Local preview</small></div>
+        </div>
+      </aside>
+
+      <main class="workspace" id="workspace">
+        <header class="topbar">
+          <div class="breadcrumbs"><span class="breadcrumb-muted">Personal</span><span class="crumb-slash">/</span><span class="breadcrumb-current">Threads</span><span class="study-badge">DESIGN STUDY</span></div>
+          <div class="topbar-right"><span class="snapshot-mark"><i></i> Local snapshot</span></div>
+        </header>
+
+        <section class="page-heading" aria-labelledby="page-title">
+          <div class="heading-copy">
+            <div class="eyebrow"><span class="eyebrow-line"></span> CONVERSATION WORKSPACE</div>
+            <h1 id="page-title">Threads <span class="heading-count" id="workspace-count">—</span></h1>
+            <p>Keep the conversations that matter in view.</p>
+          </div>
+          <div class="heading-meta"><span class="snapshot-caption">Snapshot captured</span><time id="snapshot-label">Design-only preview</time></div>
+        </section>
+
+        <section class="toolbar" aria-label="Thread view controls">
+          <div class="toolbar-controls">
+            <label class="select-control dataset-control"><span class="sr-only">Thread dataset</span><span class="control-icon" aria-hidden="true">▦</span>
+              <select id="dataset"><option value="history" selected>History study</option><option value="open">Open chats</option></select><span class="select-caret" aria-hidden="true">⌄</span>
+            </label>
+            <div class="toolbar-divider"></div>
+            <label class="select-control layout-control"><span class="sr-only">Pane layout</span><span class="control-icon layout-icon" aria-hidden="true">▦</span>
+              <select id="layout-mode"><option value="focus" selected>Focus</option><option value="grid">Grid</option></select><span class="select-caret" aria-hidden="true">⌄</span>
+            </label>
+            <label class="select-control columns-control"><span class="sr-only">Maximum columns</span>
+              <select id="columns" aria-label="Maximum columns"><option value="1">1 column</option><option value="2">2 columns</option><option value="3">3 columns</option><option value="4" selected>4 columns</option></select><span class="select-caret" aria-hidden="true">⌄</span>
+            </label>
+            <div class="toolbar-divider mode-divider"></div>
+            <label class="select-control composer-control"><span class="control-icon" aria-hidden="true">↗</span>
+              <select id="composer-mode" aria-label="Composer mode"><option value="shared" selected>Shared composer</option><option value="per-pane">Per-pane composers</option></select><span class="select-caret" aria-hidden="true">⌄</span>
+            </label>
+            <button class="reset-button" id="reset" type="button">Reset study</button>
+          </div>
+          <label class="search-control"><span class="search-icon" aria-hidden="true"></span><span class="sr-only">Search threads</span><input id="search" type="search" placeholder="Search threads" autocomplete="off"></label>
+        </section>
+
+        <section class="thread-stage" aria-label="Conversation panes">
+          <div class="stage-label"><span>WORKSPACE</span><span class="stage-rule"></span><span class="stage-hint">Select a conversation to focus it</span></div>
+          <div class="pane-grid" id="pane-grid" aria-live="polite">
+            <div class="empty-stage"><span class="empty-orbit" aria-hidden="true">◌</span><strong>Preparing your threads</strong><span>Conversations from this local snapshot will appear here.</span></div>
+          </div>
+        </section>
+
+        <section class="composer-panel" id="shared-composer" aria-label="Shared composer">
+          <div class="composer-heading">
+            <div class="composer-label"><span class="composer-glyph" aria-hidden="true">↗</span><span>SHARED COMPOSER</span><span class="composer-lock" aria-hidden="true">⌑</span></div>
+            <div class="composer-destination" id="destination">To: Select a thread</div>
+            <span class="composer-mode-note">Destination stays with your selection</span>
+          </div>
+          <div class="composer-entry">
+            <label class="sr-only" for="shared-draft">Write a draft</label>
+            <textarea id="shared-draft" rows="2" placeholder="Write a draft for this thread…"></textarea>
+            <div class="composer-actions"><span class="draft-saved"><i></i> Draft stays on this device</span><button class="preview-button" id="preview-send" type="button"><span aria-hidden="true">↗</span> Preview send</button></div>
+          </div>
+          <div class="feedback-line" id="feedback" aria-live="polite">Design-only preview · Nothing is sent or saved remotely.</div>
+        </section>
+        <footer class="workspace-footer"><span>APEX DECK <span class="footer-dot">·</span> THREADS STUDY</span><span>LOCAL SNAPSHOT <span class="footer-dot">·</span> NO LIVE CONNECTION</span></footer>
+      </main>
+    </div>
+  </body>
+</html>
