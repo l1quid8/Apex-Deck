@@ -394,3 +394,17 @@ A final production remote daemon check also passed, log:
 `/tmp/apex-ssh-post-review-check.log`. All six reviewed implementation findings
 are resolved at this scope; the earlier security implementation merge hold is
 lifted. The authorized local main merge is the next repository operation.
+
+### Local main read-back
+
+Main was fast-forwarded to `3e750381` after the required checks. Its Git tree
+was identical to the tested feature tree (`3fffe26f4621d6276417ed14d5bd34ee08e1fcfc`).
+`npx tsc --noEmit` passed again in the main checkout; the phone-biometric and
+command-backend tests passed there too (log:
+`/tmp/apex-ssh-merged-main-smoke.log`). The scoped diff against pre-merge main
+passes `git diff --check`. The integration's diff against its older feature
+parent includes existing whitespace from main in the CLI packaging script and
+intentional TSV fixtures; those unrelated lines were preserved.
+Main's four untracked mockup entries were preserved. No remote push occurred.
+The final documentation closeout is followed by detaching the retained SSH
+worktree and deleting the merged task branch, per repository instructions.

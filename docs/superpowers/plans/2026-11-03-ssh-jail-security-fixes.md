@@ -70,4 +70,4 @@
 - [x] Read all diffs and run `npx tsc --noEmit`, `npm test`, `TMPDIR=/tmp cargo check --locked -p apex-daemon --features remote`, and the core/adapters/host/daemon Rust library suites with remote support.
 - [x] Run a fresh review of the six fixes and resolve material findings with focused regressions.
 - [x] Update the six-finding review with exact evidence and residual Linux/native acceptance limits; retain outstanding release/infra items in the original plan.
-- [ ] Commit scoped fixes and merge to main under the existing merge authorization only after passing TypeScript and relevant checks; delete the merged task branch.
+- [x] Commit scoped fixes and merge to main under the existing merge authorization only after passing TypeScript and relevant checks; delete the merged task branch.

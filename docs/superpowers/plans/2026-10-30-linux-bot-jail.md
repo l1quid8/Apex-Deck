@@ -143,7 +143,7 @@
 
 **Files:** Create `crates/apex-daemon/src/trust_host.rs`. Modify `devices.rs`, `crates/apex-daemon/src/cli.rs`, `src/phone/sshRun.ts`, `src/phone/RemoteSsh.tsx`, Settings on Mac and phone.
 
-- [x] Complete the design's Host trust regression tests, including shutdown, existing device sessions, and unchanged-boot refusal. Unit, live-iroh and scoped subprocess coverage is recorded in the integration review.
+- [x] Cover the reviewed Host trust regressions, including shutdown, existing device sessions, and unchanged-boot refusal. Unit, live-iroh and scoped subprocess coverage is recorded in the integration review.
 - [x] Complete implementation: scoped waited daemon shutdown, live-session epoch invalidation and a durable pending reboot baseline close the reviewed defects.
 
 ### Task 11: `access_effect` and device rules
@@ -199,3 +199,14 @@ Face ID helper. Tasks 8, 10, and 11 are reopened accordingly.
 See [the concrete findings and required regressions](../../reviews/linux-jail/2026-11-03-null-merge-review.md).
 The shared checkout and unrelated branches are preserved. No production
 build or release is established by this re-sync.
+
+## Security-fix integration closeout (Null, 2026-11-07)
+
+The six implementation findings above are resolved in `59598e4f` plus the
+current-main reconciliation `3e750381`. Main was fast-forwarded to that reviewed
+integration; its tree matched the tested feature tree, TypeScript passed again,
+and the phone/command-backend smoke tests passed on main. This supersedes the
+earlier security implementation merge hold, not the release matrix in Tasks
+5, 8, 9, 11, 12 and 13. The current-main review records exact results, the
+additional local old-level and Linux Git-index regressions, and the remaining
+platform/native acceptance limits. No installer or release is established.
