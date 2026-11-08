@@ -34,6 +34,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: node --test tests/package-linux.test.mjs
+      - name: Install Linux desktop libraries and virtual display
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2 libgbm1 xvfb xdotool
       - name: Build the AppImage with the production Linux daemon
         run: npm run desktop:linux
       - name: Inspect the portable payload
@@ -49,6 +51,27 @@ jobs:
           file squashfs-root/apex-deck squashfs-root/resources/bin/apex-daemon
           squashfs-root/resources/bin/apex-daemon --version
           test ! -e 'squashfs-root/resources/Unified Computer Use.app'
+      - name: Open the packaged window on a virtual Linux display
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          export APEX_DECK_DATA_DIR="$(mktemp -d /tmp/apex-image.XXXXXX)"
+          timeout 60s xvfb-run -a bash -euo pipefail -c '
+            release/squashfs-root/AppRun >release/linux-startup.log 2>&1 &
+            pid=$!
+            trap "kill $pid 2>/dev/null || true" EXIT
+            for attempt in {1..30}; do
+              kill -0 "$pid"
+              if xdotool search --onlyvisible --name "Apex Deck" >release/linux-window.txt; then
+                sleep 5
+                kill -0 "$pid"
+                exit 0
+              fi
+              sleep 1
+            done
+            cat release/linux-startup.log
+            exit 1
+          '
       - uses: actions/upload-artifact@v4
         with:
           name: Apex-Deck-AppImage-linux-${{ matrix.arch }}
@@ -58,3 +81,10 @@ jobs:
             release/*.AppImage.json
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-startup-evidence-${{ matrix.arch }}
+          path: |
+            release/linux-startup.log
+            release/linux-window.txt

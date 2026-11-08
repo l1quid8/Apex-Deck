@@ -180,8 +180,8 @@ test('remove keeps the plist when a loaded agent will not stop, so it is not lef
 });
 
 test('the agent is used only by the installed app, with no test or dev data folder', () => {
-  assert.equal(usesLaunchAgent({ packaged: true, dataDir: undefined }), true);
-  assert.equal(usesLaunchAgent({ packaged: true, dataDir: '' }), true);
+  assert.equal(usesLaunchAgent({ packaged: true, dataDir: undefined, platform: 'darwin' }), true);
+  assert.equal(usesLaunchAgent({ packaged: true, dataDir: '', platform: 'darwin' }), true);
   assert.equal(usesLaunchAgent({ packaged: false, dataDir: undefined }), false, 'a dev build');
   assert.equal(usesLaunchAgent({ packaged: true, dataDir: '/tmp/d' }), false, 'a test folder');
   assert.equal(usesLaunchAgent({ packaged: false, dataDir: '/tmp/d' }), false);
