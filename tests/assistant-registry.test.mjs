@@ -8,6 +8,38 @@ const execution = (id, tombstonedAtMs = null, descriptor = pane(id)) => ({ taskI
 const snapshot = (revision, executions) => ({ workspaceId: 'project', revision, tasks: [], executions });
 const human = { id: 'human', workspaceId: 'project', kind: 'chat', title: 'Human thread' };
 
+test('full snapshots remove omitted workers without touching human or other-owner threads', () => {
+  let state = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), snapshot(1, [execution('deleted'), execution('kept')]));
+  state = reduceAssistantSnapshot(state, owner('monitor-b'), snapshot(1, [execution('other')]));
+  state = reduceAssistantSnapshot(state, owner(), snapshot(2, [execution('kept')]));
+  assert.deepEqual(mergeAssistantPanes([human], state).map(p => p.id), ['human', 'kept', 'other']);
+  const restarted = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), snapshot(2, [execution('kept')]));
+  assert.deepEqual(mergeAssistantPanes([human], restarted).map(p => p.id), ['human', 'kept']);
+});
+
+test('missing room descriptors disappear even when the ledger revision has not changed', () => {
+  for (const revision of [1, 2]) {
+    const first = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), snapshot(1, [execution('deleted'), execution('kept')]));
+    const next = snapshot(revision, [execution('deleted', null, null), execution('kept')]);
+    const state = reduceAssistantSnapshot(first, owner(), next);
+    assert.deepEqual(mergeAssistantPanes([human], state).map(p => p.id), ['human', 'kept']);
+    assert.deepEqual(mergeAssistantPanes([human], reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), next)), mergeAssistantPanes([human], state));
+  }
+});
+
+test('same-revision refreshes reconcile descriptors and retain deletion tombstones', () => {
+  let state = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), snapshot(2, [execution('deleted'), execution('kept')]));
+  state = reduceAssistantSnapshot(state, owner(), snapshot(2, [execution('deleted', 123, null), execution('kept')]));
+  state = reduceAssistantSnapshot(state, owner(), snapshot(2, [execution('deleted'), execution('kept', null, pane('kept', { title: 'Renamed' }))]));
+  assert.deepEqual(mergeAssistantPanes([], state), [pane('kept', { title: 'Renamed' })]);
+});
+
+test('a cold-loaded tombstone prevents later worker descriptors from reviving a deleted chat', () => {
+  const cold = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), snapshot(2, [execution('deleted', 123, null), execution('human', 124, null)]));
+  const late = reduceAssistantSnapshot(cold, owner(), snapshot(3, [execution('deleted'), execution('human')]));
+  assert.deepEqual(mergeAssistantPanes([human], late), [human]);
+});
+
 test('assistant panes merge into the view while unknown tombstones cannot hide human threads', () => {
   const state = reduceAssistantSnapshot(emptyAssistantRegistry(), owner(), snapshot(1, [execution('worker-a'), execution('human', 100, null)]));
   assert.deepEqual(mergeAssistantPanes([human], state), [human, pane('worker-a')]);

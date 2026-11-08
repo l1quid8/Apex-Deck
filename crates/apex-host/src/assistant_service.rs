@@ -3414,6 +3414,45 @@ mod tests {
     }
 
     #[test]
+    fn deleting_worker_chat_notifies_clients_with_durable_tombstone() {
+        let f = fixture();
+        let task = f.host.assistant_tasks.prepare_handoff(crate::assistant_tasks::HandoffPreparation {
+            request_id: "delete-worker".into(), batch_id: "batch".into(), owner: f.owner.clone(),
+            revision: f.host.monitor_get("workspace").unwrap().unwrap().revision,
+            original_request: "Inspect login".into(), brief: "Inspect login".into(),
+            destination: TaskDestination { thread_id: Some("parent".into()), workers: vec!["null".into()], new_thread: false, new_thread_title: None },
+            mode: TaskMode::ReadOnly, review_criteria: vec![], lineage: None, context: None,
+        }).unwrap();
+        f.host.assistant_tasks.bind_execution(&task.id, task.revision, &f.owner, "parent".into(), TaskMode::ReadOnly, None).unwrap();
+        let before = f.host.assistant_tasks_list(f.owner.clone(), false).unwrap();
+        assert_eq!(before["executions"][0]["pane"]["id"], "parent");
+        let seq = f.host.events().last_seq();
+
+        {
+            // Assistant tools delete under this lock; notification must not
+            // re-enter personal result reconciliation and deadlock.
+            let _authority = crate::personal::authority_guard();
+            f.host.room_delete("parent".into()).unwrap();
+        }
+
+        let after = f.host.assistant_tasks_list(f.owner.clone(), false).unwrap();
+        assert!(after["executions"][0]["pane"].is_null());
+        assert!(after["executions"][0]["tombstonedAtMs"].is_number());
+        assert!(f.host.store().room("parent").unwrap().is_none());
+        assert!(f.host.events().since(seq).unwrap().iter().any(|event| matches!(
+            &event.event,
+            crate::events::HostEvent::AssistantTasksChanged { workspace_id, revision }
+                if workspace_id == "workspace" && *revision == after["revision"].as_u64().unwrap()
+        )), "deletion must publish the tombstone revision so clients refresh immediately");
+
+        let restarted = Host::try_new(HostPaths { data: f.data.clone(), downloads: None }, f.runtime.handle().clone()).unwrap();
+        let restored = restarted.assistant_tasks_list(f.owner.clone(), false).unwrap();
+        assert!(restored["executions"][0]["pane"].is_null());
+        assert!(restored["executions"][0]["tombstonedAtMs"].is_number());
+        assert_eq!(restored["tasks"][0]["id"], task.id);
+    }
+
+    #[test]
     fn routing_choices_use_saved_chat_workers_and_exclude_other_folders() {
         let f = fixture();
         let saved = f.host.store().room("parent").unwrap().unwrap();

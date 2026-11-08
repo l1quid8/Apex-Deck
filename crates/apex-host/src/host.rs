@@ -3141,7 +3141,8 @@ impl Host {
         self.runner_service.lock().unwrap().remove(&id)?;
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
-        if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
+        let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
+        if execution.is_some() {
             if handle.as_ref().is_some_and(|h|h.busy()) { return Err("Stop this task and wait for its worker cleanup before deleting its chat.".into()); }
             self.assistant_tasks.tombstone_execution(&id).map_err(|e|e.to_string())?;
         }
@@ -3166,7 +3167,19 @@ impl Host {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
             None => self.store.delete_room(&id),
         };
-        combine_result(result, crate::journal::remove(&self.paths.data.join("attachments"), &id))
+        let result = combine_result(result, crate::journal::remove(&self.paths.data.join("attachments"), &id));
+        drop(_lifecycle);
+        // Publish after the durable tombstone, including when later cleanup
+        // fails. Every client must evict this worker, not just the deleting UI.
+        // Assistant-initiated deletion may hold the personal authority lock;
+        // no task results changed, so do not reconcile personal records here.
+        if let Some(entry) = execution {
+            self.emit(HostEvent::AssistantTasksChanged {
+                workspace_id: entry.workspace_id,
+                revision: self.assistant_tasks.snapshot_revision(),
+            });
+        }
+        result
     }
 
     /// Explicit deletion waits for a task's exact worker attempt before removing its saved room.

@@ -47,7 +47,7 @@ function validPane(pane: AssistantExecutionPane | undefined, execution: Assistan
     && Array.isArray(pane.participants) && !!pane.options && typeof pane.options === 'object';
 }
 
-/** Keep the latest task registry per monitor owner; children disappear only after an owned tombstone. */
+/** Reconcile each owner's full snapshot; retain tombstones to reject stale child descriptors. */
 export function reduceAssistantSnapshot(
   state: AssistantRegistryState,
   owner: AssistantTaskOwner,
@@ -61,11 +61,9 @@ export function reduceAssistantSnapshot(
   const saved = state.owners[key];
   const previous = saved && (!authenticatedHostId || !saved.authenticatedHostId || saved.authenticatedHostId === authenticatedHostId) ? saved : undefined;
   if (previous && snapshot.revision < previous.revision) return state;
-  if (previous && snapshot.revision === previous.revision) return {
-    owners: { ...state.owners, [key]: { ...previous, snapshot, observedAt, authenticatedHostId: authenticatedHostId ?? previous.authenticatedHostId } },
-  };
-
-  const panes = { ...(previous?.panes ?? {}) };
+  // The ledger revision does not cover room changes. Even at the same
+  // revision, an absent execution or descriptor must evict its cached pane.
+  const panes: Record<string, AssistantExecutionPane> = {};
   const registered = new Set(previous?.registeredChildIds ?? []);
   const tombstoned = new Set(previous?.tombstonedChildIds ?? []);
   for (const execution of snapshot.executions ?? []) {
@@ -76,10 +74,8 @@ export function reduceAssistantSnapshot(
       registered.add(pane.id);
     }
     if (execution.tombstonedAtMs != null) {
-      if (registered.has(execution.threadId)) {
-        tombstoned.add(execution.threadId);
-        delete panes[execution.threadId];
-      }
+      tombstoned.add(execution.threadId);
+      delete panes[execution.threadId];
       continue;
     }
     if (pane && !tombstoned.has(pane.id)) panes[pane.id] = pane;
