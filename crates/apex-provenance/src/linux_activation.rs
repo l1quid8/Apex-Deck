@@ -212,6 +212,57 @@ impl Store {
         Self::check_root(root)?;
         Self::open_at(root)
     }
+    /// Administrator recovery after independently verifying the selected tree.
+    /// Complete pending records contribute their epoch even before rename.
+    /// Torn records require investigation, never deletion or initialization.
+    pub fn recover_interrupted(candidate: Descriptor) -> Result<Self, String> {
+        let root = Path::new("/var/lib/apex-deck-provenance");
+        Self::check_root(root)?;
+        crate::linux_install::protected_path(&candidate.tree)?;
+        Self::recover_at(root, candidate)
+    }
+    fn recover_at(root: &Path, candidate: Descriptor) -> Result<Self, String> {
+        let lock = Self::lock(root)?;
+        let current = Activation::restore(&crate::io::root_file_limit(
+            &root.join("installation.json"),
+            16384,
+        )?)?;
+        let mut state = match std::fs::symlink_metadata(root.join("installation.pending")) {
+            Ok(_) => {
+                let pending = Activation::restore(&crate::io::root_file_limit(
+                    &root.join("installation.pending"),
+                    16384,
+                )?)?;
+                if pending.epoch < current.epoch {
+                    return Err("Pending epoch regressed; refusing recovery".into());
+                }
+                pending
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if current.phase == Phase::Ready {
+                    return Err("No interrupted activation".into());
+                }
+                current
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        if state.phase == Phase::Ready {
+            state.prepare(candidate)?;
+        } else {
+            state.recover(candidate)?;
+        }
+        persist(
+            root,
+            &serde_json::to_vec(&state).map_err(|e| e.to_string())?,
+            |_| Ok(()),
+        )?;
+        Ok(Self {
+            root: root.into(),
+            _lock: lock,
+            state,
+            poisoned: false,
+        })
+    }
     fn check_root(root: &Path) -> Result<(), String> {
         if unsafe { libc::geteuid() } != 0 {
             return Err("Installation requires administrator access".into());
@@ -271,6 +322,7 @@ impl Store {
     }
     fn open_at(root: &Path) -> Result<Self, String> {
         let lock = Self::lock(root)?;
+        ensure_no_pending(root)?;
         let bytes = crate::io::root_file_limit(&root.join("installation.json"), 16384)?;
         let state = Activation::restore(&bytes)?;
         Ok(Self {
@@ -315,6 +367,14 @@ impl Store {
         }
         self.state = next;
         Ok(())
+    }
+}
+
+fn ensure_no_pending(root: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(root.join("installation.pending")) {
+        Ok(_) => Err("Incomplete installation write; admissions closed. Explicit recovery must preserve the pending epoch.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Cannot inspect installation transaction: {error}")),
     }
 }
 
@@ -437,6 +497,115 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn interrupted_update_does_not_reopen_the_old_healthy_epoch() {
+        for stop in 0..4 {
+            let root = fixture();
+            let mut old = Activation::default();
+            old.prepare(candidate()).unwrap();
+            old.services_stopped().unwrap();
+            old.healthy().unwrap();
+            persist(&root, &serde_json::to_vec(&old).unwrap(), |_| Ok(())).unwrap();
+            let mut next = old.clone();
+            next.prepare(candidate()).unwrap();
+            assert!(persist(&root, &serde_json::to_vec(&next).unwrap(), |step| {
+                if step == stop {
+                    Err("crash during update".into())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err());
+            if stop < 2 {
+                assert!(
+                    ensure_no_pending(&root).is_err(),
+                    "old healthy installation reopened with an incomplete transaction"
+                );
+            } else {
+                ensure_no_pending(&root).unwrap();
+                let restored =
+                    Activation::restore(&std::fs::read(root.join("installation.json")).unwrap())
+                        .unwrap();
+                assert!(restored.admitted().is_err());
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+    #[test]
+    fn crash_process_fixture() {
+        let Some(root) = std::env::var_os("APEX_TEST_ACTIVATION_CRASH_ROOT") else {
+            return;
+        };
+        let stop: u8 = std::env::var("APEX_TEST_ACTIVATION_CRASH_BOUNDARY")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let root = PathBuf::from(root);
+        let bytes = std::fs::read(root.join("next.json")).unwrap();
+        let state = Activation::restore(&bytes).unwrap();
+        persist(&root, &serde_json::to_vec(&state).unwrap(), |step| {
+            if step == stop {
+                // Abrupt termination with no destructors or userspace cleanup.
+                unsafe { libc::_exit(90) }
+            }
+            Ok(())
+        })
+        .unwrap();
+        panic!("fixture did not terminate at requested boundary");
+    }
+    #[test]
+    fn process_death_at_every_persistence_boundary_keeps_admission_closed() {
+        for transition in 0..3 {
+            for stop in 0..4 {
+                let root = fixture();
+                let mut old = Activation::default();
+                // Exercise an update of a usable installation, not only first
+                // install: the prior Ready record would otherwise admit peers.
+                old.prepare(candidate()).unwrap();
+                old.services_stopped().unwrap();
+                old.healthy().unwrap();
+                if transition >= 1 {
+                    old.prepare(candidate()).unwrap();
+                }
+                if transition >= 2 {
+                    old.services_stopped().unwrap();
+                }
+                persist(&root, &serde_json::to_vec(&old).unwrap(), |_| Ok(())).unwrap();
+                let mut next = old.clone();
+                match transition {
+                    0 => next.prepare(candidate()).unwrap(),
+                    1 => next.services_stopped().unwrap(),
+                    _ => next.healthy().unwrap(),
+                }
+                std::fs::write(root.join("next.json"), serde_json::to_vec(&next).unwrap()).unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "linux_activation::tests::crash_process_fixture"])
+                    .env("APEX_TEST_ACTIVATION_CRASH_ROOT", &root)
+                    .env("APEX_TEST_ACTIVATION_CRASH_BOUNDARY", stop.to_string())
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    output.status.code(),
+                    Some(90),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let restored =
+                    Activation::restore(&std::fs::read(root.join("installation.json")).unwrap())
+                        .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&restored).unwrap(),
+                    serde_json::to_value(if stop < 2 { &old } else { &next }).unwrap()
+                );
+                if stop < 2 {
+                    assert!(ensure_no_pending(&root).is_err());
+                } else if transition < 2 {
+                    assert!(restored.admitted().is_err());
+                }
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+    #[test]
     #[cfg(target_os = "linux")]
     #[ignore = "requires root on a disposable Linux runner; invoked explicitly by CI"]
     fn native_root_store_lock_restart_and_authority_preservation() {
@@ -483,6 +652,47 @@ mod tests {
             b"consumed receipts and revocations"
         );
         drop(store);
+        let mut pending =
+            Activation::restore(&std::fs::read(root.join("installation.json")).unwrap()).unwrap();
+        pending.prepare(candidate()).unwrap();
+        assert!(
+            persist(&root, &serde_json::to_vec(&pending).unwrap(), |step| {
+                if step == 1 {
+                    Err("crash before rename".into())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+        );
+        assert!(
+            Store::open_at(&root).is_err(),
+            "interrupted update reopened healthy epoch"
+        );
+        assert!(
+            Store::initialize_at(&root).is_err(),
+            "interrupted update reset epoch"
+        );
+        assert_eq!(
+            Activation::restore(&std::fs::read(root.join("installation.pending")).unwrap())
+                .unwrap()
+                .epoch,
+            3
+        );
+        let mut store = Store::recover_at(&root, candidate()).unwrap();
+        assert_eq!(store.state().unwrap().epoch, 4);
+        assert!(store.state().unwrap().admitted().is_err());
+        store.services_stopped().unwrap();
+        store.healthy().unwrap();
+        drop(store);
+        let store = Store::open_at(&root).unwrap();
+        assert_eq!(store.state().unwrap().admitted().unwrap().epoch, 4);
+        drop(store);
+        assert_eq!(
+            std::fs::read(root.join("journal.json")).unwrap(),
+            b"consumed receipts and revocations"
+        );
+        // Test cleanup only; production never deletes installation history.
         std::fs::remove_file(root.join("installation.json")).unwrap();
         assert!(
             Store::open_at(&root).is_err(),

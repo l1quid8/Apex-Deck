@@ -70,10 +70,13 @@ whole-change security review required by the approved plan.
 
 The activation module has local tests for interruption at each write/fsync/rename
 boundary, malformed records, recovery/rollback epochs, stale temporary symlinks,
-and durability-failure poisoning. Native CI additionally runs a privileged,
+and durability-failure poisoning. Abrupt subprocess-death tests cover all
+persistence boundaries while updating an already healthy installation. Any
+pending write blocks normal reopen; explicit recovery retains its higher epoch.
+Native CI additionally runs a privileged,
 isolated `/var/lib` fixture for locking, restart recovery and preserving authority
-bytes. These are module-level tests; service-boundary fault injection and actual
-process-kill/power-loss acceptance remain outstanding.
+bytes. These are module-level tests; service-boundary fault injection and
+power-loss acceptance remain outstanding.
 
 After those gates, provision only the independently checked evaluation verifier
 in Omarchy, install the verified payload, and observe real protected chat

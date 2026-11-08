@@ -25,3 +25,19 @@ revalidation at activation, process-kill/service-boundary fault testing,
 uninstall, repair and installed rollback acceptance still remain. Task 2 trusted
 launch/exec attestation and Task 3 lifecycle/enrollment/disclosure are not complete.
 No VM installation was attempted.
+
+Independent checkpoint review found a restart defect: a durable pending prepare
+could be ignored and the old Ready record admitted. Added a regression beginning
+from a healthy active installation (initially failed for missing pending-state
+guard), closed ordinary reopen when any pending record exists, and added explicit
+recovery retaining the pending epoch before advancing again. Native CI fixture
+now checks epoch 2 -> interrupted pending 3 -> recovered 4 and unchanged journal
+bytes. Torn pending records fail closed for investigation.
+
+Added subprocess termination tests at each write/fsync/rename boundary for an
+update from an already healthy installation. These verify abrupt process death,
+not power loss. Real service-boundary termination tests remain outstanding.
+
+Ruling: an unreadable/torn pending record cannot be automatically repaired -- its
+epoch is not safely knowable -- installation remains closed until an explicit
+administrator recovery procedure can establish history; deleting it is not repair.
