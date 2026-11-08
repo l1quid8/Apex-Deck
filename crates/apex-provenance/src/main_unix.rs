@@ -423,6 +423,16 @@ fn document_payload(
 }
 fn main() {
     let args=std::env::args().collect::<Vec<_>>();
+    if args.get(1).map(String::as_str)==Some("stage-linux-release") {
+        let result=(|| -> Result<(),String> {
+            if args.len()!=5 {return Err("Usage: apex-provenance stage-linux-release MANIFEST SIGNATURE ARCHIVE".into());}
+            let target=linux_install::stage_release(Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4]))?;
+            println!("Staged verified evaluation payload: {}",target.display());
+            Ok(())
+        })();
+        if let Err(error)=result {eprintln!("apex-provenance: {error}");std::process::exit(1);}
+        return;
+    }
     if args.get(1).map(String::as_str)==Some("verify-linux-release") {
         let result=(|| -> Result<(),String> {
             use std::io::Read;

@@ -262,6 +262,7 @@ pub fn stage_release(
     if unsafe { libc::geteuid() } != 0 {
         return Err("Staging requires explicit administrator installation".into());
     }
+    if !cfg!(target_os = "linux") { return Err("Protected Linux staging requires a native Linux host".into()); }
     for path in [manifest_path, signature_path, archive_path] {
         protected_path(path)?;
     }
