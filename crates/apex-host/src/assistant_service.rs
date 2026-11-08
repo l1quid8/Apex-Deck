@@ -789,7 +789,7 @@ impl Host {
         baseline_data["executionPath"] = json!(owner.cwd);
         if input.mode != TaskMode::ReadOnly {
             self.ensure_delegated_start(&task)?;
-        let baseline = assistant_git::capture(Path::new(&owner.cwd), &task.id, "baseline")?;
+        let baseline = assistant_git::capture(self.data_dir(), Path::new(&owner.cwd), &task.id, "baseline")?;
             baseline_data["baselineSnapshot"] = json!(baseline);
             baseline_data["exclusions"] = json!(baseline.exclusions);
         }
@@ -931,7 +931,7 @@ impl Host {
         let targets = workers.iter().map(ParticipantId::new).collect();
         let handle = self.handle(&child_id)?;
         let batch = self.prepare_post(&child_id, &handle, &task_start_prompt(&task), Some(targets)).await?;
-        spawn_task_attempt(
+        spawn_task_attempt(self.data_dir(),
             Arc::clone(self),
             task.id.clone(),
             run_id,
@@ -966,7 +966,7 @@ impl Host {
             .await
             .map_err(|e| format!("Could not capture the isolated task baseline: {e:?}"))?;
         self.ensure_delegated_start(&task)?;
-        let baseline = assistant_git::capture(Path::new(&owner.cwd), &task.id, "baseline")?;
+        let baseline = assistant_git::capture(self.data_dir(), Path::new(&owner.cwd), &task.id, "baseline")?;
         drop(lease);
         let mut startup_data = task.result_data.clone().unwrap_or_else(|| json!({}));
         startup_data["mode"] = json!(TaskMode::Isolated);
@@ -1127,7 +1127,7 @@ impl Host {
         let batch = self
             .prepare_post(&child_id, &handle, &content, Some(targets))
             .await?;
-        spawn_task_attempt(
+        spawn_task_attempt(self.data_dir(),
             Arc::clone(self),
             task.id.clone(),
             run_id,
@@ -1393,7 +1393,7 @@ impl Host {
             )?;
             let registry = OwnedProcessRegistry::new(Some(process_dir));
             crate::assistant_isolation::verify_workers_with_registry(
-                &room_profiles,
+                self.data_dir(), &room_profiles,
                 &mut stop,
                 &registry,
             )
@@ -1419,7 +1419,7 @@ impl Host {
             .and_then(|data| data["executionPath"].as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&task.owner.cwd));
-        let baseline = if task.mode == TaskMode::ReadOnly { None } else { Some(assistant_git::capture(&work_path, &task.id, "baseline")?) };
+        let baseline = if task.mode == TaskMode::ReadOnly { None } else { Some(assistant_git::capture(self.data_dir(), &work_path, &task.id, "baseline")?) };
         let (mut next, run_id) = self
             .begin_delegated_attempt(&task, &task.owner)
             .map_err(|e| e.to_string())?;
@@ -1475,7 +1475,7 @@ impl Host {
             data["queuedNotes"] = json!([]);
             let _ = self.assistant_tasks.set_result_data(&next.id, next.revision, &next.owner, Some(data));
         }
-        spawn_task_attempt(
+        spawn_task_attempt(self.data_dir(),
             Arc::clone(self),
             task.id,
             run_id,
@@ -1629,7 +1629,7 @@ impl Host {
                 self.wait_for_run_to_settle(&task.id).await?;
                 self.recover_task_operations(&task.id)?;
                 let (_stop_sender,mut stop)=watch::channel(false);
-                let readiness=if task.mode==TaskMode::Isolated {serde_json::to_value(crate::assistant_isolation::verify_workers(&selected,&mut stop).await.map_err(|reason|reason.message)?).map_err(|error|error.to_string())?} else {json!({"configuration":"validated","startup":"rechecked when approved"})};
+                let readiness=if task.mode==TaskMode::Isolated {serde_json::to_value(crate::assistant_isolation::verify_workers(self.data_dir(), &selected,&mut stop).await.map_err(|reason|reason.message)?).map_err(|error|error.to_string())?} else {json!({"configuration":"validated","startup":"rechecked when approved"})};
                 let monitor=self.monitor_get(&task.owner.workspace_id)?.ok_or("Project coordinator is unavailable.")?;
                 if monitor.cwd!=task.owner.cwd || monitor.host_id!=task.owner.host_id || monitor.conversation_id!=task.owner.conversation_id {return Err("Task belongs to a previous project assignment.".into());}
                 if let Some(lineage)=&task.lineage {self.validate_delegated_task(lineage,true)?;self.validate_delegated_worker_profiles(lineage,&selected)?;}
@@ -1918,7 +1918,7 @@ impl Host {
                         let process_dir = crate::assistant_isolation::operation_process_dir(self.assistant_data_dir(), &task.id)?;
                         let mut check_results = Vec::new();
                         for check in checks {
-                            match run_check(&plan.scratch_path, &check, cargo_target_dir, &process_dir).await {
+                            match run_check(self.data_dir(), &plan.scratch_path, &check, cargo_target_dir, &process_dir).await {
                                 Ok(result) => {
                                     let success = result["success"] == true;
                                     check_results.push(result);
@@ -1926,7 +1926,7 @@ impl Host {
                                         let mut failed = data.clone();
                                         failed["checkResults"] = json!(check_results);
                                         let _ = self.assistant_tasks.set_result_data(&applying.id, applying.revision, &input.owner, Some(failed));
-                                        discard_integration_scratch(&plan);
+                                        discard_integration_scratch(self.data_dir(), &plan);
                                         return Err("A configured verification check failed.".into());
                                     }
                                 }
@@ -1935,15 +1935,15 @@ impl Host {
                                     check_results.push(json!({"argv":check,"success":false,"error":error}));
                                     failed["checkResults"] = json!(check_results);
                                     let _ = self.assistant_tasks.set_result_data(&applying.id, applying.revision, &input.owner, Some(failed));
-                                    discard_integration_scratch(&plan);
+                                    discard_integration_scratch(self.data_dir(), &plan);
                                     return Err(error);
                                 }
                             }
                         }
-                        let scratch = assistant_git::capture(&plan.scratch_path, &task.id, "integration-verify")?;
-                        let expected_tree = assistant_git::git(&plan.root, &["rev-parse", &format!("{}^{{tree}}", plan.merged_commit)])?;
+                        let scratch = assistant_git::capture(self.data_dir(), &plan.scratch_path, &task.id, "integration-verify")?;
+                        let expected_tree = assistant_git::git(self.data_dir(), &plan.root, &["rev-parse", &format!("{}^{{tree}}", plan.merged_commit)])?;
                         if scratch.tree != expected_tree.trim() {
-                            discard_integration_scratch(&plan);
+                            discard_integration_scratch(self.data_dir(), &plan);
                             return Err("The integration check changed tracked scratch state; review the task again.".into());
                         }
                         let journal_path = self.assistant_data_dir().join("apex-agent").join("tasks").join(&task.id).join("apply.json");
@@ -1952,21 +1952,21 @@ impl Host {
                         saved_data["integrationPlan"] = serde_json::to_value(&plan).map_err(|e|e.to_string())?;
                         saved_data["applyJournal"] = json!(journal_path);
                         let durable = self.assistant_tasks.set_result_data(&applying.id, applying.revision, &input.owner, Some(saved_data)).map_err(|e|e.to_string())?;
-                        if let Err(error) = assistant_git::apply_integration(&plan, &journal_path) {
+                        if let Err(error) = assistant_git::apply_integration(self.data_dir(), &plan, &journal_path) {
                             if !journal_path.exists() {
-                                discard_integration_scratch(&plan);
+                                discard_integration_scratch(self.data_dir(), &plan);
                                 let _ = self.assistant_tasks.transition(&durable.id, durable.revision, &input.owner, TaskStatus::ReadyForReview, Some(error.clone()));
                             }
                             return Err(error);
                         }
-                        discard_integration_scratch(&plan);
+                        discard_integration_scratch(self.data_dir(), &plan);
                         return Ok(durable);
                     }
                     let expected: assistant_git::GitSnapshot =
                         serde_json::from_value(data["resultSnapshot"].clone())
                             .map_err(|e| e.to_string())?;
                     let before =
-                        assistant_git::capture(Path::new(&input.owner.cwd), &task.id, "accept")?;
+                        assistant_git::capture(self.data_dir(), Path::new(&input.owner.cwd), &task.id, "accept")?;
                     if !same_checkout(&before, &expected) {
                         return Err("The checkout changed since this task was reviewed.".into());
                     }
@@ -1980,7 +1980,7 @@ impl Host {
                     let process_dir = crate::assistant_isolation::operation_process_dir(self.assistant_data_dir(), &task.id)?;
                     let mut check_results = Vec::new();
                     for check in checks {
-                        match run_check(Path::new(&input.owner.cwd), &check, None, &process_dir).await {
+                        match run_check(self.data_dir(), Path::new(&input.owner.cwd), &check, None, &process_dir).await {
                             Ok(result) => {
                                 let success = result["success"] == true;
                                 check_results.push(result);
@@ -2003,7 +2003,7 @@ impl Host {
                     let mut verified_data = data.clone();
                     verified_data["checkResults"] = json!(check_results);
                     let verified_task = self.assistant_tasks.set_result_data(&applying.id, applying.revision, &input.owner, Some(verified_data)).map_err(|e|e.to_string())?;
-                    let after = assistant_git::capture(
+                    let after = assistant_git::capture(self.data_dir(),
                         Path::new(&input.owner.cwd),
                         &task.id,
                         "post-check",
@@ -2270,10 +2270,10 @@ impl Host {
                     .as_ref()
                     .is_some_and(|doc| doc["phase"] == "applied");
                 if journal_doc.is_some() {
-                    assistant_git::reconcile_interrupted_apply(&plan, &journal)?;
+                    assistant_git::reconcile_interrupted_apply(self.data_dir(), &plan, &journal)?;
                 }
-                discard_integration_scratch(&plan);
-                let verified_applied = was_applied && applied_integration_matches(&plan)?;
+                discard_integration_scratch(self.data_dir(), &plan);
+                let verified_applied = was_applied && applied_integration_matches(self.data_dir(), &plan)?;
                 let status = if verified_applied {
                     TaskStatus::Done
                 } else {
@@ -2558,7 +2558,7 @@ fn initial_task_data(input: &AssistantMessageInput, workers: &[ParticipantConfig
 // Nine parts of one attempt: what to run, where, and the handles it reports
 // through. A struct would be built here only to be taken apart again.
 #[allow(clippy::too_many_arguments)]
-fn spawn_task_attempt(
+fn spawn_task_attempt(project_data: &std::path::Path,
     host: Arc<Host>,
     task_id: String,
     run_id: String,
@@ -2570,6 +2570,7 @@ fn spawn_task_attempt(
     isolated_permit: Option<crate::assistant_isolation::IsolatedPermit>,
 ) {
     let host_for_task = Arc::clone(&host);
+    let project_data = project_data.to_path_buf();
     host.runtime().spawn(async move {
         let _isolated_permit = isolated_permit;
         let run_result = host_for_task.run_batch(&execution_id, &handle, batch).await;
@@ -2585,7 +2586,7 @@ fn spawn_task_attempt(
             .is_some_and(|task| task.mode == TaskMode::Isolated);
         let read_only = task_before.as_ref().is_some_and(|task| task.mode == TaskMode::ReadOnly);
         let baseline = task_before.as_ref().and_then(|task| task.result_data.as_ref()).and_then(|data| data["baselineSnapshot"]["commit"].as_str()).map(str::to_owned);
-        let saved = if read_only { Ok(None) } else { save_attempt_result(&run, result_path.to_owned(), task_id.clone(), is_isolated, baseline).await.map(Some) };
+        let saved = if read_only { Ok(None) } else { save_attempt_result(&project_data, &run, result_path.to_owned(), task_id.clone(), is_isolated, baseline).await.map(Some) };
         let save_too_long = matches!(&saved, Err(error) if error == assistant_git::SAVE_TOO_LONG);
         let (snapshot, review_diff) = match saved {
             Ok(Some((snapshot, diff))) => (Ok(Some(snapshot)), diff),
@@ -2703,12 +2704,12 @@ fn spawn_task_attempt(
 
 /// Snapshot plus review diff, under one time limit. This runs off the async
 /// threads because a slow save would otherwise stall every other room.
-async fn save_attempt_result(run: &Arc<AssistantRun>, path: PathBuf, task_id: String, isolated: bool, baseline: Option<String>) -> Result<(assistant_git::GitSnapshot, Option<Result<String, String>>), String> {
+async fn save_attempt_result(project_data: &std::path::Path, run: &Arc<AssistantRun>, path: PathBuf, task_id: String, isolated: bool, baseline: Option<String>) -> Result<(assistant_git::GitSnapshot, Option<Result<String, String>>), String> {
     run.saving_since.store(crate::personal::now(), Ordering::SeqCst);
     let limit = assistant_git::GitLimit::new(std::time::Duration::from_millis(run.save_limit_ms.load(Ordering::SeqCst)), Some(Arc::clone(&run.stop)));
-    tokio::task::spawn_blocking(move || assistant_git::within(limit, || {
-        let snapshot = if isolated { assistant_git::capture_result(&path, &task_id)? } else { assistant_git::capture(&path, &task_id, "result")? };
-        let diff = match baseline.map(|baseline| assistant_git::review_diff(&path, &baseline, &snapshot.commit)) {
+    crate::project_process::spawn_blocking(project_data, move |project_data| assistant_git::within(limit, || {
+        let snapshot = if isolated { assistant_git::capture_result(project_data, &path, &task_id)? } else { assistant_git::capture(project_data, &path, &task_id, "result")? };
+        let diff = match baseline.map(|baseline| assistant_git::review_diff(project_data, &path, &baseline, &snapshot.commit)) {
             // A stopped diff isn't a failed one: a paused job must stay paused.
             Some(Err(error)) if error == assistant_git::SAVE_STOPPED || error == assistant_git::SAVE_TOO_LONG => return Err(error),
             diff => diff,
@@ -2725,15 +2726,15 @@ fn same_checkout(a: &assistant_git::GitSnapshot, b: &assistant_git::GitSnapshot)
         && a.exclusions == b.exclusions
 }
 
-fn applied_integration_matches(plan: &assistant_git::IntegrationPlan) -> Result<bool, String> {
-    let current = assistant_git::capture(&plan.root, &plan.task_id, "reconcile-verify")?;
+fn applied_integration_matches(project_data: &std::path::Path, plan: &assistant_git::IntegrationPlan) -> Result<bool, String> {
+    let current = assistant_git::capture(project_data, &plan.root, &plan.task_id, "reconcile-verify")?;
     if current.head != plan.current_snapshot.head
         || current.branch != plan.current_snapshot.branch
         || current.index_hash != plan.current_snapshot.index_hash
     {
         return Ok(false);
     }
-    let merged_tree = assistant_git::git(
+    let merged_tree = assistant_git::git(project_data,
         &plan.root,
         &["rev-parse", &format!("{}^{{tree}}", plan.merged_commit)],
     )?
@@ -2741,9 +2742,9 @@ fn applied_integration_matches(plan: &assistant_git::IntegrationPlan) -> Result<
     .to_owned();
     for path in &plan.changed_paths {
         let current_entry =
-            assistant_git::git(&plan.root, &["ls-tree", "-z", &current.tree, "--", path])?;
+            assistant_git::git(project_data, &plan.root, &["ls-tree", "-z", &current.tree, "--", path])?;
         let expected_entry =
-            assistant_git::git(&plan.root, &["ls-tree", "-z", &merged_tree, "--", path])?;
+            assistant_git::git(project_data, &plan.root, &["ls-tree", "-z", &merged_tree, "--", path])?;
         if current_entry != expected_entry {
             return Ok(false);
         }
@@ -2751,9 +2752,9 @@ fn applied_integration_matches(plan: &assistant_git::IntegrationPlan) -> Result<
     Ok(true)
 }
 
-fn discard_integration_scratch(plan: &assistant_git::IntegrationPlan) {
+fn discard_integration_scratch(project_data: &std::path::Path, plan: &assistant_git::IntegrationPlan) {
     if plan.scratch_path.exists() {
-        let _ = assistant_git::git(
+        let _ = assistant_git::git(project_data,
             &plan.root,
             &[
                 "worktree",
@@ -2793,7 +2794,7 @@ fn directory_bytes(path: &Path) -> Option<u64> {
     Some(bytes)
 }
 
-async fn run_check(
+async fn run_check(project_data: &std::path::Path,
     cwd: &Path,
     argv: &[String],
     cargo_target_dir: Option<&Path>,
@@ -2803,7 +2804,7 @@ async fn run_check(
     if program.contains('/') || program.contains('\\') || program.trim().is_empty() {
         return Err("Check command must name a program on PATH.".into());
     }
-    let mut command = tokio::process::Command::new(program);
+    let mut command = crate::project_process::tokio_command_in(project_data, program, cwd)?;
     command
         .args(args)
         .current_dir(cwd)
@@ -2815,8 +2816,9 @@ async fn run_check(
         command.env("CARGO_TARGET_DIR", path);
     }
     let registry = OwnedProcessRegistry::new(Some(process_dir.to_path_buf()));
-    let mut child = registry
-        .spawn(&mut command)
+    command.prepare().await.map_err(|e| e.to_string())?;
+    let mut child = command
+        .spawn_owned(&registry)
         .map_err(|e| format!("Could not run check: {e}"))?;
     let stdout_pipe = child.stdout.take().ok_or("Check stdout unavailable")?;
     let stderr_pipe = child.stderr.take().ok_or("Check stderr unavailable")?;
@@ -2906,7 +2908,6 @@ mod tests {
     use serde_json::json;
     use std::{
         path::PathBuf,
-        process::Command,
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -3170,7 +3171,7 @@ mod tests {
             vec!["config", "user.name", "Test"],
             vec!["config", "user.email", "test@example.invalid"],
         ] {
-            assert!(crate::project_process::git_command()
+            assert!(crate::project_process::fixture_git_command()
                 .current_dir(&root)
                 .args(args)
                 .status()
@@ -3178,13 +3179,13 @@ mod tests {
                 .success());
         }
         std::fs::write(root.join("tracked.txt"), "baseline\n").unwrap();
-        assert!(crate::project_process::git_command()
+        assert!(crate::project_process::fixture_git_command()
             .current_dir(&root)
             .args(["add", "tracked.txt"])
             .status()
             .unwrap()
             .success());
-        assert!(crate::project_process::git_command()
+        assert!(crate::project_process::fixture_git_command()
             .current_dir(&root)
             .args(["commit", "-qm", "baseline"])
             .status()
@@ -3264,7 +3265,7 @@ mod tests {
         std::fs::create_dir_all(&process_dir).unwrap();
         let result = f
             .runtime
-            .block_on(run_check(
+            .block_on(run_check(std::path::Path::new("/nonexistent-apex-test-data"),
                 &f.root,
                 &[
                     "sh".into(),
@@ -3603,8 +3604,8 @@ mod tests {
         let data = task.result_data.as_ref().unwrap();
         let worktree = Path::new(data["executionPath"].as_str().unwrap());
         std::fs::write(worktree.join(path), contents).unwrap();
-        let snapshot = assistant_git::capture_result(worktree, &task.id).unwrap();
-        let diff = assistant_git::review_diff(
+        let snapshot = assistant_git::capture_result(std::path::Path::new("/nonexistent-apex-test-data"), worktree, &task.id).unwrap();
+        let diff = assistant_git::review_diff(std::path::Path::new("/nonexistent-apex-test-data"),
             worktree,
             data["baselineSnapshot"]["commit"].as_str().unwrap(),
             &snapshot.commit,
@@ -4035,7 +4036,7 @@ mod tests {
         assert!(Path::new(execution_path).join(".git").exists());
         let task = set_isolated_result(&f, &task, "tracked.txt", "worker task one\n");
         std::fs::write(f.root.join("human-staged.txt"), "human work\n").unwrap();
-        let git_add = crate::project_process::git_command()
+        let git_add = crate::project_process::fixture_git_command()
             .current_dir(&f.root)
             .args(["add", "human-staged.txt"])
             .status()
@@ -4913,7 +4914,7 @@ mod tests {
     /// itself so a failing test can't leave it running.
     fn hold_result_save(f: &Fixture, task: &AssistantTask) {
         std::fs::write(f.root.join(".git/review-filter.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ ! -e .git/review-filter-release ] && [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat\n").unwrap();
-        assert!(crate::project_process::git_command().current_dir(&f.root).args(["config", "filter.watchdog-review.clean", "sh .git/review-filter.sh"]).status().unwrap().success());
+        assert!(crate::project_process::fixture_git_command().current_dir(&f.root).args(["config", "filter.watchdog-review.clean", "sh .git/review-filter.sh"]).status().unwrap().success());
         std::fs::write(f.root.join(".gitattributes"), "tracked.txt filter=watchdog-review\n").unwrap();
         std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
         std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();
@@ -4944,7 +4945,7 @@ mod tests {
         let f = fixture();
         let (task, _) = controlled_delegation(&f, "pause-diff", TaskMode::InPlace);
         std::fs::write(f.root.join(".git/review-diff.sh"), "echo $$ > .git/review-filter-pid\ntouch .git/review-filter-entered\ni=0\nwhile [ $i -lt 1000 ]; do sleep 0.05; i=$((i+1)); done\ncat \"$1\"\n").unwrap();
-        assert!(crate::project_process::git_command().current_dir(&f.root).args(["config", "diff.watchdog-review.textconv", "sh .git/review-diff.sh"]).status().unwrap().success());
+        assert!(crate::project_process::fixture_git_command().current_dir(&f.root).args(["config", "diff.watchdog-review.textconv", "sh .git/review-diff.sh"]).status().unwrap().success());
         std::fs::write(f.root.join(".gitattributes"), "tracked.txt diff=watchdog-review\n").unwrap();
         std::fs::write(f.root.join("tracked.txt"), "completed edit\n").unwrap();
         std::fs::write(f.root.join(".git/review-reply"), "reply").unwrap();

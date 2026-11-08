@@ -1,7 +1,7 @@
 use super::*;
 use crate::{assistant_tasks::{AssistantTask, DesiredState, TaskStatus}, host::{Host, HostPaths}, personal::{CreateInput, EventState}};
 use apex_core::{Access, Backend, ParticipantConfig, RoomOptions};
-use std::{path::PathBuf, process::Command, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{Duration, Instant}};
+use std::{path::PathBuf, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{Duration, Instant}};
 
 struct Fixture {
     host: Arc<Host>,
@@ -21,11 +21,11 @@ fn fixture(access: Access, tools: ProjectTools, version: Option<u32>) -> Fixture
     let root=base.join("repo");let data=base.join("data");
     std::fs::create_dir_all(&root).unwrap();
     for args in [vec!["init","-q"],vec!["config","user.name","Test"],vec!["config","user.email","test@example.invalid"]] {
-        assert!(crate::project_process::git_command().current_dir(&root).args(args).status().unwrap().success());
+        assert!(crate::project_process::fixture_git_command().current_dir(&root).args(args).status().unwrap().success());
     }
     std::fs::write(root.join("tracked.txt"),"baseline\n").unwrap();
-    assert!(crate::project_process::git_command().current_dir(&root).args(["add","tracked.txt"]).status().unwrap().success());
-    assert!(crate::project_process::git_command().current_dir(&root).args(["commit","-qm","baseline"]).status().unwrap().success());
+    assert!(crate::project_process::fixture_git_command().current_dir(&root).args(["add","tracked.txt"]).status().unwrap().success());
+    assert!(crate::project_process::fixture_git_command().current_dir(&root).args(["commit","-qm","baseline"]).status().unwrap().success());
     let runtime=tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let host=Host::try_new(HostPaths {data:data.clone(),downloads:None},runtime.handle().clone()).unwrap();
     std::fs::write(data.join("host-id"),"owner").unwrap();
@@ -309,7 +309,7 @@ fn held_standing_delegation_resumes_on_personal_worker_wake_without_manual_retry
     assert_eq!(held.status,TaskStatus::Queued);assert!(held.attempts.is_empty());
     assert!(held.result.as_deref().is_some_and(|reason|reason.contains("record its cost")));
     f.host.change_assistant(&f.input.assistant_id,|assistant| {assistant.events.iter_mut().find(|event|event.id==f.input.source_event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
-    f.host.start_personal_worker_with(crate::personal_worker::WorkerTools::real()).unwrap();
+    f.host.start_personal_worker_with(crate::personal_worker::WorkerTools::real(std::path::Path::new("/nonexistent-apex-test-data"))).unwrap();
     let finished=wait_for(&f,&queued.id);
     assert_eq!(finished.status,TaskStatus::ReadyForReview,"{:?}",finished.result);
     assert_eq!(finished.attempts.len(),1);

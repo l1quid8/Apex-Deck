@@ -425,7 +425,7 @@ mod tests {
             let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
             let daemon = Arc::new(Daemon {
                 voice: crate::voice::VoiceServer::new(data),
-                host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(),
+                host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(), linux_device_policy: Some(false), confinement: Default::default(),
                 invites: Default::default(), remote: Default::default(),
             });
             let endpoint: Endpoint = remote::bind(remote::key(data).unwrap(), None, 0).await.unwrap();
@@ -599,7 +599,7 @@ mod tests {
             // A daemon that isn't serving --remote.
             let data = crate::devices::tests::folder();
             let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
-            let off = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&data.0), host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), invites: Default::default(), remote: Default::default() });
+            let off = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&data.0), host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), linux_device_policy: Some(false), confinement: Default::default(), invites: Default::default(), remote: Default::default() });
             let path = ipc::endpoint(&data.0).unwrap();
             let mut listener = ipc::listen(&path).unwrap();
             let ours = ipc::connect(&path).await.unwrap();

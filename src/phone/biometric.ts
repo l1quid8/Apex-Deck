@@ -1,38 +1,24 @@
-// Real biometric step for phone level-raise flow per Task 7
-// On iOS, uses Capacitor native biometric if available, else WebAuthn or fallback.
-// This is phone's own guard, not proof to daemon.
+// Phone-local authentication only. The daemon independently checks device
+// authority; a phone authentication result is never sent as proof to the host.
+import { Capacitor, registerPlugin } from "@capacitor/core";
 
-export async function requireFaceId(reason: string): Promise<boolean> {
-  // Try Capacitor Biometrics if available
-  try {
-    // @ts-ignore
-    const { NativeBiometric } = await import("capacitor-native-biometric").catch(() => ({ NativeBiometric: null }));
-    if (NativeBiometric) {
-      const result = await NativeBiometric.isAvailable();
-      if (result.isAvailable) {
-        await NativeBiometric.verifyIdentity({ reason, title: "Face ID required", subtitle: reason });
-        return true;
-      }
-    }
-  } catch {}
-  // Try WebAuthn platform authenticator as fallback for Face ID / Touch ID
-  try {
-    if (typeof window !== "undefined" && window.PublicKeyCredential) {
-      // Simple check: if platform authenticator available, prompt
-      // For now, use a confirm dialog as guard that requires user interaction
-      // Real implementation would use a challenge via Secure Enclave
-    }
-  } catch {}
-  // Fallback: require explicit user confirmation that mimics Face ID step
-  // In production iOS, this would be native Face ID prompt via SshPlugin saved()
-  // For web, we use a modal confirmation that is still a user presence check
-  if (typeof window !== "undefined") {
-    return window.confirm(`${reason}\n\nConfirm with Face ID / biometrics to continue?`);
-  }
-  return false;
+interface BiometricNative {
+  authenticateBiometric(options: { reason: string }): Promise<{ authenticated: boolean }>;
 }
 
-// Hook for tier raise: phone must confirm with Face ID before allowing Full access actions
+let native: BiometricNative | undefined;
+
+/** No browser confirmation, passcode policy, or saved SSH-secret fallback. */
+export async function requireFaceId(reason: string): Promise<boolean> {
+  try {
+    if (!Capacitor.isPluginAvailable("ApexSsh")) return false;
+    native ??= registerPlugin<BiometricNative>("ApexSsh");
+    return (await native.authenticateBiometric({ reason })).authenticated === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function confirmFullAccessRaise(action: string): Promise<boolean> {
-  return requireFaceId(`Raising to Full lets this device ${action}. Confirm with Face ID.`);
+  return requireFaceId(`Raising to Full lets this device ${action}. Confirm with biometrics.`);
 }

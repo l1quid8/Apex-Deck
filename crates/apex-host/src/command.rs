@@ -249,7 +249,13 @@ pub enum Command {
     RoomForgetAllowed { id: String, rule: AllowedRule },
     RoomSetOptions { id: String, options: RoomOptions },
     RoomAddParticipant { id: String, participant: ParticipantConfig },
-    RoomUpdateParticipant { id: String, participant: ParticipantConfig, #[serde(default)] base: Option<ParticipantConfig> },
+    RoomUpdateParticipant {
+        id: String,
+        participant: ParticipantConfig,
+        #[serde(default)] base: Option<ParticipantConfig>,
+        #[serde(default, alias = "old_level")] old_level: Option<Access>,
+        #[serde(default)] folder: Option<String>,
+    },
     RoomRemoveParticipant { id: String, participant: ParticipantId },
     RoomClear { id: String },
     RoomRewind { id: String, upto: usize },
@@ -408,6 +414,35 @@ impl Host {
         blocking(move || apex_provenance::io::finish(&folder, &receipt.key, reason.as_deref())).await
             .map_err(|e| format!("The phone command may have completed, but its protected outcome could not be recorded. Do not retry automatically: {e}"))?;
         result
+    }
+
+    /// The Linux device route, after transport authentication. `check` is
+    /// supplied by the daemon, never deserialized from the command, and reads
+    /// the current grant, trust epoch and confinement state again at mutation.
+    pub async fn call_from_confined_device(
+        self: &Arc<Self>, intent: Value, capability: apex_core::GeneratedUiCapability,
+        check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Result<Value, String> {
+        let command = Command::from_json(intent)?;
+        if matches!(command, Command::ProvenanceExecute { .. }) {
+            return Err("A paired phone cannot execute desktop receipts".into());
+        }
+        check()?;
+        match command {
+            Command::RoomUpdateParticipant { id, participant, base, old_level, folder } => {
+                reply(self.room_update_participant_from_device(id, participant, base, old_level, folder, check.as_ref()).await?)
+            }
+            Command::RoomAddParticipant { id, participant } => {
+                let authorize = || { check()?; Ok(None) };
+                reply(self.room_add_participant_checked(id, participant, &authorize).await?)
+            }
+            command => {
+                // Folder picks retain the machine's explicit allowed-root
+                // boundary; that allow-list never supplies raise authority.
+                self.device_folder_command(&command)?;
+                self.dispatch_command(command, capability).await
+            }
+        }
     }
 
     // Tests of downstream behavior explicitly assume a previously verified UI
@@ -686,7 +721,7 @@ impl Host {
             RoomForgetAllowed { id, rule } => reply(self.room_forget_allowed(id, rule)?),
             RoomSetOptions { id, options } => reply(self.room_set_options(id, options).await?),
             RoomAddParticipant { id, participant } => reply(self.room_add_participant(id, participant).await?),
-            RoomUpdateParticipant { id, participant, base } => reply(self.room_update_participant_from(id, participant, base).await?),
+            RoomUpdateParticipant { id, participant, base, .. } => reply(self.room_update_participant_from(id, participant, base).await?),
             RoomRemoveParticipant { id, participant } => reply(self.room_remove_participant(id, participant).await?),
             RoomClear { id } => reply(self.room_clear(id).await?),
             RoomRewind { id, upto } => reply(self.room_rewind(id, upto).await?),

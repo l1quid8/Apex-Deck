@@ -161,7 +161,7 @@ export interface Backend {
   roomForgetAllowed(id: string, rule: AllowedRule): Promise<void>;
   roomAddParticipant(id: string, participant: ParticipantConfig): Promise<void>;
   /** Save settings; with base, merge only edited fields. New helpers return the saved config and broadcast it. */
-  roomUpdateParticipant(id: string, participant: ParticipantConfig, base?: ParticipantConfig): Promise<ParticipantConfig | null | void>;
+  roomUpdateParticipant(id: string, participant: ParticipantConfig, base?: ParticipantConfig, folder?: string): Promise<ParticipantConfig | null | void>;
   roomRemoveParticipant(id: string, participant: string): Promise<void>;
   /** Empty the transcript, which is all the models see, and keep the participants. */
   roomClear(id: string): Promise<void>;

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Opens the SSH sign-in you chose to keep, so Deck can repair this machine.</string>
+	<string>Authenticates access changes and opens SSH sign-ins you chose to keep.</string>
 	<key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>

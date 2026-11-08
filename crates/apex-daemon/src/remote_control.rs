@@ -202,7 +202,7 @@ mod tests {
             devices: Arc::new(Devices::open(data)),
             gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()),
             gateway: Default::default(),
-            data: data.to_path_buf(),
+            data: data.to_path_buf(), linux_device_policy: Some(false), confinement: Default::default(),
             invites: Default::default(),
             remote: RemoteController::default(),
         })

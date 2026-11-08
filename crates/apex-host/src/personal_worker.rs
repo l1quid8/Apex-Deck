@@ -95,7 +95,8 @@ pub struct WorkerTools {
 }
 
 impl WorkerTools {
-    pub fn real() -> Self {
+    pub fn real(data: &std::path::Path) -> Self {
+        let data = data.to_path_buf();
         WorkerTools {
             reason: Arc::new(|config, request, attachment_roots| Box::pin(async move {
                 crate::assistant_inference::reply(config, request, attachment_roots).await.map(|(reply, computer)| ReasonOut {
@@ -103,7 +104,10 @@ impl WorkerTools {
                     computer_used: computer.used, text_only_computer: computer.text_only,
                 })
             })),
-            execute: Arc::new(|spec, started| Box::pin(run_operation(spec, started))),
+            execute: Arc::new(move |spec, started| {
+                let data = data.clone();
+                Box::pin(async move { run_operation(&data, spec, started).await })
+            }),
             // A command that only reads may run twice; anything else is never
             // repeated blindly after a restart. Connectors only read.
             tool: Arc::new(|op| match op.tool.as_str() {
@@ -142,9 +146,9 @@ fn timeout_of(spec: &OperationSpec) -> Duration {
     Duration::from_millis(spec.plan.as_ref().and_then(|p| p.timeout_ms).unwrap_or(COMMAND_TIMEOUT_MS).clamp(1_000, MAX_TIMEOUT_MS))
 }
 
-async fn run_operation(spec: OperationSpec, started: Started) -> Result<ToolRun, String> {
+async fn run_operation(data: &std::path::Path, spec: OperationSpec, started: Started) -> Result<ToolRun, String> {
     if spec.tool == COMMAND_TOOL {
-        run_command(spec, started).await
+        run_command(data, spec, started).await
     } else {
         connectors::run(&spec).await
     }
@@ -152,10 +156,11 @@ async fn run_operation(spec: OperationSpec, started: Started) -> Result<ToolRun,
 
 /// `host.command`: argv with no shell, in its folder, time- and size-limited.
 /// Dropping the future (a cancel) kills the command and everything it started.
-pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result<ToolRun, String> {
+pub(crate) async fn run_command(data: &std::path::Path, spec: OperationSpec, started: Started) -> Result<ToolRun, String> {
     let limit = timeout_of(&spec);
     let (program, args) = spec.argv.split_first().ok_or("The command is empty.")?;
-    let mut command = tokio::process::Command::new(apex_adapters::executable_program(program, None));
+    let executable = apex_adapters::executable_program(program, None);
+    let mut command = crate::project_process::tokio_command_in(data, executable.to_str().ok_or("Command program is not valid UTF-8")?, std::path::Path::new(&spec.cwd))?;
     if program == "git" && gateway::classify(&spec, &[]).0 == ToolClass::Read {
         // Read approval must not authorize executable helpers from ambient Git
         // configuration. Apply overrides to this process only; approved writes
@@ -173,8 +178,9 @@ pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result
     // Its own process group, so its children can be stopped with it.
     #[cfg(unix)]
     command.process_group(0);
+    command.prepare().await.map_err(|e|e.to_string())?;
     #[cfg(windows)]
-    let mut child = apex_adapters::OwnedProcessRegistry::default().spawn(&mut command)
+    let mut child = command.spawn_owned(&apex_adapters::OwnedProcessRegistry::default())
         .map_err(|e| format!("Could not start {program}: {e}"))?;
     #[cfg(not(windows))]
     let mut child = command.spawn().map_err(|e| format!("Could not start {program}: {e}"))?;
@@ -522,7 +528,7 @@ pub(crate) struct Tick {
 impl Host {
     /// Start once per daemon, after `<data>/host-id` exists.
     pub fn start_personal_worker(self: &Arc<Self>) -> Result<(), String> {
-        self.start_personal_worker_with(WorkerTools::real())
+        self.start_personal_worker_with(WorkerTools::real(self.data_dir()))
     }
 
     /// Work bots can reach the browser before the assistant has ever started.
@@ -2217,7 +2223,7 @@ mod native_proposal_regression {
             let mut input=serde_json::json!({"goal":"Assign a worker","argv":["room.assign","thread","worker","Review this"]});
             if let Some(tool)=tool {input["tool"]=tool.into();}
             let proposed: ProposedTask=serde_json::from_value(input).unwrap();
-            propose_task(&mut assistant,&WorkerTools::real(),"h","pe-1","Assign a worker",proposed,None,None,None,false,5);
+            propose_task(&mut assistant,&WorkerTools::real(std::path::Path::new("/nonexistent-apex-test-data")),"h","pe-1","Assign a worker",proposed,None,None,None,false,5);
             assert!(assistant.tasks.is_empty(),"a native action must never become a command approval or executable task");
             let refusal=&assistant.messages.last().expect("visible refusal").text;
             assert!(refusal.contains("No task was made")&&refusal.contains("room.assign")&&refusal.contains("tool"),"refusal should explain the native tool form: {refusal}");

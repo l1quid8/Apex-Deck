@@ -5,10 +5,10 @@ use crate::{
     storage::Store,
     worktrees::{self, CopyInfo, WorktreeList},
 };
-use std::{path::Path, process::Command};
+use std::{path::Path};
 
-fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let out = crate::project_process::git_command()
+fn git(project_data: &Path, root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = crate::project_process::git_command(project_data, root)?
         .arg("-C")
         .arg(root)
         .args(args)
@@ -37,7 +37,7 @@ fn valid_copy(data: &Path, copy: &BotCopy) -> bool {
                 .join("work")
 }
 pub fn list(root: &Path, data: &Path) -> Result<WorktreeList, String> {
-    let mut listing = worktrees::list(root, &data.join("apex-agent/tasks"))?;
+    let mut listing = worktrees::list(data, root, &data.join("apex-agent/tasks"))?;
     let copies = bot_copies::load_copies(data);
     for row in &mut listing.items {
         if let Some(copy) = copies
@@ -59,10 +59,10 @@ pub fn list(root: &Path, data: &Path) -> Result<WorktreeList, String> {
                 reason,
             });
             // Count against the hidden base, even if the bot committed its edits.
-            row.changes = bot_copies::snapshot_tree_id(&copy.work)
+            row.changes = bot_copies::snapshot_tree_id(data, &copy.work)
                 .ok()
                 .and_then(|tree| {
-                    git(
+                    git(data,
                         &copy.work,
                         &[
                             "diff-tree",
@@ -129,7 +129,7 @@ pub fn remove(root: &Path, target: &Path, force: bool, data: &Path) -> Result<()
         if target.starts_with(data.join("bot-copies")) {
             return Err("Copy metadata is missing; the folder has been kept.".into());
         }
-        return worktrees::remove(root, target, force, &data.join("apex-agent/tasks"));
+        return worktrees::remove(data, root, target, force, &data.join("apex-agent/tasks"));
     };
     if !matches!(copy.state, CopyState::NeedsYou { .. }) {
         return Err("Deck manages this active bot copy. Wait until it needs you.".into());
@@ -143,7 +143,7 @@ pub fn remove(root: &Path, target: &Path, force: bool, data: &Path) -> Result<()
     bot_copies::remove_copy(data, &copy)
 }
 pub fn set_check(root: &Path, data: &Path, cmd: Option<String>) -> Result<(), String> {
-    let listing = worktrees::list(root, &data.join("apex-agent/tasks"))?;
+    let listing = worktrees::list(data, root, &data.join("apex-agent/tasks"))?;
     project_check::save_check(
         data,
         Path::new(&listing.root),
@@ -154,7 +154,7 @@ pub fn set_check(root: &Path, data: &Path, cmd: Option<String>) -> Result<(), St
 mod tests {
     use super::*;
     use crate::bot_copies::{create_copy, save_state, CopyState};
-    use std::{fs, path::PathBuf, process::Command};
+    use std::{fs, path::PathBuf};
     fn fixture() -> (PathBuf, PathBuf, PathBuf) {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let tmp = std::env::temp_dir().join(format!(
@@ -170,7 +170,7 @@ mod tests {
             vec!["config", "user.name", "Test"],
             vec!["config", "user.email", "test@example.com"],
         ] {
-            assert!(crate::project_process::git_command()
+            assert!(crate::project_process::fixture_git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -181,7 +181,7 @@ mod tests {
         }
         fs::write(root.join("seed"), "seed").unwrap();
         for args in [vec!["add", "seed"], vec!["commit", "-m", "seed"]] {
-            assert!(crate::project_process::git_command()
+            assert!(crate::project_process::fixture_git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -249,10 +249,10 @@ mod tests {
         assert!(copy.work.exists());
         assert_eq!(crate::bot_copies::load_copies(&data).len(), 1);
         assert!(
-            worktrees::remove(&root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
+            worktrees::remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
         );
         assert!(
-            worktrees::forget(&root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
+            worktrees::forget(std::path::Path::new("/nonexistent-apex-test-data"), &root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
         );
         fs::remove_dir_all(tmp).unwrap();
     }

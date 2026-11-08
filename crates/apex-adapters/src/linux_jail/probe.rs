@@ -98,6 +98,12 @@ pub async fn run(env: &ProbeEnv, bwrap: Option<&std::path::Path>) -> JailState {
 }
 
 #[cfg(target_os = "linux")]
+pub async fn run_installed(env: &ProbeEnv) -> JailState {
+    let bwrap = crate::gateway_sandbox::find_bwrap(None);
+    run(env, bwrap.as_deref()).await
+}
+
+#[cfg(target_os = "linux")]
 mod host {
     use super::super::{channel, launch, paths, proxy, Bind, JailError, JailSpec, INIT_PATH};
     use super::{verdict, JailState, ProbeEnv, PROBE_ARG};

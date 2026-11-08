@@ -104,14 +104,15 @@ fn cut(bytes: Vec<u8>) -> (String, bool) {
     (String::from_utf8_lossy(kept).to_string(), long)
 }
 
-pub async fn mod_process_run(
+pub async fn mod_process_run(project_data: &std::path::Path,
     argv: Vec<String>,
     cwd: Option<String>,
     stdin: Option<String>,
     timeout_ms: Option<u64>,
 ) -> Result<RunResult, String> {
     let (program, args) = argv.split_first().ok_or("process.run needs a program")?;
-    let mut command = tokio::process::Command::new(program);
+    let folder = cwd.as_deref().filter(|c| !c.is_empty()).map(std::path::PathBuf::from).unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?);
+    let mut command = crate::project_process::tokio_command_in(project_data, program, &folder)?;
     command.args(args).kill_on_drop(true);
     if let Some(path) = crate::agents::login_path() {
         command.env("PATH", path);
@@ -121,6 +122,7 @@ pub async fn mod_process_run(
     }
     command.stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() });
     command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    command.prepare().await.map_err(|e|e.to_string())?;
     let mut child = command.spawn().map_err(|e| format!("{program}: {e}"))?;
     if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
         pipe.write_all(text.as_bytes()).await.map_err(|e| e.to_string())?;

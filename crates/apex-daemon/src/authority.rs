@@ -306,6 +306,15 @@ pub enum AccessEffect {
     Raises,
 }
 
+fn access_rank(access: apex_core::Access) -> u8 {
+    match access {
+        apex_core::Access::Read => 0,
+        apex_core::Access::Ask => 1,
+        apex_core::Access::Edits => 2,
+        apex_core::Access::Full => 3,
+    }
+}
+
 pub fn access_effect(command: &Command) -> AccessEffect {
     use AccessEffect::*;
     use Command::*;
@@ -329,6 +338,10 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         // SessionSave / SettingsSave: can carry profiles with access levels, so Raises.
         // FolderAccept: lets Full bot run lower code, same rule as raise.
         RoomAddParticipant { .. } => Raises,
+        // The host atomically verifies old_level against the saved level, so
+        // a forged high old_level cannot turn this into a raising exemption.
+        RoomUpdateParticipant { participant, old_level: Some(old), .. }
+            if access_rank(participant.access) <= access_rank(*old) => None,
         RoomUpdateParticipant { .. } => Raises,
         RoomCreate { .. } => Raises,
         RoomImport { .. } => Raises,
@@ -579,7 +592,7 @@ pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -612,12 +625,12 @@ mod tests {
 
     /// One row of the table: the command, what it needs, and arguments that
     /// name thread `mine` wherever a thread is named.
-    type Row = (&'static str, Option<(Tier, &'static str)>, Value);
+    pub(crate) type Row = (&'static str, Option<(Tier, &'static str)>, Value);
 
     /// What every command needs, by name: `None` is never, `Some((tier,
     /// "thread" | "global" | "global_read"))` otherwise. Each comes with
     /// arguments that name thread `mine` wherever a thread is named.
-    fn table() -> Vec<Row> {
+    pub(crate) fn table() -> Vec<Row> {
         use Tier::*;
         let participant = json!({ "id": "null", "display_name": "Null", "backend": { "kind": "agent", "tool": "claude_code" } });
         let options = json!({ "policy": "mention", "max_bot_hops": 0 });

@@ -66,6 +66,9 @@ pub struct Daemon {
     pub gateway: tokio::sync::Mutex<crate::gateway_admin::Runtime>,
     /// The data folder (`remote.json` lives here).
     pub data: std::path::PathBuf,
+    pub(crate) confinement: tokio::sync::OnceCell<Result<(), String>>,
+    #[cfg(test)]
+    pub(crate) linux_device_policy: Option<bool>,
     /// Pairing invitations handed out since this daemon started.
     #[cfg(feature = "remote")]
     pub invites: Arc<crate::pairing::invites::Invites>,
@@ -75,6 +78,45 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    pub(crate) async fn require_confinement(&self) -> Result<(), String> {
+        if !self.uses_linux_device_policy() { return Ok(()); }
+        self.confinement.get_or_init(|| async {
+            #[cfg(target_os = "linux")]
+            {
+                use apex_adapters::linux_jail::{self, probe, JailState};
+                let env = probe::ProbeEnv {
+                    init: std::env::current_exe().map_err(|e| e.to_string())?,
+                    home: dirs::home_dir().ok_or("The host home folder is unavailable.")?,
+                    data: self.data.clone(),
+                };
+                let state = probe::run_installed(&env).await;
+                linux_jail::record_probe_state(state.clone());
+                match state { JailState::Works => Ok(()), JailState::Fails(why) => Err(why) }
+            }
+            #[cfg(not(target_os = "linux"))]
+            { Err("Linux confinement is unavailable on this platform.".into()) }
+        }).await.clone()
+    }
+
+    /// Re-read the live grant and trust record at the host mutation boundary.
+    /// This closure's identity comes only from the authenticated transport.
+    fn authorize_linux_device(&self, id: &str, command: &Command) -> Result<(), String> {
+        let device = self.devices.get(id).ok_or("This device is no longer paired.")?;
+        crate::trust_host::check_device_epoch(&self.data, &device)?;
+        self.confinement.get().ok_or("The sandbox probe has not completed.")?.clone()?;
+        if authority::access_effect(command) == authority::AccessEffect::Raises
+            && (device.tier != Tier::Full || !device.threads.is_all()) {
+            return Err("would raise access and needs full on all threads".into());
+        }
+        authority::check(&device, &authority::command_needs(command))
+    }
+
+    pub(crate) fn uses_linux_device_policy(&self) -> bool {
+        #[cfg(test)]
+        if let Some(policy) = self.linux_device_policy { return policy; }
+        cfg!(target_os = "linux")
+    }
+
     /// Open the host on `paths` with a new boot id. Call inside the runtime.
     pub fn start(paths: &apex_host::HostPaths, token: Option<String>) -> Result<Arc<Daemon>, String> {
         #[cfg(test)]
@@ -110,7 +152,8 @@ impl Daemon {
                 "[apex-deck] personal assistant worker unavailable ({why}); starting without it. Install or re-pin the provenance broker for this build."
             );
         }
-        Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(),
+        Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(), confinement: Default::default(),
+            #[cfg(test)] linux_device_policy: None,
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] remote: crate::remote_control::RemoteController::serving(),
         }))
@@ -164,6 +207,9 @@ struct Reply {
 
 /// A remote device's session: who it is, and word of revokes.
 struct Guard {
+    /// Present only for Linux host-trust policy; native Mac/Windows sessions
+    /// keep their existing device-registry authority.
+    linux_trust_data: Option<std::path::PathBuf>,
     devices: Arc<Devices>,
     id: String,
     revokes: broadcast::Receiver<String>,
@@ -172,27 +218,30 @@ struct Guard {
 impl Guard {
     /// The device as the registry has it right now; `None` once revoked.
     fn device(&self) -> Option<Device> {
-        self.devices.get(&self.id)
+        let device = self.devices.get(&self.id)?;
+        if let Some(data) = &self.linux_trust_data {
+            crate::trust_host::check_device_epoch(data, &device).ok()?;
+        }
+        Some(device)
     }
 
     /// Resolves once this device is no longer allowed. The channel is only a
     /// fast path: when it lags or closes, the registry decides.
     async fn revoked(&mut self) {
         loop {
-            match self.revokes.recv().await {
-                Ok(id) if id == self.id => return,
-                Ok(_) => {}
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    if self.device().is_none() {
-                        return;
+            if self.device().is_none() { return; }
+            // Trust can be reset by a separate shell process, so the in-memory
+            // device revoke channel is insufficient. Poll while idle or stuck
+            // writing, and recheck synchronously at every frame boundary too.
+            tokio::select! {
+                revoke = self.revokes.recv() => match revoke {
+                    Ok(id) if id == self.id => return,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {},
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    if self.device().is_none() {
-                        return;
-                    }
-                    return std::future::pending().await;
-                }
+                },
+                _ = tokio::time::sleep(Duration::from_millis(100)), if self.linux_trust_data.is_some() => {},
             }
         }
     }
@@ -300,7 +349,7 @@ where
     // A device hears of revokes from before its registry check, so one that
     // lands between the check and `hello` is caught by one or the other.
     let mut guard = match &trust {
-        Trust::Device(id) => Some(Guard { devices: Arc::clone(&daemon.devices), id: id.clone(), revokes: daemon.devices.subscribe() }),
+        Trust::Device(id) => Some(Guard { linux_trust_data: daemon.uses_linux_device_policy().then(|| daemon.data.clone()), devices: Arc::clone(&daemon.devices), id: id.clone(), revokes: daemon.devices.subscribe() }),
         _ => None,
     };
     if guard.as_ref().is_some_and(|g| g.device().is_none()) {
@@ -327,6 +376,15 @@ where
             return Ended::Refused;
         }
     };
+    // Device admission covers every surface, including voice and replayed
+    // events, before any request can rely on the confinement boundary.
+    if guard.is_some() {
+        if let Err(why) = daemon.require_confinement().await {
+            let _ = send(&mut output, &mut guard, refusal(hello.id.clone(), why)).await;
+            let _ = output.close().await;
+            return Ended::Refused;
+        }
+    }
     if let Some(guard) = &guard {
         match guard.device() {
             None => return Ended::Revoked,
@@ -421,7 +479,12 @@ where
     while reading || in_flight > 0 || !waiting.is_empty() {
         tokio::select! {
             frame = input.next(), if reading => match frame {
-                Some(Ok(text)) => match read_request(&text) {
+                Some(Ok(text)) => match {
+                    if guard.as_ref().is_some_and(|g| g.device().is_none()) {
+                        return Ended::Revoked;
+                    }
+                    read_request(&text)
+                } {
                     Ok((id, Request::InputClosed)) => {
                         if trust != Trust::Local {
                             if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "not allowed from a remote connection")).await {
@@ -652,36 +715,24 @@ where
                         }
                     },
                     Ok((id, Request::Host(command))) => {
+                        let confinement = if guard.is_some() && daemon.uses_linux_device_policy() {
+                            daemon.require_confinement().await
+                        } else { Ok(()) };
                         let need = match &guard {
+                            None if daemon.uses_linux_device_policy() && authority::access_effect(&command) == authority::AccessEffect::Raises => {
+                                Err("Raising access is only allowed from a paired device on this Linux host; local socket, CLI and SSH calls cannot authorize it.".into())
+                            }
                             None => Ok(None),
                             Some(guard) => match guard.device() {
                                 None => return Ended::Revoked,
                                 Some(device) => {
                                     let need = authority::command_needs(&command);
-                                    let effect = authority::access_effect(&command);
-                                    // Design: Raises only works on Confined+trusted hosts, Full all-threads, current epoch, old_level match, folder match
-                                    // The last two checks are done under room lock in host.rs; here we enforce Full all-threads + trusted+epoch
-                                    if matches!(effect, authority::AccessEffect::Raises) {
-                                        if device.tier != crate::devices::Tier::Full || !device.threads.is_all() {
-                                            Err("would raise access and needs full on all threads".into())
-                                        } else if crate::trust_host::is_trusted(&daemon.data) {
-                                            match (crate::trust_host::epoch(&daemon.data), &device.confined_epoch) {
-                                                (Some(current), Some(dev_epoch)) if current == *dev_epoch => {
-                                                    match authority::check(&device, &need) {
-                                                        Ok(()) => Ok(Some(need)),
-                                                        Err(e) => Err(e),
-                                                    }
-                                                },
-                                                _ => Err("this device was paired before trust and must pair again".into()),
-                                            }
-                                        } else {
-                                            Err("raising access needs a trusted host".into())
-                                        }
+                                    if let Err(why) = &confinement {
+                                        Err(why.clone())
+                                    } else if daemon.uses_linux_device_policy() {
+                                        daemon.authorize_linux_device(&device.endpoint_id, &command).map(|_| Some(need))
                                     } else {
-                                        match authority::check(&device, &need) {
-                                            Ok(()) => Ok(Some(need)),
-                                            Err(e) => Err(e),
-                                        }
+                                        authority::check(&device, &need).map(|_| Some(need))
                                     }
                                 }
                             },
@@ -693,7 +744,7 @@ where
                                     let frame: Value = serde_json::from_str(&text).expect("request already parsed");
                                     (g.id.clone(), phone_session.clone(), json!({"cmd":frame["cmd"],"args":frame.get("args").cloned().unwrap_or(json!({}))}))
                                 });
-                                run(Arc::clone(&daemon.host), id, *command, need, replies_tx.clone(), hello.client_capability, device_intent);
+                                run(Arc::clone(&daemon), id, *command, need, replies_tx.clone(), hello.client_capability, device_intent);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -825,13 +876,18 @@ where
 
 /// Run `command` on its own task and send its result to `replies`, with
 /// what a device needed to run it (`need`), to be checked again on delivery.
-fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
+fn run(daemon: Arc<Daemon>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
+    let host = Arc::clone(&daemon.host);
     let session = matches!(command, Command::SessionLoad {});
     let chat_list = matches!(command, Command::ChatList {});
     let task = {
         let host = Arc::clone(&host);
         tokio::spawn(async move {
             match device_intent {
+                Some((endpoint, _session, intent)) if daemon.uses_linux_device_policy() => {
+                    let check = Arc::new(move || daemon.authorize_linux_device(&endpoint, &command));
+                    host.call_from_confined_device(intent, client_capability, check).await
+                }
                 Some((endpoint, session, intent)) => host.call_from_device(intent, endpoint, session, id, client_capability).await,
                 None => host.call_with_client_capability(command, client_capability).await,
             }
@@ -1072,6 +1128,8 @@ mod tests {
     use apex_host::HostPaths;
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
 
+    include!("protocol_device_access_tests.rs");
+
     struct Client {
         read: FramedRead<ReadHalf<DuplexStream>, LinesCodec>,
         write: FramedWrite<WriteHalf<DuplexStream>, LinesCodec>,
@@ -1100,7 +1158,7 @@ mod tests {
         let daemon = Daemon {
             voice: crate::voice::VoiceServer::new(&data.0),
             host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices,
-            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
+            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), linux_device_policy: Some(false), confinement: Default::default(),
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] remote: Default::default(),
         };
@@ -1591,6 +1649,38 @@ mod tests {
         tokio::time::timeout(wait, session).await.expect("the session ended in time").unwrap()
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connected_device_cannot_spawn_a_terminal_after_trust_reset() {
+        for reset in ["epoch", "pending", "missing", "corrupt"] {
+            let (mut daemon, _data) = daemon();
+            Arc::get_mut(&mut daemon).unwrap().linux_device_policy = Some(true);
+            daemon.confinement.set(Ok(())).unwrap();
+            crate::trust_host::run_no_reboot(&daemon.data, true).unwrap();
+            let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+            let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
+            client.hello().await;
+            match reset {
+                "epoch" => { crate::trust_host::run_no_reboot(&daemon.data, true).unwrap(); }
+                "pending" => {
+                    let pending = json!({"trusted":false,"epoch":"","boot_id":"old"});
+                    std::fs::write(daemon.data.join(crate::trust_host::FILE), pending.to_string()).unwrap();
+                }
+                "missing" => { std::fs::remove_file(daemon.data.join(crate::trust_host::FILE)).unwrap(); }
+                _ => { std::fs::write(daemon.data.join(crate::trust_host::FILE), "broken").unwrap(); }
+            }
+            let _ = client.write.send(json!({"id":1,"cmd":"pty_spawn","args":{"id":"reset-terminal","cols":80,"rows":24}}).to_string()).await;
+            let frames = frames_for(&mut client, Duration::from_millis(200)).await;
+            daemon.host.shutdown();
+            assert!(!frames.iter().any(|frame| frame["id"] == 1 && frame.get("ok").is_some()), "{reset}: stale device executed pty_spawn: {frames:?}");
+            assert_eq!(ended_within(session, Duration::from_secs(1)).await, Ended::Revoked, "{reset}");
+            let mut local = connect_to(&daemon, Trust::Local);
+            local.hello().await;
+            local.send(json!({"id":2,"cmd":"pty_list","args":{}})).await;
+            let reply = local.until_reply(2).await.pop().unwrap();
+            assert!(!reply["ok"].as_array().unwrap().iter().any(|pty| pty["id"] == "reset-terminal"), "stale command must never create even a stopped PTY: {reply}");
+        }
+    }
+
     /// Gateway keys are the crown jewels: a paired phone or the WebSocket may
     /// never list, issue, or revoke one, whatever its tier.
     #[tokio::test(flavor = "multi_thread")]
@@ -1846,7 +1936,7 @@ mod tests {
     /// A reply carries what it needed; this checks it again as it goes out.
     fn held(daemon: &Daemon, phone: &str, command: Value, result: Value) -> (Option<Guard>, Reply) {
         let command: Command = serde_json::from_value(command).unwrap();
-        let guard = Guard { devices: Arc::clone(&daemon.devices), id: phone.to_string(), revokes: daemon.devices.subscribe() };
+        let guard = Guard { linux_trust_data: daemon.uses_linux_device_policy().then(|| daemon.data.clone()), devices: Arc::clone(&daemon.devices), id: phone.to_string(), revokes: daemon.devices.subscribe() };
         let session = matches!(command, Command::SessionLoad {});
         let chat_list = matches!(command, Command::ChatList {});
         let reply = Reply { after: 0, id: 7, result: Ok(result), need: Some(authority::command_needs(&command)), session, chat_list };
@@ -1941,7 +2031,7 @@ mod tests {
             voice: crate::voice::VoiceServer::new(&data.0),
             host: apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
             host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
-            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
+            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), linux_device_policy: Some(false), confinement: Default::default(),
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
@@ -2059,7 +2149,7 @@ mod tests {
             voice: crate::voice::VoiceServer::new(&data.0),
             host: apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
             host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
-            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
+            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), linux_device_policy: Some(false), confinement: Default::default(),
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]

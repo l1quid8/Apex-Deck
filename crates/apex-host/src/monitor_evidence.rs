@@ -3,9 +3,8 @@
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Stdio;
+use std::time::Duration;
 
 use apex_core::Speaker;
 use serde::{Deserialize, Serialize};
@@ -69,7 +68,7 @@ pub fn validate_files(cwd: &str, files: &[String]) -> Result<Vec<String>, String
 
 /// Collect only the explicitly selected files and saved rooms, plus local git
 /// status and recent commit subjects. No repository enumeration is performed.
-pub fn collect(
+pub fn collect(project_data: &Path,
     cwd: &str,
     files: &[String],
     threads: &[(String, SavedRoom)],
@@ -217,7 +216,7 @@ pub fn collect(
         }
     }
 
-    let status = run_git(
+    let status = run_git(project_data,
         &root,
         &["status", "--short", "--branch", "--untracked-files=no"],
         MAX_GIT_STATUS_BYTES,
@@ -232,7 +231,7 @@ pub fn collect(
         "Git working tree status",
         status,
     );
-    let commits = run_git(
+    let commits = run_git(project_data,
         &root,
         &["log", "-8", "--oneline", "--decorate=no"],
         MAX_GIT_LOG_BYTES,
@@ -389,8 +388,8 @@ fn add_git_source(
 }
 
 /// Runs one fixed git subcommand with bounded retained output and a hard timeout.
-fn run_git(root: &Path, args: &[&str], cap: usize) -> Result<String, String> {
-    let mut command = crate::project_process::git_command();
+fn run_git(project_data: &Path, root: &Path, args: &[&str], cap: usize) -> Result<String, String> {
+    let mut command = crate::project_process::git_command(project_data, root)?;
     command
         .arg("-c")
         .arg("core.fsmonitor=false")
@@ -406,36 +405,14 @@ fn run_git(root: &Path, args: &[&str], cap: usize) -> Result<String, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("could not start git: {e}"))?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let out_reader = thread::spawn(move || read_capped(stdout, cap));
-    let err_reader = thread::spawn(move || read_capped(stderr, 1024));
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if start.elapsed() < GIT_TIMEOUT => thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                let _ = child.kill();
-                break None;
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("git status failed: {error}"));
-            }
-        }
-    };
-    let _ = child.wait();
-    let (out, out_truncated) = out_reader.join().unwrap_or_else(|_| (Vec::new(), true));
-    let (err, _) = err_reader.join().unwrap_or_else(|_| (Vec::new(), false));
-    if status.is_none() {
-        return Err("timed out after 3 seconds".into());
-    }
-    let status = status.unwrap();
+    let bounded = command.output_bounded(GIT_TIMEOUT, cap, 1024).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut { "timed out after 3 seconds".to_string() }
+        else { format!("could not run git: {error}") }
+    })?;
+    let status = bounded.output.status;
+    let out = bounded.output.stdout;
+    let err = bounded.output.stderr;
+    let out_truncated = bounded.stdout_truncated;
     if !status.success() {
         let detail = String::from_utf8_lossy(&err).trim().to_owned();
         if detail.contains("not a git repository") {
@@ -538,7 +515,7 @@ mod tests {
         threads: &[(String, SavedRoom)],
         now: u64,
     ) -> EvidenceSnapshot {
-        collect(root.to_str().unwrap(), files, threads, now).unwrap()
+        collect(std::path::Path::new("/nonexistent-apex-test-data"), root.to_str().unwrap(), files, threads, now).unwrap()
     }
 
     #[test]

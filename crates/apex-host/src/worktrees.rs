@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,8 +44,8 @@ pub struct AddRequest {
     pub folder: Option<String>,
 }
 
-fn git(project: &Path, args: &[String]) -> Result<String, String> {
-    let output = crate::project_process::git_command()
+fn git(project_data: &Path, project: &Path, args: &[String]) -> Result<String, String> {
+    let output = crate::project_process::git_command(project_data, project)?
         .arg("-C")
         .arg(crate::assistant_git::external_path(project).as_os_str())
         .args(args)
@@ -122,10 +122,10 @@ struct Repo {
 /// The repository holding `project`. A project folder that isn't in one, such as a
 /// folder of checkouts, gets every repository checked out directly inside it; the one
 /// with the most checkouts there comes first and takes new worktrees.
-fn repos(project: &Path, task_dir: &Path) -> Result<(String, Vec<Repo>), String> {
+fn repos(project_data: &Path, project: &Path, task_dir: &Path) -> Result<(String, Vec<Repo>), String> {
     let task_root = fs_canonical(task_dir).unwrap_or_else(|| task_dir.to_path_buf());
     let worktrees = |dir: &Path| {
-        git(
+        git(project_data,
             dir,
             &[
                 "worktree".into(),
@@ -136,14 +136,14 @@ fn repos(project: &Path, task_dir: &Path) -> Result<(String, Vec<Repo>), String>
         )
         .map(|raw| parse_list(&raw, &task_root))
     };
-    let (root, mut repos) = match git(project, &["rev-parse".into(), "--show-toplevel".into()]) {
+    let (root, mut repos) = match git(project_data, project, &["rev-parse".into(), "--show-toplevel".into()]) {
         Ok(root) => {
             let root = root.trim().to_string();
             let items = worktrees(Path::new(&root))?;
             (root, vec![Repo { dir: project.to_path_buf(), items }])
         }
         Err(_) => {
-            let repos: Vec<Repo> = child_repos(project)
+            let repos: Vec<Repo> = child_repos(project_data, project)
                 .into_iter()
                 .filter_map(|checkout| {
                     let items = worktrees(&checkout).ok()?;
@@ -171,7 +171,7 @@ fn repos(project: &Path, task_dir: &Path) -> Result<(String, Vec<Repo>), String>
         .filter(|w| !w.prunable)
         .take(50)
     {
-        item.changes = git(Path::new(&item.path), &["status".into(), "--porcelain".into()])
+        item.changes = git(project_data, Path::new(&item.path), &["status".into(), "--porcelain".into()])
             .ok()
             .map(|s| s.lines().count().min(u32::MAX as usize) as u32);
     }
@@ -180,7 +180,7 @@ fn repos(project: &Path, task_dir: &Path) -> Result<(String, Vec<Repo>), String>
 /// One checkout per repository checked out directly inside `folder`, the repository
 /// with the most checkouts there first. Hidden folders and symlinks are skipped, so
 /// nothing outside `folder` is reached.
-fn child_repos(folder: &Path) -> Vec<PathBuf> {
+fn child_repos(project_data: &Path, folder: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
@@ -194,7 +194,7 @@ fn child_repos(folder: &Path) -> Vec<PathBuf> {
         .take(256);
     for entry in children {
         let path = entry.path();
-        let Ok(out) = git(
+        let Ok(out) = git(project_data,
             &path,
             &[
                 "rev-parse".into(),
@@ -226,15 +226,15 @@ fn child_repos(folder: &Path) -> Vec<PathBuf> {
         .map(|(_, mut checkouts)| checkouts.swap_remove(0))
         .collect()
 }
-pub fn list(project: &Path, task_dir: &Path) -> Result<WorktreeList, String> {
-    let (root, repos) = repos(project, task_dir)?;
+pub fn list(project_data: &Path, project: &Path, task_dir: &Path) -> Result<WorktreeList, String> {
+    let (root, repos) = repos(project_data, project, task_dir)?;
     let items = repos.into_iter().flat_map(|repo| repo.items).collect();
     Ok(WorktreeList { root, items, check_command: None })
 }
-pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
+pub fn add(project_data: &Path, project: &Path, req: AddRequest) -> Result<Worktree, String> {
     let branch = req.branch.trim();
     if branch.is_empty()
-        || !git(
+        || !git(project_data,
             project,
             &["check-ref-format".into(), "--branch".into(), branch.into()],
         )
@@ -242,7 +242,7 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
     {
         return Err("Enter a valid branch name.".into());
     }
-    let (_, repos) = repos(project, Path::new("/__apexagent_task_dir_unavailable__"))?;
+    let (_, repos) = repos(project_data, project, Path::new("/__apexagent_task_dir_unavailable__"))?;
     let repo = repos.first().ok_or("Git did not report a main worktree.")?;
     let project = repo.dir.as_path();
     let main = repo
@@ -270,7 +270,7 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
             folder_arg,
         ];
         if let Some(base) = req.base.filter(|s| !s.trim().is_empty()) {
-            let verified = git(
+            let verified = git(project_data,
                 project,
                 &[
                     "rev-parse".into(),
@@ -281,9 +281,9 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
             )?;
             args.push(verified.trim().to_string());
         }
-        git(project, &args)?;
+        git(project_data, project, &args)?;
     } else {
-        git(
+        git(project_data,
             project,
             &[
                 "rev-parse".into(),
@@ -292,7 +292,7 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
                 format!("refs/heads/{branch}^{{commit}}"),
             ],
         )?;
-        git(
+        git(project_data,
             project,
             &[
                 "worktree".into(),
@@ -303,7 +303,7 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
             ],
         )?;
     }
-    let raw = git(
+    let raw = git(project_data,
         project,
         &[
             "worktree".into(),
@@ -331,9 +331,9 @@ fn protect_copy(target: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
+pub fn remove(project_data: &Path, project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
     protect_copy(target)?;
-    let (_, repos) = repos(project, task_dir)?;
+    let (_, repos) = repos(project_data, project, task_dir)?;
     if std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("The worktree folder was replaced.".into());
     }
@@ -362,7 +362,7 @@ pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
     }
     args.push("--".into());
     args.push(arg(target));
-    git(project, &args).map(|_| ()).map_err(|error| {
+    git(project_data, project, &args).map(|_| ()).map_err(|error| {
         if !force && (error.contains("modified or untracked") || error.contains("local changes")) {
             format!("has-changes:{error}")
         } else {
@@ -373,9 +373,9 @@ pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
 
 /// Unregister only the selected worktree, retaining its working files.
 /// A separate command prevents older hosts from interpreting Prune as deletion.
-pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
+pub fn forget(project_data: &Path, project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
     protect_copy(target)?;
-    let (_, repos) = repos(project, task_dir)?;
+    let (_, repos) = repos(project_data, project, task_dir)?;
     let (project, row) = repos.iter()
         .find_map(|repo| repo.items.iter().find(|w| same_path(Path::new(&w.path), target)).map(|row| (repo.dir.as_path(), row)))
         .ok_or("That folder is not a worktree for this project.")?;
@@ -388,7 +388,7 @@ pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
     if let Ok(meta) = std::fs::symlink_metadata(target) {
         if !meta.is_dir() || meta.file_type().is_symlink() { return Err("The worktree folder was replaced.".into()); }
     }
-    let common = git(project, &["rev-parse".into(), "--path-format=absolute".into(), "--git-common-dir".into()])?;
+    let common = git(project_data, project, &["rev-parse".into(), "--path-format=absolute".into(), "--git-common-dir".into()])?;
     let registry = Path::new(common.trim()).join("worktrees");
     let entries = std::fs::read_dir(&registry).map_err(|e| e.to_string())?;
     for entry in entries {
@@ -412,16 +412,16 @@ pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
     }
     Err("Could not find the selected worktree registration.".into())
 }
-pub fn prune(project: &Path) -> Result<(), String> {
-    if git(project, &["rev-parse".into(), "--show-toplevel".into()]).is_ok() {
-        return git(project, &["worktree".into(), "prune".into()]).map(|_| ());
+pub fn prune(project_data: &Path, project: &Path) -> Result<(), String> {
+    if git(project_data, project, &["rev-parse".into(), "--show-toplevel".into()]).is_ok() {
+        return git(project_data, project, &["worktree".into(), "prune".into()]).map(|_| ());
     }
-    let checkouts = child_repos(project);
+    let checkouts = child_repos(project_data, project);
     if checkouts.is_empty() {
         return Err("This folder isn't a Git repository.".into());
     }
     for checkout in checkouts {
-        git(&checkout, &["worktree".into(), "prune".into()])?;
+        git(project_data, &checkout, &["worktree".into(), "prune".into()])?;
     }
     Ok(())
 }
@@ -439,7 +439,6 @@ fn same_path(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs;
-    use std::process::Command;
 
     #[cfg(windows)]
     #[test]
@@ -475,7 +474,7 @@ mod tests {
         let root = temp.path().join("repo");
         fs::create_dir(&root).unwrap();
         let run = |args: &[&str]| {
-            let out = crate::project_process::git_command()
+            let out = crate::project_process::fixture_git_command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -499,7 +498,7 @@ mod tests {
     #[test]
     fn list_and_add_new_and_existing_branch() {
         let (_tmp, root, tasks) = repo();
-        let first = add(
+        let first = add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "feature/one".into(),
@@ -510,12 +509,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first.branch.as_deref(), Some("feature/one"));
-        let rows = list(&root, &tasks).unwrap();
+        let rows = list(std::path::Path::new("/nonexistent-apex-test-data"), &root, &tasks).unwrap();
         assert_eq!(rows.items.len(), 2);
         assert!(rows.items[0].main);
-        remove(&root, Path::new(&first.path), false, &tasks).unwrap();
-        git(&root, &["branch".into(), "feature/two".into()]).unwrap();
-        let second = add(
+        remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&first.path), false, &tasks).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["branch".into(), "feature/two".into()]).unwrap();
+        let second = add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "feature/two".into(),
@@ -536,7 +535,7 @@ mod tests {
     #[test]
     fn validates_branch_and_folder() {
         let (_tmp, root, _) = repo();
-        assert!(add(
+        assert!(add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "bad name".into(),
@@ -547,7 +546,7 @@ mod tests {
         )
         .is_err());
         fs::create_dir(root.parent().unwrap().join("taken")).unwrap();
-        assert!(add(
+        assert!(add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "okay".into(),
@@ -568,7 +567,7 @@ mod tests {
     #[test]
     fn removes_clean_and_requires_force_for_dirty() {
         let (_tmp, root, tasks) = repo();
-        let wt = add(
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "dirty".into(),
@@ -579,55 +578,55 @@ mod tests {
         )
         .unwrap();
         fs::write(Path::new(&wt.path).join("untracked"), "x").unwrap();
-        assert!(remove(&root, Path::new(&wt.path), false, &tasks)
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), false, &tasks)
             .unwrap_err()
             .starts_with("has-changes:"));
-        remove(&root, Path::new(&wt.path), true, &tasks).unwrap();
-        assert!(remove(&root, &root, false, &tasks)
+        remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), true, &tasks).unwrap();
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, &root, false, &tasks)
             .unwrap_err()
             .contains("main checkout"));
     }
     #[test]
     fn prune_one_keeps_files_and_only_unregisters_selected() {
         let (_tmp, root, tasks) = repo();
-        let wt = add(&root, AddRequest { branch: "keep-files".into(), new_branch: true, base: None, folder: None }).unwrap();
-        let other = add(&root, AddRequest { branch: "keep-registration".into(), new_branch: true, base: None, folder: None }).unwrap();
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest { branch: "keep-files".into(), new_branch: true, base: None, folder: None }).unwrap();
+        let other = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest { branch: "keep-registration".into(), new_branch: true, base: None, folder: None }).unwrap();
         fs::write(Path::new(&wt.path).join("notes"), "unsaved work").unwrap();
-        forget(&root, Path::new(&wt.path), true, &tasks).unwrap();
+        forget(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), true, &tasks).unwrap();
         assert_eq!(fs::read_to_string(Path::new(&wt.path).join("notes")).unwrap(), "unsaved work");
         assert_eq!(fs::read_to_string(Path::new(&wt.path).join("seed")).unwrap(), "seed");
-        let rows = list(&root, &tasks).unwrap();
+        let rows = list(std::path::Path::new("/nonexistent-apex-test-data"), &root, &tasks).unwrap();
         assert!(!rows.items.iter().any(|r| r.path == wt.path));
         assert!(rows.items.iter().any(|r| r.path == other.path));
     }
     #[test]
     fn prune_one_protects_locked_main_and_task_worktrees() {
         let (_tmp, root, tasks) = repo();
-        let wt = add(&root, AddRequest { branch: "prune-locked".into(), new_branch: true, base: None, folder: None }).unwrap();
-        git(&root, &["worktree".into(), "lock".into(), wt.path.clone()]).unwrap();
-        assert!(forget(&root, Path::new(&wt.path), true, &tasks).is_err());
-        assert!(forget(&root, &root, true, &tasks).is_err());
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest { branch: "prune-locked".into(), new_branch: true, base: None, folder: None }).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["worktree".into(), "lock".into(), wt.path.clone()]).unwrap();
+        assert!(forget(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), true, &tasks).is_err());
+        assert!(forget(std::path::Path::new("/nonexistent-apex-test-data"), &root, &root, true, &tasks).is_err());
         assert_eq!(fs::read_to_string(Path::new(&wt.path).join("seed")).unwrap(), "seed");
-        let task = add(&root, AddRequest { branch: "prune-task".into(), new_branch: true, base: None, folder: Some(tasks.join("job").to_string_lossy().into_owned()) }).unwrap();
-        assert!(forget(&root, Path::new(&task.path), true, &tasks).is_err());
+        let task = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest { branch: "prune-task".into(), new_branch: true, base: None, folder: Some(tasks.join("job").to_string_lossy().into_owned()) }).unwrap();
+        assert!(forget(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&task.path), true, &tasks).is_err());
         assert!(Path::new(&task.path).exists());
     }
     #[test]
     fn prune_one_missing_does_not_prune_other_missing_worktrees() {
         let (_tmp, root, tasks) = repo();
-        let wt = add(&root, AddRequest { branch: "missing-one".into(), new_branch: true, base: None, folder: None }).unwrap();
-        let other = add(&root, AddRequest { branch: "missing-two".into(), new_branch: true, base: None, folder: None }).unwrap();
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest { branch: "missing-one".into(), new_branch: true, base: None, folder: None }).unwrap();
+        let other = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest { branch: "missing-two".into(), new_branch: true, base: None, folder: None }).unwrap();
         fs::remove_dir_all(&wt.path).unwrap();
         fs::remove_dir_all(&other.path).unwrap();
-        forget(&root, Path::new(&wt.path), false, &tasks).unwrap();
-        let rows = list(&root, &tasks).unwrap();
+        forget(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), false, &tasks).unwrap();
+        let rows = list(std::path::Path::new("/nonexistent-apex-test-data"), &root, &tasks).unwrap();
         assert!(!rows.items.iter().any(|r| r.path == wt.path));
         assert!(rows.items.iter().any(|r| r.path == other.path));
     }
     #[test]
     fn delete_removes_folder_and_unregisters() {
         let (_tmp, root, tasks) = repo();
-        let wt = add(
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "gone".into(),
@@ -638,9 +637,9 @@ mod tests {
         )
         .unwrap();
         assert!(Path::new(&wt.path).exists());
-        remove(&root, Path::new(&wt.path), false, &tasks).unwrap();
+        remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), false, &tasks).unwrap();
         assert!(!Path::new(&wt.path).exists());
-        assert!(!list(&root, &tasks)
+        assert!(!list(std::path::Path::new("/nonexistent-apex-test-data"), &root, &tasks)
             .unwrap()
             .items
             .iter()
@@ -649,7 +648,7 @@ mod tests {
     #[test]
     fn delete_requires_force_for_dirty_and_protects_main_and_task() {
         let (_tmp, root, tasks) = repo();
-        let wt = add(
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "messy".into(),
@@ -660,32 +659,32 @@ mod tests {
         )
         .unwrap();
         fs::write(Path::new(&wt.path).join("untracked"), "x").unwrap();
-        assert!(remove(&root, Path::new(&wt.path), false, &tasks)
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), false, &tasks)
             .unwrap_err()
             .starts_with("has-changes:"));
         assert!(Path::new(&wt.path).exists());
-        remove(&root, Path::new(&wt.path), true, &tasks).unwrap();
+        remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), true, &tasks).unwrap();
         assert!(!Path::new(&wt.path).exists());
-        assert!(remove(&root, &root, true, &tasks)
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, &root, true, &tasks)
             .unwrap_err()
             .contains("main checkout"));
     }
     #[test]
     fn delete_respects_locked_worktrees_even_with_force() {
         let (_tmp, root, tasks) = repo();
-        let wt = add(&root, AddRequest {
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest {
             branch: "locked".into(), new_branch: true, base: None, folder: None,
         }).unwrap();
-        git(&root, &["worktree".into(), "lock".into(), wt.path.clone()]).unwrap();
-        assert!(remove(&root, Path::new(&wt.path), true, &tasks).is_err());
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["worktree".into(), "lock".into(), wt.path.clone()]).unwrap();
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), true, &tasks).is_err());
         assert_eq!(fs::read_to_string(Path::new(&wt.path).join("seed")).unwrap(), "seed");
-        assert!(list(&root, &tasks).unwrap().items.iter().any(|w| w.path == wt.path && w.locked));
+        assert!(list(std::path::Path::new("/nonexistent-apex-test-data"), &root, &tasks).unwrap().items.iter().any(|w| w.path == wt.path && w.locked));
     }
     #[cfg(unix)]
     #[test]
     fn delete_does_not_follow_a_replaced_worktree_symlink() {
         let (tmp, root, tasks) = repo();
-        let wt = add(&root, AddRequest {
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"), &root, AddRequest {
             branch: "replaced".into(), new_branch: true, base: None, folder: None,
         }).unwrap();
         let elsewhere = tmp.path().join("unrelated");
@@ -693,14 +692,14 @@ mod tests {
         fs::write(elsewhere.join("keep"), "unrelated work").unwrap();
         fs::remove_dir_all(&wt.path).unwrap();
         std::os::unix::fs::symlink(&elsewhere, &wt.path).unwrap();
-        assert!(remove(&root, Path::new(&wt.path), false, &tasks).is_err());
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), false, &tasks).is_err());
         assert_eq!(fs::read_to_string(elsewhere.join("keep")).unwrap(), "unrelated work");
     }
     #[test]
     fn protects_task_and_prunes_missing() {
         let (_tmp, root, tasks) = repo();
         fs::create_dir_all(&tasks).unwrap();
-        let wt = add(
+        let wt = add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "task".into(),
@@ -710,10 +709,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(remove(&root, Path::new(&wt.path), true, &tasks)
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, Path::new(&wt.path), true, &tasks)
             .unwrap_err()
             .contains("ApexAgent"));
-        let outside = add(
+        let outside = add(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             AddRequest {
                 branch: "missing".into(),
@@ -724,8 +723,8 @@ mod tests {
         )
         .unwrap();
         fs::remove_dir_all(&outside.path).unwrap();
-        prune(&root).unwrap();
-        assert!(!list(&root, &tasks)
+        prune(std::path::Path::new("/nonexistent-apex-test-data"), &root).unwrap();
+        assert!(!list(std::path::Path::new("/nonexistent-apex-test-data"), &root, &tasks)
             .unwrap()
             .items
             .iter()
@@ -734,7 +733,7 @@ mod tests {
     fn init(root: &Path) {
         fs::create_dir_all(root).unwrap();
         let run = |args: &[&str]| {
-            git(root, &args.iter().map(|a| a.to_string()).collect::<Vec<_>>()).unwrap();
+            git(std::path::Path::new("/nonexistent-apex-test-data"), root, &args.iter().map(|a| a.to_string()).collect::<Vec<_>>()).unwrap();
         };
         run(&["init", "-b", "main"]);
         run(&["config", "user.email", "test@example.com"]);
@@ -763,10 +762,10 @@ mod tests {
         init(&parent.join("tool"));
         init(&parent.join(".hidden"));
         fs::create_dir_all(parent.join("notes")).unwrap();
-        add(&parent.join("app"), branch_at("feature", parent.join("app-feature"))).unwrap();
+        add(std::path::Path::new("/nonexistent-apex-test-data"), &parent.join("app"), branch_at("feature", parent.join("app-feature"))).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(parent.join("tool"), parent.join("tool-link")).unwrap();
-        let rows = list(&parent, &tasks).unwrap();
+        let rows = list(std::path::Path::new("/nonexistent-apex-test-data"), &parent, &tasks).unwrap();
         let shown: Vec<(String, bool)> = rows.items.iter().map(|w| (real(PathBuf::from(&w.path)), w.main)).collect();
         let (app, feature, tool) = (real(parent.join("app")), real(parent.join("app-feature")), real(parent.join("tool")));
         assert_eq!(shown, vec![(app.clone(), true), (feature, false), (tool, true)]);
@@ -782,34 +781,34 @@ mod tests {
         init(&app);
         init(&tool);
         // Two of app's checkouts are in the folder, so new worktrees go to app.
-        add(&app, branch_at("second", parent.join("app-second"))).unwrap();
-        let added = add(&parent, branch_at("from-folder", temp.path().join("app-new"))).unwrap();
-        assert!(list(&app, &tasks).unwrap().items.iter().any(|w| w.path == added.path));
-        assert!(git(&tool, &["rev-parse".into(), "--verify".into(), "refs/heads/from-folder".into()]).is_err());
+        add(std::path::Path::new("/nonexistent-apex-test-data"), &app, branch_at("second", parent.join("app-second"))).unwrap();
+        let added = add(std::path::Path::new("/nonexistent-apex-test-data"), &parent, branch_at("from-folder", temp.path().join("app-new"))).unwrap();
+        assert!(list(std::path::Path::new("/nonexistent-apex-test-data"), &app, &tasks).unwrap().items.iter().any(|w| w.path == added.path));
+        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"), &tool, &["rev-parse".into(), "--verify".into(), "refs/heads/from-folder".into()]).is_err());
 
-        let outside = add(&tool, branch_at("outside", temp.path().join("tool-outside"))).unwrap();
-        assert!(list(&parent, &tasks).unwrap().items.iter().any(|w| w.path == outside.path));
-        remove(&parent, Path::new(&outside.path), false, &tasks).unwrap();
+        let outside = add(std::path::Path::new("/nonexistent-apex-test-data"), &tool, branch_at("outside", temp.path().join("tool-outside"))).unwrap();
+        assert!(list(std::path::Path::new("/nonexistent-apex-test-data"), &parent, &tasks).unwrap().items.iter().any(|w| w.path == outside.path));
+        remove(std::path::Path::new("/nonexistent-apex-test-data"), &parent, Path::new(&outside.path), false, &tasks).unwrap();
         assert!(!Path::new(&outside.path).exists());
-        assert!(remove(&parent, &tool, false, &tasks).unwrap_err().contains("main checkout"));
+        assert!(remove(std::path::Path::new("/nonexistent-apex-test-data"), &parent, &tool, false, &tasks).unwrap_err().contains("main checkout"));
 
-        let gone = add(&tool, branch_at("gone", temp.path().join("tool-gone"))).unwrap();
-        let missing = add(&app, branch_at("missing", temp.path().join("app-missing"))).unwrap();
+        let gone = add(std::path::Path::new("/nonexistent-apex-test-data"), &tool, branch_at("gone", temp.path().join("tool-gone"))).unwrap();
+        let missing = add(std::path::Path::new("/nonexistent-apex-test-data"), &app, branch_at("missing", temp.path().join("app-missing"))).unwrap();
         fs::remove_dir_all(&gone.path).unwrap();
         fs::remove_dir_all(&missing.path).unwrap();
-        forget(&parent, Path::new(&gone.path), false, &tasks).unwrap();
-        let rows = list(&parent, &tasks).unwrap();
+        forget(std::path::Path::new("/nonexistent-apex-test-data"), &parent, Path::new(&gone.path), false, &tasks).unwrap();
+        let rows = list(std::path::Path::new("/nonexistent-apex-test-data"), &parent, &tasks).unwrap();
         assert!(!rows.items.iter().any(|w| w.path == gone.path));
         assert!(rows.items.iter().any(|w| w.path == missing.path && w.prunable));
-        prune(&parent).unwrap();
-        assert!(!list(&parent, &tasks).unwrap().items.iter().any(|w| w.prunable));
+        prune(std::path::Path::new("/nonexistent-apex-test-data"), &parent).unwrap();
+        assert!(!list(std::path::Path::new("/nonexistent-apex-test-data"), &parent, &tasks).unwrap().items.iter().any(|w| w.prunable));
     }
     #[test]
     fn folder_without_checkouts_is_not_a_repository() {
         let temp = Temp::new();
         let folder = temp.path().join("empty");
         fs::create_dir_all(folder.join("notes")).unwrap();
-        assert_eq!(list(&folder, &temp.path().join("agent-data")).unwrap_err(), "This folder isn't a Git repository.");
-        assert!(prune(&folder).is_err());
+        assert_eq!(list(std::path::Path::new("/nonexistent-apex-test-data"), &folder, &temp.path().join("agent-data")).unwrap_err(), "This folder isn't a Git repository.");
+        assert!(prune(std::path::Path::new("/nonexistent-apex-test-data"), &folder).is_err());
     }
 }

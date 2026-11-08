@@ -183,13 +183,14 @@ impl Host {
             };
             let result=if !allowed { "Check requires command permission".into() } else {
                 let cwd=handle.context.cwd.as_deref().ok_or("Checks require a room folder")?;
+                crate::project_process::prepare(&self.paths.data).await?;
                 let gate=self.runner_gate(room);let guard=gate.lock().await;
                 let prepared={
                     // Synchronous launch and Stop's state invalidation share this
                     // lock; after Stop is accepted no stale command can spawn.
                     let service=self.runner_service.lock().unwrap();
                     if !service.state(room)?.is_some_and(|s|s.id==key.runner_id&&s.generation==key.generation&&s.in_flight.as_deref()==Some(key.attempt_id.as_str())&&!s.is_terminal()&&now()<s.deadline_at) {return Ok(text);}
-                    prepare_check(check,cwd,&self.paths.data.join("runner-processes"))?
+                    prepare_check(&self.paths.data,check,cwd,&self.paths.data.join("runner-processes"))?
                 };
                 drop(guard);
                 match prepared.finish(async {self.runner_cancelled(room,key).await;}).await? {
@@ -206,7 +207,8 @@ impl Host {
                 let eligible=self.runner_service.lock().unwrap().reserve_checker(room,key,now())?;
                 if !eligible {report.disposition="blocked".into();report.blocker=Some("Checker invocation limit reached".into());}
                 else {
-                    let gate=self.runner_gate(room);let guard=gate.lock().await;
+                    crate::project_process::prepare(&self.paths.data).await?;
+                let gate=self.runner_gate(room);let guard=gate.lock().await;
                     if !self.runner_current(room,key) {return Ok(text);}
                     let batch=handle.runtime.begin_turn(vec![ParticipantId::new(checker)],Some(0)).await?.with_runner_context(format!("{}\nYou are the read-only checker. Evaluate the previous worker's claim against the objective and criteria. Return done only with evidence that all criteria are met; otherwise blocked. You cannot change files or run write actions.",runner_context(snapshot)),true);
                     if !self.runner_current(room,key) {drop(batch);return Ok(text);}

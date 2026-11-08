@@ -41,6 +41,17 @@ const options = { policy: 'mention', max_bot_hops: 3 };
 const participant = { id: 'p', display_name: 'P', backend: { kind: 'scripted', lines: [] } };
 const rule = { kind: 'command', command: 'ls' };
 
+test('participant access updates carry the observed level and selected room folder', async () => {
+  const transport = recording();
+  const backend = commandBackend(transport, stubShell());
+  const saved = { ...participant, access: 'read' };
+  const next = { ...saved, access: 'full' };
+  await backend.roomUpdateParticipant('work', next, saved, '/projects/work');
+  assert.deepEqual(transport.calls, [{ cmd: 'room_update_participant', args: {
+    id: 'work', participant: next, base: saved, old_level: 'read', folder: '/projects/work',
+  } }]);
+});
+
 // Every command-backed method: how it's called, and the exact command and
 // arguments the host expects for it.
 const COMMANDS = [

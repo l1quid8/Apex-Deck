@@ -76,6 +76,9 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     let token = identity::random_hex(32);
     files::write_private(&paths.data.join("daemon-token"), &format!("{token}\n"))?;
     let daemon = Daemon::start(&paths, Some(token))?;
+    if let Err(why) = daemon.require_confinement().await {
+        eprintln!("apex-daemon: Linux device access is unavailable: {why}");
+    }
 
     let listener = TcpListener::bind((options.bind, options.port)).await.map_err(|e| format!("could not listen on {}:{}: {e}", options.bind, options.port))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();

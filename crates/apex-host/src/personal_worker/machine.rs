@@ -38,7 +38,7 @@ const REMOTE_STALE_MS: u64 = 15 * 60_000;
 impl Host {
     /// On the assistant's host: hand `machine` what's due for it.
     pub fn personal_machine_claim(&self, assistant_id: &str, machine: &str) -> Result<Vec<RemoteOp>, String> {
-        let tools = WorkerTools::real();
+        let tools = WorkerTools::real(self.data_dir());
         self.change_assistant(assistant_id, |assistant| {
             let at = now();
             let link = assistant.machines.iter_mut().find(|m| m.host_id == machine).ok_or("That machine isn't linked to this assistant.")?;
@@ -94,7 +94,7 @@ impl Host {
         if super::gateway::classify(&operation, std::slice::from_ref(&allow.folder)).1 {
             return Err("That reads a file outside the folder you allowed here, so this Mac refused it.".into());
         }
-        run_command(operation, std::sync::Arc::new(|_| {})).await
+        run_command(self.data_dir(), operation, std::sync::Arc::new(|_| {})).await
     }
 }
 

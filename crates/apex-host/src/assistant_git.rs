@@ -1,13 +1,13 @@
 //! Git snapshots and verified task integration without touching the primary index.
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::{
     cell::{Cell, RefCell},
-    io::{Read, Write},
-    path::{Component, Path, PathBuf},
-    process::{Child, Command, Output, Stdio},
+        path::{Component, Path, PathBuf},
+    process::Stdio,
     rc::Rc,
-    sync::{atomic::{AtomicBool, AtomicU64, Ordering}, mpsc, Arc},
+    sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc},
     time::{Duration, Instant},
 };
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -19,8 +19,6 @@ pub(crate) const SAVE_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// A healthy save usually fits, and pause and retry want its snapshot.
 pub(crate) const STOP_GRACE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
 /// TERM lets Git remove its own lock files before anything is killed.
-const TERM_GRACE: Duration = Duration::from_secs(2);
-const POLL: Duration = Duration::from_millis(20);
 pub(crate) const SAVE_TOO_LONG: &str = "Saving the result took too long, so Deck stopped Git. The work is still in its folder.";
 pub(crate) const SAVE_STOPPED: &str = "The job was stopped before its result finished saving. The work is still in its folder.";
 
@@ -66,57 +64,6 @@ pub(crate) fn within<T>(limit: GitLimit, work: impl FnOnce() -> Result<T, String
     // Any error after the limit is a symptom of it: a killed step can surface
     // as "the checkout changed".
     work().map_err(|error| if limit.ended() { limit.reason().to_owned() } else { error })
-}
-
-/// Stops a hung Git and whatever it started, such as a clean filter. A process
-/// stuck in the kernel can outlive even SIGKILL, so this never waits on it for
-/// long. Windows has no process group here, so only Git itself is stopped.
-fn end_git(child: &mut Child) {
-    #[cfg(unix)]
-    unsafe { libc::kill(-(child.id() as i32), libc::SIGTERM); }
-    let gone_by = Instant::now() + TERM_GRACE;
-    while Instant::now() < gone_by && !matches!(child.try_wait(), Ok(Some(_))) { std::thread::sleep(POLL); }
-    #[cfg(unix)]
-    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
-    let _ = child.kill();
-    let reaped_by = Instant::now() + TERM_GRACE;
-    while Instant::now() < reaped_by && !matches!(child.try_wait(), Ok(Some(_))) { std::thread::sleep(POLL); }
-}
-
-/// `wait_with_output`, except it can give up. Pipes drain on their own threads
-/// so a chatty Git can't block, and a process holding a pipe can't block us.
-fn output_within(mut child: Child, limit: &GitLimit) -> Result<Output, String> {
-    let (sent, outputs) = mpsc::channel();
-    let drain = |pipe: Option<Box<dyn Read + Send>>, slot: usize| {
-        let sent = sent.clone();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe { let _ = pipe.read_to_end(&mut bytes); }
-            let _ = sent.send((slot, bytes));
-        });
-    };
-    drain(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>), 0);
-    drain(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>), 1);
-    drop(sent);
-    let mut pipes = [Vec::new(), Vec::new()];
-    let mut open = 2;
-    let mut status = None;
-    loop {
-        if limit.ended() {
-            end_git(&mut child);
-            return Err(limit.reason().to_owned());
-        }
-        if status.is_none() { status = child.try_wait().map_err(|e| e.to_string())?; }
-        if open == 0 {
-            match status {
-                Some(status) => return Ok(Output { status, stdout: std::mem::take(&mut pipes[0]), stderr: std::mem::take(&mut pipes[1]) }),
-                None => std::thread::sleep(POLL),
-            }
-        } else if let Ok((slot, bytes)) = outputs.recv_timeout(POLL) {
-            pipes[slot] = bytes;
-            open -= 1;
-        }
-    }
 }
 
 /// Git for Windows does not accept Rust's verbatim canonical paths as worktree
@@ -184,10 +131,10 @@ struct ApplyJournal {
     merged_commit: String,
 }
 
-pub fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    run_git(root, None, args, None).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+pub fn git(project_data: &Path, root: &Path, args: &[&str]) -> Result<String, String> {
+    run_git(project_data, root, None, args, None).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
-fn run_git(
+fn run_git(project_data: &Path,
     root: &Path,
     index: Option<&Path>,
     args: &[&str],
@@ -197,10 +144,9 @@ fn run_git(
     if let Some(limit) = limit.as_ref().filter(|limit| limit.ended()) {
         return Err(limit.reason().to_owned());
     }
-    let mut command = crate::project_process::git_command();
+    let mut command = crate::project_process::git_command(project_data, root)?;
     #[cfg(unix)]
     if limit.is_some() {
-        use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
     command.current_dir(root).args(args);
@@ -208,24 +154,12 @@ fn run_git(
         command.env("GIT_INDEX_FILE", external_path(index).as_os_str());
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    if input.is_some() {
-        command.stdin(Stdio::piped());
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Could not run Git: {e}"))?;
-    if let Some(input) = input {
-        child
-            .stdin
-            .take()
-            .ok_or("Git stdin missing")?
-            .write_all(input)
-            .map_err(|e| e.to_string())?;
-    }
-    let result = match &limit {
-        Some(limit) => output_within(child, limit)?,
-        None => child.wait_with_output().map_err(|e| e.to_string())?,
-    };
+    if let Some(input) = input { command.input(input); }
+    let result = command.output_with_monitor(|| limit.as_ref().and_then(|limit| if limit.ended() { Some(limit.reason().to_owned()) } else { None }))
+        .map_err(|e| match limit.as_ref().filter(|limit| limit.ended()) {
+            Some(limit) => limit.reason().to_owned(),
+            None => format!("Could not run Git: {e}"),
+        })?;
     if result.status.success() {
         Ok(result.stdout)
     } else {
@@ -236,21 +170,22 @@ fn run_git(
         ))
     }
 }
-pub fn checkout_root(cwd: &Path) -> Result<PathBuf, String> {
-    let root = git(cwd, &["rev-parse", "--show-toplevel"]).map_err(|_| {
+pub fn checkout_root(project_data: &Path, cwd: &Path) -> Result<PathBuf, String> {
+    crate::project_process::check_project(project_data, cwd)?;
+    let root = git(project_data, cwd, &["rev-parse", "--show-toplevel"]).map_err(|_| {
         "Delegated editing requires a Git checkout. Observation remains available.".to_string()
     })?;
     std::fs::canonicalize(root.trim()).map_err(|e| e.to_string())
 }
-fn optional_git(root: &Path, args: &[&str]) -> Option<String> {
-    git(root, args)
+fn optional_git(project_data: &Path, root: &Path, args: &[&str]) -> Option<String> {
+    git(project_data, root, args)
         .ok()
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
 }
-fn index_hash(root: &Path) -> Option<String> {
-    let path = optional_git(root, &["rev-parse", "--git-path", "index"])?;
-    optional_git(root, &["hash-object", &path])
+fn index_hash(project_data: &Path, root: &Path) -> Option<String> {
+    let path = optional_git(project_data, root, &["rev-parse", "--git-path", "index"])?;
+    optional_git(project_data, root, &["hash-object", &path])
 }
 fn safe_component(value: &str) -> bool {
     !value.is_empty()
@@ -299,21 +234,21 @@ impl Drop for TemporaryIndex {
 /// A snapshot of the *working* files, including unstaged edits and safe new
 /// files. A separate index leaves the user's staging byte-for-byte intact.
 /// Private refs are retained locally; this module never pushes them.
-pub fn capture(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot, String> {
-    if GIT_LIMIT.with(|limit| limit.borrow().is_some()) { return capture_checkout(cwd, task, purpose) }
-    within(GitLimit::new(SAVE_LIMIT, None), || capture_checkout(cwd, task, purpose))
+pub fn capture(project_data: &Path, cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot, String> {
+    if GIT_LIMIT.with(|limit| limit.borrow().is_some()) { return capture_checkout(project_data, cwd, task, purpose) }
+    within(GitLimit::new(SAVE_LIMIT, None), || capture_checkout(project_data, cwd, task, purpose))
 }
 
-fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot, String> {
+fn capture_checkout(project_data: &Path, cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot, String> {
     if !safe_component(task) || !safe_component(purpose) {
         return Err("Invalid task snapshot identity.".into());
     }
-    let root = checkout_root(cwd)?;
-    let head = optional_git(&root, &["rev-parse", "--verify", "HEAD"]);
-    let branch = optional_git(&root, &["symbolic-ref", "-q", "HEAD"]);
-    let original_index = index_hash(&root);
+    let root = checkout_root(project_data, cwd)?;
+    let head = optional_git(project_data, &root, &["rev-parse", "--verify", "HEAD"]);
+    let branch = optional_git(project_data, &root, &["symbolic-ref", "-q", "HEAD"]);
+    let original_index = index_hash(project_data, &root);
     let staged_additions = if head.is_some() {
-        run_git(
+        run_git(project_data,
             &root,
             None,
             &[
@@ -327,15 +262,15 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
             None,
         )?
     } else {
-        run_git(&root, None, &["ls-files", "--cached", "-z"], None)?
+        run_git(project_data, &root, None, &["ls-files", "--cached", "-z"], None)?
     };
-    let git_dir = git(&root, &["rev-parse", "--absolute-git-dir"])?;
+    let git_dir = git(project_data, &root, &["rev-parse", "--absolute-git-dir"])?;
     let index = TemporaryIndex(Path::new(git_dir.trim()).join(format!(
         "apex-index-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )));
-    run_git(
+    run_git(project_data,
         &root,
         Some(&index.0),
         &["read-tree", head.as_deref().unwrap_or("--empty")],
@@ -343,7 +278,7 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
     )?;
     // With no pathspec, update tracked files even when HEAD has an empty tree.
     // Safe new files are added separately below after the exclusion checks.
-    run_git(&root, Some(&index.0), &["add", "-u"], None)?;
+    run_git(project_data, &root, Some(&index.0), &["add", "-u"], None)?;
     let mut staged_paths = Vec::new();
     for path in staged_additions
         .split(|b| *b == 0)
@@ -362,9 +297,9 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
         let mut args = vec!["add", "--"];
         let literals: Vec<_> = batch.iter().map(|p| format!(":(literal){p}")).collect();
         args.extend(literals.iter().map(String::as_str));
-        run_git(&root, Some(&index.0), &args, None)?;
+        run_git(project_data, &root, Some(&index.0), &args, None)?;
     }
-    let untracked = run_git(
+    let untracked = run_git(project_data,
         &root,
         None,
         &["ls-files", "--others", "--exclude-standard", "-z"],
@@ -380,7 +315,7 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
         Err(error) => return Err(error.to_string()),
     };
     let policy_included = if policy.is_some() {
-        Some(run_git(&root, None, &["ls-files", "--others", "--exclude-standard", "--exclude-from=.apex-agent-exclude", "-z"], None)?
+        Some(run_git(project_data, &root, None, &["ls-files", "--others", "--exclude-standard", "--exclude-from=.apex-agent-exclude", "-z"], None)?
             .split(|b| *b == 0).filter(|path| !path.is_empty()).map(Vec::from).collect::<std::collections::HashSet<_>>())
     } else { None };
     let mut included = Vec::new();
@@ -404,24 +339,24 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
         let mut args = vec!["add", "--"];
         let literals: Vec<_> = batch.iter().map(|p| format!(":(literal){p}")).collect();
         args.extend(literals.iter().map(String::as_str));
-        run_git(&root, Some(&index.0), &args, None)?;
+        run_git(project_data, &root, Some(&index.0), &args, None)?;
     }
-    let tree = String::from_utf8_lossy(&run_git(&root, Some(&index.0), &["write-tree"], None)?)
+    let tree = String::from_utf8_lossy(&run_git(project_data, &root, Some(&index.0), &["write-tree"], None)?)
         .trim()
         .to_string();
-    if !run_git(
+    if !run_git(project_data,
         &root,
         Some(&index.0),
         &["diff-files", "--name-only", "-z"],
         None,
     )?
     .is_empty()
-        || head != optional_git(&root, &["rev-parse", "--verify", "HEAD"])
-        || branch != optional_git(&root, &["symbolic-ref", "-q", "HEAD"])
-        || original_index != index_hash(&root)
+        || head != optional_git(project_data, &root, &["rev-parse", "--verify", "HEAD"])
+        || branch != optional_git(project_data, &root, &["symbolic-ref", "-q", "HEAD"])
+        || original_index != index_hash(project_data, &root)
         || policy != std::fs::read(&policy_path).ok()
         || untracked
-            != run_git(
+            != run_git(project_data,
                 &root,
                 None,
                 &["ls-files", "--others", "--exclude-standard", "-z"],
@@ -443,7 +378,7 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
     if let Some(head) = &head {
         args.extend(["-p", head]);
     }
-    let commit = String::from_utf8_lossy(&run_git(
+    let commit = String::from_utf8_lossy(&run_git(project_data,
         &root,
         None,
         &args,
@@ -451,7 +386,7 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
     )?)
     .trim()
     .to_string();
-    git(
+    git(project_data,
         &root,
         &[
             "update-ref",
@@ -460,7 +395,7 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
             &commit,
         ],
     )?;
-    git(&root, &["update-ref", &format!("refs/apex/tasks/{task}/{purpose}"), &commit])?;
+    git(project_data, &root, &["update-ref", &format!("refs/apex/tasks/{task}/{purpose}"), &commit])?;
     exclusions.sort();
     Ok(GitSnapshot {
         commit,
@@ -474,12 +409,12 @@ fn capture_checkout(cwd: &Path, task: &str, purpose: &str) -> Result<GitSnapshot
 }
 
 /// Freeze the task's complete working tree as its immutable review result.
-pub fn capture_result(worktree: &Path, task_id: &str) -> Result<GitSnapshot, String> {
-    capture(worktree, task_id, "result")
+pub fn capture_result(project_data: &Path, worktree: &Path, task_id: &str) -> Result<GitSnapshot, String> {
+    capture(project_data, worktree, task_id, "result")
 }
 
-pub fn review_diff(root: &Path, baseline: &str, result: &str) -> Result<String, String> {
-    git(
+pub fn review_diff(project_data: &Path, root: &Path, baseline: &str, result: &str) -> Result<String, String> {
+    git(project_data,
         root,
         &[
             "diff",
@@ -524,11 +459,11 @@ pub fn prepare_worktree(
     task_id: &str,
     data_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let root = checkout_root(&snapshot.root)?;
+    let root = checkout_root(data_dir, &snapshot.root)?;
     if root != snapshot.root || !safe_component(task_id) {
         return Err("Invalid task checkout or id.".into());
     }
-    if run_git(
+    if run_git(data_dir,
         &root,
         None,
         &["cat-file", "-e", &format!("{}^{{commit}}", snapshot.commit)],
@@ -544,8 +479,8 @@ pub fn prepare_worktree(
         .map_err(|e| e.to_string())?
         .join("worktree");
     if path.exists() {
-        let existing = checkout_root(&path)?;
-        let head = git(&existing, &["rev-parse", "HEAD"])?;
+        let existing = checkout_root(data_dir, &path)?;
+        let head = git(data_dir, &existing, &["rev-parse", "HEAD"])?;
         if std::fs::canonicalize(&path).ok().as_ref() == Some(&existing)
             && head.trim() == snapshot.commit
         {
@@ -553,7 +488,7 @@ pub fn prepare_worktree(
         }
         return Err("The task worktree path already belongs to another checkout.".into());
     }
-    git(
+    git(data_dir,
         &root,
         &[
             "worktree",
@@ -579,11 +514,11 @@ pub fn stage_integration(
     if !safe_component(task_id) {
         return Err("Invalid task id.".into());
     }
-    let root = checkout_root(primary)?;
+    let root = checkout_root(data_dir, primary)?;
     if root != baseline.root {
         return Err("The task baseline belongs to a different checkout.".into());
     }
-    if run_git(
+    if run_git(data_dir,
         &root,
         None,
         &[
@@ -598,8 +533,8 @@ pub fn stage_integration(
     {
         return Err("The task result is not based on its captured baseline.".into());
     }
-    let current = capture(&root, task_id, "current")?;
-    let output = git(
+    let current = capture(data_dir, &root, task_id, "current")?;
+    let output = git(data_dir,
         &root,
         &[
             "merge-tree",
@@ -615,7 +550,7 @@ pub fn stage_integration(
     if tree.len() != 40 && tree.len() != 64 {
         return Err("Git did not produce a merged tree.".into());
     }
-    let merged_commit = String::from_utf8_lossy(&run_git(
+    let merged_commit = String::from_utf8_lossy(&run_git(data_dir,
         &root,
         None,
         &[
@@ -634,7 +569,7 @@ pub fn stage_integration(
     )?)
     .trim()
     .to_string();
-    git(
+    git(data_dir,
         &root,
         &[
             "update-ref",
@@ -642,7 +577,7 @@ pub fn stage_integration(
             &merged_commit,
         ],
     )?;
-    git(
+    git(data_dir,
         &root,
         &[
             "update-ref",
@@ -650,7 +585,7 @@ pub fn stage_integration(
             &merged_commit,
         ],
     )?;
-    let names = run_git(
+    let names = run_git(data_dir,
         &root,
         None,
         &[
@@ -681,7 +616,7 @@ pub fn stage_integration(
     if scratch_path.exists() {
         return Err("An integration scratch checkout already exists; reconcile or archive the earlier attempt first.".into());
     }
-    git(
+    git(data_dir,
         &root,
         &[
             "worktree",
@@ -783,8 +718,8 @@ fn write_journal(path: &Path, journal: &ApplyJournal) -> Result<(), String> {
 
 /// Revalidate the primary checkout, then materialize only merged working files.
 /// The index and HEAD are never written by this function.
-pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<(), String> {
-    let now = capture(&plan.root, &plan.task_id, "apply-check")?;
+pub fn apply_integration(project_data: &Path, plan: &IntegrationPlan, journal_path: &Path) -> Result<(), String> {
+    let now = capture(project_data, &plan.root, &plan.task_id, "apply-check")?;
     let expected = &plan.current_snapshot;
     if now.tree != expected.tree
         || now.head != expected.head
@@ -796,21 +731,21 @@ pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<
             "The project changed after review. Re-stage the integration before accepting.".into(),
         );
     }
-    let scratch_root = checkout_root(&plan.scratch_path)?;
+    let scratch_root = checkout_root(project_data, &plan.scratch_path)?;
     if std::fs::canonicalize(&plan.scratch_path).ok().as_ref() != Some(&scratch_root)
-        || git(&scratch_root, &["rev-parse", "HEAD"])?.trim() != plan.merged_commit
+        || git(project_data, &scratch_root, &["rev-parse", "HEAD"])?.trim() != plan.merged_commit
     {
         return Err(
             "The integration scratch checkout no longer matches the reviewed result.".into(),
         );
     }
-    let scratch = capture(&scratch_root, &plan.task_id, "scratch-check")?;
-    if scratch.tree != git(&plan.root, &["rev-parse", &format!("{}^{{tree}}", plan.merged_commit)])?.trim() {
+    let scratch = capture(project_data, &scratch_root, &plan.task_id, "scratch-check")?;
+    if scratch.tree != git(project_data, &plan.root, &["rev-parse", &format!("{}^{{tree}}", plan.merged_commit)])?.trim() {
         return Err("The integration scratch files changed after verification. Re-stage before accepting.".into());
     }
     // Git's merged tree defines file leaves. A deleted file can now be a
     // directory in scratch, and a deleted child can have a file ancestor.
-    let merged_leaves: std::collections::BTreeSet<Vec<u8>> = run_git(
+    let merged_leaves: std::collections::BTreeSet<Vec<u8>> = run_git(project_data,
         &plan.root, None, &["ls-tree", "-r", "--name-only", "-z", &plan.merged_commit], None
     )?.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| p.to_vec()).collect();
     let mut journal = ApplyJournal {
@@ -903,8 +838,8 @@ pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<
         journal.completed_paths.push(path.clone());
         write_journal(journal_path, &journal)?;
     }
-    let applied = capture(&plan.root, &plan.task_id, "applied-check")?;
-    let expected_tree = git(
+    let applied = capture(project_data, &plan.root, &plan.task_id, "applied-check")?;
+    let expected_tree = git(project_data,
         &plan.root,
         &["rev-parse", &format!("{}^{{tree}}", plan.merged_commit)],
     )?;
@@ -917,7 +852,7 @@ pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<
 
 /// Roll back a partially materialized accept to the captured current working
 /// tree. The caller must hold the same project apply lease used by apply.
-pub fn reconcile_interrupted_apply(
+pub fn reconcile_interrupted_apply(project_data: &Path,
     plan: &IntegrationPlan,
     journal_path: &Path,
 ) -> Result<(), String> {
@@ -935,14 +870,14 @@ pub fn reconcile_interrupted_apply(
     if journal.phase != "applying" {
         return Err("The apply journal has an unknown phase.".into());
     }
-    let now = capture(&plan.root, &plan.task_id, "reconcile-check")?;
+    let now = capture(project_data, &plan.root, &plan.task_id, "reconcile-check")?;
     if now.head != plan.current_snapshot.head
         || now.branch != plan.current_snapshot.branch
         || now.index_hash != plan.current_snapshot.index_hash
     {
         return Err("The checkout branch or staging changed during interrupted apply; refusing automatic rollback.".into());
     }
-    let difference = run_git(
+    let difference = run_git(project_data,
         &plan.root,
         None,
         &[
@@ -974,7 +909,7 @@ pub fn reconcile_interrupted_apply(
     // A path touched by this task may also have been edited by a person after
     // the crash. Recover only an exact baseline or exact merged entry.
     for path in &plan.changed_paths {
-        let entry = |tree: &str| run_git(&plan.root, None, &["ls-tree", "-z", tree, "--", path], None);
+        let entry = |tree: &str| run_git(project_data, &plan.root, None, &["ls-tree", "-z", tree, "--", path], None);
         let current = entry(&now.tree)?;
         if current != entry(&plan.current_snapshot.tree)? && current != entry(&plan.merged_commit)? {
             return Err(format!("{} changed after interrupted apply; refusing to overwrite that edit.", path));
@@ -988,7 +923,7 @@ pub fn reconcile_interrupted_apply(
     if !recovery_path.exists() {
         std::fs::create_dir_all(recovery_path.parent().ok_or("Invalid recovery path")?)
             .map_err(|e| e.to_string())?;
-        git(
+        git(project_data,
             &plan.root,
             &[
                 "worktree",
@@ -999,8 +934,8 @@ pub fn reconcile_interrupted_apply(
             ],
         )?;
     }
-    let recovery_root = checkout_root(&recovery_path)?;
-    if git(&recovery_root, &["rev-parse", "HEAD"])?.trim() != plan.current_snapshot.commit {
+    let recovery_root = checkout_root(project_data, &recovery_path)?;
+    if git(project_data, &recovery_root, &["rev-parse", "HEAD"])?.trim() != plan.current_snapshot.commit {
         return Err(
             "The interrupted-apply recovery checkout does not match the captured project state."
                 .into(),
@@ -1054,7 +989,7 @@ pub fn reconcile_interrupted_apply(
             copy_entry(&source, &plan.root.join(&relative))?;
         }
     }
-    git(
+    git(project_data,
         &plan.root,
         &[
             "worktree",
@@ -1069,7 +1004,7 @@ pub fn reconcile_interrupted_apply(
 
 /// Remove a task's registered worktrees. Snapshot/result refs and task records stay intact.
 pub fn archive_worktree(primary: &Path, task_id: &str, data_dir: &Path) -> Result<(), String> {
-    let root = checkout_root(primary)?;
+    let root = checkout_root(data_dir, primary)?;
     if !data_dir.exists() {
         return Ok(());
     }
@@ -1083,14 +1018,14 @@ pub fn archive_worktree(primary: &Path, task_id: &str, data_dir: &Path) -> Resul
         if !path.exists() {
             continue;
         }
-        let actual = checkout_root(&path)?;
+        let actual = checkout_root(data_dir, &path)?;
         if std::fs::canonicalize(&path).ok().as_ref() != Some(&actual) {
             return Err(format!(
                 "Refusing to remove non-owned task path: {}",
                 path.display()
             ));
         }
-        git(
+        git(data_dir,
             &root,
             &[
                 "worktree",
@@ -1149,14 +1084,14 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).unwrap();
-        git(&root, &["init", "-q"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["init", "-q"]).unwrap();
         root
     }
     fn fixture() -> PathBuf {
         let root = empty_fixture();
         std::fs::write(root.join("tracked.txt"), "base\n").unwrap();
-        git(&root, &["add", "tracked.txt"]).unwrap();
-        git(
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "tracked.txt"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             &[
                 "-c",
@@ -1175,7 +1110,7 @@ mod tests {
     #[cfg(unix)]
     fn hang_saves(root: &Path) {
         std::fs::write(root.join(".git/hang.sh"), "echo $$ > .git/hang-pid\ni=0\nwhile [ $i -lt 300 ]; do sleep 0.05; i=$((i+1)); done\ncat\n").unwrap();
-        git(root, &["config", "filter.hang.clean", "sh .git/hang.sh"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), root, &["config", "filter.hang.clean", "sh .git/hang.sh"]).unwrap();
         std::fs::write(root.join(".gitattributes"), "tracked.txt filter=hang\n").unwrap();
         std::fs::write(root.join("tracked.txt"), "edited\n").unwrap();
     }
@@ -1186,15 +1121,15 @@ mod tests {
         let root = fixture();
         hang_saves(&root);
         let started = std::time::Instant::now();
-        let error = within(GitLimit::new(std::time::Duration::from_millis(500), None), || capture(&root, "hung-save", "result")).unwrap_err();
+        let error = within(GitLimit::new(std::time::Duration::from_millis(500), None), || capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "hung-save", "result")).unwrap_err();
         assert_eq!(error, SAVE_TOO_LONG);
         assert!(started.elapsed() < std::time::Duration::from_secs(8), "took {:?}", started.elapsed());
         let pid: i32 = std::fs::read_to_string(root.join(".git/hang-pid")).unwrap().trim().parse().unwrap();
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the filter Git started must die with it");
         let left: Vec<_> = std::fs::read_dir(root.join(".git")).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with("apex-index") || name.ends_with(".lock")).collect();
         assert!(left.is_empty(), "{left:?}");
-        git(&root, &["config", "--unset", "filter.hang.clean"]).unwrap();
-        capture(&root, "hung-save", "result").unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["config", "--unset", "filter.hang.clean"]).unwrap();
+        capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "hung-save", "result").unwrap();
     }
 
     #[cfg(unix)]
@@ -1204,7 +1139,7 @@ mod tests {
         hang_saves(&root);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let started = std::time::Instant::now();
-        let error = within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(&root, "stopped-save", "result")).unwrap_err();
+        let error = within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "stopped-save", "result")).unwrap_err();
         assert_eq!(error, SAVE_STOPPED);
         assert!(started.elapsed() >= STOP_GRACE, "a save that is merely slow gets its grace");
         assert!(started.elapsed() < STOP_GRACE + std::time::Duration::from_secs(6), "took {:?}", started.elapsed());
@@ -1215,43 +1150,43 @@ mod tests {
         let root = fixture();
         std::fs::write(root.join("tracked.txt"), "edited\n").unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(&root, "paused-save", "result")).unwrap();
+        within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "paused-save", "result")).unwrap();
     }
 
     #[test]
     fn a_limited_git_command_can_return_more_than_a_pipe_holds() {
         let root = fixture();
         std::fs::write(root.join("big.txt"), "x".repeat(4 * 1024 * 1024)).unwrap();
-        let blob = git(&root, &["hash-object", "-w", "big.txt"]).unwrap();
-        let text = within(GitLimit::new(SAVE_LIMIT, None), || git(&root, &["cat-file", "blob", blob.trim()])).unwrap();
+        let blob = git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["hash-object", "-w", "big.txt"]).unwrap();
+        let text = within(GitLimit::new(SAVE_LIMIT, None), || git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["cat-file", "blob", blob.trim()])).unwrap();
         assert_eq!(text.len(), 4 * 1024 * 1024);
     }
 
     #[test]
     fn empty_committed_repository_captures_runs_and_integrates_without_touching_user_index() {
         let root=empty_fixture();
-        git(&root,&["-c","user.name=Fixture","-c","user.email=fixture@localhost","commit","--allow-empty","-qm","empty baseline"]).unwrap();
-        assert!(git(&root,&["ls-files"]).unwrap().trim().is_empty());
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["-c","user.name=Fixture","-c","user.email=fixture@localhost","commit","--allow-empty","-qm","empty baseline"]).unwrap();
+        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["ls-files"]).unwrap().trim().is_empty());
         let original_index=std::fs::read(root.join(".git/index")).ok();
-        let original_head=git(&root,&["rev-parse","HEAD"]).unwrap();
+        let original_head=git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["rev-parse","HEAD"]).unwrap();
         let data=root.with_extension("data");
-        let baseline=capture(&root,"empty-tree","baseline").unwrap();
+        let baseline=capture(std::path::Path::new("/nonexistent-apex-test-data"), &root,"empty-tree","baseline").unwrap();
         let task=prepare_worktree(&baseline,"empty-tree",&data).unwrap();
         // Result capture must also support a worker that has made no changes.
-        let unchanged=capture_result(&task,"empty-tree").unwrap();
-        assert!(git(&task,&["ls-tree","--name-only",&unchanged.commit]).unwrap().trim().is_empty());
+        let unchanged=capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task,"empty-tree").unwrap();
+        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"), &task,&["ls-tree","--name-only",&unchanged.commit]).unwrap().trim().is_empty());
         std::fs::write(task.join("created.txt"),"worker result\n").unwrap();
-        let result=capture_result(&task,"empty-tree").unwrap();
+        let result=capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task,"empty-tree").unwrap();
         std::fs::write(root.join("human-note.txt"),"keep unrelated untracked work\n").unwrap();
         std::fs::write(root.join(".env"),"PRIVATE_FIXTURE=excluded\n").unwrap();
         let plan=stage_integration(&root,&baseline,&result.commit,"empty-tree",&data).unwrap();
-        apply_integration(&plan,&data.join("apply.json")).unwrap();
+        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan,&data.join("apply.json")).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("created.txt")).unwrap(),"worker result\n");
         assert_eq!(std::fs::read_to_string(root.join("human-note.txt")).unwrap(),"keep unrelated untracked work\n");
         assert_eq!(std::fs::read_to_string(root.join(".env")).unwrap(),"PRIVATE_FIXTURE=excluded\n");
         assert_eq!(std::fs::read(root.join(".git/index")).ok(),original_index);
-        assert_eq!(git(&root,&["rev-parse","HEAD"]).unwrap(),original_head);
-        assert!(!git(&root,&["ls-tree","-r","--name-only",&plan.merged_commit]).unwrap().lines().any(|path|path==".env"));
+        assert_eq!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["rev-parse","HEAD"]).unwrap(),original_head);
+        assert!(!git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["ls-tree","-r","--name-only",&plan.merged_commit]).unwrap().lines().any(|path|path==".env"));
         std::fs::remove_dir_all(data).unwrap();std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1263,10 +1198,10 @@ mod tests {
                 std::fs::create_dir_all(root.join("a/sub")).unwrap();
                 std::fs::write(root.join("a/sub/child"), "old").unwrap();
             } else { std::fs::write(root.join("a"), "old").unwrap(); }
-            git(&root, &["add", "."]).unwrap();
-            git(&root, &["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "shape"]).unwrap();
+            git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "."]).unwrap();
+            git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "shape"]).unwrap();
             let data = root.with_extension("data");
-            let baseline = capture(&root, "shape", "baseline").unwrap();
+            let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "shape", "baseline").unwrap();
             let task = prepare_worktree(&baseline, "shape", &data).unwrap();
             if directory_first {
                 std::fs::remove_dir_all(task.join("a")).unwrap();
@@ -1276,10 +1211,10 @@ mod tests {
                 std::fs::create_dir_all(task.join("a/sub")).unwrap();
                 std::fs::write(task.join("a/sub/child"), "new").unwrap();
             }
-            let result = capture_result(&task, "shape").unwrap();
+            let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "shape").unwrap();
             let index = std::fs::read(root.join(".git/index")).unwrap();
             let plan = stage_integration(&root, &baseline, &result.commit, "shape", &data).unwrap();
-            apply_integration(&plan, &data.join("apply.json")).unwrap();
+            apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("apply.json")).unwrap();
             assert_eq!(std::fs::read_to_string(root.join(if directory_first { "a" } else { "a/sub/child" })).unwrap(), "new");
             assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
         }
@@ -1289,10 +1224,10 @@ mod tests {
     fn dirty_snapshot_captures_staged_unstaged_and_new_files_without_changing_index() {
         let root = fixture();
         std::fs::write(root.join("tracked.txt"), "staged\n").unwrap();
-        git(&root, &["add", "tracked.txt"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "tracked.txt"]).unwrap();
         std::fs::write(root.join("tracked.txt"), "working\n").unwrap();
         std::fs::write(root.join("staged-new.txt"), "staged new\n").unwrap();
-        git(&root, &["add", "staged-new.txt"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "staged-new.txt"]).unwrap();
         std::fs::write(root.join("new.txt"), "new\n").unwrap();
         std::fs::write(root.join(".env"), "SECRET=fixture\n").unwrap();
         std::fs::write(root.join(".env.example"), "EXAMPLE=placeholder\n").unwrap();
@@ -1302,9 +1237,9 @@ mod tests {
         std::fs::write(root.join(".apex-agent-exclude"), "private/*.json\ntracked.txt\n").unwrap();
         std::fs::write(root.join("private/token.json"), "private credential\n").unwrap();
         let index = std::fs::read(root.join(".git/index")).unwrap();
-        let snapshot = capture(&root, "fixture", "baseline").unwrap();
+        let snapshot = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "fixture", "baseline").unwrap();
         assert_eq!(
-            git(
+            git(std::path::Path::new("/nonexistent-apex-test-data"),
                 &root,
                 &["show", &format!("{}:tracked.txt", snapshot.commit)]
             )
@@ -1312,19 +1247,19 @@ mod tests {
             "working\n"
         );
         assert_eq!(
-            git(&root, &["show", &format!("{}:new.txt", snapshot.commit)]).unwrap(),
+            git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["show", &format!("{}:new.txt", snapshot.commit)]).unwrap(),
             "new\n"
         );
         assert_eq!(
-            git(
+            git(std::path::Path::new("/nonexistent-apex-test-data"),
                 &root,
                 &["show", &format!("{}:staged-new.txt", snapshot.commit)]
             )
             .unwrap(),
             "staged new\n"
         );
-        assert!(git(&root, &["show", &format!("{}:.env", snapshot.commit)]).is_err());
-        assert!(git(
+        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["show", &format!("{}:.env", snapshot.commit)]).is_err());
+        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             &["show", &format!("{}:.env.example", snapshot.commit)]
         )
@@ -1342,14 +1277,14 @@ mod tests {
     fn earlier_attempt_snapshots_remain_reachable_after_later_results_and_gc() {
         let root = fixture();
         std::fs::write(root.join("tracked.txt"), "first attempt\n").unwrap();
-        let first = capture_result(&root, "durable-result").unwrap();
+        let first = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &root, "durable-result").unwrap();
         std::fs::write(root.join("tracked.txt"), "second attempt\n").unwrap();
-        let second = capture_result(&root, "durable-result").unwrap();
+        let second = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &root, "durable-result").unwrap();
         assert_ne!(first.commit, second.commit);
-        git(&root, &["reflog", "expire", "--expire=now", "--all"]).unwrap();
-        git(&root, &["gc", "--prune=now"]).unwrap();
-        assert_eq!(git(&root, &["show", &format!("{}:tracked.txt", first.commit)]).unwrap(), "first attempt\n");
-        assert_eq!(git(&root, &["rev-parse", &format!("refs/apex/tasks/durable-result/snapshots/{}", first.commit)]).unwrap().trim(), first.commit);
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["reflog", "expire", "--expire=now", "--all"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["gc", "--prune=now"]).unwrap();
+        assert_eq!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["show", &format!("{}:tracked.txt", first.commit)]).unwrap(), "first attempt\n");
+        assert_eq!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["rev-parse", &format!("refs/apex/tasks/durable-result/snapshots/{}", first.commit)]).unwrap().trim(), first.commit);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1365,17 +1300,17 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(&root, "task-a", "baseline").unwrap();
+        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-a", "baseline").unwrap();
         let task_a = prepare_worktree(&baseline, "task-a", &data).unwrap();
         std::fs::write(task_a.join("tracked.txt"), "task A\n").unwrap();
-        git(&task_a, &["add", "tracked.txt"]).unwrap();
-        let result_a = capture_result(&task_a, "task-a").unwrap().commit;
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &task_a, &["add", "tracked.txt"]).unwrap();
+        let result_a = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task_a, "task-a").unwrap().commit;
         std::fs::write(root.join("human.txt"), "human\n").unwrap();
-        git(&root, &["add", "human.txt"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "human.txt"]).unwrap();
         let staged_index = std::fs::read(root.join(".git/index")).unwrap();
         let integration_a =
             stage_integration(&root, &baseline, &result_a, "task-a", &data).unwrap();
-        apply_integration(&integration_a, &data.join("task-a-apply.json")).unwrap();
+        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &integration_a, &data.join("task-a-apply.json")).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "task A\n"
@@ -1389,11 +1324,11 @@ mod tests {
             staged_index
         );
 
-        let baseline_b = capture(&root, "task-b", "baseline").unwrap();
+        let baseline_b = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-b", "baseline").unwrap();
         let task_b = prepare_worktree(&baseline_b, "task-b", &data).unwrap();
         std::fs::write(task_b.join("second.txt"), "task B\n").unwrap();
-        git(&task_b, &["add", "second.txt"]).unwrap();
-        let result_b = capture_result(&task_b, "task-b").unwrap().commit;
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &task_b, &["add", "second.txt"]).unwrap();
+        let result_b = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task_b, "task-b").unwrap().commit;
         let integration_b =
             stage_integration(&root, &baseline_b, &result_b, "task-b", &data).unwrap();
         assert!(
@@ -1403,7 +1338,7 @@ mod tests {
             "{:?}",
             integration_b.changed_paths
         );
-        apply_integration(&integration_b, &data.join("task-b-apply.json")).unwrap();
+        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &integration_b, &data.join("task-b-apply.json")).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "task A\n"
@@ -1438,11 +1373,11 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(&root, "task-conflict", "baseline").unwrap();
+        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-conflict", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-conflict", &data).unwrap();
         std::fs::write(task.join("tracked.txt"), "worker\n").unwrap();
-        git(&task, &["add", "tracked.txt"]).unwrap();
-        let result = capture_result(&task, "task-conflict").unwrap().commit;
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "tracked.txt"]).unwrap();
+        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-conflict").unwrap().commit;
         std::fs::write(root.join("tracked.txt"), "human\n").unwrap();
         let before = std::fs::read(root.join("tracked.txt")).unwrap();
         assert!(stage_integration(&root, &baseline, &result, "task-conflict", &data).is_err());
@@ -1459,8 +1394,8 @@ mod tests {
         let root = fixture();
         std::fs::write(root.join("old name.bin"), [0, 255, 1, 2]).unwrap();
         std::fs::write(root.join("remove.txt"), "remove\n").unwrap();
-        git(&root, &["add", "old name.bin", "remove.txt"]).unwrap();
-        git(
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "old name.bin", "remove.txt"]).unwrap();
+        git(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             &[
                 "-c",
@@ -1482,7 +1417,7 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(&root, "task-types", "baseline").unwrap();
+        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-types", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-types", &data).unwrap();
         std::fs::rename(task.join("old name.bin"), task.join("renamed.bin")).unwrap();
         std::fs::write(task.join("renamed.bin"), [9, 0, 255, 3]).unwrap();
@@ -1493,15 +1428,15 @@ mod tests {
         .unwrap();
         std::fs::remove_file(task.join("remove.txt")).unwrap();
         symlink("renamed.bin", task.join("link.bin")).unwrap();
-        git(&task, &["add", "-A"]).unwrap();
-        let result = capture_result(&task, "task-types").unwrap().commit;
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "-A"]).unwrap();
+        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-types").unwrap().commit;
         let plan = stage_integration(&root, &baseline, &result, "task-types", &data).unwrap();
         assert!(
             plan.changed_paths.contains(&"renamed.bin".to_string()),
             "{:?}",
             plan.changed_paths
         );
-        apply_integration(&plan, &data.join("task-types-apply.json")).unwrap();
+        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("task-types-apply.json")).unwrap();
         assert!(!root.join("old name.bin").exists());
         assert!(!root.join("remove.txt").exists());
         assert_eq!(
@@ -1523,7 +1458,7 @@ mod tests {
         archive_worktree(&root, "task-types", &data).unwrap();
         assert!(!task.exists());
         assert!(!plan.scratch_path.exists());
-        assert!(run_git(
+        assert!(run_git(std::path::Path::new("/nonexistent-apex-test-data"),
             &root,
             None,
             &["cat-file", "-e", &format!("{}^{{commit}}", result)],
@@ -1546,15 +1481,15 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(&root, "task-stale", "baseline").unwrap();
+        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-stale", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-stale", &data).unwrap();
         std::fs::write(task.join("tracked.txt"), "worker\n").unwrap();
-        git(&task, &["add", "tracked.txt"]).unwrap();
-        let result = capture_result(&task, "task-stale").unwrap().commit;
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "tracked.txt"]).unwrap();
+        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-stale").unwrap().commit;
         let plan = stage_integration(&root, &baseline, &result, "task-stale", &data).unwrap();
         std::fs::write(root.join("tracked.txt"), "new human edit\n").unwrap();
         let index = std::fs::read(root.join(".git/index")).unwrap();
-        assert!(apply_integration(&plan, &data.join("stale.json")).is_err());
+        assert!(apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("stale.json")).is_err());
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "new human edit\n"
@@ -1577,11 +1512,11 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(&root, "task-recover", "baseline").unwrap();
+        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-recover", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-recover", &data).unwrap();
         std::fs::write(task.join("tracked.txt"), "worker result\n").unwrap();
-        git(&task, &["add", "tracked.txt"]).unwrap();
-        let result = capture_result(&task, "task-recover").unwrap().commit;
+        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "tracked.txt"]).unwrap();
+        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-recover").unwrap().commit;
         let plan = stage_integration(&root, &baseline, &result, "task-recover", &data).unwrap();
         std::fs::write(root.join("tracked.txt"), "worker result\n").unwrap();
         let journal_path = data.join("recover.json");
@@ -1596,7 +1531,7 @@ mod tests {
             },
         )
         .unwrap();
-        reconcile_interrupted_apply(&plan, &journal_path).unwrap();
+        reconcile_interrupted_apply(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &journal_path).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "base\n"
@@ -1607,7 +1542,7 @@ mod tests {
         // An edit made after a crash on a task-touched path is human work too.
         write_journal(&data.join("recover-human.json"), &ApplyJournal { version: 1, task_id: "task-recover".into(), phase: "applying".into(), completed_paths: vec![], merged_commit: plan.merged_commit.clone() }).unwrap();
         std::fs::write(root.join("tracked.txt"), "human edited after crash\n").unwrap();
-        assert!(reconcile_interrupted_apply(&plan, &data.join("recover-human.json")).is_err());
+        assert!(reconcile_interrupted_apply(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("recover-human.json")).is_err());
         assert_eq!(std::fs::read_to_string(root.join("tracked.txt")).unwrap(), "human edited after crash\n");
         let _ = archive_worktree(&root, "task-recover", &data);
         std::fs::remove_dir_all(root).unwrap();

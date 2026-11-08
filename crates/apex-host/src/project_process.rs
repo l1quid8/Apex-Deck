@@ -1,11 +1,13 @@
 //! One function for every project-folder spawn, per Task 8.
-//! On a tainted folder it forces jailed execution at Edits level; on Full it gates.
+//! Tainted automatic operations are refused until an Edits jail can be established.
 //! Also provides a source-scanning guard: no raw `Command::new("git")` outside this module.
 
 use std::path::Path;
 use std::process::Command;
 
 use crate::folder_trust;
+mod command;
+pub use command::{ProjectCommand, ProjectAsyncCommand, ProjectChild, prepare};
 
 /// The design's Full-gate message, centralized here so UI can reuse it.
 pub fn full_refusal() -> &'static str {
@@ -33,45 +35,65 @@ fn inherited_git_envs() -> Vec<String> {
     std::env::vars().filter_map(|(k,_)| if k.starts_with("GIT_") { Some(k) } else { None }).collect()
 }
 
-/// Build a `git` command that is isolated enough to not run project code outside jail.
-/// Sets GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL=/dev/null, GIT_ATTR_NOSYSTEM, removes GIT_ vars,
-/// and adds -c core.fsmonitor=false, -c core.hooksPath=/dev/null etc.
-/// This prevents planted `core.fsmonitor`, `diff.external`, `filter.*.clean`, `.git/hooks/*` from running outside jail.
-pub fn git_command() -> Command {
-    let mut cmd = Command::new("git");
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
-    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
-    cmd.env("GIT_ATTR_NOSYSTEM", "1");
-    cmd.env("HOME", std::env::temp_dir());
-    cmd.env("XDG_CONFIG_HOME", std::env::temp_dir());
-    for key in inherited_git_envs() {
-        cmd.env_remove(key);
+/// Automatic project operations never inherit Full acceptance. Until this
+/// boundary can establish the complete Edits jail (including its lifetime and
+/// proxy), refuse tainted folders instead of launching an ordinary host process.
+pub(crate) fn check_project(data: &Path, folder: &Path) -> Result<(), String> {
+    if apex_core::folder_trust::is_tainted_checked(data, folder)? && !cfg!(target_os = "linux") {
+        return Err("Automatic project operation refused: this folder is lower-writable and an Edits jail is unavailable for this operation.".into());
     }
-    cmd.env_remove("GIT_CONFIG_PARAMETERS");
+    Ok(())
+}
+
+/// Common Git environment and defensive flags. These flags supplement the
+/// taint boundary; they do not make arbitrary project filters or scripts safe.
+/// Kept crate-private for the separate byte-isolated checkpoint implementation.
+fn harden_git(cmd: &mut Command) {
+    for key in inherited_git_envs() { cmd.env_remove(key); }
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+               "-c", "core.attributesFile=", "-c", "diff.external="]);
+}
+
+/// Reserved for checkpoints, which independently isolate all Git inputs.
+pub(crate) fn isolated_git_command() -> Command {
+    let mut cmd = Command::new("git");
+    harden_git(&mut cmd);
     cmd
 }
 
-/// Generic project process: program + args in a folder, with envs.
-pub fn command_in(program: &str, folder: &Path) -> Command {
+#[cfg(test)]
+pub(crate) fn fixture_git_command() -> Command { isolated_git_command() }
+
+/// Construct Git only after checking the host's protected data-folder taint.
+pub fn git_command(data: &Path, folder: &Path) -> Result<ProjectCommand, String> {
+    check_project(data, folder)?;
+    let mut cmd = isolated_git_command();
+    cmd.current_dir(folder);
+    Ok(ProjectCommand::new(cmd, data, folder))
+}
+
+pub fn command_in(data: &Path, program: &str, folder: &Path) -> Result<ProjectCommand, String> {
+    check_project(data, folder)?;
     let mut cmd = Command::new(program);
     cmd.current_dir(folder);
-    for key in inherited_git_envs() {
-        cmd.env_remove(key);
-    }
-    cmd.env_remove("GIT_CONFIG_PARAMETERS");
-    cmd
+    for key in inherited_git_envs() { cmd.env_remove(key); }
+    Ok(ProjectCommand::new(cmd, data, folder))
 }
 
-/// Async version for runner/checks - also isolated
-pub fn tokio_command_in(program: &str, folder: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.current_dir(folder);
-    for key in inherited_git_envs() {
-        cmd.env_remove(key);
-    }
-    cmd.env_remove("GIT_CONFIG_PARAMETERS");
-    cmd
+pub fn tokio_command_in(data: &Path, program: &str, folder: &Path) -> Result<ProjectAsyncCommand, String> {
+    Ok(ProjectAsyncCommand::new(command_in(data, program, folder)?))
+}
+
+/// Carry the protected data context into blocking project work without lending
+/// a request-local reference to the worker thread.
+pub(crate) fn spawn_blocking<T, F>(data: &Path, work: F) -> tokio::task::JoinHandle<T>
+where T: Send + 'static, F: FnOnce(&Path) -> T + Send + 'static {
+    let data = data.to_path_buf();
+    tokio::task::spawn_blocking(move || work(&data))
 }
 
 /// Helper for `bot_copies`, `git_changes`, checks: verify folder is not tainted for Full.
@@ -118,7 +140,7 @@ mod tests {
                 if exempt.contains(&name) { continue; }
                 if name == "personal" { continue; }
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.contains("Command::new(\"git\")") {
+                    if content.contains("Command::new(\"git\")") || (name != "checkpoints.rs" && content.contains("project_process::isolated_git_command(")) {
                         raw_git.push(name.to_string());
                     }
                     // Direct sh/cmd spawn that runs project code outside wrapper
@@ -176,7 +198,42 @@ mod tests {
     }
 
     #[test]
-    fn git_command_does_not_run_fsmonitor_hook_filter() {
+    #[cfg(unix)]
+    fn command_constructed_clean_cannot_run_after_folder_is_tainted() {
+        let t = tmp();
+        let data = t.0.join("data");
+        let project = t.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let marker = data.join("escaped-after-construction");
+        let mut command = command_in(&data, "sh", &project).unwrap();
+        command.args(["-c", &format!("printf escaped > '{}'", marker.display())]);
+        folder_trust::mark_tainted(&data, &project).unwrap();
+        let result = command.output();
+        assert!(result.is_err() || !result.unwrap().status.success(), "constructed-clean command escaped after taint");
+        assert!(!marker.exists(), "project command wrote protected data after taint");
+    }
+
+    #[test]
+    fn all_project_builders_refuse_accepted_taint_and_invalid_trust_data() {
+        let t = tmp();
+        let data = t.0.join("data");
+        let project = t.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        folder_trust::mark_tainted(&data, &project).unwrap();
+        folder_trust::accept(&data, &project, None).unwrap();
+        if !cfg!(target_os = "linux") {
+            assert!(git_command(&data, &project).is_err());
+            assert!(command_in(&data, "git", &project).is_err());
+            assert!(tokio_command_in(&data, "git", &project).is_err());
+        }
+        std::fs::write(data.join("folder-trust.json"), "invalid").unwrap();
+        assert!(git_command(&data, &project).is_err());
+        assert!(command_in(&data, "git", &project).is_err());
+        assert!(tokio_command_in(&data, "git", &project).is_err());
+    }
+
+    #[test]
+    fn git_command_disables_fsmonitor_without_caller_flags() {
         // Planted files test per Task 8 Lower-writable design
         let t = tmp();
         let repo = t.0.join("repo");
@@ -195,9 +252,11 @@ mod tests {
         let hook = hooks_dir.join("post-checkout");
         std::fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
         #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let mut p = std::fs::metadata(&hook).unwrap().permissions(); p.set_mode(0o755); std::fs::set_permissions(&hook, p).unwrap(); }
-        let mut cmd = git_command();
-        cmd.arg("-C").arg(&repo).args(["--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "filter.evil.clean=cat", "status", "--porcelain"]);
-        let out = cmd.output().expect("git status");
-        assert!(!marker.exists(), "planted fsmonitor/hook ran: {}", String::from_utf8_lossy(&out.stderr));
+        for mut cmd in [git_command(&t.0.join("data"), &repo).unwrap()] {
+            cmd.args(["--literal-pathspecs", "status", "--porcelain"]);
+            let out = cmd.output().expect("git status");
+            assert!(out.status.success(), "git status failed: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(!marker.exists(), "planted fsmonitor ran: {}", String::from_utf8_lossy(&out.stderr));
+        }
     }
 }

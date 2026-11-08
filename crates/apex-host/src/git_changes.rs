@@ -2,7 +2,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -53,8 +55,8 @@ pub struct Outcome {
     pub message: String,
 }
 
-fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
-    let mut command = crate::project_process::git_command();
+fn git(project_data: &Path, cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    let mut command = crate::project_process::git_command(project_data, cwd)?;
     command
         .arg("-C")
         .arg(crate::assistant_git::external_path(cwd).as_os_str())
@@ -95,21 +97,21 @@ fn remember_check(state: &State) {
         (state.head.clone(), state.target_head.clone()),
     );
 }
-fn root(cwd: &Path) -> Result<PathBuf, String> {
+fn root(project_data: &Path, cwd: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(
-        git(cwd, None, &["rev-parse", "--show-toplevel"])?.trim(),
+        git(project_data, cwd, None, &["rev-parse", "--show-toplevel"])?.trim(),
     ))
 }
-pub fn status(cwd: &Path) -> Result<State, String> {
-    let root = root(cwd)?;
-    let head = git(&root, None, &["rev-parse", "--verify", "HEAD"])
+pub fn status(project_data: &Path, cwd: &Path) -> Result<State, String> {
+    let root = root(project_data, cwd)?;
+    let head = git(project_data, &root, None, &["rev-parse", "--verify", "HEAD"])
         .map_err(|_| "Create the repository's first commit before using Git actions.".to_string())?
         .trim()
         .to_string();
-    let branch = git(&root, None, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+    let branch = git(project_data, &root, None, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .ok()
         .map(|s| s.trim().to_string());
-    let default = git(
+    let default = git(project_data,
         &root,
         None,
         &[
@@ -125,7 +127,7 @@ pub fn status(cwd: &Path) -> Result<State, String> {
         .into_iter()
         .chain(["main".into(), "master".into()])
         .find(|b| {
-            git(
+            git(project_data,
                 &root,
                 None,
                 &[
@@ -139,10 +141,10 @@ pub fn status(cwd: &Path) -> Result<State, String> {
         });
     let target_head = target
         .as_ref()
-        .and_then(|b| git(&root, None, &["rev-parse", &format!("refs/heads/{b}")]).ok())
+        .and_then(|b| git(project_data, &root, None, &["rev-parse", &format!("refs/heads/{b}")]).ok())
         .map(|s| s.trim().to_string());
     let (ahead, behind) = if let Some(base) = &target_head {
-        let counts = git(
+        let counts = git(project_data,
             &root,
             None,
             &[
@@ -161,13 +163,13 @@ pub fn status(cwd: &Path) -> Result<State, String> {
     };
     // Build from HEAD rather than the real index: assume-unchanged and
     // skip-worktree flags must never conceal changed bytes from this review.
-    let snapshot = private_index();
-    git(&root, Some(&snapshot.0), &["read-tree", &head])?;
-    git(&root, Some(&snapshot.0), &["add", "-A", "--", "."])?;
-    let tree = git(&root, Some(&snapshot.0), &["write-tree"])?
+    let snapshot = private_index(&root);
+    git(project_data, &root, Some(&snapshot.0), &["read-tree", &head])?;
+    git(project_data, &root, Some(&snapshot.0), &["add", "-A", "--", "."])?;
+    let tree = git(project_data, &root, Some(&snapshot.0), &["write-tree"])?
         .trim()
         .to_string();
-    let patch = git(
+    let patch = git(project_data,
         &root,
         None,
         &[
@@ -184,7 +186,7 @@ pub fn status(cwd: &Path) -> Result<State, String> {
         .into_iter()
         .collect::<HashMap<_, _>>();
     // NUL-delimited names preserve tabs, newlines and non-ASCII filenames.
-    let stats = git(
+    let stats = git(project_data,
         &root,
         None,
         &[
@@ -207,7 +209,7 @@ pub fn status(cwd: &Path) -> Result<State, String> {
         let path = parts[2].to_string();
         let patch = match patches.get(&path) {
             Some(p) => p.clone(),
-            None => git(
+            None => git(project_data,
                 &root,
                 None,
                 &[
@@ -231,7 +233,7 @@ pub fn status(cwd: &Path) -> Result<State, String> {
             staged_only: false,
         });
     }
-    let staged = git(
+    let staged = git(project_data,
         &root,
         None,
         &[
@@ -250,7 +252,7 @@ pub fn status(cwd: &Path) -> Result<State, String> {
             continue;
         }
         let path = parts[2].to_string();
-        let patch = git(
+        let patch = git(project_data,
             &root,
             None,
             &[
@@ -275,7 +277,7 @@ pub fn status(cwd: &Path) -> Result<State, String> {
     files.sort_by(|a, b| a.path.cmp(&b.path));
     // Staged changes whose working copy matches HEAD must still block merge.
     let clean = files.is_empty()
-        && git(
+        && git(project_data,
             &root,
             None,
             &["status", "--porcelain", "--untracked-files=all"],
@@ -300,8 +302,8 @@ pub fn status(cwd: &Path) -> Result<State, String> {
         clean,
     })
 }
-fn current(cwd: &Path, expected: &State) -> Result<State, String> {
-    let now = status(cwd)?;
+fn current(project_data: &Path, cwd: &Path, expected: &State) -> Result<State, String> {
+    let now = status(project_data, cwd)?;
     if now.root != expected.root
         || now.head != expected.head
         || now.tree != expected.tree
@@ -355,11 +357,12 @@ fn junction_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 /// never the working tree: otherwise an uncommitted edit could make a broken
 /// commit look green, and the pass would be remembered for that commit.
 struct HeadCheckout {
+    data: PathBuf,
     root: PathBuf,
     dir: PathBuf,
 }
 impl HeadCheckout {
-    fn new(root: &Path, head: &str) -> Result<Self, String> {
+    fn new(project_data: &Path, root: &Path, head: &str) -> Result<Self, String> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "apex-checks-{}-{}-{}",
@@ -371,12 +374,13 @@ impl HeadCheckout {
                 .as_nanos()
         ));
         let path = dir.to_string_lossy().to_string();
-        git(
+        git(project_data,
             root,
             None,
             &["worktree", "add", "--detach", "--force", &path, head],
         )?;
         let checkout = Self {
+            data: project_data.to_path_buf(),
             root: root.to_path_buf(),
             dir,
         };
@@ -405,17 +409,17 @@ impl HeadCheckout {
 impl Drop for HeadCheckout {
     fn drop(&mut self) {
         let dir = self.dir.to_string_lossy().to_string();
-        let _ = git(
+        let _ = git(&self.data,
             &self.root,
             None,
             &["worktree", "remove", "--force", &dir],
         );
         let _ = std::fs::remove_dir_all(&self.dir);
-        let _ = git(&self.root, None, &["worktree", "prune"]);
+        let _ = git(&self.data, &self.root, None, &["worktree", "prune"]);
     }
 }
 struct PrivateIndex(PathBuf);
-fn private_index() -> PrivateIndex {
+fn private_index(root: &Path) -> PrivateIndex {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     PrivateIndex(
         std::env::temp_dir().join(format!(
@@ -435,8 +439,8 @@ impl Drop for PrivateIndex {
         let _ = std::fs::remove_file(self.0.with_extension("lock"));
     }
 }
-fn commit(cwd: &Path, expected: &State, paths: &[String], message: &str) -> Result<String, String> {
-    let now = current(cwd, expected)?;
+fn commit(project_data: &Path, cwd: &Path, expected: &State, paths: &[String], message: &str) -> Result<String, String> {
+    let now = current(project_data, cwd, expected)?;
     if message.trim().is_empty() || message.len() > 4096 {
         return Err("Enter a commit message (up to 4096 bytes).".into());
     }
@@ -460,21 +464,21 @@ fn commit(cwd: &Path, expected: &State, paths: &[String], message: &str) -> Resu
     {
         return Err("Select current changed files from this repository.".into());
     }
-    let index = private_index();
     let root = Path::new(&now.root);
-    git(root, Some(&index.0), &["read-tree", &now.head])?;
+    let index = private_index(root);
+    git(project_data, root, Some(&index.0), &["read-tree", &now.head])?;
     // Copy the reviewed blobs, not another read of working files. A concurrent
     // edit after validation can stay dirty but cannot enter this commit.
     let source = format!("--source={}", now.tree);
     let mut args = vec!["restore", "--staged", source.as_str(), "--"];
     args.extend(paths.iter().map(String::as_str));
-    git(root, Some(&index.0), &args)?;
+    git(project_data, root, Some(&index.0), &args)?;
     // Validate once more after preparing the index; hooks still run normally.
-    current(cwd, expected)?;
-    git(root, Some(&index.0), &["commit", "-m", message.trim()])?;
+    current(project_data, cwd, expected)?;
+    git(project_data, root, Some(&index.0), &["commit", "-m", message.trim()])?;
     let mut reset = vec!["reset", "-q", "HEAD", "--"];
     reset.extend(paths.iter().map(String::as_str));
-    if let Err(e) = git(root, None, &reset) {
+    if let Err(e) = git(project_data, root, None, &reset) {
         return Ok(format!(
             "Committed. The selected files' staging area could not be refreshed: {e}"
         ));
@@ -496,15 +500,15 @@ fn branch_ready(now: &State) -> Result<(&str, &str), String> {
     }
     Ok((branch, target))
 }
-fn target_checked_out_elsewhere(root: &Path, target: &str) -> bool {
-    let Ok(list) = git(root, None, &["worktree", "list", "--porcelain"]) else {
+fn target_checked_out_elsewhere(project_data: &Path, root: &Path, target: &str) -> bool {
+    let Ok(list) = git(project_data, root, None, &["worktree", "list", "--porcelain"]) else {
         return true;
     };
     let wanted = format!("branch refs/heads/{target}");
     list.lines().any(|line| line.trim() == wanted)
 }
-fn merge(cwd: &Path, expected: &State) -> Result<String, String> {
-    let now = current(cwd, expected)?;
+fn merge(project_data: &Path, cwd: &Path, expected: &State) -> Result<String, String> {
+    let now = current(project_data, cwd, expected)?;
     let (branch, target) = branch_ready(&now)?;
     let root = Path::new(&now.root);
     if !now.checks_passed {
@@ -520,7 +524,7 @@ fn merge(cwd: &Path, expected: &State) -> Result<String, String> {
     // Fast-forward by ref only: behind == 0 makes target an ancestor of head, so
     // advancing the ref is the whole merge. No branch switch over a dirty tree and
     // no stash, so uncommitted files are never touched.
-    if git(
+    if git(project_data,
         root,
         None,
         &["merge-base", "--is-ancestor", old_target, &now.head],
@@ -529,12 +533,12 @@ fn merge(cwd: &Path, expected: &State) -> Result<String, String> {
     {
         return Err("Update this branch from its target, then run checks again.".into());
     }
-    if target_checked_out_elsewhere(root, target) {
+    if target_checked_out_elsewhere(project_data, root, target) {
         return Err(format!(
             "{target} is checked out in another worktree. Merge there instead."
         ));
     }
-    git(
+    git(project_data,
         root,
         None,
         &[
@@ -546,8 +550,8 @@ fn merge(cwd: &Path, expected: &State) -> Result<String, String> {
     )?;
     // Both branches now point at the same commit, so switching changes only the
     // HEAD symref; working files and the index are left exactly as they are.
-    if let Err(error) = git(root, None, &["switch", target]) {
-        let _ = git(
+    if let Err(error) = git(project_data, root, None, &["switch", target]) {
+        let _ = git(project_data,
             root,
             None,
             &[
@@ -559,15 +563,15 @@ fn merge(cwd: &Path, expected: &State) -> Result<String, String> {
         );
         return Err(error);
     }
-    match git(root, None, &["branch", "-d", "--", branch]) {
+    match git(project_data, root, None, &["branch", "-d", "--", branch]) {
         Ok(_) => Ok(format!("Merged into {target} and deleted {branch}.")),
         Err(e) => Ok(format!(
             "Merged into {target}. Branch {branch} was retained: {e}"
         )),
     }
 }
-async fn run(cwd: &Path, program: &str, args: &[&str]) -> Result<String, String> {
-    let mut command = crate::project_process::tokio_command_in(program, cwd);
+async fn run(project_data: &Path, cwd: &Path, program: &str, args: &[&str]) -> Result<String, String> {
+    let mut command = crate::project_process::tokio_command_in(project_data, program, cwd)?;
     command
         .args(args)
         .stdin(Stdio::null())
@@ -597,20 +601,20 @@ fn short(head: &str) -> &str {
 /// Runs `command` in a throwaway checkout of the commit under review, then records
 /// the pass against that commit. The working tree is never an input, so unrelated
 /// uncommitted work can neither block checks nor vouch for untested code.
-async fn check_commit(cwd: &Path, expected: &State, command: &[&str]) -> Result<String, String> {
+async fn check_commit(project_data: &Path, cwd: &Path, expected: &State, command: &[&str]) -> Result<String, String> {
     let work = cwd.to_path_buf();
     let before = expected.clone();
-    let now = tokio::task::spawn_blocking(move || current(&work, &before))
+    let now = crate::project_process::spawn_blocking(project_data, move |project_data| current(project_data, &work, &before))
         .await
         .map_err(|e| e.to_string())??;
     checks().lock().unwrap().remove(&now.root);
     let root = PathBuf::from(&now.root);
     let head = now.head.clone();
-    let checkout = tokio::task::spawn_blocking(move || HeadCheckout::new(&root, &head))
+    let checkout = crate::project_process::spawn_blocking(project_data, move |project_data| HeadCheckout::new(project_data, &root, &head))
         .await
         .map_err(|e| e.to_string())??;
     let (program, args) = command.split_first().ok_or("No check command was given.")?;
-    let outcome = run(&checkout.dir, program, args).await;
+    let outcome = run(project_data, &checkout.dir, program, args).await;
     drop(checkout);
     outcome.map_err(|e| {
         format!(
@@ -620,8 +624,8 @@ async fn check_commit(cwd: &Path, expected: &State, command: &[&str]) -> Result<
     })?;
     let work = cwd.to_path_buf();
     let checked = now.clone();
-    tokio::task::spawn_blocking(move || {
-        current(&work, &checked)?;
+    crate::project_process::spawn_blocking(project_data, move |project_data| {
+        current(project_data, &work, &checked)?;
         remember_check(&checked);
         Ok::<_, String>(())
     })
@@ -632,7 +636,7 @@ async fn check_commit(cwd: &Path, expected: &State, command: &[&str]) -> Result<
         short(&now.head)
     ))
 }
-pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
+pub async fn perform(project_data: &Path, cwd: PathBuf, action: Action) -> Result<Outcome, String> {
     let message = match action {
         Action::Commit {
             expected,
@@ -640,26 +644,26 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
             message,
         } => {
             let work = cwd.clone();
-            tokio::task::spawn_blocking(move || commit(&work, &expected, &paths, &message))
+            crate::project_process::spawn_blocking(project_data, move |project_data| commit(project_data, &work, &expected, &paths, &message))
                 .await
                 .map_err(|e| e.to_string())??
         }
         Action::Merge { expected } => {
             let work = cwd.clone();
-            tokio::task::spawn_blocking(move || merge(&work, &expected))
+            crate::project_process::spawn_blocking(project_data, move |project_data| merge(project_data, &work, &expected))
                 .await
                 .map_err(|e| e.to_string())??
         }
-        Action::Checks { expected } => check_commit(&cwd, &expected, &TYPECHECK).await?,
+        Action::Checks { expected } => check_commit(project_data, &cwd, &expected, &TYPECHECK).await?,
         Action::Pr { expected } => {
             let work = cwd.clone();
-            let now = tokio::task::spawn_blocking(move || current(&work, &expected))
+            let now = crate::project_process::spawn_blocking(project_data, move |project_data| current(project_data, &work, &expected))
                 .await
                 .map_err(|e| e.to_string())??;
             let (branch, target) = branch_ready(&now)?;
             // Check CLI authentication before publishing any commits.
-            run(Path::new(&now.root), "gh", &["auth", "status"]).await?;
-            run(
+            run(project_data, Path::new(&now.root), "gh", &["auth", "status"]).await?;
+            run(project_data,
                 Path::new(&now.root),
                 "git",
                 &[
@@ -670,7 +674,7 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
                 ],
             )
             .await?;
-            let existing = run(
+            let existing = run(project_data,
                 Path::new(&now.root),
                 "gh",
                 &[
@@ -690,7 +694,7 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
             )
             .await?;
             if existing.is_empty() {
-                let url = run(
+                let url = run(project_data,
                     Path::new(&now.root),
                     "gh",
                     &["pr", "create", "--head", branch, "--base", target, "--fill"],
@@ -702,7 +706,7 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
             }
         }
     };
-    let state = tokio::task::spawn_blocking(move || status(&cwd))
+    let state = crate::project_process::spawn_blocking(project_data, move |project_data| status(project_data, &cwd))
         .await
         .map_err(|e| e.to_string())??;
     Ok(Outcome { state, message })
@@ -712,7 +716,6 @@ pub async fn perform(cwd: PathBuf, action: Action) -> Result<Outcome, String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::process::Command;
     struct Repo(PathBuf);
     impl Repo {
         fn new() -> Self {
@@ -739,7 +742,7 @@ mod tests {
             repo
         }
         fn git(&self, args: &[&str]) -> String {
-            let output = crate::project_process::git_command()
+            let output = crate::project_process::fixture_git_command()
                 .arg("-C")
                 .arg(&self.0)
                 .args(args)
@@ -770,7 +773,7 @@ mod tests {
         std::fs::remove_file(r.0.join("one.txt")).unwrap();
         r.write("two.txt", "changed\n");
         r.git(&["add", "two.txt"]);
-        let state = status(&r.0).unwrap();
+        let state = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         assert_eq!(state.branch.as_deref(), Some("feat/test"));
         assert_eq!(state.target.as_deref(), Some("main"));
         assert_eq!(
@@ -804,9 +807,9 @@ mod tests {
         r.write("one.txt", "reviewed\n");
         r.git(&["add", "one.txt"]);
         r.git(&["update-index", "--assume-unchanged", "one.txt"]);
-        let reviewed = status(&r.0).unwrap();
+        let reviewed = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         r.write("one.txt", "unreviewed\n");
-        assert!(commit(&r.0, &reviewed, &["one.txt".into()], "must reject").is_err());
+        assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &reviewed, &["one.txt".into()], "must reject").is_err());
         assert_eq!(r.git(&["show", "HEAD:one.txt"]), "one");
     }
 
@@ -823,7 +826,7 @@ mod tests {
         r.write("one.txt", "staged\n");
         r.git(&["add", "one.txt"]);
         r.write("one.txt", "one\n");
-        let state = status(&r.0).unwrap();
+        let state = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         assert!(!state.clean);
         assert!(state
             .files
@@ -833,7 +836,7 @@ mod tests {
             .files
             .iter()
             .any(|f| f.path == "one.txt" && f.staged_only));
-        assert!(commit(&r.0, &state, &["one.txt".into()], "staged only").is_err());
+        assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &state, &["one.txt".into()], "staged only").is_err());
     }
 
     #[test]
@@ -843,8 +846,8 @@ mod tests {
         r.write("two.txt", "staged\n");
         r.git(&["add", "two.txt"]);
         r.write("new file.txt", "new\n");
-        let before = status(&r.0).unwrap();
-        commit(
+        let before = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        commit(std::path::Path::new("/nonexistent-apex-test-data"),
             &r.0,
             &before,
             &["one.txt".into(), "new file.txt".into()],
@@ -854,19 +857,19 @@ mod tests {
         assert_eq!(r.git(&["show", "HEAD:two.txt"]), "two");
         assert_eq!(r.git(&["diff", "--cached", "--name-only"]), "two.txt");
         assert_eq!(r.git(&["show", "HEAD:one.txt"]), "selected");
-        assert_eq!(status(&r.0).unwrap().files.len(), 1);
+        assert_eq!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().files.len(), 1);
     }
 
     #[test]
     fn stale_tree_and_invalid_paths_are_rejected_before_commit() {
         let r = Repo::new();
         r.write("one.txt", "reviewed\n");
-        let before = status(&r.0).unwrap();
+        let before = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         r.write("one.txt", "unreviewed\n");
-        assert!(commit(&r.0, &before, &["one.txt".into()], "stale").is_err());
-        let now = status(&r.0).unwrap();
+        assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &before, &["one.txt".into()], "stale").is_err());
+        let now = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         for path in ["../escape", ":(glob)**", "/tmp/file", "two.txt"] {
-            assert!(commit(&r.0, &now, &[path.into()], "invalid").is_err());
+            assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &now, &[path.into()], "invalid").is_err());
         }
         assert_eq!(r.git(&["log", "-1", "--format=%s"]), "initial");
     }
@@ -875,19 +878,19 @@ mod tests {
     fn merge_fast_forwards_with_dirty_files_and_host_verified_current_check() {
         let r = Repo::new();
         r.write("one.txt", "changed\n");
-        assert!(merge(&r.0, &status(&r.0).unwrap()).is_err());
+        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap()).is_err());
         r.git(&["add", "."]);
         r.git(&["commit", "-qm", "feature"]);
-        assert!(merge(&r.0, &status(&r.0).unwrap()).is_err());
-        let checked = status(&r.0).unwrap();
+        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap()).is_err());
+        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         remember_check(&checked);
-        assert!(status(&r.0).unwrap().checks_passed);
+        assert!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed);
         // Unrelated dirty work after checks pass neither revokes them nor blocks
         // the merge; a stale snapshot is still rejected before anything moves.
         r.write("two.txt", "later\n");
-        assert!(status(&r.0).unwrap().checks_passed);
-        assert!(merge(&r.0, &checked).is_err());
-        merge(&r.0, &status(&r.0).unwrap()).unwrap();
+        assert!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed);
+        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).is_err());
+        merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap()).unwrap();
         assert_eq!(r.git(&["branch", "--show-current"]), "main");
         assert!(!r
             .git(&["branch", "--list", "feat/test"])
@@ -906,19 +909,19 @@ mod tests {
         let r = Repo::new();
         r.write("one.txt", "feature\n");
         r.git(&["commit", "-qam", "feature"]);
-        let checked = status(&r.0).unwrap();
+        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         remember_check(&checked);
         let main_before = r.git(&["rev-parse", "refs/heads/main"]);
         let sibling = r.0.with_extension("sibling");
         r.git(&["worktree", "add", "-q", sibling.to_str().unwrap(), "main"]);
-        let error = merge(&r.0, &checked).unwrap_err();
+        let error = merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).unwrap_err();
         assert!(error.contains("checked out in another worktree"), "{error}");
         assert_eq!(
             r.git(&["rev-parse", "refs/heads/main"]),
             main_before,
             "a branch another worktree has checked out must not move"
         );
-        let sibling_status = crate::project_process::git_command()
+        let sibling_status = crate::project_process::fixture_git_command()
             .arg("-C")
             .arg(&sibling)
             .args(["status", "--porcelain"])
@@ -936,14 +939,14 @@ mod tests {
         let r = Repo::new();
         r.write("one.txt", "feature\n");
         r.git(&["commit", "-qam", "feature"]);
-        let checked = status(&r.0).unwrap();
+        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         remember_check(&checked);
         let main_before = r.git(&["rev-parse", "refs/heads/main"]);
         // A held index lock fails the switch that follows the ref update, which is
         // the same recovery path a worktree checked out mid-merge would take.
         let lock = r.0.join(".git/index.lock");
         std::fs::write(&lock, "").unwrap();
-        let error = merge(&r.0, &checked).unwrap_err();
+        let error = merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).unwrap_err();
         std::fs::remove_file(&lock).unwrap();
         assert!(!error.is_empty());
         assert_eq!(
@@ -964,8 +967,8 @@ mod tests {
         let r = Repo::new();
         std::fs::create_dir_all(r.0.join("node_modules/typescript")).unwrap();
         r.write("node_modules/typescript/marker.txt", "installed\n");
-        let head = status(&r.0).unwrap().head;
-        let checkout = HeadCheckout::new(&r.0, &head).unwrap();
+        let head = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().head;
+        let checkout = HeadCheckout::new(&r.0.join("data"), &r.0, &head).unwrap();
         assert_eq!(
             std::fs::read_to_string(checkout.dir.join("node_modules/typescript/marker.txt")).unwrap(),
             "installed\n"
@@ -987,10 +990,10 @@ mod tests {
         r.git(&["commit", "-qam", "broken"]);
         r.write("one.txt", "FIXED\n");
         let probe = ["sh", "-c", "test \"$(cat one.txt)\" = FIXED"];
-        let dirty = status(&r.0).unwrap();
-        assert!(check_commit(&r.0, &dirty, &probe).await.is_err());
+        let dirty = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        assert!(check_commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &dirty, &probe).await.is_err());
         assert!(
-            !status(&r.0).unwrap().checks_passed,
+            !status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed,
             "an uncommitted fix must not record a pass for the broken commit"
         );
         // Isolation leaves the user's checkout and their uncommitted file alone.
@@ -1003,9 +1006,9 @@ mod tests {
             "M one.txt"
         );
         r.git(&["commit", "-qam", "fixed"]);
-        let fixed = status(&r.0).unwrap();
-        assert!(check_commit(&r.0, &fixed, &probe).await.is_ok());
-        let after = status(&r.0).unwrap();
+        let fixed = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        assert!(check_commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &fixed, &probe).await.is_ok());
+        let after = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         assert!(after.checks_passed);
         assert_eq!(r.git(&["status", "--porcelain"]), "");
     }
@@ -1015,12 +1018,12 @@ mod tests {
         let r = Repo::new();
         r.write("one.txt", "feature\n");
         r.git(&["commit", "-am", "feature"]);
-        let checked = status(&r.0).unwrap();
+        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
         remember_check(&checked);
         r.git(&["update-ref", "refs/heads/main", &checked.head]);
-        assert!(!status(&r.0).unwrap().checks_passed);
-        assert!(merge(&r.0, &checked).is_err());
+        assert!(!status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed);
+        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).is_err());
         r.git(&["checkout", "--detach"]);
-        assert_eq!(status(&r.0).unwrap().branch, None);
+        assert_eq!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().branch, None);
     }
 }

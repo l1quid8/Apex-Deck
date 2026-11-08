@@ -145,6 +145,7 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "saveSignIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readSignIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "forgetSignIn", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "authenticateBiometric", returnType: CAPPluginReturnPromise),
     ]
     private let connections = Connections()
 
@@ -268,6 +269,32 @@ public class ApexSshPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func disconnect(_ call: CAPPluginCall) {
         guard let handle = call.getInt("handle") else { return call.resolve() }
         Task { try? await (await self.connections.remove(handle))?.close(); call.resolve() }
+    }
+
+    /// Dedicated access-change authentication. Never reads an SSH credential.
+    /// A fresh context per call and no reuse window prevent one success from
+    /// authorizing another pending command. Biometry lockout fails closed.
+    @objc func authenticateBiometric(_ call: CAPPluginCall) {
+        guard let reason = call.getString("reason"), !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return call.reject("Missing biometric authentication reason.", "biometric")
+        }
+        DispatchQueue.main.async {
+            let context = LAContext()
+            context.localizedFallbackTitle = ""
+            context.touchIDAuthenticationAllowableReuseDuration = 0
+            var error: NSError?
+            guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+                context.invalidate()
+                return call.reject("Biometric authentication is unavailable. Nothing was sent.", "biometric")
+            }
+            context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { authenticated, _ in
+                context.invalidate()
+                guard authenticated else {
+                    return call.reject("Biometric authentication did not succeed. Nothing was sent.", "biometric")
+                }
+                call.resolve(["authenticated": true])
+            }
+        }
     }
 
     @objc func saveSignIn(_ call: CAPPluginCall) {

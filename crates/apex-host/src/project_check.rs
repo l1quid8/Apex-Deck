@@ -82,19 +82,19 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
     }
 }
 
-pub async fn run_check(dir: &Path, cmd: &str) -> CheckResult {
-    run_check_with_timeout(dir, cmd, Duration::from_secs(600)).await
+pub async fn run_check(project_data: &Path, dir: &Path, cmd: &str) -> CheckResult {
+    run_check_with_timeout(project_data, dir, cmd, Duration::from_secs(600)).await
 }
 
-pub async fn run_check_with_timeout(
+pub async fn run_check_with_timeout(project_data: &Path,
     dir: &Path,
     cmd: &str,
     timeout: Duration,
 ) -> CheckResult {
-    run_check_with_env(dir, cmd, timeout, &[]).await
+    run_check_with_env(project_data, dir, cmd, timeout, &[]).await
 }
 
-pub async fn run_check_with_env(
+pub async fn run_check_with_env(project_data: &Path,
     dir: &Path,
     cmd: &str,
     timeout: Duration,
@@ -102,7 +102,7 @@ pub async fn run_check_with_env(
 ) -> CheckResult {
     #[cfg(windows)]
     let mut command = {
-        let mut c = crate::project_process::tokio_command_in("cmd", dir);
+        let mut c = match crate::project_process::tokio_command_in(project_data, "cmd", dir) { Ok(c) => c, Err(error) => return CheckResult::Fail { output_tail: error } };
         // This is shell source, so C-runtime argument escaping would corrupt
         // embedded quotes. /S strips only the wrapper around the raw command.
         c.args(["/D", "/S", "/C"]).raw_arg(format!("\"{cmd}\""));
@@ -110,7 +110,7 @@ pub async fn run_check_with_env(
     };
     #[cfg(not(windows))]
     let mut command = {
-        let mut c = crate::project_process::tokio_command_in("sh", dir);
+        let mut c = match crate::project_process::tokio_command_in(project_data, "sh", dir) { Ok(c) => c, Err(error) => return CheckResult::Fail { output_tail: error } };
         c.args(["-c", cmd]);
         c
     };
@@ -128,6 +128,7 @@ pub async fn run_check_with_env(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
+    if let Err(error) = command.prepare().await { return CheckResult::Fail { output_tail: error.to_string() }; }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -194,12 +195,12 @@ pub async fn run_check_with_env(
     }
 }
 
-async fn get_or_run_main_check(
+async fn get_or_run_main_check(project_data: &Path,
     main_dir: &Path,
     cmd: &str,
     timeout: Duration,
 ) -> CheckResult {
-    let tree = crate::bot_copies::snapshot_tree_id(main_dir).ok();
+    let tree = crate::bot_copies::snapshot_tree_id(project_data, main_dir).ok();
     if let Some(tree_id) = &tree {
         let key = (tree_id.clone(), cmd.to_string());
         if let Ok(cache) = MAIN_CHECK_CACHE.lock() {
@@ -209,7 +210,7 @@ async fn get_or_run_main_check(
         }
     }
 
-    let res = run_check_with_timeout(main_dir, cmd, timeout).await;
+    let res = run_check_with_timeout(project_data, main_dir, cmd, timeout).await;
 
     if let Some(tree_id) = tree {
         let key = (tree_id, cmd.to_string());
@@ -221,15 +222,15 @@ async fn get_or_run_main_check(
     res
 }
 
-pub async fn check_blames_copy(
+pub async fn check_blames_copy(project_data: &Path,
     main_dir: &Path,
     copy_dir: &Path,
     cmd: &str,
 ) -> Option<String> {
-    check_blames_copy_with_timeout(main_dir, copy_dir, cmd, Duration::from_secs(600)).await
+    check_blames_copy_with_timeout(project_data, main_dir, copy_dir, cmd, Duration::from_secs(600)).await
 }
 
-pub async fn check_blames_copy_with_timeout(
+pub async fn check_blames_copy_with_timeout(project_data: &Path,
     main_dir: &Path,
     copy_dir: &Path,
     cmd: &str,
@@ -237,7 +238,7 @@ pub async fn check_blames_copy_with_timeout(
 ) -> Option<String> {
     let copy_target = copy_dir.join("target");
     let target_str = copy_target.to_string_lossy().to_string();
-    let copy_res = run_check_with_env(
+    let copy_res = run_check_with_env(project_data,
         copy_dir,
         cmd,
         timeout,
@@ -248,7 +249,7 @@ pub async fn check_blames_copy_with_timeout(
         CheckResult::Pass | CheckResult::TimedOut => return None,
     };
 
-    let main_res = get_or_run_main_check(main_dir, cmd, timeout).await;
+    let main_res = get_or_run_main_check(project_data, main_dir, cmd, timeout).await;
     match main_res {
         CheckResult::Pass => Some(output_tail),
         CheckResult::Fail { .. } | CheckResult::TimedOut => None,
@@ -331,6 +332,25 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn tainted_project_check_cannot_read_protected_data_marker() {
+        let temp = TempDir::new("tainted-protected-marker");
+        let data = temp.path().join("data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let protected = data.join("protected-marker");
+        fs::write(&protected, "protected-secret").unwrap();
+        crate::folder_trust::mark_tainted(&data, &project).unwrap();
+        crate::folder_trust::accept(&data, &project, None).unwrap();
+        let copied = project.join("stolen-marker");
+        let command = format!("cat '{}' > '{}'", protected.display(), copied.display());
+        let result = run_check_with_timeout(&data, &project, &command, Duration::from_secs(2)).await;
+        assert_ne!(result, CheckResult::Pass, "tainted project check read protected data");
+        assert_ne!(fs::read(&copied).ok(), Some(b"protected-secret".to_vec()), "tainted project check copied the protected data marker");
+    }
+
+    #[tokio::test]
     async fn no_blame_when_main_already_fails() {
         let temp = TempDir::new("main-fails");
         let main = temp.path().join("main");
@@ -340,7 +360,7 @@ mod tests {
 
         // Both fail
         let cmd = "echo 'failing' && exit 1";
-        let blamed = check_blames_copy(&main, &copy, cmd).await;
+        let blamed = check_blames_copy(std::path::Path::new("/nonexistent-apex-test-data"), &main, &copy, cmd).await;
         assert_eq!(blamed, None);
     }
 
@@ -362,7 +382,7 @@ mod tests {
             "test ! -f fail.flag || grep -q bad fail.flag && exit 1 || exit 0"
         };
 
-        let blamed = check_blames_copy(&main, &copy, cmd).await;
+        let blamed = check_blames_copy(std::path::Path::new("/nonexistent-apex-test-data"), &main, &copy, cmd).await;
         assert!(blamed.is_some(), "Expected copy to be blamed");
     }
 
@@ -370,7 +390,7 @@ mod tests {
     async fn timeout_reports_timed_out() {
         let temp = TempDir::new("timeout");
         let cmd = "sleep 5";
-        let res = run_check_with_timeout(temp.path(), cmd, Duration::from_millis(50)).await;
+        let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), cmd, Duration::from_millis(50)).await;
         assert_eq!(res, CheckResult::TimedOut);
     }
 
@@ -382,7 +402,7 @@ mod tests {
         } else {
             "yes 'error message long enough to fill buffers' | head -n 5000 >&2; exit 1"
         };
-        let res = run_check_with_timeout(temp.path(), cmd, Duration::from_secs(10)).await;
+        let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), cmd, Duration::from_secs(10)).await;
         match res {
             CheckResult::Fail { output_tail } => {
                 assert!(!output_tail.is_empty());
@@ -397,7 +417,7 @@ mod tests {
         let repo = temp.path().join("repo");
         fs::create_dir_all(&repo).unwrap();
         let run_git = |args: &[&str]| {
-            let out = crate::project_process::git_command()
+            let out = crate::project_process::fixture_git_command()
                 .args(args)
                 .current_dir(&repo)
                 .output()
@@ -416,13 +436,13 @@ mod tests {
         let counter_path = counter_external.to_string_lossy();
         let cmd = format!("echo 1 >> \"{}\"", counter_path);
 
-        let res1 = get_or_run_main_check(&repo, &cmd, Duration::from_secs(10)).await;
+        let res1 = get_or_run_main_check(std::path::Path::new("/nonexistent-apex-test-data"), &repo, &cmd, Duration::from_secs(10)).await;
         assert_eq!(res1, CheckResult::Pass);
 
         // Wait over 1 second so commit-tree timestamps would differ if commit id was used
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
-        let res2 = get_or_run_main_check(&repo, &cmd, Duration::from_secs(10)).await;
+        let res2 = get_or_run_main_check(std::path::Path::new("/nonexistent-apex-test-data"), &repo, &cmd, Duration::from_secs(10)).await;
         assert_eq!(res2, CheckResult::Pass);
 
         let count = fs::read_to_string(&counter_file).unwrap();
@@ -440,7 +460,7 @@ mod tests {
         let pid_file = temp.path().join("pid.txt");
         let cmd = format!("sleep 30 & echo $! > \"{}\"; wait", pid_file.display());
 
-        let res = run_check_with_timeout(temp.path(), &cmd, Duration::from_millis(100)).await;
+        let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), &cmd, Duration::from_millis(100)).await;
         assert_eq!(res, CheckResult::TimedOut);
 
         let pid_str = fs::read_to_string(&pid_file).expect("pid file should exist");
@@ -467,16 +487,16 @@ mod tests {
         fn count_fds() -> usize { 0 }
 
         // Warm up runs
-        let _ = run_check_with_timeout(temp.path(), "echo warm", Duration::from_secs(1)).await;
-        let _ = run_check_with_timeout(temp.path(), "sleep 5", Duration::from_millis(50)).await;
+        let _ = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "echo warm", Duration::from_secs(1)).await;
+        let _ = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "sleep 5", Duration::from_millis(50)).await;
 
         let initial_fds = count_fds();
 
         for _ in 0..25 {
-            let res = run_check_with_timeout(temp.path(), "echo pass", Duration::from_secs(1)).await;
+            let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "echo pass", Duration::from_secs(1)).await;
             assert_eq!(res, CheckResult::Pass);
 
-            let res = run_check_with_timeout(temp.path(), "sleep 5", Duration::from_millis(50)).await;
+            let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "sleep 5", Duration::from_millis(50)).await;
             assert_eq!(res, CheckResult::TimedOut);
         }
 

@@ -10,6 +10,7 @@ import { DaemonClient, type Connect, type Welcome } from "./daemon/client.ts";
 import { daemonTransport } from "./daemon/transport.ts";
 import { guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore, type HostConnectionStore } from "./hostConnections.ts";
+import { guardPhoneCommands } from "./phone/commandGuard.ts";
 import { isPaired, type Machine, type RemoteAccess } from "./phoneRules.ts";
 
 export interface PhoneHost {
@@ -39,7 +40,7 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
   });
   connection.setFinishResync(() => client.finishResync());
   const backend = guardHostWrites({
-    ...commandBackend(daemonTransport(client), shell),
+    ...commandBackend(guardPhoneCommands(daemonTransport(client), machine.name), shell),
     host: { id: machine.id, name: machine.name, connection },
   }, connection);
   return {

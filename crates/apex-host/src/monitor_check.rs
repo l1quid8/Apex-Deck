@@ -211,7 +211,7 @@ impl Host {
                 None => warnings.push(format!("Selected thread '{id}' is missing")),
             }
         }
-        let mut snapshot = monitor_evidence::collect(&m.cwd, &m.files, &rooms, now())?;
+        let mut snapshot = monitor_evidence::collect(self.data_dir(), &m.cwd, &m.files, &rooms, now())?;
         snapshot.warnings.extend(warnings);
         snapshot.warnings.sort();
         snapshot.warnings.dedup();

@@ -1561,7 +1561,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
         setParticipants(next);
         onProfilesChange(next);
       } else if (editing) {
-        const saved = await backend.roomUpdateParticipant(pane.id, config, editingBase.current ?? undefined);
+        const saved = await backend.roomUpdateParticipant(pane.id, config, editingBase.current ?? undefined, cwd);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
         if (!saved && attach) return setFormError("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
@@ -3731,7 +3731,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
         void backend.roomApplyAccess(pane.id, id).catch((error) => notify(`Could not apply access now: ${String(error)}`, "error"));
       }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const before = participants.find(p => p.id === config.id)?.access;
-        const saved = await backend.roomUpdateParticipant(pane.id, config, base);
+        const saved = await backend.roomUpdateParticipant(pane.id, config, base, cwd);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
         if (!saved && attach) throw new Error("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;

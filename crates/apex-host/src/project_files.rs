@@ -3,9 +3,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, Read},
+    io::Read,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
 };
 
 const MAX_IMAGE: u64 = 5 * 1024 * 1024;
@@ -356,8 +356,9 @@ pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
     Ok(FilePreview::Binary { size })
 }
 
-fn is_git_repo(root: &Path) -> bool {
-    crate::project_process::git_command()
+fn is_git_repo(project_data: &Path, root: &Path) -> bool {
+    let Ok(mut command) = crate::project_process::git_command(project_data, root) else { return false; };
+    command
         .arg("-C")
         .arg(root)
         .args(["rev-parse", "--is-inside-work-tree"])
@@ -367,8 +368,8 @@ fn is_git_repo(root: &Path) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn git(root: &Path, args: &[&std::ffi::OsStr]) -> Result<std::process::Output, String> {
-    crate::project_process::git_command()
+fn git(project_data: &Path, root: &Path, args: &[&std::ffi::OsStr]) -> Result<std::process::Output, String> {
+    crate::project_process::git_command(project_data, root)?
         .arg("-C")
         .arg(root)
         .args(args)
@@ -376,9 +377,9 @@ fn git(root: &Path, args: &[&std::ffi::OsStr]) -> Result<std::process::Output, S
         .map_err(|error| format!("Could not run Git: {error}"))
 }
 
-fn project_files(root: &Path) -> Result<Vec<String>, String> {
-    if is_git_repo(root) {
-        let output = git(
+fn project_files(project_data: &Path, root: &Path) -> Result<Vec<String>, String> {
+    if is_git_repo(project_data, root) {
+        let output = git(project_data,
             root,
             &[
                 "ls-files".as_ref(),
@@ -481,7 +482,7 @@ fn match_score(path: &str, query: &str) -> Option<i32> {
     Some(score)
 }
 
-pub fn find(root: &Path, query: &str, limit: usize) -> Result<Vec<String>, String> {
+pub fn find(project_data: &Path, root: &Path, query: &str, limit: usize) -> Result<Vec<String>, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("Could not open project folder: {error}"))?;
@@ -492,7 +493,7 @@ pub fn find(root: &Path, query: &str, limit: usize) -> Result<Vec<String>, Strin
         return Err("Enter a file name to find.".into());
     }
     let query = query.trim();
-    let mut matches: Vec<(i32, String)> = project_files(&root)?
+    let mut matches: Vec<(i32, String)> = project_files(project_data, &root)?
         .into_iter()
         .filter_map(|path| match_score(&path, query).map(|score| (score, path)))
         .collect();
@@ -550,7 +551,7 @@ fn valid_query(query: &str) -> Result<&str, String> {
     }
 }
 
-pub fn search(
+pub fn search(project_data: &Path,
     root: &Path,
     query: &str,
     case_sensitive: bool,
@@ -572,8 +573,8 @@ pub fn search(
     } else {
         None
     };
-    if is_git_repo(&root) {
-        return search_git(&root, query, case_sensitive, scoped.as_deref());
+    if is_git_repo(project_data, &root) {
+        return search_git(project_data, &root, query, case_sensitive, scoped.as_deref());
     }
     search_walk(
         &root,
@@ -583,7 +584,7 @@ pub fn search(
     )
 }
 
-fn search_git(
+fn search_git(project_data: &Path,
     root: &Path,
     query: &str,
     case_sensitive: bool,
@@ -617,34 +618,17 @@ fn search_git(
             relative.as_os_str().to_owned()
         });
     }
-    let mut child = crate::project_process::git_command()
-        .arg("-C")
-        .arg(root)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let bounded = crate::project_process::git_command(project_data, root)?
+        .arg("-C").arg(root).args(&args)
+        .output_bounded(std::time::Duration::from_secs(30), 4 * 1024 * 1024, 8192)
         .map_err(|error| format!("Could not run Git search: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Could not read Git search results.")?;
+    let output = bounded.output;
     let mut hits = Vec::new();
-    let mut truncated = false;
-    for line in BufReader::new(stdout).lines() {
-        let line = line.map_err(|error| format!("Could not read Git search results: {error}"))?;
-        if hits.len() >= MAX_SEARCH_HITS {
-            truncated = true;
-            let _ = child.kill();
-            break;
-        }
-        if let Some(hit) = parse_git_hit(&line, query, case_sensitive) {
-            hits.push(hit);
-        }
+    let mut truncated = bounded.stdout_truncated;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if hits.len() >= MAX_SEARCH_HITS { truncated = true; break; }
+        if let Some(hit) = parse_git_hit(line, query, case_sensitive) { hits.push(hit); }
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| error.to_string())?;
     if !output.status.success() && output.status.code() != Some(1) && !truncated {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -940,9 +924,9 @@ mod tests {
         fs::write(temp.0.join("src/components/btn.tsx"), "").unwrap();
         fs::write(temp.0.join("else_b_t_n.txt"), "").unwrap();
         fs::write(temp.0.join("notes.txt"), "").unwrap();
-        let result = find(&temp.0, "btn", 10).unwrap();
+        let result = find(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "btn", 10).unwrap();
         assert_eq!(result[0], "src/components/btn.tsx");
-        assert!(find(&temp.0, "", 10).is_err());
+        assert!(find(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "", 10).is_err());
     }
 
     #[test]
@@ -958,7 +942,7 @@ mod tests {
         fs::write(temp.0.join("binary.txt"), [0, b'n', b'e', b'e']).unwrap();
         fs::create_dir_all(temp.0.join("target")).unwrap();
         fs::write(temp.0.join("target/ignored.txt"), "needle ignored").unwrap();
-        let result = search(&temp.0, "needle", false, Some(Path::new("docs"))).unwrap();
+        let result = search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "needle", false, Some(Path::new("docs"))).unwrap();
         assert_eq!(
             result
                 .hits
@@ -968,13 +952,13 @@ mod tests {
             vec![("docs/readme.md", 1), ("docs/readme.md", 3)]
         );
         assert!(!result.truncated);
-        assert!(search(&temp.0, "  ", false, None).is_err());
+        assert!(search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "  ", false, None).is_err());
         let lines = (0..=MAX_SEARCH_HITS)
             .map(|_| "needle")
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(temp.0.join("many.txt"), lines).unwrap();
-        let capped = search(&temp.0, "needle", true, None).unwrap();
+        let capped = search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "needle", true, None).unwrap();
         assert_eq!(capped.hits.len(), MAX_SEARCH_HITS);
         assert!(capped.truncated);
     }
@@ -985,21 +969,21 @@ mod tests {
         fs::write(temp.0.join("tracked.txt"), "Needle here\n").unwrap();
         fs::write(temp.0.join(".gitignore"), "ignored.txt\n").unwrap();
         fs::write(temp.0.join("ignored.txt"), "Needle hidden\n").unwrap();
-        let status = crate::project_process::git_command()
+        let status = crate::project_process::fixture_git_command()
             .arg("-C")
             .arg(&temp.0)
             .args(["init", "-q"])
             .status()
             .unwrap();
         assert!(status.success());
-        crate::project_process::git_command()
+        crate::project_process::fixture_git_command()
             .arg("-C")
             .arg(&temp.0)
             .args(["add", ".gitignore", "tracked.txt"])
             .status()
             .unwrap();
         fs::write(temp.0.join("untracked.txt"), "Needle untracked\n").unwrap();
-        let result = search(&temp.0, "needle", false, None).unwrap();
+        let result = search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "needle", false, None).unwrap();
         assert_eq!(
             result
                 .hits
@@ -1009,7 +993,7 @@ mod tests {
             vec!["tracked.txt", "untracked.txt"]
         );
         assert!(
-            find(&temp.0, "untracked", 10)
+            find(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "untracked", 10)
                 .unwrap()
                 .contains(&"untracked.txt".to_string())
         );

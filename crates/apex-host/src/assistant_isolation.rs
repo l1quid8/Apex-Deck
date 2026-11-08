@@ -12,7 +12,6 @@ use std::{
 };
 use tokio::{
     io::AsyncReadExt,
-    process::Command as TokioCommand,
     sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore},
     task::JoinHandle,
     time::timeout,
@@ -211,11 +210,11 @@ fn classify_claude_help(profile_id: &str, help: &str) -> WorkerReadiness {
     }
 }
 
-async fn verify_claude(
+async fn verify_claude(project_data: &std::path::Path,
     stop: &mut watch::Receiver<bool>,
     registry: &OwnedProcessRegistry,
 ) -> WorkerReadiness {
-    match run_owned("claude", &["--help"], Path::new("."), HELP_TIMEOUT, stop, registry).await {
+    match run_owned(project_data, "claude", &["--help"], Path::new("."), HELP_TIMEOUT, stop, registry).await {
         Ok(output) if output.status.success() => {
             let help = String::from_utf8_lossy(&output.stdout);
             classify_claude_help("", &help)
@@ -225,14 +224,14 @@ async fn verify_claude(
     }
 }
 
-pub async fn verify_workers(
+pub async fn verify_workers(project_data: &std::path::Path,
     profiles: &[ParticipantConfig],
     stop: &mut watch::Receiver<bool>,
 ) -> Result<Vec<WorkerReadiness>, StartupNeedsYou> {
-    verify_workers_with_registry(profiles, stop, &OwnedProcessRegistry::default()).await
+    verify_workers_with_registry(project_data, profiles, stop, &OwnedProcessRegistry::default()).await
 }
 
-pub(crate) async fn verify_workers_with_registry(
+pub(crate) async fn verify_workers_with_registry(project_data: &std::path::Path,
     profiles: &[ParticipantConfig],
     stop: &mut watch::Receiver<bool>,
     registry: &OwnedProcessRegistry,
@@ -243,7 +242,7 @@ pub(crate) async fn verify_workers_with_registry(
             Backend::Agent {
                 tool: AgentTool::ClaudeCode,
                 ..
-            } => verify_claude(stop, registry).await,
+            } => verify_claude(project_data, stop, registry).await,
             backend => classify_backend(&profile.id.0, backend),
         };
         match &mut readiness {
@@ -351,7 +350,7 @@ async fn drain_readers(
     }
 }
 
-async fn run_owned(
+async fn run_owned(project_data: &std::path::Path,
     program: &str,
     args: &[&str],
     cwd: &Path,
@@ -360,10 +359,10 @@ async fn run_owned(
     registry: &OwnedProcessRegistry,
 ) -> Result<Output, String> {
     let login_path = crate::agents::login_path();
-    run_owned_with_path(program, args, cwd, limit, stop, registry, login_path.as_deref()).await
+    run_owned_with_path(project_data, program, args, cwd, limit, stop, registry, login_path.as_deref()).await
 }
 
-async fn run_owned_with_path(
+async fn run_owned_with_path(project_data: &std::path::Path,
     program: &str,
     args: &[&str],
     cwd: &Path,
@@ -372,7 +371,7 @@ async fn run_owned_with_path(
     registry: &OwnedProcessRegistry,
     login_path: Option<&str>,
 ) -> Result<Output, String> {
-    let mut command = TokioCommand::new(program);
+    let mut command = crate::project_process::tokio_command_in(project_data, program, cwd)?;
     // GUI/LaunchAgent hosts may have a minimal PATH. Match the normal worker
     // launch context without mutating the daemon's global environment.
     if let Some(path) = login_path {
@@ -385,8 +384,9 @@ async fn run_owned_with_path(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let mut child = registry
-        .spawn(&mut command)
+    command.prepare().await.map_err(|e| e.to_string())?;
+    let mut child = command
+        .spawn_owned(&registry)
         .map_err(|e| format!("Could not start {program}: {e}"))?;
     let stdout = child
         .stdout
@@ -466,7 +466,7 @@ pub async fn prepare(
 ) -> Result<PreparedWorkspace, StartupNeedsYou> {
     let operation_dir = operation_process_dir(data_dir, task_id).map_err(StartupNeedsYou::new)?;
     let registry = OwnedProcessRegistry::new(Some(operation_dir));
-    let workers = verify_workers_with_registry(profiles, stop, &registry).await?;
+    let workers = verify_workers_with_registry(data_dir, profiles, stop, &registry).await?;
     if *stop.borrow() {
         return Err(StartupNeedsYou::new("Task startup was cancelled."));
     }
@@ -484,7 +484,7 @@ pub async fn prepare(
     })?;
     let setup = dependency_setup(&path).map_err(StartupNeedsYou::new)?;
     let npm_installed = if setup == DependencySetup::NpmCi {
-        let output = run_owned("npm", &["ci"], &path, SETUP_TIMEOUT, stop, &registry)
+        let output = run_owned(data_dir, "npm", &["ci"], &path, SETUP_TIMEOUT, stop, &registry)
             .await
             .map_err(StartupNeedsYou::new)?;
         if !output.status.success() {
@@ -527,7 +527,7 @@ mod tests {
         let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
         let worker=root.join("apex-qa-fake-worker");std::fs::write(&worker,"#!/bin/sh\nprintf 'owned-worker-ready'\n").unwrap();std::fs::set_permissions(&worker,std::fs::Permissions::from_mode(0o755)).unwrap();
         let before=std::env::var_os("PATH");let registry=OwnedProcessRegistry::new(Some(root.join("registry")));let (_tx,mut stop)=watch::channel(false);
-        let output=run_owned_with_path("apex-qa-fake-worker",&[],&root,Duration::from_secs(3),&mut stop,&registry,Some(root.to_str().unwrap())).await;
+        let output=run_owned_with_path(std::path::Path::new("/nonexistent-apex-test-data"), "apex-qa-fake-worker",&[],&root,Duration::from_secs(3),&mut stop,&registry,Some(root.to_str().unwrap())).await;
         assert_eq!(std::env::var_os("PATH"),before,"only the child receives the login PATH");
         let output=output.expect("worker installed only on the login PATH must start");assert!(output.status.success());assert_eq!(output.stdout,b"owned-worker-ready");let _=std::fs::remove_dir_all(root);
     }
@@ -556,7 +556,7 @@ mod tests {
         let run_root = root.clone();
         let run_script = script.to_string_lossy().to_string();
         let run = tokio::spawn(async move {
-            run_owned(
+            run_owned(std::path::Path::new("/nonexistent-apex-test-data"),
                 &run_script,
                 &[],
                 &run_root,
@@ -692,7 +692,7 @@ mod tests {
         let registry = OwnedProcessRegistry::new(Some(registry_dir.clone()));
         let (_stop_tx, mut stop_rx) = watch::channel(false);
         let started = std::time::Instant::now();
-        let result = run_owned(
+        let result = run_owned(std::path::Path::new("/nonexistent-apex-test-data"),
             "/bin/sh",
             &["-c", "sleep 30"],
             &root,

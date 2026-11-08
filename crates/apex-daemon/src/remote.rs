@@ -124,11 +124,12 @@ pub async fn serve(daemon: Arc<Daemon>, connection: Connection) {
     let id = connection.remote_id().to_string();
     // Hear of revokes before the check, so one in between isn't missed.
     let mut revokes = daemon.devices.subscribe();
-    // Confined epoch: if host is trusted, only devices carrying current epoch may act.
-    if let Some(device) = daemon.devices.get(&id) {
-        if let Some(current_epoch) = crate::trust_host::epoch(&daemon.data) {
-            if device.confined_epoch.as_deref() != Some(current_epoch.as_str()) {
-                connection.close(close::NOT_PAIRED.into(), b"this device was paired before trust and must pair again");
+    // Linux admission uses the same fail-closed policy as every protocol
+    // command/frame; Mac and Windows do not need a Linux trust record.
+    if daemon.uses_linux_device_policy() {
+        if let Some(device) = daemon.devices.get(&id) {
+            if let Err(why) = crate::trust_host::check_device_epoch(&daemon.data, &device) {
+                connection.close(close::NOT_PAIRED.into(), why.as_bytes());
                 return;
             }
         }
@@ -477,8 +478,13 @@ mod tests {
     use std::time::Duration;
 
     async fn daemon(data: &Path) -> (Arc<Daemon>, Endpoint) {
+        daemon_with_policy(data, false).await
+    }
+
+    async fn daemon_with_policy(data: &Path, linux_policy: bool) -> (Arc<Daemon>, Endpoint) {
         let host = apex_host::test_support::isolated_host_assuming_verified_ui(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(data), host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(), invites: Default::default(), remote: Default::default() });
+        let daemon = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(data), host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(), linux_device_policy: Some(linux_policy), confinement: Default::default(), invites: Default::default(), remote: Default::default() });
+        if linux_policy { daemon.confinement.set(Ok(())).unwrap(); }
         let endpoint = bind(key(data).unwrap(), None, 0).await.unwrap();
         tokio::spawn(accept(Arc::clone(&daemon), endpoint.clone()));
         (daemon, endpoint)
@@ -802,11 +808,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_live_iroh_device_cannot_spawn_after_the_epoch_changes() {
+        let data = crate::devices::tests::folder();
+        crate::trust_host::run_no_reboot(&data.0, true).unwrap();
+        let (daemon, server) = daemon_with_policy(&data.0, true).await;
+        let key = SecretKey::generate();
+        daemon.devices.add(&key.public().to_string(), "Phone", Tier::Full, Threads::ALL, false).unwrap();
+        let mut phone = Phone::dial(key, &server).await;
+        assert!(phone.call(json!({"id":0,"cmd":"hello","args":{"protocol":1}})).await.unwrap().get("ok").is_some());
+        crate::trust_host::run_no_reboot(&data.0, true).unwrap();
+        let reply = phone.call(json!({"id":1,"cmd":"pty_spawn","args":{"id":"stale-phone","cols":80,"rows":24}})).await;
+        daemon.host.shutdown();
+        assert!(!reply.as_ref().is_some_and(|reply| reply.get("ok").is_some()), "old authenticated connection spawned a terminal: {reply:?}");
+        assert!(daemon.host.pty_list(None).iter().all(|pty| pty.id != "stale-phone"));
+        assert_eq!(phone.closed_with().await, Some(close::REVOKED.into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn pre_epoch_device_refused_on_trusted_host() {
         // Task 10: epoch check. A device paired before trust (no epoch) must be refused.
         let data = crate::devices::tests::folder();
         // Pre-trust: create daemon first, add old device, then trust host
-        let (daemon, server) = daemon(&data.0).await;
+        let (daemon, server) = daemon_with_policy(&data.0, true).await;
         let pre_key = SecretKey::generate();
         let pre_id = pre_key.public().to_string();
         daemon.devices.add(&pre_id, "OldPhone", Tier::Full, Threads::ALL, false).unwrap();

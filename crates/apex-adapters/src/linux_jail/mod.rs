@@ -7,7 +7,7 @@
 pub mod channel;
 pub mod home;
 pub mod init;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod launch;
 pub mod paths;
 pub mod probe;
@@ -16,6 +16,7 @@ pub mod refresh;
 pub mod seccomp;
 
 pub use probe::JailState;
+pub fn find_bwrap(path: Option<&str>) -> Option<std::path::PathBuf> { crate::gateway_sandbox::find_bwrap(path) }
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,16 @@ pub fn state(bwrap_path: Option<&Path>) -> probe::JailState {
 
 pub fn set_state_for_test(state: Option<probe::JailState>) {
     *OVERRIDE_STATE.write().unwrap() = state;
+}
+
+/// The actual boot verdict, distinct from a mere installed-bwrap check.
+pub fn recorded_probe_state() -> Option<probe::JailState> {
+    OVERRIDE_STATE.read().unwrap_or_else(|error| error.into_inner()).clone()
+}
+
+/// Publish the real boot probe to every launch point in this daemon process.
+pub fn record_probe_state(state: probe::JailState) {
+    *OVERRIDE_STATE.write().unwrap() = Some(state);
 }
 
 pub fn set_forced_for_test(forced: bool) {

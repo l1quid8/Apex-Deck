@@ -514,7 +514,7 @@ impl Host {
     pub(crate) fn assistant_data_dir(&self) -> &Path { &self.paths.data }
 
     pub(crate) fn checkout_gate(&self, cwd: &Path) -> apex_core::CheckoutWriteGate {
-        let key = crate::assistant_git::checkout_root(cwd).unwrap_or_else(|_| std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()));
+        let key = crate::assistant_git::checkout_root(&self.paths.data, cwd).unwrap_or_else(|_| std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()));
         self.write_gates.lock().unwrap().entry(key).or_default().clone()
     }
 
@@ -2238,12 +2238,25 @@ impl Host {
     /// Apply only fields edited since `base`, under the room lock. Older clients
     /// can omit it and retain the full-replacement behavior.
     pub async fn room_update_participant_from(self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>) -> Result<ParticipantConfig, String> {
+        self.room_update_participant_checked(id, participant, base, None, &|| Ok(())).await
+    }
+
+    pub(crate) async fn room_update_participant_from_device(
+        self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>,
+        old_level: Option<Access>, folder: Option<String>, check: &(dyn Fn() -> Result<(), String> + Send + Sync),
+    ) -> Result<ParticipantConfig, String> {
+        self.room_update_participant_checked(id, participant, base, Some((old_level, folder)), check).await
+    }
+
+    async fn room_update_participant_checked(
+        self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>,
+        binding: Option<(Option<Access>, Option<String>)>, check: &(dyn Fn() -> Result<(), String> + Send + Sync),
+    ) -> Result<ParticipantConfig, String> {
         let handle = self.handle(&id)?;
         if handle.checkpoint.lock().unwrap().snapshot.kind.is_chat() {
             return Err("Use chat_update_participant for talk-only chat rooms.".into());
         }
         let _action = handle.lock_checkout().await?;
-        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         let name = participant.id.clone();
         let context = self.room_context(&id)?;
         let room = self.room(&id)?;
@@ -2254,12 +2267,34 @@ impl Host {
             if base.id != name { return Err("settings base belongs to another participant".into()); }
             merge_participant(&current, &base, &participant)?
         } else { participant };
+        check()?;
+        if let Some((old_level, folder)) = binding {
+            if old_level.is_some_and(|old| old != current.access) {
+                return Err("The bot's access changed. Refresh its settings before trying again.".into());
+            }
+            if next.access != current.access {
+                if old_level.is_none() {
+                    return Err("An access change must name the bot's old_level.".into());
+                }
+                if next.access == Access::Full {
+                    let cwd = context.cwd.as_deref().ok_or("Full access needs the thread's folder.")?;
+                    let named = folder.as_deref().filter(|path| !path.is_empty()).ok_or("Full access must name the thread's folder.")?;
+                    let named = std::fs::canonicalize(named).map_err(|_| "The Full access folder is unavailable.")?;
+                    let actual = std::fs::canonicalize(cwd).map_err(|_| "The thread's folder is unavailable.")?;
+                    if named != actual {
+                        return Err("The Full access folder does not match the thread's folder.".into());
+                    }
+                    crate::folder_trust::check_full_allowed(&self.paths.data, &actual)?;
+                }
+            }
+        }
         // Only a new name is checked, so a chat that already has two bots
         // answering to one name can still save their other settings.
         if next.display_name != current.display_name {
             if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
         }
         self.ensure_task_read_access(&id, &next)?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         if next.access != current.access { self.computer.revoke(Some(&id),Some(name.as_str())); }
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         let access_moved = next.access != current.access && handle.runtime.busy();
@@ -2280,6 +2315,9 @@ impl Host {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         }
         // Step 4: Save the new level.
+        // Cancellation above yields; a device revoked or reset while it waits
+        // cannot use the earlier authorization to commit a new saved level.
+        check()?;
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
                 return Err("Only the name, model, reasoning, speed and access can change while models are replying".into());
@@ -2723,12 +2761,14 @@ impl Host {
     }
 
     pub async fn file_find(&self, root: String, query: String) -> Result<Vec<String>, String> {
-        tokio::task::spawn_blocking(move || crate::project_files::find(Path::new(&root), &query, 100))
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || crate::project_files::find(&data, Path::new(&root), &query, 100))
             .await.map_err(|error| error.to_string())?
     }
 
     pub async fn file_search(&self, root: String, query: String, case_sensitive: bool, folder: Option<String>) -> Result<crate::project_files::SearchResult, String> {
-        tokio::task::spawn_blocking(move || crate::project_files::search(Path::new(&root), &query, case_sensitive, folder.as_deref().map(Path::new)))
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || crate::project_files::search(&data, Path::new(&root), &query, case_sensitive, folder.as_deref().map(Path::new)))
             .await.map_err(|error| error.to_string())?
     }
 
@@ -2862,7 +2902,8 @@ impl Host {
         Ok(serde_json::json!({ "trusted": true, "epoch": epoch, "trusted_at_ms": now_ms }))
     }
     pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
-        tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || worktrees::add(&data, Path::new(&path), request)).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_remove(self: &Arc<Self>, path: String, target: String, force: bool) -> Result<(), String> {
         let host = Arc::clone(self);
@@ -2878,11 +2919,12 @@ impl Host {
         tokio::task::spawn_blocking(move || {
             let _lifecycle = host.room_lifecycle.lock().unwrap();
             if host.store.checkout_in_use(Path::new(&target))? { return Err("This worktree is mounted in a chat. Mount another worktree before pruning this one.".into()); }
-            worktrees::forget(Path::new(&path), Path::new(&target), force, &task_dir)
+            worktrees::forget(&host.paths.data, Path::new(&path), Path::new(&target), force, &task_dir)
         }).await.map_err(|e| e.to_string())?
     }
     pub async fn worktree_prune(&self, path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || worktrees::prune(Path::new(&path))).await.map_err(|e| e.to_string())?
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || worktrees::prune(&data, Path::new(&path))).await.map_err(|e| e.to_string())?
     }
 
     /// The saved session, or `None` before the first save.
@@ -3202,7 +3244,7 @@ impl Host {
     }
 
     pub async fn mod_process_run(&self, argv: Vec<String>, cwd: Option<String>, stdin: Option<String>, timeout_ms: Option<u64>) -> Result<mods::RunResult, String> {
-        mods::mod_process_run(argv, cwd, stdin, timeout_ms).await
+        mods::mod_process_run(&self.paths.data, argv, cwd, stdin, timeout_ms).await
     }
 
     pub async fn mod_http_fetch(&self, url: String, method: Option<String>, headers: Option<HashMap<String, String>>, body: Option<String>) -> Result<mods::FetchResult, String> {
@@ -3223,7 +3265,8 @@ impl Host {
 
     pub async fn room_git_status(&self, id: String) -> Result<crate::git_changes::State, String> {
         let cwd = self.room_context(&id)?.cwd.ok_or("This thread has no workspace folder.")?;
-        tokio::task::spawn_blocking(move || crate::git_changes::status(&cwd)).await.map_err(|e| e.to_string())?
+        let data = self.paths.data.clone();
+        tokio::task::spawn_blocking(move || crate::git_changes::status(&data, &cwd)).await.map_err(|e| e.to_string())?
     }
 
     pub async fn room_git_action(&self, id: String, action: crate::git_changes::Action) -> Result<crate::git_changes::Outcome, String> {
@@ -3232,7 +3275,7 @@ impl Host {
         let cwd = handle.context.cwd.clone().ok_or("This thread has no workspace folder.")?;
         let gate = self.checkout_gate(&cwd);
         let _lease = gate.acquire(format!("git-menu:{id}"), Arc::new(AtomicBool::new(false))).await.map_err(|e| format!("Could not reserve the checkout: {e:?}"))?;
-        crate::git_changes::perform(cwd, action).await
+        crate::git_changes::perform(&self.paths.data, cwd, action).await
     }
 
     /// What changed in the folder since this thread started, and who changed it.
@@ -3246,9 +3289,10 @@ impl Host {
             snapshot.changes = snapshot.changes.iter().enumerate().filter(|(index, change)| mount.change_count.map_or(change.seq >= mount.seq, |count| *index >= count)).map(|(_,change)| change.clone()).collect();
         }
         let snapshots = Arc::clone(&self.snapshots);
+        let data = self.paths.data.clone();
         tokio::task::spawn_blocking(move || {
             // Threads from before the snapshot store keep their old starting point while git still has it.
-            if snapshot.baseline.is_some() { return changes::thread_diff(&cwd, snapshot.baseline.as_deref(), &snapshot.changes); }
+            if snapshot.baseline.is_some() { return changes::thread_diff(&data, &cwd, snapshot.baseline.as_deref(), &snapshot.changes); }
             match snapshots.diff_since_start(&id, &cwd) {
                 Some(Ok(patch)) => changes::from_patch(&cwd, &patch, &snapshot.changes),
                 Some(Err(error)) => changes::thread_diff_note(&snapshot.changes, &format!("Couldn't compare the folder ({error}), so this lists only the edits the models reported.")),
@@ -3334,7 +3378,7 @@ impl Host {
         let target = PathBuf::from(&cwd).canonicalize().map_err(|_| "That worktree folder is missing.")?;
         if !target.is_dir() { return Err("That worktree folder is missing.".into()); }
         let common = |path: &Path| -> Result<PathBuf, String> {
-            let out = crate::project_process::git_command().arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(|e| e.to_string())?;
+            let out = crate::project_process::git_command(&self.paths.data, path)?.arg("-C").arg(path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(|e| e.to_string())?;
             if !out.status.success() { return Err("Choose a worktree of this chat's repository.".into()); }
             PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize().map_err(|e| e.to_string())
         };
@@ -4179,12 +4223,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         let cwd = path.join("checkout");
         std::fs::create_dir_all(&cwd).unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
         std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
 
         let data = path.join("data");
         // Create an unfolded copy for a thread that is NOT in store ("deleted-thread")
@@ -4232,12 +4276,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         let cwd = path.join("checkout");
         std::fs::create_dir_all(&cwd).unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["init"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["config", "user.email", "a@b.c"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["config", "user.name", "ab"]).output().unwrap();
         std::fs::write(cwd.join("seed.txt"), "hello\n").unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
-        let _ = crate::project_process::git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["add", "seed.txt"]).output().unwrap();
+        let _ = crate::project_process::fixture_git_command().arg("-C").arg(&cwd).args(&["commit", "-m", "init"]).output().unwrap();
 
         let data = path.join("data");
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -4513,7 +4557,7 @@ mod host_tests {
     fn mount_repo(data: &Path) -> (PathBuf, PathBuf) {
         let repo = data.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| { assert!(crate::project_process::git_command().arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
+        let git = |args: &[&str]| { assert!(crate::project_process::fixture_git_command().arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
         git(&["init", "-b", "main"]);
         git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"]);
         let tree = data.join("tree");
@@ -4570,7 +4614,7 @@ mod host_tests {
         host.room_create("r".into(), vec![], RoomOptions::default(), Some(repo.to_string_lossy().into())).unwrap();
         let gate = host.checkout_gate(&repo);
         gate.restore_hold("test-owner").unwrap();
-        let expected = crate::git_changes::status(&repo).unwrap();
+        let expected = crate::git_changes::status(&data, &repo).unwrap();
         runtime.block_on(async {
             let action = host.room_git_action("r".into(), crate::git_changes::Action::Commit {
                 expected, paths: vec!["missing".into()], message: "test".into(),

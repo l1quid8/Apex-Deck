@@ -299,6 +299,14 @@ impl Group {
 
     #[cfg(unix)]
     fn exists(&self) -> bool {
+        // Most checks follow a reaped child. Avoid scanning the process table
+        // when the kernel already proves its entire process group is gone.
+        // EPERM and other errors still take the conservative inspection path.
+        if unsafe { libc::kill(-self.id, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
+            return false;
+        }
         #[cfg(target_os = "linux")]
         if let Ok(entries) = std::fs::read_dir("/proc") {
             for entry in entries.flatten() {

@@ -27,16 +27,16 @@ impl ConfiguredCheck {
 /// Execute only checks from protected start configuration, after the host has
 /// applied the worker's current room permission. No shell interpolation.
 /// Uses `project_process` so tainted-folder tracking and Full-gate share one entry.
-pub fn prepare_check(check: &ConfiguredCheck, cwd: &std::path::Path, process_dir: &std::path::Path) -> Result<PreparedCheck,String> {
+pub fn prepare_check(data: &std::path::Path, check: &ConfiguredCheck, cwd: &std::path::Path, process_dir: &std::path::Path) -> Result<PreparedCheck,String> {
     use tokio::io::AsyncReadExt;
     check.validate()?;
     let cwd = cwd.canonicalize().map_err(|e|e.to_string())?;
-    let mut cmd = crate::project_process::tokio_command_in(&check.argv[0], &cwd);
+    let mut cmd = crate::project_process::tokio_command_in(data, &check.argv[0], &cwd)?;
     cmd.args(&check.argv[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     std::fs::create_dir_all(process_dir).map_err(|e|e.to_string())?;
     let process_dir=process_dir.canonicalize().map_err(|e|e.to_string())?;
     let registry = apex_adapters::OwnedProcessRegistry::new(Some(process_dir));
-    let mut child = registry.spawn(&mut cmd).map_err(|e|e.to_string())?;
+    let mut child = cmd.spawn_owned(&registry).map_err(|e|e.to_string())?;
     async fn drain(mut input: impl tokio::io::AsyncRead+Unpin) -> std::io::Result<Vec<u8>> {
         let mut out = Vec::new(); let mut buf=[0u8;4096];
         loop { let n=input.read(&mut buf).await?; if n==0 {break;} let keep=n.min(8192usize.saturating_sub(out.len()));out.extend_from_slice(&buf[..keep]); } Ok(out)
@@ -47,7 +47,7 @@ pub fn prepare_check(check: &ConfiguredCheck, cwd: &std::path::Path, process_dir
 }
 
 pub struct PreparedCheck {
-    child: apex_adapters::OwnedProcessChild,
+    child: crate::project_process::ProjectChild,
     stdout: tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
     stderr: tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
     timeout_ms:u64,
@@ -70,8 +70,9 @@ impl PreparedCheck {
 }
 }
 
-pub async fn run_check(check:&ConfiguredCheck,cwd:&std::path::Path,process_dir:&std::path::Path,cancelled:impl std::future::Future<Output=()>)->Result<VerificationResult,String>{
-    prepare_check(check,cwd,process_dir)?.finish(cancelled).await
+pub async fn run_check(data:&std::path::Path,check:&ConfiguredCheck,cwd:&std::path::Path,process_dir:&std::path::Path,cancelled:impl std::future::Future<Output=()>)->Result<VerificationResult,String>{
+    crate::project_process::prepare(data).await?;
+    prepare_check(data,check,cwd,process_dir)?.finish(cancelled).await
 }
 
 #[cfg(test)]
@@ -117,18 +118,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_check_refuses_accepted_tainted_project() {
+        let root = std::env::temp_dir().join(format!("runner-tainted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data = root.join("data");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        crate::folder_trust::mark_tainted(&data, &project).unwrap();
+        crate::folder_trust::accept(&data, &project, None).unwrap();
+        let check = ConfiguredCheck { id: "tainted".into(), argv: fixture_argv("check_pass_fixture"), timeout_ms: Some(10_000) };
+        let result = run_check(&data, &check, &project, &data.join("processes"), std::future::pending()).await;
+        assert!(result.is_err(), "accepted taint must not exempt a configured check");
+        if !cfg!(target_os = "linux") { assert!(!data.join("processes").exists(), "refusal must precede process launch"); }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn configured_argv_check_runs_and_bounds_output_and_timeout() {
         let root = std::env::temp_dir().join(format!("runner-check-{}",std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let processes=root.join("processes");
         let pass = ConfiguredCheck { id:"pass".into(),argv:fixture_argv("check_pass_fixture"),timeout_ms:Some(10_000) };
-        assert!(matches!(run_check(&pass,&root,&processes,std::future::pending()).await.unwrap(), VerificationResult::Passed{output} if output.contains("result")));
+        assert!(matches!(run_check(&root.join("data"),&pass,&root,&processes,std::future::pending()).await.unwrap(), VerificationResult::Passed{output} if output.contains("result")));
         let fail = ConfiguredCheck { argv:fixture_argv("check_fail_fixture"),..pass.clone() };
-        assert!(matches!(run_check(&fail,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Failed{exit:7,..}));
+        assert!(matches!(run_check(&root.join("data"),&fail,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Failed{exit:7,..}));
         let long = ConfiguredCheck { argv:fixture_argv("check_output_fixture"),..pass.clone() };
-        assert!(matches!(run_check(&long,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Passed{output} if output.len() == 8192 && output.contains(&"x".repeat(100))));
+        assert!(matches!(run_check(&root.join("data"),&long,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Passed{output} if output.len() == 8192 && output.contains(&"x".repeat(100))));
         let timeout = ConfiguredCheck { argv:fixture_argv("check_timeout_fixture"),timeout_ms:Some(20),..pass };
-        assert_eq!(run_check(&timeout,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Timeout);
+        assert_eq!(run_check(&root.join("data"),&timeout,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Timeout);
         std::fs::remove_dir_all(root).unwrap();
     }
 

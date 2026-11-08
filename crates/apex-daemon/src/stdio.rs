@@ -138,6 +138,9 @@ fn run_in_process(paths: HostPaths, _lock: DataLock, stdin: File, stdout: File) 
     runtime.block_on(async {
         let stop = signals::stop_requested()?;
         let daemon = Daemon::start(&paths, None)?;
+        if let Err(why) = daemon.require_confinement().await {
+            eprintln!("apex-daemon: Linux device access is unavailable: {why}");
+        }
         let host = Arc::clone(&daemon.host);
         eprintln!("apex-daemon: running the host in this process; its work stops when this connection closes");
         let (input, output) = protocol::lines(tokio::fs::File::from_std(stdin), tokio::fs::File::from_std(stdout));

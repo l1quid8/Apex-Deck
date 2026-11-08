@@ -131,3 +131,182 @@ authenticate an access change. Native-device acceptance remains required.
 - Docker arm64/x86_64, Ubuntu/AppArmor, X11, Git-version/Windows coverage,
   native iPhone checks, updater recipe preparation, and release approval
   remain open. No installer was built or release approved.
+
+## Follow-up verification, 2026-11-07
+
+The security-fix working tree is still on `fix/ssh-jail-security`; this
+checkpoint does not lift the merge/release hold above.
+
+- Reproduced Rust error E0308 in `git_changes::commit`: `root` resolved to the
+  function because its local path binding was declared after its first use.
+  Moved the binding before private-index construction.
+- `npx tsc --noEmit`: passed.
+- `npm test`: passed, 3,380 passed and 3 skipped, no failures.
+  Log: `/tmp/apex-ssh-security-frontend-tests.log`.
+- `TMPDIR=/tmp cargo test --locked -p apex-host --lib project_process`:
+  passed, 5 tests, including construction-before-taint execution refusal.
+- The resulting host test binary, invoked with `tainted_ --test-threads=2`:
+  passed, 3 tests covering actual bot-copy fsmonitor, protected-marker project
+  check, and configured runner-check paths. These are macOS refusal checks.
+- The same host binary with `git_changes::tests --test-threads=2`: passed,
+  11 tests, including selected commits and preservation of unrelated staging.
+- `TMPDIR=/tmp cargo test --locked -p apex-daemon --features remote --lib
+  trust_host`: passed, 9 tests covering boot-ID transitions and trust records.
+  Log: `/tmp/apex-ssh-security-trust-tests.log`.
+- Docker was initially unavailable; starting Docker restored the daemon.
+  This checkpoint supplies no new Linux kernel or native-phone acceptance.
+- The combined Rust library run (`cargo test --locked -p apex-core -p
+  apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote --lib
+  -- --test-threads=2`, with `TMPDIR=/tmp`) exited 143 while compiling, before
+  any test result. The queued `cargo test --locked -p apex-daemon --features
+  remote --test trust_reset` attempt also exited 143. The logs do not establish
+  the cause; neither attempt counts as a pass or a test assertion failure.
+  Logs: `/tmp/apex-ssh-security-rust-libs.log` and
+  `/tmp/apex-ssh-security-trust-reset.log`.
+  Combined Rust suites, live trust-reset checks, final review and merge remain
+  required before closing the implementation.
+
+## Resumed verification, 2026-11-07
+
+No implementation files were changed during this verification pass. The
+branch remains uncommitted; the merge hold remains in effect.
+
+- `npx tsc --noEmit`: passed (exit 0).
+- `node --experimental-strip-types --test tests/phone-biometric-transport.test.mjs`:
+  35 passed, zero failures. Native biometric UI/command-transmission acceptance
+  remains open. The shared phone was started and released, without installing
+  or pairing an app; this supplies no native acceptance evidence.
+- `TMPDIR=/tmp CARGO_BUILD_JOBS=2 cargo test --locked -p apex-daemon --features
+  remote --test trust_reset`: passed, 1 test. The real temporary daemon, bot,
+  and terminal stopped; the second daemon stayed available.
+  Log: `/tmp/apex-ssh-security-trust-reset-retry.log`.
+- `TMPDIR=/tmp cargo check --locked -p apex-daemon --features remote`: passed.
+  Log: `/tmp/apex-ssh-security-check-current.log`.
+- Ubuntu 24.04 arm64 Docker: `cargo check --locked -p apex-daemon --features
+  remote`, with `CARGO_BUILD_JOBS=1`: passed. Log:
+  `/tmp/apex-ssh-security-linux-check.log`. Compilation is not jail acceptance.
+- Existing test binaries were invoked directly with `TMPDIR=/tmp` and
+  `--test-threads=2`: core `apex_core-25196520490592dc` passed 101 tests;
+  adapters `apex_adapters-3dd07bbae729b888` passed 474 with 3 ignored;
+  daemon `apex_daemon-891ab2d048217b71` passed 262 with 1 ignored.
+  These are direct-binary results, not a successful fresh combined Cargo run.
+- Host `apex_host-733d93d8c7f1770a project_process --test-threads=2`:
+  5 passed, including construction-before-taint execution refusal.
+- **Host verification has an unresolved failure:** the broader direct-binary
+  host run reported five standing-delegation failures before being killed
+  (exit 137). An isolated `--exact --nocapture` rerun of
+  `assistant_delegation::standing_tests::full_delegation_queues_and_runs_isolated_without_a_human_approval_card`
+  failed with exit 101: the task remained Queued, with no attempts or execution
+  thread, beyond the ten-second deadline at `standing_tests.rs:53`.
+  Cause is not yet established; do not classify it as an unrelated flake.
+  Log: `/tmp/apex-ssh-security-host-failure-retry.log`.
+- Combined Cargo attempts still did not pass: the initial host run exited 143;
+  the two-job retry reported `rustc` killed by SIGKILL compiling host tests.
+  Linux test attempts exited 137 or lost their Docker client during compilation.
+  The orphaned container from this pass was stopped before the retry.
+- Kernel acceptance remains open: ordinary Docker bubblewrap execution refused
+  namespace creation. A temporary container with SYS_ADMIN and unconfined
+  seccomp still refused mounting `/proc`. Neither attempt ran the application
+  confinement acceptance flow. No host kernel or Docker configuration changed.
+- `git diff --check`: passed before this evidence-only update.
+
+Next: diagnose the isolated standing-delegation timeout, rerun the integrated
+host suites, and complete Linux/native-phone acceptance before final review,
+commit, or merge.
+
+## Delegation and Linux follow-up, 2026-11-07
+
+- The isolated standing-delegation test passed unchanged in 5.97 seconds.
+  Both direct-binary and fresh Cargo standing-delegation suites passed all
+  16 tests (45.56 and 45.39 seconds). These reruns alone did not explain the
+  previous timeout.
+- Broader host verification reproduced two snapshot-save failures. In
+  isolation, `a_stopped_job_still_saves_when_git_is_healthy` failed after
+  2.40 seconds because the test's two-second stop grace expired. Owned-process
+  cleanup scanned the complete macOS process table even for already-empty
+  groups. Added an ESRCH-only fast path; all other outcomes retain conservative
+  inspection. The unchanged regression then passed in 0.33 seconds. This
+  removes demonstrated cleanup overhead without extending deadlines.
+- A subsequent full host run exposed
+  `pausing_during_a_hung_review_diff_leaves_the_job_paused_not_failed`:
+  Failed rather than Interrupted, also reproduced alone. The Git wrapper
+  prefixed cancellation errors, preventing the review-diff caller from
+  recognizing them. Preserve the canonical limit reason when the limit ends.
+  The unchanged regression passed after correction (4.25 seconds).
+- The first full host attempt was deliberately terminated after the two
+  snapshot failures. The next completed run, before the cancellation fix,
+  reported 1,068 passed, one failed, 14 ignored. Neither counts as a pass.
+- Final `TMPDIR=/tmp CARGO_BUILD_JOBS=1 cargo test --locked -p apex-host
+  --lib -- --test-threads=2`: passed, 1,069 passed, zero failed, 14 ignored.
+  Log: `/tmp/apex-ssh-host-final-current.log`.
+- `TMPDIR=/tmp CARGO_BUILD_JOBS=1 cargo test --locked -p apex-adapters
+  --lib owned_process -- --test-threads=1`: four passed.
+  Log: `/tmp/apex-ssh-owned-process-current.log`.
+- `bash tests/linux-jail/run.sh`: passed both before and after the cleanup
+  correction, 32 reported passes each. The prescribed privileged container
+  works; SYS_ADMIN plus unconfined seccomp alone was insufficient earlier.
+  Final log: `/tmp/apex-ssh-kernel-cleanup-fixed.log`. Signed-in provider tests
+  return early without APEX_JAIL_SIGNED_IN, which was not set: no signed-in
+  login/refresh acceptance is claimed. This is arm64 Docker coverage only.
+- Built current host tests in the Linux build image, then ran `project_process
+  --test-threads=1 --nocapture` in the privileged spike image with
+  APEX_JAIL_INIT pointing to the built daemon: five passed. This includes
+  successful Git execution and construction-before-taint protection. The
+  source-scan test cannot inspect the source tree in this runtime image;
+  its non-vacuous scan is covered by the macOS suite. Logs:
+  `/tmp/apex-ssh-linux-host-build.log`, `/tmp/apex-ssh-linux-host-current.log`.
+- Fresh `npx tsc --noEmit` and `git diff --check`: passed.
+
+The demonstrated host failures are corrected and the full host suite passes.
+The earlier queued timeout is consistent with the removed cleanup overhead,
+but was not independently reproduced after the correction. Native-phone
+biometric command-transmission acceptance, final combined review and merge
+remain open. No commit, merge, installer, or release was performed here.
+
+## Native biometric boundary acceptance, 2026-11-07
+
+Built an isolated copy of the current native phone wrapper, using the actual
+`ApexSshPlugin` and production `guardPhoneCommands`, with a counting transport
+instead of a paired machine. Bundle: `dev.apexdeck.biometricacceptance`.
+No real daemon was paired or modified. This proves the native authentication
+and command-release boundary; it is not full paired-phone settings UI or
+physical-iPhone acceptance.
+
+- Simulator: Deck-owned `0B6A0F54-12D8-4A02-8122-F330DD6613F5`.
+- Native build passed with `xcodebuild -scheme App -destination id=<UDID>`;
+  installed and launched successfully. Initial capture was blank while the
+  webview loaded; subsequent captures displayed the fixture.
+- Enrollment off: protected `folder_accept` was blocked, send count zero.
+- Enrollment on: observed native Face ID prompt while send count stayed zero.
+  A failed match showed native retry/cancel, with no passcode fallback.
+  Cancelling returned BLOCKED with zero sends.
+- A fresh attempt followed by biometric match returned AUTHENTICATED and
+  incremented the send count exactly once.
+- Another attempt required a fresh native prompt, with sends still one.
+  Failure and cancellation did not reuse the previous success: BLOCKED, one send.
+- Disabling enrollment after success also returned BLOCKED with one send.
+  Restored original unenrolled state and released the phone.
+- Captures: `/tmp/apex-native-biometric-evidence/` (eight named JPEG files).
+  Initial build log: `/tmp/apex-native-biometric-build.log`.
+- Added a reproducible fixture under `tests/native-phone-biometric/` with
+  build instructions and the same production guard/native-plugin boundary.
+  Its standalone TypeScript check passed. The fixture build script was rerun
+  successfully; `/tmp/apex-native-biometric-repro.log` names its output/log.
+
+Fresh combined verification on this branch:
+
+- `npx tsc --noEmit`: passed.
+- `npm test`: 3,380 passed, three skipped, zero failed.
+  Log: `/tmp/apex-ssh-frontend-final.log`.
+- `TMPDIR=/tmp CARGO_BUILD_JOBS=1 cargo test --locked -p apex-core
+  -p apex-adapters -p apex-daemon --features apex-daemon/remote --lib
+  -- --test-threads=2`: passed. Core 101; adapters 474 with three ignored;
+  daemon 262 with one ignored. Log: `/tmp/apex-ssh-combined-final.log`.
+- Fresh trust-reset integration: one passed; the target daemon and children
+  stopped while the second daemon remained available.
+  Log: `/tmp/apex-ssh-trust-reset-final.log`.
+
+**Integration remains open:** main is now `5bd8772b`, 79 commits ahead of this
+worktree's `7dc89342` base. The final combined review, reconciliation against
+current main, post-integration checks, commit and merge are still required.
+These passes must not be presented as validation of the newer main tree.
