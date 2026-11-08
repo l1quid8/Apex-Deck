@@ -62,7 +62,8 @@ test('Chips & effects and Share follow the draft rules', { timeout: 200000 }, as
     assert.equal(s.landingTexture,undefined);
     const frameDoc="document.querySelector('.studio-preview iframe').contentDocument";
     assert.equal(await run(frameDoc+".querySelector('.chips').dataset.chipStyle"),'stamp','the preview shows the chip style');
-    await run("document.querySelector('input[name=studio-scene][value=empty]').click()"); await sleep(100);
+    await run("document.querySelector('input[name=studio-scene][value=empty]').click()");
+    await until("!!"+frameDoc+".querySelector('.empty')",'the empty-thread preview scene');
     assert.ok(await run("!!"+frameDoc+".querySelector('.empty')"),'the empty-thread scene shows');
 
     await tab('share');
@@ -115,6 +116,7 @@ test('a search result opens the right tab, and glass results explain themselves 
     assert.equal(await run("!!document.querySelector('[data-ctl=effort]')"),true);
     await search('Corners radius');
     assert.equal(await selected(),'customize');
+    await until("document.activeElement.closest('[data-ctl]')?.dataset.ctl==='corners'",'focus on the Corners control');
     assert.equal(await run("document.activeElement.closest('[data-ctl]')?.dataset.ctl"),'corners','focus lands on the control');
   `);
 });
