@@ -1,6 +1,6 @@
 # Linux desktop background approval service
 
-Status: proposal for the user; no service implementation is authorized yet.
+Status: implementation authorized by the user on 2026-11-08 under the approved implementation plan. Implementation and Omarchy protected-action acceptance remain in progress.
 
 ## Intent and current milestone
 

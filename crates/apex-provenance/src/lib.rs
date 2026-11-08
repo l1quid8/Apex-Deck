@@ -5,6 +5,8 @@ pub mod broker;
 #[cfg(unix)]
 pub mod io;
 #[cfg(unix)]
+pub mod linux_install;
+#[cfg(unix)]
 pub mod update;
 #[cfg(windows)]
 #[path="io_windows.rs"]

@@ -422,6 +422,26 @@ fn document_payload(
     Ok(json!({"domain":DOMAIN,"kind":"document","uid":uid,"dataDir":folder,"name":name,"nonce":nonce,"document":document}))
 }
 fn main() {
+    let args=std::env::args().collect::<Vec<_>>();
+    if args.get(1).map(String::as_str)==Some("verify-linux-release") {
+        let result=(|| -> Result<(),String> {
+            use std::io::Read;
+            if args.len()!=5 {return Err("Usage: apex-provenance verify-linux-release MANIFEST SIGNATURE ARCHIVE".into());}
+            fn bounded(path: &str, limit: usize)->Result<Vec<u8>,String>{
+                let file=std::fs::File::open(path).map_err(|e|e.to_string())?;
+                let mut bytes=Vec::new();file.take(limit as u64+1).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+                if bytes.len()>limit {return Err("Verification input exceeds limit".into());}Ok(bytes)
+            }
+            let manifest=bounded(&args[2],linux_install::MANIFEST_LIMIT)?;
+            let signature=bounded(&args[3],64)?;
+            let mut archive=std::fs::File::open(&args[4]).map_err(|e|e.to_string())?;
+            let verified=linux_install::verify_release(&manifest,&signature,&mut archive)?;
+            println!("Verified evaluation-only Linux payload: {} {} {}",verified.version,verified.commit,verified.arch);
+            Ok(())
+        })();
+        if let Err(error)=result {eprintln!("apex-provenance: {error}");std::process::exit(1);}
+        return;
+    }
     if let Err(error) = run() {
         eprintln!("apex-provenance: {error}");
         std::process::exit(1);
