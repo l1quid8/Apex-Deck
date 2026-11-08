@@ -40,6 +40,7 @@ jobs:
         run: |
           node --test tests/linux-protected-package.test.mjs
           cargo test --locked -p apex-provenance
+          node scripts/test-linux-activation.mjs
           node scripts/test-linux-protected-package.mjs
       - name: Install Linux desktop libraries and virtual display
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2 libgbm1 xvfb xdotool

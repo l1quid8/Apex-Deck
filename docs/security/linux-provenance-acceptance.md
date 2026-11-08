@@ -30,6 +30,12 @@ protected service in the VM.
   receipts. Mac/Windows default issuance omits the optional field. A monotonic
   installation transaction must supply the epoch before these methods are wired
   into Linux admission.
+- A durable installation state machine now keeps descriptor selection and the
+  epoch high-water mark in one atomic record. Prepared/switched states close
+  admissions; explicit recovery and rollback burn a higher epoch. Disk-write
+  failures poison the open store until recovery. Initialization refuses existing
+  authority material; missing state is never silently initialized. This module
+  is not yet connected to service activation or peer admission.
 
 ## Evidence
 
@@ -61,6 +67,13 @@ policy; root broker and user-run daemon units tied to login/logout; installed UI
 routing and the protected same-account safety disclosure; atomic activation,
 monotonic epochs, crash recovery, repair, rollback and uninstall. Then perform the
 whole-change security review required by the approved plan.
+
+The activation module has local tests for interruption at each write/fsync/rename
+boundary, malformed records, recovery/rollback epochs, stale temporary symlinks,
+and durability-failure poisoning. Native CI additionally runs a privileged,
+isolated `/var/lib` fixture for locking, restart recovery and preserving authority
+bytes. These are module-level tests; service-boundary fault injection and actual
+process-kill/power-loss acceptance remain outstanding.
 
 After those gates, provision only the independently checked evaluation verifier
 in Omarchy, install the verified payload, and observe real protected chat
