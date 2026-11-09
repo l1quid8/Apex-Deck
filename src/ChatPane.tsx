@@ -889,7 +889,6 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
   }, []);
   const showComposer = () => {
     if (onWantComposer && !onWantComposer(pane.id)) {
-      notify("That thread is open in its own window.");
       return false;
     }
     wantInputFocus.current = true;
@@ -2573,8 +2572,15 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
   const attachDropped = useRef<(paths: string[], x: number, y: number) => void>(() => {});
   attachDropped.current = (paths, x, y) => {
     if (talkOnly) return;
-    const box = composer.current?.parentElement?.getBoundingClientRect();
-    if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
+    const contains = (el: Element | null | undefined) => {
+      const box = el?.getBoundingClientRect();
+      return !!box && box.width > 0 && box.height > 0 && x >= box.left && x < box.right && y >= box.top && y < box.bottom;
+    };
+    const map = root.current?.closest('[data-pane-map-region]');
+    const hit = map
+      ? (contains(root.current) && contains(map)) || (!!dock?.target && contains(composer.current?.closest('.composer-dock')))
+      : contains(composer.current?.parentElement);
+    if (!hit || (dock && !dock.target && !showComposer())) return;
     for (const path of paths) {
       const name = path.replace(/\/+$/, "").split("/").pop() || path;
       track(name, undefined, () => backend.copyAttachment(pane.id, path));
@@ -4083,7 +4089,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
       {!profileMode && !talkOnly && !(panel && !artifactsHost) && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
       </div>}
 
-      {!profileMode && composerMounted && renderComposer(<div className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
+      {!profileMode && composerMounted && renderComposer(<div data-bot-chip-style={chipParts.style ?? "classic"} className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
         onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attachFiles(e.dataTransfer.files); } }}>
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
@@ -4134,7 +4140,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
         {!profileMode && !talkOnly && <PaneVoicePortal countsSlot={headSlot}><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} /></PaneVoicePortal>}
         {!talkOnly && <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />}
-        <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
+        <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock" && !dock} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
           <RunnerDrawer snapshot={runner} hostNowOffsetMs={runnerHostOffset} composerRef={input} platform="desktop" endRequest={runnerEndRequest} showRequest={runnerShowRequest} onEndCancel={()=>{runnerClear.current=false;}}
             onAction={(action,limits)=>{if(!runner)return;void runnerAction(backend,pane.id,runner,action,limits,runnerClear.current).then(next=>{runnerClear.current=false;setRunner(next);}).catch(error=>notify(String(error),'error'));}}

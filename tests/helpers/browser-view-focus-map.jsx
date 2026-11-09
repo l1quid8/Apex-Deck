@@ -39,9 +39,11 @@ const renderPane = (id, _rect, onScreen) => <div className="focus-browser-probe"
 </div>;
 
 function Harness() {
+  const [borrowed, setBorrowed] = useState(0);
   const [arrangement, setArrangement] = useState({ mode:'left', order:ids, zoom:1, focusShare:0.58 });
   const handle = useRef(null);
   window.fixture = {
+    grow: setBorrowed,
     clearCalls() { calls.length = 0; },
     setMode(mode) { setArrangement(value => ({ ...value, mode })); },
     reset() {
@@ -63,8 +65,8 @@ function Harness() {
       };
     },
   };
-  return <PaneMap arrangement={arrangement} mounted={ids} onArrangement={setArrangement} active={['p0']}
-    maximized={null} onRestore={() => {}} renderPane={renderPane} onPopOut={() => {}} handle={handle} />;
+  return <div style={{height:800-borrowed}}><PaneMap borrowed={borrowed} arrangement={arrangement} mounted={ids} onArrangement={setArrangement} active={['p0']}
+    maximized={null} onRestore={() => {}} renderPane={renderPane} onPopOut={() => {}} handle={handle} /></div>;
 }
 
 createRoot(document.getElementById('root')).render(<Harness />);

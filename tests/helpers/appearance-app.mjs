@@ -12,9 +12,9 @@ const electronBinary = createRequire(import.meta.url)('electron');
  *  real App in Electron. With no preload, App uses its browser demo backend,
  *  whose settings file is localStorage. Inside the scenario: win, run(code),
  *  frame(), size(w, h), seed(settings), stored(), openAppearance(), assert, sleep(ms). */
-export async function withAppearanceApp(name, scenario, { width = 1164, height = 655, timeoutMs = 150000 } = {}) {
+export async function withAppearanceApp(name, scenario, { width = 1164, height = 655, timeoutMs = 150000, plugins = [] } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
-  const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error' });
+  const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error', plugins });
   await server.listen();
   const url = `http://localhost:${server.httpServer.address().port}/`;
   const main = path.join(temp, 'main.cjs');
@@ -24,9 +24,9 @@ export async function withAppearanceApp(name, scenario, { width = 1164, height =
     const fs=require('node:fs');
     const SHOTS=${JSON.stringify(process.env.APPEARANCE_SHOTS ?? '')};
     app.whenReady().then(async()=>{
-      const win=new BrowserWindow({show:false,width:${width},height:${height},useContentSize:true,webPreferences:{contextIsolation:true,sandbox:true}});
+      const win=new BrowserWindow({show:false,width:${width},height:${height},useContentSize:true,webPreferences:{contextIsolation:true,sandbox:true,backgroundThrottling:false}});
       win.webContents.on('console-message',(e)=>{ if(e.level==='error'||e.level===3) console.log('[page]',e.message); });
-      const run=code=>win.webContents.executeJavaScript(code);
+      const run=async code=>{ try { return await win.webContents.executeJavaScript(code); } catch(error) { throw new Error(String(error)+" in renderer script: "+code); } };
       const sleep=ms=>new Promise(r=>setTimeout(r,ms));
       const frame=()=>run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       const until=async(code,what)=>{ for(let i=0;i<500;i++){ if(await run(code)) return; await sleep(20);} assert.fail('timed out: '+(what||code)); };

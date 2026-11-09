@@ -43,6 +43,14 @@ app.whenReady().then(async () => {
     await until('!!window.fixture && fixture.snapshot().calls.filter(c=>c.kind==="show").length>=2 && !fixture.snapshot().moving && !fixture.snapshot().focusMoving', 'both real BrowserViews settle in the real map', 5000);
     await frame();
     await run('fixture.clearCalls()');
+    for (let i=1;i<=9;i++) {
+      await run('fixture.grow('+i*12+')'); await frame(); await sleep(25);
+      const grown = await snapshot();
+      assert.deepEqual(grown.calls.filter(c=>c.kind==='hide'), [], 'composer refit never hides a live preview');
+      assert.equal(grown.moving,false); assert.equal(grown.focusMoving,false);
+    }
+    assert.ok((await snapshot()).calls.some(c=>c.kind==='bounds'), 'refit updates native bounds');
+    await run('fixture.grow(0)'); await frame(); await sleep(100); await run('fixture.clearCalls()');
     const before = await snapshot();
     assert.equal(before.panes.p0.pinned, true, 'p0 is the sticky Focus pane');
     mouse('mouseMove', 1000, 400);

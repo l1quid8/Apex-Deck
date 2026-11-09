@@ -65,3 +65,17 @@ test('stored arrangements are checked: unknown mode → grid, bad zoom → 1, cl
     { mode: 'grid', order: ['a', 'b'], zoom: 1, focusShare: 0.58 });
 });
 
+test('composer growth keeps chosen rows and columns in every layout, while fitting actual height', () => {
+ for (const mode of ['grid','horizontal','vertical','left','right']) {
+  const rest=place(arr(mode),{w:1240,h:683});
+  const grown=place(arr(mode),{w:1240,h:531},152);
+  assert.equal(grown.levelIdx,rest.levelIdx,mode);
+  assert.equal(grown.levels[grown.levelIdx].cols,rest.levels[rest.levelIdx].cols,mode);
+  assert.equal(grown.levels[grown.levelIdx].rows,rest.levels[rest.levelIdx].rows,mode);
+  for(const [id,r] of grown.rects) {
+   assert.equal(r.x,rest.rects.get(id).x,mode+' '+id);
+   assert.ok(r.h>=56 && r.h<=531);
+  }
+  assert.ok(Math.max(...[...grown.rects.values()].slice(0,rest.levels[rest.levelIdx].shown).map(r=>r.y+r.h))<=531.01);
+ }
+});

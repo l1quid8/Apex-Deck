@@ -5,6 +5,7 @@ import { GAP, centreId, chooseAnchor, insertIndex, place, reorder, scrollFor, st
 export interface PaneMapHandle { reveal(id: string): void }
 interface PaneMapProps {
   arrangement: Arrangement;
+  borrowed?: number;
   mounted: string[];
   onArrangement(next: Arrangement): void;
   active: string[];
@@ -49,7 +50,12 @@ export function PaneMap(props: PaneMapProps) {
   const [dragging, setDragging] = useState<Drag | null>(null);
   const press = useRef<Drag | null>(null);
   const retireDrag = useRef<() => void>(() => {});
-  const placement = useMemo(() => place(props.arrangement, area), [props.arrangement, area]);
+  const placement = useMemo(() => place(props.arrangement, area, props.borrowed), [props.arrangement, area, props.borrowed]);
+  const fitted = useRef({ arrangement: props.arrangement, area, borrowed: props.borrowed });
+  const beforeFit = fitted.current;
+  const refitting = beforeFit.arrangement === props.arrangement && beforeFit.area.w === area.w &&
+    (beforeFit.area.h !== area.h || beforeFit.borrowed !== props.borrowed);
+  useLayoutEffect(() => { fitted.current = { arrangement: props.arrangement, area, borrowed: props.borrowed }; });
   const live = useRef({ props, area, placement });
   live.current = { props, area, placement };
   const pointer = useRef<Point | null>(null);
@@ -153,7 +159,7 @@ export function PaneMap(props: PaneMapProps) {
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [props.borrowed]);
 
   useLayoutEffect(() => {
     const el = root.current;
@@ -170,7 +176,7 @@ export function PaneMap(props: PaneMapProps) {
         const arrangement = { ...now.arrangement, order };
         drag.order = order;
         // Native events may arrive before React has painted the prior move.
-        live.current = { ...live.current, props: { ...now, arrangement }, placement: place(arrangement, live.current.area) };
+        live.current = { ...live.current, props: { ...now, arrangement }, placement: place(arrangement, live.current.area, now.borrowed) };
         now.onArrangement(arrangement);
       }
       markMoving(true);
@@ -252,7 +258,7 @@ export function PaneMap(props: PaneMapProps) {
     const arr = props.arrangement;
     const drag = press.current;
     if (drag && (props.maximized || arr.mode !== drag.original.mode || arr.order.length !== drag.order.length || arr.order.some((id, i) => id !== drag.order[i]))) retireDrag.current();
-    markMoving(true);
+    if (!refitting) markMoving(true);
     previous.current = { mode: arr.mode, order: arr.order, maximized: props.maximized };
     if (props.maximized) {
       if (!old?.maximized) savedScroll.current = offset.current;
@@ -285,7 +291,7 @@ export function PaneMap(props: PaneMapProps) {
     const focus = placement.focus;
     const beforeFocus = old?.placement.focus;
     const a = beforeFocus?.rect, b = focus?.rect;
-    if (beforeFocus?.id !== focus?.id || a?.x !== b?.x || a?.y !== b?.y || a?.w !== b?.w || a?.h !== b?.h || old?.maximized !== props.maximized) markFocusMoving(true);
+    if (!refitting && (beforeFocus?.id !== focus?.id || a?.x !== b?.x || a?.y !== b?.y || a?.w !== b?.w || a?.h !== b?.h || old?.maximized !== props.maximized)) markFocusMoving(true);
     drawnLayout.current = { placement, maximized: props.maximized };
     if (!rebaseGlide && old?.maximized === props.maximized) return;
     for (const animation of focusGlides.current.values()) animation.cancel();
@@ -328,9 +334,9 @@ export function PaneMap(props: PaneMapProps) {
     const { props: now, placement: before, area: size } = live.current;
     if (!el || now.maximized) return;
     const arr = now.arrangement;
-    const nextArr = { ...arr, zoom: dir === 0 ? 1 : stepZoom(arr, size, dir) };
+    const nextArr = { ...arr, zoom: dir === 0 ? 1 : stepZoom(arr, size, dir, now.borrowed) };
     if (nextArr.zoom === arr.zoom) { if (dir === 0) scrollTo(0); return; }
-    const next = place(nextArr, size);
+    const next = place(nextArr, size, now.borrowed);
     const scroll = axisScroll(el, before);
     const regionPoint = point && { x: point.x - before.region.x, y: point.y - before.region.y };
     let pointerId: string | null = null;
@@ -421,7 +427,7 @@ export function PaneMap(props: PaneMapProps) {
     updateVisibility();
   };
   return <div className={`pane-map-frame${resizing || dragging ? " adjusting" : ""}`}>
-    <div ref={root} className={`pane-map${resizing || dragging ? " adjusting" : ""}${resizing ? " resizing" : ""}`} data-pane-map-region data-axis={p.axis} data-level={p.levelIdx} data-many={!full && props.arrangement.order.length > 1 ? "" : undefined}
+    <div ref={root} className={`pane-map${resizing || dragging ? " adjusting" : ""}${resizing ? " resizing" : ""}${refitting ? " refitting" : ""}`} data-pane-map-region data-axis={p.axis} data-level={p.levelIdx} data-many={!full && props.arrangement.order.length > 1 ? "" : undefined}
     style={{ overflowX: !full && p.axis === "x" ? "auto" : "hidden", overflowY: !full && p.axis === "y" ? "auto" : "hidden", scrollSnapType: dragging ? "none" : `${p.axis} mandatory` }}
     tabIndex={0} aria-label="Thread panes" onScroll={readScroll}
     onTransitionEnd={event => { if (event.target instanceof HTMLElement && event.target.classList.contains("pane-map-slot")) markMoving(); }}

@@ -13,7 +13,7 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
   const html = `<html><body><div id="test-root"></div><script type="module">
     import React, {useState} from 'react'; import {createRoot} from 'react-dom/client';
     import {ChatPane, INSERT_COMPOSER_EVENT} from '/src/ChatPane.tsx';
-    import {ComposerDock} from '/src/ComposerDock.tsx';
+    import {ComposerDock} from '/src/ComposerDock.tsx'; import {dockTarget} from '/src/composerTarget.ts';
     import {getBackend} from '/src/backend.ts'; import '/src/styles.css';
     const bot={id:'bot',display_name:'Bot',persona:'',access:'read',effort:null,backend:{kind:'scripted',lines:['[pass]']}};
     const snapshot={participants:[bot],options:{policy:'mention',max_bot_hops:3},transcript:[]};
@@ -22,8 +22,8 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
     function Fixture(){
       const [target,setTarget]=useState('a'), [slot,setSlot]=useState(null), [outside,setOutside]=useState(false), [inline,setInline]=useState(false);
       window.fixture={outside,focus:setTarget,pop(){setOutside(true);setTarget('b');},inline(){setInline(true);},insert(id,text){window.dispatchEvent(new CustomEvent(INSERT_COMPOSER_EVENT,{detail:{paneId:id,text}}));}};
-      const want=id=>{if(id==='a'&&outside)return false;setTarget(id);return true;};
-      return <div style={{height:700,display:'flex',flexDirection:'column'}}><div style={{display:'flex',flex:1,minHeight:0}}>{['a','b'].map(id=><ChatPane key={id} dock={inline?undefined:{target:id===target&&!(outside&&id==='a'),slot}} onWantComposer={inline?undefined:want} pane={{id,workspaceId:'w',kind:'chat',title:id}} cwd='/tmp/project' agents={[]} backend={backend} focused={target===id} onActivity={()=>{}} profiles={[]} onProfilesChange={()=>{}} disabledProviders={[]}/>)}</div>{!inline&&<ComposerDock target={{paneId:target,title:target,project:'Project'}} slotRef={setSlot}/>}</div>;
+      const want=id=>{if(id==='a'&&outside){document.getElementById('notice').textContent='That thread is open in its own window.';return false;}setTarget(id);return true;}; const actual=dockTarget({focused:target,recent:['b','a'],candidates:['a','b'],popped:new Set(outside?['a']:[])});
+      return <div id="fixture" style={{height:700,display:'flex',flexDirection:'column'}}><div style={{display:'flex',flex:1,minHeight:0}}>{['a','b'].map(id=><ChatPane key={id} dock={inline?undefined:{target:id===actual,slot}} onWantComposer={inline?undefined:want} pane={{id,workspaceId:'w',kind:'chat',title:id}} cwd='/tmp/project' agents={[]} backend={backend} focused={target===id} onActivity={()=>{}} profiles={[]} onProfilesChange={()=>{}} disabledProviders={[]}/>)}</div>{!inline&&<ComposerDock target={{paneId:actual,title:actual,project:'Project'}} slotRef={setSlot}/>}<span id="notice" /></div>;
     }
     createRoot(document.getElementById('test-root')).render(<Fixture/>); window.ready=true;
   </script></body></html>`;

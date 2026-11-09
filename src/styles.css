@@ -4494,3 +4494,14 @@ button.mod-status:hover { color: var(--text); }
   .pane-head-adaptive .pane-title.marquee .thread-name-text { display: inline !important; animation: none !important; }
 }
 
+
+/* Dock growth refits the existing grid immediately, keeping live previews live. */
+.pane-map.refitting .pane-map-slot { transition: none; }
+.composer-dock-target { width: min(var(--deck-message-width, 44rem), calc(100% - 48px)); margin-inline: auto; padding: 8px 0 0; border: 0; border-radius: 0; background: transparent; text-align: left; align-items: center; }
+.composer-dock-target .dot { flex: none; }
+.composer-dock .composer-box { position: relative; }
+:root .composer-dock .composer-box > .quick-add {
+  position: absolute; top: auto; bottom: calc(100% + 8px); left: 0;
+  width: 100%; max-height: var(--quick-add-max, 260px); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 14px 34px rgba(0,0,0,.45); animation: none;
+}

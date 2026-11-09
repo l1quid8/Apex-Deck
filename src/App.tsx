@@ -1,3 +1,4 @@
+import { dockTarget } from "./composerTarget";
 import { ComposerDock } from "./ComposerDock";
 import { nextSettingsSaveSequence } from "./settingsSaveSequence";
 import { assistantSidebarPanes, assistantThreadKey } from './assistantSidebar';
@@ -344,6 +345,7 @@ export function App() {
   const [focusedPane, setFocusedPane] = useState<string | null>(null);
   /** Threads in the order they were last focused, most recent first. */
   const [recentThreads, setRecentThreads] = useState<string[]>([]);
+  const [composerBorrowed, setComposerBorrowed] = useState(0);
   const [composerSlot, setComposerSlot] = useState<HTMLDivElement | null>(null);
   const [maximized, setMaximized] = useState<string | null>(null);
   /** How the panes of each workspace section are arranged. */
@@ -852,8 +854,8 @@ export function App() {
     if (focusedPane && viewPanes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
   }, [focusedPane, viewPanes]);
   const composerCandidates = visiblePanes.filter(p => p.kind === "chat" && !poppedIds.has(p.id));
-  const composerTarget = [focusedPane, ...recentThreads, ...composerCandidates.map(p => p.id)]
-    .map(id => composerCandidates.find(p => p.id === id)).find(p => !!p) ?? null;
+  const composerTargetId = dockTarget({ focused: focusedPane, recent: recentThreads, candidates: composerCandidates.map(p => p.id), popped: poppedIds });
+  const composerTarget = composerCandidates.find(p => p.id === composerTargetId) ?? null;
   const onWantComposer = useCallback((id: string) => {
     if (poppedIds.has(id)) {
       toast("That thread is open in its own window.");
@@ -2982,7 +2984,7 @@ export function App() {
           {/* Every pane of every workspace stays mounted so its session keeps
               running. Panes outside the current view are only hidden. */}
           <div className={`grid ${resizing ? "resizing-sidebar" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
-            <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} onArrangement={setArrangement} active={focusedPane ? [focusedPane] : []}
+            <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} borrowed={composerBorrowed} onArrangement={setArrangement} active={focusedPane ? [focusedPane] : []}
               maximized={maximized && visiblePanes.some(pane => pane.id === maximized) ? maximized : null} onRestore={() => setMaximized(null)} onVisiblePanes={onVisiblePanes} handle={paneMap}
               onPopOut={(id, x, y) => { void popOutPane(id, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 }); }}
               renderPane={(id, rect, onScreen) => {
@@ -3041,7 +3043,7 @@ export function App() {
               );
             }} />
           </div>
-          {section !== "agents" && current && !picking && <ComposerDock target={composerTarget ? { paneId: composerTarget.id, title: composerTarget.title, project: workspaces.find(w => w.id === composerTarget.workspaceId)?.name ?? "" } : null} slotRef={setComposerSlot} />}
+          {section !== "agents" && current && !picking && <ComposerDock target={composerTarget ? { paneId: composerTarget.id, title: composerTarget.title, status: statusOf(composerTarget), agents: threadStatus[composerTarget.id]?.who?.length ?? 0, project: workspaces.find(w => w.id === composerTarget.workspaceId)?.name ?? "" } : null} slotRef={setComposerSlot} onBorrowed={setComposerBorrowed} onReveal={id => paneMap.current?.reveal(id)} />}
           </div>
           {keeperOwner && keeperLane && <AssistantVoiceKeeper key={assistantIdentityKey(keeperOwner)} lane={keeperLane} backend={keeperBackend} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}
           {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}

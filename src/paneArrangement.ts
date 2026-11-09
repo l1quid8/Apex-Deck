@@ -123,7 +123,7 @@ export function arrangementFromSaved(tree: unknown, layout: unknown, ids: string
 }
 
 /** Place the scrolling region in its own coordinates and pin a Focus pane. */
-export function place(arr: Arrangement, area: Size): Placement {
+export function place(arr: Arrangement, area: Size, borrowed = 0): Placement {
   const region = { x: 0, y: 0, w: hasArea(area) ? area.w : 0, h: hasArea(area) ? area.h : 0 };
   const result: Placement = {
     levels: [], levelIdx: -1, defaultIdx: -1, axis: arr.mode === "vertical" ? "x" : "y",
@@ -140,8 +140,10 @@ export function place(arr: Arrangement, area: Size): Placement {
     ids = ids.slice(1);
   }
   const band = arr.mode === "horizontal" || arr.mode === "vertical" ? arr.mode : null;
-  const levels = band ? bandLevels(ids.length, region, band) : gridLevels(ids.length, region);
-  const d = defaultLevel(levels, region.w);
+  const resting = { ...region, h: region.h + (Number.isFinite(borrowed) ? Math.max(0, borrowed) : 0) };
+  const chosen = band ? bandLevels(ids.length, resting, band) : gridLevels(ids.length, resting);
+  const levels = chosen.map(level => ({ ...level, h: Math.max(MIN_PANE.h, (region.h - (level.rows - 1) * GAP) / level.rows) }));
+  const d = defaultLevel(chosen, region.w);
   const idx = levelIndex(levels, d, arr.zoom);
   Object.assign(result, { levels, defaultIdx: d, levelIdx: idx });
   const level = levels[idx];
@@ -167,8 +169,8 @@ export function place(arr: Arrangement, area: Size): Placement {
   return result;
 }
 
-export function stepZoom(arr: Arrangement, area: Size, dir: 1 | -1): number {
-  const placement = place(arr, area);
+export function stepZoom(arr: Arrangement, area: Size, dir: 1 | -1, borrowed = 0): number {
+  const placement = place(arr, area, borrowed);
   if (placement.levelIdx < 0) return arr.zoom;
   const idx = clamp(placement.levelIdx + dir, 0, placement.levels.length - 1);
   if (idx === placement.levelIdx) return arr.zoom;
