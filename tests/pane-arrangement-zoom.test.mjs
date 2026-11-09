@@ -74,7 +74,8 @@ test('zooming out keeps a bottom-line pane on the bottom line', () => {
 test('zoom keeps the whole selected group visible even if its middle would move the top line', () => {
   const anchor = chooseAnchor(p32, ['p6', 'p9'], null, null);
   assert.deepEqual(anchor, { kind: 'active', ids: ['p6', 'p9'] });
-  assert.ok(near(zoomScroll(p32, anchor, 130), 808));
+  assert.ok(near(zoomScroll(p32, anchor, 700), 808)); // the point alone gives 404, which cuts p9 off
+  assert.ok(near(zoomScroll(p32, chooseAnchor(p32, ['p13'], null, null), 0), 1212)); // the point alone gives 1616, past the last line
 });
 test('zoom without a screen point centres the anchor line; no anchor starts at zero', () => {
   const p = place({ ...a, mode: 'horizontal' }, A);
