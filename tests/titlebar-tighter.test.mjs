@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { GAP } from "../src/paneArrangement.ts";
 
 const plain = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const glass = readFileSync(new URL("../src/glass-theme.css", import.meta.url), "utf8");
-const paneLayout = readFileSync(new URL("../src/PaneLayout.tsx", import.meta.url), "utf8");
 const sectionNavigation = readFileSync(new URL("../src/SectionNavigation.tsx", import.meta.url), "utf8");
 const block = (css, selector) => {
   const start = css.indexOf(`${selector} {`);
@@ -39,7 +39,7 @@ test("title bar buttons scale to 0.75 without affecting other controls", () => {
 
 test("panes sit closer to the window edge and to each other", () => {
   assert.match(glass, /:root\s*{\s*--deck-gap:\s*8px/);
-  assert.match(paneLayout, /export const GAP = 8;/);
+  assert.equal(GAP, 8);
   assert.match(plain, /\.grid\s*{[^}]*margin:\s*-4px/);
   assert.match(plain, /\.titlebar\s*{[^}]*padding:\s*8px 16px/);
   assert.match(plain, /\.titlebar\s*\{ min-height: 50px; flex-shrink: 0; \}/);

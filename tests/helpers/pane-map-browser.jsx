@@ -9,6 +9,7 @@ const all = [...ids, 'other-section', 'popped-out'];
 const initial = () => ({ mode: 'grid', order: [...ids], zoom: 1, focusShare: 0.58 });
 const mounts = {};
 const unmounts = {};
+const renders = {};
 const clicks = [];
 const popouts = [];
 
@@ -24,7 +25,8 @@ document.head.insertAdjacentHTML('beforeend', `<style>
     margin-top:12px; background:#202d42; color:#f0f4fb; border:1px solid #75849a; }
 </style>`);
 
-function Probe({ id }) {
+function Probe({ id, onScreen }) {
+  renders[id] = (renders[id] || 0) + 1;
   useEffect(() => {
     mounts[id] = (mounts[id] || 0) + 1;
     return () => { unmounts[id] = (unmounts[id] || 0) + 1; };
@@ -34,6 +36,8 @@ function Probe({ id }) {
     <textarea aria-label={`Draft ${id}`} defaultValue="" />
   </div>;
 }
+
+const renderPane = (id, _rect, onScreen) => <Probe id={id} onScreen={onScreen} />;
 
 function Harness() {
   const [arrangement, setArrangement] = useState(initial);
@@ -99,13 +103,13 @@ function Harness() {
         drafts: Object.fromEntries([...document.querySelectorAll('[data-id] textarea')].map(el => [el.parentElement.dataset.id, el.value])),
         wheelEvents: [...wheelEvents.current],
         keyEvents: [...keyEvents.current],
-        clicks: [...clicks], popouts: [...popouts],
+        renders: { ...renders }, clicks: [...clicks], popouts: [...popouts],
       };
     },
   };
   return <PaneMap arrangement={arrangement} mounted={mounted} onArrangement={next => setArrangement(validArrangement(next, next.order))}
     active={active} maximized={maximized} onVisiblePanes={setOnScreenPanes} onRestore={() => { restores.current += 1; }}
-    renderPane={id => <Probe id={id} />} onPopOut={(...args) => popouts.push(args)} handle={handle} />;
+    renderPane={renderPane} onPopOut={(...args) => popouts.push([...args, arrangement.order.join(",")])} handle={handle} />;
 }
 
 createRoot(document.getElementById('root')).render(<Harness />);

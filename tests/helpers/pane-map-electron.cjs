@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+app.commandLine.appendSwitch('force-device-scale-factor', '1');
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 1200, height: 800, useContentSize: true, webPreferences: { offscreen: true, backgroundThrottling: false } });
   const run = code => win.webContents.executeJavaScript(code);
@@ -54,6 +55,80 @@ app.whenReady().then(async () => {
     assert.ok(ready, 'PaneMap fixture mounted: ' + errors.join('\n') + await run('document.body.innerText.slice(-2000)'));
     await settle();
     win.webContents.focus();
+
+    const review = new URL(fixtureUrl).searchParams.get('review');
+    if (review) {
+      await reset();
+      if (review === 'popups') {
+        const probe = async id => {
+          const boxes = await run(`(()=>{const parent=document.querySelector('[data-id="${id}"]');
+            const small=document.createElement('div'),full=document.createElement('div');
+            small.style.cssText='position:fixed;left:342px;top:329px;width:40px;height:30px';
+            full.style.cssText='position:fixed;inset:0'; parent.append(small,full);
+            const rect=el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}};
+            const result={small:rect(small),full:rect(full)};small.remove();full.remove();return result})()`);
+          near(boxes.small.x,342,id+' fixed popup x'); near(boxes.small.y,329,id+' fixed popup y');
+          near(boxes.full.x,0,id+' fullscreen x'); near(boxes.full.y,0,id+' fullscreen y');
+          near(boxes.full.w,1200,id+' fullscreen width'); near(boxes.full.h,800,id+' fullscreen height');
+        };
+        await probe('p5');
+        await run('fixture.step(1)'); await frame(); await probe('p5'); await settle();
+        await reset({arrangement:{mode:'left'}}); await probe('p0'); await probe('p5');
+        await run('document.querySelector("[data-pane-map-region]").scrollTop=500'); await frame(); await probe('p0'); await probe('p5');
+      } else if (review === 'keys') {
+        await run('document.querySelector("[data-id=p3] button").focus()'); await key('-'); await settle();
+        assert.equal((await snapshot()).levelIdx,1,'a pane button must not activate map zoom');
+        await focus(); await key('-'); await settle(); assert.equal((await snapshot()).levelIdx,0,'map focus activates zoom');
+      } else if (review === 'restore') {
+        await reset({active:['p5']});
+        await run('document.querySelector("[data-pane-map-region]").scrollTop=fixture.snapshot().snaps.at(-1)'); await settle();
+        const before=(await snapshot()).scrollTop;
+        await run('fixture.setMaximized("p5")'); await settle();
+        await run('fixture.setMaximized(null)'); await settle(); near((await snapshot()).scrollTop,before,'restoring fullscreen preserves scroll');
+      } else if (review === 'drag-out') {
+        await pointer(25,14); win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,x:25,y:14}); await frame();
+        for(let i=1;i<=6;i++){win.webContents.sendInputEvent({type:'mouseMove',x:Math.round(25+1205*i/6),y:Math.round(14+136*i/6),modifiers:['leftButtonDown']});await frame();}
+        win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,x:1230,y:150}); await settle();
+        const state=await snapshot(); assert.equal(state.popouts.length,1,'one popout');
+        assert.deepEqual(state.arrangement.order.slice(0,4),['p0','p1','p2','p3'],'drag-out restores original order');
+        assert.equal(state.popouts[0][3].split(",").slice(0,4).join(","),"p0,p1,p2,p3","popout snapshot sees restored order");
+      } else if (review === 'renders') {
+        const before=(await snapshot()).renders;
+        for(let i=0;i<12;i++){ await wheel(298,400,-50); await sleep(16); } await settle();
+        const after=(await snapshot()).renders;
+        for(const id of ['other-section','popped-out']) assert.equal(after[id]-before[id],0,id+' never visible must not re-render');
+        for(let i=0;i<14;i++) assert.ok(after['p'+i]-before['p'+i]<=2,'pane only renders on visibility transitions: p'+i+' '+(after['p'+i]-before['p'+i]));
+        await reset(); await pointer(25,14);
+        win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,x:25,y:14}); await frame();
+        const start=(await snapshot()).renders;
+        for(let i=0;i<6;i++){ win.webContents.sendInputEvent({type:'mouseMove',x:40+i*5,y:40,modifiers:['leftButtonDown']});await frame(); }
+        assert.deepEqual((await snapshot()).renders,start,'same-cell drag moves render no panes');
+        await key('Escape'); win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,x:65,y:40}); await settle();
+      } else if (review === 'reduced-pinned') {
+        await reset({arrangement:{mode:'left'}});
+        win.webContents.debugger.attach('1.3');
+        await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]}); await frame();
+        assert.equal(await run('getComputedStyle(document.querySelector(".pane-map-slot.pinned")).transitionDuration'),'0s','reduced motion disables sticky Focus glide');
+        win.webContents.debugger.detach();
+      } else if (review === 'paint') {
+        await reset({arrangement:{mode:'left'}});
+        await run(`document.head.insertAdjacentHTML('beforeend','<style>[data-id=p0]{background:rgb(255,0,0)!important;border:0!important;border-radius:0!important}[data-id=p0]>*{visibility:hidden}.pane-map-divider{background:rgb(0,255,0)!important}.pane-map-divider::after{display:none}</style>')`); await settle();
+        const state=await snapshot(); const frames=[];
+        const sample=(image,x,test)=>{const {width,height}=image.getSize(),data=image.toBitmap();let first=-1,last=-1;for(let y=0;y<height;y++){const i=(y*width+x)*4;if(test(data[i+2],data[i+1],data[i])){if(first<0)first=y;last=y;}}return {first,last}};
+        const x=Math.floor(state.panes.p0.w/2), dx=Math.floor(state.region.x-4);
+        const capture=(_event,_dirty,image)=> frames.push({focus:sample(image,x,(r,g,b)=>r>200&&g<60&&b<60),divider:sample(image,dx,(r,g,b)=>g>200&&r<60&&b<60)});
+        win.webContents.on('paint',capture); win.webContents.invalidate(); await sleep(100);
+        const sx=Math.floor(state.region.x+60); await pointer(sx,400);
+        let maximumScroll=0;
+        for(const delta of [-45,45]){for(let i=0;i<24;i++){win.webContents.sendInputEvent({type:'mouseWheel',x:sx,y:400,deltaX:0,deltaY:delta,canScroll:true,hasPreciseScrollingDeltas:true});await sleep(16);}await sleep(300);maximumScroll=Math.max(maximumScroll,(await snapshot()).scrollTop);}
+        assert.ok(maximumScroll>500,'paint capture scrolls more than one side pane');
+        win.webContents.invalidate(); await sleep(100); win.webContents.removeListener('paint',capture);
+        assert.ok(frames.length>5,'actual compositor frames captured');
+        for(const f of frames){near(f.focus.first,0,'Focus top in drawn frame');near(f.focus.last,799,'Focus bottom in drawn frame');near(f.divider.first,0,'divider top in drawn frame');near(f.divider.last,799,'divider bottom in drawn frame');}
+        console.log('Focus compositor frames',frames.length);
+      }
+      console.log('PaneMap review regression passed:',review); win.destroy(); app.exit(0); return;
+    }
 
     if (new URL(fixtureUrl).searchParams.has('viewport-only')) {
       await reset();
@@ -207,7 +282,7 @@ app.whenReady().then(async () => {
       await reset(); from = await start('p0'); target = { x: 1230, y: 150 };
       await move(from, target); await release(target);
       state = await snapshot(); assert.equal(state.popouts.length, 1, 'release outside the window requests one pop-out');
-      assert.equal(state.popouts[0][0], 'p0'); assert.ok(state.popouts[0].slice(1).every(Number.isFinite), 'pop-out receives screen coordinates');
+      assert.equal(state.popouts[0][0], 'p0'); assert.ok(state.popouts[0].slice(1,3).every(Number.isFinite), 'pop-out receives screen coordinates');
       console.log('PaneMap native title drag, Escape cancel, button exclusion, scrolled hit testing, bounded edge pan and outside release passed');
       win.destroy(); app.exit(0); return;
     }

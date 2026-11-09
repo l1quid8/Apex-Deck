@@ -17,6 +17,9 @@ const compiled = transform(source, { transforms: ['typescript', 'jsx', 'imports'
 const exports = {};
 new Function('require', 'exports', compiled)(require, exports);
 const { LayoutPicker } = exports;
+const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+// Exercise App's actual selection callback, including its zoom and focus rules.
+const arrange = transform(appSource.match(/  const arrange = \(mode: PaneLayoutMode\) => \{[\s\S]*?\n  \};/)[0], { transforms: ['typescript'] }).code;
 
 test('the pane layout menu exposes all five choices with Vertical checked', () => {
   const html = renderToStaticMarkup(React.createElement(LayoutPicker, { value: 'vertical', disabled: false, onSelect() {} }));
@@ -39,9 +42,12 @@ test('the layout menu follows keyboard selection, dismissal, and focus conventio
     import {LayoutPicker} from '/src/LayoutPicker.tsx'; import '/src/styles.css';
     window.selections=[];
     function Fixture(){
-      const [value,setValue]=useState('vertical'); const [disabled,setDisabled]=useState(false);
+      const [arrangement,setArrangement]=useState({mode:'vertical',order:['p0','p1'],zoom:1,focusShare:0.58}); const [disabled,setDisabled]=useState(false);
+      const value=arrangement.mode,focusedPane='p0',setMaximized=()=>{};
+      ${arrange}
       window.setDisabled=setDisabled;
-      return React.createElement(LayoutPicker,{value,disabled,onSelect(mode){window.selections.push(mode);setValue(mode);}});
+      window.zoomIn=()=>setArrangement(current=>({...current,zoom:current.zoom+1}));window.arrangement=arrangement;
+      return React.createElement(LayoutPicker,{value,disabled,onSelect(mode){window.selections.push(mode);arrange(mode);}});
     }
     createRoot(document.getElementById('root')).render(React.createElement(Fixture));
   </script></body></html>`;
@@ -106,6 +112,12 @@ test('the layout menu follows keyboard selection, dismissal, and focus conventio
           await key('Down');
           await run("document.querySelector('#after').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))");
           assert.equal(await expanded(),'false','outside pointer closes');
+          await run("document.querySelector('.layout-picker-trigger').click()");
+          await run("[...document.querySelectorAll('[role=menuitemradio]')].find(node=>node.textContent.includes('Even grid')).click()");
+          await run('window.zoomIn()');await until('window.arrangement.zoom===2');
+          await run("document.querySelector('.layout-picker-trigger').click()");
+          await run("[...document.querySelectorAll('[role=menuitemradio]')].find(node=>node.textContent.includes('Even grid')).click()");
+          assert.equal(await run('window.arrangement.zoom'),2,'picking the current layout preserves its zoom');
           await trigger(); await key('Down'); await run('window.setDisabled(true)');
           await until("document.querySelector('.layout-picker-trigger').disabled");
           assert.equal(await expanded(),'false','disabling closes the menu');

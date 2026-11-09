@@ -480,15 +480,16 @@ html[data-platform="windows"] .titlebar {
   padding: 16px;
   display: flex;
 }
-/* Panes are placed inside this by position (see PaneLayout.tsx). Each one
-   is inset by half the gap, so the area reaches half a gap past the edge. */
+/* The canvas reaches half a gap past its outer edge. */
 .grid {
   flex: 1;
   min-width: 0;
   position: relative;
   margin: -4px;
 }
-/* Adaptive pane map: all sessions keep the same keyed parent. */
+/* Adaptive pane map: all sessions keep the same keyed parent.
+   Keep ancestors free of transforms/filters/containment: panes own fixed pop-ups. */
+.pane-map-frame { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; }
 .pane-map {
   flex: 1;
   min-width: 0;
@@ -501,23 +502,23 @@ html[data-platform="windows"] .titlebar {
   outline-offset: -2px;
 }
 .pane-map::-webkit-scrollbar { display: none; }
-.pane-map-space { pointer-events: none; visibility: hidden; }
+.pane-map-space { position: absolute; left: 0; top: 0; pointer-events: none; visibility: hidden; }
 .pane-map-slot {
   position: absolute;
   top: 0;
   left: 0;
   min-width: 0;
   min-height: 0;
-  transition: transform 220ms ease, width 220ms ease, height 220ms ease;
+  transition: left 220ms ease, top 220ms ease, width 220ms ease, height 220ms ease;
 }
 .pane-map-slot > .pane { width: 100%; height: 100%; }
-.pane-map-slot.pinned { z-index: 2; transition: width 220ms ease, height 220ms ease; }
+.pane-map-slot.pinned:not(.dragging) { position: sticky; z-index: 2; transition: margin-left 220ms ease, width 220ms ease, height 220ms ease; }
 .pane-map-slot.dragging { z-index: 5; transition: none; pointer-events: none; }
 .pane-map-slot.dragging .pane { box-shadow: 0 8px 24px #0004; }
 .pane-map-snap { position: absolute; pointer-events: none; scroll-snap-align: start; }
 .pane-map-divider { z-index: 3; }
 .pane-map.adjusting { user-select: none; }
-.pane-map.adjusting .pane-body { pointer-events: none; }
+.pane-map-frame.adjusting .pane-body { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .pane-map-slot, .pane-map-slot.pinned { transition: none; }
 }
@@ -1837,29 +1838,15 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 }
 /* While a pane is being resized or moved, the panes must not take the
    pointer, or a terminal would swallow the drag. */
-.grid.adjusting .pane-body {
+.grid.resizing-sidebar .pane-body {
   pointer-events: none;
 }
-.grid.adjusting {
+.grid.resizing-sidebar {
   user-select: none;
   -webkit-user-select: none;
 }
 .pane-head {
   cursor: grab;
-}
-.pane.lifted {
-  opacity: 0.55;
-}
-.pane.lifted .pane-head {
-  cursor: grabbing;
-}
-.drop-preview {
-  z-index: 6;
-  pointer-events: none;
-  border: 2px solid var(--accent);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  transition: left 0.08s, top 0.08s, width 0.08s, height 0.08s;
 }
 .layout-presets {
   display: inline-flex;
@@ -1889,7 +1876,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   stroke-width: 1.3;
 }
 @media (prefers-reduced-motion: reduce) {
-  .drop-preview, .divider::after { transition: none; }
+  .divider::after { transition: none; }
 }
 
 /* Panes that want attention. The dot, a short flag beside the pane, a count

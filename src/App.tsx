@@ -527,10 +527,11 @@ export function App() {
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), .cm-editor")) return;
       if (document.querySelector('[role="menu"]:not([hidden]), [role="dialog"]:not([hidden]), [aria-modal="true"]')) return;
+      event.preventDefault();
       setSidePanelFull(false);
     };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
   }, [sidePanelFull]);
   const showDetails = (target?: DetailsSection) => {
     pendingSection.current = target;
@@ -900,7 +901,7 @@ export function App() {
   /** Rearrange the panes in view into one of the ready-made layouts. */
   const arrange = (mode: PaneLayoutMode) => {
     const ids = arrangement.order;
-    if (ids.length < 2) return;
+    if (ids.length < 2 || mode === arrangement.mode) return;
     // The pane in use becomes the large one.
     const main = focusedPane && ids.includes(focusedPane) ? focusedPane : ids[0];
     const focus = mode === "left" || mode === "right";
@@ -1501,7 +1502,10 @@ export function App() {
     };
     const sourceKey = layoutKey(null, paneSection(pane));
     const source = dashboardArrangement(paneSection(pane));
-    const spot: PaneSpot = { workspaceId: pane.workspaceId, index: Math.max(0, source.order.indexOf(paneId)), before: [...source.order] };
+    // Keep external neighbours in the return snapshot too, so windows can
+    // return in either order without trading their original places.
+    const before = withPoppedOut({ [sourceKey]: source }, poppedOut)[sourceKey].order;
+    const spot: PaneSpot = { workspaceId: pane.workspaceId, index: Math.max(0, before.indexOf(paneId)), before: [...before] };
     return bridge.open(snapshot, bounds).then(({ token }) => {
       setArrangements((all) => {
         const current = all[sourceKey] ?? source;
@@ -2963,7 +2967,7 @@ export function App() {
 
           {/* Every pane of every workspace stays mounted so its session keeps
               running. Panes outside the current view are only hidden. */}
-          <div className={`grid ${resizing ? "adjusting" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
+          <div className={`grid ${resizing ? "resizing-sidebar" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
             <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} onArrangement={setArrangement} active={focusedPane ? [focusedPane] : []}
               maximized={maximized && visiblePanes.some(pane => pane.id === maximized) ? maximized : null} onRestore={() => setMaximized(null)} onVisiblePanes={onVisiblePanes} handle={paneMap}
               onPopOut={(id, x, y) => { void popOutPane(id, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 }); }}

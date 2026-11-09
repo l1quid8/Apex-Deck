@@ -68,18 +68,20 @@ test('Dashboard external action uses the existing popout route and normal clicks
 
 test('external panes use their source section layout even if another screen is active', async () => {
   const declaration = app.match(/const popOutPane = \(paneId: string,[\s\S]*?\n  \};/)[0];
-  const code = transform(declaration, { transforms: ['typescript'], disableESTransforms: true }).code;
-  const { popoutRefusal } = await import('../src/popoutModel.ts');
+  const remember = app.match(/^function withPoppedOut\([\s\S]*?^\}/m)[0];
+  const code = transform(remember + '\n' + declaration, { transforms: ['typescript'], disableESTransforms: true }).code;
+  const { popoutRefusal, restoreOrder } = await import('../src/popoutModel.ts');
   const source = pane('shell', 'terminal');
   const arrangements = { ':threads': saved(['chat']), ':code': saved(['shell', 'other']) };
   let records = []; const snapshots = [];
   const bindings = {
     window: { apexDeck: { popout: { open: async snapshot => { snapshots.push(snapshot); return { token: 'token' }; } } } },
-    poppedIds: new Set(), listed: [source], toast: message => assert.fail(message),
+    poppedIds: new Set(), poppedOut: [], listed: [source], toast: message => assert.fail(message),
     hostOfPane: () => ({ workspace: { id: source.workspaceId, path: '/remote/project' }, hostId: 'remote-host' }),
     runs: {}, appearance: {}, appearanceSettings: undefined, chatFolder: (_pane, workspace) => workspace.path,
     layoutKey: (_workspace, section) => `:${section}`, paneSection,
     dashboardArrangement: section => arrangements[`:${section}`], popoutRefusal,
+    restoreOrder, validArrangement: arrangement.validArrangement,
     setArrangements: update => Object.assign(arrangements, update(arrangements)),
     setPoppedOut: update => { records = update(records); },
     key: ':threads',

@@ -380,8 +380,8 @@
 }
 :root[data-deck-theme="clay"] .thread-details.overlay { inset: 0 0 0 auto; }
 :root[data-deck-theme="clay"] :is(.sidebar-handle.overlay) { top: 0; bottom: 0; }
-/* Panes are inset half a gap inside the grid (PaneLayout GAP); with no
-   canvas padding a lone pane meets the canvas edges exactly; split panes
+/* The canvas reaches half a paneArrangement gap past its edges; with no
+   canvas padding a lone pane meets the canvas edges exactly; adjacent panes
    get back a hairline frame (below) so the gutter between them reads. */
 :root[data-deck-theme="clay"] .pane {
   background: var(--deck-bg);
@@ -390,12 +390,10 @@
 }
 :root[data-deck-theme="clay"] .pane.focused { box-shadow: none; }
 /* Only with two or more panes showing does focus need a frame. */
-:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane,
 :root[data-deck-theme="clay"] .pane-map[data-many] > .pane-map-slot > .pane {
   border: 1px solid var(--line);
   border-radius: max(6px, calc(var(--deck-radius, 10px) * .6));
 }
-:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane.focused,
 :root[data-deck-theme="clay"] .pane-map[data-many] > .pane-map-slot > .pane.focused {
   border-color: color-mix(in srgb, var(--deck-accent-text) 55%, var(--line));
 }

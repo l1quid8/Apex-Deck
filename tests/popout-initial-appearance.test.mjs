@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { transform } from 'sucrase';
-import { followedTabPane, popoutRefusal, takeTabOut } from '../src/popoutModel.ts';
+import { followedTabPane, popoutRefusal, restoreOrder, takeTabOut } from '../src/popoutModel.ts';
+import { validArrangement } from '../src/paneArrangement.ts';
 import { defaultPanel } from '../src/rightPanelModel.ts';
 import { DEFAULT_APPEARANCE } from '../src/themes.ts';
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const remember = app.match(/^function withPoppedOut\([\s\S]*?^\}/m)[0];
 
 // Execute App's actual opening callbacks, intercepting only the window bridge.
 // Returning theme values alone must fail: the initial payload needs the mode,
@@ -17,7 +19,7 @@ for (const kind of ['pane', 'tab']) {
       const name = kind === 'pane' ? 'popOutPane' : 'popOutTab';
       const declaration = app.match(new RegExp(`const ${name} = [\\s\\S]*?\\n  \\};`))?.[0];
       assert.ok(declaration, `App declares ${name}`);
-      const code = transform(declaration, { transforms: ['typescript'], disableESTransforms: true }).code;
+      const code = transform(remember + '\n' + declaration, { transforms: ['typescript'], disableESTransforms: true }).code;
       const appearance = DEFAULT_APPEARANCE;
       const appearanceSettings = mode === undefined ? undefined : {
         current: { format: 'apex-glass-playground', version: 2, name: 'Classic', appearance },
@@ -32,11 +34,11 @@ for (const kind of ['pane', 'tab']) {
           return { token: 'window-token' };
         } } } },
         appearance, appearanceSettings,
-        poppedIds: new Set(), poppedTabs: [], listed: [pane], runs: {},
+        poppedIds: new Set(), poppedOut: [], poppedTabs: [], listed: [pane], runs: {},
         toast: message => assert.fail(message),
         hostOfPane: () => ({ workspace, hostId: 'local' }),
         chatFolder: () => workspace.path,
-        popoutRefusal, takeTabOut, followedTabPane,
+        popoutRefusal, restoreOrder, validArrangement, takeTabOut, followedTabPane,
         layoutKey: () => ':code', paneSection: () => 'code',
         dashboardArrangement: () => ({ mode: 'grid', order: [pane.id], zoom: 1, focusShare: .58 }),
         panel: defaultPanel(), focusedPane: null, detailsTarget: null,

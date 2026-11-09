@@ -80,3 +80,67 @@ they are implemented in the app.
 The original build plan and other untracked documents/mockups/scripts remain
 unstaged. The revision-12 plan snapshot and implementation ledger remain
 under `.superpowers/sdd/2026-11-08-adaptive-thread-panes-build/`.
+
+## Task 7a: revision-13 review corrections
+
+- Pane slots now glide with `left`/`top`, keeping fixed selection actions,
+  link menus and full-window previews in window coordinates.
+- Focus uses compositor-managed sticky positioning. Its divider sits outside
+  the scroller. Scroll offsets are refs; memoized pane content changes only
+  for its render callback, geometry or visibility.
+- A moving or clipped docked browser shows its snapshot, then restores its
+  native view at settled bounds. Full-window previews retain live content
+  and ordinary menu coverage.
+- Drag-out restores the original order before App snapshots the return spot.
+  Return spots retain external neighbours and restore beside surviving ones.
+- Zoom keys require map focus; fullscreen restores scroll; reselecting the
+  current layout preserves zoom. Side-panel Escape consumes the event first.
+- Removed the unused split-tree renderer and live editing helpers; retained
+  saved-session validation and migration, and the sidebar resize input guard.
+
+The six original PaneMap review scenarios failed on the integration baseline
+before their fixes. Corrected checks cover pop-ups in grid and Focus, mid-glide
+placement, same-cell drag render counts, native drag-out snapshot order,
+fullscreen scroll restoration, and zoom keys from focused buttons. A native
+offscreen paint capture checked Focus and divider edges in 25 drawn frames
+while scrolling more than one side pane; neither moved. Reduced-motion Focus
+is also checked.
+
+The new BrowserView tests use a stub BrowserApi with actual Chromium layout,
+including actual PreviewPane markup for full-window mode. Their five scenarios
+cover clipping, moving attributes, transitionend, scrollend, and full-window
+entry/return with menus. Tests use isolated data and never the real clipboard.
+
+The isolated full-App fixture mounts the actual App, ChatPane, TerminalPane
+and PreviewPane with 14 synthetic long-transcript threads, a demo PTY and a
+real WebContentsView displaying a synthetic page. At exact 1512×945 and
+1100×650, all 28 interaction checks passed: selection toolbar and path-menu
+placement in all five layouts; full-window native preview; pinned Focus
+scrolling; native preview clipping; drag-out/child-window-close return order;
+and TerminalPane rendering. The terminal is on Code, as in the real product.
+Pop-out content is a synthetic child; App's opening/return callbacks and
+order readback are real. No production daemon or provider was used.
+
+Screenshots, runner and results: `/tmp/apex-task7a-app/`. Root inspected the
+large grid, small Vertical, selected-text toolbar and path menu; the acceptance
+helper inspected all ten layout captures. Electron's page screenshots omit
+native child compositing, so native visibility and bounds were read separately.
+
+This is full-App UI fixture validation, not a packaged or installed release;
+Task 8 remains pending Jigga's review.
+
+Final Task 7a verification:
+
+- `npm test`: **3,514 passed, 0 failed, 5 skipped** (3,519 total), exit 0.
+  The count includes the new regressions and removal of obsolete split-tree
+  tests. The first run found five callback-extraction test harnesses missing
+  the new helper bindings; those harnesses now use App's real helpers.
+- `npx tsc --noEmit`: exit 0.
+- `git diff --check`: clean.
+- Mockup readback against `aa2eb6bb`: unchanged.
+- Independent read-only reviews of PaneMap/styles and preview movement
+  integration found no remaining blocking issue.
+
+Logs: `/tmp/null-7a-final-full.log`, `/tmp/null-7a-final-tsc.log`,
+`/tmp/null-7a-red.log`, `/tmp/null-7a-drag-paint.log`. No merge, package,
+installed-app replacement or production-service acceptance was performed.

@@ -6,6 +6,10 @@ import path from 'node:path';
 import electron from 'electron';
 import { createServer } from 'vite';
 import { runElectronScenario } from './helpers/electron-test.mjs';
+import { transform } from 'sucrase';
+
+const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const sidePanelEscape = transform(appSource.match(/  useEffect\(\(\) => \{\n    if \(!sidePanelFull\) return;[\s\S]*?\n  \}, \[sidePanelFull\]\);/)[0], { transforms: ['typescript'] }).code;
 
 test('compact heads preserve controls, maximize from the title, marquee, and rename safely', { timeout: 100000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-head-'));
@@ -18,6 +22,8 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
     function Fixture(){
       const [width,setWidth]=useState(600),[title,setTitle]=useState('A deliberately long thread name for checking the title marquee'),[maximized,setMaximized]=useState(false),[menu,setMenu]=useState(false),[request,setRequest]=useState(0),[countsSlot,setCountsSlot]=useState(null),[voice,setVoice]=useState(false),[host,setHost]=useState('adaptive'),[externalSlot,setExternalSlot]=useState(null);
       window.fixture={setWidth,setTitle,setVoice,setHost};
+      const [sidePanelFull,setSidePanelFull]=useState(false);window.setSidePanelFull=setSidePanelFull;window.sidePanelFull=sidePanelFull;
+      ${sidePanelEscape}
       useEffect(()=>setCountsSlot(document.querySelector('.pane-head .pane-counts')),[]);
       useEffect(()=>{const key=e=>{if(e.key==='Escape'&&menu){e.preventDefault();e.stopPropagation();setMenu(false);}};document.addEventListener('keydown',key);return()=>document.removeEventListener('keydown',key);},[menu]);
       return React.createElement(React.Fragment,null,
@@ -76,6 +82,10 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
           await mouse('.pane-head .pane-title',2);
           assert.equal(await run("document.querySelector('#maximized').textContent"),'true');
           assert.equal(await run("!!document.querySelector('.pane-head input')"),false,'double-click does not rename');
+          await run('window.setSidePanelFull(true)');await until('window.sidePanelFull');
+          await key('Escape');
+          assert.equal(await run('window.sidePanelFull'),false,'Escape first restores the full-screen side panel');
+          assert.equal(await run("document.querySelector('#maximized').textContent"),'true','the same Escape keeps the pane maximized');
           await key('Escape');assert.equal(await run("document.querySelector('#maximized').textContent"),'false');
           await mouse('.pane-head .pane-title',2);
           await mouse('.pane-head [aria-haspopup=menu]');

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning, assistantsRunning } from "../src/closing.ts";
+import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, restoredLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning, assistantsRunning } from "../src/closing.ts";
 
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
 const term = (id, extra = {}) => ({ id, workspaceId: "w", kind: "terminal", title: id, ...extra });
@@ -181,11 +181,6 @@ test("a thread keeps where you stopped reading; older files load without it", ()
   assert.equal(savedPanes([chat("a", { lastSeenSeq: 7 })])[0].lastSeenSeq, 7);
   assert.equal(loadedPanes([chat("a", { lastSeenSeq: 7 })], ["w"])[0].lastSeenSeq, 7);
   assert.equal(loadedPanes([chat("a")], ["w"])[0].lastSeenSeq, undefined);
-});
-
-test("Threads and Code layouts are saved for workspaces still listed", () => {
-  const layouts = { "w:threads": leaf("a"), "w:code": leaf("t"), "gone:code": leaf("x"), ":code": leaf("y"), "w:agents": leaf("z") };
-  assert.deepEqual(savedLayouts(layouts, ["w"]), { "w:threads": leaf("a"), "w:code": leaf("t"), ":code": leaf("y") });
 });
 
 test("a saved layout drops panes that didn't load and gives their space to the rest", () => {
