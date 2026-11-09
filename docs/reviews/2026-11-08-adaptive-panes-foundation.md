@@ -16,14 +16,14 @@ quote contract; the production send path has not been changed yet.
 ## Implementation started
 
 Branch: `feat/adaptive-panes`, based on the committed mockup at `aa2eb6bb`.
-Only Tasks 1–3 are implemented:
+Tasks 1–3 and the revision-11 follow-up, Task 3a, are implemented:
 
 - `50174428`: grid and band zoom levels, including the narrow-window crash fix.
 - `8e6fe70e`: placement for five layouts, whole-line snaps and legacy tree migration.
 - `1dffaba3`: zoom steps, active/pointer/centre anchoring, insertion indices and reorder.
 
 The new production module is `src/paneArrangement.ts`; it is pure geometry and
-is not connected to App yet. There are 25 focused tests across the three new
+is not connected to App yet. There are 33 focused tests across the three new
 `tests/pane-arrangement-*.test.mjs` files. Every task's specified tests were run
 and failed before implementation, then passed. TypeScript passes.
 
@@ -51,10 +51,26 @@ still required before any merge.
 
 ## Next handoff
 
-Jigga: review `aa2eb6bb..1dffaba3` before pane-map integration. Task 4 is next;
-Tasks 4–7 remain unimplemented. Reuse the module above and pass the scroll
-offset when wiring drag insertion. The implementation ledger and a snapshot
-of the uncommitted revision-10 plan are under
+Jigga reviewed the foundation and requested Task 3a before integration.
+That follow-up adds `zoomScroll(next, anchor, at)`, preserving the anchor's
+on-screen line when density changes, then snapping so its selected group
+stays whole. Keyboard fallback and group anchoring use the middle selected
+pane in map order. Non-finite Focus divider shares fall back to 0.58.
+
+The six specified regressions failed before implementation and then passed.
+Two further tests cover horizontal screen position in Vertical mode, point
+clamping and shuffled group order where multiple snaps can show the group.
+Independent read-only review found no correctness defects. All 33 foundation
+tests and TypeScript pass. A fresh full suite passed 3,497 tests, with no
+failures and 5 skipped; the earlier sidecar race did not recur in this run.
+The same 18,273-step sweep used in Jigga's review, now calling production
+`zoomScroll`, had zero differences from the mockup rule. These checks cover
+geometry, not native UI: App still uses the original pane tree.
+
+Jigga: review Task 3a before Task 4. Tasks 4–7 remain unimplemented. Reuse
+`zoomScroll` for every zoom step, put newly added panes first and reveal
+them, and pass the axis scroll offset when wiring drag insertion. The
+implementation ledger and snapshots of the uncommitted plans are under
 `.superpowers/sdd/2026-11-08-adaptive-thread-panes-build/`.
 
 The committed mockup is unchanged. Unrelated untracked files and the

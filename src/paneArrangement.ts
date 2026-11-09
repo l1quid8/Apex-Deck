@@ -132,7 +132,8 @@ export function place(arr: Arrangement, area: Size): Placement {
   if (!arr.order.length || !hasArea(area)) return result;
   let ids = arr.order;
   if ((arr.mode === "left" || arr.mode === "right") && ids.length > 1 && area.w >= 320 + GAP + 260) {
-    const width = clamp(Math.round((area.w - GAP) * arr.focusShare), 320, area.w - GAP - 260);
+    const share = Number.isFinite(arr.focusShare) ? arr.focusShare : 0.58;
+    const width = clamp(Math.round((area.w - GAP) * share), 320, area.w - GAP - 260);
     result.focus = { id: ids[0], rect: { x: arr.mode === "left" ? 0 : area.w - width, y: 0, w: width, h: area.h } };
     region.x = arr.mode === "left" ? width + GAP : 0;
     region.w = area.w - width - GAP;
@@ -194,10 +195,11 @@ function visibleSnaps(p: Placement, r: PxRect): number[] {
 }
 
 export function chooseAnchor(next: Placement, active: string[], pointerId: string | null, held: string | null, centre: string | null = null): ZoomAnchor | null {
-  const ids = [...new Set(active.filter(id => next.rects.has(id)))];
+  const selected = new Set(active);
+  const ids = [...next.rects.keys()].filter(id => selected.has(id));
   const r = bounds(next, ids);
   if (r && visibleSnaps(next, r).length) return { kind: "active", ids };
-  const id = [held, pointerId, ids[0], centre].find(candidate => candidate != null && next.rects.has(candidate));
+  const id = [held, pointerId, ids[Math.floor((ids.length - 1) / 2)], centre].find(candidate => candidate != null && next.rects.has(candidate));
   return id ? { kind: "pane", id } : null;
 }
 
@@ -227,6 +229,25 @@ export function scrollFor(next: Placement, anchor: ZoomAnchor | null, current: n
   if (fits.length) return nearest(fits, offset);
   const centre = next.axis === "x" ? r.x + r.w / 2 - next.region.w / 2 : r.y + r.h / 2 - next.region.h / 2;
   return nearest(next.snaps, centre);
+}
+
+/** Preserve the anchor's on-screen line as density changes, then keep its group whole. */
+export function zoomScroll(next: Placement, anchor: ZoomAnchor | null, at: number | null): number {
+  if (!anchor || next.levelIdx < 0) return 0;
+  const selected = new Set(anchor.kind === "active" ? anchor.ids : [anchor.id]);
+  const ids = [...next.rects.keys()].filter(id => selected.has(id));
+  const r = next.rects.get(ids[Math.floor((ids.length - 1) / 2)]);
+  if (!r) return 0;
+  const level = next.levels[next.levelIdx];
+  const horizontal = next.axis === "x";
+  const stride = (horizontal ? level.w : level.h) + GAP;
+  const visible = horizontal ? level.cols : level.rows;
+  const span = horizontal ? next.region.w : next.region.h;
+  const line = Math.round((horizontal ? r.x : r.y) / stride);
+  const screenLine = at !== null && Number.isFinite(at)
+    ? Math.floor(visible * clamp(at / span, 0, 0.999))
+    : Math.floor((visible - 1) / 2);
+  return scrollFor(next, anchor, (line - screenLine) * stride);
 }
 
 /** Point is viewport-relative to the full pane area; only map panes scroll. */

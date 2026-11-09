@@ -30,6 +30,11 @@ test('focus width clamps to [320, width − 8 − 260]; too narrow means no focu
   assert.equal(place(arr('left', { focusShare: 0.1 }), A).focus.rect.w, 320);
   assert.equal(place(arr('left'), { w: 580, h: 800 }).focus, null);
 });
+test('a non-finite Focus divider position falls back to the default', () => {
+  for (const focusShare of [NaN, Infinity, -Infinity]) {
+    assert.deepEqual(place(arr('left', { focusShare }), A).focus.rect, { x: 0, y: 0, w: 691, h: 800 });
+  }
+});
 test('one pane fills the area in every mode', () => {
   for (const mode of ['horizontal', 'vertical', 'grid', 'left', 'right']) {
     const p = place({ mode, order: ['a'], zoom: 1, focusShare: 0.58 }, A);
