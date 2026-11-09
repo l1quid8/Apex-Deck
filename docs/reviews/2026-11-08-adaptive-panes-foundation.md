@@ -36,6 +36,19 @@ Task 6 must pass the current axis scroll offset. The fix was independently
 re-reviewed without further findings. This extends the plan's three-argument
 interface compatibly and avoids conditional coordinate transforms in callers.
 
+## Repository verification
+
+The baseline suite passed 3,464 tests with 5 skipped. The final foundation
+passes all 25 focused tests and `npx tsc --noEmit`. Two full-suite runs on the
+final code each reported 3,488 passed, 5 skipped and one failure in the unchanged
+`tests/desktop-sidecar.test.mjs:102`: both concurrent starters reported
+`owned: true` instead of just one. The isolated sidecar suite passed 7/7.
+`desktop/sidecar.mjs` can observe the winner's listening socket before it has
+observed the losing child's exit, which explains the two ownership reports.
+Neither the sidecar nor its test imports the new geometry module, and neither
+file was changed. No unrelated sidecar fix is included. Full-suite green is
+still required before any merge.
+
 ## Next handoff
 
 Jigga: review `aa2eb6bb..1dffaba3` before pane-map integration. Task 4 is next;
