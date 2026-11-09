@@ -483,10 +483,19 @@ html[data-platform="windows"] .titlebar {
 /* The canvas reaches half a gap past its outer edge. */
 .grid {
   flex: 1;
+  min-height: 0;
   min-width: 0;
   position: relative;
   margin: -4px;
 }
+.workspace-canvas-content { flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+.composer-dock { flex: none; min-width: 0; position: relative; background: var(--panel); border-top: 1px solid var(--line); }
+.composer-dock[hidden] { display: none; }
+.composer-dock-target { display: flex; align-items: baseline; gap: 8px; padding: 8px 16px 0; font-size: 12px; color: var(--muted); }
+.composer-dock-target strong { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-dock-target span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-dock .composer { border-top: 0; }
+.composer-dock-slot > .composer { padding-inline: max(24px, calc((100% - var(--deck-message-width, 44rem)) / 2)); }
 /* Adaptive pane map: all sessions keep the same keyed parent.
    Keep ancestors free of transforms/filters/containment: panes own fixed pop-ups. */
 .pane-map-frame { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; }
