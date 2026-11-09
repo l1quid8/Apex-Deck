@@ -26,6 +26,9 @@ import { remoteProfileEdit } from '../src/sessionSync.ts';
 import * as monitorAttention from '../src/monitorAttention.ts';
 import * as canvasPanes from '../src/canvasPanes.ts';
 import * as layout from '../src/layout.ts';
+import * as paneArrangement from '../src/paneArrangement.ts';
+import { paneSection, restoredArrangements, savedArrangements } from '../src/closing.ts';
+import { migrateCanvasLayouts } from '../src/hostSession.ts';
 import * as paneHost from '../src/paneHost.ts';
 import * as themes from '../src/themes.ts';
 import * as assistantRegistry from '../src/assistantRegistry.ts';
@@ -165,8 +168,8 @@ function appHarness(options = {}) {
     approvalSnapshot: () => ({}), subscribeApprovals: () => () => {},
     openCards: () => [], dueEscalations: () => [], escalationKey: () => '',
     remoteSessionEdit: (_local, remote) => remote, remoteProfileEdit,
-    normalizeWorkspaces: ws => ws ?? [], loadedPanes: ps => ps ?? [], migrateCanvasLayouts: value => ({ layouts: value.layouts ?? {} }),
-    restoredLayouts: () => ({}), savedLayouts: () => ({}), savedPanes: ps => ps,
+    normalizeWorkspaces: ws => ws ?? [], loadedPanes: ps => ps ?? [], migrateCanvasLayouts,
+    paneSection, restoredArrangements, savedArrangements, savedPanes: ps => ps,
     shownWorkspaces: ws => ws, listedPanes: (ps, ws) => ps.filter(p => ws.some(w => w.id === p.workspaceId)),
     workspaceHost: w => w.hostId ?? 'local', workspaceFamily: (_ws, id) => id,
     addFolders: list => ({ list, ids: [] }),
@@ -182,6 +185,7 @@ function appHarness(options = {}) {
     ...monitorAttention,
     ...canvasPanes,
     ...layout,
+    ...paneArrangement,
     loadStartupState,
     ...paneHost,
     ...themes,
@@ -201,7 +205,7 @@ function appHarness(options = {}) {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
     crypto: { randomUUID: () => `request-${++requestSequence}` },
     window: { ...(options.companion?{apexDeck:{popout:bridge}}:{}), addEventListener(name, fn) { listeners.set(name, fn); }, removeEventListener(name) { listeners.delete(name); }, setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {} },
-    document: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, hasFocus: () => false, activeElement: null, body: {}, querySelector: () => null },
+    document: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, hasFocus: () => Boolean(options.focused), activeElement: null, body: {}, querySelector: () => null },
     navigator: { platform: 'Linux', userAgent: 'node' },
     ResizeObserver: class { observe() {} disconnect() {} },
     setInterval: () => 1, clearInterval() {}, requestAnimationFrame: fn => fn(),
@@ -245,7 +249,11 @@ function appHarness(options = {}) {
 function find(node, predicate) {
   if (!node || typeof node !== 'object') return null;
   if (predicate(node)) return node;
-  for (const child of [...(node.children ?? []),node.props?.chat,node.props?.work,node.props?.editor]) { const found = find(child, predicate); if (found) return found; }
+  // PaneMap owns geometry; this App harness follows its render callback to
+  // keep testing the real pane content and its owner callbacks.
+  const paneChildren = typeof node.props?.renderPane === 'function'
+    ? (node.props.mounted ?? []).map(id => node.props.renderPane(id, {x:0,y:0,w:1200,h:800}, true)) : [];
+  for (const child of [...(node.children ?? []), ...paneChildren, node.props?.chat,node.props?.work,node.props?.editor]) { const found = find(child, predicate); if (found) return found; }
   return null;
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -725,6 +733,26 @@ test('the rendered Mark ready as seen button clears ordinary Ready flags but kee
   assert.equal(rows.length, 1, 'only the blocker is left');
   assert.match(rows[0], /Assistant has 1 active blocker/);
   assert.equal(textOf(sidebarBadge(drawSidebar, tree)), '1', 'the sidebar badge drops to just the blocker');
+  h.unmount();
+});
+
+test('a focused thread scrolled out of view keeps its attention until it is seen again', async () => {
+  const h = appHarness({ focused:true });
+  h.session.focusedPane = pane.id;
+  let tree = h.render(); await tick(); tree = h.render();
+  const map = find(tree, node => typeof node.props?.renderPane === 'function');
+  assert.ok(map, 'the pane map is mounted');
+  map.props.onVisiblePanes?.([]);
+  tree = h.render();
+  const host = find(tree, node => typeof node.type === 'function' && node.type.displayName === 'HostPane' && node.props.backend);
+  const chat = find(host.children.find(c => typeof c === 'function')?.([]), node => typeof node.type === 'function' && node.type.displayName === 'ChatPane' && node.props.pane?.id === pane.id);
+  chat.props.onSignal(pane.id, 'done', 'Finished off screen');
+  tree = h.render(); tree = h.render();
+  const rows = attentionMenuOf(tree).props.flags.threads.rows;
+  assert.ok(rows.some(row => row.paneId === pane.id), 'the off-screen focused thread still reports Ready');
+  map.props.onVisiblePanes?.([pane.id]);
+  tree = h.render(); tree = h.render();
+  assert.ok(!attentionMenuOf(tree).props.flags.threads.rows.some(row => row.paneId === pane.id), 'returning the thread to the viewport settles its flag');
   h.unmount();
 });
 

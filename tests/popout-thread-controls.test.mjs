@@ -13,7 +13,7 @@ test("task threads never pop out: the one door refuses them before any window op
   assert.match(body, /popoutRefusal\(pane\)/);
   assert.match(body, /toast\(refusal\)/);
   assert.ok(body.indexOf("popoutRefusal(pane)") < body.indexOf("bridge.open"));
-  assert.match(app, /onDropOutside:.*popOutPane\(id,/);
+  assert.match(app, /onPopOut=\{.*popOutPane\(id,/);
 });
 
 test("the owner sends found agents and settings with a popped thread, and keeps pushing them", () => {

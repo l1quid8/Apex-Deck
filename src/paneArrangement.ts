@@ -276,3 +276,14 @@ export function reorder(order: string[], id: string, index: number): string[] {
   next.splice(clamp(Number.isFinite(index) ? Math.trunc(index) : 0, 0, next.length), 0, id);
   return next;
 }
+
+/** Dashboard placement trades positions while retaining every pane identity. */
+export function placeInOrder(order: string[], id: string, targetId?: string): string[] {
+  if (targetId && !order.includes(targetId)) throw new Error("That pane is no longer available.");
+  const next = order.includes(id) ? [...order] : [...order, id];
+  if (targetId) {
+    const source = next.indexOf(id), target = next.indexOf(targetId);
+    [next[source], next[target]] = [next[target], next[source]];
+  }
+  return next;
+}

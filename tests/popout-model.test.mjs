@@ -5,6 +5,17 @@ import { addLeaf, leafIds, moveLeaf, resize } from "../src/layout.ts";
 import { changedProfiles, createForkChannel, orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles } from "../src/popoutModel.ts";
 import { defaultPanel, openTab } from "../src/rightPanelModel.ts";
 
+test("popped panes return to their order position without replacing other panes", async () => {
+  const { restoreOrder } = await import("../src/popoutModel.ts");
+  assert.equal(typeof restoreOrder, "function");
+  const order = ["b", "c"], before = ["a", "b", "c"];
+  assert.deepEqual(restoreOrder(order, "a", {workspaceId:"w",index:0,before}), ["a","b","c"]);
+  assert.deepEqual(restoreOrder(order, "a", {workspaceId:"w",index:5,before}), ["b","c","a"]);
+  assert.deepEqual(restoreOrder(["c","b"], "a", {workspaceId:"w",index:1,before}), ["c","a","b"]);
+  assert.deepEqual(restoreOrder(["a","b"], "a", {workspaceId:"w",index:1,before}), ["a","b"]);
+  assert.deepEqual(order, ["b","c"]);
+});
+
 test("task threads are refused a pop-out; ordinary panes are not", () => {
   // A task thread lives in the assistant's list, not Deck's panes, so popping one
   // out opened a window the gone-thread check closed again at once.

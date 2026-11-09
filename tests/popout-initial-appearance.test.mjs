@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { transform } from 'sucrase';
-import { followedTabPane, popoutRefusal, takePaneOut, takeTabOut } from '../src/popoutModel.ts';
+import { followedTabPane, popoutRefusal, takeTabOut } from '../src/popoutModel.ts';
 import { defaultPanel } from '../src/rightPanelModel.ts';
 import { DEFAULT_APPEARANCE } from '../src/themes.ts';
 
@@ -36,14 +36,14 @@ for (const kind of ['pane', 'tab']) {
         toast: message => assert.fail(message),
         hostOfPane: () => ({ workspace, hostId: 'local' }),
         chatFolder: () => workspace.path,
-        popoutRefusal, takePaneOut, takeTabOut, followedTabPane,
+        popoutRefusal, takeTabOut, followedTabPane,
         layoutKey: () => ':code', paneSection: () => 'code',
-        dashboardTree: () => ({ kind: 'leaf', id: pane.id }),
+        dashboardArrangement: () => ({ mode: 'grid', order: [pane.id], zoom: 1, focusShare: .58 }),
         panel: defaultPanel(), focusedPane: null, detailsTarget: null,
         workspaces: [workspace], activeWorkspace: workspace.id,
         shownWorkspaces: items => items, workspaceHost: () => 'local',
         tabTitle: () => 'Details', chatConfigOf: () => ({}),
-        setLayouts: () => {}, setPoppedOut: () => {},
+        setArrangements: () => {}, setPoppedOut: () => {},
         setPanel: () => {}, setPoppedTabs: () => {},
       };
       const open = new Function(...Object.keys(bindings), `${code}; return ${name};`)(...Object.values(bindings));

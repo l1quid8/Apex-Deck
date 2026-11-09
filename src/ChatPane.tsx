@@ -11,6 +11,7 @@ import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
 import './runner/runner.css';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
+import { PaneVoicePortal } from './PaneHead';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
 import { composerButton } from './voice/callView';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
@@ -2569,7 +2570,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   useEffect(() => {
     if (countsSlot !== undefined) return;
     const head = headSlot?.closest<HTMLElement>(".pane-head");
-    if (!head) return;
+    if (!head || head.hasAttribute("data-adaptive-head")) return;
     fitHead(head);
     const resized = new ResizeObserver(() => fitHead(head));
     resized.observe(head);
@@ -3720,7 +3721,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && <LegacyImportPanel backend={backend} />}
       {!profileMode && legacy && <div className="legacy-room-marker"><LegacyBadge scope="room" /></div>}
-      {!profileMode && !talkOnly && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
+      {!profileMode && !talkOnly && headSlot && createPortal(threadCounts, headSlot)}
 
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} accessChange={(() => {
         const from = accessFrom[quickSettings.id], bot = participants.find(p => p.id === quickSettings.id);
@@ -4085,6 +4086,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
+        {!profileMode && !talkOnly && <PaneVoicePortal countsSlot={headSlot}><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} /></PaneVoicePortal>}
         {!talkOnly && <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />}
         <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
           {quickAdd === "dock" && quickAddMenu}

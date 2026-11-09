@@ -11,6 +11,7 @@ import { normalizeAddress } from "./previewAddress.ts";
 import { discardQuestion } from "./unsavedEdits.ts";
 import type { Pane, PaneStatus, ThreadStatus } from "./types";
 import type { Ask } from "./ConfirmDialog";
+import { validArrangement, type Arrangement } from "./paneArrangement.ts";
 
 /** How long a deleted thread can still be brought back. */
 export const UNDO_MS = 8000;
@@ -140,6 +141,25 @@ export function restoredLayouts(saved: unknown, panes: Pane[]): Record<string, L
     let tree = validate(value);
     for (const id of leafIds(tree)) if (!loaded.has(id)) tree = removeLeaf(tree, id);
     if (tree) out[key] = tree;
+  }
+  return out;
+}
+
+/** Save arrangements only for sections belonging to projects still listed. */
+export function savedArrangements(arrangements: Record<string, Arrangement>, workspaceIds: string[]): Record<string, Arrangement> {
+  const keep = new Set([":threads", ":code", ...workspaceIds.flatMap((id) => [`${id}:threads`, `${id}:code`])]);
+  return Object.fromEntries(Object.entries(arrangements).filter(([key]) => keep.has(key)));
+}
+
+/** Validate saved order against the live panes in each section. */
+export function restoredArrangements(saved: unknown, panes: Pane[]): Record<string, Arrangement> {
+  const out: Record<string, Arrangement> = {};
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return out;
+  for (const [key, value] of Object.entries(saved)) {
+    const cut = key.lastIndexOf(":"), section = key.slice(cut + 1), workspace = key.slice(0, cut);
+    if (cut < 0 || (section !== "threads" && section !== "code")) continue;
+    const ids = panes.filter(p => (!workspace || p.workspaceId === workspace) && !p.closed && !p.archived && paneSection(p) === section).map(p => p.id);
+    out[key] = validArrangement(value, ids);
   }
   return out;
 }

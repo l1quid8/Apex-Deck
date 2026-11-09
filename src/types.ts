@@ -315,11 +315,13 @@ export interface AppSession {
   focusedPane: string | null;
   section: AppSection;
   /** The last ready-made layout chosen. Kept for files saved by older versions. */
-  layout: Layout;
+  layout?: "top" | "left";
   /** How the panes of each workspace are arranged in Threads and in Code, by
    *  "workspace:section". Each value is a tree from layout.ts and is checked
    *  when it is read; panes that didn't load are taken out. */
   layouts?: Record<string, unknown>;
+  /** Computed pane layouts, order and zoom, saved by "workspace:section". */
+  arrangements?: Record<string, unknown>;
   threadDetailsOpen?: boolean;
   rightPanel?: import("./rightPanelModel").RightPanelState;
   threadDetailsCollapsed?: Partial<Record<import("./detailsLayout").DetailsSection, boolean>>;

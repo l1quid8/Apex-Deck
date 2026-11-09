@@ -390,11 +390,13 @@
 }
 :root[data-deck-theme="clay"] .pane.focused { box-shadow: none; }
 /* Only with two or more panes showing does focus need a frame. */
-:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane {
+:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane,
+:root[data-deck-theme="clay"] .pane-map[data-many] > .pane-map-slot > .pane {
   border: 1px solid var(--line);
   border-radius: max(6px, calc(var(--deck-radius, 10px) * .6));
 }
-:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane.focused {
+:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane.focused,
+:root[data-deck-theme="clay"] .pane-map[data-many] > .pane-map-slot > .pane.focused {
   border-color: color-mix(in srgb, var(--deck-accent-text) 55%, var(--line));
 }
 :root[data-deck-theme="clay"] .pane-head { background: transparent; }

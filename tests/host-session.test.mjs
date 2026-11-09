@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addFolders } from '../src/workspaces.ts';
-import { restoredLayouts, savedLayouts } from '../src/closing.ts';
+import * as closing from '../src/closing.ts';
 const mod = await import('../src/hostSession.ts').catch(() => ({}));
 const base = () => ({ version: 1, workspaces: [{id:'mac',name:'Deck',path:'/code/deck'}], panes:[{id:'m',workspaceId:'mac',kind:'chat',title:'Mac'}], profiles:[], activeWorkspace:'mac',focusedPane:'m',section:'threads',layout:'left',layouts:{'mac:threads':{kind:'leaf',id:'m'}} });
 test('same directory on distinct hosts creates distinct workspaces', () => {
@@ -37,7 +37,9 @@ test('shared migration keeps visible panes from all projects and round trips sec
   old.layouts['vps:threads']={kind:'leaf',id:'r'};
   const session=mod.migrateCanvasLayouts(old);
   assert.equal(session.canvasVersion,1);
-  assert.deepEqual(session.layouts[':threads'],{kind:'split',dir:'row',children:[{kind:'leaf',id:'m'},{kind:'leaf',id:'r'}],sizes:[.5,.5]});
+  assert.deepEqual(session.arrangements[':threads'],{mode:'grid',order:['m','r'],zoom:1,focusShare:.58});
+  assert.equal('layouts' in session, false);
+  assert.equal('layout' in session, false);
   assert.deepEqual(mod.migrateCanvasLayouts(session),session);
-  assert.deepEqual(restoredLayouts(savedLayouts(session.layouts,['mac','vps']),session.panes),session.layouts);
+  assert.deepEqual(closing.restoredArrangements(closing.savedArrangements(session.arrangements,['mac','vps']),session.panes),session.arrangements);
 });

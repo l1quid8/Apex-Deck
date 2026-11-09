@@ -108,7 +108,7 @@ export interface PopoutSnapshot {
 export type PopoutSide = "left" | "right" | "top" | "bottom";
 
 /** Where a pane sat in its workspace layout. */
-export interface PaneSpot {
+export interface LegacyPaneSpot {
   workspaceId: string;
   /** The neighbour in the pane's own split, nearest pane first: one pane, or every pane of a
    *  neighbouring group, so the return goes beside the whole group. Empty when the layout was left empty. */
@@ -119,6 +119,22 @@ export interface PaneSpot {
   share: number;
   /** The layout with the pane still in place; an unchanged layout comes back exactly. */
   before: LayoutNode | null;
+}
+
+/** Where a pane sat in its section's computed order. */
+export interface PaneSpot {
+  workspaceId: string;
+  index: number;
+  before: string[];
+}
+
+/** Restore by position without replacing or duplicating another pane. */
+export function restoreOrder(order: string[], paneId: string, spot: PaneSpot): string[] {
+  if (order.includes(paneId)) return order;
+  const next = [...order];
+  const index = Number.isFinite(spot.index) ? Math.trunc(spot.index) : next.length;
+  next.splice(Math.max(0, Math.min(index, next.length)), 0, paneId);
+  return next;
 }
 
 /** Where a tab sat in the side-panel tab strip. */
@@ -196,7 +212,7 @@ export interface PopoutUpdate {
 
 export interface PaneTakeout {
   layout: LayoutNode | null;
-  spot: PaneSpot;
+  spot: LegacyPaneSpot;
 }
 
 export interface TabTakeout {
@@ -288,7 +304,7 @@ export function takePaneOut(layout: LayoutNode | null, workspaceId: string, pane
 }
 
 /** Put a popped-out pane back where it was, or beside the workspace root when the neighbour is gone. */
-export function restorePane(layout: LayoutNode | null, paneId: string, spot: PaneSpot): LayoutNode {
+export function restorePane(layout: LayoutNode | null, paneId: string, spot: LegacyPaneSpot): LayoutNode {
   if (layout && leafIds(layout).includes(paneId)) return layout;
   if (!layout) return { kind: "leaf", id: paneId };
   // Nothing changed since the pop-out: put the exact layout back, side and sizes intact.

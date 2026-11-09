@@ -264,8 +264,9 @@ pub fn filter_session(threads: &Threads, session: Value) -> Value {
     }
     session.insert("panes".into(), Value::Array(panes));
     session.insert("workspaces".into(), Value::Array(workspaces));
-    // Layouts name panes, and imported sessions name other machines' threads.
+    // Layouts and arrangements name panes, and imported sessions name other machines' threads.
     session.remove("layouts");
+    session.remove("arrangements");
     session.remove("importedHostSessions");
     Value::Object(session)
 }
@@ -991,12 +992,17 @@ pub(crate) mod tests {
             ],
             "activeWorkspace": "w2", "focusedPane": "theirs",
             "layouts": { "w1:threads": { "pane": "theirs" } },
+            "arrangements": {
+                ":threads": { "mode": "grid", "order": ["mine", "theirs", "also-w1"], "zoom": 1, "focusShare": 0.58 },
+                ":code": { "mode": "vertical", "order": ["t1"], "zoom": 1, "focusShare": 0.58 },
+            },
         });
         let filtered = filter_session(&Threads::Only(vec!["mine".into()]), session.clone());
         assert_eq!(filtered["panes"], json!([{ "id": "mine", "kind": "chat", "workspaceId": "w1", "title": "My thread" }]));
         assert_eq!(filtered["workspaces"], json!([{ "id": "w1", "name": "Mine" }]));
         assert_eq!((filtered["activeWorkspace"].clone(), filtered["focusedPane"].clone()), (Value::Null, Value::Null));
         assert!(filtered.get("layouts").is_none() && filtered.get("importedHostSessions").is_none());
+        assert!(filtered.get("arrangements").is_none());
         assert_eq!(filtered["profiles"], session["profiles"]);
         let text = filtered.to_string();
         for secret in ["theirs", "Secret", "Their thread", "also-w1", "zsh", "other-mac"] {
