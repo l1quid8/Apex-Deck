@@ -20,7 +20,8 @@ for (const [width,height] of [[1512,945],[1100,650]]) test(`App dock: drops, ste
  const shape=()=>run('(()=>{const m=document.querySelector(".pane-map"),r=m.getBoundingClientRect();return {level:m.dataset.level,h:r.height,lefts:[...m.querySelectorAll(".pane-map-slot")].map(s=>s.style.left)}})()');
  const type=async text=>{await until('!!document.querySelector(".composer textarea")');await run('document.querySelector(".composer textarea").focus()');await win.webContents.insertText(text);await sleep(70);};
  const clear=async()=>{await run('(()=>{const t=document.querySelector(".composer textarea");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(t,"");t.dispatchEvent(new Event("input",{bubbles:true}))})()');await sleep(100);};
- const drop=async selector=>{await run('(()=>{window.copies=[];const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();for(const cb of window.drops)cb(["/tmp/dock.png"],r.x+r.width/2,r.y+Math.min(35,r.height/2))})()');await until('window.copies?.length===1 && !!document.querySelector(".composer textarea")');await frame();return run('window.copies.map(c=>c[0])');};
+ let dropCount=0;
+ const drop=async selector=>{await run('(()=>{window.copies=[];const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();for(const cb of window.drops)cb(["/tmp/dock-'+(++dropCount)+'.png"],r.x+r.width/2,r.y+Math.min(35,r.height/2))})()');await until('window.copies?.length===1 && !!document.querySelector(".composer textarea")');await frame();return run('window.copies.map(c=>c[0])');};
  assert.deepEqual(await drop('[data-pane-id="dock-1"] .transcript'),['dock-1']);
  assert.equal(await run('document.querySelector(".composer-dock-target strong").textContent'),'Thread 1');
  assert.deepEqual(await drop('[data-pane-id="dock-0"] .transcript'),['dock-0']);
@@ -36,6 +37,25 @@ for (const [width,height] of [[1512,945],[1100,650]]) test(`App dock: drops, ste
   await clear();assert.ok(Math.abs((await shape()).h-base.h)<=1);
  }
  const before=await shape();
+ // Keep a long, attached draft through hiding, remounting and resizing the dock.
+ await run('document.querySelector(".layout-picker-trigger").click()');
+ await run('[...document.querySelectorAll("[role=menuitemradio]")].find(b=>b.querySelector("strong")?.textContent==="Even grid").click()');await sleep(350);
+ const empty=await shape();
+ await type('one\ntwo\nthree\nfour\nfive');
+ const same=async(base,note)=>{const s=await shape();assert.equal(s.level,base.level,note);assert.deepEqual(s.lefts,base.lefts,note);};
+ await run('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="Code").click()');await sleep(150);
+ await run('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="Threads").click()');await sleep(250);
+ await same(empty,'returning from Code with a draft');
+ for(let i=0;i<3;i++){
+  for(const id of ['dock-3','dock-0']){
+   await run('document.querySelector("[data-pane-id='+id+'] .pane-head").click()');await sleep(150);
+   await same(empty,'switching long and empty drafts');
+  }
+ }
+ await shot('dock-restored-${width}');
+ await size(${width-112},${height});await sleep(150);const narrow=await shape();
+ await clear();await same(narrow,'clearing after width change');
+ await size(${width},${height});await sleep(150);
  await run('document.querySelector(".composer-dock .chip-add").click()');await sleep(150);
  assert.ok(Math.abs((await shape()).h-before.h)<=1,'Add bot does not take map height');
  const dialog=await run('(()=>{const f=document.querySelector(".composer-dock .quick-add").getBoundingClientRect(),d=document.querySelector(".composer-dock").getBoundingClientRect();return {top:f.top,bottom:f.bottom,dock:d.top,height:innerHeight}})()');
@@ -53,5 +73,23 @@ for (const [width,height] of [[1512,945],[1100,650]]) test(`App dock: drops, ste
  await size(${width-200},${height});
  assert.equal(await run('[...document.querySelectorAll(".composer-bots .chip")].some(c=>c.getBoundingClientRect().right>c.closest(".composer-bots").getBoundingClientRect().right+1)'),false,'chips refit');
  await shot('dock-typed-${width}');
+ // Send through the real composer on the demo backend; its started-thread UI
+ // must already be present before recording the empty-composer geometry.
+ await size(${width},${height});await clear();await type('start');
+ const enter=async()=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});await until('document.querySelector(".composer textarea").value===""');await sleep(200);};
+ await enter();
+ const rects=()=>run('[...document.querySelectorAll(".pane-map-slot")].map(s=>{const r=s.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})');
+ const sent=await rects();
+ await type('1\n2\n3\n4\n5\n6\n7\n8\n9');await enter();
+ const again=await rects();sent.forEach((r,i)=>r.forEach((v,j)=>assert.ok(Math.abs(v-again[i][j])<=1,'Send restores pane rect')));
+ const tall=await shape();await size(${width},${width===1512?700:500});await sleep(200);
+ assert.ok((await shape()).h<tall.h,'height resize refits the map');
+ if(${width}===1512)assert.notEqual((await shape()).level,tall.level,'height resize chooses a new grid');
+ await run('document.querySelector(".layout-picker-trigger").click()');
+ await run('[...document.querySelectorAll("[role=menuitemradio]")].find(b=>b.querySelector("strong")?.textContent==="Horizontal").click()');await sleep(350);
+ await run('(()=>{const m=document.querySelector(".pane-map");m.focus();for(let i=0;i<20;i++)m.dispatchEvent(new KeyboardEvent("keydown",{key:"-",bubbles:true}))})()');await sleep(350);
+ await type('1\n2\n3\n4\n5\n6\n7\n8\n9');
+ await run('(()=>{const m=document.querySelector(".pane-map");m.focus();m.dispatchEvent(new KeyboardEvent("keydown",{key:"End",bubbles:true}))})()');await sleep(200);
+ assert.equal(await run('(()=>{const m=document.querySelector(".pane-map").getBoundingClientRect(),r=document.querySelector("[data-pane-id=dock-13]").getBoundingClientRect();return r.top>=m.top-1&&r.bottom<=m.bottom+1})()'),true,'End reaches the full last pane with a long draft');
  `,{width,height,plugins:[hooks]});
 });

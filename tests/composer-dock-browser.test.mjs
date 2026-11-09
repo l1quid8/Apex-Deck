@@ -20,10 +20,10 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
     window.posts=[];
     const backend={...await getBackend(),roomTargets:async()=>['bot'],roomPostTo:async(...args)=>{window.posts.push(args);},roomState:async()=>({recovery_seq:1,snapshot,active:[],approvals:[]}),roomSteps:async()=>null,onRoomEvent:async()=>()=>{},onPtyData:async()=>()=>{},onPtyExit:async()=>()=>{},roomClose:async()=>{}};
     function Fixture(){
-      const [target,setTarget]=useState('a'), [slot,setSlot]=useState(null), [outside,setOutside]=useState(false), [inline,setInline]=useState(false);
-      window.fixture={outside,focus:setTarget,pop(){setOutside(true);setTarget('b');},inline(){setInline(true);},insert(id,text){window.dispatchEvent(new CustomEvent(INSERT_COMPOSER_EVENT,{detail:{paneId:id,text}}));}};
+      const [target,setTarget]=useState('a'), [slot,setSlot]=useState(null), [outside,setOutside]=useState(false), [inline,setInline]=useState(false), [agents,setAgents]=useState(0);
+      window.fixture={agents:setAgents,outside,focus:setTarget,pop(){setOutside(true);setTarget('b');},inline(){setInline(true);},insert(id,text){window.dispatchEvent(new CustomEvent(INSERT_COMPOSER_EVENT,{detail:{paneId:id,text}}));}};
       const want=id=>{if(id==='a'&&outside){document.getElementById('notice').textContent='That thread is open in its own window.';return false;}setTarget(id);return true;}; const actual=dockTarget({focused:target,recent:['b','a'],candidates:['a','b'],popped:new Set(outside?['a']:[])});
-      return <div id="fixture" style={{height:700,display:'flex',flexDirection:'column'}}><div style={{display:'flex',flex:1,minHeight:0}}>{['a','b'].map(id=><ChatPane key={id} dock={inline?undefined:{target:id===actual,slot}} onWantComposer={inline?undefined:want} pane={{id,workspaceId:'w',kind:'chat',title:id}} cwd='/tmp/project' agents={[]} backend={backend} focused={target===id} onActivity={()=>{}} profiles={[]} onProfilesChange={()=>{}} disabledProviders={[]}/>)}</div>{!inline&&<ComposerDock target={{paneId:actual,title:actual,project:'Project'}} slotRef={setSlot}/>}<span id="notice" /></div>;
+      return <div id="fixture" style={{height:700,display:'flex',flexDirection:'column'}}><div style={{display:'flex',flex:1,minHeight:0}}>{['a','b'].map(id=><ChatPane key={id} dock={inline?undefined:{target:id===actual,slot}} onWantComposer={inline?undefined:want} pane={{id,workspaceId:'w',kind:'chat',title:id}} cwd='/tmp/project' agents={[]} backend={backend} focused={target===id} onActivity={()=>{}} profiles={[]} onProfilesChange={()=>{}} disabledProviders={[]}/>)}</div>{!inline&&<ComposerDock target={{paneId:actual,title:actual,project:'Project',agents}} slotRef={setSlot}/>}<span id="notice" /></div>;
     }
     createRoot(document.getElementById('test-root')).render(<Fixture/>); window.ready=true;
   </script></body></html>`;
@@ -43,6 +43,11 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
         await win.loadURL(${JSON.stringify(url)});
         await wait(()=>document.querySelector('.composer textarea:not(:disabled)'),'ready');
         assert.equal(await run(()=>document.querySelectorAll('.composer-input').length),1);
+        assert.equal(await run(()=>document.querySelector('.composer-dock-target span').textContent),'Project · No agents yet');
+        await run(()=>window.fixture.agents(1));
+        await wait(()=>document.querySelector('.composer-dock-target span').textContent==='Project · 1 agent','singular');
+        await run(()=>window.fixture.agents(2));
+        await wait(()=>document.querySelector('.composer-dock-target span').textContent==='Project · 2 agents','plural');
         await type('alpha');
         await run(()=>window.fixture.focus('b'));
         await wait(()=>document.querySelector('.composer-dock-target strong')?.textContent==='b','B');
@@ -67,7 +72,7 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
         await wait(()=>document.querySelector('.composer textarea')?.value.includes('line 29'),'long A restored');
         assert.deepEqual(await run(()=>{const t=document.querySelector('.composer textarea');return [t.selectionStart,t.selectionEnd,t.scrollTop];}),scrollBefore);
 
-        await run(()=>window.fixture.insert('b','src/App.tsx'));
+        await run(()=>{const raf=window.requestAnimationFrame;window.requestAnimationFrame=cb=>{queueMicrotask(()=>cb(performance.now()));return 0;};window.fixture.insert('b','src/App.tsx');queueMicrotask(()=>{window.requestAnimationFrame=raf;});});
         await wait(()=>document.querySelector('.composer textarea')?.value==='beta src/App.tsx','external insertion reveals B');
         assert.equal(await run(()=>document.querySelector('.composer textarea').selectionStart),16);
         await run(()=>window.fixture.pop());

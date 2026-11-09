@@ -2,6 +2,14 @@ import test from 'node:test'; import assert from 'node:assert/strict';
 import { place, arrangementFromSaved, validArrangement } from '../src/paneArrangement.ts';
 const ids = Array.from({ length: 14 }, (_, i) => `p${i}`); const A = { w: 1200, h: 800 }; const H = 784 / 3;
 const arr = (mode, x = {}) => ({ mode, order: ids, zoom: 1, focusShare: 0.58, ...x });
+test('composer growth at the pane floor keeps the final row reachable', () => {
+  for (const [mode, area, end] of [['horizontal', {w:1240,h:531},357], ['left',{w:860,h:236},204]]) {
+    const p = place(arr(mode, {zoom:.01}), area, 152);
+    assert.equal(p.snaps.at(-1), end, mode);
+    assert.equal(p.snaps.at(-1), p.world.h - p.region.h);
+  }
+  assert.equal(place(arr('grid', {zoom:.01}), {w:1240,h:531}, 152).snaps.at(-1), 0);
+});
 test('Even grid: 4×3 on screen; the short last row widens', () => {
   const p = place(arr('grid'), A);
   assert.deepEqual(p.rects.get('p0'), { x: 0, y: 0, w: 294, h: H });

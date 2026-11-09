@@ -881,6 +881,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
   const savedInput = useRef<{ start: number; end: number; direction: "forward" | "backward" | "none"; scroll: number; height: string; text: string } | null>(null);
   const restoreInput = useRef(false);
   const wantInputFocus = useRef(false);
+  const wantedCaret = useRef<number | 'end' | null>(null);
   const bindInput = useCallback((node: HTMLTextAreaElement | null) => {
     const old = input.current;
     if (old) savedInput.current = { start: old.selectionStart, end: old.selectionEnd, direction: old.selectionDirection, scroll: old.scrollTop, height: old.style.height, text: old.value };
@@ -909,6 +910,11 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
       }
     }
     if (wantInputFocus.current) { wantInputFocus.current = false; node.focus(); }
+    if (wantedCaret.current !== null) {
+      const end = wantedCaret.current === 'end' ? node.value.length : wantedCaret.current;
+      wantedCaret.current = null;
+      node.focus(); node.setSelectionRange(end, end);
+    }
   });
   useEffect(() => {
     const insert = (event: Event) => {
@@ -918,7 +924,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
       const caret = field?.selectionStart ?? savedInput.current?.start ?? text.length;
       const next = insertAt(text, null, caret, detail.text);
       setText(next.text); setCaret(next.caret);
-      requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+      wantedCaret.current = next.caret;
     };
     window.addEventListener(INSERT_COMPOSER_EVENT, insert);
     return () => window.removeEventListener(INSERT_COMPOSER_EVENT, insert);
@@ -2307,7 +2313,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
     setText(next);
     setCaret(next.length);
     if (details?.overlay) details.close();
-    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
+    wantedCaret.current = next.length;
   };
   const cardIn = (message: Message) => (code: { language: string; text: string }) =>
     code.language === CARD_LANGUAGE
@@ -2668,7 +2674,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
   const useTool = (token: string) => {
     if (!showComposer()) return;
     setText((current) => appendToolToken(current, token));
-    requestAnimationFrame(() => { const end = input.current?.value.length ?? 0; input.current?.focus(); input.current?.setSelectionRange(end, end); });
+    wantedCaret.current = 'end';
   };
   const requestedServers = parseServerRequests(text).map(s => s.name);
   const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
@@ -2809,7 +2815,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
     const next = text.trim() ? `${text.trimEnd()} ${example}` : example;
     setText(next);
     setCaret(next.length);
-    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
+    wantedCaret.current = next.length;
   };
   const mention = (bot: ParticipantConfig) => {
     if (!showComposer()) return;

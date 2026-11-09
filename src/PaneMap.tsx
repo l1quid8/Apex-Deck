@@ -63,6 +63,8 @@ export function PaneMap(props: PaneMapProps) {
   const wheelAcc = useRef({ value: 0, time: 0 });
   const pendingScroll = useRef<number | null>(null);
   const pendingReveal = useRef<string | null>(null);
+  // The refit's own scroll correction updates visibility without freezing views.
+  const quietScroll = useRef<number | null>(null);
   const previous = useRef<{ mode: Arrangement["mode"]; order: string[]; maximized: string | null } | null>(null);
 
   // Read the old DOM before React changes positioning mode. Reading the drawn
@@ -282,6 +284,7 @@ export function PaneMap(props: PaneMapProps) {
     if (reset) held.current = null;
     const selected = props.active.filter(id => placement.rects.has(id));
     scrollTo(reset ? 0 : scrollFor(placement, selected.length ? { kind: "active", ids: selected } : null, axisScroll(el, placement)));
+    quietScroll.current = refitting ? offset.current : null;
   }, [placement, props.maximized]);
 
   useLayoutEffect(() => {
@@ -423,7 +426,9 @@ export function PaneMap(props: PaneMapProps) {
     const el = root.current;
     if (!el) return;
     offset.current = axisScroll(el, live.current.placement);
-    markMoving();
+    const quiet = quietScroll.current !== null && Math.abs(offset.current - quietScroll.current) < 1;
+    quietScroll.current = null;
+    if (!quiet) markMoving();
     updateVisibility();
   };
   return <div className={`pane-map-frame${resizing || dragging ? " adjusting" : ""}`}>

@@ -161,9 +161,12 @@ export function place(arr: Arrangement, area: Size, borrowed = 0): Placement {
     result.world = { w: region.w, h: rows * level.h + (rows - 1) * GAP };
   }
   // Whole strides avoid rounding a final snap a fraction short of a row.
-  const max = result.axis === "x"
+  const strides = result.axis === "x"
     ? Math.max(0, ids.length - level.cols) * (level.w + GAP)
     : Math.max(0, Math.ceil(ids.length / level.cols) - level.rows) * (level.h + GAP);
+  // At the height floor, the chosen rows may no longer fit in the live area.
+  const end = result.axis === "y" ? result.world.h - region.h : 0;
+  const max = end > strides + 0.5 ? end : strides;
   const starts = [...result.rects.values()].map(rect => Math.min(max, result.axis === "x" ? rect.x : rect.y));
   result.snaps = [...new Set([0, ...starts, max])].sort((a, b) => a - b);
   return result;

@@ -107,6 +107,7 @@ test('the layout menu follows keyboard selection, dismissal, and focus conventio
           await key('Down'); await key('Tab');
           assert.equal(await expanded(),'false'); assert.equal(await active(),'after','Tab moves beyond the menu');
           await trigger(); await key('Down'); await key('Tab',['shift']);
+          await until("document.querySelector('.layout-picker-trigger').getAttribute('aria-expanded')==='false'");
           assert.equal(await expanded(),'false');
           assert.equal(await run("document.activeElement.classList.contains('layout-picker-trigger')"),true,'Shift+Tab returns to the trigger');
           await key('Down');

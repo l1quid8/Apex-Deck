@@ -1,5 +1,8 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 
+// A window's resting height survives hiding, unmounting and width changes.
+let restHeight = Infinity;
+
 export function ComposerDock({ target, slotRef, onBorrowed, onReveal, children }: {
   target: { paneId: string; title: string; project: string; status?: string; agents?: number } | null;
   slotRef: (el: HTMLDivElement | null) => void;
@@ -13,13 +16,12 @@ export function ComposerDock({ target, slotRef, onBorrowed, onReveal, children }
   useLayoutEffect(() => {
     const el = root.current;
     if (!el || !target) { report.current?.(0); return; }
-    let width = -1, rest = Infinity, last = -1;
+    let last = -1;
     const measure = () => {
       const box = el.getBoundingClientRect();
-      if (!el.querySelector('.composer')) { rest = Infinity; width = -1; if (last !== 0) report.current?.(0); last = 0; return; }
-      if (width !== box.width) { width = box.width; rest = Infinity; }
-      rest = Math.min(rest, box.height);
-      const borrowed = Math.round(box.height - rest);
+      if (!el.querySelector('.composer')) { if (last !== 0) report.current?.(0); last = 0; return; }
+      restHeight = Math.min(restHeight, box.height);
+      const borrowed = Math.round(box.height - restHeight);
       if (borrowed !== last) { last = borrowed; report.current?.(borrowed); }
       const map = el.parentElement?.querySelector('[data-pane-map-region]');
       if (map) el.style.setProperty('--quick-add-max', Math.min(560, Math.max(260, map.clientHeight * .78), Math.max(0, box.top - 12)) + 'px');
@@ -34,7 +36,7 @@ export function ComposerDock({ target, slotRef, onBorrowed, onReveal, children }
   return <section ref={root} className="composer-dock thread-chat" aria-label="Thread composer" hidden={!target}>
     <button type="button" className="composer-dock-target" onClick={() => target && onReveal?.(target.paneId)}>
       To <i className={`dot ${target?.status ?? 'idle'}`} aria-label={target?.status ?? 'idle'} />
-      <strong>{target?.title}</strong><span>{target?.project}{target?.project ? ' · ' : ''}{target?.agents ?? 0} agents</span>
+      <strong>{target?.title}</strong><span>{target?.project}{target?.project ? ' · ' : ''}{target?.agents ? `${target.agents} ${target.agents === 1 ? 'agent' : 'agents'}` : 'No agents yet'}</span>
     </button>
     <div ref={slotRef} className="composer-dock-slot" />
     {children}

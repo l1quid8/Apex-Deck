@@ -43,6 +43,20 @@ app.whenReady().then(async () => {
     await until('!!window.fixture && fixture.snapshot().calls.filter(c=>c.kind==="show").length>=2 && !fixture.snapshot().moving && !fixture.snapshot().focusMoving', 'both real BrowserViews settle in the real map', 5000);
     await frame();
     await run('fixture.clearCalls()');
+    // Put p1 on the second visible row so a scrolled refit exercises a live view.
+    await run('fixture.setOrder(["p0","p2","p3","p1","p4","p5","p6","p7","p8","p9","p10","p11","p12","p13"])');
+    await sleep(350);
+    await run('document.querySelector("[data-pane-map-region]").scrollTop=808/3');
+    await sleep(350); await frame();
+    await run('fixture.clearCalls()');
+    for (let i=1;i<=9;i++) {
+      await run('fixture.grow('+i*12+')'); await frame(); await sleep(25);
+      const state = await snapshot();
+      assert.equal(state.moving, false, 'a scrolled refit is quiet');
+      assert.deepEqual(state.calls.filter(c=>c.kind==='hide'), [], 'scrolled refit keeps previews live');
+    }
+    assert.ok((await snapshot()).calls.some(c=>c.pane==='p1' && c.kind==='bounds'));
+    await run('fixture.grow(0)'); await reset();
     for (let i=1;i<=9;i++) {
       await run('fixture.grow('+i*12+')'); await frame(); await sleep(25);
       const grown = await snapshot();

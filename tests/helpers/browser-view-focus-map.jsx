@@ -44,6 +44,7 @@ function Harness() {
   const handle = useRef(null);
   window.fixture = {
     grow: setBorrowed,
+    setOrder(order) { setArrangement(value => ({ ...value, order })); },
     clearCalls() { calls.length = 0; },
     setMode(mode) { setArrangement(value => ({ ...value, mode })); },
     reset() {
