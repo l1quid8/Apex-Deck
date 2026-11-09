@@ -1,3 +1,5 @@
+import { validate, leafIds } from "./layout.ts";
+
 /** Pure geometry for the adaptive pane layouts. All rects use CSS pixels. */
 export type PaneLayoutMode = "horizontal" | "vertical" | "grid" | "left" | "right";
 export interface Size { w: number; h: number }
@@ -78,4 +80,88 @@ export function zoomRange(levels: Level[], defaultIdx: number): [number, number]
   if (!levels.length) return [1, 1];
   const d = clamp(Number.isInteger(defaultIdx) ? defaultIdx : 0, 0, levels.length - 1);
   return [levels[d].shown / levels[0].shown, levels[d].shown / levels[levels.length - 1].shown];
+}
+
+export interface PxRect extends Size { x: number; y: number }
+export interface Arrangement { mode: PaneLayoutMode; order: string[]; zoom: number; focusShare: number }
+export interface Placement {
+  levels: Level[];
+  levelIdx: number;
+  defaultIdx: number;
+  axis: "x" | "y";
+  region: PxRect;
+  world: Size;
+  /** Coordinates relative to region; the focus pane is kept separately. */
+  rects: Map<string, PxRect>;
+  snaps: number[];
+  focus: { id: string; rect: PxRect } | null;
+}
+
+const modes: readonly PaneLayoutMode[] = ["horizontal", "vertical", "grid", "left", "right"];
+
+/** Validate saved state, retaining order while reconciling the live inventory. */
+export function validArrangement(value: unknown, ids: string[]): Arrangement {
+  const stored = value && typeof value === "object" ? value as Partial<Arrangement> : {};
+  const live = new Set(ids);
+  const ordered = Array.isArray(stored.order) ? stored.order.filter(id => typeof id === "string" && live.has(id)) : [];
+  return {
+    mode: modes.includes(stored.mode!) ? stored.mode! : "grid",
+    order: [...new Set([...ordered, ...ids])],
+    zoom: typeof stored.zoom === "number" && Number.isFinite(stored.zoom) && stored.zoom > 0 ? stored.zoom : 1,
+    focusShare: typeof stored.focusShare === "number" && Number.isFinite(stored.focusShare) && stored.focusShare > 0 && stored.focusShare < 1 ? stored.focusShare : 0.58,
+  };
+}
+
+/** Legacy `layout` may be stale: a Focus-left shape must corroborate it. */
+export function arrangementFromSaved(tree: unknown, layout: unknown, ids: string[]): Arrangement {
+  const node = validate(tree);
+  const side = node?.kind === "split" ? node.children[1] : null;
+  const focusLeft = layout === "left" && node?.kind === "split" && node.dir === "row" &&
+    node.children.length === 2 && node.children[0].kind === "leaf" && node.sizes[0] > 0.52 &&
+    (side?.kind === "leaf" || (side?.kind === "split" && side.dir === "column" && side.children.every(child => child.kind === "leaf")));
+  return validArrangement({ mode: focusLeft ? "left" : "grid", order: leafIds(node) }, ids);
+}
+
+/** Place the scrolling region in its own coordinates and pin a Focus pane. */
+export function place(arr: Arrangement, area: Size): Placement {
+  const region = { x: 0, y: 0, w: hasArea(area) ? area.w : 0, h: hasArea(area) ? area.h : 0 };
+  const result: Placement = {
+    levels: [], levelIdx: -1, defaultIdx: -1, axis: arr.mode === "vertical" ? "x" : "y",
+    region, world: { w: region.w, h: region.h }, rects: new Map(), snaps: [0], focus: null,
+  };
+  if (!arr.order.length || !hasArea(area)) return result;
+  let ids = arr.order;
+  if ((arr.mode === "left" || arr.mode === "right") && ids.length > 1 && area.w >= 320 + GAP + 260) {
+    const width = clamp(Math.round((area.w - GAP) * arr.focusShare), 320, area.w - GAP - 260);
+    result.focus = { id: ids[0], rect: { x: arr.mode === "left" ? 0 : area.w - width, y: 0, w: width, h: area.h } };
+    region.x = arr.mode === "left" ? width + GAP : 0;
+    region.w = area.w - width - GAP;
+    ids = ids.slice(1);
+  }
+  const band = arr.mode === "horizontal" || arr.mode === "vertical" ? arr.mode : null;
+  const levels = band ? bandLevels(ids.length, region, band) : gridLevels(ids.length, region);
+  const d = defaultLevel(levels, region.w);
+  const idx = levelIndex(levels, d, arr.zoom);
+  Object.assign(result, { levels, defaultIdx: d, levelIdx: idx });
+  const level = levels[idx];
+  if (result.axis === "x") {
+    ids.forEach((id, i) => result.rects.set(id, { x: i * (level.w + GAP), y: 0, w: level.w, h: region.h }));
+    result.world = { w: ids.length * level.w + (ids.length - 1) * GAP, h: region.h };
+  } else {
+    const rows = Math.ceil(ids.length / level.cols);
+    ids.forEach((id, i) => {
+      const row = Math.floor(i / level.cols);
+      const cols = Math.min(level.cols, ids.length - row * level.cols);
+      const w = (region.w - (cols - 1) * GAP) / cols;
+      result.rects.set(id, { x: (i % level.cols) * (w + GAP), y: row * (level.h + GAP), w, h: level.h });
+    });
+    result.world = { w: region.w, h: rows * level.h + (rows - 1) * GAP };
+  }
+  // Whole strides avoid rounding a final snap a fraction short of a row.
+  const max = result.axis === "x"
+    ? Math.max(0, ids.length - level.cols) * (level.w + GAP)
+    : Math.max(0, Math.ceil(ids.length / level.cols) - level.rows) * (level.h + GAP);
+  const starts = [...result.rects.values()].map(rect => Math.min(max, result.axis === "x" ? rect.x : rect.y));
+  result.snaps = [...new Set([0, ...starts, max])].sort((a, b) => a - b);
+  return result;
 }
