@@ -144,3 +144,71 @@ Final Task 7a verification:
 Logs: `/tmp/null-7a-final-full.log`, `/tmp/null-7a-final-tsc.log`,
 `/tmp/null-7a-red.log`, `/tmp/null-7a-drag-paint.log`. No merge, package,
 installed-app replacement or production-service acceptance was performed.
+
+## Task 7b: revision-14 Focus corrections
+
+- Entering and leaving Focus now animates the pane's drawn position using
+  sticky insets/margins or absolute left/top. No transform or new containing
+  block is introduced; fixed pop-ups retain window coordinates mid-glide.
+- Divider drags disable slot transitions immediately. Title drags still let
+  neighbouring panes glide. Lifting a pane cancels its own animation.
+- Focus previews use a separate movement marker. Side scrolling and zoom
+  leave the stationary native page live; actual Focus movement, resizing,
+  maximize/restore and title dragging use its picture until settled.
+- Review caught two interrupted-animation cases: a lifted former Focus pane
+  was animated away from its pointer, and a quick layout change retained an
+  old animation destination. Regressions cover both. A side zoom during entry
+  also extends the Focus snapshot guard through the rebased animation.
+
+The new glide/divider checks failed before implementation; the preview marker
+check failed on side scrolling. The interrupted-glide and snapshot-lifetime
+checks also failed before their corrections. Native pointer-up delivery is
+asynchronous, so the preview restoration deadline starts when the drag's DOM
+state actually clears, not when the test enqueues the OS event. Reversal
+samples start after the new layout commits, avoiding a stale pre-command
+measurement.
+
+Full-App synthetic checks at 1512×945 and 1100×650 passed all ten scenarios:
+six normal-speed transitions have intermediate frames, eight divider samples
+have zero geometry error, and both Focus-preview side scrolls produce zero
+native hide/show/bounds calls. Source hashes match the final run. Evidence:
+`/tmp/apex-task7b-app/results.json`, `acceptance-report.md` and both
+`acceptance-contact-*.png` boards, visually inspected. The fixture uses six
+messages per thread; a dense 48-message diagnostic missed intermediate frames
+during a scheduling gap. This is not a dense-transcript performance claim.
+Main-window screenshots exclude live native child compositing; separate page
+captures and attached/shown/bounds records establish the native page's state.
+
+The real Electron dev command was also launched from the repository root and
+its native window inspected with Computer Use. The new PaneMap rendered and
+the local host reported Connected. The window showed service build
+`ac0326491ba9` versus source app `6be84694e2f6-dirty`. DevTools readback did not
+produce a usable response; this is visual shell evidence, not matching-build
+end-to-end acceptance. The agent's dev process was stopped after inspection.
+No real messages were sent or provider approvals exercised.
+
+An intermediate unrestricted full-suite run had three failures:
+`pinned BrowserView follows Focus motion and switches guards when lifted`
+(printed success but the Electron process outlived its deadline),
+`desktop exit leaves its shared daemon alive and simultaneous startup reuses
+the winner` (the previously observed startup race, two starts instead of one),
+and `PaneMap review regression: focus-interruptions` (the pre-command position
+comparison described above). Final verification is recorded below.
+
+Final Task 7b verification:
+
+- `npm test -- --test-concurrency=4`: **3,518 passed, 1 failed, 5 skipped**
+  (3,524 total). All 22 PaneMap/BrowserView scenarios pass. The sole remaining
+  failure is the unchanged shared-daemon startup race named above, again two
+  starts instead of one. This is not a fully green suite.
+- `node --experimental-strip-types --test tests/desktop-sidecar.test.mjs`:
+  **7 passed, 0 failed**, including that same startup test on isolated rerun.
+- `npx tsc --noEmit`: exit 0; staged/unstaged whitespace checks are clean.
+- Independent final review approved after the interruption and marker fixes.
+- Mockup diff against `aa2eb6bb` is empty. Only Task 7b source, tests and this
+  handoff are staged; the untracked plan and unrelated files remain untouched.
+
+Logs: `/tmp/null-7b-verified-full.log`, `/tmp/null-7b-verified-tsc.log`,
+`/tmp/null-7b-sidecar-recheck.log`. Initial red cases are in
+`/tmp/null-7b-red.log` and `/tmp/null-7b-interruptions-red.log`.
+Jigga should review this commit before Task 8. No merge or package was made.

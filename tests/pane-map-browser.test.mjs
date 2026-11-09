@@ -44,6 +44,6 @@ test('native PaneMap reports panes actually inside the viewport', { timeout: 120
 
 test('native PaneMap retires drags interrupted by section and geometry changes', { timeout: 120000 }, () => runFixture('interruptions-only'));
 
-for (const scenario of ['popups', 'renders', 'keys', 'restore', 'drag-out', 'paint', 'reduced-pinned']) {
+for (const scenario of ['popups', 'renders', 'keys', 'restore', 'drag-out', 'paint', 'reduced-pinned', 'focus-glide', 'divider-live', 'focus-interruptions']) {
   test(`PaneMap review regression: ${scenario}`, { timeout: 120000 }, () => runFixture('review=' + scenario));
 }

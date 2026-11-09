@@ -49,7 +49,8 @@ export function BrowserView({ pane, url, browser, visible, onState }: Props) {
       // native page use the window. Only the docked page is clipped by the map.
       const region = el.closest(".preview.full-window") ? null : el.closest("[data-pane-map-region]");
       const regionRect = region?.getBoundingClientRect();
-      const mapCovered = region !== null && (region.hasAttribute("data-moving") || (regionRect !== undefined && (
+      const moving = el.closest("[data-pinned]") ? "data-focus-moving" : "data-moving";
+      const mapCovered = region !== null && (region.hasAttribute(moving) || (regionRect !== undefined && (
         rect.left < regionRect.left || rect.top < regionRect.top || rect.right > regionRect.right || rect.bottom > regionRect.bottom
       )));
       const overlays = [...document.querySelectorAll(OVERLAYS)].filter((o) => !el.contains(o)).map((o) => o.getBoundingClientRect());
@@ -91,7 +92,7 @@ export function BrowserView({ pane, url, browser, visible, onState }: Props) {
     const resize = new ResizeObserver(() => schedule.current());
     resize.observe(el);
     const changes = new MutationObserver(() => schedule.current());
-    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "class", "style", "hidden", "data-moving"] });
+    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "class", "style", "hidden", "data-moving", "data-focus-moving", "data-pinned"] });
     const moved = () => schedule.current();
     window.addEventListener("resize", moved);
     window.addEventListener("scroll", moved, true);

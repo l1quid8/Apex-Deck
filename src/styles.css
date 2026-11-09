@@ -513,6 +513,7 @@ html[data-platform="windows"] .titlebar {
 }
 .pane-map-slot > .pane { width: 100%; height: 100%; }
 .pane-map-slot.pinned:not(.dragging) { position: sticky; z-index: 2; transition: margin-left 220ms ease, width 220ms ease, height 220ms ease; }
+.pane-map.resizing .pane-map-slot { transition: none; }
 .pane-map-slot.dragging { z-index: 5; transition: none; pointer-events: none; }
 .pane-map-slot.dragging .pane { box-shadow: 0 8px 24px #0004; }
 .pane-map-snap { position: absolute; pointer-events: none; scroll-snap-align: start; }

@@ -51,6 +51,37 @@ app.whenReady().then(async () => {
       assert.equal(state.calls.at(-1).kind, 'show', 'removing only data-moving restores before the one-second fallback');
       assert.deepEqual(nativeBounds(state), expected);
       assert.equal(state.picture, null, 'the live page replaces the picture');
+    } else if (scenario === 'focus-moving') {
+      await run('fixture.pinned(true); fixture.clearCalls(); fixture.moving(true)');
+      await sleep(160); await frame();
+      let state = await snapshot();
+      assert.deepEqual(state.calls, [], 'side-pane movement leaves the pinned live page untouched');
+      assert.equal(state.picture, null, 'the pinned page stays live during side-pane movement');
+
+      await run('fixture.focusMoving(true)');
+      await sleep(120); await frame();
+      state = await snapshot();
+      assert.equal(state.calls.at(-1)?.kind, 'hide', 'adding only data-focus-moving promptly hides the pinned page');
+      assert.equal(state.calls.at(-1)?.snapshot, true, 'Focus movement asks for a picture');
+      assert.ok(state.picture, 'Focus movement renders the picture');
+
+      await run('fixture.focusMoving(false)');
+      await sleep(120); await frame();
+      state = await snapshot();
+      assert.equal(state.calls.at(-1)?.kind, 'show', 'clearing only data-focus-moving promptly restores the pinned page');
+      assert.equal(state.picture, null, 'the pinned live page replaces its picture');
+
+      await run('fixture.clearCalls(); fixture.pinned(false)');
+      await sleep(120); await frame();
+      state = await snapshot();
+      assert.equal(state.calls.at(-1)?.kind, 'hide', 'lifting the Focus pane immediately uses the moving map guard');
+      assert.ok(state.picture, 'the lifted pane keeps a picture');
+
+      await run('fixture.pinned(true)');
+      await sleep(120); await frame();
+      state = await snapshot();
+      assert.equal(state.calls.at(-1)?.kind, 'show', 'pinning again immediately returns to the settled Focus guard');
+      assert.deepEqual(nativeBounds(state), expected);
     } else if (scenario === 'transition') {
       await run('fixture.glide().then(()=>true)');
       await sleep(120); await frame();

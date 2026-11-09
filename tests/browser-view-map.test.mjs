@@ -34,6 +34,7 @@ async function scenario(name) {
 
 test('BrowserView snapshots a placeholder clipped by native map scrolling', { timeout: 60000 }, () => scenario('clipped'));
 test('BrowserView follows only its nearest map moving attribute without waiting for fallback', { timeout: 60000 }, () => scenario('moving'));
+test('pinned BrowserView follows Focus motion and switches guards when lifted', { timeout: 60000 }, () => scenario('focus-moving'));
 test('BrowserView updates native bounds at the end of a position-only glide', { timeout: 60000 }, () => scenario('transition'));
 test('BrowserView rechecks settled geometry on a map scrollend event', { timeout: 60000 }, () => scenario('scrollend'));
 test('full-window Preview uses window geometry, keeps overlays, and restores the docked map guard', { timeout: 60000 }, () => scenario('full-window'));

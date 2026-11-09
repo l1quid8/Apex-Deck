@@ -59,6 +59,9 @@ window.fixture = {
     };
   },
   moving(value) { document.getElementById('region').toggleAttribute('data-moving', value); },
+  focusMoving(value) { document.getElementById('region').toggleAttribute('data-focus-moving', value); },
+  pinned(value) { document.getElementById('slot').toggleAttribute('data-pinned', value); },
+  clearCalls() { calls.length = 0; },
   glide() {
     const slot = document.getElementById('slot');
     slot.classList.add('glide');

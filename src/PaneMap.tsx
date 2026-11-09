@@ -42,6 +42,9 @@ export function PaneMap(props: PaneMapProps) {
   const visibleRef = useRef<string[]>([]);
   const savedScroll = useRef(0);
   const motion = useRef({ until: 0, timer: 0 });
+  const focusMotion = useRef({ until: 0, timer: 0 });
+  const drawnLayout = useRef<{ placement: Placement; maximized: string | null } | null>(null);
+  const focusGlides = useRef(new Map<string, Animation>());
   const [resizing, setResizing] = useState(false);
   const [dragging, setDragging] = useState<Drag | null>(null);
   const press = useRef<Drag | null>(null);
@@ -55,6 +58,25 @@ export function PaneMap(props: PaneMapProps) {
   const pendingScroll = useRef<number | null>(null);
   const pendingReveal = useRef<string | null>(null);
   const previous = useRef<{ mode: Arrangement["mode"]; order: string[]; maximized: string | null } | null>(null);
+
+  // Read the old DOM before React changes positioning mode. Reading the drawn
+  // rect (rather than just the destination) also lets a second switch interrupt
+  // a glide without jumping. Only the two panes changing sticky ownership need it.
+  const oldFocus = drawnLayout.current?.placement.focus;
+  const newFocus = placement.focus;
+  const changingFocus = oldFocus?.id !== newFocus?.id;
+  const rebaseGlide = changingFocus || (drawnLayout.current?.placement !== placement && focusGlides.current.size > 0);
+  const starts = new Map<string, Point>();
+  if (rebaseGlide && root.current && !props.maximized && !drawnLayout.current?.maximized) {
+    const box = root.current.getBoundingClientRect();
+    for (const slot of root.current.querySelectorAll<HTMLElement>(".pane-map-slot")) {
+      const id = slot.dataset.paneId;
+      if (id && (id === oldFocus?.id || id === newFocus?.id || focusGlides.current.has(id)) && slot.style.display !== "none") {
+        const rect = slot.getBoundingClientRect();
+        starts.set(id, { x: rect.x - box.x, y: rect.y - box.y });
+      }
+    }
+  }
 
   const updateVisibility = () => {
     const el = root.current;
@@ -75,22 +97,28 @@ export function PaneMap(props: PaneMapProps) {
     visibleRef.current = ids;
     setVisibleIds(ids);
   };
-  const markMoving = (glide = false) => {
+  const markMotion = (state: typeof motion, attribute: "moving" | "focusMoving", glide: boolean) => {
     const el = root.current;
     if (!el) return;
-    el.dataset.moving = "";
+    el.dataset[attribute] = "";
     const duration = glide && !matchMedia("(prefers-reduced-motion: reduce)").matches ? 250 : 150;
-    motion.current.until = Math.max(motion.current.until, performance.now() + duration);
-    window.clearTimeout(motion.current.timer);
+    state.current.until = Math.max(state.current.until, performance.now() + duration);
+    window.clearTimeout(state.current.timer);
     const settle = () => {
-      const remaining = motion.current.until - performance.now();
+      const remaining = state.current.until - performance.now();
       if (remaining > 0 || press.current?.active || el.classList.contains("adjusting")) {
-        motion.current.timer = window.setTimeout(settle, Math.max(16, remaining, 100));
-      } else delete el.dataset.moving;
+        state.current.timer = window.setTimeout(settle, Math.max(16, remaining, 100));
+      } else delete el.dataset[attribute];
     };
-    motion.current.timer = window.setTimeout(settle, duration);
+    state.current.timer = window.setTimeout(settle, duration);
   };
-  useLayoutEffect(() => () => window.clearTimeout(motion.current.timer), []);
+  const markMoving = (glide = false) => markMotion(motion, "moving", glide);
+  const markFocusMoving = (glide = false) => markMotion(focusMotion, "focusMoving", glide);
+  useLayoutEffect(() => () => {
+    window.clearTimeout(motion.current.timer);
+    window.clearTimeout(focusMotion.current.timer);
+    for (const animation of focusGlides.current.values()) animation.cancel();
+  }, []);
 
   const scrollTo = (value: number) => {
     const el = root.current;
@@ -146,6 +174,7 @@ export function PaneMap(props: PaneMapProps) {
         now.onArrangement(arrangement);
       }
       markMoving(true);
+      markFocusMoving(true);
       setDragging({ ...drag });
     };
     const edgePan = () => {
@@ -182,6 +211,8 @@ export function PaneMap(props: PaneMapProps) {
       if (!drag.active) {
         if (Math.hypot(event.clientX - drag.start.x, event.clientY - drag.start.y) < 6) return;
         drag.active = true;
+        focusGlides.current.get(drag.id)?.cancel();
+        focusGlides.current.delete(drag.id);
         el.setPointerCapture(drag.pid);
       }
       event.preventDefault();
@@ -246,6 +277,47 @@ export function PaneMap(props: PaneMapProps) {
     const selected = props.active.filter(id => placement.rects.has(id));
     scrollTo(reset ? 0 : scrollFor(placement, selected.length ? { kind: "active", ids: selected } : null, axisScroll(el, placement)));
   }, [placement, props.maximized]);
+
+  useLayoutEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const old = drawnLayout.current;
+    const focus = placement.focus;
+    const beforeFocus = old?.placement.focus;
+    const a = beforeFocus?.rect, b = focus?.rect;
+    if (beforeFocus?.id !== focus?.id || a?.x !== b?.x || a?.y !== b?.y || a?.w !== b?.w || a?.h !== b?.h || old?.maximized !== props.maximized) markFocusMoving(true);
+    drawnLayout.current = { placement, maximized: props.maximized };
+    if (!rebaseGlide && old?.maximized === props.maximized) return;
+    for (const animation of focusGlides.current.values()) animation.cancel();
+    focusGlides.current.clear();
+    if (!rebaseGlide || props.maximized || old?.maximized || resizing || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const scrollX = el.scrollLeft, scrollY = el.scrollTop;
+    for (const [id, start] of starts) {
+      if (press.current?.active && press.current.id === id) continue;
+      const slot = [...el.querySelectorAll<HTMLElement>(".pane-map-slot")].find(slot => slot.dataset.paneId === id);
+      if (!slot || slot.style.display === "none") continue;
+      const pinned = focus?.id === id;
+      // Sticky insets are viewport coordinates; absolute slots use the new
+      // scroller's content coordinates. Neither creates a fixed containing block.
+      const from = pinned ? { marginLeft: `${start.x}px`, top: `${start.y}px` }
+        : { left: `${start.x + scrollX}px`, top: `${start.y + scrollY}px` };
+      const to = pinned ? { marginLeft: slot.style.marginLeft, top: slot.style.top }
+        : { left: slot.style.left, top: slot.style.top };
+      const animation = slot.animate([from, to], { duration: 220, easing: "ease" });
+      focusGlides.current.set(id, animation);
+      if (pinned) markFocusMoving(true);
+      void animation.finished.then(() => {
+        if (focusGlides.current.get(id) === animation) focusGlides.current.delete(id);
+      }, () => {});
+    }
+  }, [placement, props.maximized]);
+
+  useLayoutEffect(() => {
+    if (resizing) {
+      for (const animation of focusGlides.current.values()) animation.cancel();
+      focusGlides.current.clear();
+    }
+  }, [resizing]);
 
   useLayoutEffect(() => {
     if (!placement.focus || props.maximized) setResizing(false);
@@ -349,7 +421,7 @@ export function PaneMap(props: PaneMapProps) {
     updateVisibility();
   };
   return <div className={`pane-map-frame${resizing || dragging ? " adjusting" : ""}`}>
-    <div ref={root} className={`pane-map${resizing || dragging ? " adjusting" : ""}`} data-pane-map-region data-axis={p.axis} data-level={p.levelIdx} data-many={!full && props.arrangement.order.length > 1 ? "" : undefined}
+    <div ref={root} className={`pane-map${resizing || dragging ? " adjusting" : ""}${resizing ? " resizing" : ""}`} data-pane-map-region data-axis={p.axis} data-level={p.levelIdx} data-many={!full && props.arrangement.order.length > 1 ? "" : undefined}
     style={{ overflowX: !full && p.axis === "x" ? "auto" : "hidden", overflowY: !full && p.axis === "y" ? "auto" : "hidden", scrollSnapType: dragging ? "none" : `${p.axis} mandatory` }}
     tabIndex={0} aria-label="Thread panes" onScroll={readScroll}
     onTransitionEnd={event => { if (event.target instanceof HTMLElement && event.target.classList.contains("pane-map-slot")) markMoving(); }}

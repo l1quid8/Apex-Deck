@@ -6,6 +6,7 @@ const path = require('node:path');
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false, width: 1200, height: 800, useContentSize: true, webPreferences: { offscreen: true, backgroundThrottling: false } });
+  win.webContents.setFrameRate(60);
   const run = code => win.webContents.executeJavaScript(code);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const frame = () => run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
@@ -75,6 +76,74 @@ app.whenReady().then(async () => {
         await run('fixture.step(1)'); await frame(); await probe('p5'); await settle();
         await reset({arrangement:{mode:'left'}}); await probe('p0'); await probe('p5');
         await run('document.querySelector("[data-pane-map-region]").scrollTop=500'); await frame(); await probe('p0'); await probe('p5');
+      } else if (review === 'focus-glide') {
+        const order = ['p5', ...Array.from({length:14}, (_,i)=>'p'+i).filter(id=>id!=='p5')];
+        const sample = async (options, changes, start, end) => {
+          await reset(options);
+          const before = (await snapshot()).panes.p5;
+          near(before.x, start.x, 'glide starts at old x'); near(before.y, start.y, 'glide starts at old y');
+          const frames = await run(`new Promise(resolve=>{
+            ${changes};
+            const samples=[], start=performance.now();
+            const tick=time=>{const r=document.querySelector('[data-pane-id=p5]').getBoundingClientRect();samples.push({x:r.x,y:r.y,t:time});
+              if(time-start<360)requestAnimationFrame(tick);else resolve(samples)};
+            requestAnimationFrame(tick);
+          })`);
+          assert.ok(Math.hypot(frames[0].x-start.x,frames[0].y-start.y)<60,'first frame retains old drawn position: '+JSON.stringify(frames[0]));
+          assert.ok(frames.some(p=>Math.hypot(p.x-start.x,p.y-start.y)>5&&Math.hypot(p.x-end.x,p.y-end.y)>5),'glide draws intermediate positions');
+          // Chromium can skip frames under suite load. Bound speed by elapsed
+          // time and ease's peak slope, rather than treating a skipped frame as a jump.
+          const distance=Math.hypot(end.x-start.x,end.y-start.y);
+          for(let i=1;i<frames.length;i++) assert.ok(Math.hypot(frames[i].x-frames[i-1].x,frames[i].y-frames[i-1].y)<=distance*Math.min(1,3*(frames[i].t-frames[i-1].t)/220)+5,'no position discontinuity: '+JSON.stringify(frames.slice(i-1,i+1)));
+          const after=(await snapshot()).panes.p5; near(after.x,end.x,'glide final x');near(after.y,end.y,'glide final y');
+        };
+        await sample({active:['p5']}, `fixture.setOrder(${JSON.stringify(order)});fixture.setMode('right')`, {x:302,y:269.328125}, {x:508.640625,y:0});
+        await sample({active:['p5']}, `fixture.setOrder(${JSON.stringify(order)});fixture.setMode('left')`, {x:302,y:269.328125}, {x:0,y:0});
+        await sample({active:['p5'],arrangement:{mode:'right',order}}, `fixture.setMode('grid')`, {x:508.640625,y:0}, {x:0,y:0});
+        // A position animation must never create a containing block for a fixed popup.
+        await reset({active:['p5']});
+        await run(`fixture.setOrder(${JSON.stringify(order)});fixture.setMode('right')`); await frame();
+        const popup=await run(`(()=>{const el=document.createElement('div');el.style.cssText='position:fixed;left:342px;top:329px;width:40px;height:30px';document.querySelector('[data-pane-id=p5]').append(el);const r=el.getBoundingClientRect();const result={x:r.x,y:r.y};el.remove();return result})()`);
+        near(popup.x,342,'mid-glide fixed popup x'); near(popup.y,329,'mid-glide fixed popup y');
+        await settle();
+        win.webContents.debugger.attach('1.3');
+        await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+        await reset({active:['p5']});
+        await run(`fixture.setOrder(${JSON.stringify(order)});fixture.setMode('right')`); await frame();
+        const reduced=(await snapshot()).panes.p5;near(reduced.x,508.640625,'reduced motion lands immediately');near(reduced.y,0,'reduced motion y');
+        win.webContents.debugger.detach();
+      } else if (review === 'focus-interruptions') {
+        const order = ['p5', ...Array.from({length:14}, (_,i)=>'p'+i).filter(id=>id!=='p5')];
+        await reset({active:['p5']});
+        await run(`fixture.setOrder(${JSON.stringify(order)});fixture.setMode('right')`);await frame();await sleep(60);
+        const xBefore=(await snapshot()).panes.p5.x;
+        assert.ok(xBefore>302&&xBefore<509,'interrupt an in-progress incoming Focus glide');
+        const positions=await run(`new Promise(resolve=>{fixture.setMode('left');const xs=[],start=performance.now();const tick=t=>{const slot=document.querySelector('[data-pane-id=p5]');if(slot.style.marginLeft==='0px')xs.push(slot.getBoundingClientRect().x);if(t-start<360)requestAnimationFrame(tick);else resolve(xs)};requestAnimationFrame(tick)})`);
+        assert.ok(positions.some(x=>x>5),'reversal draws intermediate positions');
+        for(let i=1;i<positions.length;i++) assert.ok(positions[i]<=positions[i-1]+1,'after the left-side commit the glide never continues toward the stale right-hand destination: '+JSON.stringify(positions));
+        near(positions.at(-1),0,'interrupted glide ends at new Focus side');
+
+        await reset({arrangement:{mode:'left'}});await pointer(60,14);
+        win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,x:60,y:14});await frame();
+        win.webContents.sendInputEvent({type:'mouseMove',x:1000,y:100,modifiers:['leftButtonDown']});await frame();
+        win.webContents.sendInputEvent({type:'mouseMove',x:1050,y:150,modifiers:['leftButtonDown']});await frame();
+        const lifted=(await snapshot()).panes.p0;
+        near(lifted.x,990,'lifted former Focus pane follows pointer x immediately');near(lifted.y,136,'lifted former Focus pane follows pointer y immediately');
+        await key('Escape');win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,x:1050,y:150});await settle();
+      } else if (review === 'divider-live') {
+        await reset({arrangement:{mode:'left'}});
+        const d=await run('(()=>{const r=document.querySelector(".pane-map-divider").getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:400}})()');
+        await pointer(d.x,d.y);win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...d});await frame();
+        for(let i=1;i<=6;i++){
+          win.webContents.sendInputEvent({type:'mouseMove',x:d.x+i*20,y:d.y,modifiers:['leftButtonDown']});await frame();
+          const state=await snapshot();near(state.panes.p0.w,691.359375+i*20,'Focus width follows divider in same frame');
+          assert.equal(await run('getComputedStyle(document.querySelector("[data-pane-id=p1]")).transitionDuration'),'0s','side pane follows divider too');
+        }
+        win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,x:d.x+120,y:d.y});await settle();
+        await pointer(25,14);win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,x:25,y:14});await frame();
+        win.webContents.sendInputEvent({type:'mouseMove',x:70,y:40,modifiers:['leftButtonDown']});await frame();
+        assert.ok(parseFloat(await run('getComputedStyle(document.querySelector("[data-pane-id=p1]")).transitionDuration'))>0,'title drags keep the glide');
+        await key('Escape');win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,x:70,y:40});await settle();
       } else if (review === 'keys') {
         await run('document.querySelector("[data-id=p3] button").focus()'); await key('-'); await settle();
         assert.equal((await snapshot()).levelIdx,1,'a pane button must not activate map zoom');
