@@ -165,3 +165,93 @@ export function place(arr: Arrangement, area: Size): Placement {
   result.snaps = [...new Set([0, ...starts, max])].sort((a, b) => a - b);
   return result;
 }
+
+export function stepZoom(arr: Arrangement, area: Size, dir: 1 | -1): number {
+  const placement = place(arr, area);
+  if (placement.levelIdx < 0) return arr.zoom;
+  const idx = clamp(placement.levelIdx + dir, 0, placement.levels.length - 1);
+  if (idx === placement.levelIdx) return arr.zoom;
+  return placement.levels[placement.defaultIdx].shown / placement.levels[idx].shown;
+}
+
+export type ZoomAnchor = { kind: "active"; ids: string[] } | { kind: "pane"; id: string };
+
+function bounds(p: Placement, ids: string[]): PxRect | null {
+  const rects = ids.flatMap(id => { const rect = p.rects.get(id); return rect ? [rect] : []; });
+  if (!rects.length) return null;
+  const x = Math.min(...rects.map(r => r.x));
+  const y = Math.min(...rects.map(r => r.y));
+  return { x, y, w: Math.max(...rects.map(r => r.x + r.w)) - x, h: Math.max(...rects.map(r => r.y + r.h)) - y };
+}
+
+/** Snaps that show the entire target, including both ends of a group. */
+function visibleSnaps(p: Placement, r: PxRect): number[] {
+  if (r.w > p.region.w + 0.01 || r.h > p.region.h + 0.01) return [];
+  const start = p.axis === "x" ? r.x : r.y;
+  const end = start + (p.axis === "x" ? r.w : r.h);
+  const span = p.axis === "x" ? p.region.w : p.region.h;
+  return p.snaps.filter(s => s <= start + 0.01 && s + span >= end - 0.01);
+}
+
+export function chooseAnchor(next: Placement, active: string[], pointerId: string | null, held: string | null, centre: string | null = null): ZoomAnchor | null {
+  const ids = [...new Set(active.filter(id => next.rects.has(id)))];
+  const r = bounds(next, ids);
+  if (r && visibleSnaps(next, r).length) return { kind: "active", ids };
+  const id = [held, pointerId, ids[0], centre].find(candidate => candidate != null && next.rects.has(candidate));
+  return id ? { kind: "pane", id } : null;
+}
+
+const distanceToRect = (r: PxRect, x: number, y: number) => Math.hypot(Math.max(r.x - x, 0, x - r.x - r.w), Math.max(r.y - y, 0, y - r.y - r.h));
+
+/** Prefer the containing pane; when the centre lands in a gap, use its neighbour. */
+export function centreId(p: Placement, scroll: number): string | null {
+  const offset = Number.isFinite(scroll) ? scroll : 0;
+  const x = p.region.w / 2 + (p.axis === "x" ? offset : 0);
+  const y = p.region.h / 2 + (p.axis === "y" ? offset : 0);
+  let id: string | null = null;
+  let best = Infinity;
+  for (const [candidate, rect] of p.rects) {
+    const distance = distanceToRect(rect, x, y);
+    if (distance < best) { best = distance; id = candidate; }
+  }
+  return id;
+}
+
+const nearest = (values: number[], target: number) => values.reduce((best, value) => Math.abs(value - target) < Math.abs(best - target) ? value : best, values[0] ?? 0);
+
+export function scrollFor(next: Placement, anchor: ZoomAnchor | null, current: number): number {
+  const offset = Number.isFinite(current) ? current : 0;
+  const r = anchor ? bounds(next, anchor.kind === "active" ? anchor.ids : [anchor.id]) : null;
+  if (!r) return nearest(next.snaps, offset);
+  const fits = visibleSnaps(next, r);
+  if (fits.length) return nearest(fits, offset);
+  const centre = next.axis === "x" ? r.x + r.w / 2 - next.region.w / 2 : r.y + r.h / 2 - next.region.h / 2;
+  return nearest(next.snaps, centre);
+}
+
+/** Point is viewport-relative to the full pane area; only map panes scroll. */
+export function insertIndex(p: Placement, point: { x: number; y: number }, dragged: string, scroll = 0): number {
+  const offset = Number.isFinite(scroll) ? scroll : 0;
+  const slots: [string, PxRect][] = [
+    ...(p.focus ? [[p.focus.id, p.focus.rect] as [string, PxRect]] : []),
+    ...[...p.rects].map(([id, r]): [string, PxRect] => [id, {
+      ...r,
+      x: r.x + p.region.x - (p.axis === "x" ? offset : 0),
+      y: r.y + p.region.y - (p.axis === "y" ? offset : 0),
+    }]),
+  ];
+  let best = Math.max(0, slots.findIndex(([id]) => id === dragged));
+  let distance = Infinity;
+  slots.forEach(([, rect], i) => {
+    const d = distanceToRect(rect, point.x, point.y) * 4 + Math.hypot(point.x - rect.x - rect.w / 2, point.y - rect.y - rect.h / 2) * 0.001;
+    if (d < distance) { distance = d; best = i; }
+  });
+  return best;
+}
+
+export function reorder(order: string[], id: string, index: number): string[] {
+  if (!order.includes(id)) return [...order];
+  const next = order.filter(candidate => candidate !== id);
+  next.splice(clamp(Number.isFinite(index) ? Math.trunc(index) : 0, 0, next.length), 0, id);
+  return next;
+}
