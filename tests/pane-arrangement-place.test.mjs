@@ -1,7 +1,22 @@
 import test from 'node:test'; import assert from 'node:assert/strict';
-import { place, arrangementFromSaved, validArrangement } from '../src/paneArrangement.ts';
+import { place, keepLine, arrangementFromSaved, validArrangement } from '../src/paneArrangement.ts';
 const ids = Array.from({ length: 14 }, (_, i) => `p${i}`); const A = { w: 1200, h: 800 }; const H = 784 / 3;
 const arr = (mode, x = {}) => ({ mode, order: ids, zoom: 1, focusShare: 0.58, ...x });
+test('a composer refit keeps the first scrolled line across all layouts', () => {
+  for (const mode of ['grid','horizontal','vertical','left','right']) {
+    const old = place(arr(mode), A);
+    const next = place(arr(mode), {w:A.w,h:648}, 152);
+    assert.equal(keepLine(old,next,old.snaps[1]),next.snaps[1],mode);
+    assert.equal(keepLine(next,old,next.snaps[1]),old.snaps[1],mode+' clearing');
+    assert.equal(keepLine(old,next,NaN),0);
+    assert.equal(keepLine(old,next,Infinity),0);
+    assert.equal(keepLine(old,next,1e8),next.snaps.at(-1));
+  }
+  const empty = place(arr('grid'), {w:0,h:0});
+  assert.equal(keepLine(empty,empty,400),0);
+  const next = place(arr('horizontal'), A);
+  assert.equal(keepLine(null,next,NaN),0);
+});
 test('composer growth at the pane floor keeps the final row reachable', () => {
   for (const [mode, area, end] of [['horizontal', {w:1240,h:531},357], ['left',{w:860,h:236},204]]) {
     const p = place(arr(mode, {zoom:.01}), area, 152);

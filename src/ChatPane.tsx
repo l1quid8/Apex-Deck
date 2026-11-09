@@ -4095,7 +4095,7 @@ export function ChatPane({ dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnl
       {!profileMode && !talkOnly && !(panel && !artifactsHost) && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
       </div>}
 
-      {!profileMode && composerMounted && renderComposer(<div data-bot-chip-style={chipParts.style ?? "classic"} className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
+      {!profileMode && composerMounted && renderComposer(<div data-bot-chip-style={chipParts.style ?? "classic"} data-room-ready={roomReady ? "" : undefined} className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
         onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attachFiles(e.dataTransfer.files); } }}>
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden

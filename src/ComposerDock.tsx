@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 
-// A window's resting height survives hiding, unmounting and width changes.
+// Learn from a loaded room's complete composer. Keep it across hiding,
+// unmounting and width changes for this window.
 let restHeight = Infinity;
 
 export function ComposerDock({ target, slotRef, onBorrowed, onReveal, children }: {
@@ -19,9 +20,11 @@ export function ComposerDock({ target, slotRef, onBorrowed, onReveal, children }
     let last = -1;
     const measure = () => {
       const box = el.getBoundingClientRect();
-      if (!el.querySelector('.composer')) { if (last !== 0) report.current?.(0); last = 0; return; }
-      restHeight = Math.min(restHeight, box.height);
-      const borrowed = Math.round(box.height - restHeight);
+      if (!box.width || !box.height) return;
+      const composer = el.querySelector('.composer');
+      if (!composer) { if (last !== 0) report.current?.(0); last = 0; return; }
+      if (composer.hasAttribute('data-room-ready')) restHeight = Math.min(restHeight, box.height);
+      const borrowed = Number.isFinite(restHeight) ? Math.max(0, Math.round(box.height - restHeight)) : 0;
       if (borrowed !== last) { last = borrowed; report.current?.(borrowed); }
       const map = el.parentElement?.querySelector('[data-pane-map-region]');
       if (map) el.style.setProperty('--quick-add-max', Math.min(560, Math.max(260, map.clientHeight * .78), Math.max(0, box.top - 12)) + 'px');
@@ -29,7 +32,7 @@ export function ComposerDock({ target, slotRef, onBorrowed, onReveal, children }
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     const mutation = new MutationObserver(measure);
-    mutation.observe(el, { childList: true, subtree: true });
+    mutation.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-room-ready'] });
     measure();
     return () => { observer.disconnect(); mutation.disconnect(); };
   }, [!!target]);

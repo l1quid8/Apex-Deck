@@ -1,6 +1,6 @@
 import { memo, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { GAP, centreId, chooseAnchor, insertIndex, place, reorder, scrollFor, stepZoom, zoomScroll, type Arrangement, type Placement, type PxRect, type Size } from "./paneArrangement";
+import { GAP, centreId, chooseAnchor, insertIndex, keepLine, place, reorder, scrollFor, stepZoom, zoomScroll, type Arrangement, type Placement, type PxRect, type Size } from "./paneArrangement";
 
 export interface PaneMapHandle { reveal(id: string): void }
 interface PaneMapProps {
@@ -283,7 +283,10 @@ export function PaneMap(props: PaneMapProps) {
     const reset = old && old.mode !== arr.mode && !["left", "right"].includes(arr.mode);
     if (reset) held.current = null;
     const selected = props.active.filter(id => placement.rects.has(id));
-    scrollTo(reset ? 0 : scrollFor(placement, selected.length ? { kind: "active", ids: selected } : null, axisScroll(el, placement)));
+    // Typing must not pull someone reading another row back to the active pane.
+    const elsewhere = refitting && selected.length > 0 && !selected.some(id => visibleRef.current.includes(id));
+    scrollTo(reset ? 0 : elsewhere ? keepLine(drawnLayout.current?.placement, placement, offset.current)
+      : scrollFor(placement, selected.length ? { kind: "active", ids: selected } : null, axisScroll(el, placement)));
     quietScroll.current = refitting ? offset.current : null;
   }, [placement, props.maximized]);
 

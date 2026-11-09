@@ -17,13 +17,13 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
     import {getBackend} from '/src/backend.ts'; import '/src/styles.css';
     const bot={id:'bot',display_name:'Bot',persona:'',access:'read',effort:null,backend:{kind:'scripted',lines:['[pass]']}};
     const snapshot={participants:[bot],options:{policy:'mention',max_bot_hops:3},transcript:[]};
-    window.posts=[];
-    const backend={...await getBackend(),roomTargets:async()=>['bot'],roomPostTo:async(...args)=>{window.posts.push(args);},roomState:async()=>({recovery_seq:1,snapshot,active:[],approvals:[]}),roomSteps:async()=>null,onRoomEvent:async()=>()=>{},onPtyData:async()=>()=>{},onPtyExit:async()=>()=>{},roomClose:async()=>{}};
+    window.posts=[]; window.roomWaiters=[]; window.borrowed=[];
+    const backend={...await getBackend(),roomTargets:async()=>['bot'],roomPostTo:async(...args)=>{window.posts.push(args);},roomState:async()=>{await new Promise(r=>window.roomWaiters.push(r));return {recovery_seq:1,snapshot,active:[],approvals:[]};},roomSteps:async()=>null,onRoomEvent:async()=>()=>{},onPtyData:async()=>()=>{},onPtyExit:async()=>()=>{},roomClose:async()=>{}};
     function Fixture(){
       const [target,setTarget]=useState('a'), [slot,setSlot]=useState(null), [outside,setOutside]=useState(false), [inline,setInline]=useState(false), [agents,setAgents]=useState(0);
       window.fixture={agents:setAgents,outside,focus:setTarget,pop(){setOutside(true);setTarget('b');},inline(){setInline(true);},insert(id,text){window.dispatchEvent(new CustomEvent(INSERT_COMPOSER_EVENT,{detail:{paneId:id,text}}));}};
       const want=id=>{if(id==='a'&&outside){document.getElementById('notice').textContent='That thread is open in its own window.';return false;}setTarget(id);return true;}; const actual=dockTarget({focused:target,recent:['b','a'],candidates:['a','b'],popped:new Set(outside?['a']:[])});
-      return <div id="fixture" style={{height:700,display:'flex',flexDirection:'column'}}><div style={{display:'flex',flex:1,minHeight:0}}>{['a','b'].map(id=><ChatPane key={id} dock={inline?undefined:{target:id===actual,slot}} onWantComposer={inline?undefined:want} pane={{id,workspaceId:'w',kind:'chat',title:id}} cwd='/tmp/project' agents={[]} backend={backend} focused={target===id} onActivity={()=>{}} profiles={[]} onProfilesChange={()=>{}} disabledProviders={[]}/>)}</div>{!inline&&<ComposerDock target={{paneId:actual,title:actual,project:'Project',agents}} slotRef={setSlot}/>}<span id="notice" /></div>;
+      return <div id="fixture" style={{height:700,display:'flex',flexDirection:'column'}}><div style={{display:'flex',flex:1,minHeight:0}}>{['a','b'].map(id=><ChatPane key={id} dock={inline?undefined:{target:id===actual,slot}} onWantComposer={inline?undefined:want} pane={{id,workspaceId:'w',kind:'chat',title:id}} cwd='/tmp/project' agents={[]} backend={backend} focused={target===id} onActivity={()=>{}} profiles={[]} onProfilesChange={()=>{}} disabledProviders={[]}/>)}</div>{!inline&&<ComposerDock target={{paneId:actual,title:actual,project:'Project',agents}} slotRef={setSlot} onBorrowed={px=>window.borrowed.push(px)}/>}<span id="notice" /></div>;
     }
     createRoot(document.getElementById('test-root')).render(<Fixture/>); window.ready=true;
   </script></body></html>`;
@@ -41,7 +41,12 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
       const type=async text=>{await run(()=>document.querySelector('.composer textarea').focus());await win.webContents.insertText(text);};
       try{
         await win.loadURL(${JSON.stringify(url)});
+        await wait(()=>window.roomWaiters?.length===2 && document.querySelector('.composer textarea'),'unloaded composer');
+        await new Promise(r=>setTimeout(r,150));
+        await run(()=>window.roomWaiters.splice(0).forEach(r=>r()));
         await wait(()=>document.querySelector('.composer textarea:not(:disabled)'),'ready');
+        await new Promise(r=>setTimeout(r,150));
+        assert.equal(await run(()=>window.borrowed.at(-1)),0,'rest height is learned after the room and agent row load');
         assert.equal(await run(()=>document.querySelectorAll('.composer-input').length),1);
         assert.equal(await run(()=>document.querySelector('.composer-dock-target span').textContent),'Project · No agents yet');
         await run(()=>window.fixture.agents(1));

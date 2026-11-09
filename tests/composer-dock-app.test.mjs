@@ -20,6 +20,18 @@ for (const [width,height] of [[1512,945],[1100,650]]) test(`App dock: drops, ste
  const shape=()=>run('(()=>{const m=document.querySelector(".pane-map"),r=m.getBoundingClientRect();return {level:m.dataset.level,h:r.height,lefts:[...m.querySelectorAll(".pane-map-slot")].map(s=>s.style.left)}})()');
  const type=async text=>{await until('!!document.querySelector(".composer textarea")');await run('document.querySelector(".composer textarea").focus()');await win.webContents.insertText(text);await sleep(70);};
  const clear=async()=>{await run('(()=>{const t=document.querySelector(".composer textarea");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(t,"");t.dispatchEvent(new Event("input",{bubbles:true}))})()');await sleep(100);};
+ const initial=await shape();
+ await run('[...document.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="Add teammate").click()');
+ await until('getComputedStyle(document.querySelector(".workspace-canvas-content")).display==="none"');await sleep(100);
+ await run('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="Threads").click()');await sleep(250);
+ assert.equal((await shape()).level,initial.level,'hidden dock must not become the resting height');
+ assert.deepEqual((await shape()).lefts,initial.lefts);
+ await run('document.querySelector(".pane-map").scrollTop=10000');await sleep(300);
+ const lastVisible=()=>run('(()=>{const m=document.querySelector(".pane-map").getBoundingClientRect(),r=document.querySelector("[data-pane-id=dock-13]").getBoundingClientRect();return r.top<m.bottom&&r.bottom>m.top})()');
+ assert.equal(await lastVisible(),true);
+ await type('one\ntwo\nthree\nfour\nfive');await sleep(200);
+ assert.equal(await lastVisible(),true,'typing keeps the row being read when the active pane is off screen');
+ await clear();await run('document.querySelector(".composer-dock-target").click()');await sleep(250);
  let dropCount=0;
  const drop=async selector=>{await run('(()=>{window.copies=[];const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();for(const cb of window.drops)cb(["/tmp/dock-'+(++dropCount)+'.png"],r.x+r.width/2,r.y+Math.min(35,r.height/2))})()');await until('window.copies?.length===1 && !!document.querySelector(".composer textarea")');await frame();return run('window.copies.map(c=>c[0])');};
  assert.deepEqual(await drop('[data-pane-id="dock-1"] .transcript'),['dock-1']);

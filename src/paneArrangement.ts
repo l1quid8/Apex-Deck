@@ -236,6 +236,15 @@ export function scrollFor(next: Placement, anchor: ZoomAnchor | null, current: n
   return nearest(next.snaps, centre);
 }
 
+/** Keep the first visible line when a composer refit changes pane heights. */
+export function keepLine(old: Placement | null | undefined, next: Placement, at: number): number {
+  const offset = Number.isFinite(at) ? at : 0;
+  if (!old || old.levelIdx < 0 || next.levelIdx < 0 || old.axis !== next.axis) return nearest(next.snaps, offset);
+  const stride = (p: Placement) => (p.axis === "x" ? p.levels[p.levelIdx].w : p.levels[p.levelIdx].h) + GAP;
+  const line = Math.floor((offset + 0.5) / stride(old));
+  return nearest(next.snaps, line * stride(next));
+}
+
 /** Preserve the anchor's on-screen line as density changes, then keep its group whole. */
 export function zoomScroll(next: Placement, anchor: ZoomAnchor | null, at: number | null): number {
   if (!anchor || next.levelIdx < 0) return 0;
