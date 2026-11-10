@@ -1,12 +1,12 @@
 //! Loopback tests against the real daemon (no relay).
 use super::*;
 use apex_daemon::{
-    devices::{Devices, Threads, Tier},
+    devices::{Threads, Tier},
     pairing::invites::HostInfo,
     protocol::Daemon,
     remote,
 };
-use apex_host::{test_support::isolated_host_assuming_verified_ui, HostPaths};
+use apex_host::HostPaths;
 use std::{path::PathBuf, time::Instant};
 
 /// A throwaway data folder, removed on drop.
@@ -97,20 +97,13 @@ struct Server {
 impl Server {
     async fn start() -> Server {
         let data = Folder::new();
-        let host = isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon {
-            host,
-            host_id: "host-1".into(),
-            boot_id: "boot-1".into(),
-            token: None,
-            devices: Arc::new(Devices::open(&data.0)),
-            data: data.0.clone(),
-            invites: Default::default(),
-            voice: apex_daemon::voice::VoiceServer::new(&data.0),
-            gateway_keys: Arc::new(apex_daemon::gateway_keys::GatewayKeys::load(&data.0).unwrap()),
-            gateway: Default::default(),
-            remote: Default::default(),
-        });
+        // The daemon only builds a host for this process's own test binary when
+        // it is told to, exactly as the fixture binary's main does.
+        static ASSUMED: std::sync::Once = std::sync::Once::new();
+        ASSUMED.call_once(apex_daemon::test_support::assume_verified_ui_for_this_process);
+        // Construct through the daemon's own entry point: a hand-rolled literal
+        // breaks whenever the daemon gains a private field.
+        let daemon = Daemon::start(&HostPaths { data: data.0.clone(), downloads: None }, None).unwrap();
         let endpoint = remote::bind(remote::key(&data.0).unwrap(), None, 0).await.unwrap();
         tokio::spawn(remote::accept(Arc::clone(&daemon), endpoint.clone()));
         Server { daemon, endpoint, _data: data }
@@ -160,7 +153,7 @@ async fn two_connections_on_two_handles() {
     for h in [one, two] {
         let line = events.wait(h, "line", Duration::from_secs(10)).await;
         let v: Value = serde_json::from_str(line["line"].as_str().unwrap()).unwrap();
-        assert_eq!(v["ok"]["host_id"], "host-1");
+        assert_eq!(v["ok"]["host_id"], server.daemon.host_id);
         let route = events.wait(h, "route", Duration::from_secs(1)).await;
         assert_eq!(route["route"], "direct");
     }
