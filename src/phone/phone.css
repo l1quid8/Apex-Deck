@@ -1353,6 +1353,11 @@
 .ph-speed { padding: 6px 14px 10px; display: grid; gap: 8px; }
 .ph-speed .ph-segment { margin-bottom: 0; }
 .ph-speed small { color: var(--muted); font-size: 12px; }
+/* Access has four choices: a tighter font so "Read-only" fits on a 375pt screen. */
+.ph-access .ph-segment button { font-size: 13px; padding-left: 2px; padding-right: 2px; white-space: nowrap; }
+.ph-access-wait { display: grid; gap: 8px; margin: 4px 0 10px; }
+.ph-access-wait-row { display: flex; gap: 8px; }
+.ph-access-wait-row button { flex: 1; min-height: 44px; }
 
 /* Work steps (WorkSteps.tsx) on the phone: plain rows, bigger to tap. A helper's steps are an indented group
    with a thin rule on the left, not a bordered card, and command output is a quiet tinted block, not a boxed one. */

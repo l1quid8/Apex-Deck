@@ -350,3 +350,20 @@ test('a DeepSeek bot on the phone gets its provider\'s models, levels and balanc
   assert.deepEqual(meters.map((row) => [row.label, row.value]), [['Context', '—'], ['Balance', '$9.87']]);
   assert.equal(botMeters(null, undefined, undefined, new Date()).at(-1).label, 'Plan');
 });
+
+test('the phone changes a bot\'s Access without undoing a model change made on the Mac', async () => {
+  const { accessOptions } = await import('../src/accessChange.ts');
+  const claude = { id: 'null', display_name: 'Null', backend: { kind: 'agent', tool: 'claude_code', model: 'opus' }, effort: 'high', access: 'ask' };
+  const onMac = { ...claude, backend: { ...claude.backend, model: 'sonnet' } };
+  const next = withPhoneChange(onMac, { access: 'full' }, []);
+  assert.equal(next.access, 'full');
+  assert.equal(next.backend.model, 'sonnet', 'the Mac\'s model change stays');
+  assert.equal(next.effort, 'high');
+  // A change that leaves Access alone keeps what the machine has.
+  assert.equal(withPhoneChange({ ...claude, access: 'read' }, { effort: 'low' }, []).access, 'read');
+  // Same choices as the Mac's sheet; Grok and Muse have no Ask.
+  assert.deepEqual(accessOptions('claude_code').map((o) => o.value), ['read', 'ask', 'edits', 'full']);
+  assert.deepEqual(accessOptions('grok').map((o) => o.value), ['read', 'edits', 'full']);
+  assert.deepEqual(accessOptions('muse').map((o) => o.value), ['read', 'edits', 'full']);
+  assert.deepEqual(accessOptions(null).map((o) => o.text), ['Read-only', 'Ask', 'Edit', 'Full']);
+});
