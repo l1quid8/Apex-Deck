@@ -2938,3 +2938,68 @@ async fn launch_points_below_full_refuse_when_linux_jail_fails() {
     let err3 = apex_adapters::codex_tool_servers(None, None).await.unwrap_err();
     assert!(err3.contains("simulated sandbox fault"), "got: {err3}");
 }
+
+#[tokio::test]
+async fn gateway_usage_reaches_deck_without_local_account_aliasing() {
+    use apex_core::{ContextUse, NoApprover, Progress};
+    use serde_json::json;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut usage_reads = 0;
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0u8;8192];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 { break; }
+                bytes.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&bytes);
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end].lines().find_map(|line|line.to_ascii_lowercase().strip_prefix("content-length:").and_then(|s|s.trim().parse::<usize>().ok())).unwrap_or(0);
+                    if bytes.len() >= end+4+length {break;}
+                }
+            }
+            let text = String::from_utf8(bytes).unwrap();
+            let body = if text.starts_with("GET /v1/models ") {
+                json!({"data":[{"id":"claude/default"}]}).to_string()
+            } else if text.starts_with("POST /v1/usage ") {
+                usage_reads += 1;
+                if usage_reads > 1 {
+                    socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+                    continue;
+                }
+                json!({"object":"apex.gateway.usage","model":"claude/default","subscription":{"provider":"claude_code","windows":[{"name":"five_hour","used_percent":23,"window_minutes":300,"resets_at":4102444800_u64}],"partial":false}}).to_string()
+            } else {
+                let payload:serde_json::Value = serde_json::from_str(text.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+                assert_eq!(payload["model"],"claude/default");
+                let frames = [json!({"choices":[{"delta":{"content":"ok"}}]}), json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":80},"context":{"used_tokens":104,"window_tokens":200000,"estimated":true}}})];
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
+                for frame in frames { socket.write_all(format!("data: {frame}\n\n").as_bytes()).await.unwrap(); }
+                socket.write_all(b"data: [DONE]\n\n").await.unwrap();
+                continue;
+            };
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let bot = OpenAiCompatParticipant::new(config("remote-bot", Backend::OpenAiCompatible {base_url:base.clone(),model:"claude/default".into(),api_key_env:None}));
+    let contexts = Mutex::new(Vec::new());
+    let plans = Mutex::new(Vec::new());
+    let reply = bot.respond_with_approvals(request("reply"), &|event|match event {
+        Progress::Context(c) => contexts.lock().unwrap().push(c),
+        Progress::RemotePlan {plan,model} => plans.lock().unwrap().push((plan.clone(),model.to_owned())),
+        _=>{}
+    }, &NoApprover).await.unwrap();
+    assert_eq!((reply.input_tokens,reply.output_tokens,reply.cached_input_tokens),(Some(100),Some(4),Some(80)));
+    assert_eq!(*contexts.lock().unwrap(),vec![ContextUse{used_tokens:104,window_tokens:200000,estimated:true}]);
+    let reports = plans.lock().unwrap();
+    assert_eq!(reports.last().unwrap().0.windows[0].used_percent,23);
+    assert_eq!(reports.last().unwrap().1,format!("gateway:{}",json!([base,"","claude/default"])));
+    drop(reports);
+    bot.respond_with_approvals(request("again"), &|event|if let Progress::RemotePlan {plan,model} = event {
+        plans.lock().unwrap().push((plan.clone(),model.to_owned()));
+    }, &NoApprover).await.unwrap();
+    assert!(plans.lock().unwrap().last().unwrap().0.windows.is_empty(), "a later telemetry failure clears prior quota");
+    server.abort();
+}

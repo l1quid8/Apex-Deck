@@ -3,10 +3,10 @@
 # upload anywhere else. The Human downloads it from the run summary, tries it on
 # a Windows 11 PC, and only then is a real release cut.
 #
-# Runs on fix/windows-catch-up are signed through Azure Artifact Signing as Tyler
-# Caldwell. GitHub proves the branch to Azure, so no key is stored here, and Azure
-# trusts that one branch only. Other branches build an unsigned installer, which
-# Windows shows as "unknown publisher".
+# Runs on fix/windows-catch-up and feat/windows-auto-update are signed through
+# Azure Artifact Signing as Tyler Caldwell. GitHub proves the branch to Azure, so
+# no key is stored here, and Azure trusts those branches only. Other branches build
+# an unsigned installer, which Windows shows as "unknown publisher".
 #
 # Runs only for the branches that carry Windows work, because an Electron build
 # is minutes of runner time nobody asked for on every push.
@@ -19,20 +19,20 @@ on:
       - feat/win-m4-installer
       - feat/windows-11
       - fix/windows-catch-up
+      - feat/windows-auto-update
 
 permissions:
   contents: read
-  id-token: write
 
 env:
-  APEX_DECK_WIN_SIGN: ${{ github.ref == 'refs/heads/fix/windows-catch-up' && '1' || '' }}
+  APEX_DECK_WIN_SIGN: ${{ (github.ref == 'refs/heads/fix/windows-catch-up' || github.ref == 'refs/heads/feat/windows-auto-update') && '1' || '' }}
 
 concurrency:
   group: windows-installer-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  installer:
+  build:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -51,21 +51,78 @@ jobs:
         run: npm ci
       - name: Compile the service and the app
         run: node scripts/package-win.mjs --compile
-      # The Azure login lasts minutes, so it comes after the long compile.
+      - name: Test elevated authority ACLs and read-only host locks
+        run: cargo test --locked -p apex-provenance --lib -- --ignored
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-unpacked
+          path: release/win-unpacked
+          if-no-files-found: error
+          retention-days: 1
+
+  # Only this job can reach Azure. It runs no install scripts and no project build,
+  # so nothing the dependencies add to a build can get hold of the signing login.
+  sign:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install the packaging tools only
+        run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: win-unpacked
+          path: release/win-unpacked
       - name: Sign in to Azure
         if: env.APEX_DECK_WIN_SIGN == '1'
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: 4c7cb8eb-c6e5-4804-80fe-b2164f58af8b
           tenant-id: 02381f02-2a9b-4968-b74c-dd4b89329434
           subscription-id: 360e8f4a-285c-46a3-bd01-5f8cddbbaa59
           allow-no-subscriptions: true
+      - name: Sign the programs
+        if: env.APEX_DECK_WIN_SIGN == '1'
+        shell: pwsh
+        run: scripts/sign-win-unpacked.ps1 -Unpacked release/win-unpacked
       - name: Build the installer
         run: node scripts/package-win.mjs --package
-      - name: Test elevated authority ACLs and read-only host locks
-        run: cargo test --locked -p apex-provenance --lib -- --ignored
+      - name: Write the update feed
+        run: node scripts/windows-update-manifest.mjs
       - name: Show what was built
         run: Get-ChildItem release | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-to-verify
+          path: |
+            release/Apex-Deck-Setup.exe
+            release/Apex-Deck-Setup.exe.sha256
+            release/windows-update/
+          if-no-files-found: error
+          retention-days: 1
+
+  verify:
+    needs: sign
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: installer-to-verify
+          path: release
       # The shutdown step lives inside the built .exe, so `npm run desktop:win`
       # cannot prove anything about it. An earlier version compiled, passed every
       # check, and would have refused to install on a machine that never had Apex
@@ -117,6 +174,8 @@ jobs:
                 throw "$file is not validly signed by Tyler Caldwell"
               }
             }
+            node scripts/windows-update-smoke.mjs $setup (Join-Path $env:ProgramFiles 'Apex Deck\Apex Deck.exe')
+            if ($LASTEXITCODE -ne 0) { throw 'the update check refused the installer it should accept' }
           }
           node scripts/windows-authority-smoke.mjs $service.FullName
           if ($LASTEXITCODE -ne 0) { throw 'installed production authority smoke failed' }
@@ -161,5 +220,6 @@ jobs:
           path: |
             release/Apex-Deck-Setup.exe
             release/Apex-Deck-Setup.exe.sha256
+            release/windows-update/
           if-no-files-found: error
           retention-days: 30

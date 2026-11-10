@@ -21,7 +21,7 @@ const QUOTA: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUser
 /// to; the reply groups quotas per model family, and a model with its own
 /// small group (`gemini-4-argon`) is spent long before the family one is.
 pub(crate) async fn read_plan(path: Option<&str>, model: Option<&str>) -> Result<PlanUsage, Failure> {
-    let program = crate::presets::resolve_gemini_program(path);
+    let program = if std::env::var_os("APEX_GATEWAY_AGY_HOME").is_some() { "agy" } else { crate::presets::resolve_gemini_program(path) };
     if program == "agy" || program == "antigravity" {
         return read_agy_plan(program, path, model).await;
     }
@@ -36,6 +36,8 @@ async fn read_agy_plan(program: &str, path: Option<&str>, model: Option<&str>) -
     if let Some(path) = path {
         command.env("PATH", path);
     }
+    if let Some(home) = std::env::var_os("APEX_GATEWAY_AGY_HOME") { command.env("HOME", home); }
+    command.kill_on_drop(true);
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());

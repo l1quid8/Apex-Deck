@@ -1,4 +1,4 @@
-// Automatic updates for the packaged Mac app.
+// Automatic updates for the packaged Mac and Windows apps.
 //
 // Deck reads apex-deck-update.json from the latest public GitHub release, and
 // when it names a newer version for this Mac, downloads that release's .pkg
@@ -8,6 +8,12 @@
 // update" hands it to the root update job through the provenance broker
 // (desktop/provenance.mjs requestUpdate); that job checks everything again
 // itself, so nothing decided here is trusted by root.
+//
+// Windows has its own feed, because a shipped Mac copy rejects the whole feed at
+// the first entry that isn't a .pkg. Its installer is ready only once Windows
+// finds a valid signature by the publisher that signed this running app, on the
+// promised version. "Restart to update" checks that again, then starts the
+// installer through Windows' own permission prompt; declining changes nothing.
 //
 // Effects (network, files, commands, the broker, timers) come in through the
 // constructor, so the tests never touch any of them for real.
@@ -20,6 +26,8 @@ import { pipeline } from 'node:stream/promises';
 export const REPO = 'l1quid8/apex-deck';
 export const MANIFEST_NAME = 'apex-deck-update.json';
 export const FEED_URL = `https://github.com/${REPO}/releases/latest/download/${MANIFEST_NAME}`;
+export const WINDOWS_MANIFEST_NAME = 'apex-deck-update-windows.json';
+export const WINDOWS_FEED_URL = `https://github.com/${REPO}/releases/latest/download/${WINDOWS_MANIFEST_NAME}`;
 /** Written by the update job; root-owned and readable by everyone. */
 export const RESULT_FILE = '/Library/Application Support/Apex Deck Updates/last-update.json';
 export const FIRST_CHECK_MS = 30_000;
@@ -40,7 +48,7 @@ const FOLDED_NOTE = /Apex Deck's background service in the account "[\s\S]*?" (?
 const PACKAGE_LIMIT = 4 * 1024 ** 3;
 const MANIFEST_LIMIT = 64 * 1024;
 const VERSION = /^\d+(?:\.\d+){1,3}$/;
-const PACKAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.pkg$/;
+const PACKAGE_NAME = { '.pkg': /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.pkg$/, '.exe': /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.exe$/ };
 const ARCHES = new Set(['arm64', 'x64']);
 
 /** [major, minor, patch, build] for a dotted version, or null. */
@@ -63,14 +71,14 @@ export function compareVersions(a, b) {
  * `{ schemaVersion: 1, version, notes?, packages: [{ arch, minimumSystemVersion, name, size, sha256 }] }`.
  * It decides only what to download; the package's own signature decides whether it installs.
  */
-export function parseManifest(value) {
+export function parseManifest(value, { extension = '.pkg' } = {}) {
   if (!value || typeof value !== 'object' || value.schemaVersion !== 1) throw new Error('The update feed is not one this version understands.');
   if (!versionParts(value.version)) throw new Error('The update feed names no valid version.');
   if (value.notes !== undefined && (typeof value.notes !== 'string' || value.notes.length > 4000)) throw new Error('The update notes are malformed.');
   if (!Array.isArray(value.packages) || value.packages.length === 0 || value.packages.length > 8) throw new Error('The update feed lists no packages.');
   const packages = value.packages.map((entry) => {
     const ok = entry && ARCHES.has(entry.arch) && versionParts(entry.minimumSystemVersion)
-      && typeof entry.name === 'string' && PACKAGE_NAME.test(entry.name)
+      && typeof entry.name === 'string' && PACKAGE_NAME[extension].test(entry.name)
       && Number.isSafeInteger(entry.size) && entry.size > 0 && entry.size <= PACKAGE_LIMIT
       && typeof entry.sha256 === 'string' && /^[a-f0-9]{64}$/.test(entry.sha256);
     if (!ok) throw new Error('The update feed has a malformed package.');
@@ -86,18 +94,20 @@ export function packageFor(manifest, { arch, osVersion }) {
 }
 
 /** Always a file of this repository's release for `version`: the feed never chooses the host. */
-export function assetUrl(version, name) {
-  if (!versionParts(version) || !PACKAGE_NAME.test(name)) throw new Error('Invalid update asset.');
+export function assetUrl(version, name, extension = '.pkg') {
+  if (!versionParts(version) || !PACKAGE_NAME[extension].test(name)) throw new Error('Invalid update asset.');
   return `https://github.com/${REPO}/releases/download/v${version}/${name}`;
 }
 
 /** Why this copy never updates itself, or null when it can. */
 export function disabledReason({ packaged, platform, dataDir, smoke, protectedCopy, team }) {
   if (!packaged) return 'Development builds don’t update themselves.';
-  if (platform !== 'darwin') return 'Automatic updates are only on the Mac for now.';
+  if (platform !== 'darwin' && platform !== 'win32') return 'Automatic updates aren’t available on this system.';
   if (smoke) return 'Updates are off during smoke runs.';
   if (dataDir) return 'Updates are off while Deck uses a separate data folder.';
-  if (!team) return 'This build isn’t signed with a Developer ID, so it can’t check who made an update.';
+  if (!team) return platform === 'win32'
+    ? 'This build isn’t signed, so it can’t check who made an update.'
+    : 'This build isn’t signed with a Developer ID, so it can’t check who made an update.';
   if (!protectedCopy) return 'Updates install from the protected copy of Apex Deck. Open that copy to update.';
   return null;
 }
@@ -192,6 +202,93 @@ export function packageVerifier({ run, team, scratch, files = fs }) {
   };
 }
 
+const SIGNATURE_SCRIPT = [
+  '$file = $env:APEX_UPDATE_FILE',
+  '$signature = Get-AuthenticodeSignature -LiteralPath $file',
+  '[pscustomobject]@{ status = "$($signature.Status)"; subject = $signature.SignerCertificate.Subject; issuer = $signature.SignerCertificate.Issuer; version = (Get-Item -LiteralPath $file).VersionInfo.ProductVersion } | ConvertTo-Json -Compress',
+].join('; ');
+/**
+ * Outlives Deck: starts the installer, says whether Windows allowed it, then
+ * records how it ended for the next launch and reopens Deck if it failed.
+ */
+const INSTALL_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "try { $installer = Start-Process -FilePath $env:APEX_UPDATE_FILE -ArgumentList '/S','--updated','--force-run' -Verb RunAs -PassThru; $null = $installer.Handle; Set-Content -LiteralPath $env:APEX_UPDATE_STARTED -Value started } catch { Set-Content -LiteralPath $env:APEX_UPDATE_STARTED -Value declined; exit 1 }",
+  '$installer.WaitForExit()',
+  "$outcome = if ($installer.ExitCode -eq 0) { 'installed' } else { 'failed' }",
+  '[pscustomobject]@{ id = $env:APEX_UPDATE_ID; outcome = $outcome } | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:APEX_UPDATE_RESULT -Encoding ascii',
+  "if ($outcome -ne 'installed') { Start-Process -FilePath $env:APEX_UPDATE_APP }",
+].join('; ');
+/** Long enough to read Windows' prompt and answer it. */
+const PROMPT_WAIT_MS = 5 * 60 * 1000;
+
+/**
+ * Run PowerShell with the file in the environment, so no path is ever parsed as
+ * code. A PSModulePath inherited from PowerShell 7 stops Windows PowerShell from
+ * loading its own signature commands.
+ */
+const powershell = (run, script, file, extra = {}) => {
+  const { PSModulePath: _inherited, ...env } = process.env;
+  return run(
+    path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    { env: { ...env, ...extra, APEX_UPDATE_FILE: file }, windowsHide: true, stdoutOnly: true },
+  );
+};
+
+/** The publisher behind a valid signature, or null. The issuing CA changes; its organization doesn't. */
+export function windowsSignerFrom(output) {
+  let found;
+  try { found = JSON.parse(String(output)); } catch { return null; }
+  const issuer = /(?:^|,\s*)O=([^,]+)/.exec(found?.issuer ?? '')?.[1];
+  if (found?.status !== 'Valid' || typeof found.subject !== 'string' || !found.subject || !issuer) return null;
+  return { subject: found.subject, issuer, version: typeof found.version === 'string' ? found.version.trim() : '' };
+}
+
+/** Who signed `file`, as Windows sees it. Null when it can't say: an unsigned copy never updates. */
+export const windowsSigner = async (run, file) => windowsSignerFrom(await powershell(run, SIGNATURE_SCRIPT, file).catch(() => ''));
+
+/** The installer must be validly signed by this app's own publisher, at the promised version. */
+export function windowsVerifier({ run, signer }) {
+  return async (file, { version }) => {
+    const found = await windowsSigner(run, file);
+    if (!found || found.subject !== signer?.subject || found.issuer !== signer?.issuer) {
+      throw new Error('The update isn’t signed by the publisher that signed this app.');
+    }
+    if (found.version !== version) throw new Error(`The installer holds version ${found.version || 'unknown'}, not ${version}.`);
+  };
+}
+
+/**
+ * Check again, then start the installer. Windows shows its permission prompt
+ * here. Resolves once it's allowed, so Deck quits only for an update that's running.
+ */
+export function windowsInstaller({ launch, verify, resultFile, app, files = fs, timers = globalThis, now = () => Date.now(), promptWait = PROMPT_WAIT_MS }) {
+  return async (ready) => {
+    await verify(ready.package, { version: ready.version });
+    const id = crypto.randomUUID();
+    const started = `${resultFile}.started`;
+    files.rmSync(started, { force: true });
+    files.rmSync(resultFile, { force: true });
+    launch(ready.package, { APEX_UPDATE_ID: id, APEX_UPDATE_RESULT: resultFile, APEX_UPDATE_STARTED: started, APEX_UPDATE_APP: app });
+    for (const end = now() + promptWait; now() < end;) {
+      let answer = '';
+      try { answer = files.readFileSync(started, 'utf8').trim(); } catch { /* not answered yet */ }
+      if (answer === 'started') return id;
+      if (answer) break;
+      await new Promise((done) => timers.setTimeout(done, 250));
+    }
+    throw new Error('Windows didn’t start the update, so nothing was changed. Choose Yes when it asks for permission.');
+  };
+}
+
+/** Start the update script so that it outlives Deck. */
+export function windowsLauncher(spawn) {
+  return (file, extra) => powershell((command, args, { env, windowsHide }) => {
+    spawn(command, args, { env, windowsHide, detached: true, stdio: 'ignore' }).unref();
+  }, INSTALL_SCRIPT, file, extra);
+}
+
 /** The installer's result as a short reason plus every account note, whole. */
 export function resultParts(found) {
   let message = found.message == null ? '' : String(found.message);
@@ -218,11 +315,12 @@ const failure = (error) => (message(error).includes('net::ERR_')
 export class Updater {
   constructor({
     current, arch, osVersion, cacheDir, stateFile, resultFile = RESULT_FILE, disabled = null,
+    feedUrl = FEED_URL, extension = '.pkg',
     fetchJson, download, verify, requestInstall,
     files = fs, now = () => Date.now(), timers = globalThis, onChange = () => {},
     retryDelays = RETRY_DELAYS_MS,
   }) {
-    Object.assign(this, { current, arch, osVersion, cacheDir, stateFile, resultFile, fetchJson, download, verify, requestInstall, files, now, timers, onChange, retryDelays });
+    Object.assign(this, { current, arch, osVersion, cacheDir, stateFile, resultFile, feedUrl, extension, fetchJson, download, verify, requestInstall, files, now, timers, onChange, retryDelays });
     this.view = {
       current,
       state: disabled ? 'disabled' : 'idle',
@@ -330,12 +428,12 @@ export class Updater {
     const readyView = ready ? { available: this.view.available } : null;
     if (!ready) this.set({ state: 'checking', error: null });
     try {
-      const raw = await this.fetchJson(FEED_URL);
+      const raw = await this.fetchJson(this.feedUrl);
       if (raw === null) {
         if (!ready) this.set({ state: 'up-to-date', checkedAt: this.now() });
         return this.status();
       }
-      const manifest = parseManifest(raw);
+      const manifest = parseManifest(raw, { extension: this.extension });
       if (compareVersions(manifest.version, this.current) <= 0) {
         this.set({ state: 'up-to-date', checkedAt: this.now(), available: null });
         return this.status();
@@ -346,7 +444,7 @@ export class Updater {
       }
       const entry = packageFor(manifest, { arch: this.arch, osVersion: this.osVersion });
       if (!entry) {
-        this.set({ state: 'up-to-date', checkedAt: this.now(), available: null, error: `Version ${manifest.version} has no build for this Mac.` });
+        this.set({ state: 'up-to-date', checkedAt: this.now(), available: null, error: `Version ${manifest.version} has no build for this computer.` });
         return this.status();
       }
       await this.fetchPackage(manifest, entry);
@@ -373,7 +471,7 @@ export class Updater {
           const partial = `${file}.partial`;
           this.files.rmSync(partial, { force: true });
           this.set({ state: 'downloading', available, progress: { received: 0, total: entry.size }, error: null });
-          const sha = await this.download(assetUrl(manifest.version, entry.name), partial, {
+          const sha = await this.download(assetUrl(manifest.version, entry.name, this.extension), partial, {
             size: entry.size,
             onProgress: (received) => this.set({ progress: { received, total: entry.size } }),
           });
@@ -406,7 +504,8 @@ export class Updater {
     let entries = [];
     try { entries = this.files.readdirSync(this.cacheDir); } catch { return; }
     for (const name of entries) {
-      if (name !== keep) this.files.rmSync(path.join(this.cacheDir, name), { recursive: true, force: true });
+      // An installer still closing locks its file; the next start clears it.
+      if (name !== keep) try { this.files.rmSync(path.join(this.cacheDir, name), { recursive: true, force: true }); } catch { /* left for later */ }
     }
   }
 

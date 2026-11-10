@@ -219,7 +219,7 @@ test('the installer is actually run on Windows before it is published', () => {
   // It has to happen before the download is offered: a broken installer must not
   // reach the Human, and the artifact is how it would.
   const smokeAt = workflow.indexOf('Run the installer');
-  const uploadAt = workflow.indexOf('upload-artifact');
+  const uploadAt = workflow.indexOf('name: Apex-Deck-Setup-windows-x64');
   assert.ok(smokeAt > 0, 'the installer must be run');
   assert.ok(smokeAt < uploadAt, 'and before the artifact is attached');
 });

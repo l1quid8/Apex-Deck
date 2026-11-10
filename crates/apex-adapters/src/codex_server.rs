@@ -957,6 +957,7 @@ pub(crate) async fn run_with_images(
     match outcome.error {
         Some(error) => Err(TurnError::Failed(error)),
         None => Ok(Reply {
+            cached_input_tokens: outcome.cached_input_tokens,
             text: outcome.text.trim().to_string(),
             input_tokens: outcome.input_tokens,
             output_tokens: outcome.output_tokens,

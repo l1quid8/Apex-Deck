@@ -177,30 +177,36 @@ export async function removeAgent({ plistPath, uid, run = launchctl, fs: files =
  *
  * A daemon something else started already on the socket is left alone and
  * the agent is not started: resolves 'foreign', for the caller to attach to
- * it as a daemon Deck found. When the wait runs out, the agent is removed,
- * so launchd doesn't retry it every ten seconds, and this rejects saying why.
+ * it as a daemon Deck found. After `timeout`, a daemon launchd still has
+ * running is slow, not failing, and is waited for up to `slowTimeout`. When
+ * the wait runs out, or the agent has no running daemon (launchd is between
+ * retries), the agent is removed, so launchd doesn't retry it every ten
+ * seconds, and this rejects saying why.
  */
-export async function startAgentDaemon({ socket, infoFile, uid, install, remove, answers, run = launchctl, readInfo = readJson, timeout = 15_000, wait = sleep }) {
+export async function startAgentDaemon({ socket, infoFile, uid, install, remove, answers, run = launchctl, readInfo = readJson, timeout = 15_000, slowTimeout = 120_000, wait = sleep, now = Date.now }) {
   const before = await agentState(uid, run);
   if (before.pid === null && await answers(socket)) {
     if (before.loaded) await remove();
     return 'foreign';
   }
   await install();
-  const started = Date.now();
+  const started = now();
   let pid = null;
   let info = null;
   let serving = false;
+  let elapsed = 0;
   for (;;) {
     ({ pid } = await agentState(uid, run));
     info = readInfo(infoFile);
     serving = await answers(socket);
     if (pid !== null && serving && info?.pid === pid) return 'agent';
-    if (Date.now() - started > timeout) break;
+    elapsed = now() - started;
+    const other = serving && info?.pid && info.pid !== pid;
+    if (elapsed > timeout && (pid === null || other || elapsed > slowTimeout)) break;
     await wait(50);
   }
   await remove().catch(() => {});
-  const seconds = Math.round(timeout / 1000);
+  const seconds = Math.round((elapsed > slowTimeout ? slowTimeout : timeout) / 1000);
   if (serving && info?.pid && info.pid !== pid) {
     throw new Error(`Another apex-daemon (pid ${info.pid}) is using Deck's data folder, so the background service can't start. Quit it, then open Deck again`);
   }
