@@ -11,7 +11,7 @@ import { mediaKind } from "./media.ts";
 import { providerForConfig } from "./providers.ts";
 import { applyTurnChange, withTurnSettings } from "./participantSettings.ts";
 import { supportsSpeed } from "./speed.ts";
-import type { AgentTool, ApiModel, ModelChoice, ParticipantConfig, PlanWindow, Speed, ToolServer } from "./types.ts";
+import type { Access, AgentTool, ApiModel, ModelChoice, ParticipantConfig, PlanWindow, Speed, ToolServer } from "./types.ts";
 
 export type MachineKind = "mac" | "server";
 export type LinkStatus = "online" | "offline" | "connecting";
@@ -447,8 +447,8 @@ export function settingsLine(config: ParticipantConfig, reported: ModelChoice[],
   return `${name} · ${config.effort && levels.includes(config.effort) ? `${effortLabel(config.effort)} reasoning` : "Default reasoning"}${fast}`;
 }
 
-/** What the phone changed in a bot's sheet. Only these fields are written. */
-export type TurnChange = { model?: string; effort?: string; speed?: Speed | "" };
+/** What the phone changed in a bot's sheet. Only these fields are written; a chat never takes Access. */
+export type TurnChange = { model?: string; effort?: string; speed?: Speed | ""; access?: Access };
 
 /**
  * The bot as saved on its machine with only the phone's changes laid over it, so a change made
@@ -460,7 +460,8 @@ export function withPhoneChange(saved: ParticipantConfig, change: TurnChange, re
   const effort = change.effort ?? saved.effort ?? "";
   const next = withTurnSettings(saved, model, effort, reasoningLevels(saved, groups, model));
   // Empty Speed follows the tool's own setting, as on the desktop.
-  return "speed" in change && phoneSpeed(saved) ? applyTurnChange(next, { speed: change.speed || null }) : next;
+  const sped = "speed" in change && phoneSpeed(saved) ? applyTurnChange(next, { speed: change.speed || null }) : next;
+  return change.access ? applyTurnChange(sped, { access: change.access }) : sped;
 }
 
 /** Whether the bot's backend accepts a speed override. */

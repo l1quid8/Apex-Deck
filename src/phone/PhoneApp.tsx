@@ -33,6 +33,7 @@ import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phoneTask
 import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState, type AssistantVisiblePane } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { SPEED_OPTIONS, speedHint } from "../speed";
+import { accessOptions, applyNowFirst } from "../accessChange";
 import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
@@ -2812,6 +2813,11 @@ export function PhoneApp() {
               })()}
               offline={openLink.status !== "online" ? downLine(openLink) : ""}
               onSave={(change) => openChat ? saveChatTurn(openChat, who.id)({ change, reported, apiModels }) : saveTurn(room.id, openLink.id, who.id)({ change, reported, apiModels })}
+              onApplyAccess={openChat ? undefined : async () => {
+                const host = phoneHost(openLink.id);
+                if (!host || openLink.status !== "online") throw new Error(`${downLine(openLink)}. Nothing changed.`);
+                await host.backend.roomApplyAccess(room.id, who.id);
+              }}
               extra={openChat ? <TalkOnlyRow name={who.display_name} onMove={openChat.promotedTo ? undefined : () => { setBotSheet(null); setChatSheet({ kind: "move" }); }} /> : undefined}
               onMention={() => { if (openKey) setDraft(openKey, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotSheet(null); }}
               onStop={() => { void stopBot(who.id); setBotSheet(null); }}
@@ -3138,6 +3144,8 @@ function BotSheet(props: {
   onSave(change: TurnChange): Promise<void>; onMention(): void; onStop(): void; onClose(): void;
   /** Shown above Mention: a chat's locked Access row. */
   extra?: ReactNode;
+  /** A Work thread's bot: restart it now with the Access just saved, instead of after its reply. Absent in a chat. */
+  onApplyAccess?: () => Promise<void>;
 }) {
   const backend = props.config.backend;
   const tool = backend.kind === "agent" ? backend.tool : null;
@@ -3145,6 +3153,10 @@ function BotSheet(props: {
   const [model, setModel] = useState(savedModel);
   const [effort, setEffort] = useState(props.config.effort ?? "");
   const [speed, setSpeed] = useState<Speed | "">(props.config.speed ?? "");
+  const [access, setAccess] = useState<Access>(props.config.access);
+  // The Access the bot had when it was changed mid-reply; the change waits for that reply to end.
+  const [accessFrom, setAccessFrom] = useState<Access | null>(null);
+  const [applying, setApplying] = useState("");
   const [typed, setTyped] = useState(savedModel);
   const [view, setView] = useState<"bot" | "models">("bot");
   const [result, setResult] = useState<{ saving: boolean; error: string; saved: boolean }>({ saving: false, error: "", saved: false });
@@ -3159,6 +3171,7 @@ function BotSheet(props: {
   // Show the bot as its machine has it (after a save, or a change from the Mac), except picks still saving.
   const savedEffort = props.config.effort ?? "";
   const savedSpeed = props.config.speed ?? "";
+  const savedAccess = props.config.access;
   const shownModel = useRef(savedModel);
   useEffect(() => {
     if (!("model" in touched.current)) {
@@ -3170,7 +3183,10 @@ function BotSheet(props: {
     }
     if (!("effort" in touched.current)) setEffort(savedEffort);
     if (!("speed" in touched.current)) setSpeed(savedSpeed);
-  }, [savedModel, savedEffort, savedSpeed, settled]);
+    if (!("access" in touched.current)) setAccess(savedAccess);
+  }, [savedModel, savedEffort, savedSpeed, savedAccess, settled]);
+  // Once the reply ends the bot starts its next one with the new Access, so nothing waits any more.
+  useEffect(() => { if (!props.working) setAccessFrom(null); }, [props.working]);
   const choices = tool ? modelChoices(tool, props.reported) : backend.kind === "open_ai_compatible" ? apiModelChoices(props.apiModels, savedModel) : null;
   // Who lists an API bot's models, for the menu's note.
   const lister = tool ? toolName(tool) : apiProviderName(props.config) ?? "this provider";
@@ -3195,6 +3211,7 @@ function BotSheet(props: {
       if (left.model === sent.model) delete left.model;
       if (left.effort === sent.effort) delete left.effort;
       if (left.speed === sent.speed) delete left.speed;
+      if (left.access === sent.access) delete left.access;
       touched.current = left;
       setSettled((n) => n + 1);
       if (mine === version.current) setResult({ saving: false, error: "", saved: true });
@@ -3206,9 +3223,24 @@ function BotSheet(props: {
       setModel("model" in now.backend ? now.backend.model ?? "" : "");
       setEffort(now.effort ?? "");
       setSpeed(now.speed ?? "");
+      setAccess(now.access);
+      setAccessFrom(null);
       setResult({ saving: false, error: words(error), saved: false });
     }
   };
+  const pickAccess = (value: Access) => {
+    if (value === access) return;
+    // Only the first change mid-reply counts as "from": a second one still compares with what the bot runs on.
+    if (props.working) setAccessFrom((from) => from ?? access);
+    setAccess(value);
+    void apply({ access: value });
+  };
+  const applyNow = () => {
+    if (!props.onApplyAccess) return;
+    setApplying("…");
+    props.onApplyAccess().then(() => { setAccessFrom(null); setApplying(""); }, (error) => setApplying(`Couldn't apply now: ${words(error)}`));
+  };
+  const accessWaits = accessFrom !== null && accessFrom !== access && props.working;
   const pick = (id: string) => {
     setModel(id);
     if (!reasoningLevels(props.config, groups, id).includes(effort)) setEffort("");
@@ -3294,10 +3326,31 @@ function BotSheet(props: {
               <small>{speedHint(tool!)}</small>
             </div>
           )}
+          {props.onApplyAccess && (
+            <div className="ph-speed ph-access">
+              <strong>Access</strong>
+              <div className="ph-segment" role="radiogroup" aria-label="Access">
+                {accessOptions(tool).map((option) => (
+                  <button key={option.value} type="button" role="radio" aria-checked={access === option.value} title={option.title} onClick={() => pickAccess(option.value)}>{option.text}</button>
+                ))}
+              </div>
+              <small>{accessOptions(tool).find((option) => option.value === access)?.title}</small>
+            </div>
+          )}
         </fieldset>
+        {accessWaits && (
+          <div className="ph-access-wait" role="group" aria-label="When to apply this access">
+            <p className="ph-sheet-text ph-quiet">Applies after this reply. Apply now stops {name} and restarts it from the thread, so it loses track of its current steps and a running command is cut off.</p>
+            <div className="ph-access-wait-row">
+              <button type="button" className={applyNowFirst(accessFrom!, access) ? "primary" : ""} disabled={applying === "…"} onClick={applyNow}>{applying === "…" ? "Applying…" : "Apply now"}</button>
+              <button type="button" className={applyNowFirst(accessFrom!, access) ? "" : "primary"} onClick={() => setAccessFrom(null)}>After this reply</button>
+            </div>
+            {applying && applying !== "…" && <p className="ph-sheet-text ph-red" role="alert">{applying}</p>}
+          </div>
+        )}
         {note && <p className="ph-sheet-text ph-quiet">{note}</p>}
         <p className={`ph-sheet-text ph-turn-note${result.error ? " ph-red" : props.offline ? " ph-amber" : ""}`} role={result.error ? "alert" : "status"}>
-          {props.offline ? `${props.offline}. Model, reasoning and speed can change once it's back.`
+          {props.offline ? `${props.offline}. ${props.onApplyAccess ? "Model, reasoning, speed and access" : "Model, reasoning and speed"} can change once it's back.`
             : result.error ? `Couldn't save: ${result.error}`
             : result.saving ? "Saving…"
             : result.saved ? props.working ? `Saved. ${name} finishes this reply first, then uses it.` : `Saved. ${name} uses it from its next reply.`

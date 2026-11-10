@@ -3,7 +3,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode 
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { Access, ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
-import { applyNowFirst } from './accessChange';
+import { accessOptions as accessOptionsFor, applyNowFirst } from './accessChange';
 import { Segmented } from './AgentPicker';
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from './speed';
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
@@ -279,12 +279,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
     ).filter(Boolean).map(line => <span key={line}>{line}<br /></span>)}</p>
   </> : null;
   const access = touched.current.access ?? config.access;
-  const accessOptions: { value: Access; text: string; title: string }[] = [
-    { value: 'read', text: 'Read-only', title: 'Read files. No edits or commands.' },
-    ...(!(tool === 'grok' || tool === 'muse') ? [{ value: 'ask' as const, text: 'Ask', title: 'Ask before edits and commands.' }] : []),
-    { value: 'edits', text: 'Edit', title: 'Edit files; ask before commands where supported.' },
-    { value: 'full', text: 'Full', title: 'Full access.' },
-  ];
+  const accessOptions = accessOptionsFor(tool);
   const commitEffort = (value: string) => {
     setEffort(value);
     if (value !== requested.current.effort || model !== requested.current.model) void apply({ effort: value });
