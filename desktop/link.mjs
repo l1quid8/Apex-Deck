@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
-import { sshArgs } from './hosts.mjs';
+import { LOCAL_NAME, sshArgs } from './hosts.mjs';
 import { lineReader } from './lines.mjs';
 
 /** How much of a child's stderr becomes the close reason. */
@@ -60,7 +60,7 @@ export function childLink(program, args, { onLine, onClose }) {
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (text) => { stderr = (stderr + text).slice(-LAST_WORDS * 2); });
   child.stdin.on('error', () => {});
-  child.once('error', (e) => { problem ||= e.code === 'ENOENT' ? `There is no ${program} on this Mac.` : e.message; });
+  child.once('error', (e) => { problem ||= e.code === 'ENOENT' ? `There is no ${program} on ${LOCAL_NAME.replace(/^This /, 'this ')}.` : e.message; });
   child.once('close', (code, signal) => {
     if (closed) return;
     closed = true;

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { quitQuestion, type Running } from "./closing.ts";
 import { discardQuestion } from "./unsavedEdits.ts";
 import type { Ask } from "./ConfirmDialog";
+import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 
 export type UpdateState = "disabled" | "idle" | "checking" | "up-to-date" | "downloading" | "verifying" | "ready" | "installing" | "error";
 
@@ -118,7 +119,7 @@ export function restartQuestion(busy: Running[]): { title: string; body: string;
   if (!asked) return null;
   return {
     ...asked,
-    body: "Installing restarts this Mac's background service, which ends them and anything they're running, and disconnects phones for about a minute. Threads and their messages are saved; replies in progress are not.",
+    body: `Installing restarts ${LOCAL_HOST_REFERENCE}'s background service, which ends them and anything they're running, and disconnects phones for about a minute. Threads and their messages are saved; replies in progress are not.`,
     action: "Restart and end them",
   };
 }

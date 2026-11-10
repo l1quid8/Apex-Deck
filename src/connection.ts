@@ -2,6 +2,7 @@
 // and the banner. Only the Electron app sets it.
 
 import type { Status } from "./daemon/client";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 
 export interface Connection {
   status: Status;
@@ -10,7 +11,7 @@ export interface Connection {
 }
 
 export function connectionStore() {
-  let current: Connection = { status: { kind: "connecting" }, host: "This Mac" };
+  let current: Connection = { status: { kind: "connecting" }, host: LOCAL_HOST_NAME };
   const listeners = new Set<() => void>();
   let retry = () => {};
   const change = (next: Connection) => {

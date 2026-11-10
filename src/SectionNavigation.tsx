@@ -5,6 +5,7 @@ import { nextLine, stripView } from "./answerStrip";
 import type { OpenCard } from "./approvals";
 import { ago, type Attention, type Signal } from "./attention";
 import type { AppSection } from "./types";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 
 const sections = [
   { id: "agents", label: "Agents" },
@@ -101,7 +102,7 @@ export function SectionNavigation({ section, onChange, flags = {}, onOpen, onMar
           return <div key={row.key} className="attention-item expanded">
             <button className="attention-row" onClick={go}>{body}</button>
             <div className="answer-strip" data-strip={row.paneId}>
-              <span className="answer-kind">{view.label} · Runs on {row.hostName ?? "This Mac"}</span>
+              <span className="answer-kind">{view.label} · Runs on {row.hostName ?? LOCAL_HOST_NAME}</span>
               {view.kind === "command"
                 ? <code className="answer-command">{view.command}</code>
                 : <><span className="answer-summary">{view.summary}</span><Diff text={view.diff} /></>}

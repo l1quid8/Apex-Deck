@@ -104,10 +104,15 @@ test('the layout menu follows keyboard selection, dismissal, and focus conventio
           assert.equal(await expanded(),'false');
           assert.equal(await run("document.activeElement.classList.contains('layout-picker-trigger')"),true);
           assert.deepEqual(await run('window.selections'),['right','horizontal'],'Escape never selects');
-          await key('Down'); await key('Tab');
+          await key('Down');
+          await until("document.activeElement.getAttribute('role')==='menuitemradio'");
+          await key('Tab');
+          await until("document.querySelector('.layout-picker-trigger').getAttribute('aria-expanded')==='false' && document.activeElement.id==='after'");
           assert.equal(await expanded(),'false'); assert.equal(await active(),'after','Tab moves beyond the menu');
-          await trigger(); await key('Down'); await key('Tab',['shift']);
-          await until("document.querySelector('.layout-picker-trigger').getAttribute('aria-expanded')==='false'");
+          await trigger(); await key('Down');
+          await until("document.activeElement.getAttribute('role')==='menuitemradio'");
+          await key('Tab',['shift']);
+          await until("document.querySelector('.layout-picker-trigger').getAttribute('aria-expanded')==='false' && document.activeElement.classList.contains('layout-picker-trigger')");
           assert.equal(await expanded(),'false');
           assert.equal(await run("document.activeElement.classList.contains('layout-picker-trigger')"),true,'Shift+Tab returns to the trigger');
           await key('Down');

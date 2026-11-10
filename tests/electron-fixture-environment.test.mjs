@@ -14,6 +14,8 @@ test('Electron fixtures keep requested content bounds and explicitly test both m
     const assert = require('node:assert/strict');
     app.whenReady().then(async () => {
       const win = new BrowserWindow({ show:false, width:1600, height:1000, useContentSize:true, enableLargerThanScreen:true, webPreferences:{ offscreen:true, backgroundThrottling:false } });
+      // enableLargerThanScreen permits the resize, but Windows still clamps constructor centering.
+      win.setContentSize(1600, 1000);
       const run = code => win.webContents.executeJavaScript(code);
       try {
         assert.ok(app.commandLine.hasSwitch('force-prefers-no-reduced-motion'), 'the fixture preference is explicit rather than inherited from the desktop');

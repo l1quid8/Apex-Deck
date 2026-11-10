@@ -14,19 +14,6 @@ fn token(data: &std::path::Path) -> String {
     std::fs::read_to_string(data.join("daemon-token")).unwrap().trim().to_string()
 }
 
-/// Persist an authorized fixture before the daemon starts. On Linux a local
-/// or legacy-token connection may use saved rooms, but cannot create authority.
-fn saved_room(data: &std::path::Path, id: &str, participants: Vec<serde_json::Value>) {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let host = apex_host::test_support::isolated_host_assuming_verified_ui(
-        apex_host::HostPaths { data: data.to_path_buf(), downloads: None },
-        runtime.handle().clone(),
-    );
-    let participants = participants.into_iter().map(|p| serde_json::from_value(p).unwrap()).collect();
-    host.room_create(id.into(), participants, Default::default(), None).unwrap();
-    host.shutdown();
-}
-
 #[test]
 fn serve_owns_the_folder_and_listens_on_a_private_socket() {
     let data = temp_dir();

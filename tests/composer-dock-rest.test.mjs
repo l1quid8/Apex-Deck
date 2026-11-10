@@ -17,7 +17,35 @@ test('multi mode shares the learned single-composer resting height', {timeout:30
   const server=await createServer({cacheDir:path.join(temp,'cache'),server:{port:0},logLevel:'error',plugins:[{name:'dock-rest',configureServer(vite){vite.middlewares.use('/__dock_rest',async(_req,res)=>{res.setHeader('Content-Type','text/html');const script=fixture.match(/<script type="module">([\s\S]*?)<\/script>/)[1];res.end(await vite.transformIndexHtml('/__dock_rest',fixture.replace(script,transform(script,{transforms:['jsx']}).code)));});}}]});
   try {
     await server.listen();const main=path.join(temp,'main.cjs');
-    fs.writeFileSync(main,`const{app,BrowserWindow}=require('electron'),assert=require('node:assert/strict');app.whenReady().then(async()=>{const win=new BrowserWindow({show:false,width:1100,height:650,enableLargerThanScreen:true,webPreferences:{backgroundThrottling:false}});const run=s=>win.webContents.executeJavaScript(s),sleep=n=>new Promise(r=>setTimeout(r,n));try{await win.loadURL(${JSON.stringify('http://localhost:'+server.httpServer.address().port+'/__dock_rest')});for(let i=0;i<100&&await run('!window.fixture||window.borrowed===undefined');i++)await sleep(20);const state=()=>run('({height:document.querySelector(".composer-dock").getBoundingClientRect().height,borrowed:window.borrowed})');const before=await state();assert.equal(before.borrowed,0);await run('fixture.multi(true)');await sleep(150);assert.deepEqual(await state(),before,'short multi mode cannot lower canonical resting height');await run('fixture.height(320)');await sleep(150);assert.ok((await state()).borrowed>100,'multi draft growth borrows space');await run('fixture.multi(false)');await sleep(150);assert.deepEqual(await state(),before,'returning to single does not carry a new resting height');win.destroy();app.exit(0);}catch(e){console.error(e.stack);win.destroy();app.exit(1);}});`);
+    fs.writeFileSync(main,`
+      const{app,BrowserWindow}=require('electron'),assert=require('node:assert/strict');
+      app.whenReady().then(async()=>{
+        const win=new BrowserWindow({show:false,width:1100,height:650,useContentSize:true,enableLargerThanScreen:true,webPreferences:{backgroundThrottling:false}});
+        win.setContentSize(1100,650);
+        const run=s=>win.webContents.executeJavaScript(s),sleep=n=>new Promise(r=>setTimeout(r,n));
+        const until=async(code,what)=>{for(let i=0;i<100;i++){if(await run(code))return;await sleep(20);}assert.fail('timed out: '+what);};
+        const state=()=>run('({height:document.querySelector(".composer-dock").getBoundingClientRect().height,borrowed:window.borrowed})');
+        try{
+          await win.loadURL(${JSON.stringify('http://localhost:'+server.httpServer.address().port+'/__dock_rest')});
+          assert.deepEqual(win.getContentSize(),[1100,650]);
+          assert.deepEqual(await run('[innerWidth,innerHeight]'),[1100,650]);
+          await until('!!window.fixture&&window.borrowed!==undefined','the initial dock measurement');
+          const before=await state();assert.equal(before.borrowed,0);
+          await run('fixture.multi(true)');
+          await until('!!document.querySelector(".multi-composer")&&document.querySelector(".composer-dock").getBoundingClientRect().height==='+before.height,'the short multi composer');
+          assert.deepEqual(await state(),before,'short multi mode cannot lower canonical resting height');
+          await run('fixture.height(320)');
+          await until('window.borrowed>100','the multi draft growth measurement');
+          assert.ok((await state()).borrowed>100,'multi draft growth borrows space');
+          await run('fixture.multi(false)');
+          // ResizeObserver reports after React has restored the single height.
+          // Await its callback too; the DOM alone can still have the old report.
+          await until('!document.querySelector(".multi-composer")&&window.borrowed===0','the single composer resting measurement');
+          assert.deepEqual(await state(),before,'returning to single does not carry a new resting height');
+          win.destroy();app.exit(0);
+        }catch(e){console.error(e.stack);win.destroy();app.exit(1);}
+      });
+    `);
     const result=await runElectronScenario(electron,main,temp,{timeoutMs:20000,attempts:1});assert.equal(result.code,0,result.output);
   } finally {await server.close();fs.rmSync(temp,{recursive:true,force:true});}
 });

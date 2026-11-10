@@ -336,7 +336,7 @@ ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
   if (!fromUi(event) || typeof line !== 'string') return;
   let frame; try { frame = JSON.parse(line); } catch { return; }
   if (hostId !== LOCAL && ['session_save', 'settings_save'].includes(frame.cmd)) {
-    event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
+    event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: `App preferences are owned by ${LOCAL_NAME}.` }));
     return;
   }
   // Remote coding rooms and phone-grant management use authenticated SSH;
@@ -548,7 +548,7 @@ handle('shell:snapshotDrop', async (_entry, file) => snapshotFile(String(file), 
 handle('shell:readLocalFile', async (_entry, host, file) => {
   // Only for sending a dropped file to another machine.
   const remote = remoteHost(host);
-  if (!remote) throw new Error('This Mac reads its own files.');
+  if (!remote) throw new Error(`${LOCAL_NAME} reads its own files.`);
   const info = await fs.promises.stat(String(file));
   if (info.isDirectory()) throw new Error(`Folders can't be sent to ${remote.name}; drop the files in it instead.`);
   if (info.size > SEND_LIMIT) throw new Error(`${path.basename(String(file))} is over 20 MB, too large to send to ${remote.name}.`);
@@ -809,6 +809,10 @@ const frontWindow = () => windows.get(BrowserWindow.getFocusedWindow()?.id) ?? [
 
 function menu() {
   const toWindow = (action) => () => frontWindow()?.win.webContents.send('menu', action);
+  const checkForUpdates = () => {
+    void updater?.check({ manual: true });
+    toWindow('updates')();
+  };
   const mac = process.platform === 'darwin';
   return Menu.buildFromTemplate([
     ...(mac ? [{
@@ -817,10 +821,7 @@ function menu() {
         { role: 'about' },
         {
           label: 'Check for Updates…',
-          click: () => {
-            void updater?.check({ manual: true });
-            toWindow('updates')();
-          },
+          click: checkForUpdates,
         },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: toWindow('settings') },
@@ -830,6 +831,14 @@ function menu() {
         { role: 'hide' },
         { role: 'hideOthers' },
         { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    }] : process.platform === 'win32' ? [{
+      label: 'File',
+      role: 'fileMenu',
+      submenu: [
+        { label: 'Settings…', accelerator: 'Ctrl+Shift+,', click: toWindow('settings') },
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -850,6 +859,17 @@ function menu() {
     },
     { label: 'Servers', submenu: [{ label: 'Manage Servers…', click: toWindow('hosts') }] },
     { role: 'windowMenu' },
+    ...(process.platform === 'win32' ? [{
+      label: 'Help',
+      role: 'help',
+      submenu: [
+        { role: 'about' },
+        {
+          label: 'Check for Updates…',
+          click: checkForUpdates,
+        },
+      ],
+    }] : []),
   ]);
 }
 

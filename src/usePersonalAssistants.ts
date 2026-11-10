@@ -9,6 +9,7 @@ import type { PersonalTask, PersonalTodo } from "./personalAssistant.ts";
 import type { PersonalAssistantRecord, PersonalLane, PersonalSettings, ConnectorState, BrowserView, BrowserInput } from "./personalAssistant.ts";
 import { unsupported as unsupportedCommand } from "./threadMove.ts";
 import { createProjectMemoryClient, PROJECT_MEMORY_CAPABILITY } from "./projectMemory.ts";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 
 import type { PersonalViewContext } from "./assistantViewContext.ts";
 export type PersonalAssistantsOptions = {
@@ -275,11 +276,11 @@ export class PersonalAssistantsCollection {
       seeNotices: () => after("personal_notices_seen", { upTo: Date.now() }),
       localHostId: this.localHostId,
       linkThisMac: async folder => {
-        need(); const mac = this.options.hosts.find(h => !h.remote); if (!mac || this.options.offlineHost(mac.id)) throw new Error("This Mac's Deck isn't running.");
+        need(); const mac = this.options.hosts.find(h => !h.remote); if (!mac || this.options.offlineHost(mac.id)) throw new Error(`${LOCAL_HOST_NAME}'s Deck isn't running.`);
         const local = this.options.hostBackend(mac.id), localId = this.owner(local);
         const assertOwner = () => {
           need();
-          if (this.options.hostBackend(mac.id) !== local || this.owner(local) !== localId || this.options.offlineHost(mac.id)) throw new Error("This Mac's identity changed while linking.");
+          if (this.options.hostBackend(mac.id) !== local || this.owner(local) !== localId || this.options.offlineHost(mac.id)) throw new Error(`${LOCAL_HOST_NAME}'s identity changed while linking.`);
         };
         const linked = await linkThisMacOn({ local, vps: route, assistantId: need(), assistantHostId: row.ref.hostId, folder, assertOwner });
         this.localHostId = linked.hostId;
@@ -355,7 +356,7 @@ export class PersonalAssistantsCollection {
       try {
         const assertOwner = () => {
           bound.need();
-          if (this.options.hostBackend(local.id) !== localRoute || this.owner(localRoute) !== localId || this.options.offlineHost(local.id)) throw new Error("This Mac's identity changed during a command.");
+          if (this.options.hostBackend(local.id) !== localRoute || this.owner(localRoute) !== localId || this.options.offlineHost(local.id)) throw new Error(`${LOCAL_HOST_NAME}'s identity changed during a command.`);
         };
         await runMachineBridge({ local: localRoute, vps: bound.route, assistantId: row.ref.assistantId, assistantHostId: row.ref.hostId, localHostId: localId, assertOwner });
       }

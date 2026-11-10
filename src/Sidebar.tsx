@@ -9,7 +9,7 @@ import { label as flagLabel, workspaceFlag, type Signal } from "./attention";
 import { workspaceHost } from "./hostSession.ts";
 import type { HostConnectionStore } from "./hostConnections";
 import { ageWords, hostTints, projectGroups, sidebarSections, twinPath, type ProjectBlock } from "./sidebarModel.ts";
-import { DOT_WORDS, dotState } from "./hostFacts.ts";
+import { DOT_WORDS, dotState, LOCAL_HOST_NAME } from "./hostFacts.ts";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { HoverCard, ProjectCard, ThreadCard, useHoverCard } from "./HoverCards";
 import { Glyph, ProjectFolder } from "./SidebarIcons";
@@ -118,7 +118,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const now = Date.now();
 
   const hostName = (hostId: string) => {
-    if (hostId === "local") return "This Mac";
+    if (hostId === "local") return LOCAL_HOST_NAME;
     const saved = hosts.find((h) => h.id === hostId)?.name;
     if (saved) return saved;
     try { return backend.machines?.connection(hostId).get().name ?? hostId; } catch { return hostId; }

@@ -11,7 +11,10 @@ for (const width of [1100, 1512]) test(`multi-thread composer keeps the original
     await win.loadURL(new URL('/branding/mark.svg',win.webContents.getURL()).href);
     await run('localStorage.clear();localStorage.setItem("apex-deck.demo.session.v1",'+JSON.stringify(JSON.stringify(session))+')');
     await load(); await until('!!document.querySelector(".composer-dock textarea")');
-    const look=async root=>{await run('document.activeElement?.blur()');await sleep(300);return run('(()=>{const box='+root+'.querySelector(".composer-box");if(!box)return "no .composer-box";const b=box.getBoundingClientRect();const s=getComputedStyle(box);return {left:Math.round(b.left),width:Math.round(b.width),radius:s.borderRadius,background:s.backgroundColor,border:s.borderTopColor,padding:s.padding}})()');};
+    // Compare the rendered sRGB pixels, independent of CSS color serialization.
+    // Blur starts a background transition; await that transition's completion.
+    await run('window.renderedColor=color=>{const canvas=document.createElement("canvas");canvas.width=canvas.height=1;const ctx=canvas.getContext("2d");ctx.fillStyle=color;ctx.fillRect(0,0,1,1);return [...ctx.getImageData(0,0,1,1).data]};void 0');
+    const look=async root=>run('(async()=>{document.activeElement?.blur();const box='+root+'.querySelector(".composer-box");if(!box)return "no .composer-box";getComputedStyle(box).backgroundColor;await Promise.all(box.getAnimations().map(a=>a.finished.catch(()=>{})));const b=box.getBoundingClientRect();const s=getComputedStyle(box);return {left:Math.round(b.left),width:Math.round(b.width),radius:s.borderRadius,background:renderedColor(s.backgroundColor),border:renderedColor(s.borderTopColor),padding:s.padding}})()');
     await frame();
     const single=await look('document.querySelector(".composer-dock-slot > .composer")');
     const to=await run('(()=>{const t=document.querySelector(".composer-dock-target");const s=getComputedStyle(t);return {left:Math.round(t.getBoundingClientRect().left),font:s.fontSize,color:s.color}})()');
@@ -20,7 +23,7 @@ for (const width of [1100, 1512]) test(`multi-thread composer keeps the original
       await until('!!document.querySelector(".rich-draft-editor")'); await frame();
     }
     await run('document.querySelector(".rich-draft-editor").focus()');
-    win.webContents.insertText('Please check the build'); await frame();
+    await win.webContents.insertText('Please check the build'); await frame();
 
     assert.deepEqual(await look('document.querySelector(".multi-composer")'),single,'the same box as the original composer');
     assert.equal(await run('(()=>{const d=document.querySelector(".composer-dock").getBoundingClientRect(),c=document.querySelector(".multi-composer").getBoundingClientRect();return Math.round(d.bottom-c.bottom)})()'),0,'the composer fills the dock: no band of dock under it');

@@ -3,6 +3,7 @@ import { useId, useRef, useState } from "react";
 import { answerLabel, choicesFor, sendApprovalAnswer, kindLabel, scopeLine, showsScope, type Answer } from "./approvalChoices";
 import { Markdown } from "./Markdown";
 import type { FileChange, ProposedAction } from "./types";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 
 /** A diff drawn line by line: added lines green, removed lines red. */
 export function Diff({ text }: { text: string }) {
@@ -46,7 +47,7 @@ interface CardProps {
  * says what Always allow would cover; others say it while Always allow is
  * hovered or focused.
  */
-export function ApprovalCard({ action, deadline = null, name, onDecide, request, by, hostName = "This Mac", disabled = false }: CardProps) {
+export function ApprovalCard({ action, deadline = null, name, onDecide, request, by, hostName = LOCAL_HOST_NAME, disabled = false }: CardProps) {
   const [answered, setAnswered] = useState<Answer | null>(null);
   const pending = useRef(false);
   const [error, setError] = useState("");

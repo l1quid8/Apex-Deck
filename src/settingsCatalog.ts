@@ -1,4 +1,6 @@
 // Shared catalog for grouped navigation, search, scope, anchors
+import { LOCAL_HOST_NAME, LOCAL_HOST_REFERENCE } from './hostFacts.ts';
+
 export type SettingsScope = 'app' | 'host' | 'new-thread' | 'all';
 export type SettingsSectionId = 
   | 'general' | 'appearance' | 'calls' | 'threads' | 'terminal'
@@ -29,23 +31,23 @@ export interface CatalogEntry {
 export const CATALOG_SECTIONS: CatalogSection[] = [
   { id: 'general', label: 'General', group: 'everyday', purpose: 'Daily behavior', scope: 'all', scopeLabel: 'All chats' },
   { id: 'appearance', label: 'Appearance', group: 'everyday', purpose: 'Look and feel, Light/Dark/System', scope: 'all', scopeLabel: 'All chats' },
-  { id: 'calls', label: 'Calls', group: 'everyday', purpose: 'Voice and call behavior', scope: 'host', scopeLabel: 'This Mac' },
+  { id: 'calls', label: 'Calls', group: 'everyday', purpose: 'Voice and call behavior', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
   { id: 'threads', label: 'New threads', group: 'work', purpose: 'Creation defaults and work preferences', scope: 'new-thread', scopeLabel: 'New threads only' },
   { id: 'terminal', label: 'Terminal', group: 'work', purpose: 'Make the terminal comfortable', scope: 'all', scopeLabel: 'All terminals' },
-  { id: 'shortcuts', label: 'Shortcuts', group: 'work', purpose: 'Keep the things you use close at hand', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'models', label: 'Models & providers', aliases: ['providers'], group: 'connections', purpose: 'Provider configuration and connected models', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'computers', label: 'Computers', aliases: ['hosts'], group: 'connections', purpose: 'The machines where your work happens', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'phones', label: 'Phones', group: 'connections', purpose: 'Your paired devices', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'computer', label: 'Unified Computer Use', group: 'capabilities', purpose: 'Let agents work with apps on this Mac', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'extensions', label: 'Extensions', aliases: ['mods'], group: 'capabilities', purpose: 'Add capabilities', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'gateway', label: 'Model gateway', group: 'capabilities', purpose: 'Use your model stack from other apps', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'data', label: 'Data & storage', group: 'maintenance', purpose: 'Migration, locations, maintenance', scope: 'host', scopeLabel: 'This Mac' },
-  { id: 'about', label: 'About & updates', group: 'maintenance', purpose: 'Version and diagnostics', scope: 'host', scopeLabel: 'This Mac' },
+  { id: 'shortcuts', label: 'Shortcuts', group: 'work', purpose: 'Keep the things you use close at hand', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'models', label: 'Models & providers', aliases: ['providers'], group: 'connections', purpose: 'Provider configuration and connected models', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'computers', label: 'Computers', aliases: ['hosts'], group: 'connections', purpose: 'The machines where your work happens', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'phones', label: 'Phones', group: 'connections', purpose: 'Your paired devices', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'computer', label: 'Unified Computer Use', group: 'capabilities', purpose: `Let agents work with apps on ${LOCAL_HOST_REFERENCE}`, scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'extensions', label: 'Extensions', aliases: ['mods'], group: 'capabilities', purpose: 'Add capabilities', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'gateway', label: 'Model gateway', group: 'capabilities', purpose: 'Use your model stack from other apps', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'data', label: 'Data & storage', group: 'maintenance', purpose: 'Migration, locations, maintenance', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
+  { id: 'about', label: 'About & updates', group: 'maintenance', purpose: 'Version and diagnostics', scope: 'host', scopeLabel: LOCAL_HOST_NAME },
 ];
 
 const SCOPE_LABEL: Record<SettingsScope, string> = {
   'app': 'All chats',
-  'host': 'This Mac',
+  'host': LOCAL_HOST_NAME,
   'new-thread': 'New threads only',
   'all': 'All chats'
 };

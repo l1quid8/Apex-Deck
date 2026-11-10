@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Backend, HostEntry } from "./backend";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 export function WorkspaceHostMenu({ backend, choose, manage }: { backend: Backend; choose(hostId: string): Promise<void>; manage(): void }) {
   const [open, setOpen] = useState(false); const [hosts, setHosts] = useState<HostEntry[]>([]); const [error, setError] = useState("");
   const root = useRef<HTMLSpanElement>(null);
@@ -33,7 +34,7 @@ export function WorkspaceHostMenu({ backend, choose, manage }: { backend: Backen
   }, [open]);
   const show = async () => {
     setOpen(v => !v); setError("");
-    try { setHosts(await backend.hosts?.list() ?? [{ id: "local", name: "This Mac", remote: false }]); }
+    try { setHosts(await backend.hosts?.list() ?? [{ id: "local", name: LOCAL_HOST_NAME, remote: false }]); }
     catch (e) { setError(String(e)); }
   };
   return <span ref={root} className="workspace-host-menu" onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); button.current?.focus(); } }}>

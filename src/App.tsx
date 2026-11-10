@@ -83,7 +83,7 @@ import { COPIED, folderCopyText } from "./threadCopy.ts";
 import { copyText } from "./copyText.ts";
 import { chooseOutcome, pickerRows, workInRows } from "./destinations.ts";
 import type { WorkContext } from "./WorkBar";
-import { dotState } from "./hostFacts.ts";
+import { dotState, LOCAL_HOST_NAME } from "./hostFacts.ts";
 import { MoveRefused, forkThread as importThreadFork, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
 import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
@@ -931,7 +931,7 @@ export function App() {
 
   // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
   // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
-  const chatMachines = useMemo(() => backend ? [{ id: "local", name: "This Mac" }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
+  const chatMachines = useMemo(() => backend ? [{ id: "local", name: LOCAL_HOST_NAME }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
   const chats = useDesktopChats({
     machines: chatMachines,
     backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
@@ -2329,7 +2329,7 @@ export function App() {
       return lane?.assistant ? [{ assistant: summary.ref, name: summary.name, hostName: summary.hostName, tasks: lane.assistant.tasks, todos: lane.assistant.taskManagerTodos, schedules: lane.assistant.schedules, revision: lane.assistant.revision, offline: summary.offline, observedAt: summary.lastSeen, routeHostId: host?.routeHostId }] : [];
     }), Object.values(currentAssistantRegistry.owners).flatMap(entry => entry.snapshot ? [{
       project: entry.snapshot.project ?? { hostId: entry.authenticatedHostId ?? entry.owner.hostId, workspaceId: entry.owner.workspaceId, cwd: entry.owner.cwd }, owner: entry.owner, authenticatedHostId: entry.authenticatedHostId,
-      name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId, hostName: entry.owner.hostId === 'local' ? 'This Mac' : hostNameFor(entry.owner.hostId),
+      name: workspaces.find(workspace => workspace.id === entry.owner.workspaceId)?.name ?? entry.owner.workspaceId, hostName: entry.owner.hostId === 'local' ? LOCAL_HOST_NAME : hostNameFor(entry.owner.hostId),
       snapshot: entry.snapshot, offline: offlineHost(entry.owner.hostId) || !!assistantTaskErrors[entry.owner.workspaceId] || !workspaceTaskHostMatches({ verifiedHostId: entry.snapshot.project?.hostId ?? entry.authenticatedHostId ?? null }, taskRouteStatus(entry.owner.hostId)), observedAt: entry.observedAt ?? 0,
     }] : []));
   } catch (cause) { workspaceTaskProblems.push(`Could not verify task owners: ${cause instanceof Error ? cause.message : String(cause)}`); }
@@ -2650,7 +2650,7 @@ export function App() {
       workRows: workInRows(workspaces, ["local", ...servers.map((h) => h.id)], here, offlineHost).map((r) => ({ ...r, hostName: hostNameFor(r.hostId), tint: tint(r.hostId), seen: seen(r.hostId) })),
       servers: servers.map((h) => ({ id: h.id, name: h.name, tint: tint(h.id), offline: offlineHost(h.id) })),
       choose: (id) => { const target = latest.current.workspaces.find((w) => w.id === id); if (target) choose(pane, target); },
-      newProject: (on = "local") => void projectOn(on, on === "local" ? "New project on This Mac" : `New project on ${hostNameFor(on)}`)
+      newProject: (on = "local") => void projectOn(on, on === "local" ? `New project on ${LOCAL_HOST_NAME}` : `New project on ${hostNameFor(on)}`)
         .then((made) => { if (made) choose(pane, made); }, (error) => toast(String(error))),
       noProject: () => {
         const none = latest.current.workspaces.find((w) => !w.path && !w.hidden && workspaceHost(w) === "local" && w.name === "No project");

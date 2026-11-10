@@ -4,7 +4,8 @@ import type { AgentInfo } from "./types";
 import type { ProjectMonitor } from "./apexAgentModel";
 import { startHub } from "./hub";
 import { hostConnectionStore } from "./hostConnections";
-const demo = hostConnectionStore("local", "This Mac");
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
+const demo = hostConnectionStore("local", LOCAL_HOST_NAME);
 demo.setStatus({ kind: "connected", hostId: "demo" });
 
 /** Hooks stay outside the pane map; a host's discovery never inherits the Mac's. */

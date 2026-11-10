@@ -1,6 +1,7 @@
 import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type ProjectRef } from './assistantIdentity.ts';
 import { assistantTasksForOwner, taskDisplayStatus, canReconcileTask, type AssistantTask, type AssistantTaskOwner, type AssistantTaskSnapshot } from './assistantTaskModel.ts';
 import type { Backend } from './backend.ts';
+import { LOCAL_HOST_NAME } from './hostFacts.ts';
 import type { PersonalTask, PersonalTodo, Schedule, PersonalAssistantRecord } from './personalAssistant.ts';
 
 export interface PersonalTaskSource {
@@ -88,7 +89,7 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
       const assistant = lineage(task, source.project);
       const status = taskDisplayStatus(task).toLowerCase().replaceAll(' ', '_');
       const key = workspaceTaskKey('project', { ...task.owner, ...source.project }, task.id);
-      rows.set(key, { key, source: 'project', assistant, project: source.project, taskId: task.id, title: task.originalRequest || task.brief, searchText: [task.result, ...task.evidence ?? []].filter(Boolean).join(' '), machineName: source.hostName ?? (source.owner.hostId === 'local' ? 'This Mac' : 'Remote machine'),
+      rows.set(key, { key, source: 'project', assistant, project: source.project, taskId: task.id, title: task.originalRequest || task.brief, searchText: [task.result, ...task.evidence ?? []].filter(Boolean).join(' '), machineName: source.hostName ?? (source.owner.hostId === 'local' ? LOCAL_HOST_NAME : 'Remote machine'),
         status, updatedAt: task.updatedAtMs, observedAt: source.observedAt, offline: source.offline, group: task.resultData?.dismissedAtMs != null || task.resultData?.deletedAtMs != null || task.resultData?.archivedAtMs != null ? 'done' : group(status),
         assistantName: assistant ? names.get(assistantIdentityKey(assistant)) ?? assistant.assistantId : 'Unassigned', projectName: source.name,
         dismissed: task.resultData?.dismissedAtMs != null || task.resultData?.deletedAtMs != null || task.resultData?.archivedAtMs != null, purgeBlocked: canReconcileTask(task) || task.attempts?.some(attempt => attempt.finishedAtMs == null), owner: task.owner, revision: task.revision, routeHostId: source.owner.hostId, verifiedHostId: canonical?.hostId ?? source.authenticatedHostId ?? null });
@@ -102,12 +103,12 @@ export function collectWorkspaceTasks(personalSnapshots: readonly PersonalTaskSo
     }
     for (const todo of source.todos ?? []) {
       const key = workspaceTaskKey('todo', source.assistant, todo.id);
-      rows.set(key, { key, source: 'todo', assistant: source.assistant, project: null, taskId: todo.id, title: todo.text, machineName: source.hostName ?? (source.routeHostId === 'local' ? 'This Mac' : 'Assistant machine'), status: todo.status, updatedAt: todo.updatedAt, observedAt: source.observedAt, offline: source.offline,
+      rows.set(key, { key, source: 'todo', assistant: source.assistant, project: null, taskId: todo.id, title: todo.text, machineName: source.hostName ?? (source.routeHostId === 'local' ? LOCAL_HOST_NAME : 'Assistant machine'), status: todo.status, updatedAt: todo.updatedAt, observedAt: source.observedAt, offline: source.offline,
         group: todo.status === 'done' ? 'done' : (todo.dueAt ?? todo.remindAt ?? 0) > Date.now() ? 'scheduled' : 'waiting', todo, assistantRevision: source.revision, assistantName: source.name, projectName: 'Personal', owner: null, revision: null, routeHostId: source.routeHostId ?? source.assistant.hostId, verifiedHostId: source.assistant.hostId });
     }
     for (const task of source.tasks) {
       const key = workspaceTaskKey('personal', source.assistant, task.id);
-      rows.set(key, { key, source: 'personal', assistant: source.assistant, project: null, taskId: task.id, title: task.goal, searchText: [task.lastUpdate, ...task.receipts?.map(receipt => receipt.outputExcerpt) ?? []].filter(Boolean).join(' '), machineName: source.hostName ?? (source.routeHostId === 'local' ? 'This Mac' : 'Assistant machine'),
+      rows.set(key, { key, source: 'personal', assistant: source.assistant, project: null, taskId: task.id, title: task.goal, searchText: [task.lastUpdate, ...task.receipts?.map(receipt => receipt.outputExcerpt) ?? []].filter(Boolean).join(' '), machineName: source.hostName ?? (source.routeHostId === 'local' ? LOCAL_HOST_NAME : 'Assistant machine'),
         status: task.status, updatedAt: task.updatedAt, observedAt: source.observedAt, offline: source.offline,
         dismissed: task.deletedAt != null, assistantRevision: source.revision, purgeBlocked: task.receipts?.some(receipt => receipt.finishedAt == null),
         group: task.deletedAt != null ? 'done' : task.status === 'failed' ? 'waiting' : task.status === 'waiting' && task.wait?.kind === 'timer' ? 'scheduled' : task.status === 'needsYou' && task.decision?.status === 'open' ? 'waiting' : ['queued', 'running', 'waiting', 'blocked', 'needsYou'].includes(task.status) ? 'working' : 'done',

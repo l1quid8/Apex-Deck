@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { HostEntry, HostsApi } from "./backend";
-import { classifyIdentity } from "./hostFacts.ts";
+import { classifyIdentity, LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import { ipcWords as words } from "./electronShell";
 
 // Edit connection… and Add a server: the same fields as Settings › Hosts.
@@ -59,7 +59,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
   const cmd = command.trim() || DEFAULT_COMMAND;
   const moved = !!editing && (ssh.trim() !== editing.ssh || cmd !== editing.command);
   const lower = name.trim().toLowerCase();
-  const taken = !!lower && hosts.some((h) => h.id !== editing?.id && h.name.toLowerCase() === lower);
+  const taken = lower === "this mac" || (!!lower && hosts.some((h) => h.id !== "local" && h.id !== editing?.id && h.name.toLowerCase() === lower));
   const edit = (set: (value: string) => void) => (value: string) => { set(value); setTest(null); setProblem(""); asked.current++; };
 
   const differentWords = () => `${ssh.trim()} is a different machine: its apex-daemon reports another host ID. ${uses ? `${label}'s ${uses} can't move there, so this address isn't saved.` : "This address isn't saved."} You can add it as a new server instead.`;
@@ -123,8 +123,8 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
       <form className="confirm connection-dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <strong id="connection-title">{title}</strong>
         <p className="muted">{add
-          ? <>The machine needs apex-daemon running (see docs/daemon-ubuntu.md) and an SSH key this Mac already uses for it. Run <code>ssh {ssh.trim() || "vps"}</code> once in Terminal first so its host key is known; Deck never asks for a password.</>
-          : <>Deck reaches {label} over SSH with a key this Mac already uses. It never asks for a password.</>}</p>
+          ? <>The machine needs apex-daemon running (see docs/daemon-ubuntu.md) and an SSH key {LOCAL_HOST_REFERENCE} already uses for it. Run <code>ssh {ssh.trim() || "vps"}</code> once in Terminal first so its host key is known; Deck never asks for a password.</>
+          : <>Deck reaches {label} over SSH with a key {LOCAL_HOST_REFERENCE} already uses. It never asks for a password.</>}</p>
         <label>Name<input ref={first} data-field="name" readOnly={saving} value={name} onChange={(event) => edit(setName)(event.target.value)} placeholder="vps" maxLength={40} autoComplete="off" /></label>
         {taken && <small className="conn-taken" role="alert">Another server is already called {name.trim()}.</small>}
         <label>SSH destination<input className="mono" data-field="ssh" readOnly={saving} value={ssh} onChange={(event) => edit(setSsh)(event.target.value)} placeholder="me@vps.example.com or a ~/.ssh/config Host" spellCheck={false} autoCapitalize="off" autoComplete="off" /></label>

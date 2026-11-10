@@ -8,6 +8,7 @@ import {
   spacedCode, timerText, type PairState,
 } from "./pairing";
 import { deckClipboard } from "./copyText";
+import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 
 // Phones → Pair phone: a big QR the phone scans, and a Copy link button.
 // The link text itself is never shown, so nobody copies a cut-off one. Codes
@@ -115,7 +116,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
         <strong id="pair-title">Pair a phone</strong>
 
         {turningOn && <p className="pair-note" role="status">Turning on phone connections…</p>}
-        {turnedOn && showCode && <p className="pair-note" role="status">Turned on phone connections so your phone can reach this Mac. Nothing was restarted.</p>}
+        {turnedOn && showCode && <p className="pair-note" role="status">Turned on phone connections so your phone can reach {LOCAL_HOST_REFERENCE}. Nothing was restarted.</p>}
 
         {showCode && <>
           <div className="pair-qr" aria-busy={!qr}>
@@ -164,7 +165,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
           </div>
           {pick && <div className="pair-thread-list">
             {threads === null && <small className="muted">…</small>}
-            {threads?.length === 0 && <small className="muted">No threads on this Mac yet.</small>}
+            {threads?.length === 0 && <small className="muted">No threads on {LOCAL_HOST_REFERENCE} yet.</small>}
             {threads?.map((t) => <label key={t.id}>
               <input type="checkbox" checked={picked.includes(t.id)} onChange={(e) => setPicked((old) => e.target.checked ? [...old, t.id] : old.filter((id) => id !== t.id))} />
               <span>{t.title}</span><small className="muted">{t.workspace}</small>

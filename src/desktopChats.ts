@@ -17,6 +17,7 @@ import { chatRows, chatTitle, emptyCatalog, findRoom, parseChatEntry, parseChatL
 import { DESKTOP_PROMOTES_KEY, parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets, type PromoteTicket } from "./chatPromote.ts";
 import { createChatDeliveryRpc } from "./phone/phoneChatDelivery.ts";
 import { watchChatDelivery } from "./phone/chatDeliveryWatch.ts";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 
 export const DESKTOP_CHAT_DELIVERY_KEY = "apex-deck.desktop-chat-delivery";
 export const OPEN_CHAT_KEY = "apex-deck.desktop-open-chat";
@@ -190,7 +191,7 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
     return kind === undefined ? hostId === "local" : kind === "connected";
   }, []);
   const held = useCallback((hostId: string, room: string) => promoteHolds(readPromoteTickets(live.current.storage, DESKTOP_PROMOTES_KEY), hostId, room, findRoom(catalogRef.current, hostId, room)?.promotedTo), []);
-  const machineName = useCallback((hostId: string) => hostId === "local" ? "This Mac" : live.current.machines.find((m) => m.id === hostId)?.name ?? catalogRef.current.hosts[hostId]?.name ?? hostId, []);
+  const machineName = useCallback((hostId: string) => hostId === "local" ? LOCAL_HOST_NAME : live.current.machines.find((m) => m.id === hostId)?.name ?? catalogRef.current.hosts[hostId]?.name ?? hostId, []);
 
   // One outbox for the window. A store that can't be read pauses sending instead of losing messages.
   const deliveryRef = useRef<{ controller: ChatDeliveryController | null; problem: string | null; holds: TrashDeliveryHolds | null } | null>(null);
