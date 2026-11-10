@@ -249,10 +249,10 @@ mod tests {
         assert!(copy.work.exists());
         assert_eq!(crate::bot_copies::load_copies(&data).len(), 1);
         assert!(
-            worktrees::remove(std::path::Path::new("/nonexistent-apex-test-data"), &root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
+            worktrees::remove(&data, &root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
         );
         assert!(
-            worktrees::forget(std::path::Path::new("/nonexistent-apex-test-data"), &root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
+            worktrees::forget(&data, &root, &copy.work, true, &data.join("apex-agent/tasks")).is_err()
         );
         fs::remove_dir_all(tmp).unwrap();
     }

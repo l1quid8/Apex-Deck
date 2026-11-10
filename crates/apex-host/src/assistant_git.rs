@@ -1074,6 +1074,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     fn empty_fixture() -> PathBuf {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = std::env::temp_dir().join(format!(
             "apex-assistant-git-{}-{}-{}",
             std::process::id(),
@@ -1084,14 +1085,15 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["init", "-q"]).unwrap();
+        git(project_data.path(), &root, &["init", "-q"]).unwrap();
         root
     }
     fn fixture() -> PathBuf {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = empty_fixture();
         std::fs::write(root.join("tracked.txt"), "base\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "tracked.txt"]).unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"),
+        git(project_data.path(), &root, &["add", "tracked.txt"]).unwrap();
+        git(project_data.path(),
             &root,
             &[
                 "-c",
@@ -1109,8 +1111,9 @@ mod tests {
     /// The filter gives up by itself so a failing test can't run forever.
     #[cfg(unix)]
     fn hang_saves(root: &Path) {
+        let project_data = crate::project_process::TestDataDir::new();
         std::fs::write(root.join(".git/hang.sh"), "echo $$ > .git/hang-pid\ni=0\nwhile [ $i -lt 300 ]; do sleep 0.05; i=$((i+1)); done\ncat\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), root, &["config", "filter.hang.clean", "sh .git/hang.sh"]).unwrap();
+        git(project_data.path(), root, &["config", "filter.hang.clean", "sh .git/hang.sh"]).unwrap();
         std::fs::write(root.join(".gitattributes"), "tracked.txt filter=hang\n").unwrap();
         std::fs::write(root.join("tracked.txt"), "edited\n").unwrap();
     }
@@ -1118,28 +1121,32 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_hung_save_ends_at_its_time_limit_and_leaves_nothing_behind() {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = fixture();
         hang_saves(&root);
         let started = std::time::Instant::now();
-        let error = within(GitLimit::new(std::time::Duration::from_millis(500), None), || capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "hung-save", "result")).unwrap_err();
+        let error = within(GitLimit::new(std::time::Duration::from_millis(500), None), || capture(project_data.path(), &root, "hung-save", "result")).unwrap_err();
         assert_eq!(error, SAVE_TOO_LONG);
         assert!(started.elapsed() < std::time::Duration::from_secs(8), "took {:?}", started.elapsed());
         let pid: i32 = std::fs::read_to_string(root.join(".git/hang-pid")).unwrap().trim().parse().unwrap();
-        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the filter Git started must die with it");
+        if let Some(pid) = crate::project_process::fixture_host_pid(&root, pid) {
+            assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the filter Git started must die with it");
+        }
         let left: Vec<_> = std::fs::read_dir(root.join(".git")).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with("apex-index") || name.ends_with(".lock")).collect();
         assert!(left.is_empty(), "{left:?}");
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["config", "--unset", "filter.hang.clean"]).unwrap();
-        capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "hung-save", "result").unwrap();
+        git(project_data.path(), &root, &["config", "--unset", "filter.hang.clean"]).unwrap();
+        capture(project_data.path(), &root, "hung-save", "result").unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn stopping_ends_a_hung_save_after_a_short_grace() {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = fixture();
         hang_saves(&root);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let started = std::time::Instant::now();
-        let error = within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "stopped-save", "result")).unwrap_err();
+        let error = within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(project_data.path(), &root, "stopped-save", "result")).unwrap_err();
         assert_eq!(error, SAVE_STOPPED);
         assert!(started.elapsed() >= STOP_GRACE, "a save that is merely slow gets its grace");
         assert!(started.elapsed() < STOP_GRACE + std::time::Duration::from_secs(6), "took {:?}", started.elapsed());
@@ -1147,46 +1154,48 @@ mod tests {
 
     #[test]
     fn a_stopped_job_still_saves_when_git_is_healthy() {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = fixture();
         std::fs::write(root.join("tracked.txt"), "edited\n").unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "paused-save", "result")).unwrap();
+        within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(project_data.path(), &root, "paused-save", "result")).unwrap();
     }
 
     #[test]
     fn a_limited_git_command_can_return_more_than_a_pipe_holds() {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = fixture();
         std::fs::write(root.join("big.txt"), "x".repeat(4 * 1024 * 1024)).unwrap();
-        let blob = git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["hash-object", "-w", "big.txt"]).unwrap();
-        let text = within(GitLimit::new(SAVE_LIMIT, None), || git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["cat-file", "blob", blob.trim()])).unwrap();
+        let blob = git(project_data.path(), &root, &["hash-object", "-w", "big.txt"]).unwrap();
+        let text = within(GitLimit::new(SAVE_LIMIT, None), || git(project_data.path(), &root, &["cat-file", "blob", blob.trim()])).unwrap();
         assert_eq!(text.len(), 4 * 1024 * 1024);
     }
 
     #[test]
     fn empty_committed_repository_captures_runs_and_integrates_without_touching_user_index() {
         let root=empty_fixture();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["-c","user.name=Fixture","-c","user.email=fixture@localhost","commit","--allow-empty","-qm","empty baseline"]).unwrap();
-        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["ls-files"]).unwrap().trim().is_empty());
-        let original_index=std::fs::read(root.join(".git/index")).ok();
-        let original_head=git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["rev-parse","HEAD"]).unwrap();
         let data=root.with_extension("data");
-        let baseline=capture(std::path::Path::new("/nonexistent-apex-test-data"), &root,"empty-tree","baseline").unwrap();
+        git(&data, &root,&["-c","user.name=Fixture","-c","user.email=fixture@localhost","commit","--allow-empty","-qm","empty baseline"]).unwrap();
+        assert!(git(&data, &root,&["ls-files"]).unwrap().trim().is_empty());
+        let original_index=std::fs::read(root.join(".git/index")).ok();
+        let original_head=git(&data, &root,&["rev-parse","HEAD"]).unwrap();
+        let baseline=capture(&data, &root,"empty-tree","baseline").unwrap();
         let task=prepare_worktree(&baseline,"empty-tree",&data).unwrap();
         // Result capture must also support a worker that has made no changes.
-        let unchanged=capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task,"empty-tree").unwrap();
-        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"), &task,&["ls-tree","--name-only",&unchanged.commit]).unwrap().trim().is_empty());
+        let unchanged=capture_result(&data, &task,"empty-tree").unwrap();
+        assert!(git(&data, &task,&["ls-tree","--name-only",&unchanged.commit]).unwrap().trim().is_empty());
         std::fs::write(task.join("created.txt"),"worker result\n").unwrap();
-        let result=capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task,"empty-tree").unwrap();
+        let result=capture_result(&data, &task,"empty-tree").unwrap();
         std::fs::write(root.join("human-note.txt"),"keep unrelated untracked work\n").unwrap();
         std::fs::write(root.join(".env"),"PRIVATE_FIXTURE=excluded\n").unwrap();
         let plan=stage_integration(&root,&baseline,&result.commit,"empty-tree",&data).unwrap();
-        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan,&data.join("apply.json")).unwrap();
+        apply_integration(&data, &plan,&data.join("apply.json")).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("created.txt")).unwrap(),"worker result\n");
         assert_eq!(std::fs::read_to_string(root.join("human-note.txt")).unwrap(),"keep unrelated untracked work\n");
         assert_eq!(std::fs::read_to_string(root.join(".env")).unwrap(),"PRIVATE_FIXTURE=excluded\n");
         assert_eq!(std::fs::read(root.join(".git/index")).ok(),original_index);
-        assert_eq!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["rev-parse","HEAD"]).unwrap(),original_head);
-        assert!(!git(std::path::Path::new("/nonexistent-apex-test-data"), &root,&["ls-tree","-r","--name-only",&plan.merged_commit]).unwrap().lines().any(|path|path==".env"));
+        assert_eq!(git(&data, &root,&["rev-parse","HEAD"]).unwrap(),original_head);
+        assert!(!git(&data, &root,&["ls-tree","-r","--name-only",&plan.merged_commit]).unwrap().lines().any(|path|path==".env"));
         std::fs::remove_dir_all(data).unwrap();std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1194,14 +1203,14 @@ mod tests {
     fn integration_accepts_file_directory_transitions_and_preserves_index() {
         for directory_first in [false, true] {
             let root = fixture();
+            let data = root.with_extension("data");
             if directory_first {
                 std::fs::create_dir_all(root.join("a/sub")).unwrap();
                 std::fs::write(root.join("a/sub/child"), "old").unwrap();
             } else { std::fs::write(root.join("a"), "old").unwrap(); }
-            git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "."]).unwrap();
-            git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "shape"]).unwrap();
-            let data = root.with_extension("data");
-            let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "shape", "baseline").unwrap();
+            git(&data, &root, &["add", "."]).unwrap();
+            git(&data, &root, &["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "shape"]).unwrap();
+            let baseline = capture(&data, &root, "shape", "baseline").unwrap();
             let task = prepare_worktree(&baseline, "shape", &data).unwrap();
             if directory_first {
                 std::fs::remove_dir_all(task.join("a")).unwrap();
@@ -1211,10 +1220,10 @@ mod tests {
                 std::fs::create_dir_all(task.join("a/sub")).unwrap();
                 std::fs::write(task.join("a/sub/child"), "new").unwrap();
             }
-            let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "shape").unwrap();
+            let result = capture_result(&data, &task, "shape").unwrap();
             let index = std::fs::read(root.join(".git/index")).unwrap();
             let plan = stage_integration(&root, &baseline, &result.commit, "shape", &data).unwrap();
-            apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("apply.json")).unwrap();
+            apply_integration(&data, &plan, &data.join("apply.json")).unwrap();
             assert_eq!(std::fs::read_to_string(root.join(if directory_first { "a" } else { "a/sub/child" })).unwrap(), "new");
             assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
         }
@@ -1222,12 +1231,13 @@ mod tests {
 
     #[test]
     fn dirty_snapshot_captures_staged_unstaged_and_new_files_without_changing_index() {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = fixture();
         std::fs::write(root.join("tracked.txt"), "staged\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "tracked.txt"]).unwrap();
+        git(project_data.path(), &root, &["add", "tracked.txt"]).unwrap();
         std::fs::write(root.join("tracked.txt"), "working\n").unwrap();
         std::fs::write(root.join("staged-new.txt"), "staged new\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "staged-new.txt"]).unwrap();
+        git(project_data.path(), &root, &["add", "staged-new.txt"]).unwrap();
         std::fs::write(root.join("new.txt"), "new\n").unwrap();
         std::fs::write(root.join(".env"), "SECRET=fixture\n").unwrap();
         std::fs::write(root.join(".env.example"), "EXAMPLE=placeholder\n").unwrap();
@@ -1237,9 +1247,9 @@ mod tests {
         std::fs::write(root.join(".apex-agent-exclude"), "private/*.json\ntracked.txt\n").unwrap();
         std::fs::write(root.join("private/token.json"), "private credential\n").unwrap();
         let index = std::fs::read(root.join(".git/index")).unwrap();
-        let snapshot = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "fixture", "baseline").unwrap();
+        let snapshot = capture(project_data.path(), &root, "fixture", "baseline").unwrap();
         assert_eq!(
-            git(std::path::Path::new("/nonexistent-apex-test-data"),
+            git(project_data.path(),
                 &root,
                 &["show", &format!("{}:tracked.txt", snapshot.commit)]
             )
@@ -1247,19 +1257,19 @@ mod tests {
             "working\n"
         );
         assert_eq!(
-            git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["show", &format!("{}:new.txt", snapshot.commit)]).unwrap(),
+            git(project_data.path(), &root, &["show", &format!("{}:new.txt", snapshot.commit)]).unwrap(),
             "new\n"
         );
         assert_eq!(
-            git(std::path::Path::new("/nonexistent-apex-test-data"),
+            git(project_data.path(),
                 &root,
                 &["show", &format!("{}:staged-new.txt", snapshot.commit)]
             )
             .unwrap(),
             "staged new\n"
         );
-        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["show", &format!("{}:.env", snapshot.commit)]).is_err());
-        assert!(git(std::path::Path::new("/nonexistent-apex-test-data"),
+        assert!(git(project_data.path(), &root, &["show", &format!("{}:.env", snapshot.commit)]).is_err());
+        assert!(git(project_data.path(),
             &root,
             &["show", &format!("{}:.env.example", snapshot.commit)]
         )
@@ -1275,16 +1285,17 @@ mod tests {
 
     #[test]
     fn earlier_attempt_snapshots_remain_reachable_after_later_results_and_gc() {
+        let project_data = crate::project_process::TestDataDir::new();
         let root = fixture();
         std::fs::write(root.join("tracked.txt"), "first attempt\n").unwrap();
-        let first = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &root, "durable-result").unwrap();
+        let first = capture_result(project_data.path(), &root, "durable-result").unwrap();
         std::fs::write(root.join("tracked.txt"), "second attempt\n").unwrap();
-        let second = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &root, "durable-result").unwrap();
+        let second = capture_result(project_data.path(), &root, "durable-result").unwrap();
         assert_ne!(first.commit, second.commit);
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["reflog", "expire", "--expire=now", "--all"]).unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["gc", "--prune=now"]).unwrap();
-        assert_eq!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["show", &format!("{}:tracked.txt", first.commit)]).unwrap(), "first attempt\n");
-        assert_eq!(git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["rev-parse", &format!("refs/apex/tasks/durable-result/snapshots/{}", first.commit)]).unwrap().trim(), first.commit);
+        git(project_data.path(), &root, &["reflog", "expire", "--expire=now", "--all"]).unwrap();
+        git(project_data.path(), &root, &["gc", "--prune=now"]).unwrap();
+        assert_eq!(git(project_data.path(), &root, &["show", &format!("{}:tracked.txt", first.commit)]).unwrap(), "first attempt\n");
+        assert_eq!(git(project_data.path(), &root, &["rev-parse", &format!("refs/apex/tasks/durable-result/snapshots/{}", first.commit)]).unwrap().trim(), first.commit);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1300,17 +1311,17 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-a", "baseline").unwrap();
+        let baseline = capture(&data, &root, "task-a", "baseline").unwrap();
         let task_a = prepare_worktree(&baseline, "task-a", &data).unwrap();
         std::fs::write(task_a.join("tracked.txt"), "task A\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &task_a, &["add", "tracked.txt"]).unwrap();
-        let result_a = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task_a, "task-a").unwrap().commit;
+        git(&data, &task_a, &["add", "tracked.txt"]).unwrap();
+        let result_a = capture_result(&data, &task_a, "task-a").unwrap().commit;
         std::fs::write(root.join("human.txt"), "human\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "human.txt"]).unwrap();
+        git(&data, &root, &["add", "human.txt"]).unwrap();
         let staged_index = std::fs::read(root.join(".git/index")).unwrap();
         let integration_a =
             stage_integration(&root, &baseline, &result_a, "task-a", &data).unwrap();
-        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &integration_a, &data.join("task-a-apply.json")).unwrap();
+        apply_integration(&data, &integration_a, &data.join("task-a-apply.json")).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "task A\n"
@@ -1324,11 +1335,11 @@ mod tests {
             staged_index
         );
 
-        let baseline_b = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-b", "baseline").unwrap();
+        let baseline_b = capture(&data, &root, "task-b", "baseline").unwrap();
         let task_b = prepare_worktree(&baseline_b, "task-b", &data).unwrap();
         std::fs::write(task_b.join("second.txt"), "task B\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &task_b, &["add", "second.txt"]).unwrap();
-        let result_b = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task_b, "task-b").unwrap().commit;
+        git(&data, &task_b, &["add", "second.txt"]).unwrap();
+        let result_b = capture_result(&data, &task_b, "task-b").unwrap().commit;
         let integration_b =
             stage_integration(&root, &baseline_b, &result_b, "task-b", &data).unwrap();
         assert!(
@@ -1338,7 +1349,7 @@ mod tests {
             "{:?}",
             integration_b.changed_paths
         );
-        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &integration_b, &data.join("task-b-apply.json")).unwrap();
+        apply_integration(&data, &integration_b, &data.join("task-b-apply.json")).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "task A\n"
@@ -1373,11 +1384,11 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-conflict", "baseline").unwrap();
+        let baseline = capture(&data, &root, "task-conflict", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-conflict", &data).unwrap();
         std::fs::write(task.join("tracked.txt"), "worker\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "tracked.txt"]).unwrap();
-        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-conflict").unwrap().commit;
+        git(&data, &task, &["add", "tracked.txt"]).unwrap();
+        let result = capture_result(&data, &task, "task-conflict").unwrap().commit;
         std::fs::write(root.join("tracked.txt"), "human\n").unwrap();
         let before = std::fs::read(root.join("tracked.txt")).unwrap();
         assert!(stage_integration(&root, &baseline, &result, "task-conflict", &data).is_err());
@@ -1392,10 +1403,18 @@ mod tests {
     fn integration_preserves_rename_binary_executable_mode_symlink_add_and_delete() {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let root = fixture();
+        let data = root.parent().unwrap().join(format!(
+            "apex-assistant-data-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::write(root.join("old name.bin"), [0, 255, 1, 2]).unwrap();
         std::fs::write(root.join("remove.txt"), "remove\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &["add", "old name.bin", "remove.txt"]).unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"),
+        git(&data, &root, &["add", "old name.bin", "remove.txt"]).unwrap();
+        git(&data,
             &root,
             &[
                 "-c",
@@ -1408,16 +1427,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let data = root.parent().unwrap().join(format!(
-            "apex-assistant-data-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-types", "baseline").unwrap();
+        let baseline = capture(&data, &root, "task-types", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-types", &data).unwrap();
         std::fs::rename(task.join("old name.bin"), task.join("renamed.bin")).unwrap();
         std::fs::write(task.join("renamed.bin"), [9, 0, 255, 3]).unwrap();
@@ -1428,15 +1439,15 @@ mod tests {
         .unwrap();
         std::fs::remove_file(task.join("remove.txt")).unwrap();
         symlink("renamed.bin", task.join("link.bin")).unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "-A"]).unwrap();
-        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-types").unwrap().commit;
+        git(&data, &task, &["add", "-A"]).unwrap();
+        let result = capture_result(&data, &task, "task-types").unwrap().commit;
         let plan = stage_integration(&root, &baseline, &result, "task-types", &data).unwrap();
         assert!(
             plan.changed_paths.contains(&"renamed.bin".to_string()),
             "{:?}",
             plan.changed_paths
         );
-        apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("task-types-apply.json")).unwrap();
+        apply_integration(&data, &plan, &data.join("task-types-apply.json")).unwrap();
         assert!(!root.join("old name.bin").exists());
         assert!(!root.join("remove.txt").exists());
         assert_eq!(
@@ -1458,7 +1469,7 @@ mod tests {
         archive_worktree(&root, "task-types", &data).unwrap();
         assert!(!task.exists());
         assert!(!plan.scratch_path.exists());
-        assert!(run_git(std::path::Path::new("/nonexistent-apex-test-data"),
+        assert!(run_git(&data,
             &root,
             None,
             &["cat-file", "-e", &format!("{}^{{commit}}", result)],
@@ -1481,15 +1492,15 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-stale", "baseline").unwrap();
+        let baseline = capture(&data, &root, "task-stale", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-stale", &data).unwrap();
         std::fs::write(task.join("tracked.txt"), "worker\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "tracked.txt"]).unwrap();
-        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-stale").unwrap().commit;
+        git(&data, &task, &["add", "tracked.txt"]).unwrap();
+        let result = capture_result(&data, &task, "task-stale").unwrap().commit;
         let plan = stage_integration(&root, &baseline, &result, "task-stale", &data).unwrap();
         std::fs::write(root.join("tracked.txt"), "new human edit\n").unwrap();
         let index = std::fs::read(root.join(".git/index")).unwrap();
-        assert!(apply_integration(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("stale.json")).is_err());
+        assert!(apply_integration(&data, &plan, &data.join("stale.json")).is_err());
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "new human edit\n"
@@ -1512,11 +1523,11 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&data).unwrap();
-        let baseline = capture(std::path::Path::new("/nonexistent-apex-test-data"), &root, "task-recover", "baseline").unwrap();
+        let baseline = capture(&data, &root, "task-recover", "baseline").unwrap();
         let task = prepare_worktree(&baseline, "task-recover", &data).unwrap();
         std::fs::write(task.join("tracked.txt"), "worker result\n").unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &task, &["add", "tracked.txt"]).unwrap();
-        let result = capture_result(std::path::Path::new("/nonexistent-apex-test-data"), &task, "task-recover").unwrap().commit;
+        git(&data, &task, &["add", "tracked.txt"]).unwrap();
+        let result = capture_result(&data, &task, "task-recover").unwrap().commit;
         let plan = stage_integration(&root, &baseline, &result, "task-recover", &data).unwrap();
         std::fs::write(root.join("tracked.txt"), "worker result\n").unwrap();
         let journal_path = data.join("recover.json");
@@ -1531,7 +1542,7 @@ mod tests {
             },
         )
         .unwrap();
-        reconcile_interrupted_apply(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &journal_path).unwrap();
+        reconcile_interrupted_apply(&data, &plan, &journal_path).unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
             "base\n"
@@ -1542,7 +1553,7 @@ mod tests {
         // An edit made after a crash on a task-touched path is human work too.
         write_journal(&data.join("recover-human.json"), &ApplyJournal { version: 1, task_id: "task-recover".into(), phase: "applying".into(), completed_paths: vec![], merged_commit: plan.merged_commit.clone() }).unwrap();
         std::fs::write(root.join("tracked.txt"), "human edited after crash\n").unwrap();
-        assert!(reconcile_interrupted_apply(std::path::Path::new("/nonexistent-apex-test-data"), &plan, &data.join("recover-human.json")).is_err());
+        assert!(reconcile_interrupted_apply(&data, &plan, &data.join("recover-human.json")).is_err());
         assert_eq!(std::fs::read_to_string(root.join("tracked.txt")).unwrap(), "human edited after crash\n");
         let _ = archive_worktree(&root, "task-recover", &data);
         std::fs::remove_dir_all(root).unwrap();
