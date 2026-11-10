@@ -84,6 +84,7 @@ import { HexColorPicker } from "./HexColorPicker";
 import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { QuestionForm } from "./QuestionForm";
+import { ReplyNextSteps } from "./ReplyNextSteps";
 import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, type FormView } from "./questions";
 import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
@@ -1022,9 +1023,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   // The thread's Plan switch, as the host keeps it.
   const [planOn, setPlanOn] = useState(false);
   const setPlan = (on: boolean) => backend.roomSetPlan(pane.id, on).catch((error) => notify(`Could not ${on ? "turn Plan on" : "turn Plan off"}: ${String(error)}`, "error"));
-  // The form above the composer: a bot's question, or next steps after a reply.
+  // Questions stay with the composer; follow-ups live beneath their reply.
   const questionState = useSyncExternalStore(subscribeQuestions, questionSnapshot);
   const form = formView(questionState[pane.id]);
+  const composerForm: FormView = form.kind === "question" ? form : { kind: "none" };
   const [highlighted, setHighlighted] = useState(-1);
   const [formFolded, setFormFolded] = useState(false);
   const [formNotice, setFormNotice] = useState<string | null>(null);
@@ -2753,7 +2755,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   };
   /** A key in the composer that the form takes. True when it was handled. */
   const formKeys = (key: string) => {
-    const act = formKey(key, text === "", form, highlighted);
+    const act = formKey(key, text === "", composerForm, highlighted);
     if (act.act === "none") return false;
     if (act.act === "move") setHighlighted(act.index);
     else if (act.act === "dismiss") dismissSteps(pane.id);
@@ -4019,6 +4021,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   };
                   return <SavedSteps count={saved.count} cached={loadedSteps.current.get(seq) ?? null} load={load} />;
                 })()}
+                {form.kind === "steps" && form.offer.by === entry.message.speaker.id && newestReply.get(entry.message.speaker.id) === entry.message.seq &&
+                  <ReplyNextSteps key={formKeyId} offer={form.offer} onStep={sendStep} />}
               </div>
               {messageActions(entry.message)}
             </div>
@@ -4206,7 +4210,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
-        {!profileMode && <QuestionForm view={form} nameOf={(id) => names.get(id) ?? id} colorOf={color}
+        {!profileMode && <QuestionForm view={composerForm} nameOf={(id) => names.get(id) ?? id} colorOf={color}
           highlighted={highlighted} collapsed={formFolded} notice={formNotice}
           onHighlight={setHighlighted} onExpand={() => setFormFolded(false)}
           onAnswer={answerQuestion} onStep={sendStep} onDismiss={() => dismissSteps(pane.id)} />}
@@ -4299,7 +4303,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             }
           }}
           rows={1}
-          placeholder={chatBlocked ?? (waitingForOwner ? "Waiting for Deck…" : voiceHint ?? (form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder))}
+          placeholder={chatBlocked ?? (waitingForOwner ? "Waiting for Deck…" : voiceHint ?? copy.placeholder)}
           disabled={chatReadOnly || !roomReady || participants.length === 0}
         />
           </div>
