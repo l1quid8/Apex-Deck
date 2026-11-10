@@ -37,7 +37,7 @@ test('a Next button drawn for one machine\'s chat sends nothing once another mac
   loadedSteps:{current:new Map()},refreshSteps:{current:()=>{}},catalogRef:{current:{hosts:{}}},delivery,
   setRoom:next=>{env.room=typeof next==='function'?next(env.room):next;env.roomRef.current=env.room},
   setNotice:n=>notices.push(n),words:String,useEffect:cb=>cb(),chatGate:null,
-  setSavedSteps:()=>{},setWaiting:()=>{},setBusy:()=>{},setCuts:()=>{},queues:{current:new Map()},stuckRef:{current:false},
+  setSavedSteps:()=>{},setWaiting:()=>{},setBusy:()=>{},setCuts:()=>{},queues:{current:new Map()},stuckRef:{current:false},stick:near=>{env.stuckRef.current=near},
   chatOnline:true,openRights:{post:true},linkOf:()=>({id:'B',status:'online'}),roomFor:row=>env.room&&env.room.id===row.id&&env.room.hostId===row.hostId?env.room:null,draft:{text:'',files:[]},mayPostIn,
   chatRoute,chatMachine:id=>({name:'Machine '+id}),queueFor:()=>{throw Error('Work queue must not run')},findRoom:()=>null,
   promoteHolds,readPromoteTickets,localStorage:{getItem:()=>null},

@@ -101,8 +101,9 @@ import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } 
 import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
-import { archivedDetail, foldChoice, machineGroups, machineNote, readFolds, threadState } from "./threadListRules";
-import { edgeSwipe, holdStrip, neighbour, roomFits, stripPosition, swipeBlocked, swipeIntent, swipeRelease, swipeStrip, type StripHold, type SwipePane } from "./threadSwipe";
+import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
+import { edgeSwipe, neighbour, roomFits, stripPosition, swipeBlocked, swipeIntent, swipeRelease } from "./threadSwipe";
+import { afterClose, openKeyParts, openStrip, pruneOpenThreads, readOpenThreads, withOpenThread, withoutOpenThread, writeOpenThreads, type OpenKey } from "./openThreads";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
@@ -135,6 +136,8 @@ const DRAFT_KEY = "apex-deck.phone.drafts.v1";
 const FOLDS_KEY = "apex-deck.phone.folds.v1";
 /** The bot bar under a thread's title: "shut" when folded into the title bar. One choice for every thread, kept on this phone. */
 const CREW_KEY = "apex-deck.phone.crew.v1";
+/** The threads open on this phone, in the order they were opened: swiping moves through these and no others. */
+const OPEN_KEY = "apex-deck.phone.openThreads.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
 type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
@@ -174,9 +177,9 @@ type Room = {
 };
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
-/** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
+/** Long-press or ⋯ on a row, + at the top of Threads, renaming a thread, or the threads open on this phone. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
-  | { kind: "artifacts"; id: string } | { kind: "delete"; id: string } | { kind: "archived" } | { kind: "remove"; id: string };
+  | { kind: "artifacts"; id: string } | { kind: "delete"; id: string } | { kind: "archived" } | { kind: "remove"; id: string } | { kind: "open" };
 /** What a chat adds to the thread view: its banner and the messages its outbox still holds. */
 interface ChatThreadExtras {
   banner: ReactNode;
@@ -411,6 +414,13 @@ export function PhoneApp() {
   const setTldr = (id: string, on: boolean) => { saveTldr(id, on); setTldrs((all) => ({ ...all, [id]: on })); };
   const [folded, setFolded] = useState<Record<string, boolean>>(() => { try { return readFolds(localStorage.getItem(FOLDS_KEY)); } catch { return {}; } });
   useEffect(() => { try { localStorage.setItem(FOLDS_KEY, JSON.stringify(folded)); } catch { /* retain choices for this session */ } }, [folded]);
+  // The threads open on this phone, in opening order: what a swipe moves through, and what ⋯ → Close
+  // thread takes out. Saved, because iOS shuts apps down in the background and the set would otherwise
+  // be empty on the way back.
+  const [openThreads, setOpenThreads] = useState<OpenKey[]>(() => { try { return readOpenThreads(localStorage.getItem(OPEN_KEY)); } catch { return []; } });
+  useEffect(() => {
+    try { localStorage.setItem(OPEN_KEY, writeOpenThreads(openThreads)); } catch { /* the set lasts for this session */ }
+  }, [openThreads]);
   const [notice, setNotice] = useState("");
   noticeRef.current = setNotice;
   if (gateRef.current === null) gateRef.current = createPairingGate((message) => noticeRef.current(message));
@@ -1460,14 +1470,20 @@ export function PhoneApp() {
   useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
 
   // Follow the newest message and a reply as it streams in, unless the person scrolled up to read.
+  // Whether they had is remembered per thread: an open thread you swiped away from while reading an
+  // older reply comes back to that reply, where one you left at the end comes back to the end.
   const stuckRef = useRef(true);
+  const stuckByKey = useRef(new Map<string, boolean>());
+  const stick = (near: boolean) => { stuckRef.current = near; if (openKey) stuckByKey.current.set(openKey, near); };
   const shownRef = useRef<string | null>(null);
   const streamed = room ? Object.values(room.working).reduce((sum, turn) => sum + turn.text.length + turn.steps.length + turn.work.steps.length + turn.work.todo.length + 1, 0) : 0;
+  const shownKey = openKey ?? openId;
   useEffect(() => {
-    if (shownRef.current !== openId) stuckRef.current = true;
-    shownRef.current = openId;
+    if (shownRef.current !== shownKey) stuckRef.current = stuckByKey.current.get(shownKey ?? "") ?? true;
+    shownRef.current = shownKey;
     if (stuckRef.current) endRef.current?.scrollIntoView({ block: "end" });
-  }, [room?.messages.length, room?.approvals.length, openId, streamed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.messages.length, room?.approvals.length, shownKey, streamed]);
 
   async function send() {
     const id = openId;
@@ -1483,7 +1499,7 @@ export function PhoneApp() {
     if (!host) return;
     // One send at a time: a second tap must not post twice or start a second thread.
     sendingRef.current = true;
-    stuckRef.current = true;
+    stick(true);
     setSending(true);
     try {
       const starter = (session?.profiles ?? [])[0] ?? null;
@@ -1599,7 +1615,7 @@ export function PhoneApp() {
       const queued = enqueueChat(openChat, step.prompt, [by]);
       if (!queued) return;
       setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current);
-      stuckRef.current = true;
+      stick(true);
       delivery.send(queued.chatId, queued.messageId).catch((error) => setNotice(words(error)));
       return;
     }
@@ -1873,6 +1889,8 @@ export function PhoneApp() {
       return;
     }
     if (openId === pane.id) setOpenId(null);
+    // A deleted thread must leave the open set too, or a swipe would land on a page that opens nothing.
+    setOpenThreads((list) => withoutOpenThread(list, threadKey({ id: pane.id, hostId }, hostId)));
     try {
       await host.backend.roomDelete(pane.id);
     } catch (error) {
@@ -1995,14 +2013,14 @@ export function PhoneApp() {
       if (openChat.id !== paneId || shown.hostId !== openChat.hostId) return;
       const queued = enqueueChat(openChat, body, []);
       if (!queued) return;
-      stuckRef.current = true;
+      stick(true);
       delivery.send(queued.chatId, queued.messageId).catch((error) => setNotice(words(error)));
       return;
     }
     if (openLink.status !== "online") { setNotice(downLine(openLink)); return; }
     const key = `${queueKey(openLink.id, paneId)}\u0000${body}`;
     queuedDrafts.current.set(key, { draft: { text: MORE_DETAILS, files: [] }, quotes: [quote], inBox: false });
-    stuckRef.current = true;
+    stick(true);
     queueFor(paneId, openLink.id).send(body).catch((error) => { queuedDrafts.current.delete(key); setNotice(words(error)); });
   }
 
@@ -2077,7 +2095,7 @@ export function PhoneApp() {
         const box = threadKey({ id: paneId }, host.machine.id);
         setDrafts((all) => ({ ...all, [box]: { ...(all[box] ?? emptyDraft()), text: splitTldr(message.text).text } }));
       }
-      if (kind === "retry" && bot) { stuckRef.current = true; queueFor(paneId, host.machine.id).turn([bot], null); }
+      if (kind === "retry" && bot) { stick(true); queueFor(paneId, host.machine.id).turn([bot], null); }
     } catch (error) {
       setNotice(`Could not ${kind}: ${words(error)}`);
     }
@@ -2137,26 +2155,15 @@ export function PhoneApp() {
   }
 
   const draft = openKey ? draftFor(openKey) : emptyDraft();
-  // ---- Swiping between threads ---------------------------------------------------------------
-  // The Code tab swipes between terminals; a thread swipes the same way, in the order the Threads
-  // list shows them. Swiping is how the single thread on screen is chosen, where the Mac has one
-  // pane focused and the others beside it. The order is held while a thread is open, so a reply
-  // that starts another thread can't move the one under your thumb.
-  const swipeKeyOf = (pane: SwipePane) => threadKey(pane, sessionHost(pane as AssistantVisiblePane));
-  const swipeList = useMemo(() => swipeStrip([
-    sections.pinned,
-    ...machineGroups(sections.projects, (block) => workspaceHost(block.workspace), links).flatMap((group) => group.projects.map((block) => block.panes)),
-    chatPlaces.panes,
-  ], swipeKeyOf),
-    // sessionHost reads the projects, so they are part of what this order is made from.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sections, links, chatPlaces, workspaces]);
-  const stripHold = useRef<StripHold | null>(null);
-  stripHold.current = holdStrip(stripHold.current, swipeList, openKey ?? null);
-  const swipeKeys = stripHold.current.keys;
+  // ---- Swiping between open threads ----------------------------------------------------------
+  // The Code tab swipes between terminals; a thread swipes the same way. What a swipe moves through
+  // here is this phone's own open set (openThreads.ts) — the threads you opened, in the order you
+  // opened them — not every thread in the Threads list, which on a phone would mean passing threads
+  // you never asked for. The set is saved, so closing the app doesn't close them.
+  const swipeKeyOf = (pane: AssistantVisiblePane) => threadKey(pane, sessionHost(pane));
   /** What a peek shows of a thread not on screen: its name, where it lives, and what it is doing. */
-  const swipeRow = (pane: SwipePane): SwipeRow => {
-    const hostId = sessionHost(pane as AssistantVisiblePane);
+  const swipeRow = (pane: AssistantVisiblePane): SwipeRow => {
+    const hostId = sessionHost(pane);
     const at = queueKey(hostId, pane.id);
     const state = threadState({
       down: machineNote(linkOf(hostId) ?? null).down,
@@ -2180,25 +2187,66 @@ export function PhoneApp() {
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sections, chatPlaces, workspaces, links, waiting, busy, session]);
-  const swipePeek = (to: "next" | "previous") => {
-    const key = neighbour(swipeKeys, openKey ?? null, to);
-    return (key && swipeRows.get(key)) || null;
-  };
-  /** A swipe, or the end that says nothing opens: the thread on that side, if there is one. */
-  const swipeTo = (to: "next" | "previous") => {
-    const target = swipePeek(to);
-    if (!target) return;
-    // The next thread starts at its newest message, as opening it from the list does.
-    stuckRef.current = true;
-    const saved = panes.find((pane) => pane.id === target.id && sessionHost(pane) === target.hostId);
+  // Open threads in opening order, minus any whose list this phone hasn't loaded yet: there is no
+  // title or machine to show for those, so they wait rather than being swiped onto.
+  const swipeKeys = useMemo(() => openStrip(openThreads, (key) => swipeRows.has(key)), [openThreads, swipeRows]);
+  const openPaneKey = openPane ? threadKey(openPane, openHostId) : null;
+  /** Show the thread a key names, from the Mac's saved list or from a machine's own chat list. */
+  const showThreadKey = (key: OpenKey) => {
+    const parts = openKeyParts(key);
+    if (!parts) return;
+    const saved = panes.find((pane) => pane.id === parts.id && (sessionHost(pane) || "local") === parts.hostId);
     if (saved) { openThread(saved.id); return; }
-    // A Work thread made from a chat belongs to its machine, not to the Mac's saved session.
-    setOpenHost(target.hostId);
-    setOpenId(target.id);
+    // A chat, or a Work thread made from one, belongs to its machine, not to the Mac's saved session.
+    setOpenHost(parts.hostId);
+    setOpenId(parts.id);
     setTab("threads");
     setSheet(null);
     setMenu(null);
     setAsk(null);
+  };
+  /**
+   * Close the thread on screen: out of the open set, its neighbour shown, and the conversation left
+   * where it was in the Threads list. Closing the last one goes back to the list. Delete is the one
+   * that removes it; this one only closes the window.
+   */
+  const closeThread = (key: OpenKey) => {
+    setMenu(null);
+    setChatSheet(null);
+    setOpenThreads((list) => withoutOpenThread(list, key));
+    if (openKey !== key) return;
+    const next = afterClose(swipeKeys, key);
+    if (next) showThreadKey(next);
+    else setOpenId(null);
+  };
+  // Opening a thread puts it in the open set — from the list, a chat, a task, a notification or a
+  // swipe. Opening one that is already open focuses it and leaves its place alone, so the threads
+  // beside it don't move. An unsent draft has no room yet, so it stays out until it is sent.
+  useEffect(() => { if (openPaneKey) setOpenThreads((list) => withOpenThread(list, openPaneKey)); }, [openPaneKey]);
+  // Housekeeping, whenever a thread list refreshes: a thread deleted, archived or whose project went
+  // leaves the set. A machine this phone hasn't loaded yet, or that is away, keeps its threads,
+  // because they come back — only a thread we can see is gone is dropped.
+  useEffect(() => {
+    const alive = (key: OpenKey): boolean | null => {
+      const parts = openKeyParts(key);
+      if (!parts) return false;
+      const saved = panes.find((pane) => pane.id === parts.id && (sessionHost(pane) || "local") === parts.hostId);
+      if (saved) return !saved.archived;
+      if (!chatView.hosts[parts.hostId]) return null;
+      const row = findRoom(chatView, parts.hostId, parts.id);
+      return row ? !row.archived : false;
+    };
+    setOpenThreads((list) => { const next = pruneOpenThreads(list, alive); return next.length === list.length ? list : next; });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panes, chatView]);
+  const swipePeek = (to: "next" | "previous") => {
+    const key = neighbour(swipeKeys, openKey ?? null, to);
+    return (key && swipeRows.get(key)) || null;
+  };
+  /** A swipe, or the end where nothing happens: the open thread on that side, if there is one. */
+  const swipeTo = (to: "next" | "previous") => {
+    const key = neighbour(swipeKeys, openKey ?? null, to);
+    if (key) showThreadKey(key);
   };
   // The open thread's queued messages, and whether Send would queue: everyone it goes to is mid-reply.
   // The room on screen is the open thread's only when it came from that thread's machine too. Everything
@@ -2343,7 +2391,7 @@ export function PhoneApp() {
     const queued = enqueueChat(row, body, []);
     if (!queued) return;
     const { chatId, messageId } = queued;
-    stuckRef.current = true;
+    stick(true);
     setDrafts((all) => ({ ...all, [id]: { text: (all[id]?.text ?? "") === sent.text ? "" : all[id]?.text ?? "", files: [] } }));
     if (sentQuotes.length) setQuotes((all) => ({ ...all, [id]: (all[id] ?? []).filter((quote) => !sentQuotes.includes(quote)) }));
     setNotice("");
@@ -2438,7 +2486,7 @@ export function PhoneApp() {
             approvalStays={openPane ? Boolean(approvalStays[openPane.id]) : false}
             other={links.find((link) => link.kind === "server" && link.status === "online" && link.id !== openLink.id) ?? null}
             endRef={endRef}
-            onScrolled={(near) => { stuckRef.current = near; }}
+            onScrolled={(near) => stick(near)}
             onResized={(chat) => { if (stuckRef.current) chat.scrollTop = chat.scrollHeight; }}
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
@@ -2782,6 +2830,10 @@ export function PhoneApp() {
                 {workspace?.path && <p className="ph-path">{workspace.path}</p>}
                 <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? activeWords(ageWords(Date.now() - menuPane.activeAt)) : "Not started"}</p>
               </div>
+              {/* Close first and Delete last: they sit in the same menu and sound alike, but one keeps the
+                  conversation and the other removes it. */}
+              <MenuRow label="Close thread" detail="Closes its window. Stays in Threads" onClick={() => closeThread(threadKey(menuPane, sessionHost(menuPane)))} />
+              <MenuRow label="Open threads" detail={swipeKeys.length > 1 ? `${swipeKeys.length} open. Swipe between them, or pick one` : "Threads you have open, to swipe between"} onClick={() => setMenu({ kind: "open" })} />
               {menuPane.id === openId && room && room.id === openPane?.id && (
                 <button type="button" className="ph-srow ph-bots-menu" onClick={() => { setBotChange(null); setMenu({ kind: "bots", id: menuPane.id }); }}>
                   <span className="ph-grow"><strong>Bots</strong><small>{room.participants.length} in this thread</small></span>
@@ -2799,6 +2851,28 @@ export function PhoneApp() {
             </Sheet>
           );
         })()}
+        {menu?.kind === "open" && (
+          <Sheet title="Open threads" onClose={() => setMenu(null)}>
+            <p className="ph-sheet-text">
+              {swipeKeys.length === 0
+                ? "No threads are open. Open one from Threads, and it waits here to swipe back to."
+                : "Swipe left or right between these. Closing one keeps its conversation in Threads."}
+            </p>
+            {swipeKeys.map((key) => {
+              const row = swipeRows.get(key);
+              if (!row) return null;
+              const here = key === openKey;
+              return (
+                <div className={`ph-open-row${here ? " here" : ""}`} key={key}>
+                  <button type="button" className="ph-srow ph-open-pick" aria-current={here ? "true" : undefined} onClick={() => { setMenu(null); if (!here) showThreadKey(key); }}>
+                    <span className="ph-grow"><strong>{row.title}</strong><small>{[here ? "On screen" : "", row.where, row.words].filter(Boolean).join(" · ")}</small></span>
+                  </button>
+                  <button type="button" className="ph-icon ph-open-close" aria-label={`Close ${row.title}`} onClick={() => closeThread(key)}>×</button>
+                </div>
+              );
+            })}
+          </Sheet>
+        )}
         {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
           const host = workspaces.find((item) => item.id === menuPane.workspaceId) ? phoneHost(workspaceHost(workspaces.find((item) => item.id === menuPane.workspaceId)!)) : null;
           const full = !!host && canStartOn(host.machine.id);
@@ -2957,6 +3031,7 @@ export function PhoneApp() {
               <p><strong>Chat</strong> · {chatMachine(sheetChat.hostId).name}</p>
               <p className="ph-meta">{botNames(sheetChat)} · Talk only</p>
             </div>
+            <MenuRow label="Close chat" detail="Closes its window. Stays in Threads" onClick={() => closeThread(threadKey({ id: sheetChat.id, hostId: sheetChat.hostId }, sheetChat.hostId))} />
             <MenuRow label="Bots" detail={`${sheetChat.bots.length} in this chat`} onClick={() => setChatSheet({ kind: "bots", hostId: sheetChat.hostId, id: sheetChat.id })} />
             {sheetRights?.post ? <>
               <MenuRow label="Where this chat runs" detail={chatMachine(sheetChat.hostId).name} onClick={() => setChatSheet({ kind: "where", hostId: sheetChat.hostId, id: sheetChat.id })} />
@@ -2975,6 +3050,7 @@ export function PhoneApp() {
               <p><strong>{sheetChat.folderName ?? sheetChat.cwd ?? "Work thread"}</strong> · {chatMachine(sheetChat.hostId).name}</p>
               <p className="ph-meta">{botNames(sheetChat)} · Made from a chat</p>
             </div>
+            <MenuRow label="Close thread" detail="Closes its window. Stays in Threads" onClick={() => closeThread(threadKey({ id: sheetChat.id, hostId: sheetChat.hostId }, sheetChat.hostId))} />
             {sheetChat.promotedFrom && findRoom(chatView, sheetChat.hostId, sheetChat.promotedFrom) && <MenuRow label="Open the chat it came from" onClick={() => openChatRow({ hostId: sheetChat.hostId, id: sheetChat.promotedFrom! })} />}
             {sheetRights?.post ? <>
               <MenuRow label="Rename…" onClick={() => setChatSheet({ kind: "rename", hostId: sheetChat.hostId, id: sheetChat.id, text: sheetChat.title })} />
@@ -3443,6 +3519,32 @@ function ThreadView(props: {
     watch.observe(box);
     return () => watch.disconnect();
   }, []);
+  // ---- Where you were reading ------------------------------------------------------------------
+  // A thread's place is kept as the reply at the top of the screen and how far into it you were, not
+  // as a pixel offset: replies that arrived while you were away push the page without moving what you
+  // were reading. Swiping back, or reopening the app, finds that reply again. A thread with nothing
+  // remembered — or one you left at the end — follows the newest message as before.
+  const placeKey = `${props.link.id}\u0000${props.paneId}`;
+  const places = useRef(new Map<string, { seq: number; gap: number }>());
+  const restoredFor = useRef<string | null>(null);
+  const rememberPlace = (box: HTMLElement) => {
+    if (restoredFor.current !== placeKey) return;
+    const top = [...box.querySelectorAll<HTMLElement>("[data-seq]")].find((el) => el.offsetTop + el.offsetHeight > box.scrollTop + 1);
+    const seq = Number(top?.dataset.seq);
+    if (!top || !Number.isFinite(seq)) return;
+    places.current.set(placeKey, { seq, gap: top.offsetTop - box.scrollTop });
+  };
+  useLayoutEffect(() => {
+    const box = chatRef.current;
+    if (!box || restoredFor.current === placeKey) return;
+    const kept = places.current.get(placeKey);
+    if (!kept) { restoredFor.current = placeKey; return; }
+    const at = box.querySelector<HTMLElement>(`[data-seq="${kept.seq}"]`);
+    // Its replies are still arriving: this runs again when they do, and until then nothing moves.
+    if (!at) return;
+    box.scrollTop = at.offsetTop - kept.gap;
+    restoredFor.current = placeKey;
+  }, [placeKey, props.messages.length]);
   // The title's second line: the project always shows in full, and the machine shortens into the room left.
   // When not even 5.5em is left, the machine drops out; tapping the title still names it in "Where this runs".
   const contextRef = useRef<HTMLParagraphElement>(null);
@@ -3628,7 +3730,7 @@ function ThreadView(props: {
       )}
       <div className={`ph-swap${dragX !== 0 ? " dragging" : ""}`} style={dragX !== 0 ? { transform: `translateX(${dragX / 4}px)` } : undefined}
         onPointerDown={swipeDown} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeDrop} onLostPointerCapture={swipeDrop}>
-      <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
+      <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; rememberPlace(box); props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {!paused && props.link.mismatch && (
           <div className="ph-banner warn" role="status">

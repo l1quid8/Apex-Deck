@@ -7,8 +7,10 @@
 //  - The Mac shows several threads at once and its composer types into whichever pane has focus.
 //    One thread fits on a phone, so a swipe is how you pick the thread, and each thread keeps its
 //    own unsent text: swiping never moves your typing into another thread.
-//  - The order is the Threads list's own order, and it is held still while a thread is open, so a
-//    reply arriving can't shuffle the threads under your thumb mid-swipe.
+//  - The strip is the phone's open threads, in the order they were opened (openThreads.ts), not the
+//    Threads list. Opening a thread puts it in the strip, ⋯ → Close thread takes it out, and nothing
+//    a machine does can reorder it: a reply that starts another thread can't move the one under your
+//    thumb.
 //  - Some swipes are not ours: the left edge goes back to the thread list, as an edge swipe does in
 //    other iPhone apps; sideways-scrolling things (code, tables, the bot row) scroll themselves; and
 //    the composer keeps its own.
@@ -17,63 +19,6 @@
 
 import { swipeIntent } from "./phoneTerminals.ts";
 export { swipeIntent };
-
-/** What the strip needs of a thread: the list decides which panes are threads. */
-export interface SwipePane {
-  id: string;
-  kind?: string;
-  archived?: boolean;
-}
-
-/**
- * The threads a swipe moves through, in the order the Threads list shows them: Pinned first, then
- * each machine's projects, then the Work threads made from chats. Only threads are in it — never a
- * terminal, an assistant, or an archived thread, which the list keeps at the bottom and without an
- * open row. `keyOf` names a thread (machine plus id), because two machines can both have a thread
- * called the same thing.
- */
-export function swipeStrip(lists: readonly (readonly SwipePane[])[], keyOf: (pane: SwipePane) => string): string[] {
-  const keys: string[] = [];
-  const seen = new Set<string>();
-  for (const list of lists) {
-    for (const pane of list) {
-      if (pane.kind !== "chat" || pane.archived) continue;
-      const key = keyOf(pane);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      keys.push(key);
-    }
-  }
-  return keys;
-}
-
-/**
- * The strip while a thread is open. Its order stays put: a thread that appears (a reply starting
- * another thread, a thread made on the Mac) waits for the next time one is opened, so the row you
- * were about to swipe to is still the row you get. Threads that are gone — deleted, archived — do
- * leave, so a swipe never lands on a thread that isn't there any more.
- */
-export function heldStrip(held: readonly string[], next: readonly string[], open: string | null): string[] {
-  if (open === null || !held.includes(open)) return [...next];
-  const live = new Set(next);
-  return held.filter((key) => live.has(key));
-}
-
-/** What the screen remembers between renders: the thread it was open on, and the strip it held then. */
-export interface StripHold {
-  open: string | null;
-  keys: string[];
-}
-
-/**
- * The strip to swipe through this time. Opening a thread — from the list, from a search, from a
- * notification — takes the order as it is at that moment; staying in it holds the order it had,
- * so the thread beside this one doesn't change while you are reading.
- */
-export function holdStrip(held: StripHold | null, next: readonly string[], open: string | null): StripHold {
-  if (held === null || held.open !== open) return { open, keys: [...next] };
-  return { open, keys: heldStrip(held.keys, next, open) };
-}
 
 /** Where this thread sits, as "3 of 9"; empty when there is nothing to count or it isn't in the strip. */
 export function stripPosition(strip: readonly string[], key: string | null): string {

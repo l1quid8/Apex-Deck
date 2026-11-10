@@ -561,6 +561,13 @@
 .ph-lock-row .ph-grow { min-width: 0; }
 .ph-lock-row .ph-composer-switch { margin: -6px -4px -6px 0; }
 .ph-lock-problem { color: var(--red) !important; }
+/* ⋯ → Open threads: the threads a swipe moves through, and the one way to close one from here. */
+.ph-open-row { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); }
+.ph-open-row:last-child { border-bottom: 0; }
+.ph-open-row.here .ph-open-pick strong { color: var(--mint); }
+.ph-open-row .ph-srow.ph-srow { flex: 1; min-width: 0; border-bottom: 0; }
+.ph-open-pick strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-open-close { flex: none; color: var(--muted); font-size: 20px; line-height: 1; }
 
 .ph-card { background: var(--panel-2); border-radius: 14px; padding: 12px 14px; margin-bottom: 6px; font-size: 14px; }
 .ph-card p { overflow-wrap: anywhere; }

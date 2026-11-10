@@ -1,66 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  EDGE_GUARD, edgeSwipe, heldStrip, holdStrip, neighbour, roomFits, stripPosition, swipeBlocked, swipeRelease, swipeStrip,
+  EDGE_GUARD, edgeSwipe, neighbour, roomFits, stripPosition, swipeBlocked, swipeRelease,
 } from "../src/phone/threadSwipe.ts";
 
-const keyOf = (pane) => `${pane.hostId ?? "local"}:${pane.id}`;
-const thread = (id, over = {}) => ({ id, kind: "chat", title: id, ...over });
-
-test("the strip is Pinned, then each project, then Work threads made from chats", () => {
-  const strip = swipeStrip([
-    [thread("pinned", { hostId: "mac" })],
-    [thread("a1", { hostId: "mac" }), thread("a2", { hostId: "mac" })],
-    [thread("b1", { hostId: "studio" })],
-    [thread("from-chat", { hostId: "studio" })],
-  ], keyOf);
-  assert.deepEqual(strip, ["mac:pinned", "mac:a1", "mac:a2", "studio:b1", "studio:from-chat"]);
-});
-
-test("terminals, assistants and archived threads are not swiped through", () => {
-  const strip = swipeStrip([
-    [thread("t1"), { id: "shell", kind: "terminal" }, { id: "bot", kind: "agent" }, thread("old", { archived: true })],
-  ], keyOf);
-  assert.deepEqual(strip, ["local:t1"]);
-});
-
-test("a thread listed twice (Pinned and its project) appears once", () => {
-  const strip = swipeStrip([[thread("a", { hostId: "mac" })], [thread("a", { hostId: "mac" }), thread("b", { hostId: "mac" })]], keyOf);
-  assert.deepEqual(strip, ["mac:a", "mac:b"]);
-});
-
-test("the same thread id on two machines is two threads", () => {
-  const strip = swipeStrip([[thread("same", { hostId: "mac" }), thread("same", { hostId: "studio" })]], keyOf);
-  assert.deepEqual(strip, ["mac:same", "studio:same"]);
-});
-
-test("while a thread is open its neighbours stay put, so a new thread can't shuffle them", () => {
-  const held = ["mac:a", "mac:b", "mac:c"];
-  const arriving = ["mac:new", "mac:a", "mac:b", "mac:c"];
-  assert.deepEqual(heldStrip(held, arriving, "mac:b"), ["mac:a", "mac:b", "mac:c"]);
-});
-
-test("a thread that is gone leaves the strip, so no swipe lands on nothing", () => {
-  assert.deepEqual(heldStrip(["mac:a", "mac:b", "mac:c"], ["mac:a", "mac:c"], "mac:a"), ["mac:a", "mac:c"]);
-});
-
-test("opening a thread — from the list, or by a swipe — takes the order as it is now", () => {
-  const was = { open: "mac:a", keys: ["mac:a", "mac:b"] };
-  assert.deepEqual(holdStrip(was, ["mac:new", "mac:a", "mac:b"], "mac:b"), { open: "mac:b", keys: ["mac:new", "mac:a", "mac:b"] });
-  assert.deepEqual(holdStrip(null, ["mac:a", "mac:b"], "mac:b"), { open: "mac:b", keys: ["mac:a", "mac:b"] });
-  // Back to the list: nothing is open, so the next thread opened starts from the list's order again.
-  assert.deepEqual(holdStrip(was, ["mac:new", "mac:a", "mac:b"], null), { open: null, keys: ["mac:new", "mac:a", "mac:b"] });
-});
-
-test("staying in a thread keeps its order, and drops only what is gone", () => {
-  const was = { open: "mac:b", keys: ["mac:a", "mac:b", "mac:c"] };
-  assert.deepEqual(holdStrip(was, ["mac:new", "mac:a", "mac:b", "mac:c"], "mac:b"), { open: "mac:b", keys: ["mac:a", "mac:b", "mac:c"] });
-  assert.deepEqual(holdStrip(was, ["mac:a", "mac:c"], "mac:b"), { open: "mac:b", keys: ["mac:a", "mac:c"] });
-});
-
-test("a thread that isn't in the strip yet (unsent text) gets the whole strip back", () => {
-  assert.deepEqual(heldStrip(["mac:a"], ["mac:a", "mac:b"], "draft-1"), ["mac:a", "mac:b"]);
-});
+// The strip itself — which threads a swipe moves through, and in what order — is the phone's open set:
+// opening adds, ⋯ → Close thread removes, iOS shutting the app keeps it. That lives in openThreads.ts
+// and is tested in phoneOpenThreads.test.mjs. What is here is the gesture, and where a thread sits.
 
 test("the position under the title counts threads, and says nothing when there is only one", () => {
   const strip = ["mac:a", "mac:b", "mac:c", "mac:d"];
