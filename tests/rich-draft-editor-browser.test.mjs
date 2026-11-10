@@ -25,6 +25,7 @@ const fixture = { name: 'rich-editor-fixture', enforce: 'pre', transform(code, i
 
 test('rich editor handles atomic edits, filtered history, IME, clipboard and drag', { timeout: 120000 }, async () => {
   // Both Electron attempts must finish before node:test's outer deadline.
+  // Render offscreen so hidden Windows windows keep delivering compositor frames.
   await withAppearanceApp('rich-draft-editor', String.raw`
     // Report a stuck renderer/frame while Electron can still return its output.
     let phase='mount';
@@ -166,5 +167,5 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     assert.deepEqual(await doc(),[[]]);
     await run('Date.now=window.editTestClock.original;true');
     stage('complete');
-  `, { plugins: [fixture], width: 900, height: 600, timeoutMs: 45000 });
+  `, { plugins: [fixture], width: 900, height: 600, timeoutMs: 45000, offscreen: true });
 });

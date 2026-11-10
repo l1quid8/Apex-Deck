@@ -1,6 +1,7 @@
 import {commandBackend} from '../src/commandBackend.ts';
 import {assistantVoiceKeeperOwner} from '../src/voice/assistantVoiceOwner.ts';
 import {statusWords} from '../src/connection.ts';
+import {shortcutList} from '../src/shortcuts.ts';
 import * as companionContext from '../src/assistantCompanionContext.ts';
 import * as floatModel from '../src/assistantFloat.ts';
 import * as composerDrafts from '../src/assistantComposerDrafts.ts';
@@ -630,6 +631,7 @@ const attentionRows = nav => {
 
 function realSidebar() {
   return mountComponent('Sidebar.tsx', 'ProjectSidebar', {
+    shortcutList,
     assistantIdentityKey,assistantAppearance,Avatar:stubComponent('Avatar'),createAssistantAvatarApi:()=>undefined,AssistantTeamRow:stubComponent('AssistantTeamRow'),assistantStatus,
     flagLabel: attention.label, workspaceFlag: attention.workspaceFlag,
     workspaceHost: hostSession.workspaceHost,

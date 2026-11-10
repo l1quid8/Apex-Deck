@@ -55,10 +55,11 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
     fs.writeFileSync(main, `
       const {app,BrowserWindow}=require('electron');const assert=require('node:assert/strict');const fs=require('node:fs');
       app.whenReady().then(async()=>{
-        const win=new BrowserWindow({show:false,width:900,height:500,webPreferences:{contextIsolation:true}});
+        const win=new BrowserWindow({show:false,width:900,height:500,webPreferences:{contextIsolation:true,backgroundThrottling:false,offscreen:true}});
         const run=code=>win.webContents.executeJavaScript(code);const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
         const until=async(code)=>{for(let i=0;i<300;i++){if(await run(code))return;await sleep(20)}throw Error('Timed out: '+code)};
-        const key=async keyCode=>{win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await sleep(40)};
+        // Flush the render and its effect listeners before delivering a native key.
+        const key=async keyCode=>{await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await sleep(40);await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')};
         const point=selector=>run("(()=>{const r=document.querySelector("+JSON.stringify(selector)+").getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()");
         const mouse=async(selector,clicks=1)=>{const p=await point(selector);win.webContents.sendInputEvent({type:'mouseMove',...p});for(let clickCount=1;clickCount<=clicks;clickCount++){win.webContents.sendInputEvent({type:'mouseDown',...p,button:'left',clickCount});win.webContents.sendInputEvent({type:'mouseUp',...p,button:'left',clickCount})}await sleep(50)};
         const setWidth=async width=>{await run('window.fixture.setWidth('+width+')');await sleep(100);await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')};
