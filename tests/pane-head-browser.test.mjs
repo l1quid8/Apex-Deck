@@ -15,7 +15,7 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-head-'));
   const shots = process.env.PANE_HEAD_SHOTS || '';
   if (shots) fs.mkdirSync(shots, { recursive: true });
-  const html = `<html><body style="padding:20px"><div id="root"></div><script type="module">
+  const html = `<!doctype html><html><body style="padding:20px"><div id="root"></div><script type="module">
     import React,{useState,useEffect} from 'react';import {createRoot} from 'react-dom/client';import {createPortal} from 'react-dom';
     import {PaneHead,PaneVoicePortal} from '/src/PaneHead.tsx';import {ThreadName} from '/src/ThreadName.tsx';import '/src/styles.css';import '/src/glass-theme.css';import '/src/clay-theme.css';import '/src/voice/voice.css';
     window.renames=[];window.dragStarts=0;window.sidebarRenames=[];window.voiceActions=[];
@@ -74,6 +74,8 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
         try{
           await win.loadURL(${JSON.stringify(`http://localhost:${server.httpServer.address().port}/__pane_head_test`)});
           await until("!!document.querySelector('.pane-head')");
+          // Quirks mode changes :hover matching inside :is(), unlike the real app.
+          assert.equal(await run('document.compatMode'),'CSS1Compat','fixture uses production standards mode');
           for(const width of [600,190,125]){
             await setWidth(width);
             assert.equal(await run("document.querySelector('.pane-head').getBoundingClientRect().height"),28,'28px at '+width);
@@ -104,10 +106,13 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
           assert.equal(await animation(),'none');
           win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);
           const hoverState=await run("(()=>{const head=document.querySelector('.pane-head'),title=head.querySelector('.pane-title'),text=head.querySelector('.thread-name-text');return {hover:head.matches(':hover'),focus:head.matches(':focus-within'),marquee:title.classList.contains('marquee'),reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches,titleWidth:title.clientWidth,textWidth:text.getBoundingClientRect().width}})()");
+          assert.equal(hoverState.hover,true,'native pointer returns to the head: '+JSON.stringify(hoverState));
           assert.notEqual(await animation(),'none','cut-off title marquees on hover: '+JSON.stringify(hoverState));
           await pointerOff();assert.equal(await animation(),'none','leaving resets marquee');
           win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
-          win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);assert.equal(await animation(),'none','reduced motion keeps ellipsis');
+          win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);
+          assert.equal(await run("document.querySelector('.pane-head').matches(':hover')"),true,'reduced-motion check also hovers the head');
+          assert.equal(await animation(),'none','reduced motion keeps ellipsis');
           await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});win.webContents.debugger.detach();
           await mouse('.pane-head .pane-title',2);
           await mouse('.pane-head [aria-haspopup=menu]');await mouse('#head-menu button');
