@@ -91,6 +91,8 @@ import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody
 import { PhoneArtifacts } from "./ArtifactSheet";
 import { LockRow } from "./LockRow";
 import { deleteThreadGate, deleteThreadWords, removeThreadFrom } from "./threadDelete";
+import { AgentSheet } from "./AgentSheet";
+import { removeAgent, upsertAgent } from "./agentEdit";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
 import { carriedEntry } from "../threadState";
 import { leftBehindWords, type ChatDeliveryStatus } from "../chatDelivery";
@@ -477,6 +479,14 @@ export function PhoneApp() {
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
   const [botSheet, setBotSheet] = useState<string | null>(null);
+  /** The agent the Agents tab is changing: an id, or null while making a new one. Null closes the sheet. */
+  const [agentSheet, setAgentSheet] = useState<{ id: string | null } | null>(null);
+  /** The bots the Mac offers, which a new agent starts from. Loaded when the sheet opens. */
+  const [agentTemplates, setAgentTemplates] = useState<ChatProfile[] | null>(null);
+  const [agentTemplatesProblem, setAgentTemplatesProblem] = useState("");
+  /** Why the machine refused the last save, shown in the sheet so the sheet stays open. */
+  const [agentSaveProblem, setAgentSaveProblem] = useState("");
+  const [agentSaving, setAgentSaving] = useState(false);
   /** One key per reset asked for, by machine, provider and credit. Kept after a failure, so trying
    *  again can't spend a second credit if the first went through unseen. */
   const resetKeys = useRef(new Map<string, string>());
@@ -1265,6 +1275,54 @@ export function PhoneApp() {
   /** Change one saved thread on the Mac. */
   function patchPane(id: string, change: (pane: Pane) => Pane) {
     saveSession((current) => ({ ...current, panes: current.panes.map((item) => item.id === id ? change(item) : item) })).catch((error) => setNotice(words(error)));
+  }
+
+  // ---- Agents: created and changed from the Agents tab, saved to the same list the Mac's Agents page reads.
+  /** + New agent: the Mac says which bots it has, so the new agent can start from a tool that runs there. */
+  function newAgent() {
+    if (!macHost) return;
+    if (!canSeeNewThread(macHost.access())) { setNotice(`Making an agent needs Full access on ${mac?.name ?? "your Mac"}. Change this phone's level in that machine's Settings → Phones.`); return; }
+    setAgentSaveProblem("");
+    setAgentTemplatesProblem("");
+    setAgentTemplates(null);
+    setAgentSheet({ id: null });
+    chatProfilesOn(macHost.machine.id).then(setAgentTemplates, (error) => { setAgentTemplates([]); setAgentTemplatesProblem(words(error)); });
+  }
+
+  function changeAgent(id: string) {
+    setAgentSaveProblem("");
+    setAgentSheet({ id });
+  }
+
+  /**
+   * Saved from the agent sheet. It writes through saveSession, which reads the Mac's session fresh
+   * first: an agent made or changed on the Mac while this sheet was open is kept, not overwritten.
+   */
+  async function saveAgent(config: ParticipantConfig) {
+    setAgentSaving(true);
+    setAgentSaveProblem("");
+    try {
+      await saveSession((current) => ({ ...current, profiles: upsertAgent(current.profiles, config) }));
+      setAgentSheet(null);
+    } catch (error) {
+      setAgentSaveProblem(words(error));
+    } finally {
+      setAgentSaving(false);
+    }
+  }
+
+  /** The agent goes; the threads it worked in stay, with the replies it already wrote. */
+  async function deleteAgent(id: string) {
+    setAgentSaving(true);
+    setAgentSaveProblem("");
+    try {
+      await saveSession((current) => ({ ...current, profiles: removeAgent(current.profiles, id) }));
+      setAgentSheet(null);
+    } catch (error) {
+      setAgentSaveProblem(words(error));
+    } finally {
+      setAgentSaving(false);
+    }
   }
 
   function openThread(id: string) {
@@ -2269,7 +2327,7 @@ export function PhoneApp() {
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
+  const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const shownTab = tab === "machines" ? machinesReturn.current : tab;
   const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
@@ -2656,6 +2714,9 @@ export function PhoneApp() {
             personal={personal} onPersonal={() => setPersonalOpen(true)}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
+            canEditAgents={newAllowed}
+            onNewAgent={newAgent}
+            onEditAgent={changeAgent}
             onAssistant={(workspaceId) => {
               const workspace = workspaces.find((item) => item.id === workspaceId);
               if (!workspace) return;
@@ -2748,6 +2809,21 @@ export function PhoneApp() {
             <button type="button" className="ph-plain ph-wide" onClick={() => setAsk(null)}>Cancel</button>
           </Sheet>
         )}
+        {agentSheet && (() => {
+          // The agent this sheet changes. Gone from the list while the sheet was open means nothing to change.
+          const editing = agentSheet.id ? (session?.profiles ?? []).find((profile) => profile.id === agentSheet.id) ?? null : null;
+          if (agentSheet.id && !editing) return null;
+          return (
+            <Sheet title={editing ? editing.display_name : "New agent"} onClose={() => setAgentSheet(null)}>
+              <AgentSheet agent={editing}
+                others={(session?.profiles ?? []).filter((profile) => profile.id !== agentSheet.id)}
+                templates={editing ? null : agentTemplates} templatesProblem={agentTemplatesProblem}
+                saveProblem={agentSaveProblem} saving={agentSaving}
+                onSave={(config) => { void saveAgent(config); }}
+                onDelete={() => { if (editing) void deleteAgent(editing.id); }} />
+            </Sheet>
+          );
+        })()}
         {sheet && openWorkspace && openLink && (
           <Sheet title={sheet === "project" ? "Project" : sheet === "where" ? "Where this runs" : "Tools"} onClose={() => setSheet(null)} variant={sheet === "where" ? "location" : undefined}>
             {sheet === "project" && <ProjectSheet rows={pickerRows(workspaces, panes, openWorkspace.id, (id) => linkOf(id)?.status !== "online")} links={links} query={query} machineIcon={machineIcon} onQuery={setQuery} onPick={pickWhere} />}
@@ -4215,7 +4291,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   );
 }
 
-function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, terminalHomeSignal, onTerminalViewing, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; terminalHomeSignal: number; onTerminalViewing(viewing: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
+function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, terminalHomeSignal, onTerminalViewing, onAssistant, onShow, personal, onPersonal, canEditAgents, onNewAgent, onEditAgent }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; terminalHomeSignal: number; onTerminalViewing(viewing: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void; canEditAgents: boolean; onNewAgent(): void; onEditAgent(id: string): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
   if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
@@ -4226,14 +4302,26 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
       {link && tab === "agents" && <p className="ph-intro"><i className={`ph-dot${link.status === "online" ? " on" : link.status === "offline" ? " off" : ""}`} />Follows {link.name}</p>}
       {!link && <div className="ph-empty"><h3>Pair a machine first</h3><p>Open Settings → Machines.</p></div>}
       {link && offline && <div className="ph-banner"><strong>{link.name} can't be reached</strong><p>{downLine(link)}</p></div>}
-      {tab === "agents" && bots.length > 0 && <>
-        <div className="ph-section">Your bots</div>
-        <div className="ph-list">{bots.map((bot) => (
-          <div key={bot.id} className="ph-srow">
-            <Avatar seed={bot.look.seed} color={bot.look.color} working={bot.working !== null} />
-            <span className="ph-grow"><strong>{bot.display_name}</strong><small className={bot.working ? "ph-mint" : bot.cutOff ? "ph-amber" : undefined}>{bot.working ? `Working in ${bot.working}` : bot.cutOff ?? bot.tool}</small></span>
-          </div>
-        ))}</div>
+      {tab === "agents" && <>
+        <div className="ph-section">Your agents</div>
+        <div className="ph-list">
+          {/* Making one comes first, so the agent you want is never hidden behind a scroll of the ones you have. */}
+          <button type="button" className="ph-srow ph-project-assistant" disabled={!canEditAgents} onClick={onNewAgent}>
+            <span className="ph-grow"><strong>+ New agent</strong><small>{canEditAgents ? "Start from a bot your Mac has, then name it." : "Making agents needs Full access on your Mac: Settings → Phones."}</small></span>
+            {canEditAgents && <ChevronRight size={15} />}
+          </button>
+          {bots.map((bot) => {
+            const doing = bot.working ? `Working in ${bot.working}` : bot.cutOff ?? bot.tool;
+            return (
+              <button key={bot.id} type="button" className="ph-srow ph-project-assistant" disabled={!canEditAgents} onClick={() => onEditAgent(bot.id)} aria-label={`${bot.display_name}, ${bot.working ? `working in ${bot.working}` : bot.cutOff ?? bot.tool}. Change or delete this agent`}>
+                <Avatar seed={bot.look.seed} color={bot.look.color} working={bot.working !== null} />
+                <span className="ph-grow"><strong>{bot.display_name}</strong><small className={bot.working ? "ph-mint" : bot.cutOff ? "ph-amber" : undefined}>{doing}</small></span>
+                {canEditAgents && <ChevronRight size={15} />}
+              </button>
+            );
+          })}
+        </div>
+        {bots.length === 0 && <p className="ph-list-note">No agents yet. Make one with + New agent, or from a bot in a thread on the Mac.</p>}
       </>}
       {tab === "agents" && personal && <>
         <div className="ph-section">Your assistant</div>

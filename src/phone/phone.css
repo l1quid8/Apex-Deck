@@ -589,6 +589,22 @@
   padding: 10px 12px;
 }
 .ph-label small { display: block; margin-top: 5px; font-size: 12px; }
+/* The agent sheet's model and reasoning pickers, and its brief, take the same shape as a name field. */
+.ph-label select, .ph-label textarea {
+  display: block;
+  width: 100%;
+  min-height: 46px;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  padding: 10px 12px;
+  color: inherit;
+  font: inherit;
+}
+.ph-label textarea { min-height: 96px; resize: vertical; }
+/* Deleting an agent, once confirmed, reads as the one thing on the sheet that can't be undone. */
+.ph-app .ph-danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
 .ph-form h3 { margin-bottom: 12px; }
 .ph-row2 { display: grid; grid-template-columns: minmax(0, 1fr) 88px; gap: 10px; }
 .ph-hidden-file { display: none; }
