@@ -301,7 +301,7 @@ fn run_with_boot_id(data: &Path, no_reboot: bool, current_boot: Option<String>) 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Tmp(std::path::PathBuf);
@@ -314,7 +314,8 @@ mod tests {
         Tmp(p)
     }
 
-    fn isolated_process() -> bool {
+    /// Reruns the calling test alone in a fresh process; true in the parent.
+    pub(crate) fn isolated_process() -> bool {
         // A sibling test's fork can briefly inherit a dropped owner lock until
         // exec. Create the fixture only after exec, with no sibling test threads.
         const CHILD_MARKER: &str = "APEX_DECK_TRUST_HOST_TEST_CHILD";

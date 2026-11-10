@@ -1691,6 +1691,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn connected_device_cannot_spawn_a_terminal_after_trust_reset() {
+        // trust-host takes the data lock; a sibling test's fork can hold it until exec.
+        if crate::trust_host::tests::isolated_process() { return; }
         for reset in ["epoch", "pending", "missing", "corrupt"] {
             let (mut daemon, _data) = daemon();
             Arc::get_mut(&mut daemon).unwrap().linux_device_policy = Some(true);
