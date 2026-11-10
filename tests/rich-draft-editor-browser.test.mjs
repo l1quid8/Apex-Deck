@@ -88,7 +88,10 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     await run('(()=>{const e=document.querySelector(".rich-draft-editor"),r=document.createRange();r.setStart(e.firstChild.firstChild,0);r.setEnd(e.firstChild.lastChild,2);const s=getSelection();s.removeAllRanges();s.addRange(r);})()');
     await set({}); // A metadata render must retain the person's selected range.
     stage('cut');
-    await run('(()=>{const e=document.querySelector(".rich-draft-editor");console.log("[rich editor] cut: DataTransfer constructor");const data=new DataTransfer();console.log("[rich editor] cut: ClipboardEvent constructor");const event=new ClipboardEvent("cut",{bubbles:true,cancelable:true,clipboardData:data});console.log("[rich editor] cut: dispatch");e.dispatchEvent(event);console.log("[rich editor] cut: read plain text");window.cutText=data.getData("text/plain");console.log("[rich editor] cut: complete");})()');await frame();
+    await run('(()=>{const e=document.querySelector(".rich-draft-editor");console.log("[rich editor] cut: DataTransfer constructor");const data=new DataTransfer();console.log("[rich editor] cut: ClipboardEvent constructor");const event=new ClipboardEvent("cut",{bubbles:true,cancelable:true,clipboardData:data});console.log("[rich editor] cut: dispatch");e.dispatchEvent(event);console.log("[rich editor] cut: read plain text");window.cutText=data.getData("text/plain");console.log("[rich editor] cut: complete");})()');
+    stage('cut renderer returned');
+    await frame();
+    stage('cut frames returned');
     assert.equal(await run('window.cutText'),'#Thread Ane');
     assert.deepEqual(await doc(),[[{kind:'text',text:'two'}]]);
     stage('cut undo');
