@@ -1144,6 +1144,7 @@ pub async fn list_servers(
                 &path_os,
                 &[],
                 &[],
+                &[],
             ).map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
 
             let registry = Registry::default();

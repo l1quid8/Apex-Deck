@@ -62,12 +62,40 @@ impl Drop for TempIndexGuard {
     }
 }
 
+/// Git that creates `checkout`, a folder inside the data folder: the jail is
+/// handed that folder and no other, so the checkout lands on the real disk.
+fn run_git_writing(
+    project_data: &Path,
+    root: &Path,
+    checkout: &Path,
+    args: &[&str],
+) -> Result<String, String> {
+    let mut cmd = crate::project_process::git_command(project_data, root)?;
+    cmd.writable(checkout).current_dir(root).args(args);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("Could not run git {}: {e}", args.first().unwrap_or(&"")))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!(
+            "Git {} failed: {}",
+            args.first().unwrap_or(&"command"),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 fn run_git(project_data: &Path,
     root: &Path,
     envs: &[(&str, &std::ffi::OsStr)],
     args: &[&str],
 ) -> Result<String, String> {
     let mut cmd = crate::project_process::git_command(project_data, root)?;
+    // A copy's work tree lives in the data folder, where the jail writes nothing
+    // unless the launch names the folder: the command's own folder is that one.
+    let data = std::fs::canonicalize(project_data).unwrap_or_else(|_| project_data.to_path_buf());
+    if root.starts_with(&data) { cmd.writable(root); }
     cmd.current_dir(root);
     for (k, v) in envs {
         if *k == "GIT_INDEX_FILE" {
@@ -273,14 +301,18 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
     let res = (|| -> Result<BotCopy, String> {
         std::fs::create_dir_all(&copy_dir)
             .map_err(|e| format!("Could not create bot copy directory: {e}"))?;
+        // `git worktree add` reuses an empty folder, and the jail can only expose
+        // a folder that already exists: make the work tree here, on the real disk.
+        std::fs::create_dir_all(&work)
+            .map_err(|e| format!("Could not create bot copy work tree: {e}"))?;
 
         run_git(data, &root, &[], &["update-ref", &ref_name, &base])?;
 
         let work_path = crate::assistant_git::external_path(&work);
         let work_str = work_path.to_str().ok_or("Invalid UTF-8 in worktree path")?;
-        run_git(data,
+        run_git_writing(data,
             &root,
-            &[],
+            &work,
             &[
                 "-c",
                 "core.hooksPath=/dev/null",
@@ -516,7 +548,10 @@ fn is_binary(bytes: &[u8]) -> bool {
 
 fn get_ignored_new_in_work(project_data: &Path, root: &Path, work: &Path) -> Result<Vec<String>, String> {
     let mut skipped = Vec::new();
-    let out = match crate::project_process::git_command(project_data, work)?
+    let mut command = crate::project_process::git_command(project_data, work)?;
+    let data = std::fs::canonicalize(project_data).unwrap_or_else(|_| project_data.to_path_buf());
+    if work.starts_with(&data) { command.writable(work); }
+    let out = match command
         .current_dir(work)
         .args(["status", "--ignored", "--porcelain", "-z"])
         .output()

@@ -337,6 +337,7 @@ impl Connection {
                             &path_os,
                             &[],
                             &[],
+                            &[],
                         ).map_err(|e| format!("The MCP server `{}` couldn't start: {e}", spec.name))?;
                         for (k, v) in env {
                             jail_spec.provider_env.push((k.clone(), v.clone().into()));

@@ -156,6 +156,9 @@ pub struct JailSpec {
     pub private_home: PathBuf,
     /// Project and mounts, already through `paths::check_writable` if writable.
     pub folders: Vec<Bind>,
+    /// Deck's own folders inside the data folder, bound writable at their own
+    /// path: the copy or task checkout the launch runs in or is about to make.
+    pub writable: Vec<Bind>,
     /// PATH folders and provider or runtime install folders.
     pub read_only: Vec<PathBuf>,
     /// Never bound, under any name: a folder showing any of these stops the launch.
@@ -202,6 +205,11 @@ pub fn bwrap_args(spec: &JailSpec, mounts: &paths::Mounts, is_dir: impl Fn(&Path
     for folder in &spec.folders {
         paths::check_read(&folder.source, &spec.protected, mounts)?;
         bind(&mut out, folder);
+    }
+    // Deck's own folders inside the data folder: the copy or task checkout this
+    // launch runs in or creates. `build_spec` checked each one for its launch.
+    for item in &spec.writable {
+        bind(&mut out, item);
     }
     for item in &spec.restored {
         bind(&mut out, item);
@@ -259,6 +267,7 @@ pub fn build_spec(
     path: &std::ffi::OsStr,
     attachment_roots: &[PathBuf],
     read_only_extra: &[PathBuf],
+    writable_extra: &[PathBuf],
 ) -> Result<JailSpec, JailError> {
     let mounts = paths::Mounts::current()?;
 
@@ -272,6 +281,23 @@ pub fn build_spec(
     }
 
     let writable = matches!(access, apex_core::Access::Ask | apex_core::Access::Edits);
+    // The folders inside the data folder this launch may write: the empty work
+    // tree a copy or a task checkout is about to be created in. They have to
+    // exist, because a jail can only expose a folder that does.
+    let mut own: Vec<PathBuf> = Vec::new();
+    if writable {
+        let data = data_dir.canonicalize().unwrap_or_else(|_| data_dir.to_path_buf());
+        for folder in writable_extra {
+            let folder = folder.canonicalize()?;
+            // Only the checkout Deck makes for itself: a copy's work tree or a
+            // task's worktree. Keys, sessions and the records beside a checkout
+            // are not that shape, so no caller can open them here.
+            match paths::deck_checkout(&data, &folder) {
+                Some(folder) => own.push(folder),
+                None => return Err(JailError::Login(format!("{} is not a checkout this launch may write in the data folder.", folder.display()))),
+            }
+        }
+    }
     if writable {
         // Taint before any check that could fail, per spec: on disk before jail starts.
         // Must not start jail if taint write fails (Task 6)
@@ -281,11 +307,18 @@ pub fn build_spec(
             protected: paths::standard_protected(home, data_dir),
             path_dirs: std::env::split_paths(path).collect(),
             executables: Vec::new(),
-            // A turn inside a bot copy runs in `<data>/bot-copies/<thread>/<bot>/work`,
-            // which is inside the data folder the guard protects.
-            bot_copy: paths::copy_work(data_dir, room, bot),
+            // A turn inside a bot copy runs in `<data>/bot-copies/<thread>/<bot>/work`.
+            // Deck's own Git also runs in, or creates, the copy or task folder it
+            // names. Either way, that one folder is inside the data folder the
+            // guard protects, and it is the folder the launch is let into.
+            own_folder: own.iter().find(|folder| cwd.starts_with(folder)).cloned()
+                .or_else(|| paths::copy_work(data_dir, room, bot)),
         };
         paths::check_writable(cwd, &guard, &mounts)?;
+        for folder in &own {
+            let opening = paths::Guard { own_folder: Some(folder.clone()), ..guard.clone() };
+            paths::check_writable(folder, &opening, &mounts)?;
+        }
     } else {
         paths::check_read(cwd, &paths::standard_protected(home, data_dir), &mounts)?;
     }
@@ -342,6 +375,7 @@ pub fn build_spec(
         home: home.to_path_buf(),
         private_home,
         folders,
+        writable: own.into_iter().map(|folder| Bind { source: folder.clone(), target: folder, writable: true }).collect(),
         read_only,
         protected: paths::standard_protected(home, data_dir),
         restored,
@@ -382,6 +416,7 @@ mod tests {
             home: home.clone(),
             private_home: data.join("jail-homes/r/b"),
             folders: vec![Bind { source: home.join("work/app"), target: home.join("work/app"), writable: true }],
+            writable: vec![],
             read_only: vec!["/opt/node/bin".into(), home.join(".ssh/bin")],
             protected: paths::standard_protected(&home, &data),
             restored: vec![Bind { source: data.join("attachments"), target: data.join("attachments"), writable: false }],
@@ -480,11 +515,41 @@ mod tests {
     /// A spec for a turn in `work`, the room and bot being the ones the host
     /// names a copy after.
     fn spec_for(work: &Path, data: &Path, room: &str, bot: &str) -> Result<JailSpec, JailError> {
+        spec_writing(work, data, room, bot, &[])
+    }
+
+    /// A spec for a launch that may also write `writable` in the data folder:
+    /// Deck's own Git, running in a project and creating a copy or task checkout.
+    fn spec_writing(work: &Path, data: &Path, room: &str, bot: &str, writable: &[PathBuf]) -> Result<JailSpec, JailError> {
         build_spec(
             Path::new("/usr/bin/claude"), &[], work, apex_core::Access::Edits, None,
             &data.parent().unwrap().parent().unwrap().parent().unwrap(), data, room, bot,
-            std::ffi::OsStr::new("/usr/bin"), &[], &[],
+            std::ffi::OsStr::new("/usr/bin"), &[], &[], writable,
         )
+    }
+
+    #[test]
+    fn deck_may_create_the_checkout_it_names_and_nothing_else_in_the_data_folder() {
+        // Deck's own Git runs in the project and creates an empty folder inside
+        // the data folder. Only that checkout may be named; the records beside
+        // it, keys and sessions can't be.
+        let root = std::env::temp_dir().join(format!("apex-jail-spec-{}-checkout", std::process::id()));
+        let data = root.join("me/.local/share/apex");
+        let project = root.join("me/project");
+        let task = data.join("apex-agent/tasks/task1");
+        let checkout = task.join("worktree");
+        for folder in [&project, &checkout, &data.join("keys")] { std::fs::create_dir_all(folder).unwrap(); }
+
+        let spec = spec_writing(&project, &data, "project-operations", "7", &[checkout.clone()]).unwrap();
+        // The empty folder is bound writable at its own path, so `git worktree
+        // add` writes it on the real disk rather than inside the jail.
+        let checkout = checkout.canonicalize().unwrap();
+        assert_eq!(spec.writable, vec![Bind { source: checkout.clone(), target: checkout.clone(), writable: true }]);
+        for refused in [data.clone(), data.join("keys"), task.clone(), data.join("sessions")] {
+            assert!(spec_writing(&project, &data, "project-operations", "7", &[refused.clone()]).is_err(), "{refused:?}");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -15,6 +15,9 @@ pub struct ProjectCommand {
     command: Option<Command>,
     data: PathBuf,
     folder: PathBuf,
+    /// Folders inside the data folder this command may write: the copy or task
+    /// checkout it runs in, or the empty one it is about to create.
+    writable: Vec<PathBuf>,
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
@@ -33,6 +36,7 @@ struct SpawnConfig {
     command: Command,
     data: PathBuf,
     folder: PathBuf,
+    writable: Vec<PathBuf>,
     stdin: Stdio,
     stdout: Stdio,
     stderr: Stdio,
@@ -41,7 +45,7 @@ struct SpawnConfig {
 
 impl ProjectCommand {
     pub(super) fn new(command: Command, data: &Path, folder: &Path) -> Self {
-        Self { command: Some(command), data: data.to_path_buf(), folder: folder.to_path_buf(), stdin: None, stdout: None, stderr: None, input: None }
+        Self { command: Some(command), data: data.to_path_buf(), folder: folder.to_path_buf(), writable: Vec::new(), stdin: None, stdout: None, stderr: None, input: None }
     }
     fn config(&mut self) -> &mut Command { self.command.as_mut().expect("project command already executed") }
     pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self { self.config().arg(arg); self }
@@ -49,6 +53,9 @@ impl ProjectCommand {
     pub fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self { self.config().env(key,value); self }
     pub fn env_remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self { self.config().env_remove(key); self }
     pub fn current_dir(&mut self, folder: impl AsRef<Path>) -> &mut Self { self.folder=folder.as_ref().to_path_buf(); self.config().current_dir(folder); self }
+    /// Let the jailed command write this checkout in the data folder. The jail
+    /// takes only a folder Deck makes there, and only one it can name.
+    pub fn writable(&mut self, folder: impl AsRef<Path>) -> &mut Self { self.writable.push(folder.as_ref().to_path_buf()); self }
     pub fn stdin(&mut self, stdio: Stdio) -> &mut Self { self.stdin=Some(stdio); self }
     pub fn stdout(&mut self, stdio: Stdio) -> &mut Self { self.stdout=Some(stdio); self }
     pub fn stderr(&mut self, stdio: Stdio) -> &mut Self { self.stderr=Some(stdio); self }
@@ -67,7 +74,7 @@ impl ProjectCommand {
         command.current_dir(&folder);
         let input=self.input.take();
         let stdin=if input.is_some(){Stdio::piped()}else{self.stdin.take().unwrap_or_else(||if output {Stdio::null()}else{Stdio::inherit()})};
-        Ok(SpawnConfig { command, data:self.data.clone(), folder,
+        Ok(SpawnConfig { command, data:self.data.clone(), folder, writable:std::mem::take(&mut self.writable),
             stdin,
             stdout:self.stdout.take().unwrap_or_else(||if output {Stdio::piped()} else {Stdio::inherit()}),
             stderr:self.stderr.take().unwrap_or_else(||if output {Stdio::piped()} else {Stdio::inherit()}), input })
@@ -113,6 +120,7 @@ impl ProjectAsyncCommand {
     pub fn env(&mut self,key:impl AsRef<OsStr>,value:impl AsRef<OsStr>)->&mut Self{self.0.env(key,value);self}
     pub fn env_remove(&mut self,key:impl AsRef<OsStr>)->&mut Self{self.0.env_remove(key);self}
     pub fn current_dir(&mut self,folder:impl AsRef<Path>)->&mut Self{self.0.current_dir(folder);self}
+    pub fn writable(&mut self,folder:impl AsRef<Path>)->&mut Self{self.0.writable(folder);self}
     pub fn stdin(&mut self,stdio:Stdio)->&mut Self{self.0.stdin(stdio);self}
     pub fn stdout(&mut self,stdio:Stdio)->&mut Self{self.0.stdout(stdio);self}
     pub fn stderr(&mut self,stdio:Stdio)->&mut Self{self.0.stderr(stdio);self}
@@ -172,7 +180,7 @@ fn spawn_jailed(config:SpawnConfig,registry:&OwnedProcessRegistry)->io::Result<P
     let args:Vec<String>=config.command.get_args().map(|arg|arg.to_str().map(str::to_owned).ok_or_else(||io::Error::other("project jail arguments must be valid UTF-8"))).collect::<Result<_,_>>()?;
     static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
     let id=format!("{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed));
-    let mut spec=linux_jail::build_spec(Path::new(config.command.get_program()),&args,&config.folder,apex_core::Access::Edits,None,&home,&config.data,"project-operations",&id,&path,&[],&[]).map_err(|error|io::Error::other(error.to_string()))?;
+    let mut spec=linux_jail::build_spec(Path::new(config.command.get_program()),&args,&config.folder,apex_core::Access::Edits,None,&home,&config.data,"project-operations",&id,&path,&[],&[],&config.writable).map_err(|error|io::Error::other(error.to_string()))?;
     spec.init=init_path()?;
     spec.provider_env=config.command.get_envs().filter_map(|(key,value)|Some((key.to_str()?.to_owned(),value?.to_os_string()))).collect();
     let mut jailed=linux_jail::launch::jailed_command(&spec,&bwrap).map_err(|error|io::Error::other(error.to_string()))?;

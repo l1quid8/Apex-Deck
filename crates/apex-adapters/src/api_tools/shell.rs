@@ -274,6 +274,7 @@ fn start(env: &Env, registry: &Registry, script: &str) -> Result<Started, String
                     &path_os,
                     &[],
                     &[],
+                    &[],
                 ).map_err(|e| e.to_string())?;
 
                 let mut jailed = crate::linux_jail::launch::jailed_command(&spec, &_bwrap)

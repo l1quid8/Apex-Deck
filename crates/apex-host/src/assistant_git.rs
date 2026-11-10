@@ -145,6 +145,10 @@ fn run_git(project_data: &Path,
         return Err(limit.reason().to_owned());
     }
     let mut command = crate::project_process::git_command(project_data, root)?;
+    // A task checkout lives in the data folder, where the jail writes nothing
+    // unless the launch names the folder: the command's own folder is that one.
+    let data = std::fs::canonicalize(project_data).unwrap_or_else(|_| project_data.to_path_buf());
+    if root.starts_with(&data) { command.writable(root); }
     #[cfg(unix)]
     if limit.is_some() {
         command.process_group(0);
@@ -170,6 +174,43 @@ fn run_git(project_data: &Path,
         ))
     }
 }
+/// Create the empty checkout at `path`, inside the data folder, and add it as a
+/// worktree of `root`.
+///
+/// `git worktree add` reuses an empty folder, and the jail can only expose a
+/// folder that already exists, so the folder is made here first and named as the
+/// one folder this launch may write in the data folder.
+fn add_worktree(project_data: &Path, root: &Path, path: &Path, commit: &str) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    let mut command = crate::project_process::git_command(project_data, root)?;
+    command
+        .writable(path)
+        .current_dir(root)
+        .args(["worktree", "add", "--detach", &git_path(path)?, commit])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let result = command
+        .output()
+        .map_err(|e| format!("Could not run Git: {e}"))?;
+    if result.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Git worktree add failed: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ))
+    }
+}
+
+/// `git worktree remove`, which also has to unlink the checkout's folder: the
+/// jail can only empty it. Whatever is left is removed below, and `prune` drops
+/// the registration, as the copy cleanup does.
+fn remove_worktree(project_data: &Path, root: &Path, path: &Path) {
+    let _ = git(project_data, root, &["worktree", "remove", "--force", &git_path(path).unwrap_or_default()]);
+    let _ = std::fs::remove_dir_all(path);
+    let _ = git(project_data, root, &["worktree", "prune"]);
+}
+
 pub fn checkout_root(project_data: &Path, cwd: &Path) -> Result<PathBuf, String> {
     crate::project_process::check_project(project_data, cwd)?;
     let root = git(project_data, cwd, &["rev-parse", "--show-toplevel"]).map_err(|_| {
@@ -488,16 +529,7 @@ pub fn prepare_worktree(
         }
         return Err("The task worktree path already belongs to another checkout.".into());
     }
-    git(data_dir,
-        &root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            &git_path(&path)?,
-            &snapshot.commit,
-        ],
-    )?;
+    add_worktree(data_dir, &root, &path, &snapshot.commit)?;
     Ok(path)
 }
 
@@ -616,16 +648,7 @@ pub fn stage_integration(
     if scratch_path.exists() {
         return Err("An integration scratch checkout already exists; reconcile or archive the earlier attempt first.".into());
     }
-    git(data_dir,
-        &root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            &git_path(&scratch_path)?,
-            &merged_commit,
-        ],
-    )?;
+    add_worktree(data_dir, &root, &scratch_path, &merged_commit)?;
     Ok(IntegrationPlan {
         task_id: task_id.to_owned(),
         root,
@@ -921,18 +944,7 @@ pub fn reconcile_interrupted_apply(project_data: &Path,
         .ok_or("Invalid scratch path")?
         .join("recovery");
     if !recovery_path.exists() {
-        std::fs::create_dir_all(recovery_path.parent().ok_or("Invalid recovery path")?)
-            .map_err(|e| e.to_string())?;
-        git(project_data,
-            &plan.root,
-            &[
-                "worktree",
-                "add",
-                "--detach",
-                &git_path(&recovery_path)?,
-                &plan.current_snapshot.commit,
-            ],
-        )?;
+        add_worktree(project_data, &plan.root, &recovery_path, &plan.current_snapshot.commit)?;
     }
     let recovery_root = checkout_root(project_data, &recovery_path)?;
     if git(project_data, &recovery_root, &["rev-parse", "HEAD"])?.trim() != plan.current_snapshot.commit {
@@ -989,15 +1001,7 @@ pub fn reconcile_interrupted_apply(project_data: &Path,
             copy_entry(&source, &plan.root.join(&relative))?;
         }
     }
-    git(project_data,
-        &plan.root,
-        &[
-            "worktree",
-            "remove",
-            "--force",
-            &git_path(&recovery_path)?,
-        ],
-    )?;
+    remove_worktree(project_data, &plan.root, &recovery_path);
     journal.phase = "reconciled".into();
     write_journal(journal_path, &journal)
 }
@@ -1025,15 +1029,7 @@ pub fn archive_worktree(primary: &Path, task_id: &str, data_dir: &Path) -> Resul
                 path.display()
             ));
         }
-        git(data_dir,
-            &root,
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                &git_path(&path)?,
-            ],
-        )?;
+        remove_worktree(data_dir, &root, &path);
     }
     Ok(())
 }

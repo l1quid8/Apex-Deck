@@ -427,6 +427,7 @@ pub async fn list_servers(
                     &path_os,
                     &[],
                     &[],
+                    &[],
                 );
                 let bwrap = _bwrap.clone();
                 async move {
