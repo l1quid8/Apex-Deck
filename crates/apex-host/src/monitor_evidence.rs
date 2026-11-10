@@ -515,7 +515,8 @@ mod tests {
         threads: &[(String, SavedRoom)],
         now: u64,
     ) -> EvidenceSnapshot {
-        collect(std::path::Path::new("/nonexistent-apex-test-data"), root.to_str().unwrap(), files, threads, now).unwrap()
+        let project_data = crate::project_process::TestDataDir::new();
+        collect(project_data.path(), root.to_str().unwrap(), files, threads, now).unwrap()
     }
 
     #[test]
