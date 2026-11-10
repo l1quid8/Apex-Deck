@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { transform } from 'sucrase';
+import { popoutOwnership } from './helpers/popout-ownership.mjs';
 import { followedTabPane, popoutRefusal, restoreOrder, takeTabOut } from '../src/popoutModel.ts';
 import { validArrangement } from '../src/paneArrangement.ts';
 import { defaultPanel } from '../src/rightPanelModel.ts';
@@ -29,6 +30,7 @@ for (const kind of ['pane', 'tab']) {
       const workspace = { id: 'project', name: 'Project', path: '/tmp/project' };
       const snapshots = [];
       const bindings = {
+        ...popoutOwnership(),
         window: { apexDeck: { popout: { open: async snapshot => {
           snapshots.push(structuredClone(snapshot));
           return { token: 'window-token' };

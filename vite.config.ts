@@ -2,13 +2,14 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 // The same commit and dirty flag apex-daemon's build.rs records, so the app
 // can tell when a service was built from something else.
 function git(args: string[]): string | null {
-  try { return execFileSync("git", args, { cwd: new URL(".", import.meta.url).pathname, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+  try { return execFileSync("git", args, { cwd: fileURLToPath(new URL(".", import.meta.url)), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
   catch { return null; }
 }
 // A packaging run pins the commit once (scripts/package-pinned.mjs) so this
@@ -30,8 +31,8 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       input: {
-        main: new URL("./index.html", import.meta.url).pathname,
-        phone: new URL("./phone.html", import.meta.url).pathname,
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        phone: fileURLToPath(new URL("./phone.html", import.meta.url)),
       },
       // Large libraries get their own long-lived chunks, shared by the desktop
       // and phone entries, instead of one oversized shared chunk.

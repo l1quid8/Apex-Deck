@@ -139,6 +139,17 @@ test('V3 task controls cannot dispatch to a host that silently ignores new field
 
 import { electronShell } from '../src/electronShell.ts';
 
+test('drop snapshots always read this Mac through preload, including a remote thread', async () => {
+  const calls=[];const snapshot={kind:'file',name:'shot.png',bytes:new Uint8Array([9,8,7])};
+  const bridge={shell:{snapshotDrop:async file=>{calls.push(file);return snapshot;}}};
+  const transport={call:async()=>assert.fail('drop snapshots must not read a host file')};
+  for(const remote of [false,true]) {
+    const shell=electronShell(bridge,transport,{id:'at',owned:false,remote,name:'Server'},async()=>null);
+    assert.deepEqual(await shell.snapshotDrop?.('/tmp/shot.png'),snapshot);
+  }
+  assert.deepEqual(calls,['/tmp/shot.png','/tmp/shot.png']);
+});
+
 test('the shell saves and opens on this machine, and the host opens targets and copies drops', async () => {
   const seen = [];
   const record = (name) => async (...args) => { seen.push([name, ...args]); return name === 'saveFile' ? '/Users/me/Downloads/a.md' : null; };

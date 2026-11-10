@@ -25,13 +25,14 @@ app.whenReady().then(async () => {
   const focusIsShown = '["show","bounds"].includes(fixture.snapshot().calls.filter(c=>c.pane==="p0").at(-1)?.kind) && !fixture.snapshot().panes.p0.picture';
   const focusHasPicture = 'fixture.snapshot().calls.some(c=>c.pane==="p0" && c.kind==="hide" && c.snapshot) && !!fixture.snapshot().panes.p0.picture';
   const reset = async () => {
-    await run('fixture.reset()');
+    await run('window.resetFrom = fixture.snapshot().arrangement; fixture.reset()');
+    await until('fixture.snapshot().arrangement !== window.resetFrom', 'reset renders', 1000);
     await until('!fixture.snapshot().moving && !fixture.snapshot().focusMoving', 'reset settles', 1000);
     await frame();
     await run('fixture.clearCalls()');
   };
-  const restored = async note => {
-    await until(focusIsShown, note + ' restores the live Focus page within 300ms', 300);
+  const restored = async (note, budget = 300) => {
+    await until(focusIsShown, note + ' restores the live Focus page within ' + budget + 'ms', budget);
     const state = await snapshot();
     const bounds = state.calls.filter(call => call.pane === 'p0' && (call.kind === 'show' || call.kind === 'bounds')).at(-1).bounds;
     const actual = state.panes.p0.placeholder;
@@ -135,7 +136,8 @@ app.whenReady().then(async () => {
     await until(focusHasPicture, 'a native side-pane title drag snapshots p0', 180);
     mouse('mouseUp', titleX - 40, titleY + 100);
     await until('!document.querySelector(".pane-map-slot.dragging")', 'native title release commits before timing restoration');
-    await restored('Title drag');
+    await until('![...document.querySelectorAll(".pane-map-slot")].some(slot => slot.getAnimations().some(a=>a.playState==="running"))', 'drop glide ends', 1000);
+    await restored('Title drag', 150);
 
     console.log('Focus BrowserView real map scroll, switch, divider and title drag passed');
     win.destroy(); app.exit(0);

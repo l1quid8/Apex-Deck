@@ -94,9 +94,14 @@ export function mediaSendsFor(ids: string[], participants: ParticipantConfig[], 
 
 /** The total for these sends (null when no price is known), and a video bot that needs a picture it does not have. */
 export async function priceSend(sends: MediaSend[], source: QuoteSource): Promise<{ usd: number | null; missing: MediaSend | null }> {
-  const missing = sends.find(s => s.kind === 'video' && s.spec.needs_image && !s.hasPicture) ?? null;
+  const missing = missingPicture(sends);
   const prices = await Promise.all(sends.map(s => s.kind === 'image'
     ? imagePrice(s.spec, s.resolved, s.editing)
     : quoteFor(source, s.baseUrl, s.apiKeyEnv, s.model, s.resolved).catch(() => null)));
   return { usd: sumPrices(prices), missing };
+}
+
+/** Decide picture requirements without fetching a price. */
+export function missingPicture(sends: MediaSend[]): MediaSend | null {
+  return sends.find(s => s.kind === 'video' && s.spec.needs_image && !s.hasPicture) ?? null;
 }

@@ -937,6 +937,28 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn chosen_agents_reach_the_price_card() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!("../../../shared/media-naming.json")).unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let (address, seen) = fake_venice(vec![("/video/quote", vec![json_answer(json!({"quote": 2.91}))])]).await;
+            let dir = scratch("chosen-agents");
+            let (result, _, cards) = run_job_answering(false, &address, &video_model(), &dir, turn(vec![human(case["posted"].as_str().unwrap())], vec![])).await;
+            assert_eq!(result.unwrap().text, PASS_TOKEN, "{name}");
+            if let Some(prompt) = case["card"].as_str() {
+                assert_eq!(cards.len(), 1, "{name}");
+                assert_eq!(cards[0].kind, ActionKind::Spend, "{name}");
+                assert_eq!(cards[0].title, "Make a video · $2.91", "{name}");
+                assert!(cards[0].detail.ends_with(&format!("\n\n{prompt}")), "{name}: {}", cards[0].detail);
+                assert!(seen.lock().unwrap().iter().all(|r| r.starts_with("/video/quote")), "{name}: only free quotes");
+            } else {
+                assert!(cards.is_empty(), "{name}");
+                assert!(seen.lock().unwrap().is_empty(), "{name}");
+            }
+        }
+    }
+
     #[test]
     fn build_on_last_skips_replies_that_made_nothing() {
         let made = ViewTurn { role: Role::Assistant, content: "Made with Flux\n\nPrompt: a fox in snow\n\nAttached image: /x.png".into() };

@@ -245,6 +245,21 @@ export function keepLine(old: Placement | null | undefined, next: Placement, at:
   return nearest(next.snaps, line * stride(next));
 }
 
+/** Preserve the reading line unless an active pane previously wholly visible
+ * needs the nearest fitting line to remain wholly visible. */
+export function refitScroll(old: Placement | null | undefined, next: Placement, at: number, active: string[]): number {
+  const kept = keepLine(old, next, at);
+  const was = old ? bounds(old, active) : null;
+  const now = bounds(next, active);
+  if (!old || !was || !now) return kept;
+  const offset = Number.isFinite(at) ? at : 0;
+  const start = (old.axis === "x" ? was.x : was.y) - offset;
+  const end = start + (old.axis === "x" ? was.w : was.h);
+  if (start < -1 || end > (old.axis === "x" ? old.region.w : old.region.h) + 1) return kept;
+  const fits = visibleSnaps(next, now);
+  return !fits.length || fits.includes(kept) ? kept : nearest(fits, kept);
+}
+
 /** Preserve the anchor's on-screen line as density changes, then keep its group whole. */
 export function zoomScroll(next: Placement, anchor: ZoomAnchor | null, at: number | null): number {
   if (!anchor || next.levelIdx < 0) return 0;

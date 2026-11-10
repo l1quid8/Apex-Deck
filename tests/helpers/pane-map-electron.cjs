@@ -60,7 +60,26 @@ app.whenReady().then(async () => {
     const review = new URL(fixtureUrl).searchParams.get('review');
     if (review) {
       await reset();
-      if (review === 'popups') {
+      if (review === 'motion-lifetime') {
+        const samples = await run(`new Promise(resolve=>{
+          fixture.setOrder(['p5',...Array.from({length:14},(_,i)=>'p'+i).filter(id=>id!=='p5')]);
+          const samples=[],start=performance.now();let held=false;
+          const tick=time=>{
+            if(!held){held=true;const end=performance.now()+60;while(performance.now()<end){}}
+            const map=document.querySelector('[data-pane-map-region]');
+            const gliding=[...map.querySelectorAll('.pane-map-slot')].some(slot=>slot.getAnimations().some(a=>a.playState==='running'));
+            samples.push({gliding,moving:map.hasAttribute('data-moving')});
+            if(time-start<850)requestAnimationFrame(tick);else resolve(samples);
+          };requestAnimationFrame(tick);
+        })`);
+        assert.ok(samples.some(s=>s.gliding), 'reorder produces real slot transitions');
+        assert.deepEqual(samples.filter(s=>s.gliding&&!s.moving), [], 'motion covers every delayed transition frame');
+        const settled=samples.findIndex(s=>!s.moving);
+        assert.ok(settled>=0, 'motion eventually settles');
+        assert.ok(samples.slice(settled).every(s=>!s.moving), 'motion never restarts after settling');
+        await run(`document.querySelector('.pane-map-slot').dispatchEvent(new TransitionEvent('transitionend',{bubbles:true,propertyName:'top'}))`);
+        assert.equal(await run(`document.querySelector('[data-pane-map-region]').hasAttribute('data-moving')`), false, 'a late transitionend cannot restart settled motion');
+      } else if (review === 'popups') {
         const probe = async id => {
           const boxes = await run(`(()=>{const parent=document.querySelector('[data-id="${id}"]');
             const small=document.createElement('div'),full=document.createElement('div');

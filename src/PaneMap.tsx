@@ -1,6 +1,6 @@
 import { memo, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { GAP, centreId, chooseAnchor, insertIndex, keepLine, place, reorder, scrollFor, stepZoom, zoomScroll, type Arrangement, type Placement, type PxRect, type Size } from "./paneArrangement";
+import { GAP, centreId, chooseAnchor, insertIndex, place, refitScroll, reorder, scrollFor, stepZoom, zoomScroll, type Arrangement, type Placement, type PxRect, type Size } from "./paneArrangement";
 
 export interface PaneMapHandle { reveal(id: string): void }
 interface PaneMapProps {
@@ -55,7 +55,10 @@ export function PaneMap(props: PaneMapProps) {
   const beforeFit = fitted.current;
   const refitting = beforeFit.arrangement === props.arrangement && beforeFit.area.w === area.w &&
     (beforeFit.area.h !== area.h || beforeFit.borrowed !== props.borrowed);
-  useLayoutEffect(() => { fitted.current = { arrangement: props.arrangement, area, borrowed: props.borrowed }; });
+  // The borrowed-height render can precede the map's ResizeObserver. Don't
+  // commit scroll or Focus bookkeeping for that temporary size pairing.
+  const stale = () => { const el = root.current; return !!el && (el.clientWidth !== area.w || el.clientHeight !== area.h); };
+  useLayoutEffect(() => { if (!stale()) fitted.current = { arrangement: props.arrangement, area, borrowed: props.borrowed }; });
   const live = useRef({ props, area, placement });
   live.current = { props, area, placement };
   const pointer = useRef<Point | null>(null);
@@ -112,9 +115,11 @@ export function PaneMap(props: PaneMapProps) {
     const duration = glide && !matchMedia("(prefers-reduced-motion: reduce)").matches ? 250 : 150;
     state.current.until = Math.max(state.current.until, performance.now() + duration);
     window.clearTimeout(state.current.timer);
+    const gliding = () => [...el.querySelectorAll<HTMLElement>(".pane-map-slot")].some(slot =>
+      slot.hasAttribute("data-pinned") === (attribute === "focusMoving") && slot.getAnimations().some(animation => animation.playState === "running"));
     const settle = () => {
       const remaining = state.current.until - performance.now();
-      if (remaining > 0 || press.current?.active || el.classList.contains("adjusting")) {
+      if (remaining > 0 || press.current?.active || el.classList.contains("adjusting") || gliding()) {
         state.current.timer = window.setTimeout(settle, Math.max(16, remaining, 100));
       } else delete el.dataset[attribute];
     };
@@ -255,7 +260,7 @@ export function PaneMap(props: PaneMapProps) {
 
   useLayoutEffect(() => {
     const el = root.current;
-    if (!el || !area.w || !area.h) return;
+    if (!el || !area.w || !area.h || stale()) return;
     const old = previous.current;
     const arr = props.arrangement;
     const drag = press.current;
@@ -283,21 +288,21 @@ export function PaneMap(props: PaneMapProps) {
     const reset = old && old.mode !== arr.mode && !["left", "right"].includes(arr.mode);
     if (reset) held.current = null;
     const selected = props.active.filter(id => placement.rects.has(id));
-    // Typing must not pull someone reading another row back to the active pane.
-    const elsewhere = refitting && selected.length > 0 && !selected.some(id => visibleRef.current.includes(id));
-    scrollTo(reset ? 0 : elsewhere ? keepLine(drawnLayout.current?.placement, placement, offset.current)
+    // Preserve the reading line even when the active pane is already visible,
+    // or is pinned outside the scrolling region.
+    scrollTo(reset ? 0 : refitting ? refitScroll(drawnLayout.current?.placement, placement, offset.current, selected)
       : scrollFor(placement, selected.length ? { kind: "active", ids: selected } : null, axisScroll(el, placement)));
     quietScroll.current = refitting ? offset.current : null;
   }, [placement, props.maximized]);
 
   useLayoutEffect(() => {
     const el = root.current;
-    if (!el) return;
+    if (!el || stale()) return;
     const old = drawnLayout.current;
     const focus = placement.focus;
     const beforeFocus = old?.placement.focus;
     const a = beforeFocus?.rect, b = focus?.rect;
-    if (!refitting && (beforeFocus?.id !== focus?.id || a?.x !== b?.x || a?.y !== b?.y || a?.w !== b?.w || a?.h !== b?.h || old?.maximized !== props.maximized)) markFocusMoving(true);
+    if (!refitting && (beforeFocus?.id !== focus?.id || a?.x !== b?.x || a?.y !== b?.y || a?.w !== b?.w || a?.h !== b?.h || old?.maximized !== props.maximized)) markFocusMoving(!resizing);
     drawnLayout.current = { placement, maximized: props.maximized };
     if (!rebaseGlide && old?.maximized === props.maximized) return;
     for (const animation of focusGlides.current.values()) animation.cancel();
@@ -438,11 +443,15 @@ export function PaneMap(props: PaneMapProps) {
     <div ref={root} className={`pane-map${resizing || dragging ? " adjusting" : ""}${resizing ? " resizing" : ""}${refitting ? " refitting" : ""}`} data-pane-map-region data-axis={p.axis} data-level={p.levelIdx} data-many={!full && props.arrangement.order.length > 1 ? "" : undefined}
     style={{ overflowX: !full && p.axis === "x" ? "auto" : "hidden", overflowY: !full && p.axis === "y" ? "auto" : "hidden", scrollSnapType: dragging ? "none" : `${p.axis} mandatory` }}
     tabIndex={0} aria-label="Thread panes" onScroll={readScroll}
-    onTransitionEnd={event => { if (event.target instanceof HTMLElement && event.target.classList.contains("pane-map-slot")) markMoving(); }}
+    onTransitionEnd={event => {
+      // A delayed transitionend may extend motion, but cannot restart a map
+      // whose final animated frame has already settled.
+      if (event.target instanceof HTMLElement && event.target.classList.contains("pane-map-slot") && event.currentTarget.hasAttribute("data-moving")) markMoving();
+    }}
     onPointerDownCapture={event => {
       const target = event.target instanceof Element ? event.target : null;
       const slot = target?.closest<HTMLElement>(".pane-map-slot");
-      if (press.current || event.button !== 0 || full || !slot || !target?.closest(".pane-head") || target.closest("button, input, select, a, [contenteditable=true]") || target.closest(".pane-head")?.querySelector(".thread-name-input")) return;
+      if (press.current || event.button !== 0 || event.metaKey || event.ctrlKey || full || !slot || !target?.closest(".pane-head") || target.closest("button, input, select, a, [contenteditable=true]") || target.closest(".pane-head")?.querySelector(".thread-name-input")) return;
       const id = slot.dataset.paneId;
       if (!id || !props.arrangement.order.includes(id)) return;
       const box = root.current!.getBoundingClientRect();

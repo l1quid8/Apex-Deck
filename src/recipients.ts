@@ -29,6 +29,26 @@ export function mentionedWords(text: string): string[] {
   return mentionSpans(text).map((span) => span.word);
 }
 
+/** The picked agents' current mentions, added only when a one-send item posts. */
+export function pickLead(to: string[], people: readonly Mentionable[]): string {
+  const names = to.flatMap(id => {
+    const person = people.find(person => person.id === id);
+    return person ? [`@${mentionFor(person)}`] : [];
+  });
+  return names.length ? `${names.join(" ")} ` : "";
+}
+
+/** Individual agents named in the text, first mention first; broadcasts name nobody. */
+export function namedIn(text: string, people: readonly Mentionable[]): string[] {
+  const found: string[] = [];
+  for (const word of mentionedWords(text)) {
+    if (word === "all" || word === "everyone") continue;
+    const id = people.find(person => mentionFor(person) === word)?.id;
+    if (id && !found.includes(id)) found.push(id);
+  }
+  return found;
+}
+
 /**
  * Who `text` @mentions, by the room's rules: "everyone" for @all or
  * @everyone, otherwise the bots mentioned, first mention first. A word is a
@@ -79,3 +99,9 @@ export function exampleRows(people: readonly Mentionable[]): { label: string; te
     .map((text) => ({ label: `e.g. ${text}`, text }));
 }
 
+
+/** Typed media mentions survive a mod rewriting their words. */
+export function keptNames(typed: string, rewritten: string, people: readonly Mentionable[]): string {
+  const kept = namedIn(rewritten, people);
+  return pickLead(namedIn(typed, people).filter(id => !kept.includes(id)), people);
+}

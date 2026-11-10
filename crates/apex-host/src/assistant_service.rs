@@ -1264,7 +1264,14 @@ impl Host {
         answers: Option<bool>,
         capability: apex_core::GeneratedUiCapability,
     ) -> Result<bool, String> {
-        self.continue_thread_expected_with_answer_guidance(id, text, targets, None, answers, capability).await
+        self.assistant_continue_thread_keeping_default(id, text, targets, answers, capability, false).await
+    }
+
+    pub(crate) async fn assistant_continue_thread_keeping_default(
+        self: &Arc<Self>, id: &str, text: Option<String>, targets: Vec<ParticipantId>,
+        answers: Option<bool>, capability: apex_core::GeneratedUiCapability, keep_default: bool,
+    ) -> Result<bool, String> {
+        self.continue_thread_expected_with_answer_guidance(id, text, targets, None, answers, capability, keep_default).await
     }
 
     async fn continue_thread_expected(
@@ -1274,7 +1281,7 @@ impl Host {
         targets: Vec<ParticipantId>,
         expected_revision: Option<u64>,
     ) -> Result<bool, String> {
-        self.continue_thread_expected_with_answer_guidance(id, text, targets, expected_revision, None, apex_core::GeneratedUiCapability::Unsupported).await
+        self.continue_thread_expected_with_answer_guidance(id, text, targets, expected_revision, None, apex_core::GeneratedUiCapability::Unsupported, false).await
     }
 
     async fn continue_thread_expected_with_answer_guidance(
@@ -1285,6 +1292,7 @@ impl Host {
         expected_revision: Option<u64>,
         answers: Option<bool>,
         capability: apex_core::GeneratedUiCapability,
+        keep_default: bool,
     ) -> Result<bool, String> {
         // Ordinary chats do not participate in task integration. Let their
         // read turns continue while another task is being accepted.
@@ -1461,7 +1469,7 @@ impl Host {
             for note in notes.iter().filter_map(Value::as_str) { content.push_str(&format!("\n\nAdditional human note for this task:\n{note}")); }
         }
         let batch = match self
-            .prepare_post(id, &handle, &content, Some(selected))
+            .prepare_post_keeping_default(id, &handle, &content, Some(selected), keep_default)
             .await
         {
             Ok(batch) => batch.with_answer_guidance(answers, capability),
@@ -4678,6 +4686,32 @@ mod tests {
     }
 
     #[test]
+    fn one_send_execution_continuation_keeps_the_saved_default() {
+        for keep_default in [true, false] {
+            let f = fixture();
+            let task = approve_into_parent(&f, "one-send-continuation", TaskMode::ReadOnly);
+            let child = task.execution_thread_id.clone().unwrap();
+            let bot = Arc::new(apex_core::testing::ScriptedParticipant::new("null", &["done"]));
+            f.runtime.block_on(async {
+                let handle = f.host.handle(&child).unwrap();
+                let mut room = handle.room.lock().await;
+                let mut snapshot = room.snapshot();
+                snapshot.last_targets.clear();
+                *room = apex_core::Room::restore(vec![bot.clone()], snapshot);
+                drop(room);
+                f.host.call_with_client_capability_assuming_verified_ui_for_test(crate::Command::RoomPostTo {
+                    id: child.clone(), text: "@null one more pass".into(), targets: vec![ParticipantId::new("null")],
+                    interactive_answers: None, client_turn_id: None, max_bot_hops: None, client_message_id: None, keep_default,
+                }, apex_core::GeneratedUiCapability::Verified).await.unwrap();
+            });
+            assert_eq!(wait_for(&f, &task.id).status, TaskStatus::ReadyForReview);
+            let saved = f.host.store().room(&child).unwrap().unwrap().snapshot;
+            assert_eq!(saved.last_targets, if keep_default { vec![] } else { vec![ParticipantId::new("null")] });
+            assert_eq!(bot.requests().len(), 1);
+        }
+    }
+
+    #[test]
     fn assistant_owned_continuations_keep_each_commands_answer_guidance() {
         use apex_core::GeneratedUiCapability::{Unsupported, Verified};
 
@@ -4700,7 +4734,7 @@ mod tests {
             for kind in ["post", "post_to", "turn"] {
                 let command = match kind {
                     "post" => crate::Command::RoomPost { id: child.clone(), text: "Continue with a calculator".into(), interactive_answers: answers, client_message_id: None },
-                    "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], interactive_answers: answers, client_turn_id: None, max_bot_hops: None, client_message_id: None },
+                    "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], interactive_answers: answers, client_turn_id: None, max_bot_hops: None, client_message_id: None, keep_default: false },
                     _ => crate::Command::RoomTurn { id: child.clone(), participants: vec![ParticipantId::new("null")], hops: Some(0), interactive_answers: answers },
                 };
                 f.runtime.block_on(f.host.call_with_client_capability_assuming_verified_ui_for_test(command, capability)).unwrap();

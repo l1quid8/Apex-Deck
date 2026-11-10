@@ -589,15 +589,15 @@ test('the chat hook runs only for a message that stayed queued, and after the co
   const chat = await fs.readFile(new URL('../src/ChatPane.tsx', import.meta.url), 'utf8');
   assert.equal((chat.match(/chatQueued/g) ?? []).length, 1, 'only the send path tells the phone');
   assert.doesNotMatch(chat, /behindTurn/, 'whether anyone is working is not the same as being queued');
-  const start = chat.indexOf('void turnQueue.send(message).then(id => {');
+  const start = chat.indexOf('void done.then(id => {');
   assert.ok(start > 0);
   const block = chat.slice(start, chat.indexOf('}).catch(', start));
   const hook = block.indexOf('chatQueued');
-  assert.match(block, /if \(item\) void backend\.phone\?\.chatQueued\(pane\.id\)\.catch\(\(\) => \{\}\);/);
+  assert.match(block, /if \(item\) void current\.current\.phone\?\.chatQueued\(pane\.id\)\.catch\(\(\) => \{\}\);/);
   assert.match(block, /const item = turnQueue\.items\.find\(queuedItem => queuedItem\.id === id\);/);
   assert.ok(block.indexOf('const item =') < hook, 'it asks the queue first');
   assert.ok(block.indexOf('setText(') < hook && block.indexOf('setAttached(') < hook && block.indexOf('askToSteer') < hook, 'it comes last');
-  assert.ok(block.indexOf('A message queued while the person holds the phone tells waiting bots to end their turn.') > 0);
+  assert.ok(chat.includes('const { done } = submitDraft('), 'composer uses the ordered admission path');
 });
 
 test('a lost live picture removes the old screen instead of leaving clickable stale video', async () => {

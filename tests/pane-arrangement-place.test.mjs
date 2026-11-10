@@ -1,7 +1,18 @@
 import test from 'node:test'; import assert from 'node:assert/strict';
+import * as arrangement from '../src/paneArrangement.ts';
 import { place, keepLine, arrangementFromSaved, validArrangement } from '../src/paneArrangement.ts';
 const ids = Array.from({ length: 14 }, (_, i) => `p${i}`); const A = { w: 1200, h: 800 }; const H = 784 / 3;
 const arr = (mode, x = {}) => ({ mode, order: ids, zoom: 1, focusShare: 0.58, ...x });
+test('every refit keeps its line unless a previously whole active pane needs a nearer fitting line', () => {
+  for (const [mode,line,active] of [['horizontal',8,['p9']],['horizontal',8,['p0']],['left',7,['p0']],['right',7,[]]]) {
+    const old = place(arr(mode), A), next = place(arr(mode), {w:A.w,h:648},152);
+    const start = old.snaps[line], kept = next.snaps[line];
+    assert.equal(arrangement.refitScroll?.(old,next,start,active),kept,mode+' growth');
+    assert.equal(arrangement.refitScroll?.(next,old,kept,active),start,mode+' clearing');
+  }
+  const old = place(arr('horizontal'),A), next = place(arr('horizontal'),{w:A.w,h:150},650);
+  assert.equal(arrangement.refitScroll?.(old,next,old.snaps[8],['p10']), next.snaps[9], 'keep the bottom active pane wholly visible');
+});
 test('a composer refit keeps the first scrolled line across all layouts', () => {
   for (const mode of ['grid','horizontal','vertical','left','right']) {
     const old = place(arr(mode), A);

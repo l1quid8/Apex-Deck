@@ -106,3 +106,12 @@ test('More details asks the bot that wrote the part to explain it', () => {
   const quote = { id: 'null', name: 'Null', text: 'Use @jigga\'s plan.' };
   assert.equal(moreDetailsText(quote, bots('null', 'jigga')), '@null Explain this part in more detail.\n\n> Null wrote:\n> Use ＠jigga\'s plan.');
 });
+
+test('chosen quote lead is reused after a mod adds a different mention', async () => {
+ const {replyLead,replyWith}=await import('../src/reply.ts');
+ const people=[{id:'a',display_name:'Allison'},{id:'m',display_name:'Muck'}];
+ const quotes=[{id:'a',name:'Allison',text:'@muck quoted context'}];
+ const lead=replyLead('a whale',quotes,people);
+ assert.equal(lead,'@allison ');
+ assert.equal(replyWith('@muck rewrite',quotes,lead),'@allison @muck rewrite\n\n> Allison wrote:\n> ＠muck quoted context');
+});

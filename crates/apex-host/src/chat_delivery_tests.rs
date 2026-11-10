@@ -53,6 +53,41 @@ async fn call(host: &Arc<Host>, mut value: Value) -> Result<Value, String> {
 }
 
 #[test]
+fn one_send_picks_keep_the_default_for_legacy_and_client_message_posts() {
+    for client in [false, true] {
+        for field in [None, Some("keepDefault"), Some("keep_default")] {
+            let (runtime, host, path) = fixture(&format!("one-off-{client}-{field:?}"));
+            runtime.block_on(async {
+                let handle = host.handle("r").unwrap();
+                let _ = host.prepare_post("r", &handle, "@a initial", Some(vec![ParticipantId::new("a")])).await.unwrap();
+                assert_eq!(call(&host, json!({"command":"room_targets","id":"r","text":""})).await.unwrap(), json!(["a"]));
+                let mut post = json!({"command":"room_post_to","id":"r","text":"@b hello","targets":["b"]});
+                if client { post["clientMessageId"] = json!("one-off"); }
+                if let Some(field) = field { post[field] = json!(true); }
+                call(&host, post).await.unwrap();
+                let targets = call(&host, json!({"command":"room_targets","id":"r","text":""})).await.unwrap();
+                assert_eq!(targets, if field.is_some() { json!(["a"]) } else { json!(["b"]) }, "client={client}, field={field:?}");
+                let snapshot = host.store.room("r").unwrap().unwrap().snapshot;
+                assert_eq!(snapshot.last_targets, vec![ParticipantId::new(if field.is_some() { "a" } else { "b" })]);
+                assert_eq!(snapshot.transcript[1].text, "@b hello");
+            });
+            drop(host);
+            drop(runtime);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn post_capabilities_advertises_one_send_default_preservation() {
+    let (runtime, host, path) = fixture("post-capabilities");
+    assert_eq!(runtime.block_on(call(&host, json!({"command":"post_capabilities"}))).unwrap(), json!({"keep_default_v1":true}));
+    drop(host);
+    drop(runtime);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn fence_is_durable_and_refuses_a_delayed_group_post() {
     let (runtime, host, path) = fixture("fence");
     runtime.block_on(async {

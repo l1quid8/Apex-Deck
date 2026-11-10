@@ -27,6 +27,10 @@ import * as monitorAttention from '../src/monitorAttention.ts';
 import * as canvasPanes from '../src/canvasPanes.ts';
 import * as layout from '../src/layout.ts';
 import * as paneArrangement from '../src/paneArrangement.ts';
+import * as sliceDraft from '../src/sliceDraft.ts';
+import * as multiSend from '../src/multiSend.ts';
+import * as slicePlan from '../src/slicePlan.ts';
+import * as recipients from '../src/recipients.ts';
 import { paneSection, restoredArrangements, savedArrangements } from '../src/closing.ts';
 import { migrateCanvasLayouts } from '../src/hostSession.ts';
 import * as paneHost from '../src/paneHost.ts';
@@ -94,6 +98,7 @@ function appHarness(options = {}) {
     return hostBackends.get(hostId);
   };
   backend = {
+    onFileDrop: async () => () => {},
     demo: false, host: { id: 'host-a', connection: connectionFor('host-a') },
     machines: {
       get: id => backendForHost(id),
@@ -121,6 +126,18 @@ function appHarness(options = {}) {
   const mountSource = fsSync.readFileSync(new URL('../src/useWorktreeMount.ts', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '').replace('export function', 'function');
   const mountCode = transform(mountSource, {transforms:['typescript']}).code;
   const useWorktreeMount = new Function('useEffect','useRef','useState','mountWorktree',mountCode+';return useWorktreeMount;')(hooks.useEffect,hooks.useRef,hooks.useState,mountWorktree);
+  const multiDraftSource = fsSync.readFileSync(new URL('../src/useMultiDraft.ts', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const multiDraftCode = transform(multiDraftSource, { transforms: ['typescript'] }).code;
+  const multiDraftScope = { ...hooks, ...sliceDraft, crypto: { randomUUID: () => `draft-${++requestSequence}` } };
+  const useMultiDraft = new Function(...Object.keys(multiDraftScope), `${multiDraftCode};return useMultiDraft;`)(...Object.values(multiDraftScope));
+  const evaluateHooks = (file, scope, name) => {
+    const source = fsSync.readFileSync(new URL(`../src/${file}.ts`, import.meta.url), 'utf8').replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+    const code = transform(source, {transforms:['typescript']}).code;
+    return new Function(...Object.keys(scope), `${code};return ${name};`)(...Object.values(scope));
+  };
+  const registryScope = {...hooks};
+  const useSendApis = evaluateHooks('threadSendApi',registryScope,'useSendApis');
+  const useMultiBatches = evaluateHooks('useMultiBatches',{...hooks,...multiSend},'useMultiBatches');
   let floatOptions,personalOptions,floatControls;
   const popoutRecords={opens:[],updates:[],visibility:[],layout:[]};
   const floatActions=new Set(),floatClosed=new Set();
@@ -157,7 +174,7 @@ function appHarness(options = {}) {
     readOpenChat:()=>null,restoredChat:()=>'unknown',
 
     subscribeToImports,
-    chatFolder, useWorktreeMount,
+    chatFolder, useWorktreeMount, useMultiDraft, useSendApis, useMultiBatches, ...slicePlan, ...recipients,
     getBackend: async () => backend,
     DEFAULT_SETTINGS: { disabledProviders: [], theme: 'dark', newThread:options.newThread??{policy:'mention',max_bot_hops:3} },
     readSettings: () => ({ disabledProviders: [], newThread:options.newThread??{policy:'mention',max_bot_hops:3} }),

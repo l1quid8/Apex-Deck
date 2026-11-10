@@ -211,7 +211,7 @@ export function WorkBar({ work, attachedCount, files, tools, toolsWhere, canCopy
   );
 
   return (
-    <div className="tray" ref={root}>
+    <div className="tray" data-dock-extra ref={root}>
       <button type="button" className={`tray-chip proj ${pop === "picker" ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={pop === "picker"}
         aria-label="Change the project for this thread" title="Change the project for this thread (⌥⇧⌘O)" onClick={() => toggle("picker")}>
         <ProjectFolder tint={remote ? project.tint : undefined} size={14} /><span className="pname">{project.name}</span>

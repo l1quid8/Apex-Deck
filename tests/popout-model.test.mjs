@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { transform } from "sucrase";
+import { popoutOwnership } from './helpers/popout-ownership.mjs';
 import { renamedAgents } from "../src/agentRenames.ts";
 import { validArrangement } from "../src/paneArrangement.ts";
 import { changedProfiles, createForkChannel, orphanedPopouts, popoutRefusal, restoreOrder, restoreTab, retargetPoppedTab, takeTabOut, upsertProfiles } from "../src/popoutModel.ts";
@@ -52,6 +53,7 @@ test("App remembers already-external neighbours when another pane pops out", asy
     // App re-creates this callback at each render; native opening is the only
     // external boundary replaced here. All return snapshots use App's code.
     const scope = {
+      ...popoutOwnership(poppedOut.map(item => item.id)),
       window: { apexDeck: { popout: { open: async snapshot => ({ token: snapshot.id }) } } },
       listed, poppedOut, poppedIds: new Set(poppedOut.map(item => item.id)),
       hostOfPane: () => ({ workspace: { path: "/fixture" }, hostId: "local" }),

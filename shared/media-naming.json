@@ -1,0 +1,13 @@
+{
+  "about": "Shared app-posting and media-agent cases. Allison is the video agent; the default is Null except for the unnamed case, whose default is Allison. A quote's lead is chosen before a mod rewrites the typed text.",
+  "cases": [
+    {"name":"menu pick with TL;DR", "typed":"a whale at dawn", "picked":["allison"], "tldr":true, "posted":"@allison a whale at dawn\n\n[TL;DR mode: answer in 2–4 sentences. Lead with the answer. No preamble, no headings. Expand only if asked.]", "card":"a whale at dawn"},
+    {"name":"typed name without a mod", "typed":"@allison a whale", "tldr":false, "posted":"@allison a whale", "card":"a whale"},
+    {"name":"typed name removed by a mod", "typed":"@allison a whale", "mod":"a whale", "tldr":false, "posted":"@allison a whale", "card":"a whale"},
+    {"name":"typed name kept by a mod", "typed":"@allison a whale", "mod":"@allison a big whale", "tldr":false, "posted":"@allison a big whale", "card":"a big whale"},
+    {"name":"broadcast removed by a mod", "typed":"@all a whale", "mod":"a whale", "tldr":false, "posted":"a whale", "card":null},
+    {"name":"named by no one", "typed":"a whale", "tldr":false, "posted":"a whale", "card":null},
+    {"name":"quoted agent with a name added by a mod", "typed":"look at this", "quote":{"id":"allison", "name":"Allison", "text":"the first cut"}, "mod":"look at this @null", "tldr":false, "posted":"@allison look at this @null\n\n> Allison wrote:\n> the first cut", "card":"look at this @null\n\n> Allison wrote:\n> the first cut"},
+    {"name":"quoted agent with a broadcast removed by a mod", "typed":"@all look at this", "quote":{"id":"allison", "name":"Allison", "text":"the first cut"}, "mod":"look at this", "tldr":false, "posted":"look at this\n\n> Allison wrote:\n> the first cut", "card":null}
+  ]
+}

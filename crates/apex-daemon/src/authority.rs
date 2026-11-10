@@ -52,7 +52,7 @@ pub fn command_needs(command: &Command) -> Need {
     match command {
         ProvenanceExecute { .. } => Need::Never, // Issued only for this Mac; never bypass paired-device scope.
         // Read-only.
-        VoiceCapabilities {} => read(GlobalRead),
+        VoiceCapabilities {} | PostCapabilities {} => read(GlobalRead),
         SessionLoad {} => read(GlobalRead),
         MonitorList {} | MonitorGet { .. } => read(Global),
         AssistantTasksList { .. } => read(Global),
@@ -536,7 +536,7 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         RoomRefreshPlans { .. } => None,
         RoomApplyAccess { .. } => None,
         RoomPostTo { .. } => None,
-        VoiceCapabilities {} => None,
+        VoiceCapabilities {} | PostCapabilities {} => None,
         RoomStopRequest { .. } => None,
         RoomTurn { .. } => None,
         RoomStop { .. } => None,
@@ -749,6 +749,7 @@ pub(crate) mod tests {
             ("room_bot_balance", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
             ("room_plan_reset", Some((Full, "thread")), json!({ "room": "mine", "tool": "codex" })),
             ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
+            ("post_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("voice_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),

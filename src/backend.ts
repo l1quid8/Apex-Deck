@@ -14,6 +14,7 @@ import { electronBackend } from "./electronShell.ts";
 import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, Curation, CurationUndo, CurateReply, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, ResetCredits, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
 export type Unlisten = () => void;
+export type DropSnapshot = { kind: "file"; name: string; bytes: Uint8Array } | { kind: "folder"; name: string } | { kind: "too-big"; name: string };
 
 export type PtySummary = { id: string; name: string; project: string | null; cwd: string | null; tail: string; matched?: string; state: "running" | "exited"; exitCode: number | null; lastActivity: number; cursor: number };
 export type PtySnapshot = { id: string; output: string; cursor: number; state: "running" | "exited"; exitCode: number | null };
@@ -139,7 +140,7 @@ export interface Backend {
   roomRefreshPlans(id: string): Promise<void>;
   /** Stop a working bot and run it again under the access just saved. */
   roomApplyAccess(id: string, participant: string): Promise<void>;
-  roomPostTo(id: string, text: string, targets: string[], interactiveAnswers?: boolean, voice?: { client_turn_id: string; max_bot_hops: 0 }): Promise<void>;
+  roomPostTo(id: string, text: string, targets: string[], interactiveAnswers?: boolean, voice?: { client_turn_id: string; max_bot_hops: 0 }, keepDefault?: boolean): Promise<void>;
   /** Run participants on the transcript as it is, one after another, without
    *  posting anything. `hops` caps the rounds of bots answering bots that may
    *  follow: null keeps the room's limit (which itself may be unlimited),
@@ -147,6 +148,7 @@ export interface Backend {
   roomTurn(id: string, participants: string[], hops: number | null, interactiveAnswers?: boolean): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
   voiceCapabilities?(): Promise<{voice_turn_correlation_v1:boolean}>;
+  postCapabilities?(): Promise<{keep_default_v1:boolean}>;
   roomStopRequest?(id:string,participant:string,requestId:string):Promise<string>;
   /** Answer an action a bot proposed, named by the `request` from its event.
    *  `always` saves a rule with the thread, so the same thing isn't asked again
@@ -199,6 +201,8 @@ export interface Backend {
   readAttachment(path: string): Promise<ArrayBuffer>;
   /** Files dropped on the window, with where they landed in CSS pixels. */
   onFileDrop(cb: (paths: string[], x: number, y: number) => void): Promise<Unlisten>;
+  /** Snapshot a real recent Finder drop on this Mac, regardless of the thread's host. */
+  snapshotDrop?(path: string): Promise<DropSnapshot>;
   roomPin(id: string, fact: string): Promise<string[]>;
   roomUnpin(id: string, index: number): Promise<string[]>;
   roomFork(source: string, target: string, upto: number | null): Promise<void>;
@@ -640,11 +644,11 @@ function demoBackend(): Backend {
     }
   };
 
-  const postPreview = async (id: string, text: string, targets: string[]) => {
+  const postPreview = async (id: string, text: string, targets: string[], keepDefault = false) => {
     const room = rooms.get(id);
     if (!room) throw new Error(`no group chat with id ${id}`);
     if (targets.some(target => !room.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
-    room.last = targets;
+    if (!keepDefault) room.last = targets;
     emitRoom(id, {type: "message_added", message: {seq: room.seq++, speaker: {kind: "human"}, text, at: Date.now()}});
     await runChain(id, targets, room.options.policy === "round_robin", room.options.max_bot_hops);
   };
@@ -832,9 +836,10 @@ function demoBackend(): Backend {
     roomRefreshPlans: async () => {},
     roomApplyAccess: async () => {},
     roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),
-    roomPostTo: async (id, text, targets) => {
+    postCapabilities: async () => ({keep_default_v1:true}),
+    roomPostTo: async (id, text, targets, _answers, _voice, keepDefault) => {
       if (!rooms.has(id) || targets.some(target => !rooms.get(id)!.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
-      void postPreview(id, text, targets).catch(error => emitRoom(id, {type: "failed", id: "storage", error: String(error)}));
+      void postPreview(id, text, targets, keepDefault).catch(error => emitRoom(id, {type: "failed", id: "storage", error: String(error)}));
     },
     roomTurn: async (id, participants, hops) => {
       const room = rooms.get(id);
@@ -938,6 +943,7 @@ function demoBackend(): Backend {
     libraryRename: async () => {},
     readAttachment: async () => { throw new Error("Pictures are shown in the desktop app"); },
     onFileDrop: async () => () => {},
+    snapshotDrop: async () => { throw new Error('Only a file dropped on this window can be read.'); },
     roomPin: async (id, fact) => {
       const room = rooms.get(id);
       if (!room) throw new Error(`no group chat with id ${id}`);

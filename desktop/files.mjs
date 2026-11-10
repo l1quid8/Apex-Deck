@@ -3,6 +3,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** Read a Finder drop once. Classify directories and large files before reading
+ * any contents, so callers can keep the same bytes through sends and retries. */
+export async function snapshotFile(file, limit) {
+  const name = path.basename(file);
+  const info = await fs.promises.stat(file);
+  if (info.isDirectory()) return { kind: 'folder', name };
+  if (info.size > limit) return { kind: 'too-big', name };
+  return { kind: 'file', name, bytes: new Uint8Array(await fs.promises.readFile(file)) };
+}
+
 /** The file under `root` (the built UI) for an `app://deck/...` URL, or null when it would be outside. */
 export function appFile(root, url) {
   let pathname;

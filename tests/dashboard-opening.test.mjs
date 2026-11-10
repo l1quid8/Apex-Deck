@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { transform } from 'sucrase';
+import { popoutOwnership } from './helpers/popout-ownership.mjs';
 import { paneSection } from '../src/closing.ts';
 import * as arrangement from '../src/paneArrangement.ts';
 
@@ -76,6 +77,7 @@ test('external panes use their source section layout even if another screen is a
   let records = []; const snapshots = [];
   const bindings = {
     window: { apexDeck: { popout: { open: async snapshot => { snapshots.push(snapshot); return { token: 'token' }; } } } },
+    ...popoutOwnership(),
     poppedIds: new Set(), poppedOut: [], listed: [source], toast: message => assert.fail(message),
     hostOfPane: () => ({ workspace: { id: source.workspaceId, path: '/remote/project' }, hostId: 'remote-host' }),
     runs: {}, appearance: {}, appearanceSettings: undefined, chatFolder: (_pane, workspace) => workspace.path,

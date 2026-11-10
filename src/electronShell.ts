@@ -3,7 +3,7 @@
 // Electron's main process. Commands go over that link with DaemonClient; the
 // shell's own jobs go to main through the bridge.
 
-import type { Backend, BrowserApi, HostEntry, HostUpdateResult, RemoteAccessState } from "./backend";
+import type { Backend, BrowserApi, DropSnapshot, HostEntry, HostUpdateResult, RemoteAccessState } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
 import { createHostBackends, guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore } from "./hostConnections.ts";
@@ -68,6 +68,7 @@ export interface DeckBridge {
     startupFolders(): Promise<string[]>;
     /** A file on this Mac, to send to a host on another machine. */
     readLocalFile(hostId: string, path: string): Promise<Uint8Array>;
+    snapshotDrop(path: string): Promise<DropSnapshot>;
     onFileDrop(cb: (paths: string[], x: number, y: number) => void): () => void;
     onQuitRequested(cb: (request: number) => void): () => void;
     quitHeard(request: number): Promise<void>;
@@ -214,6 +215,7 @@ export function electronShell(
     },
     requestCriticalAttention: () => shell.attention(true),
     onFileDrop: async (cb) => shell.onFileDrop(cb),
+    snapshotDrop: (path) => shell.snapshotDrop(path),
     onQuitRequested: async (cb) => shell.onQuitRequested(cb),
     quitHeard: (request) => shell.quitHeard(request),
     quitApp: () => shell.quitApp(),

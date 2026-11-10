@@ -1,4 +1,14 @@
 import { dockTarget } from "./composerTarget";
+import { useMultiDraft } from "./useMultiDraft";
+import { useSendApis, ownerRefusal, leaveRefusal } from './threadSendApi';
+import type { PendingFile } from './threadSendApi';
+import { useMultiBatches } from './useMultiBatches';
+import { MultiComposer, replaceDraftRange, type ComposerThread } from './MultiComposer';
+import { MultiBatchBar } from './MultiBatchBar';
+import type { Caret } from './sliceDraft';
+import { singleToMultiDoc } from './sliceDraft';
+import { planSend } from './slicePlan';
+import { mentionTarget, mentionedWords } from './recipients';
 import { ComposerDock } from "./ComposerDock";
 import { nextSettingsSaveSequence } from "./settingsSaveSequence";
 import { assistantSidebarPanes, assistantThreadKey } from './assistantSidebar';
@@ -343,6 +353,103 @@ export function App() {
     list.some((p) => p.id === paneId && p.lastSeenSeq !== seq) ? list.map((p) => (p.id === paneId ? { ...p, lastSeenSeq: seq } : p)) : list
   )), []);
   const [focusedPane, setFocusedPane] = useState<string | null>(null);
+  const multiDraft = useMultiDraft();
+  const outside = useRef(new Set<string>());
+  const [outsideIds, setOutsideIds] = useState<Set<string>>(new Set());
+  const sendApis = useSendApis(id => outside.current.has(id));
+  const batches = useMultiBatches(sendApis);
+  const [apiRevision, setApiRevision] = useState(0);
+  useEffect(() => sendApis.subscribe(() => setApiRevision(n => n + 1)), [sendApis]);
+  const [multiDefaults, setMultiDefaults] = useState(new Map<string, string[]>());
+  const [multiFiles, setMultiFiles] = useState(new Map<string, PendingFile>());
+  const filesLive = useRef(multiFiles);
+  const updateFiles = (next: Map<string, PendingFile>) => { filesLive.current = next; setMultiFiles(next); };
+  const [multiFlashes, setMultiFlashes] = useState<string[]>([]);
+  const [routeRequest, setRouteRequest] = useState<{paneId:string;anchor:DOMRect;seq:number}>();
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashPanes = (ids: string[]) => {
+    setMultiFlashes(ids); if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setMultiFlashes([]), 1200);
+  };
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
+  const previousMulti = useRef(multiDraft.on);
+  const dockSince = useRef(0);
+  if (previousMulti.current && !multiDraft.on) dockSince.current = Date.now();
+  previousMulti.current = multiDraft.on;
+  useEffect(() => {
+    // Send has already frozen all bytes into the batch before this runs.
+    for (const file of filesLive.current.values()) if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+    updateFiles(new Map());
+  }, [multiDraft.draftId]);
+  const attachMultiFiles = (files: File[], at: Caret) => {
+    const draftId = multiDraft.current().draftId;
+    let next = new Map(filesLive.current);
+    const accepted = files.filter(file => file.size <= 20 * 1024 * 1024);
+    if (accepted.length !== files.length) toast('Files must be 20 MB or smaller.');
+    const tokens = accepted.map(file => {
+      const id = crypto.randomUUID();
+      const entry: PendingFile = { id, label: `Image${next.size + 1}`, name: file.name, bytes: null, previewUrl: null };
+      next.set(id, entry);
+      void file.arrayBuffer().then(buffer => {
+        if (multiDraft.current().draftId !== draftId || !filesLive.current.has(id)) return;
+        updateFiles(new Map(filesLive.current).set(id, { ...entry, bytes: new Uint8Array(buffer) }));
+      }).catch(() => {
+        if (multiDraft.current().draftId !== draftId) return;
+        const remaining = new Map(filesLive.current); remaining.delete(id); updateFiles(remaining);
+        multiDraft.setDoc(multiDraft.current().doc.map(line => line.filter(token => token.kind !== 'file' || token.fileId !== id)));
+        toast(`Could not read ${file.name}. Add it again to retry.`);
+      });
+      return { kind: 'file' as const, fileId: id };
+    });
+    updateFiles(next);
+    multiDraft.setDoc(replaceDraftRange(multiDraft.current().doc, at, 0, tokens));
+  };
+  const multiDrop = useRef<(paths: string[], x: number, y: number) => void>(() => {});
+  multiDrop.current = (paths, x, y) => {
+    if (!multiDraft.current().on || !backend?.snapshotDrop) return;
+    const region = document.elementFromPoint(x, y)?.closest('.composer-dock, [data-pane-map-region]');
+    if (!region) return;
+    const before = multiDraft.current(); const draftId = before.draftId;
+    const line = Math.max(0, before.doc.length - 1);
+    let at = {line, offset:(before.doc[line]??[]).reduce((n,token)=>n+(token.kind==='text'?token.text.length:1),0)};
+    const editor = document.querySelector<HTMLElement>('.multi-composer .rich-draft-editor');
+    const range = document.caretRangeFromPoint(x,y);
+    const row = (range?.startContainer instanceof Element ? range.startContainer : range?.startContainer.parentElement)?.closest<HTMLElement>('[data-line]');
+    if (editor && row && editor.contains(row) && range) {
+      const prefix = document.createRange(); prefix.selectNodeContents(row); prefix.setEnd(range.startContainer,range.startOffset);
+      const fragment = prefix.cloneContents();
+      for(const chip of fragment.querySelectorAll('[data-token]'))chip.textContent='\uFFFC';
+      at={line:Number(row.dataset.line),offset:fragment.textContent?.length??0};
+    }
+    const next = new Map(filesLive.current);
+    const tokens = paths.map(path => {
+      const id=crypto.randomUUID(); const name=path.split(/[\\/]/).at(-1)??'File';
+      const entry:PendingFile={id,label:`Image${next.size+1}`,name,bytes:null,previewUrl:null};next.set(id,entry);
+      void backend.snapshotDrop!(path).then(result=>{
+        if(multiDraft.current().draftId!==draftId||!filesLive.current.has(id))return;
+        if(result.kind==='folder')throw new Error('Folders belong in a single-thread composer.');
+        if(result.kind==='too-big')throw new Error(`${result.name} is larger than 20 MB.`);
+        updateFiles(new Map(filesLive.current).set(id,{...entry,name:result.name,bytes:new Uint8Array(result.bytes)}));
+      }).catch(error=>{
+        if(multiDraft.current().draftId!==draftId)return;
+        const remaining=new Map(filesLive.current);remaining.delete(id);updateFiles(remaining);
+        multiDraft.setDoc(multiDraft.current().doc.map(line=>line.filter(token=>token.kind!=='file'||token.fileId!==id)));
+        toast(String(error).replace(/^Error: /,''));
+      });
+      return {kind:'file' as const,fileId:id};
+    });
+    updateFiles(next);multiDraft.setDoc(replaceDraftRange(before.doc,at,0,tokens));
+  };
+  useEffect(()=>{
+    if(!backend)return;let live=true;let stop:(()=>void)|undefined;
+    void backend.onFileDrop((paths,x,y)=>multiDrop.current(paths,x,y)).then(off=>{if(live)stop=off;else off();});
+    return()=>{live=false;stop?.();};
+  },[backend]);
+  const setOutside = (id: string, value: boolean) => {
+    if (value) outside.current.add(id); else outside.current.delete(id);
+    setOutsideIds(new Set(outside.current));
+    sendApis.refresh();
+  };
   /** Threads in the order they were last focused, most recent first. */
   const [recentThreads, setRecentThreads] = useState<string[]>([]);
   const [composerBorrowed, setComposerBorrowed] = useState(0);
@@ -845,8 +952,37 @@ export function App() {
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
   const listed = useMemo(() => listedPanes(viewPanes, workspaces), [viewPanes, workspaces]);
+  useEffect(() => {
+    let stopped = false;
+    for (const pane of listed) {
+      const api = sendApis.get(pane.id); if (!api) continue;
+      void api.defaultTargets().then(ids => {
+        if (stopped || sendApis.get(pane.id) !== api) return;
+        setMultiDefaults(previous => JSON.stringify(previous.get(pane.id)) === JSON.stringify(ids) ? previous : new Map(previous).set(pane.id, ids));
+      }).catch(() => {});
+    }
+    return () => { stopped = true; };
+  }, [apiRevision, listed, threadStatus, sendApis]);
+  const multiThreads = new Map<string, ComposerThread>(listed.filter(p => p.kind === 'chat').map(pane => {
+    const workspace = workspaces.find(w => w.id === pane.workspaceId);
+    const api = sendApis.get(pane.id);
+    return [pane.id, {paneId:pane.id,hostId:api?.hostId ?? (pane as Pane & {hostId?:string}).hostId ?? (workspace ? workspaceHost(workspace) : 'missing'),title:pane.title,project:workspace?.name,
+      open:!!api && !pane.closed && !pane.archived && !outside.current.has(pane.id), outside:outside.current.has(pane.id), agents:api?.agents()??[], defaultAgentIds:multiDefaults.get(pane.id)??[]}];
+  }));
+  const multiPlan = planSend({doc:multiDraft.doc,threads:multiThreads,overrides:multiDraft.overrides,files:new Map([...multiFiles].map(([id,file])=>[id,{...file,reading:!file.bytes}]))});
+  const routeFor = (id: string) => {
+    if(!multiDraft.selected.includes(id))return undefined;
+    const thread=multiThreads.get(id);const api=sendApis.get(id);const slice=multiPlan.slices.find(s=>s.paneId===id);
+    const names=mentionedWords(slice?.routing??'');
+    const typed=mentionTarget(slice?.routing??'',thread?.agents.map(a=>({id:a.id,display_name:a.handle}))??[]);
+    const ids=names.length?(typed==='everyone'?thread?.agents.map(a=>a.id)??[]:typed):multiDraft.overrides.has(id)?[multiDraft.overrides.get(id)!]:multiDefaults.get(id)??[];
+    return {label:slice?.command?`/${slice.command.replace('_',' ')}`:thread?.agents.filter(a=>ids.includes(a.id)).map(a=>a.name).join(', ')||(names.length?'Unknown agent':'No agents yet'),
+      problem:multiPlan.problems.some(p=>'paneId' in p&&p.paneId===id),disabled:!api?.canPickAgent||!!slice?.command,
+      title:!api?.canPickAgent?`Update ${thread?.hostId??'this machine'} to pick an agent for one send. Typing @name still works.`:undefined,
+      onOpen:(anchor:DOMRect)=>setRouteRequest({paneId:id,anchor,seq:Date.now()})};
+  };
   const currentMonitorAttention = useMemo(() => monitorAttentionEntries(monitorAttention, workspaces, Date.now()), [monitorAttention, workspaces, tick]);
-  const poppedIds = useMemo(() => new Set(poppedOut.map((p) => p.id)), [poppedOut]);
+  const poppedIds = useMemo(() => new Set([...outsideIds, ...poppedOut.map((p) => p.id)]), [poppedOut, outsideIds]);
   // A popped-out pane leaves the layout but stays mounted and hidden, so its session keeps running.
   const visiblePanes = useMemo(() => canvasPanes(viewPanes, workspaces, deleting, section).filter((p) => !poppedIds.has(p.id)), [viewPanes, workspaces, deleting, section, poppedIds]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
@@ -856,15 +992,35 @@ export function App() {
   const composerCandidates = visiblePanes.filter(p => p.kind === "chat" && !poppedIds.has(p.id));
   const composerTargetId = dockTarget({ focused: focusedPane, recent: recentThreads, candidates: composerCandidates.map(p => p.id), popped: poppedIds });
   const composerTarget = composerCandidates.find(p => p.id === composerTargetId) ?? null;
+  useEffect(() => {
+    if (!multiDraft.on) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || picking || maximized || headMenu || sidePanelFull) return;
+      if ([...document.querySelectorAll<HTMLElement>('[role="menu"], [role="dialog"], [role="listbox"], [aria-modal="true"]')].some(el => el.getClientRects().length > 0)) return;
+      event.preventDefault();
+      multiDraft.exit();
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [multiDraft.on, multiDraft.exit, picking, maximized, headMenu, sidePanelFull]);
   const onWantComposer = useCallback((id: string) => {
     if (poppedIds.has(id)) {
       toast("That thread is open in its own window.");
       return false;
     }
     if (!listed.some(p => p.id === id && p.kind === "chat")) return false;
+    multiDraft.exit();
     setFocusedPane(id);
     return true;
-  }, [poppedIds, listed, toast]);
+  }, [poppedIds, listed, toast, multiDraft.exit]);
+  const onTagThread = (fromPaneId: string, picked: {paneId:string;hostId:string}, draft: {text:string;tldr:boolean}, start: number, end: number) => {
+    if (batches.failed.length) { toast('Retry or discard the failed batch first. Your own draft is kept.'); return; }
+    if (multiDraft.current().doc.some(line => line.some(token => token.kind !== 'text' || token.text.trim()))) return;
+    const source = sendApis.get(fromPaneId); const own = source?.draft();
+    if (!source || !own || own.attachments || own.quotes || !sendApis.get(picked.paneId)) return;
+    multiDraft.setDoc(singleToMultiDoc(draft.text,start,end,picked));
+    multiDraft.setTldr(draft.tldr); multiDraft.open(); source.clearDraft();
+  };
   /** The thread the details sidebar shows; null when no thread is on screen. */
   const detailsTarget = section === "threads" && !picking ? detailsThread(focusedPane, shown.filter((p) => p.kind === "chat").map((p) => p.id), recentThreads) : null;
   detailsTargetRef.current = detailsTarget;
@@ -1488,7 +1644,7 @@ export function App() {
       toast("Pop-outs need the Deck app.");
       return;
     }
-    if (poppedIds.has(paneId)) return;
+    if (outside.current.has(paneId)) return;
     const pane = listed.find((p) => p.id === paneId);
     if (!pane || (pane.kind !== "terminal" && pane.kind !== "chat" && pane.kind !== "preview")) return;
     // The menu hides this door from task threads; drag-out reaches here too, so the refusal lives here.
@@ -1497,6 +1653,9 @@ export function App() {
       toast(refusal);
       return;
     }
+    const queueRefusal = ownerRefusal("pop out", pane.title, { outside: outside.current.has(paneId), moving: moving.current.has(paneId) })
+      ?? leaveRefusal(sendApis.get(paneId), pane.title, "pop it out");
+    if (queueRefusal) { toast(queueRefusal); return; }
     const { workspace, hostId } = hostOfPane(pane);
     const run = runs[paneId];
     const snapshot: PopoutSnapshot = {
@@ -1522,6 +1681,7 @@ export function App() {
     // return in either order without trading their original places.
     const before = withPoppedOut({ [sourceKey]: source }, poppedOut)[sourceKey].order;
     const spot: PaneSpot = { workspaceId: pane.workspaceId, index: Math.max(0, before.indexOf(paneId)), before: [...before] };
+    setOutside(paneId, true);
     return bridge.open(snapshot, bounds).then(({ token }) => {
       setArrangements((all) => {
         const current = all[sourceKey] ?? source;
@@ -1529,6 +1689,7 @@ export function App() {
       });
       setPoppedOut((list) => (list.some((p) => p.id === paneId) ? list : [...list, { token, id: paneId, layoutKey: sourceKey, spot }]));
     }, (error: unknown) => {
+      setOutside(paneId, false);
       toast(error instanceof Error ? error.message : String(error));
     });
   };
@@ -1584,6 +1745,7 @@ export function App() {
       lastSent.current.delete(token);
       const paneRec = popoutLive.current.poppedOut.find((p) => p.token === token);
       if (paneRec) {
+        setOutside(paneRec.id, false);
         // A pane closed from its pop-out stays closed, and one archived here stays
         // archived; anything else goes back where it was.
         const pane = latest.current.panes.find((p) => p.id === paneRec.id);
@@ -1632,6 +1794,7 @@ export function App() {
         if (pane) live.focusPane(pane);
       } else if (action.type === "close-pane") {
         if (!paneRec) return;
+        setOutside(paneRec.id, false);
         live.closePane(paneRec.id);
         setPoppedOut((list) => list.filter((p) => p.token !== token));
         void bridge.close(token).catch(() => {});
@@ -1735,6 +1898,7 @@ export function App() {
     const orphans = orphanedPopouts(poppedOut, panes, listed);
     if (orphans.length === 0) return;
     const tokens = new Set(orphans.map((o) => o.token));
+    for (const orphan of orphans) setOutside(orphan.id, false);
     setPoppedOut((list) => list.filter((p) => !tokens.has(p.token)));
     for (const orphan of orphans) {
       lastSent.current.delete(orphan.token);
@@ -2397,10 +2561,15 @@ export function App() {
   const moveDraft = async (pane: Pane, target: Workspace) => {
     const source = latest.current.workspaces.find((w) => w.id === pane.workspaceId);
     if (!source || moving.current.has(pane.id)) return;
+    const ownership = ownerRefusal("move", pane.title, { outside: outside.current.has(pane.id), moving: moving.current.has(pane.id) });
+    if (ownership) { toast(ownership); return; }
     const [fromHost, toHost] = [workspaceHost(source), workspaceHost(target)];
     if (!reachable(toHost)) { toast(`Can't reach ${hostNameFor(toHost)}, so ${pane.title} stays where it is.`); return; }
     if (!reachable(fromHost)) { toast(`Can't reach ${hostNameFor(fromHost)} to bring ${pane.title} over. Try again once it's back.`); return; }
+    const waiting = leaveRefusal(sendApis.get(pane.id), pane.title, "move it");
+    if (waiting) { toast(waiting); return; }
     moving.current.add(pane.id);
+    const release = sendApis.get(pane.id)?.suspend(`Not sent: ${pane.title} is moving to ${hostNameFor(toHost)}.`);
     try {
       await flushAnswerStores(hostBackend(fromHost), pane.id);
       const snapshot = await snapshotOf(pane, source);
@@ -2412,6 +2581,7 @@ export function App() {
       if (error instanceof MoveRefused) { setMoveAsk({ paneId: pane.id, to: target, why: error.message }); focusPane(pane); }
       else toast(`Couldn't move ${pane.title}: ${String(error).replace(/^Error: /, "")}`);
     } finally {
+      release?.();
       moving.current.delete(pane.id);
     }
   };
@@ -2512,6 +2682,7 @@ export function App() {
   };
   /** Project ›, in a thread's menu: every project, recent first; picking one moves an unstarted thread or asks. */
   const projectEntries = (pane: Pane): MenuEntry[] => {
+    const ownership = ownerRefusal("move", pane.title, { outside: outside.current.has(pane.id), moving: moving.current.has(pane.id) });
     const here = workspaces.find((w) => w.id === pane.workspaceId);
     const rows = pickerRows(workspaces, panes, pane.workspaceId, offlineHost);
     const stays = startedOf(pane)
@@ -2520,7 +2691,7 @@ export function App() {
     return [
       ...rows.map((row) => ({
         key: row.workspace.id, label: row.workspace.name, side: row.hostId === "local" ? "" : hostNameFor(row.hostId),
-        checked: row.current, disabled: row.offline && !row.current, reason: row.offline ? `${hostNameFor(row.hostId)} can't be reached.` : "",
+        checked: row.current, disabled: !!ownership || (row.offline && !row.current), reason: ownership ?? (row.offline ? `${hostNameFor(row.hostId)} can't be reached.` : ""),
         onSelect: () => choose(pane, row.workspace),
       })),
       { key: "note", label: stays, note: true, separated: true },
@@ -2984,7 +3155,7 @@ export function App() {
           {/* Every pane of every workspace stays mounted so its session keeps
               running. Panes outside the current view are only hidden. */}
           <div className={`grid ${resizing ? "resizing-sidebar" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
-            <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} borrowed={composerBorrowed} onArrangement={setArrangement} active={focusedPane ? [focusedPane] : []}
+            <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} borrowed={composerBorrowed} onArrangement={setArrangement} active={multiDraft.selected.length ? multiDraft.selected : focusedPane ? [focusedPane] : []}
               maximized={maximized && visiblePanes.some(pane => pane.id === maximized) ? maximized : null} onRestore={() => setMaximized(null)} onVisiblePanes={onVisiblePanes} handle={paneMap}
               onPopOut={(id, x, y) => { void popOutPane(id, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 }); }}
               renderPane={(id, rect, onScreen) => {
@@ -2999,11 +3170,27 @@ export function App() {
                 <section
                   key={pane.id}
                   data-pane-id={pane.id} data-host-id={(pane as Pane & { hostId?: string }).hostId ?? (workspace ? workspaceHost(workspace) : "missing")}
-                  className={`pane ${pane.id === focusedPane ? "focused" : ""}`}
+                  className={`pane ${pane.id === focusedPane ? "focused" : ""} ${multiDraft.selected.includes(pane.id) ? "multi-selected" : ""} ${multiFlashes.includes(pane.id) ? "multi-flash" : ""}`}
                   style={rect && !poppedIds.has(pane.id) ? { position: "relative", width: "100%", height: "100%" } : { display: "none" }}
-                  onMouseDown={() => { setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId); if (pane.unread && !(pane as Pane & { assistantTaskId?: string }).assistantTaskId) setPanes((list) => setUnread(list, pane.id, false)); }}
+                  onMouseDown={(event) => {
+                    const target = event.target instanceof Element ? event.target : null;
+                    const modified = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? event.metaKey : event.ctrlKey;
+                    const control = target?.closest('button, a, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="button"]:not(.pane-title), [role="link"]');
+                    const eligible = target?.closest(".pane-head") || target?.matches(".transcript");
+                    if (modified && event.button === 0 && !control && eligible && pane.kind === "chat" && !poppedIds.has(pane.id) && !window.getSelection()?.toString()) {
+                      event.preventDefault();
+                      if (batches.failed.length) { toast("Retry or discard the failed batch first. Your own draft is kept."); return; }
+                      if (!multiDraft.current().doc.some(line => line.some(token => token.kind !== "text" || token.text.trim()))) {
+                        if (composerTarget && composerTarget.id !== pane.id) multiDraft.toggle(composerTarget.id, (composerTarget as Pane & {hostId?:string}).hostId ?? paneDestination(composerTarget, workspaces).hostId);
+                      }
+                      multiDraft.toggle(pane.id, (pane as Pane & {hostId?:string}).hostId ?? (workspace ? workspaceHost(workspace) : "missing"));
+                    } else if (!modified && multiDraft.current().on && !multiDraft.current().doc.some(line => line.some(token => token.kind === "thread" && token.paneId === pane.id))) multiDraft.exit();
+                    setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId);
+                    if (pane.unread && !(pane as Pane & { assistantTaskId?: string }).assistantTaskId) setPanes(list => setUnread(list, pane.id, false));
+                  }}
                 >
                   <PaneHead pane={pane} workspace={workspace} status={status} attention={attention[pane.id]}
+                    route={routeFor(pane.id)}
                     statusText={pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : pane.kind === "preview" ? previewStatus[pane.id] ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}
                     server={servers[pane.id]} host={paneBackend?.host ?? null} maximized={maximized === pane.id}
                     projectTitle={workspace ? `${workspace.name}${((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? "" : ` on ${hostNameFor((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))}`}${chatFolder(pane, workspace) ? ` · ${chatFolder(pane, workspace)}` : ""}` : undefined}
@@ -3036,14 +3223,19 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane dock={{ target: composerTarget?.id === pane.id, slot: composerSlot }} onWantComposer={onWantComposer} onPlanRuns={onPlanRuns} onOpenPlan={openPlan} voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane tagThreads={[...multiThreads.values()].map(t => ({paneId:t.paneId,hostId:t.hostId,title:t.title,project:t.project??"",outside:!t.open}))} onTagThread={onTagThread} multiWaiting={!multiDraft.on && multiDraft.doc.some(line => line.some(token => token.kind !== "text" || token.text.trim()))} onOpenMulti={multiDraft.open} multiBlocked={batches.failed.length > 0} onSendApi={sendApis.register} dock={{ target: !multiDraft.on && composerTarget?.id === pane.id, slot: composerSlot, since: dockSince.current, multi: multiDraft.on }} onWantComposer={onWantComposer} onPlanRuns={onPlanRuns} onOpenPlan={openPlan} voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
               );
             }} />
           </div>
-          {section !== "agents" && current && !picking && <ComposerDock target={composerTarget ? { paneId: composerTarget.id, title: composerTarget.title, status: statusOf(composerTarget), agents: threadStatus[composerTarget.id]?.who?.length ?? 0, project: workspaces.find(w => w.id === composerTarget.workspaceId)?.name ?? "" } : null} slotRef={setComposerSlot} onBorrowed={setComposerBorrowed} onReveal={id => paneMap.current?.reveal(id)} />}
+          {section !== "agents" && current && !picking && <ComposerDock target={composerTarget ? { paneId: composerTarget.id, title: composerTarget.title, status: statusOf(composerTarget), agents: threadStatus[composerTarget.id]?.who?.length ?? 0, project: workspaces.find(w => w.id === composerTarget.workspaceId)?.name ?? "" } : multiDraft.on ? { paneId: "", title: "Multi-thread message", project: "" } : null} slotRef={setComposerSlot} onBorrowed={setComposerBorrowed} onReveal={id => paneMap.current?.reveal(id)}>
+            <MultiBatchBar batches={batches} onReveal={id => paneMap.current?.reveal(id)} />
+            {multiDraft.on && <MultiComposer routeRequest={routeRequest} draft={multiDraft} batches={batches} threads={multiThreads} files={multiFiles} onAttachFiles={attachMultiFiles} onFlash={flashPanes} />}
+            {!multiDraft.on && multiDraft.doc.some(line => line.length) && <p className="multi-kept">Your multi-thread message is kept. <button type="button" onClick={multiDraft.open}>Open it</button></p>}
+            {!multiDraft.on && multiDraft.lastRemoved && <p className="multi-kept">Removed · <button type="button" onClick={multiDraft.undoRemove}>Undo</button></p>}
+          </ComposerDock>}
           </div>
           {keeperOwner && keeperLane && <AssistantVoiceKeeper key={assistantIdentityKey(keeperOwner)} lane={keeperLane} backend={keeperBackend} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}
           {mainView.kind==='assistant' && selectedAssistant && <AssistantWorkspace onPopOut={window.apexDeck?.popout&&selectedAssistant.ref?popOutAssistant:undefined} detailsOpen={detailsOpen&&detailsTabActive} onToggleDetails={toggleAssistantDetails} onOpenBrowser={openAssistantBrowser} onStartCall={startAssistantCall} callControls={<span ref={setAssistantVoiceHost}/>} browser={<AssistantBrowser lane={selectedAssistant} presentation={assistantBrowser} onExpand={()=>setAssistantBrowser('expanded')} onReturnToChat={()=>{navigateAssistant('chat');setAssistantBrowser('popup');}} onClose={()=>setAssistantBrowser('closed')}/>} key={assistantIdentityKey(mainView.assistant)} delegatedTasks={selectedDelegatedTasks} backend={assistantBackend??undefined} lane={selectedAssistant} section={mainView.section} onNavigate={navigateAssistant} previousSection={mainView.previousSections?.at(-1)} onSubviewBack={()=>setMainView(before=>assistantNavigation({mainView:before},{kind:'back'}).mainView)}

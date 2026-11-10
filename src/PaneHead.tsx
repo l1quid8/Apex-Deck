@@ -52,10 +52,11 @@ export interface PaneHeadProps {
   menuOpen?: boolean;
   menuDisabled?: boolean;
   modStatuses?: ReactNode;
+  route?: { label: string; problem: boolean; disabled?: boolean; title?: string; onOpen(anchor: DOMRect): void };
 }
 
 /** The title gives up space first; secondary details leave before its controls. */
-export function PaneHead({ pane, workspace, status, attention, statusText, server, host, maximized, onMaximize, onMenu, onClose, onRename, renameRequest, onDragStart, onOpenServer, projectTitle, projectTint, hostTint, program, menuOpen = false, menuDisabled = false, modStatuses }: PaneHeadProps) {
+export function PaneHead({ pane, workspace, status, attention, statusText, server, host, maximized, onMaximize, onMenu, onClose, onRename, renameRequest, onDragStart, onOpenServer, projectTitle, projectTint, hostTint, program, menuOpen = false, menuDisabled = false, modStatuses, route }: PaneHeadProps) {
   const root = useRef<HTMLDivElement>(null);
   const statusLabel = attention ? attention.note || label(attention.kind) : status;
   const projectName = workspace ? `${workspace.name}${pane.mount && pane.mount !== workspace.path ? ` · ${pane.mount.replace(/\\/g, "/").split("/").filter(Boolean).at(-1)}` : ""}` : "";
@@ -109,11 +110,11 @@ export function PaneHead({ pane, workspace, status, attention, statusText, serve
 
   return <div ref={root} className="pane-head pane-head-adaptive" data-adaptive-head="" title="Double-click for full screen"
     onPointerDown={(event) => {
-      if (event.button !== 0 || root.current?.querySelector(".thread-name-input") || (event.target as Element).closest("button, input, textarea, select, [contenteditable='true']")) return;
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || root.current?.querySelector(".thread-name-input") || (event.target as Element).closest("button, input, textarea, select, [contenteditable='true']")) return;
       onDragStart(event);
     }}
     onDoubleClick={(event) => {
-      if (root.current?.querySelector(".thread-name-input") || (event.target as Element).closest("button, input, textarea, select, [contenteditable='true']")) return;
+      if (event.metaKey || event.ctrlKey || root.current?.querySelector(".thread-name-input") || (event.target as Element).closest("button, input, textarea, select, [contenteditable='true']")) return;
       event.preventDefault();
       onMaximize();
     }}>
@@ -131,6 +132,7 @@ export function PaneHead({ pane, workspace, status, attention, statusText, serve
       {program && <span className="program-title">· {program}</span>}
       {attention ? <span className={`flag ${attention.kind}`} title={statusLabel}>{statusLabel}</span> : statusText && <span className="pane-folder">{statusText}</span>}
       {modStatuses}
+      {route && <button type="button" disabled={route.disabled} title={route.title} className={`pane-route${route.problem ? ' problem' : ''}`} onClick={event => route.onOpen(event.currentTarget.getBoundingClientRect())}>→ {route.label} ▾</button>}
     </span>
     {(pane.kind === "terminal" || pane.kind === "chat") && server && <button data-head-part="server" className="server-chip" onClick={onOpenServer} title="Open in the Browser tab">{hostLabel(server)}</button>}
     {pane.kind === "chat" && <span className="pane-voice" />}

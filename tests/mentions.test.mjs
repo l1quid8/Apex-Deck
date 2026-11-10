@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import * as naming from "../src/slug.ts";
-import { mentionTarget } from "../src/recipients.ts";
+import { mentionTarget, pickLead, namedIn } from "../src/recipients.ts";
 
 // The daemon checks the same list (apex_core::mention), so the two rules can't drift.
 const shared = JSON.parse(fs.readFileSync(new URL("../shared/mention-names.json", import.meta.url), "utf8"));
@@ -18,6 +18,18 @@ test("messages reach bots by their current name only; an old name reaches nobody
 
 const atlas = { id: "jigga", display_name: "Atlas" };
 const nul = { id: "null", display_name: "Null" };
+
+test('one-send picks use current participant mentions in picked order', () => {
+  assert.equal(pickLead(['null', 'jigga'], [atlas, nul]), '@null @atlas ');
+  assert.equal(pickLead(['missing'], [atlas, nul]), '');
+  assert.equal(pickLead(['jigga'], [atlas, nul]), '@atlas ');
+});
+
+test('namedIn matches individual daemon names without treating broadcasts as names', () => {
+  for (const c of shared.routing) assert.deepEqual(namedIn(c.text, c.bots.map(bot)), c.to === 'everyone' ? [] : c.to, c.text);
+  assert.deepEqual(namedIn('@everyone go', [atlas, nul]), []);
+  assert.deepEqual(namedIn('@all @null then @atlas @null', [atlas, nul]), ['null', 'jigga']);
+});
 
 test("a name another bot already answers to is refused, and so are @all, @everyone and names with nothing to mention", () => {
   assert.deepEqual(naming.mentionClash({ id: "new", display_name: "atlas" }, [atlas, nul]), { kind: "taken", mention: "atlas", by: atlas });

@@ -55,6 +55,9 @@ test('participant access updates carry the observed level and selected room fold
 // Every command-backed method: how it's called, and the exact command and
 // arguments the host expects for it.
 const COMMANDS = [
+  ['postCapabilities', [], 'post_capabilities', {}],
+  ['roomPostTo', ['r','one send',['p'],undefined,undefined,true], 'room_post_to', {id:'r',text:'one send',targets:['p'],keep_default:true}],
+  ['roomPostTo', ['r','regular',['p'],undefined,undefined,false], 'room_post_to', {id:'r',text:'regular',targets:['p']}],
   ['voiceCapabilities', [], 'voice_capabilities', {}],
   ['roomStopRequest', ['r','p','v1'], 'room_stop_request', {id:'r',participant:'p',client_turn_id:'v1'}],
   ['roomPostTo', ['r','hello',['p'],false,{client_turn_id:'v1',max_bot_hops:0}], 'room_post_to', {id:'r',text:'hello',targets:['p'],interactive_answers:false,client_turn_id:'v1',max_bot_hops:0}],

@@ -546,6 +546,10 @@ html[data-platform="windows"] .titlebar {
   border-color: #3d695c;
   box-shadow: 0 0 0 1px rgba(113, 230, 181, 0.05);
 }
+.pane.multi-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .pane-head {
   display: flex;
   align-items: center;
