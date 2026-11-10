@@ -1,3 +1,11 @@
+## Focused-pane targeting (2026-11-10, design only)
+
+In `../adaptive-thread-panes.html`, select threads with ⌘/Ctrl-click, then maximize a pane (□ or double-click its title). The composer targets only that pane with its separate draft; multi-selection and #thread picking are suspended. Restore with ▣ or Escape to recover the previous selection and multi-thread draft. The same rule applies when Even grid, Horizontal or Vertical zoom reaches one visible pane; zoom out to restore multi-targeting. Focus left/right keeps multi-targeting while its side panes remain visible. Sends stay local to this mockup.
+
+## Response next-step study (2026-11-10, design only)
+
+Open `../adaptive-thread-panes.html?next-steps` to see illustrative next-step chips beneath the latest agent reply in each thread. They wrap within the response width, keep the shared composer clear, and disappear on dismissal or the next human message. Clicking adds a sample prompt to that thread inside the mockup only; existing single/multi drafts are preserved. No message reaches a service. The labels are illustrative, not generated from the captured conversations. Required mid-task questions are outside this placement study.
+
 ## Current routing study (2026-11-08)
 
 The standalone `../adaptive-thread-panes.html` remains design-only. Pane selection appends one stable thread chip per line in click order, with the initial caret after the first chip. Manually grouped tags still broadcast. `@` picks agents; `#` picks threads.

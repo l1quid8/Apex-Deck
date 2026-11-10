@@ -12,6 +12,7 @@ interface PaneMapProps {
   maximized: string | null;
   onRestore(): void;
   onVisiblePanes?(ids: string[]): void;
+  onTargetOnly?(id: string | null): void;
   renderPane(id: string, rect: PxRect | null, onScreen: boolean): ReactNode;
   onPopOut(id: string, x: number, y: number): void;
   handle: Ref<PaneMapHandle>;
@@ -95,6 +96,12 @@ export function PaneMap(props: PaneMapProps) {
     const { placement: p, area, props: now } = live.current;
     const full = now.maximized && now.mounted.includes(now.maximized);
     const scroll = axisScroll(el, p);
+    // A one-pane zoom targets the nearest snapped pane, even mid-scroll.
+    // Focus layouts retain their side list and therefore allow multi targeting.
+    const one = !p.focus && p.levels[p.levelIdx]?.shown === 1;
+    // Borrowed height and ResizeObserver arrive in separate renders. A stale
+    // size pair can momentarily look like one-pane zoom while clearing text.
+    if (!stale()) now.onTargetOnly?.(full ? now.maximized : one ? centreId(p, scroll) : null);
     const ids = now.mounted.filter(id => {
       if (full) return now.maximized === id;
       if (p.focus?.id === id) return true;
@@ -288,9 +295,12 @@ export function PaneMap(props: PaneMapProps) {
     const reset = old && old.mode !== arr.mode && !["left", "right"].includes(arr.mode);
     if (reset) held.current = null;
     const selected = props.active.filter(id => placement.rects.has(id));
+    const single = !placement.focus && placement.levels[placement.levelIdx]?.shown === 1;
     // Preserve the reading line even when the active pane is already visible,
-    // or is pinned outside the scrolling region.
-    scrollTo(reset ? 0 : refitting ? refitScroll(drawnLayout.current?.placement, placement, offset.current, selected)
+    // or is pinned outside the scrolling region. At one-pane zoom, keep the
+    // targeted pane: switching composers can change height while a sliver of
+    // the previous row still intersects the viewport.
+    scrollTo(reset ? 0 : refitting && !single ? refitScroll(drawnLayout.current?.placement, placement, offset.current, selected)
       : scrollFor(placement, selected.length ? { kind: "active", ids: selected } : null, axisScroll(el, placement)));
     quietScroll.current = refitting ? offset.current : null;
   }, [placement, props.maximized]);
