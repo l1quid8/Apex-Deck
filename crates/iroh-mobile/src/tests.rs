@@ -1,7 +1,7 @@
 //! Loopback tests against the real daemon (no relay).
 use super::*;
 use apex_daemon::{
-    devices::{Devices, Threads, Tier},
+    devices::{Threads, Tier},
     pairing::invites::HostInfo,
     protocol::Daemon,
     remote,
@@ -97,20 +97,12 @@ struct Server {
 impl Server {
     async fn start() -> Server {
         let data = Folder::new();
-        let host = isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon {
-            host,
-            host_id: "host-1".into(),
-            boot_id: "boot-1".into(),
-            token: None,
-            devices: Arc::new(Devices::open(&data.0)),
-            data: data.0.clone(),
-            invites: Default::default(),
-            voice: apex_daemon::voice::VoiceServer::new(&data.0),
-            gateway_keys: Arc::new(apex_daemon::gateway_keys::GatewayKeys::load(&data.0).unwrap()),
-            gateway: Default::default(),
-            remote: Default::default(),
-        });
+        let paths = HostPaths { data: data.0.clone(), downloads: None };
+        let host = isolated_host_assuming_verified_ui(paths.clone(), tokio::runtime::Handle::current());
+        // The sandbox probe and the Linux device policy are the daemon's to set.
+        // Asking it for a harness instead of writing the literal keeps this file
+        // out of its private fields — and keeps it compiling when one is added.
+        let daemon = Arc::new(Daemon::for_harness(host, &paths).expect("a harness daemon"));
         let endpoint = remote::bind(remote::key(&data.0).unwrap(), None, 0).await.unwrap();
         tokio::spawn(remote::accept(Arc::clone(&daemon), endpoint.clone()));
         Server { daemon, endpoint, _data: data }
@@ -160,7 +152,7 @@ async fn two_connections_on_two_handles() {
     for h in [one, two] {
         let line = events.wait(h, "line", Duration::from_secs(10)).await;
         let v: Value = serde_json::from_str(line["line"].as_str().unwrap()).unwrap();
-        assert_eq!(v["ok"]["host_id"], "host-1");
+        assert_eq!(v["ok"]["host_id"], server.daemon.host_id);
         let route = events.wait(h, "route", Duration::from_secs(1)).await;
         assert_eq!(route["route"], "direct");
     }
