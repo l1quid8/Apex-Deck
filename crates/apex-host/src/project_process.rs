@@ -68,6 +68,51 @@ pub(crate) fn isolated_git_command() -> Command {
 #[cfg(test)]
 pub(crate) fn fixture_git_command() -> Command { isolated_git_command() }
 
+/// Protected host state for a fixture, kept outside its mounted project folders.
+#[cfg(test)]
+pub(crate) struct TestDataDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDataDir {
+    pub(crate) fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!("apex-test-data-{}-{}-{}", std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    pub(crate) fn path(&self) -> &Path { &self.0 }
+}
+
+#[cfg(test)]
+impl Drop for TestDataDir {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+/// Resolve a jailed fixture's PID before checking it from the host namespace.
+#[cfg(all(test, unix))]
+pub(crate) fn fixture_host_pid(project: &Path, pid: i32) -> Option<i32> {
+    #[cfg(target_os = "linux")]
+    {
+        let project = project.canonicalize().unwrap();
+        let mut found = std::fs::read_dir("/proc").unwrap().flatten().filter_map(|entry| {
+            let host_pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+            if std::fs::read_link(entry.path().join("cwd")).ok()? != project { return None; }
+            let status = std::fs::read_to_string(entry.path().join("status")).ok()?;
+            let namespace_pids: Vec<i32> = status.lines().find_map(|line| line.strip_prefix("NSpid:"))?
+                .split_whitespace().filter_map(|value| value.parse().ok()).collect();
+            (namespace_pids.last() == Some(&pid)).then_some(host_pid)
+        });
+        let pid = found.next();
+        assert!(found.next().is_none(), "fixture PID must identify exactly one jailed process");
+        pid
+    }
+    #[cfg(not(target_os = "linux"))]
+    { let _ = project; Some(pid) }
+}
+
 /// Construct Git only after checking the host's protected data-folder taint.
 pub fn git_command(data: &Path, folder: &Path) -> Result<ProjectCommand, String> {
     check_project(data, folder)?;

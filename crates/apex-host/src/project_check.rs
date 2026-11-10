@@ -277,6 +277,9 @@ mod tests {
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }
+        fn data(&self) -> PathBuf {
+            self.0.with_extension("data")
+        }
         fn path(&self) -> &Path {
             &self.0
         }
@@ -284,6 +287,7 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+            let _ = fs::remove_dir_all(self.data());
         }
     }
 
@@ -360,7 +364,7 @@ mod tests {
 
         // Both fail
         let cmd = "echo 'failing' && exit 1";
-        let blamed = check_blames_copy(std::path::Path::new("/nonexistent-apex-test-data"), &main, &copy, cmd).await;
+        let blamed = check_blames_copy(&temp.data(), &main, &copy, cmd).await;
         assert_eq!(blamed, None);
     }
 
@@ -382,7 +386,7 @@ mod tests {
             "test ! -f fail.flag || grep -q bad fail.flag && exit 1 || exit 0"
         };
 
-        let blamed = check_blames_copy(std::path::Path::new("/nonexistent-apex-test-data"), &main, &copy, cmd).await;
+        let blamed = check_blames_copy(&temp.data(), &main, &copy, cmd).await;
         assert!(blamed.is_some(), "Expected copy to be blamed");
     }
 
@@ -390,7 +394,7 @@ mod tests {
     async fn timeout_reports_timed_out() {
         let temp = TempDir::new("timeout");
         let cmd = "sleep 5";
-        let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), cmd, Duration::from_millis(50)).await;
+        let res = run_check_with_timeout(&temp.data(), temp.path(), cmd, Duration::from_millis(50)).await;
         assert_eq!(res, CheckResult::TimedOut);
     }
 
@@ -402,7 +406,7 @@ mod tests {
         } else {
             "yes 'error message long enough to fill buffers' | head -n 5000 >&2; exit 1"
         };
-        let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), cmd, Duration::from_secs(10)).await;
+        let res = run_check_with_timeout(&temp.data(), temp.path(), cmd, Duration::from_secs(10)).await;
         match res {
             CheckResult::Fail { output_tail } => {
                 assert!(!output_tail.is_empty());
@@ -428,21 +432,24 @@ mod tests {
         run_git(&["config", "user.name", "Test"]);
         run_git(&["config", "user.email", "test@test.com"]);
         fs::write(repo.join("file.txt"), "hello").unwrap();
+        fs::write(repo.join(".gitignore"), "counter.txt\n").unwrap();
         run_git(&["add", "."]);
         run_git(&["commit", "-m", "init"]);
 
-        let counter_file = temp.path().join("counter.txt");
+        // The jailed check can write inside its project. Ignore the counter so
+        // its first execution does not change the tree used as the cache key.
+        let counter_file = repo.join("counter.txt");
         let counter_external = crate::assistant_git::external_path(&counter_file);
         let counter_path = counter_external.to_string_lossy();
         let cmd = format!("echo 1 >> \"{}\"", counter_path);
 
-        let res1 = get_or_run_main_check(std::path::Path::new("/nonexistent-apex-test-data"), &repo, &cmd, Duration::from_secs(10)).await;
+        let res1 = get_or_run_main_check(&temp.data(), &repo, &cmd, Duration::from_secs(10)).await;
         assert_eq!(res1, CheckResult::Pass);
 
         // Wait over 1 second so commit-tree timestamps would differ if commit id was used
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
-        let res2 = get_or_run_main_check(std::path::Path::new("/nonexistent-apex-test-data"), &repo, &cmd, Duration::from_secs(10)).await;
+        let res2 = get_or_run_main_check(&temp.data(), &repo, &cmd, Duration::from_secs(10)).await;
         assert_eq!(res2, CheckResult::Pass);
 
         let count = fs::read_to_string(&counter_file).unwrap();
@@ -460,7 +467,7 @@ mod tests {
         let pid_file = temp.path().join("pid.txt");
         let cmd = format!("sleep 30 & echo $! > \"{}\"; wait", pid_file.display());
 
-        let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), &cmd, Duration::from_millis(100)).await;
+        let res = run_check_with_timeout(&temp.data(), temp.path(), &cmd, Duration::from_millis(100)).await;
         assert_eq!(res, CheckResult::TimedOut);
 
         let pid_str = fs::read_to_string(&pid_file).expect("pid file should exist");
@@ -468,7 +475,8 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let alive = unsafe { libc::kill(bg_pid, 0) == 0 };
+        let alive = crate::project_process::fixture_host_pid(temp.path(), bg_pid)
+            .is_some_and(|pid| unsafe { libc::kill(pid, 0) == 0 });
         assert!(
             !alive,
             "Background child pid {} should have been killed",
@@ -487,16 +495,16 @@ mod tests {
         fn count_fds() -> usize { 0 }
 
         // Warm up runs
-        let _ = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "echo warm", Duration::from_secs(1)).await;
-        let _ = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "sleep 5", Duration::from_millis(50)).await;
+        let _ = run_check_with_timeout(&temp.data(), temp.path(), "echo warm", Duration::from_secs(1)).await;
+        let _ = run_check_with_timeout(&temp.data(), temp.path(), "sleep 5", Duration::from_millis(50)).await;
 
         let initial_fds = count_fds();
 
         for _ in 0..25 {
-            let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "echo pass", Duration::from_secs(1)).await;
+            let res = run_check_with_timeout(&temp.data(), temp.path(), "echo pass", Duration::from_secs(1)).await;
             assert_eq!(res, CheckResult::Pass);
 
-            let res = run_check_with_timeout(std::path::Path::new("/nonexistent-apex-test-data"), temp.path(), "sleep 5", Duration::from_millis(50)).await;
+            let res = run_check_with_timeout(&temp.data(), temp.path(), "sleep 5", Duration::from_millis(50)).await;
             assert_eq!(res, CheckResult::TimedOut);
         }
 

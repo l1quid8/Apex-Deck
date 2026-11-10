@@ -79,11 +79,15 @@ pub async fn run_check(data:&std::path::Path,check:&ConfiguredCheck,cwd:&std::pa
 mod tests {
     use super::*;
 
-    // Reuse this native test executable so the real process checks need no shell
-    // or platform-specific utilities. --exact keeps the child out of this test.
-    fn fixture_argv(name: &str) -> Vec<String> {
+    // Keep the native fixture inside the project so the Linux jail can execute
+    // it. --exact keeps the child out of this test.
+    fn fixture_argv(project: &std::path::Path, name: &str) -> Vec<String> {
+        let executable = project.join(if cfg!(windows) { "check-fixture.exe" } else { "check-fixture" });
+        if !executable.exists() {
+            std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        }
         vec![
-            std::env::current_exe().unwrap().to_str().unwrap().into(),
+            executable.to_str().unwrap().into(),
             "--ignored".into(), "--exact".into(), "--nocapture".into(),
             format!("runner::checks::tests::{name}"),
         ]
@@ -117,8 +121,16 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(30));
     }
 
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn check_protected_data_fixture() {
+        let project = std::env::current_dir().unwrap();
+        let marker = project.parent().unwrap().join("data/escaped-check");
+        std::process::exit(if std::fs::write(marker, "escaped").is_ok() { 0 } else { 7 });
+    }
+
     #[tokio::test]
-    async fn configured_check_refuses_accepted_tainted_project() {
+    async fn configured_check_cannot_write_host_data_after_full_acceptance() {
         let root = std::env::temp_dir().join(format!("runner-tainted-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let data = root.join("data");
@@ -126,26 +138,36 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         crate::folder_trust::mark_tainted(&data, &project).unwrap();
         crate::folder_trust::accept(&data, &project, None).unwrap();
-        let check = ConfiguredCheck { id: "tainted".into(), argv: fixture_argv("check_pass_fixture"), timeout_ms: Some(10_000) };
+        let check = ConfiguredCheck { id: "tainted".into(), argv: fixture_argv(&project, "check_protected_data_fixture"), timeout_ms: Some(10_000) };
+        let control = std::process::Command::new(&check.argv[0]).args(&check.argv[1..]).current_dir(&project).output().unwrap();
+        assert!(control.status.success() && data.join("escaped-check").exists(), "the unjailed fixture must actually write the protected marker");
+        std::fs::remove_file(data.join("escaped-check")).unwrap();
         let result = run_check(&data, &check, &project, &data.join("processes"), std::future::pending()).await;
-        assert!(result.is_err(), "accepted taint must not exempt a configured check");
-        if !cfg!(target_os = "linux") { assert!(!data.join("processes").exists(), "refusal must precede process launch"); }
+        if cfg!(target_os = "linux") {
+            assert!(matches!(result.unwrap(), VerificationResult::Failed { exit: 7, .. }), "the jailed fixture must run and fail its protected write");
+        } else {
+            assert!(result.is_err(), "accepted taint must not exempt a configured check");
+            assert!(!data.join("processes").exists(), "refusal must precede process launch");
+        }
+        assert!(!data.join("escaped-check").exists(), "configured check wrote protected host data");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
     async fn configured_argv_check_runs_and_bounds_output_and_timeout() {
         let root = std::env::temp_dir().join(format!("runner-check-{}",std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let processes=root.join("processes");
-        let pass = ConfiguredCheck { id:"pass".into(),argv:fixture_argv("check_pass_fixture"),timeout_ms:Some(10_000) };
-        assert!(matches!(run_check(&root.join("data"),&pass,&root,&processes,std::future::pending()).await.unwrap(), VerificationResult::Passed{output} if output.contains("result")));
-        let fail = ConfiguredCheck { argv:fixture_argv("check_fail_fixture"),..pass.clone() };
-        assert!(matches!(run_check(&root.join("data"),&fail,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Failed{exit:7,..}));
-        let long = ConfiguredCheck { argv:fixture_argv("check_output_fixture"),..pass.clone() };
-        assert!(matches!(run_check(&root.join("data"),&long,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Passed{output} if output.len() == 8192 && output.contains(&"x".repeat(100))));
-        let timeout = ConfiguredCheck { argv:fixture_argv("check_timeout_fixture"),timeout_ms:Some(20),..pass };
-        assert_eq!(run_check(&root.join("data"),&timeout,&root,&processes,std::future::pending()).await.unwrap(),VerificationResult::Timeout);
+        let project=root.join("project");
+        let data=root.join("data");
+        std::fs::create_dir_all(&project).unwrap();
+        let processes=data.join("processes");
+        let pass = ConfiguredCheck { id:"pass".into(),argv:fixture_argv(&project,"check_pass_fixture"),timeout_ms:Some(10_000) };
+        assert!(matches!(run_check(&data,&pass,&project,&processes,std::future::pending()).await.unwrap(), VerificationResult::Passed{output} if output.contains("result")));
+        let fail = ConfiguredCheck { argv:fixture_argv(&project,"check_fail_fixture"),..pass.clone() };
+        assert!(matches!(run_check(&data,&fail,&project,&processes,std::future::pending()).await.unwrap(),VerificationResult::Failed{exit:7,..}));
+        let long = ConfiguredCheck { argv:fixture_argv(&project,"check_output_fixture"),..pass.clone() };
+        assert!(matches!(run_check(&data,&long,&project,&processes,std::future::pending()).await.unwrap(),VerificationResult::Passed{output} if output.len() == 8192 && output.contains(&"x".repeat(100))));
+        let timeout = ConfiguredCheck { argv:fixture_argv(&project,"check_timeout_fixture"),timeout_ms:Some(20),..pass };
+        assert_eq!(run_check(&data,&timeout,&project,&processes,std::future::pending()).await.unwrap(),VerificationResult::Timeout);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -525,9 +525,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root=std::env::temp_dir().join(format!("apex-login-worker-{}",std::process::id()));
         let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
-        let worker=root.join("apex-qa-fake-worker");std::fs::write(&worker,"#!/bin/sh\nprintf 'owned-worker-ready'\n").unwrap();std::fs::set_permissions(&worker,std::fs::Permissions::from_mode(0o755)).unwrap();
-        let before=std::env::var_os("PATH");let registry=OwnedProcessRegistry::new(Some(root.join("registry")));let (_tx,mut stop)=watch::channel(false);
-        let output=run_owned_with_path(std::path::Path::new("/nonexistent-apex-test-data"), "apex-qa-fake-worker",&[],&root,Duration::from_secs(3),&mut stop,&registry,Some(root.to_str().unwrap())).await;
+        let bin=root.join("bin");let project=root.join("project");let data=root.join("data");
+        std::fs::create_dir_all(&bin).unwrap();std::fs::create_dir_all(&project).unwrap();
+        let worker=bin.join("apex-qa-fake-worker");std::fs::write(&worker,"#!/bin/sh\nprintf 'owned-worker-ready'\n").unwrap();std::fs::set_permissions(&worker,std::fs::Permissions::from_mode(0o755)).unwrap();
+        let before=std::env::var_os("PATH");
+        let path=std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(before.as_deref().unwrap_or_default()))).unwrap();
+        let registry=OwnedProcessRegistry::new(Some(data.join("registry")));let (_tx,mut stop)=watch::channel(false);
+        let output=run_owned_with_path(&data, "apex-qa-fake-worker",&[],&project,Duration::from_secs(3),&mut stop,&registry,Some(path.to_str().unwrap())).await;
         assert_eq!(std::env::var_os("PATH"),before,"only the child receives the login PATH");
         let output=output.expect("worker installed only on the login PATH must start");assert!(output.status.success());assert_eq!(output.stdout,b"owned-worker-ready");let _=std::fs::remove_dir_all(root);
     }
@@ -550,13 +554,15 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let registry_dir = root.join("registry");
+        let data = root.with_extension("data");
+        let registry_dir = data.join("registry");
         let registry = OwnedProcessRegistry::new(Some(registry_dir.clone()));
         let (stop_tx, mut stop_rx) = watch::channel(false);
         let run_root = root.clone();
+        let run_data = data.clone();
         let run_script = script.to_string_lossy().to_string();
         let run = tokio::spawn(async move {
-            run_owned(std::path::Path::new("/nonexistent-apex-test-data"),
+            run_owned(&run_data,
                 &run_script,
                 &[],
                 &run_root,
@@ -580,6 +586,8 @@ mod tests {
             .unwrap()
             .trim()
             .to_owned();
+        let child_pid = crate::project_process::fixture_host_pid(&root, child_pid.parse().unwrap())
+            .expect("the descendant's host PID is visible").to_string();
         stop_tx.send(true).unwrap();
         let result = tokio::time::timeout(Duration::from_secs(10), run)
             .await
@@ -597,6 +605,7 @@ mod tests {
             "descendant remained active: {state}"
         );
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[tokio::test]
@@ -688,11 +697,12 @@ mod tests {
         let root = std::env::temp_dir().join(format!("apex-isolation-timeout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let registry_dir = root.join("registry");
+        let data = root.with_extension("data");
+        let registry_dir = data.join("registry");
         let registry = OwnedProcessRegistry::new(Some(registry_dir.clone()));
         let (_stop_tx, mut stop_rx) = watch::channel(false);
         let started = std::time::Instant::now();
-        let result = run_owned(std::path::Path::new("/nonexistent-apex-test-data"),
+        let result = run_owned(&data,
             "/bin/sh",
             &["-c", "sleep 30"],
             &root,
@@ -706,6 +716,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
         assert_eq!(std::fs::read_dir(&registry_dir).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]
