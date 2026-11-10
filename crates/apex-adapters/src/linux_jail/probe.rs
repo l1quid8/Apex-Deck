@@ -190,6 +190,7 @@ mod host {
             home: env.home.clone(),
             private_home: scratch.data.join("home"),
             folders: vec![Bind { source: scratch.bound.clone(), target: scratch.bound.clone(), writable: false }],
+            writable: Vec::new(),
             read_only: Vec::new(),
             protected: paths::standard_protected(&env.home, &env.data),
             restored: Vec::new(),
