@@ -73,6 +73,7 @@ jobs:
           tests/rich-draft-editor-browser.test.mjs
           tests/desktop-menu.test.mjs
           tests/local-computer-labels.test.mjs
+          tests/settings-shortcut-labels.test.mjs
           tests/desktop-provenance.test.mjs
           tests/desktop-updater.test.mjs
       - name: Diagnose pane and rich-editor native interactions
@@ -83,3 +84,4 @@ jobs:
           node --experimental-strip-types --test --test-concurrency=$env:NATIVE_TEST_CONCURRENCY
           tests/pane-head-browser.test.mjs
           tests/rich-draft-editor-browser.test.mjs
+          tests/settings-shortcut-labels.test.mjs
