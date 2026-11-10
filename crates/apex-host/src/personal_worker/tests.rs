@@ -209,7 +209,7 @@ async fn full_access_executes_commands_without_requiring_the_program_name_in_fol
     let f = Fixture::new(); let project = f.project_chat(crate::personal_workspace::ProjectTools::Full); f.full_access();
     f.host.change_assistant(&f.id,|a| {a.permissions.set(crate::personal::permissions::Capability::CommandRun,crate::personal::permissions::Scope::AllProjects,crate::personal::permissions::GrantMode::Ask,false)?;Ok(())}).unwrap();
     let fake = Fake::new(true); fake.say(r#"{"reply":"On it.","task":{"argv":["touch","full-access-marker"]}}"#);
-    let mut tools = fake.tools(); tools.execute = Arc::new(|operation,mark|Box::pin(run_command(std::path::Path::new("/nonexistent-apex-test-data"), operation,mark)));
+    let mut tools = fake.tools(); tools.execute = WorkerTools::real(f.host.data_dir()).execute;
     f.host.personal_send(&f.id,"followup","Yes, do that now.").unwrap(); f.drain(&tools).await;
     assert_eq!(f.task().status,TaskStatus::Done);
     assert!(std::path::Path::new(&project.cwd).join("full-access-marker").is_file());
@@ -279,7 +279,7 @@ async fn full_access_schedules_execute_on_each_fire_and_after_restart_without_ap
     let mut f=Fixture::new();let project=f.project_chat(crate::personal_workspace::ProjectTools::Full);f.full_access();
     let fake=Fake::new(false);
     fake.say(r#"{"reply":"Scheduled.","schedule":{"goal":"Record a run","argv":["sh","-c","printf x >> scheduled-full-count"],"everyMinutes":5}}"#);
-    let mut tools=fake.tools();tools.execute=Arc::new(|operation,mark|Box::pin(run_command(std::path::Path::new("/nonexistent-apex-test-data"), operation,mark)));
+    let mut tools=fake.tools();tools.execute=WorkerTools::real(f.host.data_dir()).execute;
     f.host.personal_send(&f.id,"full-schedule","Yes, keep doing that every five minutes.").unwrap();f.drain(&tools).await;
     let first=f.get().schedules[0].clone();
     assert_eq!(first.status,ScheduleStatus::Active,"Full must activate a supported schedule without another card");
@@ -355,16 +355,20 @@ async fn full_access_uncertain_command_blocks_without_replay_or_card_while_ask_k
         assert_eq!(f.task().status,TaskStatus::Queued);
         // The command really changes a file, then the service loses the result
         // before it can commit a receipt. A replay would append a second x.
-        let mut crashing=fake.tools();crashing.execute=Arc::new(|operation,mark|Box::pin(async move {
-            run_command(std::path::Path::new("/nonexistent-apex-test-data"), operation,mark).await?;
-            std::future::pending::<Result<ToolRun,String>>().await
-        }));
+        let execute=WorkerTools::real(f.host.data_dir()).execute;
+        let mut crashing=fake.tools();crashing.execute=Arc::new(move |operation,mark| {
+            let execute=execute.clone();
+            Box::pin(async move {
+                execute(operation,mark).await?;
+                std::future::pending::<Result<ToolRun,String>>().await
+            })
+        });
         f.step_and_crash(&crashing).await;
         let effect=std::path::Path::new(&project.cwd).join("uncertain-effect");
         assert_eq!(std::fs::read_to_string(&effect).unwrap(),"x");
         assert_eq!(f.task().receipts[0].phase,OpPhase::Attempted);
         f.restart();
-        let mut tools=fake.tools();tools.execute=Arc::new(|operation,mark|Box::pin(run_command(std::path::Path::new("/nonexistent-apex-test-data"), operation,mark)));
+        let mut tools=fake.tools();tools.execute=WorkerTools::real(f.host.data_dir()).execute;
         f.drain(&tools).await;
         let task=f.task();assert_eq!(task.receipts.len(),1);assert_eq!(task.receipts[0].phase,OpPhase::Uncertain);
         if full {
@@ -1090,11 +1094,13 @@ async fn an_operation_for_another_machine_never_runs_here() {
 
 #[tokio::test]
 async fn the_real_command_tool_runs_argv_without_a_shell() {
-    let dir = std::env::temp_dir();
-    let run = run_command(std::path::Path::new("/nonexistent-apex-test-data"), OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["echo".into(), "a;b $HOME".into()], plan: None }, Arc::new(|_| {})).await.unwrap();
+    let fixture = Fixture::new();
+    let dir = fixture.root.join("command");
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = run_command(fixture.host.data_dir(), OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["echo".into(), "a;b $HOME".into()], plan: None }, Arc::new(|_| {})).await.unwrap();
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.output.trim(), "a;b $HOME");
-    assert!(run_command(std::path::Path::new("/nonexistent-apex-test-data"), OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["/no/such/program".into()], plan: None }, Arc::new(|_| {})).await.is_err());
+    assert!(run_command(fixture.host.data_dir(), OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["/no/such/program".into()], plan: None }, Arc::new(|_| {})).await.is_err());
 }
 
 fn result_message(at: u64) -> PersonalMessage {
@@ -1305,11 +1311,11 @@ async fn stop_task_kills_the_running_command_and_everything_it_started() {
     fake.say(&task.to_string());
     fixture.host.personal_send(&fixture.id, "phone-1", "Run the slow job").unwrap();
     fixture.drain(&fake.tools()).await;
-    let tools = WorkerTools { execute: WorkerTools::real(std::path::Path::new("/nonexistent-apex-test-data")).execute, ..fake.tools() };
+    let tools = WorkerTools { execute: WorkerTools::real(fixture.host.data_dir()).execute, ..fake.tools() };
     fixture.host.start_personal_worker_with(tools).unwrap();
     fixture.decide("mac-1", true);
     let pids: Vec<i32> = wait_for_file(&std::path::Path::new(&folder).join("pids")).await
-        .split_whitespace().map(|p| p.parse().unwrap()).collect();
+        .split_whitespace().map(|p| crate::project_process::fixture_host_pid(std::path::Path::new(&folder), p.parse().unwrap()).expect("the command's host PID is visible")).collect();
     assert_eq!(pids.len(), 2);
     assert!(pids.iter().all(|pid| alive(*pid)), "the command and its child are running");
 
@@ -1334,8 +1340,10 @@ async fn dropping_the_command_kills_its_background_child() {
     std::fs::create_dir_all(&dir).unwrap();
     let spec = OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(),
         argv: vec!["sh".into(), "-c".into(), "sleep 300 & echo $! > pid.tmp; mv pid.tmp pid; wait".into()], plan: None };
-    let running = tokio::spawn(run_command(std::path::Path::new("/nonexistent-apex-test-data"), spec, Arc::new(|_| {})));
+    let data = crate::project_process::TestDataDir::new();
+    let running = tokio::spawn(async move { run_command(data.path(), spec, Arc::new(|_| {})).await });
     let pid: i32 = wait_for_file(&dir.join("pid")).await.trim().parse().unwrap();
+    let pid = crate::project_process::fixture_host_pid(&dir, pid).expect("the background child's host PID is visible");
     assert!(alive(pid));
     running.abort();
     let _ = running.await;
@@ -1359,12 +1367,13 @@ async fn a_running_command_saves_its_process_group() {
     fake.say(&task.to_string());
     fixture.host.personal_send(&fixture.id, "phone-1", "Run the slow job").unwrap();
     fixture.drain(&fake.tools()).await;
-    fixture.host.start_personal_worker_with(WorkerTools { execute: WorkerTools::real(std::path::Path::new("/nonexistent-apex-test-data")).execute, ..fake.tools() }).unwrap();
+    fixture.host.start_personal_worker_with(WorkerTools { execute: WorkerTools::real(fixture.host.data_dir()).execute, ..fake.tools() }).unwrap();
     fixture.decide("mac-1", true);
     let shell: u32 = wait_for_file(&std::path::Path::new(&folder).join("pid")).await.trim().parse().unwrap();
+    let shell = crate::project_process::fixture_host_pid(std::path::Path::new(&folder), shell as i32).expect("the shell's host PID is visible");
     fixture.until("the group is saved", |a| a.tasks[0].receipts.first().is_some_and(|r| r.process.is_some())).await;
     let mark = fixture.task().receipts[0].process.clone().unwrap();
-    assert_eq!(mark.pgid, shell, "the command leads its own group");
+    assert_eq!(mark.pgid, unsafe { libc::getpgid(shell) } as u32, "the saved group owns the running command");
     fixture.host.personal_cancel(&fixture.id, "mac-2", &fixture.task().id).unwrap();
     fixture.until("the stop is recorded", |a| a.messages.iter().any(|m| m.kind == "result")).await;
 }
@@ -1963,14 +1972,15 @@ async fn automatic_git_status_disables_configured_fsmonitor_execution() {
     std::fs::remove_file(dir.join("hook-marker")).unwrap();
     let mut operation = OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["git".into(), "status".into(), "--short".into()], plan: None };
     assert_eq!(gateway::classify(&operation, &[]).0, ToolClass::Read);
-    let output = run_command(std::path::Path::new("/nonexistent-apex-test-data"), operation.clone(), Arc::new(|_| {})).await.unwrap();
+    let data = crate::project_process::TestDataDir::new();
+    let output = run_command(data.path(), operation.clone(), Arc::new(|_| {})).await.unwrap();
     assert_eq!(output.exit_code, 0);
     assert!(output.output.contains("tracked"));
     assert!(!dir.join("hook-marker").exists());
     // Unknown forms require approval and retain their original execution semantics.
     operation.argv.push("--untracked-files=all".into());
     assert_eq!(gateway::classify(&operation, &[]).0, ToolClass::Write);
-    assert_eq!(run_command(std::path::Path::new("/nonexistent-apex-test-data"), operation, Arc::new(|_| {})).await.unwrap().exit_code, 0);
+    assert_eq!(run_command(data.path(), operation, Arc::new(|_| {})).await.unwrap().exit_code, 0);
     assert!(dir.join("hook-marker").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }

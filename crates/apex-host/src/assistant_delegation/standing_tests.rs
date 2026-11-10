@@ -312,7 +312,7 @@ fn held_standing_delegation_resumes_on_personal_worker_wake_without_manual_retry
     assert_eq!(held.status,TaskStatus::Queued);assert!(held.attempts.is_empty());
     assert!(held.result.as_deref().is_some_and(|reason|reason.contains("record its cost")));
     f.host.change_assistant(&f.input.assistant_id,|assistant| {assistant.events.iter_mut().find(|event|event.id==f.input.source_event_id).unwrap().state=EventState::Done;Ok(())}).unwrap();
-    f.host.start_personal_worker_with(crate::personal_worker::WorkerTools::real(std::path::Path::new("/nonexistent-apex-test-data"))).unwrap();
+    f.host.start_personal_worker_with(crate::personal_worker::WorkerTools::real(f.host.data_dir())).unwrap();
     let finished=wait_for(&f,&queued.id);
     assert_eq!(finished.status,TaskStatus::ReadyForReview,"{:?}",finished.result);
     assert_eq!(finished.attempts.len(),1);
