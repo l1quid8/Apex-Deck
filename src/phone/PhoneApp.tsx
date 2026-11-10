@@ -102,7 +102,7 @@ import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
-import { edgeSwipe, neighbour, roomFits, stripPosition, swipeBlocked, swipeIntent, swipeRelease } from "./threadSwipe";
+import { edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeIntent, swipeRelease } from "./threadSwipe";
 import { afterClose, openKeyParts, openStrip, pruneOpenThreads, readOpenThreads, withOpenThread, withoutOpenThread, writeOpenThreads, type OpenKey } from "./openThreads";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
@@ -177,9 +177,9 @@ type Room = {
 };
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
-/** Long-press or ⋯ on a row, + at the top of Threads, renaming a thread, or the threads open on this phone. */
+/** Long-press or ⋯ on a row, + at the top of Threads, renaming a thread, or checking it for updates. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
-  | { kind: "artifacts"; id: string } | { kind: "delete"; id: string } | { kind: "archived" } | { kind: "remove"; id: string } | { kind: "open" };
+  | { kind: "artifacts"; id: string } | { kind: "delete"; id: string } | { kind: "archived" } | { kind: "remove"; id: string };
 /** What a chat adds to the thread view: its banner and the messages its outbox still holds. */
 interface ChatThreadExtras {
   banner: ReactNode;
@@ -2445,7 +2445,7 @@ export function PhoneApp() {
             crewShut={crewShut}
             onCrew={foldCrew}
             onBots={() => { if (openPane && !viewingPending) { setBotChange(null); setMenu({ kind: "bots", id: openPane.id }); } }}
-            swipe={{ next: swipePeek("next"), previous: swipePeek("previous"), position: stripPosition(swipeKeys, openKey ?? null) }}
+            swipe={{ next: swipePeek("next"), previous: swipePeek("previous"), place: stripPlace(swipeKeys, openKey ?? null) }}
             onSwipe={swipeTo}
             onBot={setBotSheet}
             meters={openRoom ? Object.fromEntries(openRoom.configs.map((config) => {
@@ -2836,7 +2836,6 @@ export function PhoneApp() {
               {/* Close first and Delete last: they sit in the same menu and sound alike, but one keeps the
                   conversation and the other removes it. */}
               <MenuRow label="Close thread" detail="Closes its window. Stays in Threads" onClick={() => closeThread(threadKey(menuPane, sessionHost(menuPane)))} />
-              <MenuRow label="Open threads" detail={swipeKeys.length > 1 ? `${swipeKeys.length} open. Swipe between them, or pick one` : "Threads you have open, to swipe between"} onClick={() => setMenu({ kind: "open" })} />
               {menuPane.id === openId && room && room.id === openPane?.id && (
                 <button type="button" className="ph-srow ph-bots-menu" onClick={() => { setBotChange(null); setMenu({ kind: "bots", id: menuPane.id }); }}>
                   <span className="ph-grow"><strong>Bots</strong><small>{room.participants.length} in this thread</small></span>
@@ -2854,28 +2853,6 @@ export function PhoneApp() {
             </Sheet>
           );
         })()}
-        {menu?.kind === "open" && (
-          <Sheet title="Open threads" onClose={() => setMenu(null)}>
-            <p className="ph-sheet-text">
-              {swipeKeys.length === 0
-                ? "No threads are open. Open one from Threads, and it waits here to swipe back to."
-                : "Swipe left or right between these. Closing one keeps its conversation in Threads."}
-            </p>
-            {swipeKeys.map((key) => {
-              const row = swipeRows.get(key);
-              if (!row) return null;
-              const here = key === openKey;
-              return (
-                <div className={`ph-open-row${here ? " here" : ""}`} key={key}>
-                  <button type="button" className="ph-srow ph-open-pick" aria-current={here ? "true" : undefined} onClick={() => { setMenu(null); if (!here) showThreadKey(key); }}>
-                    <span className="ph-grow"><strong>{row.title}</strong><small>{[here ? "On screen" : "", row.where, row.words].filter(Boolean).join(" · ")}</small></span>
-                  </button>
-                  <button type="button" className="ph-icon ph-open-close" aria-label={`Close ${row.title}`} onClick={() => closeThread(key)}>×</button>
-                </div>
-              );
-            })}
-          </Sheet>
-        )}
         {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
           const host = workspaces.find((item) => item.id === menuPane.workspaceId) ? phoneHost(workspaceHost(workspaces.find((item) => item.id === menuPane.workspaceId)!)) : null;
           const full = !!host && canStartOn(host.machine.id);
@@ -3385,8 +3362,8 @@ function ThreadView(props: {
   onUnqueue(id: number): void; onRemoveQueued(id: number): void; onResume(): void;
   /** The question or next steps, above the composer. */
   form: ReactNode; plan: boolean; onStopPlanning(): void;
-  /** Swiping between threads: the ones on either side, and where this one sits ("3 of 9"). */
-  swipe: { next: SwipeRow | null; previous: SwipeRow | null; position: string };
+  /** Swiping between threads: the ones on either side, and where this one sits among the open ones. */
+  swipe: { next: SwipeRow | null; previous: SwipeRow | null; place: { at: number; of: number } | null };
   onSwipe(to: "next" | "previous"): void;
   runner: RunnerSnapshot|null; runnerHostOffset:number; runnerEndRequest:number; runnerShowRequest:number; onRunnerEndCancel():void; onRunnerAction(action:RunnerActionTag,limits?:RunnerLimits):void; onRunnerReview():void; runnerSetup:ReactNode;
 
@@ -3562,16 +3539,15 @@ function ThreadView(props: {
       const style = getComputedStyle(line);
       const icons = parts.filter((part) => !part.classList.contains("ph-context-project") && !part.classList.contains("ph-context-machine"))
         .reduce((sum, part) => sum + part.getBoundingClientRect().width, 0);
-      // Three gaps once the machine is in: icon, project, machine, chevron — and two more when the
-      // thread's place ("3 of 9") sits between the machine and the chevron.
-      const room = line.clientWidth - icons - project.scrollWidth - (props.swipe.position ? 5 : 3) * (parseFloat(style.columnGap) || 0);
+      // Three gaps once the machine is in: icon, project, machine, chevron.
+      const room = line.clientWidth - icons - project.scrollWidth - 3 * (parseFloat(style.columnGap) || 0);
       setMachineFits(room >= 5.5 * parseFloat(style.fontSize));
     };
     fit();
     const watch = new ResizeObserver(fit);
     watch.observe(line);
     return () => watch.disconnect();
-  }, [props.project, props.machine, props.started, props.swipe.position]);
+  }, [props.project, props.machine, props.started, props.swipe.place?.of]);
   // ---- Swiping to the thread on either side ----------------------------------------------------
   // The Code tab's own detector (swipeIntent, in swipeRelease), so a thumb works the same in both.
   // The messages follow the finger a quarter of the way, as a terminal does, and the thread on that
@@ -3632,6 +3608,16 @@ function ThreadView(props: {
   };
   const person = (id: string) => props.participants.find((participant) => participant.id === id) ?? { id, display_name: id, look: legacyAppearance(id) };
   const capsule = props.callSlot.live && props.callSlot.look === "capsule";
+  // Where this thread sits among the open ones: one small dot each, the one on screen lit. No numbers
+  // to read and nothing to tap — swiping is what moves you, so the dots only say where you are.
+  const place = props.swipe.place;
+  const dots = place && (
+    <span className="ph-nav-dots" aria-hidden="true">
+      {Array.from({ length: place.of }, (_, at) => <i key={at} className={at === place.at ? "on" : ""} />)}
+    </span>
+  );
+  const among = place ? `, ${place.at + 1} of ${place.of} open` : "";
+
   // One round button: the mic while the box is empty, Send once it has something.
   const round = composerButton({ hasContent: props.draft.text.trim() !== "" || props.draft.files.length > 0, canCall: !!props.call, live: props.callSlot.live, look: props.callSlot.look });
   const pillCall = props.callSlot.live && props.callSlot.look === "pill";
@@ -3648,18 +3634,19 @@ function ThreadView(props: {
         {/* During a Top bar call the capsule takes the project line's place; its buttons can't sit inside the title button. */}
         {capsule ? (
           <div className="ph-nav-title ph-has-capsule">
-            <button type="button" className="ph-nav-title-tap" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
+            <button type="button" className="ph-nav-title-tap" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}${among}. Change where this runs`} onClick={() => props.onSheet("where")}>
+              {dots}
               <h2>{props.draftThread ? "New thread" : props.title}</h2>
             </button>
             {props.callCapsule}
           </div>
-        ) : <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}${props.swipe.position ? `, ${props.swipe.position}` : ""}. Change where this runs`} onClick={() => props.onSheet("where")}>
+        ) : <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}${among}. Change where this runs`} onClick={() => props.onSheet("where")}>
+          {dots}
           <h2>{props.draftThread ? "New thread" : props.title}</h2>
           <p ref={contextRef} className="ph-context">
             {props.started ? <Lock size={11} /> : props.hostIcon}
             <span className="ph-context-project">{props.project}</span>
             {machineFits && <span className="ph-context-machine">· {props.machine}</span>}
-            {props.swipe.position && <span className="ph-context-pos">· {props.swipe.position}</span>}
             <ChevronDown size={12} />
           </p>
         </button>}

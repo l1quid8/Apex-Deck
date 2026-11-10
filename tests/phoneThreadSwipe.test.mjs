@@ -1,20 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  EDGE_GUARD, edgeSwipe, neighbour, roomFits, stripPosition, swipeBlocked, swipeRelease,
+  EDGE_GUARD, edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeRelease,
 } from "../src/phone/threadSwipe.ts";
 
 // The strip itself — which threads a swipe moves through, and in what order — is the phone's open set:
 // opening adds, ⋯ → Close thread removes, iOS shutting the app keeps it. That lives in openThreads.ts
 // and is tested in phoneOpenThreads.test.mjs. What is here is the gesture, and where a thread sits.
 
-test("the position under the title counts threads, and says nothing when there is only one", () => {
+test("where a thread sits among the open ones, for the dots over the title", () => {
   const strip = ["mac:a", "mac:b", "mac:c", "mac:d"];
-  assert.equal(stripPosition(strip, "mac:c"), "3 of 4");
-  assert.equal(stripPosition(strip, "mac:a"), "1 of 4");
-  assert.equal(stripPosition(["mac:a"], "mac:a"), "");
-  assert.equal(stripPosition(strip, "draft-7"), "");
-  assert.equal(stripPosition(strip, null), "");
+  assert.deepEqual(stripPlace(strip, "mac:c"), { at: 2, of: 4 });
+  assert.deepEqual(stripPlace(strip, "mac:a"), { at: 0, of: 4 });
+  assert.equal(stripPlace(["mac:a"], "mac:a"), null, "one open thread has nothing to sit among");
+  assert.equal(stripPlace(strip, "draft-7"), null, "a thread that isn't in the strip has no place in it");
+  assert.equal(stripPlace(strip, null), null);
 });
 
 test("swiping moves one thread, and stops at either end", () => {

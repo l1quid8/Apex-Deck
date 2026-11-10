@@ -321,9 +321,13 @@
    the machine takes what's left. ThreadView drops the machine when less than 5.5em is left. */
 .ph-context-project { flex: none; max-width: calc(100% - 36px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ph-context-machine { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Where this thread sits among the ones a swipe moves through: "3 of 9". Never shrinks away, because
-   dots stop being readable past a handful of threads. */
-.ph-context-pos { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Where this thread sits among the open ones: one dot each, the one on screen lit. Dots instead of
+   "3 of 9", and nothing to tap — a swipe is what moves you. They shrink towards a 2px floor as the
+   set grows, so a long set of open threads still fits over the title instead of running past it. */
+.ph-nav-dots { display: flex; justify-content: center; gap: 4px; max-width: 100%; margin: 0 0 3px; }
+.ph-nav-dots i { flex: 0 1 6px; min-width: 2px; max-width: 6px; aspect-ratio: 1; border-radius: 50%; background: var(--line); transition: background .18s ease; }
+.ph-nav-dots i.on { background: var(--mint); }
+@media (prefers-reduced-motion: reduce) { .ph-nav-dots i { transition: none; } }
 .ph-path { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin: 6px 0 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ph-chat { padding: 12px 16px 16px; }
 /* Swiping to the thread on either side. The messages follow the finger a quarter of the way, as a
@@ -561,13 +565,6 @@
 .ph-lock-row .ph-grow { min-width: 0; }
 .ph-lock-row .ph-composer-switch { margin: -6px -4px -6px 0; }
 .ph-lock-problem { color: var(--red) !important; }
-/* ⋯ → Open threads: the threads a swipe moves through, and the one way to close one from here. */
-.ph-open-row { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); }
-.ph-open-row:last-child { border-bottom: 0; }
-.ph-open-row.here .ph-open-pick strong { color: var(--mint); }
-.ph-open-row .ph-srow.ph-srow { flex: 1; min-width: 0; border-bottom: 0; }
-.ph-open-pick strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ph-open-close { flex: none; color: var(--muted); font-size: 20px; line-height: 1; }
 
 .ph-card { background: var(--panel-2); border-radius: 14px; padding: 12px 14px; margin-bottom: 6px; font-size: 14px; }
 .ph-card p { overflow-wrap: anywhere; }

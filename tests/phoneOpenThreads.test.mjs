@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  OPEN_LIMIT, afterClose, openKeyParts, openStrip, pruneOpenThreads, readOpenThreads, withOpenThread,
+  afterClose, openKeyParts, openStrip, pruneOpenThreads, readOpenThreads, withOpenThread,
   withoutOpenThread, writeOpenThreads,
 } from "../src/phone/openThreads.ts";
 
@@ -47,12 +47,14 @@ test("a key that isn't a thread never gets into the open set", () => {
   assert.deepEqual(withOpenThread([], "draft-7"), []);
 });
 
-test("the oldest thread leaves when the set is full, so a long session can't grow without end", () => {
+test("opening a thread never closes another one, however many are open", () => {
   let open = [];
-  for (let n = 0; n < OPEN_LIMIT + 3; n++) open = withOpenThread(open, mac(`t${n}`));
-  assert.equal(open.length, OPEN_LIMIT);
-  assert.equal(open[0], mac("t3"));
-  assert.equal(open[open.length - 1], mac(`t${OPEN_LIMIT + 2}`));
+  for (let n = 0; n < 40; n++) open = withOpenThread(open, mac(`t${n}`));
+  assert.equal(open.length, 40, "nothing is evicted to make room");
+  assert.equal(open[0], mac("t0"));
+  assert.equal(open[39], mac("t39"));
+  // And a long saved list comes back whole when the app opens again.
+  assert.equal(readOpenThreads(writeOpenThreads(open)).length, 40);
 });
 
 test("closing a thread takes it out of the set and leaves the conversation where it was", () => {
@@ -111,13 +113,23 @@ test("the phone swipes through its open threads, and saves them for the next lau
 });
 
 test("Close thread and Delete thread sit in the same menu, Close first and Delete last", () => {
-  const menu = between('{menu?.kind === "thread" && menuPane &&', '{menu?.kind === "open" &&');
+  const menu = between('{menu?.kind === "thread" && menuPane &&', '{menu?.kind === "bots" && menuPane &&');
   const close = menu.indexOf('label="Close thread"');
   const remove = menu.indexOf('label="Delete thread…"');
   assert.ok(close >= 0, "the thread's ⋯ menu has Close thread");
   assert.ok(remove > close, "Delete comes after Close");
   const lastRow = [...menu.matchAll(/<MenuRow label="([^"]+)"/g)].pop();
   assert.equal(lastRow?.[1], "Delete thread…", "Delete is the last row, past the rows you reach for every day");
+});
+
+test("no count and no picker: the dots over the title are the only thing that says where you are", () => {
+  const css = fs.readFileSync(new URL("../src/phone/phone.css", import.meta.url), "utf8");
+  assert.match(source, /place: stripPlace\(swipeKeys, openKey \?\? null\)/, "the dots are fed by the open set");
+  assert.match(source, /className="ph-nav-dots" aria-hidden="true"/, "the dots say nothing to a screen reader, and take no tap");
+  assert.doesNotMatch(source, /kind: "open"|<Sheet title="Open threads"|label="Open threads"/, "the quick picker is gone");
+  assert.doesNotMatch(source, /stripPosition|ph-context-pos/, "the \"3 of 5\" line is gone");
+  assert.doesNotMatch(css, /ph-open-|ph-context-pos/, "and its styles with it");
+  assert.match(css, /\.ph-nav-dots i\.on \{[^}]*background: var\(--mint\)/, "the active dot is lit");
 });
 
 test("closing keeps the conversation, and a chat can be closed as well as a thread", () => {

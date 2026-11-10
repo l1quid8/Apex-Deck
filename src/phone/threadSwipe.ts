@@ -20,11 +20,15 @@
 import { swipeIntent } from "./phoneTerminals.ts";
 export { swipeIntent };
 
-/** Where this thread sits, as "3 of 9"; empty when there is nothing to count or it isn't in the strip. */
-export function stripPosition(strip: readonly string[], key: string | null): string {
-  if (!key || strip.length < 2) return "";
+/**
+ * Where this thread sits among the open ones, for the dots over the title: 3 of 5 is `{ at: 2, of: 5 }`.
+ * Null with fewer than two open — one thread has nothing to sit among — and for a thread that isn't in
+ * the strip, such as a new one whose text hasn't been sent yet.
+ */
+export function stripPlace(strip: readonly string[], key: string | null): { at: number; of: number } | null {
+  if (!key || strip.length < 2) return null;
   const at = strip.indexOf(key);
-  return at < 0 ? "" : `${at + 1} of ${strip.length}`;
+  return at < 0 ? null : { at, of: strip.length };
 }
 
 /**

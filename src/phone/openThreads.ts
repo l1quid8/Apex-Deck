@@ -17,9 +17,6 @@
 /** A thread named by machine and id, as `threadKey` in chatRoutes.ts names it. */
 export type OpenKey = string;
 
-/** How many threads can be open at once. Enough to swipe between a few, few enough to pick from a list. */
-export const OPEN_LIMIT = 12;
-
 /** The machine and id inside a thread key, or null for a key this phone didn't write. */
 export function openKeyParts(key: OpenKey): { hostId: string; id: string } | null {
   try {
@@ -45,7 +42,7 @@ export function readOpenThreads(raw: string | null | undefined): OpenKey[] {
     if (typeof entry !== "string" || !openKeyParts(entry) || keys.includes(entry)) continue;
     keys.push(entry);
   }
-  return keys.slice(0, OPEN_LIMIT);
+  return keys;
 }
 
 /** The saved form of the open set. */
@@ -56,13 +53,13 @@ export function writeOpenThreads(keys: readonly OpenKey[]): string {
 /**
  * The set with this thread open. Opening one that is already open leaves it where it is, so reaching
  * a thread from a notification, a search or the list focuses it without moving it away from the
- * threads beside it. The oldest one leaves when the set is full.
+ * threads beside it. Nothing is ever evicted to make room: opening a thread must not close one the
+ * person opened on purpose — ⋯ → Close thread is the only way out.
  */
 export function withOpenThread(keys: readonly OpenKey[], key: OpenKey): OpenKey[] {
   if (!openKeyParts(key)) return [...keys];
   if (keys.includes(key)) return [...keys];
-  const next = [...keys, key];
-  return next.length > OPEN_LIMIT ? next.slice(next.length - OPEN_LIMIT) : next;
+  return [...keys, key];
 }
 
 /** The set without this thread. Closing one that isn't open changes nothing. */
