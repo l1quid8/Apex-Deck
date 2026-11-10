@@ -6,7 +6,7 @@ import fs from 'node:fs';
 // writes the fields the sheet shows and keeps the rest, a name another agent answers to is refused, and
 // the agent list ends up exactly as the sheet left it.
 const mod = await import(new URL('../src/phone/agentEdit.ts', import.meta.url).href);
-const { agentAccessChoices, agentDraft, agentFromDraft, agentProblem, agentReasoning, agentTemplateDraft, agentTool, removeAgent, upsertAgent } = mod;
+const { agentAccessChoices, agentDraft, agentFromDraft, agentProblem, agentReasoning, agentTemplateDraft, agentTool, mergeAgentDraft, removeAgent, saveAgentDraft, upsertAgent } = mod;
 const { accessOptions } = await import(new URL('../src/accessChange.ts', import.meta.url).href);
 
 const agent = (over = {}) => ({
@@ -134,8 +134,10 @@ test('a draft carries the name, brief, access, model and speed the sheet shows',
 
 test('PhoneApp saves agents through the session it reads fresh from the Mac', () => {
   const source = fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url), 'utf8');
-  // Through saveSession, which loads the Mac's session first: a change made there stays.
-  assert.match(source, /await saveSession\(\(current\) => \(\{ \.\.\.current, profiles: upsertAgent\(current\.profiles, config\) \}\)\)/);
+  // Through saveSession, which loads the Mac's session first, and the change is applied to that fresh
+  // copy rather than replacing the agent with the sheet's older one.
+  assert.match(source, /await saveSession\(\(current\) => \{\s*const next = saveAgentDraft\(current\.profiles, change\)/);
+  assert.doesNotMatch(source, /profiles: upsertAgent\(current\.profiles, config\)/, 'the sheet\'s whole copy is never written over the Mac\'s agent');
   assert.match(source, /await saveSession\(\(current\) => \(\{ \.\.\.current, profiles: removeAgent\(current\.profiles, id\) \}\)\)/);
   // The Agents tab opens the sheet for a new agent and for one that exists.
   assert.match(source, /onNewAgent=\{newAgent\}/);
@@ -145,6 +147,13 @@ test('PhoneApp saves agents through the session it reads fresh from the Mac', ()
   assert.match(source, /if \(!canSeeNewThread\(macHost\.access\(\)\)\) \{ setNotice\(`Making an agent needs Full access/);
 });
 
+test('the sheet hands back what it opened with, so the save can tell what was touched', () => {
+  const source = fs.readFileSync(new URL('../src/phone/AgentSheet.tsx', import.meta.url), 'utf8');
+  assert.match(source, /initial,/);
+  assert.match(source, /draft,/);
+  assert.doesNotMatch(source, /props\.onSave\(built\)/, 'no finished agent is built from the stale copy');
+});
+
 test('the agent sheet asks once before deleting and never deletes on the first tap', () => {
   const source = fs.readFileSync(new URL('../src/phone/AgentSheet.tsx', import.meta.url), 'utf8');
   assert.match(source, /onClick=\{\(\) => setConfirm\(true\)\}>Delete agent…/);
@@ -152,4 +161,84 @@ test('the agent sheet asks once before deleting and never deletes on the first t
   // The delete button only exists in the confirmed branch, and the sheet keeps it or goes back.
   assert.match(source, /\{props\.agent && \(confirm/);
   assert.doesNotMatch(source, /window\.confirm/);
+});
+
+// ---- The sheet's copy is stale the moment it opens ------------------------------------------------
+// Reviewed blocker: saving from the sheet used to replace the whole agent with the copy the sheet was
+// given, so anything changed on the Mac while it was open was put back to what the phone last saw.
+// A save now merges the fields the person touched into the Mac's own copy, read fresh at save time.
+
+/** The sheet as it was opened, and the change as the person left it. */
+const sheetOn = (opened, edit = {}) => ({ initial: agentDraft(opened), draft: { ...agentDraft(opened), ...edit } });
+
+test('a setting changed on the Mac while the sheet was open survives a save from the phone', () => {
+  const opened = agent({ access: 'read', persona: 'Writes the code.', voice: 'alloy' });
+  const { initial } = sheetOn(opened);
+  // While the sheet sits open, the Mac gives the agent Full access, rewrites its brief and changes its voice.
+  const asMacHasIt = agent({ access: 'full', persona: 'Reviews every change before it lands.', voice: 'verse' });
+  const next = saveAgentDraft([asMacHasIt], { id: 'claude', template: opened, initial, draft: { ...initial, name: 'Reviewer' }, appearance: null });
+  assert.equal(typeof next, 'object');
+  const saved = next.find((item) => item.id === 'claude');
+  assert.equal(saved.display_name, 'Reviewer', 'the name the person typed is written');
+  assert.equal(saved.access, 'full', 'the access the Mac was given is kept, not the Read-only the phone last saw');
+  assert.equal(saved.persona, 'Reviews every change before it lands.', 'the Mac\'s newer brief is kept');
+  assert.equal(saved.voice, 'verse', 'a field the sheet does not show is untouched');
+});
+
+test('a field the person did change on the phone is the one that saves', () => {
+  const opened = agent({ access: 'read', persona: 'Writes the code.' });
+  const { initial } = sheetOn(opened);
+  const asMacHasIt = agent({ access: 'full', persona: 'Reviews every change.' });
+  const next = saveAgentDraft([asMacHasIt], { id: 'claude', template: opened, initial, draft: { ...initial, access: 'edits', brief: 'Builds the thing.' }, appearance: null });
+  const saved = next.find((item) => item.id === 'claude');
+  assert.equal(saved.access, 'edits', 'the level the person picked wins over the one on the Mac');
+  assert.equal(saved.persona, 'Builds the thing.');
+});
+
+test('a model changed on the Mac is not put back by a sheet opened on the old one', () => {
+  const opened = agent({ backend: { kind: 'agent', tool: 'claude_code', model: 'opus' }, effort: 'high' });
+  const { initial } = sheetOn(opened);
+  // The Mac moves the agent to a model that takes no reasoning level, so its effort is cleared there too.
+  const asMacHasIt = agent({ backend: { kind: 'agent', tool: 'claude_code', model: 'haiku' }, effort: null });
+  const next = saveAgentDraft([asMacHasIt], { id: 'claude', template: opened, initial, draft: { ...initial, brief: 'Only reads now.' }, appearance: null });
+  const saved = next.find((item) => item.id === 'claude');
+  assert.deepEqual(saved.backend, { kind: 'agent', tool: 'claude_code', model: 'haiku' }, 'the Mac\'s model is kept');
+  assert.equal(saved.effort, null, 'and the reasoning level that model dropped is not sent back to it');
+});
+
+test('an agent deleted on the Mac while the sheet was open is not brought back', () => {
+  const opened = agent();
+  const { initial } = sheetOn(opened);
+  const next = saveAgentDraft([], { id: 'claude', template: opened, initial, draft: { ...initial, name: 'Claude 2' }, appearance: null });
+  assert.equal(typeof next, 'string');
+  assert.match(next, /deleted on your Mac/);
+});
+
+test('a name taken on the Mac while the sheet was open is refused, against the fresh list', () => {
+  const opened = agent();
+  const madeMeanwhwhile = agent({ id: 'scout', display_name: 'Scout' });
+  const start = agentTemplateDraft(opened);
+  const next = saveAgentDraft([opened, madeMeanwhwhile], { id: null, template: opened, initial: start, draft: { ...start, name: 'Scout' }, appearance: null });
+  assert.equal(typeof next, 'string');
+  assert.match(next, /Scout/);
+});
+
+test('a new agent writes every field it was given, from the bot it started from', () => {
+  const template = agent({ persona: 'Writes the code.', access: 'read' });
+  const start = agentTemplateDraft(template);
+  const next = saveAgentDraft([], { id: null, template, initial: start, draft: { ...start, name: 'Scout', access: 'edits' }, appearance: { seed: 'seed-2', color: '#f28b82' } });
+  assert.equal(typeof next, 'object');
+  const saved = next[0];
+  assert.equal(saved.id, 'scout');
+  assert.equal(saved.access, 'edits');
+  assert.equal(saved.persona, 'Writes the code.', 'the brief it started from is kept');
+  assert.deepEqual(saved.backend, template.backend, 'and so is the tool it runs');
+  assert.deepEqual(saved.appearance, { seed: 'seed-2', color: '#f28b82' }, 'with a look of its own');
+});
+
+test('merging without a starting draft writes everything, which is what a new agent needs', () => {
+  const template = agent();
+  const built = mergeAgentDraft(template, { ...agentDraft(template), name: 'Scout' }, { editing: null, others: [], appearance: null });
+  assert.equal(built.display_name, 'Scout');
+  assert.equal(built.id, 'scout');
 });

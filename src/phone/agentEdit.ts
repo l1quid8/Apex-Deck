@@ -76,35 +76,80 @@ export function agentProblem(draft: AgentDraft, others: readonly ParticipantConf
   return "error" in identity ? identity.error : "";
 }
 
+/** What the sheet hands back to be saved: the agent it opened, what it opened with, and what it holds now. */
+export type AgentSave = {
+  /** The agent being changed, or null for a new one. */
+  id: string | null;
+  /** The bot a new agent starts from. */
+  template: ParticipantConfig;
+  /** The draft as the sheet opened: a field still equal to this one was never touched. */
+  initial: AgentDraft;
+  draft: AgentDraft;
+  /** The look a new agent gets, so two made in a row don't come out the same. */
+  appearance: { seed: string; color: string } | null;
+};
+
 /**
- * The agent as it saves: the draft's fields written over the agent, everything else kept.
- * `editing` is the id of the agent being changed, or null for a new one, which takes `appearance`
- * so two agents made in a row don't come out looking the same.
+ * `base` with the fields the person touched written over it, everything else kept as `base` has it.
+ *
+ * Only fields that differ from `initial` are written. That is what stops the sheet's copy — taken
+ * when it opened — from putting back a brief, a model or an access level that was changed on the Mac
+ * while it was open. Omit `initial` and every draft field is written, which is what a new agent needs.
  */
-export function agentFromDraft(
-  template: ParticipantConfig,
+export function mergeAgentDraft(
+  base: ParticipantConfig,
   draft: AgentDraft,
-  { editing, others, appearance }: { editing: string | null; others: readonly ParticipantConfig[]; appearance?: { seed: string; color: string } | null },
+  { editing, others, appearance, initial }: { editing: string | null; others: readonly ParticipantConfig[]; appearance?: { seed: string; color: string } | null; initial?: AgentDraft },
 ): ParticipantConfig | string {
   const problem = agentProblem(draft, others, editing);
   if (problem) return problem;
   const identity = identityOf(draft, others, editing);
   if ("error" in identity) return identity.error;
-  const levels = agentReasoning(template, draft.model);
-  // A model that takes no reasoning level must not be sent one.
-  const effort = levels.length > 0 && draft.effort && levels.includes(draft.effort) ? draft.effort : null;
-  return {
-    ...template,
-    id: identity.id,
-    display_name: draft.name.trim(),
-    persona: draft.brief.trim(),
-    access: draft.access,
-    backend: template.backend.kind === "agent" ? { ...template.backend, model: draft.model || null } : template.backend,
-    effort,
-    ...(phoneSpeed(template) ? { speed: (draft.speed || null) as Speed | null } : {}),
-    // A new agent never inherits the look of the bot it started from: two made in a row would match.
-    ...(editing === null ? { appearance: appearance ?? null } : {}),
-  };
+  const touched = (field: keyof AgentDraft) => !initial || draft[field] !== initial[field];
+  const config: ParticipantConfig = { ...base, id: identity.id };
+  if (touched("name")) config.display_name = draft.name.trim();
+  if (touched("brief")) config.persona = draft.brief.trim();
+  if (touched("access")) config.access = draft.access;
+  if (touched("model") && base.backend.kind === "agent") config.backend = { ...base.backend, model: draft.model || null };
+  // A model can take reasoning levels its neighbour doesn't, so changing either one re-checks the level.
+  if (touched("model") || touched("effort")) {
+    const model = "model" in config.backend ? config.backend.model ?? "" : "";
+    const levels = agentReasoning(base, model);
+    const wanted = touched("effort") ? draft.effort : config.effort ?? "";
+    // A model that takes no reasoning level must not be sent one.
+    config.effort = levels.length > 0 && wanted && levels.includes(wanted) ? wanted : null;
+  }
+  if (touched("speed") && phoneSpeed(base)) config.speed = (draft.speed || null) as Speed | null;
+  // A new agent never inherits the look of the bot it started from: two made in a row would match.
+  if (editing === null) config.appearance = appearance ?? null;
+  return config;
+}
+
+/** The agent as it saves from a draft where every field counts as touched: a brand new agent. */
+export const agentFromDraft = (
+  template: ParticipantConfig,
+  draft: AgentDraft,
+  options: { editing: string | null; others: readonly ParticipantConfig[]; appearance?: { seed: string; color: string } | null },
+) => mergeAgentDraft(template, draft, options);
+
+/**
+ * The agent list to save: the sheet's changes merged into the machine's own copy of the agent.
+ *
+ * `fresh` is the list as the Mac has it this moment, read immediately before saving. An agent
+ * changed there while the sheet was open keeps those changes — the phone writes only what it was
+ * asked to change. Returns the reason as a string when it can't be saved.
+ */
+export function saveAgentDraft(fresh: readonly ParticipantConfig[], change: AgentSave): ParticipantConfig[] | string {
+  const base = change.id === null ? change.template : fresh.find((item) => item.id === change.id);
+  if (!base) return "That agent was deleted on your Mac while this was open. Close this and start again.";
+  const merged = mergeAgentDraft(base, change.draft, {
+    editing: change.id,
+    others: fresh.filter((item) => item.id !== change.id),
+    appearance: change.appearance,
+    initial: change.initial,
+  });
+  if (typeof merged === "string") return merged;
+  return upsertAgent(fresh, merged);
 }
 
 /** The saved agents with this one added or replaced where it already was: the list the Mac reads too. */

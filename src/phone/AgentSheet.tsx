@@ -4,15 +4,16 @@ import type { ChatProfile } from "../chatCatalog";
 import { createAppearance } from "../identicon";
 import { effortLabel } from "../models";
 import { profileLine } from "./ChatSheets";
-import { agentAccessChoices, agentDraft, agentFromDraft, agentModels, agentPicksModel, agentPicksSpeed, agentProblem, agentReasoning, agentTemplateDraft, type AgentDraft } from "./agentEdit";
+import { agentAccessChoices, agentDraft, agentModels, agentPicksModel, agentPicksSpeed, agentProblem, agentReasoning, agentTemplateDraft, type AgentDraft, type AgentSave } from "./agentEdit";
 
 /**
  * Create or change a saved agent from the Agents tab: the name it answers to, its brief, its model,
  * how hard it thinks, how fast it answers, and what it may touch.
  *
- * A save hands back a whole agent built from the draft and the agent as the machine has it, so the
- * fields this sheet doesn't show are kept rather than blanked. Deleting asks once, because it can't
- * be undone: the conversations it worked in stay, the agent goes.
+ * A save hands back the draft it opened with and the draft as it stands now, not a finished agent.
+ * PhoneApp merges the difference into the Mac's own copy of the agent, so only fields the person
+ * actually changed are written and nothing the Mac changed meanwhile is put back. Deleting asks once,
+ * because it can't be undone: the conversations it worked in stay, the agent goes.
  */
 export function AgentSheet(props: {
   /** The agent being changed, or null to make a new one. */
@@ -25,11 +26,13 @@ export function AgentSheet(props: {
   /** Why the last save failed on the machine, if it did. */
   saveProblem: string;
   saving: boolean;
-  onSave(config: ParticipantConfig): void;
+  onSave(change: AgentSave): void;
   onDelete(): void;
 }) {
   const [template, setTemplate] = useState<ParticipantConfig | null>(props.agent);
-  const [draft, setDraft] = useState<AgentDraft | null>(props.agent ? agentDraft(props.agent) : null);
+  const [opened] = useState<AgentDraft | null>(() => (props.agent ? agentDraft(props.agent) : null));
+  const [initial, setInitial] = useState<AgentDraft | null>(opened);
+  const [draft, setDraft] = useState<AgentDraft | null>(opened);
   const [confirm, setConfirm] = useState(false);
   const set = (change: Partial<AgentDraft>) => setDraft((now) => (now ? { ...now, ...change } : now));
 
@@ -42,7 +45,7 @@ export function AgentSheet(props: {
       {props.templatesProblem && <p className="ph-sheet-text ph-amber">{props.templatesProblem}</p>}
       {props.templates && ready.length === 0 && <p className="ph-sheet-text">This machine has no bots to start from. Set one up on the Mac first.</p>}
       <div className="ph-list">{ready.map((item) => (
-        <button key={item.profile.id} type="button" className="ph-srow ph-project-assistant" onClick={() => { setTemplate(item.profile); setDraft(agentTemplateDraft(item.profile)); }}>
+        <button key={item.profile.id} type="button" className="ph-srow ph-project-assistant" onClick={() => { const start = agentTemplateDraft(item.profile); setTemplate(item.profile); setInitial(start); setDraft(start); }}>
           <span className="ph-grow"><strong>{item.profile.display_name}</strong><small>{profileLine(item.profile)}</small></span>
         </button>
       ))}</div>
@@ -54,13 +57,16 @@ export function AgentSheet(props: {
   const levels = agentReasoning(template, draft.model);
   const access = agentAccessChoices(template.backend.kind === "agent" ? template.backend.tool : "");
   const save = () => {
-    const built = agentFromDraft(template, draft, {
-      editing: props.agent?.id ?? null,
-      others: props.others,
-      appearance: createAppearance(props.others.map((item) => item.appearance).filter((look): look is { seed: string; color: string } => Boolean(look))),
+    // What the sheet opened with goes back with the draft: PhoneApp needs the difference to know
+    // which fields the person actually changed.
+    if (!initial) return;
+    props.onSave({
+      id: props.agent?.id ?? null,
+      template,
+      initial,
+      draft,
+      appearance: props.agent ? null : createAppearance(props.others.map((item) => item.appearance).filter((look): look is { seed: string; color: string } => Boolean(look))),
     });
-    if (typeof built === "string") return;
-    props.onSave(built);
   };
 
   return <>

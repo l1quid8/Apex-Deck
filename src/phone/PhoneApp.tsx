@@ -93,7 +93,7 @@ import { PhoneArtifacts } from "./ArtifactSheet";
 import { LockRow } from "./LockRow";
 import { deleteThreadGate, deleteThreadWords, removeThreadFrom } from "./threadDelete";
 import { AgentSheet } from "./AgentSheet";
-import { removeAgent, upsertAgent } from "./agentEdit";
+import { removeAgent, saveAgentDraft, type AgentSave } from "./agentEdit";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
 import { carriedEntry } from "../threadState";
 import { leftBehindWords, type ChatDeliveryStatus } from "../chatDelivery";
@@ -1296,14 +1296,20 @@ export function PhoneApp() {
   }
 
   /**
-   * Saved from the agent sheet. It writes through saveSession, which reads the Mac's session fresh
-   * first: an agent made or changed on the Mac while this sheet was open is kept, not overwritten.
+   * Saved from the agent sheet. saveSession reads the Mac's session fresh first, and the change is
+   * applied to that fresh copy: the sheet's draft is merged into the agent as the Mac has it now, so
+   * only fields the person touched are written and a setting changed on the Mac while the sheet was
+   * open survives. A name that clashes is checked against the fresh list too, not the one on screen.
    */
-  async function saveAgent(config: ParticipantConfig) {
+  async function saveAgent(change: AgentSave) {
     setAgentSaving(true);
     setAgentSaveProblem("");
     try {
-      await saveSession((current) => ({ ...current, profiles: upsertAgent(current.profiles, config) }));
+      await saveSession((current) => {
+        const next = saveAgentDraft(current.profiles, change);
+        if (typeof next === "string") throw new Error(next);
+        return { ...current, profiles: next };
+      });
       setAgentSheet(null);
     } catch (error) {
       setAgentSaveProblem(words(error));
