@@ -115,6 +115,8 @@ function ScopeBadge({ label }: { label: string }) {
 }
 
 export function SettingsPage({ section, onSection, settings, onChange, appearanceStudio, agents, profiles, backend, updates = null, onRestartToUpdate, onClose }: Props) {
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const settingsShortcut = shortcutList(mac).find(binding => binding.label === 'Settings')!.keys;
   const systemDark = useSystemDark();
   const navFocusRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -335,7 +337,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
       <div className="settings-search-wrap">
         <span aria-hidden="true" className="search-icon">⌕</span>
         <input ref={searchRef} type="search" aria-label="Search settings" placeholder="Search settings" value={searchQuery} onChange={e=>handleSearch(e.target.value)} />
-        <kbd>⌘ F</kbd>
+        <kbd>{mac ? '⌘ F' : 'Ctrl+F'}</kbd>
         {searchQuery && <button className="icon search-clear" aria-label="Clear search" onClick={()=>handleSearch('')}>×</button>}
       </div>
       <nav ref={navFocusRef} aria-label="Settings sections">
@@ -357,7 +359,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
         <span className="save-state-inline" role="status" aria-live="polite">
           {saveState==='saving' ? 'Saving…' : saveState==='saved' ? '✓ Saved' : saveState==='error' ? 'Could not save' : ''}
         </span>
-        <span><kbd>⌘,</kbd> opens · <kbd>Esc</kbd> closes</span>
+        <span><kbd>{settingsShortcut}</kbd> opens · <kbd>Esc</kbd> closes</span>
         <span>{resolvedSection==='appearance' ? 'Appearance changes wait for Apply.' : 'Changes save as you make them.'}</span>
       </div>
     </aside>

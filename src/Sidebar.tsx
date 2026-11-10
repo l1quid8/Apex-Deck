@@ -16,6 +16,7 @@ import { Glyph, ProjectFolder } from "./SidebarIcons";
 import { DeckIcon } from "./DeckIcon";
 import { ThreadName } from "./ThreadName";
 import { WorkspaceHostMenu } from "./WorkspaceHostMenu";
+import { shortcutList } from "./shortcuts";
 
 // The rail, as in Codex: Pinned, Projects and Recents. Projects mixes This
 // Mac's folders and servers' folders in host groups. App owns the data and the actions; this
@@ -101,6 +102,8 @@ function marquee(row: HTMLElement) {
 const menuKey = (event: ReactKeyboardEvent) => event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
 
 export function ProjectSidebar(props: ProjectSidebarProps) {
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const settingsShortcut = shortcutList(mac).find(binding => binding.label === 'Settings')!.keys;
   const { backend, section, panes, workspaces, deleting, hosts } = props;
   const lists = useMemo(() => sidebarSections(panes, workspaces, section, deleting), [panes, workspaces, section, deleting]);
   const groups = useMemo(() => projectGroups(lists.projects, hosts.map(h => h.id)), [lists.projects, hosts]);
@@ -372,7 +375,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         <button className={props.appearanceOpen ? "icon active" : "icon"} onClick={props.onOpenAppearance} aria-label="Appearance" title="Appearance" aria-pressed={props.appearanceOpen}>
           <DeckIcon name="moon" />
         </button>
-        <button className={props.settingsOpen ? "icon active" : "icon"} onClick={props.onOpenSettings} aria-label={props.appearanceDraftCount ? `Settings, ${props.appearanceDraftCount} unapplied appearance change${props.appearanceDraftCount === 1 ? "" : "s"}` : "Settings"} title="Settings (⌘,)" aria-pressed={props.settingsOpen}>
+        <button className={props.settingsOpen ? "icon active" : "icon"} onClick={props.onOpenSettings} aria-label={props.appearanceDraftCount ? `Settings, ${props.appearanceDraftCount} unapplied appearance change${props.appearanceDraftCount === 1 ? "" : "s"}` : "Settings"} title={`Settings (${settingsShortcut})`} aria-pressed={props.settingsOpen}>
           <DeckIcon name="settings" />
           {props.appearanceDraftCount ? <span className="appearance-draft-count" aria-hidden="true">{props.appearanceDraftCount}</span> : null}
         </button>
