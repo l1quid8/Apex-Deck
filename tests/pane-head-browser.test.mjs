@@ -64,6 +64,13 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
         const setWidth=async width=>{await run('window.fixture.setWidth('+width+')');await sleep(100);await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')};
         const visible=()=>run("[...document.querySelectorAll('[data-head-part]')].filter(node=>node.getBoundingClientRect().width>0).map(node=>node.dataset.headPart)");
         const animation=()=>run("getComputedStyle(document.querySelector('.pane-head .thread-name-text')).animationName");
+        const pointerOff=async()=>{
+          // Retire native hover explicitly; a move inside a hidden Windows window
+          // can leave its previous hover target active after a menu closes.
+          win.webContents.sendInputEvent({type:'mouseLeave',x:-10,y:-10});
+          await run('document.activeElement.blur()');
+          await until("!document.querySelector('.pane-head').matches(':hover, :focus-within')");
+        };
         try{
           await win.loadURL(${JSON.stringify(`http://localhost:${server.httpServer.address().port}/__pane_head_test`)});
           await until("!!document.querySelector('.pane-head')");
@@ -93,11 +100,11 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
           assert.equal(await run("!!document.querySelector('#head-menu')"),false,'menu Escape closes the menu first');
           assert.equal(await run("document.querySelector('#maximized').textContent"),'true','menu Escape keeps full screen');
           await key('Escape');assert.equal(await run("document.querySelector('#maximized').textContent"),'false');
-          win.webContents.sendInputEvent({type:'mouseMove',x:850,y:400});await run('document.activeElement.blur()');await sleep(60);
+          await pointerOff();
           assert.equal(await animation(),'none');
           win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);
           assert.notEqual(await animation(),'none','cut-off title marquees on hover');
-          win.webContents.sendInputEvent({type:'mouseMove',x:850,y:400});await sleep(60);assert.equal(await animation(),'none','leaving resets marquee');
+          await pointerOff();assert.equal(await animation(),'none','leaving resets marquee');
           win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
           win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);assert.equal(await animation(),'none','reduced motion keeps ellipsis');
           await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});win.webContents.debugger.detach();
