@@ -235,7 +235,9 @@ mod windows_tests {
                 "personal_worker::process::windows_tests::command_tree".into()], plan: None };
         let saved = Arc::new(Mutex::new(None::<ProcessMark>));
         let callback = saved.clone();
-        let running = tokio::spawn(run_command(spec, Arc::new(move |mark| *callback.lock().unwrap() = Some(mark))));
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let running = tokio::spawn(async move { run_command(&data, spec, Arc::new(move |mark| *callback.lock().unwrap() = Some(mark))).await });
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let pid = loop {
             if let Some(pid) = std::fs::read_to_string(dir.join("child-pid")).ok().and_then(|text| text.parse::<u32>().ok()) { break pid; }
