@@ -104,6 +104,9 @@ test("the phone swipes through its open threads, and saves them for the next lau
   assert.match(source, /setOpenThreads\(\(list\) => withOpenThread\(list, openPaneKey\)\)/, "opening a thread adds it");
   assert.match(source, /localStorage\.setItem\(OPEN_KEY, writeOpenThreads\(openThreads\)\)/, "the open set is saved");
   assert.match(source, /pruneOpenThreads\(list, alive\)/, "a thread that is gone leaves the open set");
+  // Before the Mac's saved list has loaded there is no way to tell a Mac thread from one that was
+  // deleted while the app was closed, so nothing from it is dropped in the meantime.
+  assert.match(source, /if \(session === null\) return null;/, "nothing is pruned before the Mac's list lands");
   assert.doesNotMatch(source, /swipeStrip|holdStrip/, "the Threads-list order is not what a swipe moves through");
 });
 

@@ -2232,13 +2232,16 @@ export function PhoneApp() {
       if (!parts) return false;
       const saved = panes.find((pane) => pane.id === parts.id && (sessionHost(pane) || "local") === parts.hostId);
       if (saved) return !saved.archived;
+      // The Mac's saved list hasn't loaded yet, so its threads — and which of them are archived — aren't
+      // known this time round. Keeping them is right: the next refresh after the list lands decides.
+      if (session === null) return null;
       if (!chatView.hosts[parts.hostId]) return null;
       const row = findRoom(chatView, parts.hostId, parts.id);
       return row ? !row.archived : false;
     };
     setOpenThreads((list) => { const next = pruneOpenThreads(list, alive); return next.length === list.length ? list : next; });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [panes, chatView]);
+  }, [panes, chatView, session]);
   const swipePeek = (to: "next" | "previous") => {
     const key = neighbour(swipeKeys, openKey ?? null, to);
     return (key && swipeRows.get(key)) || null;
