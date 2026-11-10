@@ -372,10 +372,8 @@ export function App() {
     flashTimer.current = setTimeout(() => setMultiFlashes([]), 1200);
   };
   useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
-  const previousMulti = useRef(multiDraft.on);
+  const previousMulti = useRef(false);
   const dockSince = useRef(0);
-  if (previousMulti.current && !multiDraft.on) dockSince.current = Date.now();
-  previousMulti.current = multiDraft.on;
   useEffect(() => {
     // Send has already frozen all bytes into the batch before this runs.
     for (const file of filesLive.current.values()) if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
@@ -406,7 +404,7 @@ export function App() {
   };
   const multiDrop = useRef<(paths: string[], x: number, y: number) => void>(() => {});
   multiDrop.current = (paths, x, y) => {
-    if (!multiDraft.current().on || !backend?.snapshotDrop) return;
+    if (!multiDraft.current().on || targetOnly || !backend?.snapshotDrop) return;
     const region = document.elementFromPoint(x, y)?.closest('.composer-dock, [data-pane-map-region]');
     if (!region) return;
     const before = multiDraft.current(); const draftId = before.draftId;
@@ -458,6 +456,7 @@ export function App() {
   /** How the panes of each workspace section are arranged. */
   const [arrangements, setArrangements] = useState<Record<string, Arrangement>>({});
   const paneMap = useRef<PaneMapHandle>(null);
+  const [mapTargetOnly, setMapTargetOnly] = useState<string | null>(null);
   const [onScreenPanes, setOnScreenPanes] = useState<string[]>([]);
   const onVisiblePanes = useCallback((ids: string[]) => setOnScreenPanes(previous => previous.length === ids.length && previous.every((id, i) => id === ids[i]) ? previous : ids), []);
   const [revealRequest, setRevealRequest] = useState<{ id: string; n: number } | null>(null);
@@ -971,7 +970,7 @@ export function App() {
   }));
   const multiPlan = planSend({doc:multiDraft.doc,threads:multiThreads,overrides:multiDraft.overrides,files:new Map([...multiFiles].map(([id,file])=>[id,{...file,reading:!file.bytes}]))});
   const routeFor = (id: string) => {
-    if(!multiDraft.selected.includes(id))return undefined;
+    if(!multiOn || !multiDraft.selected.includes(id))return undefined;
     const thread=multiThreads.get(id);const api=sendApis.get(id);const slice=multiPlan.slices.find(s=>s.paneId===id);
     const names=mentionedWords(slice?.routing??'');
     const typed=mentionTarget(slice?.routing??'',thread?.agents.map(a=>({id:a.id,display_name:a.handle}))??[]);
@@ -989,11 +988,21 @@ export function App() {
   useEffect(() => {
     if (focusedPane && viewPanes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
   }, [focusedPane, viewPanes]);
-  const composerCandidates = visiblePanes.filter(p => p.kind === "chat" && !poppedIds.has(p.id));
-  const composerTargetId = dockTarget({ focused: focusedPane, recent: recentThreads, candidates: composerCandidates.map(p => p.id), popped: poppedIds });
+  // Suspend presentation only: the multi document, routing, files and selection
+  // remain authoritative until the multi-pane layout returns.
+  const targetOnly = (maximized && shown.some(p => p.id === maximized) ? maximized : null)
+    ?? (mapTargetOnly && shown.some(p => p.id === mapTargetOnly) ? mapTargetOnly : null)
+    ?? (shown.length === 1 ? shown[0].id : null);
+  const multiAllowed = !targetOnly && shown.length > 1;
+  const multiOn = multiDraft.on && multiAllowed;
+  if (previousMulti.current && !multiOn) dockSince.current = Date.now();
+  previousMulti.current = multiOn;
+  const openMulti = () => { if (multiAllowed) multiDraft.open(); };
+  const composerCandidates = (targetOnly ? shown.filter(p => p.id === targetOnly) : visiblePanes).filter(p => p.kind === "chat" && !poppedIds.has(p.id));
+  const composerTargetId = dockTarget({ focused: targetOnly ?? focusedPane, recent: recentThreads, candidates: composerCandidates.map(p => p.id), popped: poppedIds });
   const composerTarget = composerCandidates.find(p => p.id === composerTargetId) ?? null;
   useEffect(() => {
-    if (!multiDraft.on) return;
+    if (!multiOn) return;
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || picking || maximized || headMenu || sidePanelFull) return;
       if ([...document.querySelectorAll<HTMLElement>('[role="menu"], [role="dialog"], [role="listbox"], [aria-modal="true"]')].some(el => el.getClientRects().length > 0)) return;
@@ -1002,18 +1011,20 @@ export function App() {
     };
     window.addEventListener("keydown", escape);
     return () => window.removeEventListener("keydown", escape);
-  }, [multiDraft.on, multiDraft.exit, picking, maximized, headMenu, sidePanelFull]);
+  }, [multiOn, multiDraft.exit, picking, maximized, headMenu, sidePanelFull]);
   const onWantComposer = useCallback((id: string) => {
     if (poppedIds.has(id)) {
       toast("That thread is open in its own window.");
       return false;
     }
     if (!listed.some(p => p.id === id && p.kind === "chat")) return false;
-    multiDraft.exit();
+    if (targetOnly && targetOnly !== id) return false;
+    if (!targetOnly) multiDraft.exit();
     setFocusedPane(id);
     return true;
-  }, [poppedIds, listed, toast, multiDraft.exit]);
+  }, [poppedIds, listed, toast, targetOnly, multiDraft.exit]);
   const onTagThread = (fromPaneId: string, picked: {paneId:string;hostId:string}, draft: {text:string;tldr:boolean}, start: number, end: number) => {
+    if (!multiAllowed) return;
     if (batches.failed.length) { toast('Retry or discard the failed batch first. Your own draft is kept.'); return; }
     if (multiDraft.current().doc.some(line => line.some(token => token.kind !== 'text' || token.text.trim()))) return;
     const source = sendApis.get(fromPaneId); const own = source?.draft();
@@ -3155,8 +3166,8 @@ export function App() {
           {/* Every pane of every workspace stays mounted so its session keeps
               running. Panes outside the current view are only hidden. */}
           <div className={`grid ${resizing ? "resizing-sidebar" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
-            <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} borrowed={composerBorrowed} onArrangement={setArrangement} active={multiDraft.selected.length ? multiDraft.selected : focusedPane ? [focusedPane] : []}
-              maximized={maximized && visiblePanes.some(pane => pane.id === maximized) ? maximized : null} onRestore={() => setMaximized(null)} onVisiblePanes={onVisiblePanes} handle={paneMap}
+            <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} borrowed={composerBorrowed} onArrangement={setArrangement} active={targetOnly ? [targetOnly] : multiOn && multiDraft.selected.length ? multiDraft.selected : focusedPane ? [focusedPane] : []}
+              maximized={maximized && visiblePanes.some(pane => pane.id === maximized) ? maximized : null} onRestore={() => setMaximized(null)} onVisiblePanes={onVisiblePanes} onTargetOnly={setMapTargetOnly} handle={paneMap}
               onPopOut={(id, x, y) => { void popOutPane(id, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 }); }}
               renderPane={(id, rect, onScreen) => {
               const pane = listed.find(pane => pane.id === id);
@@ -3170,7 +3181,7 @@ export function App() {
                 <section
                   key={pane.id}
                   data-pane-id={pane.id} data-host-id={(pane as Pane & { hostId?: string }).hostId ?? (workspace ? workspaceHost(workspace) : "missing")}
-                  className={`pane ${pane.id === focusedPane ? "focused" : ""} ${multiDraft.selected.includes(pane.id) ? "multi-selected" : ""} ${multiFlashes.includes(pane.id) ? "multi-flash" : ""}`}
+                  className={`pane ${pane.id === focusedPane ? "focused" : ""} ${multiOn && multiDraft.selected.includes(pane.id) ? "multi-selected" : ""} ${multiFlashes.includes(pane.id) ? "multi-flash" : ""}`}
                   style={rect && !poppedIds.has(pane.id) ? { position: "relative", width: "100%", height: "100%" } : { display: "none" }}
                   onMouseDown={(event) => {
                     const target = event.target instanceof Element ? event.target : null;
@@ -3179,12 +3190,13 @@ export function App() {
                     const eligible = target?.closest(".pane-head") || target?.matches(".transcript");
                     if (modified && event.button === 0 && !control && eligible && pane.kind === "chat" && !poppedIds.has(pane.id) && !window.getSelection()?.toString()) {
                       event.preventDefault();
+                      if (!multiAllowed) return;
                       if (batches.failed.length) { toast("Retry or discard the failed batch first. Your own draft is kept."); return; }
                       if (!multiDraft.current().doc.some(line => line.some(token => token.kind !== "text" || token.text.trim()))) {
                         if (composerTarget && composerTarget.id !== pane.id) multiDraft.toggle(composerTarget.id, (composerTarget as Pane & {hostId?:string}).hostId ?? paneDestination(composerTarget, workspaces).hostId);
                       }
                       multiDraft.toggle(pane.id, (pane as Pane & {hostId?:string}).hostId ?? (workspace ? workspaceHost(workspace) : "missing"));
-                    } else if (!modified && multiDraft.current().on && !multiDraft.current().doc.some(line => line.some(token => token.kind === "thread" && token.paneId === pane.id))) multiDraft.exit();
+                    } else if (!modified && multiAllowed && multiDraft.current().on && !multiDraft.current().doc.some(line => line.some(token => token.kind === "thread" && token.paneId === pane.id))) multiDraft.exit();
                     setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId);
                     if (pane.unread && !(pane as Pane & { assistantTaskId?: string }).assistantTaskId) setPanes(list => setUnread(list, pane.id, false));
                   }}
@@ -3223,18 +3235,18 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane tagThreads={[...multiThreads.values()].map(t => ({paneId:t.paneId,hostId:t.hostId,title:t.title,project:t.project??"",outside:!t.open}))} onTagThread={onTagThread} multiWaiting={!multiDraft.on && multiDraft.doc.some(line => line.some(token => token.kind !== "text" || token.text.trim()))} onOpenMulti={multiDraft.open} multiBlocked={batches.failed.length > 0} onSendApi={sendApis.register} dock={{ target: !multiDraft.on && composerTarget?.id === pane.id, slot: composerSlot, since: dockSince.current, multi: multiDraft.on }} onWantComposer={onWantComposer} onPlanRuns={onPlanRuns} onOpenPlan={openPlan} voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane tagThreads={(multiAllowed ? [...multiThreads.values()] : []).map(t => ({paneId:t.paneId,hostId:t.hostId,title:t.title,project:t.project??"",outside:!t.open}))} onTagThread={onTagThread} multiWaiting={multiAllowed && !multiDraft.on && multiDraft.doc.some(line => line.some(token => token.kind !== "text" || token.text.trim()))} onOpenMulti={openMulti} multiBlocked={batches.failed.length > 0} onSendApi={sendApis.register} dock={{ target: !multiOn && composerTarget?.id === pane.id, slot: composerSlot, since: dockSince.current, multi: multiOn }} onWantComposer={onWantComposer} onPlanRuns={onPlanRuns} onOpenPlan={openPlan} voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
               );
             }} />
           </div>
-          {section !== "agents" && current && !picking && <ComposerDock target={composerTarget ? { paneId: composerTarget.id, title: composerTarget.title, status: statusOf(composerTarget), agents: threadStatus[composerTarget.id]?.who?.length ?? 0, project: workspaces.find(w => w.id === composerTarget.workspaceId)?.name ?? "" } : multiDraft.on ? { paneId: "", title: "Multi-thread message", project: "" } : null} slotRef={setComposerSlot} onBorrowed={setComposerBorrowed} onReveal={id => paneMap.current?.reveal(id)}>
+          {section !== "agents" && current && !picking && <ComposerDock target={composerTarget ? { paneId: composerTarget.id, title: composerTarget.title, status: statusOf(composerTarget), agents: threadStatus[composerTarget.id]?.who?.length ?? 0, project: workspaces.find(w => w.id === composerTarget.workspaceId)?.name ?? "" } : multiOn ? { paneId: "", title: "Multi-thread message", project: "" } : null} slotRef={setComposerSlot} onBorrowed={setComposerBorrowed} onReveal={id => paneMap.current?.reveal(id)}>
             <MultiBatchBar batches={batches} onReveal={id => paneMap.current?.reveal(id)} />
-            {multiDraft.on && <MultiComposer routeRequest={routeRequest} draft={multiDraft} batches={batches} threads={multiThreads} files={multiFiles} onAttachFiles={attachMultiFiles} onFlash={flashPanes} />}
-            {!multiDraft.on && multiDraft.doc.some(line => line.length) && <p className="multi-kept">Your multi-thread message is kept. <button type="button" onClick={multiDraft.open}>Open it</button></p>}
-            {!multiDraft.on && multiDraft.lastRemoved && <p className="multi-kept">Removed · <button type="button" onClick={multiDraft.undoRemove}>Undo</button></p>}
+            {multiOn && <MultiComposer routeRequest={routeRequest} draft={multiDraft} batches={batches} threads={multiThreads} files={multiFiles} onAttachFiles={attachMultiFiles} onFlash={flashPanes} />}
+            {multiAllowed && !multiOn && multiDraft.doc.some(line => line.length) && <p className="multi-kept">Your multi-thread message is kept. <button type="button" onClick={openMulti}>Open it</button></p>}
+            {multiAllowed && !multiOn && multiDraft.lastRemoved && <p className="multi-kept">Removed · <button type="button" onClick={multiDraft.undoRemove}>Undo</button></p>}
           </ComposerDock>}
           </div>
           {keeperOwner && keeperLane && <AssistantVoiceKeeper key={assistantIdentityKey(keeperOwner)} lane={keeperLane} backend={keeperBackend} settings={settings.voice} onSettings={voice=>setSettings(s=>({...s,voice}))}/>}

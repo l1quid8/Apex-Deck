@@ -60,9 +60,49 @@
     picker: $('.layout-picker'), pickerBtn: $('.layout-picker-trigger'), reset: $('#mk-reset')
   };
 
+  // Design-only study, opt in with ?next-steps. Sample prompts stay in this page.
+  const nextStepsStudy = new URLSearchParams(location.search).has('next-steps');
+  const dismissedSteps = new Set();
+  if (nextStepsStudy) {
+    ui.reset.textContent = 'Next steps mockup · Reset';
+    ui.reset.title = 'Design only. Illustrative suggestions; no service sends.';
+  }
+  const responseSteps = (thread, message) => {
+    const group = document.createElement('div');
+    group.className = 'mk-response-steps';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', `Suggested next steps from ${message.speaker} (mockup)`);
+    const samples = [
+      ['Review changes', 'Review the changes and explain the key decisions.'],
+      ['Check edge cases', 'Check the edge cases and tell me what still needs attention.'],
+      ['Plan the next step', 'Recommend the next step and explain why.']
+    ];
+    for (const [label, prompt] of samples) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = label;
+      button.title = `Sample prompt to ${message.speaker}: ${prompt}`;
+      button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const list = state.sent.get(thread.id) || [];
+        list.push({ speaker: 'You', text: `@${message.speaker} ${prompt}` });
+        state.sent.set(thread.id, list);
+        fillTranscript(paneOf(thread.id), thread);
+        schedule();
+        toast(`Mockup only: next step to ${message.speaker} in “${thread.title}”. Nothing was sent; your draft is kept.`);
+      });
+      group.append(button);
+    }
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button'; dismiss.className = 'mk-response-steps-dismiss'; dismiss.textContent = '×';
+    dismiss.setAttribute('aria-label', 'Dismiss next steps');
+    dismiss.addEventListener('click', (e) => { e.stopPropagation(); dismissedSteps.add(thread.id); group.remove(); });
+    group.append(dismiss);
+    return group;
+  };
+
   const fresh = () => ({
     order: threads.map((t) => t.id), closed: new Set(), focusFrac: 0.58, colFracs: new Map(),
-    selected: byId.has(S.focusedId) ? S.focusedId : threads[0].id, full: null, layout: 'left', gridDir: 'grid',
+    selected: nextStepsStudy ? threads[0].id : byId.has(S.focusedId) ? S.focusedId : threads[0].id, full: null, layout: 'left', gridDir: 'grid',
     drafts: new Map(), sent: new Map(), added: [], extra: new Map(), made: 0, newAgents: [], scaleThreads: 0, scaleAgents: 0,
     // Map navigation: one camera per layout, the zoom history behind Back, and
     // each thread's reading place (kept while its pane is off screen).
@@ -245,7 +285,7 @@
   const allMessages = (thread) => [...(thread.messages || []), ...(state.sent.get(thread.id) || [])];
 
   // ---------- multi-select + slice + agent dropdown ----------
-  const hasMulti = () => state.multiSelected && (state.multiSelected.size > 1 || state.multiTagged);
+  const hasMulti = () => !state.targetOnly && state.multiSelected && (state.multiSelected.size > 1 || state.multiTagged);
   const multiIds = () => hasMulti() ? [...state.multiSelected] : [state.selected];
   const explicitMentions = (text) => {
     const re = /(?:^|[\s(>"'\u201C])@([A-Za-z][\w-]{1,23})\b/g;
@@ -428,6 +468,7 @@
     syncSelectionFromDraft();
   };
   const toggleMulti = (id) => {
+    if (state.targetOnly) { toast('Zoom out to select multiple threads. Your multi-thread draft is kept.'); return; }
     if(isSyn(id) || state.multiPending.size)return;
     if(!state.multiSelected) {
       state.multiSelected=new Set();
@@ -555,6 +596,7 @@
     return start+insert.length+1;
   };
   const applyThreadPick = (threadObj) => {
+    if (state.targetOnly) { closeAtPicker(); toast('Zoom out to target multiple threads.'); return; }
     const caretAt=ui.input.selectionStart??ui.input.value.length;
     const lineStart=ui.input.value.lastIndexOf('\n',caretAt-1)+1;const lineEnd=ui.input.value.indexOf('\n',caretAt);
     if(parseThreadSlices(ui.input.value.slice(lineStart,lineEnd<0?undefined:lineEnd)).tags.some(tag=>tag.id===threadObj.id)) { toast('This thread is already tagged in this message.'); return; }
@@ -580,6 +622,7 @@
   const onComposerAtTrigger = (text, caret) => {
     // A boundary avoids treating email addresses or inline hashes as triggers.
     const m = text.slice(0, caret).match(/(?:^|[\s(])([@#])([A-Za-z0-9 _-]{0,24})$/);
+    if (m && m[1] === '#' && state.targetOnly) { closeAtPicker(); return false; }
     if (m) { openAtPicker(m[2],m[1]); if(state.multiPicker) { state.multiPicker.start=caret-m[2].length-1; state.multiPicker.end=caret; } return true; }
     closeAtPicker(); return false;
   };
@@ -666,6 +709,10 @@
     const msgs = allMessages(thread);
     $('.chat', pane).classList.toggle('thread-landing', !msgs.length);
     const rows = msgs.length ? msgs.map((m) => messageNode(thread, m)) : [landingNode(thread)];
+    const latest = msgs.at(-1);
+    if (nextStepsStudy && latest && !/^(you|user)$/i.test(latest.speaker) && !dismissedSteps.has(thread.id)) {
+      $('.bubble', rows.at(-1)).append(responseSteps(thread, latest));
+    }
     if (thread.synthetic && msgs.length) { const note = document.createElement('p'); note.className = 'mk-syn-note'; note.textContent = 'Synthetic thread, made up on demand for the scale test. Nothing in it is real or saved.'; rows.unshift(note); }
     tr.replaceChildren(...rows);
     $('.pane-folder', pane).textContent = botCount(agentTotal(thread));
@@ -1499,8 +1546,25 @@
     mountMain(except);
     paint(except);
   };
+  // Suspend multi targeting without deleting its selection, routing or draft.
+  // A Focus layout with a visible side list still has multiple panes.
+  const syncFocusedTarget = () => {
+    let target = state.full || null;
+    if (!target && !fr.main && world.kind === 'flat' && world.n &&
+        (world.band === 'v' ? world.cv === 1 : world.C === 1 && world.rv === 1)) {
+      const i = clamp(Math.round((world.band === 'v' ? cam.x : cam.y) / rowStride()), 0, world.n - 1);
+      target = idAt(i);
+    }
+    if (target === (state.targetOnly || null)) return;
+    state.targetOnly = target;
+    if (target) state.selected = target;
+    closeAgentMenu(); closeAtPicker();
+    for (const [id, pane] of panes) pane.classList.toggle('focused', id === state.selected);
+    syncMultiOutlines(); renderComposer(); renderSidebar(); renderDetails();
+  };
   const paint = (except) => {
     if (!fr) return;
+    syncFocusedTarget();
     if (!fr.map) { syncLive(new Map(), except); for (const [id, p] of leaving) { unleave(id, p); if (p.parentElement === liveLayer) p.remove(); } hideTip(); placeBars(); updateHud(); return; }
     const vw = fr.map.w; const vh = fr.map.h; const z = cam.z;
     const dpr = Math.min(2, devicePixelRatio || 1); const W = Math.round(vw * dpr); const H = Math.round(vh * dpr);
@@ -2790,7 +2854,6 @@
     schedule();
   };
   const toggleFull = (id) => {
-    if (hasMulti()) clearMulti();
     state.selected = id; state.full = state.full === id ? null : id; render();
   };
   const closePane = (id) => {
@@ -3247,6 +3310,7 @@
     if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !state.full && !e.target.closest('textarea, input, [contenteditable]')) { e.preventDefault(); nudge(state.selected, e.key === 'ArrowRight' ? 1 : -1); }
   });
   ui.reset.addEventListener('click', () => {
+    dismissedSteps.clear();
     closeAdd(); closeScale(); closeAgentMenu(); closeAtPicker(); for (const id of state.newAgents) delete BOTS[id];
     anim = null; state = fresh(); for (const p of panes.values()) p.remove(); panes.clear(); livePanes.clear();
     for (const [id, p] of leaving) unleave(id, p); synCache.clear(); th = null; hatchPat = null;

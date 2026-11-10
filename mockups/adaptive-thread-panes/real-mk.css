@@ -367,3 +367,12 @@ main.canvas .workspace-canvas-content { display: flex; flex-direction: column; f
 /* Horizontal and Vertical: their own layouts above Even grid, drawn as three plain stripes. */
 .layout-preview.mk-layout-preview-rows { grid-template: repeat(3, 1fr) / 1fr; }
 .layout-preview.mk-layout-preview-cols { grid-template: 1fr / repeat(3, 1fr); }
+
+/* Next-step placement study: part of the reply, never the shared composer. */
+.mk-response-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin-top: 12px; padding-bottom: 4px; }
+.mk-response-steps button { min-height: 28px; max-width: 100%; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; line-height: 18px; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.mk-response-steps button:hover { color: var(--text); background: var(--panel-2); border-color: color-mix(in srgb, var(--text) 30%, var(--line)); }
+.mk-response-steps button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; color: var(--text); }
+.mk-response-steps .mk-response-steps-dismiss { padding-inline: 6px; border-color: transparent; opacity: 0; }
+.mk-response-steps:hover .mk-response-steps-dismiss, .mk-response-steps:focus-within .mk-response-steps-dismiss { opacity: 1; }
+@media (hover: none) { .mk-response-steps .mk-response-steps-dismiss { opacity: 1; } }
