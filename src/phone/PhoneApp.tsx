@@ -88,6 +88,8 @@ import { chatOutboxRows, chatRights, chatRoute, machineThreadKey, mayPostIn, pic
 import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets } from "../chatPromote.ts";
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
+import { PhoneArtifacts } from "./ArtifactSheet";
+import { deleteThreadGate, deleteThreadWords, removeThreadFrom } from "./threadDelete";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
 import { carriedEntry } from "../threadState";
 import { leftBehindWords, type ChatDeliveryStatus } from "../chatDelivery";
@@ -172,7 +174,7 @@ type Room = {
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
-  | { kind: "archived" } | { kind: "remove"; id: string };
+  | { kind: "artifacts"; id: string } | { kind: "delete"; id: string } | { kind: "archived" } | { kind: "remove"; id: string };
 /** What a chat adds to the thread view: its banner and the messages its outbox still holds. */
 interface ChatThreadExtras {
   banner: ReactNode;
@@ -1841,6 +1843,41 @@ export function PhoneApp() {
     }
   }
 
+  /**
+   * Delete a thread here and on its machine. The Mac asks first and keeps it for an
+   * undo window; the phone has none, so it says so and asks before this runs.
+   * The list is saved first: a machine that then keeps its copy leaves a file on
+   * disk, where the other order would leave a row that opens nothing.
+   */
+  async function deleteThread(pane: Pane) {
+    const workspace = workspaces.find((item) => item.id === pane.workspaceId) ?? null;
+    const hostId = workspace ? workspaceHost(workspace) : "local";
+    const host = phoneHost(hostId);
+    if (!host) { setNotice("This thread's machine isn't paired with this phone."); return; }
+    setMenu(null);
+    // Anything mid-reply is cut off, and its waiting messages go with it.
+    await host.backend.roomClose(pane.id).catch(() => {});
+    const queue = queues.current.get(queueKey(hostId, pane.id));
+    if (queue) {
+      queues.current.delete(queueKey(hostId, pane.id));
+      queue.availabilityChanged();
+      for (const item of [...queue.items]) queue.remove(item.id);
+    }
+    for (const key of queuedDrafts.current.keys()) if (key.startsWith(`${queueKey(hostId, pane.id)}\u0000`)) queuedDrafts.current.delete(key);
+    try {
+      await saveSession((current) => removeThreadFrom(current, pane.id));
+    } catch (error) {
+      setNotice(`Couldn't take “${pane.title}” off the list, so nothing was deleted: ${words(error)}`);
+      return;
+    }
+    if (openId === pane.id) setOpenId(null);
+    try {
+      await host.backend.roomDelete(pane.id);
+    } catch (error) {
+      setNotice(`“${pane.title}” left the list, but ${host.machine.name} kept its copy: ${words(error)}`);
+    }
+  }
+
   /** Take a project and its threads out of the list on the Mac. Its folder on disk is never touched, and Undo brings the threads back for a few seconds. */
   async function removeProject(id: string) {
     setMenu(null);
@@ -2119,12 +2156,12 @@ export function PhoneApp() {
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const shownTab = tab === "machines" ? machinesReturn.current : tab;
   const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
-  const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
+  const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots" || menu.kind === "artifacts" || menu.kind === "delete") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
   useEffect(() => { if (botsStale) setMenu(null); }, [botsStale]);
   // Same for a thread menu whose thread isn't in the Mac's saved list: it would cover the screen with no sheet.
-  const menuLost = (menu?.kind === "thread" || menu?.kind === "rename") && !menuPane;
+  const menuLost = (menu?.kind === "thread" || menu?.kind === "rename" || menu?.kind === "artifacts" || menu?.kind === "delete") && !menuPane;
   useEffect(() => { if (menuLost) setMenu(null); }, [menuLost]);
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
@@ -2290,6 +2327,7 @@ export function PhoneApp() {
             toIds={openRoom && answerers?.paneId === openRoom.id ? answerers.ids : null}
             crewShut={crewShut}
             onCrew={foldCrew}
+            onBots={() => { if (openPane && !viewingPending) { setBotChange(null); setMenu({ kind: "bots", id: openPane.id }); } }}
             onBot={setBotSheet}
             meters={openRoom ? Object.fromEntries(openRoom.configs.map((config) => {
               const provider = config.backend.kind === "agent" ? config.backend.tool : null;
@@ -2686,7 +2724,9 @@ export function PhoneApp() {
               <MenuRow label="Rename…" onClick={() => setMenu({ kind: "rename", id: menuPane.id, text: menuPane.title })} />
               {!menuPane.unread && <MenuRow label="Mark as unread" onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, unread: true })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />}
               {workspace?.path && <MenuRow label="Copy folder path" onClick={() => { copyPath(workspace.path); setMenu(null); }} />}
+              <MenuRow label="Artifacts" detail="Pages, drawings and documents its replies made" onClick={() => setMenu({ kind: "artifacts", id: menuPane.id })} />
               <MenuRow label="Archive" danger onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, archived: true, pinned: undefined })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />
+              <MenuRow label="Delete thread…" danger onClick={() => setMenu({ kind: "delete", id: menuPane.id })} />
             </Sheet>
           );
         })()}
@@ -2737,6 +2777,33 @@ export function PhoneApp() {
               <div className="ph-section">Add a bot</div>
               <div className="ph-bot-list">{absent.map((profile) => row(profile, false))}</div>
               {absent.length === 0 && <p className="ph-meta">Every saved bot is already here. Make new ones on the Mac.</p>}
+            </Sheet>
+          );
+        })()}
+        {menu?.kind === "artifacts" && menuPane && (() => {
+          const workspace = workspaces.find((item) => item.id === menuPane.workspaceId) ?? null;
+          const host = workspace ? phoneHost(workspaceHost(workspace)) : null;
+          return (
+            <Sheet title="Artifacts" onClose={() => setMenu(null)}>
+              {host
+                ? <PhoneArtifacts backend={host.backend} room={menuPane.id} />
+                : <p className="ph-sheet-text">This thread's machine isn't paired with this phone, so its artifacts can't be read here.</p>}
+            </Sheet>
+          );
+        })()}
+        {menu?.kind === "delete" && menuPane && (() => {
+          const asked = deleteThreadWords(menuPane.title);
+          const workspace = workspaces.find((item) => item.id === menuPane.workspaceId) ?? null;
+          const hostId = workspace ? workspaceHost(workspace) : "local";
+          const host = phoneHost(hostId);
+          // The host decides, from this phone's level on that machine; the phone only says so before trying.
+          const why = deleteThreadGate({ paired: !!host, online: !!host && toLink(host.connection.get().status) === "online", full: canStartOn(hostId), machine: host?.machine.name ?? "its machine" });
+          return (
+            <Sheet title={asked.title} onClose={() => setMenu(null)}>
+              <p className="ph-sheet-text">{asked.body}</p>
+              {why && <p className="ph-sheet-text ph-quiet">{why}</p>}
+              <button type="button" className="danger ph-wide" disabled={!!why} onClick={() => void deleteThread(menuPane)}>{asked.action}</button>
+              <button type="button" className="ph-plain ph-wide" onClick={() => setMenu(null)}>Cancel</button>
             </Sheet>
           );
         })()}
@@ -3150,6 +3217,8 @@ function ThreadView(props: {
   toIds: string[] | null;
   /** The bot bar is folded into the title bar; the phone remembers this for every thread. */
   crewShut: boolean; onCrew(shut: boolean): void; onBot(id: string): void;
+  /** Open the Bots sheet: add a bot to this thread, or take one out. */
+  onBots(): void;
   /** Each bot's context hairline and plan dot, for its pill. */
   meters: Record<string, PillMeter>;
   fork?: Pane["fork"]; approvalStays: boolean; other: LinkView | null; endRef: RefObject<HTMLDivElement | null>;
@@ -3418,6 +3487,12 @@ function ThreadView(props: {
                 </button>
               );
             })}
+            {/* Adding and removing bots used to be two levels into ⋯ → Bots, and only while this thread was open. Now it is where the bots are. */}
+            {!props.draftThread && (
+              <button type="button" className="ph-crew-pill ph-crew-add" aria-label="Add or remove bots in this thread" onClick={() => { inputRef.current?.blur(); props.onBots(); }}>
+                <span className="ph-crew-chip"><Plus size={15} /><span className="ph-crew-name">Bots</span></span>
+              </button>
+            )}
           </div>
           <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the bots into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
         </div>
