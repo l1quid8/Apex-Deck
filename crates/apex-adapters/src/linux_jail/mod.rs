@@ -222,6 +222,27 @@ pub fn bwrap_args(spec: &JailSpec, mounts: &paths::Mounts, is_dir: impl Fn(&Path
     Ok(out)
 }
 
+/// The shared `.git` folder of a linked worktree at `checkout`. `None` for an
+/// empty folder not yet made a worktree, an ordinary repository, or anything
+/// that doesn't hold together. The checkout's `.git` file is the bot's to
+/// rewrite, so it is only believed when the folder it names is
+/// `<common>/worktrees/<name>` and that folder names this checkout back: the
+/// bot can't point the jail at a folder it couldn't already write.
+pub(crate) fn linked_git_common(checkout: &Path) -> Option<PathBuf> {
+    let checkout = checkout.canonicalize().ok()?;
+    let text = std::fs::read_to_string(checkout.join(".git")).ok()?;
+    let gitdir = Path::new(text.lines().next()?.strip_prefix("gitdir:")?.trim());
+    let gitdir = if gitdir.is_absolute() { gitdir.to_path_buf() } else { checkout.join(gitdir) };
+    let gitdir = gitdir.canonicalize().ok()?;
+    let back = std::fs::read_to_string(gitdir.join("gitdir")).ok()?;
+    if Path::new(back.trim()).canonicalize().ok()? != checkout.join(".git") { return None; }
+    let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+    let common = Path::new(common.trim());
+    let common = if common.is_absolute() { common.to_path_buf() } else { gitdir.join(common) };
+    let common = common.canonicalize().ok()?;
+    (gitdir.parent()? == common.join("worktrees")).then_some(common)
+}
+
 /// Names that hand a bot a way out, whatever a provider's settings ask for.
 fn blocked(name: &str) -> bool {
     let name = name.to_ascii_uppercase();
@@ -298,6 +319,14 @@ pub fn build_spec(
             }
         }
     }
+    // True when the launch runs inside its own copy or task checkout. That
+    // folder is inside the protected data folder, so it is bound with Deck's own
+    // folders below rather than as a project folder `bwrap_args` refuses.
+    let mut in_own = false;
+    // A copy or task checkout is a linked Git worktree: its history, index and
+    // refs live in the project's `.git`, outside the checkout. Git inside the
+    // checkout needs that one folder, never the project's files.
+    let mut git_common: Option<PathBuf> = None;
     if writable {
         // Taint before any check that could fail, per spec: on disk before jail starts.
         // Must not start jail if taint write fails (Task 6)
@@ -314,7 +343,15 @@ pub fn build_spec(
             own_folder: own.iter().find(|folder| cwd.starts_with(folder)).cloned()
                 .or_else(|| paths::copy_work(data_dir, room, bot)),
         };
-        paths::check_writable(cwd, &guard, &mounts)?;
+        let real = paths::check_writable(cwd, &guard, &mounts)?;
+        in_own = guard.own_folder.as_deref().map(paths::resolved).is_some_and(|folder| real.starts_with(folder));
+        if in_own {
+            if let Some(common) = guard.own_folder.as_deref().and_then(linked_git_common) {
+                // Checked as a project folder: no exception for anything protected.
+                let plain = paths::Guard { own_folder: None, ..guard.clone() };
+                git_common = Some(paths::check_writable(&common, &plain, &mounts)?);
+            }
+        }
         for folder in &own {
             let opening = paths::Guard { own_folder: Some(folder.clone()), ..guard.clone() };
             paths::check_writable(folder, &opening, &mounts)?;
@@ -323,11 +360,14 @@ pub fn build_spec(
         paths::check_read(cwd, &paths::standard_protected(home, data_dir), &mounts)?;
     }
 
-    let folders = vec![Bind {
-        source: cwd.to_path_buf(),
-        target: cwd.to_path_buf(),
-        writable,
-    }];
+    let project = Bind { source: cwd.to_path_buf(), target: cwd.to_path_buf(), writable };
+    let mut own: Vec<Bind> = own.into_iter().map(|folder| Bind { source: folder.clone(), target: folder, writable: true }).collect();
+    let folders = if in_own {
+        if !own.iter().any(|item| paths::resolved(&item.source) == paths::resolved(&project.source)) { own.push(project); }
+        git_common.into_iter().map(|common| Bind { source: common.clone(), target: common, writable: true }).collect()
+    } else {
+        vec![project]
+    };
 
     let safe_room = folder_name(room);
     let safe_bot = folder_name(bot);
@@ -375,7 +415,7 @@ pub fn build_spec(
         home: home.to_path_buf(),
         private_home,
         folders,
-        writable: own.into_iter().map(|folder| Bind { source: folder.clone(), target: folder, writable: true }).collect(),
+        writable: own,
         read_only,
         protected: paths::standard_protected(home, data_dir),
         restored,
@@ -545,6 +585,11 @@ mod tests {
         // add` writes it on the real disk rather than inside the jail.
         let checkout = checkout.canonicalize().unwrap();
         assert_eq!(spec.writable, vec![Bind { source: checkout.clone(), target: checkout.clone(), writable: true }]);
+        // Later Git in that checkout runs with it as its folder: still only it.
+        let inside = spec_writing(&checkout, &data, "project-operations", "7", &[checkout.clone()]).unwrap();
+        assert!(inside.folders.is_empty());
+        assert_eq!(inside.writable, vec![Bind { source: checkout.clone(), target: checkout.clone(), writable: true }]);
+        assert!(bwrap_args(&inside, &none(), all_dirs).is_ok());
         for refused in [data.clone(), data.join("keys"), task.clone(), data.join("sessions")] {
             assert!(spec_writing(&project, &data, "project-operations", "7", &[refused.clone()]).is_err(), "{refused:?}");
         }
@@ -562,9 +607,38 @@ mod tests {
         let theirs = data.join("bot-copies/t1/bot2/work");
         for folder in [&mine, &theirs, &data.join("keys")] { std::fs::create_dir_all(folder).unwrap(); }
 
-        assert!(spec_for(&mine, &data, "t1", "bot1").is_ok());
+        // The whole launch, mounts included: the work tree is inside the data
+        // folder `bwrap_args` refuses, so it must arrive as Deck's own folder.
+        let spec = spec_for(&mine, &data, "t1", "bot1").unwrap();
+        let real = mine.clone();
+        assert!(spec.folders.is_empty());
+        assert_eq!(spec.writable, vec![Bind { source: real.clone(), target: real.clone(), writable: true }]);
+        let args = strings(&bwrap_args(&spec, &none(), all_dirs).unwrap());
+        assert!(args.windows(3).any(|w| w == ["--bind", real.to_str().unwrap(), real.to_str().unwrap()]));
+        assert!(!args.iter().any(|arg| arg == data.to_str().unwrap() || arg == theirs.to_str().unwrap()));
         assert!(spec_for(&theirs, &data, "t1", "bot1").is_err());
         assert!(spec_for(&mine, &data, "t1", "bot2").is_err());
+
+        // Once it is a worktree, its project's `.git` comes along, and nothing
+        // else of the project; a `.git` file the bot rewrote brings nothing.
+        let project = root.join("me/work/app");
+        let common = project.join(".git");
+        let link = common.join("worktrees/work");
+        std::fs::create_dir_all(&link).unwrap();
+        std::fs::write(mine.join(".git"), format!("gitdir: {}\n", link.display())).unwrap();
+        std::fs::write(link.join("gitdir"), format!("{}\n", mine.join(".git").display())).unwrap();
+        std::fs::write(link.join("commondir"), "../..\n").unwrap();
+        let common = common.canonicalize().unwrap();
+        let spec = spec_for(&mine, &data, "t1", "bot1").unwrap();
+        assert_eq!(spec.folders, vec![Bind { source: common.clone(), target: common.clone(), writable: true }]);
+        assert!(bwrap_args(&spec, &none(), all_dirs).is_ok());
+        let elsewhere = root.join("me/Documents/worktrees/work");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("commondir"), "../..\n").unwrap();
+        std::fs::write(mine.join(".git"), format!("gitdir: {}\n", elsewhere.display())).unwrap();
+        assert!(spec_for(&mine, &data, "t1", "bot1").unwrap().folders.is_empty());
+        std::fs::write(mine.join(".git"), format!("gitdir: {}\n", data.join("keys").display())).unwrap();
+        assert!(spec_for(&mine, &data, "t1", "bot1").unwrap().folders.is_empty());
         assert!(spec_for(&data.join("keys"), &data, "t1", "bot1").is_err());
         assert!(spec_for(&data, &data, "t1", "bot1").is_err());
 
