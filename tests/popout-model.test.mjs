@@ -1,9 +1,81 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { transform } from "sucrase";
+import { popoutOwnership } from './helpers/popout-ownership.mjs';
 import { renamedAgents } from "../src/agentRenames.ts";
-import { addLeaf, leafIds, moveLeaf, resize } from "../src/layout.ts";
-import { changedProfiles, createForkChannel, orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles } from "../src/popoutModel.ts";
+import { validArrangement } from "../src/paneArrangement.ts";
+import { changedProfiles, createForkChannel, orphanedPopouts, popoutRefusal, restoreOrder, restoreTab, retargetPoppedTab, takeTabOut, upsertProfiles } from "../src/popoutModel.ts";
 import { defaultPanel, openTab } from "../src/rightPanelModel.ts";
+
+test("popped panes return to their order position without replacing other panes", async () => {
+  const { restoreOrder } = await import("../src/popoutModel.ts");
+  assert.equal(typeof restoreOrder, "function");
+  const order = ["b", "c"], before = ["a", "b", "c"];
+  assert.deepEqual(restoreOrder(order, "a", {workspaceId:"w",index:0,before}), ["a","b","c"]);
+  assert.deepEqual(restoreOrder(order, "a", {workspaceId:"w",index:5,before:[]}), ["b","c","a"]);
+  assert.deepEqual(restoreOrder(["c","b"], "a", {workspaceId:"w",index:1,before}), ["c","a","b"]);
+  assert.deepEqual(restoreOrder(["a","b"], "a", {workspaceId:"w",index:1,before}), ["a","b"]);
+  assert.deepEqual(order, ["b","c"]);
+});
+
+test("panes return beside old neighbours even after multiple pop-outs and a new first pane", () => {
+  const original = ["a", "b", "c", "d"];
+  const bSpot = { workspaceId: "w", index: 1, before: original };
+  const cSpot = { workspaceId: "w", index: 2, before: original };
+  let order = restoreOrder(["a", "d"], "b", bSpot);
+  order = restoreOrder(order, "c", cSpot);
+  assert.deepEqual(order, original);
+  const returnC = { workspaceId: "w", index: 2, before: order };
+  assert.deepEqual(restoreOrder(["n", "a", "b", "d"], "c", returnC), ["n", "a", "b", "c", "d"]);
+  // Returning in the other order uses c as b's following neighbour.
+  order = restoreOrder(["a", "d"], "c", cSpot);
+  assert.deepEqual(restoreOrder(order, "b", bSpot), original);
+});
+
+test("a returning pane uses nearest surviving neighbours before its saved numeric index", () => {
+  const spot = { workspaceId: "w", index: 2, before: ["a", "b", "c", "d", "e"] };
+  assert.deepEqual(restoreOrder(["n", "b", "a", "d", "e"], "c", spot), ["n", "b", "c", "a", "d", "e"]);
+  assert.deepEqual(restoreOrder(["n", "d", "e"], "c", spot), ["n", "c", "d", "e"]);
+  assert.deepEqual(restoreOrder(["n", "e"], "c", spot), ["n", "c", "e"]);
+  assert.deepEqual(restoreOrder(["n"], "c", spot), ["n", "c"]);
+});
+
+test("App remembers already-external neighbours when another pane pops out", async () => {
+  const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const remember = source.match(/^function withPoppedOut\([\s\S]*?^\}/m)[0];
+  const open = source.match(/^  const popOutPane = [\s\S]*?^  \};/m)[0];
+  const code = transform(remember + "\n" + open, { transforms: ["typescript"] }).code;
+  const original = ["a", "b", "c", "d"];
+  const listed = original.map(id => ({ id, workspaceId: "w", kind: "terminal", title: id }));
+  let arrangements = { ":code": validArrangement({ order: original }, original) }, poppedOut = [];
+  const popOut = async id => {
+    // App re-creates this callback at each render; native opening is the only
+    // external boundary replaced here. All return snapshots use App's code.
+    const scope = {
+      ...popoutOwnership(poppedOut.map(item => item.id)),
+      window: { apexDeck: { popout: { open: async snapshot => ({ token: snapshot.id }) } } },
+      listed, poppedOut, poppedIds: new Set(poppedOut.map(item => item.id)),
+      hostOfPane: () => ({ workspace: { path: "/fixture" }, hostId: "local" }),
+      runs: {}, appearanceSettings: {}, chatFolder: () => "/fixture", popoutRefusal,
+      layoutKey: () => ":code", paneSection: () => "code", dashboardArrangement: () => arrangements[":code"],
+      validArrangement, restoreOrder,
+      setArrangements: update => { arrangements = update(arrangements); },
+      setPoppedOut: update => { poppedOut = update(poppedOut); },
+      toast: message => assert.fail(message),
+    };
+    await new Function(...Object.keys(scope), code + ";return popOutPane;")(...Object.values(scope))(id);
+  };
+  await popOut("b");
+  await popOut("c");
+  assert.deepEqual(arrangements[":code"].order, ["a", "d"]);
+  assert.deepEqual(poppedOut[1].spot.before, original, "c remembers b even while b is external");
+  for (const returning of [poppedOut, [...poppedOut].reverse()]) {
+    let order = arrangements[":code"].order;
+    for (const item of returning) order = restoreOrder(order, item.id, item.spot);
+    assert.deepEqual(order, original);
+  }
+});
 
 test("task threads are refused a pop-out; ordinary panes are not", () => {
   // A task thread lives in the assistant's list, not Deck's panes, so popping one
@@ -12,42 +84,6 @@ test("task threads are refused a pop-out; ordinary panes are not", () => {
   assert.equal(popoutRefusal({}), null);
   assert.equal(popoutRefusal({ assistantTaskId: undefined }), null);
   assert.equal(popoutRefusal({ assistantTaskId: "" }), null);
-});
-
-test("taking a pane out remembers a neighbour and restores beside it", () => {
-  let tree = addLeaf(null, "a");
-  tree = addLeaf(tree, "b", 1.6);
-  tree = addLeaf(tree, "c", 1.6);
-  const out = takePaneOut(tree, "w1", "b");
-  assert.deepEqual(leafIds(out.layout).sort(), ["a", "c"]);
-  // b and c share a column, so c is the neighbour, not a.
-  assert.deepEqual(out.spot.neighborIds, ["c"]);
-  const back = restorePane(out.layout, "b", out.spot);
-  assert.deepEqual(leafIds(back).sort(), ["a", "b", "c"]);
-});
-
-test("restoring falls back when the neighbour is gone", () => {
-  let tree = addLeaf(null, "a");
-  tree = addLeaf(tree, "b", 1.6);
-  const out = takePaneOut(tree, "w1", "a");
-  assert.deepEqual(out.spot.neighborIds, ["b"]);
-  // Neighbour closed meanwhile: only c remains.
-  let current = addLeaf(null, "c");
-  const back = restorePane(current, "a", out.spot);
-  assert.deepEqual(leafIds(back).sort(), ["a", "c"]);
-});
-
-test("restoring into an empty layout makes a lone leaf", () => {
-  const out = takePaneOut(addLeaf(null, "a"), "w1", "a");
-  assert.equal(out.layout, null);
-  assert.deepEqual(out.spot.neighborIds, []);
-  assert.deepEqual(restorePane(out.layout, "a", out.spot), { kind: "leaf", id: "a" });
-});
-
-test("restoring a pane that is already back changes nothing", () => {
-  const tree = addLeaf(addLeaf(null, "a"), "b", 1.6);
-  const out = takePaneOut(tree, "w1", "missing");
-  assert.deepEqual(out.layout, tree);
 });
 
 test("tabs remember their strip index and come back there", () => {
@@ -98,42 +134,6 @@ test("a tab recreated while popped out stays; the popped copy is dropped", () =>
   assert.equal(back.tabs.filter((t) => t.id === "files").length, 1);
 });
 
-test("an unchanged layout comes back exactly: same order, same sizes", () => {
-  // Null's repro: [a, b] at 30/70 must not return as [b, a] at 50/50.
-  const tree = { kind: "split", dir: "row", children: [{ kind: "leaf", id: "a" }, { kind: "leaf", id: "b" }], sizes: [0.3, 0.7] };
-  const out = takePaneOut(tree, "w1", "b");
-  assert.equal(out.spot.side, "right");
-  assert.equal(out.spot.share, 0.7);
-  const back = restorePane(out.layout, "b", out.spot);
-  assert.deepEqual(back, tree);
-});
-
-test("popping the first pane remembers the left side", () => {
-  const tree = { kind: "split", dir: "row", children: [{ kind: "leaf", id: "a" }, { kind: "leaf", id: "b" }], sizes: [0.3, 0.7] };
-  const out = takePaneOut(tree, "w1", "a");
-  assert.equal(out.spot.side, "left");
-  assert.equal(out.spot.share, 0.3);
-  assert.deepEqual(restorePane(out.layout, "a", out.spot), tree);
-});
-
-test("a changed layout returns the pane to its remembered side at its remembered size", () => {
-  const tree = { kind: "split", dir: "row", children: [{ kind: "leaf", id: "a" }, { kind: "leaf", id: "b" }], sizes: [0.3, 0.7] };
-  const out = takePaneOut(tree, "w1", "b");
-  // Meanwhile another pane opened: b must land right of a again, near 70% of its split.
-  const changed = addLeaf(out.layout, "c");
-  assert.ok(leafIds(changed).includes("c"));
-  const back = restorePane(changed, "b", out.spot);
-  assert.deepEqual(leafIds(back), ["a", "b", "c"]);
-  assert.equal(back.kind, "split");
-  assert.ok(Math.abs(back.sizes[1] - 0.7) < 1e-9);
-});
-
-test("a column pop-out remembers top and bottom", () => {
-  const tree = { kind: "split", dir: "column", children: [{ kind: "leaf", id: "a" }, { kind: "leaf", id: "b" }], sizes: [0.5, 0.5] };
-  assert.equal(takePaneOut(tree, "w1", "a").spot.side, "top");
-  assert.equal(takePaneOut(tree, "w1", "b").spot.side, "bottom");
-});
-
 test("a popped browser tab keeps navigating and comes back with the new address", () => {
   const opened = openTab(defaultPanel(), "browser", 1, "https://first.example");
   const tab = opened.tabs.find((t) => t.kind === "browser");
@@ -146,54 +146,6 @@ test("a popped browser tab keeps navigating and comes back with the new address"
   assert.equal(recs[0].tab.url, "https://second.example");
   const back = restoreTab(out.panel, recs[0].tab, recs[0].spot);
   assert.equal(back.tabs.find((t) => t.id === tab.id)?.url, "https://second.example");
-});
-
-// A layout's shape without sizes, e.g. "row(column(a,b),c)", so nested placement reads at a glance.
-const shape = (n) => (n.kind === "leaf" ? n.id : `${n.dir}(${n.children.map(shape).join(",")})`);
-const L = (id) => ({ kind: "leaf", id });
-const S = (dir, children, sizes) => ({ kind: "split", dir, children, sizes: sizes ?? children.map(() => 1 / children.length) });
-
-test("a nested pane returns into its own split after the remaining divider moves", () => {
-  // Null's repro: a above b, with c alongside. b belongs below a, not above c.
-  const tree = S("row", [S("column", [L("a"), L("b")], [0.4, 0.6]), L("c")]);
-  const out = takePaneOut(tree, "w1", "b");
-  const moved = resize(out.layout, { path: [], index: 0 }, 0.7);
-  const back = restorePane(moved, "b", out.spot);
-  assert.equal(shape(back), "row(column(a,b),c)");
-  // The divider the person moved stays moved; b gets its old share of its own split.
-  assert.ok(Math.abs(back.sizes[0] - 0.7) < 1e-9);
-  assert.ok(Math.abs(back.children[0].sizes[1] - 0.6) < 1e-9);
-});
-
-test("a pane returns beside its whole neighbouring group, which keeps its own sizes", () => {
-  // b sat right of the a-over-d stack: going back beside a or d alone would cut the stack in two.
-  const tree = S("row", [S("column", [L("a"), L("d")]), L("b")], [0.6, 0.4]);
-  const out = takePaneOut(tree, "w1", "b");
-  const moved = resize(out.layout, { path: [], index: 0 }, 0.3);
-  const back = restorePane(moved, "b", out.spot);
-  assert.equal(shape(back), "row(column(a,d),b)");
-  assert.ok(Math.abs(back.sizes[1] - 0.4) < 1e-9);
-  assert.deepEqual(back.children[0].sizes.map((s) => Math.round(s * 100)), [30, 70]);
-});
-
-test("a group folded into the outer split by the pop-out is regrouped on return", () => {
-  // b sat above the c|e row. Taking b out folds c and e into the outer row, beside the a-over-d stack.
-  const tree = S("row", [S("column", [L("a"), L("d")]), S("column", [L("b"), S("row", [L("c"), L("e")])], [0.4, 0.6])]);
-  const out = takePaneOut(tree, "w1", "b");
-  assert.equal(shape(out.layout), "row(column(a,d),c,e)");
-  const moved = resize(out.layout, { path: [], index: 0 }, 0.6);
-  const back = restorePane(moved, "b", out.spot);
-  assert.equal(shape(back), "row(column(a,d),column(b,row(c,e)))");
-  assert.ok(Math.abs(back.children[1].sizes[0] - 0.4) < 1e-9);
-});
-
-test("a neighbouring group broken up meanwhile falls back to its nearest pane", () => {
-  const tree = S("row", [S("column", [L("a"), L("d")]), S("column", [L("b"), S("row", [L("c"), L("e")])])]);
-  const out = takePaneOut(tree, "w1", "b");
-  // e was dragged into the a-over-d stack, so no subtree or run holds just c and e any more.
-  const moved = moveLeaf(out.layout, "e", "d", "bottom");
-  const back = restorePane(moved, "b", out.spot);
-  assert.equal(shape(back), "row(column(a,d,e),column(b,c))");
 });
 
 const agent = (id, extra = {}) => ({ id, display_name: id, persona: "", access: "read", effort: null, backend: { kind: "ollama", model: "m" }, ...extra });

@@ -11,17 +11,20 @@ const source = fs.readFileSync(new URL('../src/ChatPane.tsx', import.meta.url), 
 const quickMenu = () => source.slice(source.indexOf('const quickAddMenu = ('), source.indexOf('const quickAddButton = ('));
 const agentTile = () => source.slice(source.indexOf('function AgentTile('), source.indexOf('\n}\n', source.indexOf('function AgentTile(')));
 
-test('the add menu grows out of the message box instead of floating', () => {
+test('inline Add bot replaces the box; docked Add bot keeps its controls under the floating menu', () => {
   const opening = source.match(/<ThreadComposerBox\b[^>]*>/)?.[0];
   assert.ok(opening, 'Threads renders the shared composer box');
   const firstChild = source.slice(source.indexOf(opening) + opening.length).split('\n')[1].trim();
   const { React, ThreadComposerBox } = sharedComposerSurface();
   const code = transform(`return (${opening}${firstChild}</ThreadComposerBox>);`, { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-  const render = new Function('React', 'ThreadComposerBox', 'stacked', 'work', 'quickAdd', 'field', 'quickAddMenu', code);
+  const render = new Function('React', 'ThreadComposerBox', 'stacked', 'work', 'quickAdd', 'field', 'quickAddMenu', 'dock', code);
   const field = { current: null }, menu = { type: 'form', props: { className: 'quick-add' }, children: [] };
   const open = render(React, ThreadComposerBox, false, null, 'dock', field, menu);
   assert.equal(open.type, 'div');assert.equal(open.props.ref, field);assert.match(open.props.className, /composer-box adding/);
   assert.equal(open.children[0], menu, 'the menu is rendered inside the shared box before other controls');
+  const docked = render(React, ThreadComposerBox, false, null, 'dock', field, menu, {target:true});
+  assert.doesNotMatch(docked.props.className, /adding/);
+  assert.equal(docked.children[0], menu);
   const closed = render(React, ThreadComposerBox, false, null, null, field, menu);
   assert.doesNotMatch(closed.props.className, /adding/);assert.equal(closed.children[0], false);
   assert.doesNotMatch(source, /rosterAnchor|roster-pop|quickAddButton\("empty"/, 'no floating copy of the menu is left');

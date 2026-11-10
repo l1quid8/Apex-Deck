@@ -1,0 +1,369 @@
+/* Mockup-only additions on top of Deck's captured stylesheet. mk- prefix only. */
+
+/* The canvas stacks: pane area, one shared composer. */
+main.canvas.section-threads { display: flex; flex-direction: column; min-height: 0; }
+main.canvas .workspace-canvas-content { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: auto; height: auto; position: relative; }
+
+/* Pane area: panes sit at pixel positions set by the runtime (no CSS grid, no snapping). */
+.grid.mk-grid { flex: 1 1 auto; min-height: 0; margin: 0; padding: 0; position: relative; overflow: hidden; display: block; }
+.mk-region { position: absolute; }
+.mk-region[hidden], .mk-split[hidden], .mk-map[hidden] { display: none; }
+.mk-grid .pane { position: absolute; min-width: 0; min-height: 0; }
+.mk-grid > .pane.mk-full .transcript, .mk-main > .pane.mk-full .transcript { max-width: 860px; margin-inline: auto; width: 100%; }
+/* Deck's Clay rule for multi-pane borders keys on ".grid > .pane"; mirror it for regions. */
+:root[data-deck-theme="clay"] .mk-grid.mk-multi .pane { border: 1px solid var(--line); border-radius: max(6px, calc(var(--deck-radius, 10px) * .6)); }
+:root[data-deck-theme="clay"] .mk-grid.mk-multi .pane.focused { border-color: color-mix(in srgb, var(--deck-accent-text) 55%, var(--line)); }
+
+/* Dividers: drag freely; the line shows on hover and while dragging. */
+.mk-split, .mk-colsplit { position: absolute; top: 0; width: 8px; cursor: col-resize; z-index: 4; touch-action: none; }
+.mk-split { height: 100%; }
+.mk-colsplit { z-index: 3; }
+.mk-split::after, .mk-colsplit::after { content: ""; position: absolute; top: 10px; bottom: 10px; left: 3px; width: 2px; border-radius: 2px; background: var(--accent, #e8846b); opacity: 0; transition: opacity .15s; }
+.mk-split:hover::after, .mk-colsplit:hover::after, .mk-split.mk-active::after, .mk-colsplit.mk-active::after, .mk-split:focus-visible::after { opacity: .75; }
+.mk-split:focus-visible { outline: none; }
+.mk-has-full .mk-colsplit { display: none; }
+
+/* Moving: the pane lifts and follows the pointer; a soft outline marks where it lands. */
+.mk-grid > .pane.mk-lifted { z-index: 30; pointer-events: none; box-shadow: 0 18px 48px rgb(0 0 0 / .45); opacity: .96; cursor: grabbing; }
+.mk-slot { position: absolute; z-index: 20; pointer-events: none; border: 1px solid color-mix(in srgb, var(--accent, #e8846b) 55%, transparent); border-radius: max(6px, calc(var(--deck-radius, 10px) * .6)); background: color-mix(in srgb, var(--accent, #e8846b) 7%, transparent); transition: left .2s cubic-bezier(.2,.7,.2,1), top .2s cubic-bezier(.2,.7,.2,1), width .2s, height .2s; }
+.layout-preview.mk-layout-preview-right { grid-template: 1fr 1fr / 1fr 1.45fr; }
+.layout-preview.mk-layout-preview-right i:first-child { grid-column: 2; grid-row: 1 / -1; }
+.layout-preview.mk-layout-preview-right i:nth-child(2) { grid-column: 1; grid-row: 1; }
+.layout-preview.mk-layout-preview-right i:nth-child(3) { grid-column: 1; grid-row: 2; }
+.layout-choice-copy strong .mk-new { margin-left: 6px; }
+
+/* Shared composer: same composer, one per canvas. */
+.chat.thread-chat.mk-shared { height: auto; flex: 0 0 auto; min-height: 0; background: none; border: 0; }
+.mk-shared .composer { position: relative; }
+.mk-to { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0 4px 6px; font-size: 12px; color: var(--muted, #8b8b8b); cursor: pointer; }
+.mk-to .mk-to-label { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+.mk-to strong { color: var(--text); font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mk-to .mk-to-meta { white-space: nowrap; }
+.mk-to .dot { flex: 0 0 auto; }
+
+/* "new" tag on anything the real app doesn't have yet. */
+.mk-new { display: inline-block; margin-left: 8px; padding: 0 6px; border: 1px solid currentColor; border-radius: 999px; font-size: 10px; line-height: 15px; letter-spacing: .04em; text-transform: uppercase; color: var(--accent, #e8846b); opacity: .9; vertical-align: middle; }
+.mk-to .mk-new { margin: 0 2px 0 0; }
+
+/* Tile for panes too small to read a conversation. */
+.pane.mk-tile .chat-body { display: none; }
+.mk-tile-body { display: none; padding: 10px 14px; font-size: 13px; line-height: 1.45; color: var(--muted, #8b8b8b); overflow: hidden; }
+.pane.mk-tile .mk-tile-body { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+.mk-tile-body b { color: var(--text); font-weight: 600; }
+
+/* Mockup notes. */
+.mk-toast { position: fixed; left: 50%; top: 56px; transform: translateX(-50%); z-index: 70; padding: 6px 14px; border-radius: 999px; background: var(--panel, #111); color: var(--text); border: 1px solid var(--line, #333); font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.mk-toast.mk-show { opacity: 1; }
+.badge.mk-reset { cursor: pointer; font: inherit; }
+.pane-head .mk-full-tag { font-size: 11px; color: var(--muted, #8b8b8b); white-space: nowrap; }
+.pane.mk-flash { outline: 2px solid var(--accent, #e8846b); outline-offset: -2px; transition: outline-color .6s; }
+@media (prefers-reduced-motion: reduce) { .mk-toast, .pane.mk-flash, .mk-slot { transition: none; } }
+
+/* Proposed: the thread name is the last thing to shrink. Deck's own CSS
+   splits the spare room between the title and the spacer at data-fit=min,
+   which is why real panes show "A…" next to empty space. */
+ .mk-grid .pane-head .pane-title { flex: 0 1 auto; min-width: 3ch; }
+.mk-grid.adjusting, .mk-grid.adjusting * { user-select: none; -webkit-user-select: none; }
+
+/* New thread + Add agents in a multi-pane canvas.
+   The add menu docks in the shared composer (as wide as the canvas) and grows
+   upward over the panes, so a narrow pane never has to hold it. */
+.mk-shared .composer-input.mk-docked { position: absolute; z-index: 25; }
+.mk-shared .composer-input.mk-docked .composer-box.adding { box-shadow: 0 -18px 48px rgb(0 0 0 / .5); }
+.mk-shared .composer-box.adding > .quick-add { max-height: var(--mk-qa-max, 520px); }
+/* Proposed for Deck too: the heading never squeezes its hint to one word per line. */
+.quick-add-head { flex-wrap: wrap; row-gap: 2px; }
+.quick-add-head p { flex: 1 1 180px; }
+/* Empty panes drop the welcome's extras before the question and the button. */
+.mk-grid .pane[data-mk-room="snug"] .empty { padding: 12px; }
+.mk-grid .pane[data-mk-room="snug"] .empty :is(.empty-emblem, .eyebrow, .where) { display: none; }
+.mk-grid .pane[data-mk-room="snug"] .empty h3 { font-size: 19px; }
+.mk-grid .pane[data-mk-room="snug"] .empty p { line-height: 1.55; }
+.mk-tile-body .mk-tile-add { display: block; margin-top: 8px; padding: 4px 10px; font-size: 12px; }
+.pane.mk-tile:has(.mk-tile-add) .mk-tile-body { display: block; }
+.mk-shared .composer-input.mk-docked { background: var(--bg); padding-top: 8px; border-radius: 14px 14px 0 0; }
+.mk-shared .composer-input.mk-docked .mk-to { padding-inline: 10px; }
+.mk-grid .pane[data-mk-room="snug"] .landing-texture-wrap { display: none; }
+
+/* Agents picked, no prompt sent yet: they fill the pane's background in place
+   of the rain texture until the first message. The welcome text stays on top. */
+.empty.mk-has-cast > .empty-copy { position: relative; z-index: 1; text-shadow: 0 0 6px var(--bg), 0 0 14px var(--bg); transition: opacity .2s; }
+.transcript .empty.mk-has-cast { position: static; }
+.transcript .empty.mk-has-cast > canvas.mk-field { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+@media (prefers-reduced-motion: no-preference) {
+  canvas.mk-field { animation: mk-cast-in .6s ease both; }
+  @keyframes mk-cast-in { from { opacity: 0; } }
+}
+.mk-grid .pane[data-mk-room="snug"] .empty.mk-has-cast h3 { display: none; }
+/* Zoomed into the agents: the welcome steps back so the faces can be read. */
+.empty.mk-has-cast.mk-field-zoomed > .empty-copy { opacity: .12; pointer-events: none; }
+.chat-body.mk-field-grab { cursor: grabbing; }
+.mk-field-hud { position: absolute; left: 10px; bottom: 10px; z-index: 2; display: flex; align-items: center; gap: 6px; max-width: calc(100% - 20px); min-height: 24px; padding: 4px 5px 4px 11px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--bg) 88%, transparent); color: var(--muted); font-size: 11.5px; line-height: 1.3; }
+.mk-field-hud > span { display: grid; min-width: 0; }
+.mk-field-hud > span > b, .mk-field-hud > span > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-field-hud > span > b { color: var(--text); font-weight: 600; }
+.mk-field-hud > span > small { font-size: 11px; }
+.mk-field-hud > button { flex: 0 0 auto; height: 20px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
+.mk-field-hud > button[hidden] { display: none; }
+.mk-field-hud > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.quick-add-say.mk-say-error { color: var(--danger); }
+.quick-add-another:disabled { opacity: .5; cursor: default; }
+.mk-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Proposed: 28px pane title bar (was ~50px). One height for every pane so
+   the big Focus pane and the side panes line up. */
+.mk-grid .pane-head { box-sizing: border-box; height: 28px; min-height: 28px; padding: 0 6px 0 8px; gap: 6px; line-height: 1.2; font-size: 12px; }
+.mk-grid .pane-head .pane-ws { padding: 0 6px; font-size: 11px; line-height: 18px; }
+.mk-grid .pane-head .pane-folder { font-size: 11px; }
+.mk-grid .pane-head .thread-counts button { padding: 0 5px; line-height: 16px; }
+.mk-grid .pane-head button.icon.small { display: inline-grid; place-items: center; width: 20px; height: 20px; min-width: 20px; min-height: 20px; padding: 0; font-size: 12px; line-height: 1; }
+.mk-grid .pane-head .mk-full-tag { font-size: 10.5px; }
+/* Small live panes on the map give the project chip's room to the thread name
+   (the sidebar already shows the project). */
+.mk-grid .pane.mk-tile .pane-head .pane-ws, .mk-grid .pane.mk-tile .pane-head .pane-folder { display: none; }
+
+/* Proposed: a cut-off thread name rests with "…" and only slides to show the
+   rest while the pointer is over its title bar (or the bar has keyboard focus). */
+.mk-grid .pane-head .pane-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mk-grid .pane-head:is(:hover, :focus-within) .pane-title.mk-marquee { text-overflow: clip; -webkit-mask-image: linear-gradient(90deg, transparent, #000 6px, #000 calc(100% - 10px), transparent); mask-image: linear-gradient(90deg, transparent, #000 6px, #000 calc(100% - 10px), transparent); }
+.mk-grid .pane-head:is(:hover, :focus-within) .pane-title.mk-marquee .mk-tt { display: inline-block; padding-inline: 2px; animation: mk-marquee var(--mk-dur, 5s) ease-in-out 0.35s infinite alternate; }
+@keyframes mk-marquee { 0%, 12% { transform: translateX(0); } 88%, 100% { transform: translateX(var(--mk-shift, 0px)); } }
+@media (prefers-reduced-motion: reduce) {
+  .mk-grid .pane-head .pane-title.mk-marquee { text-overflow: ellipsis !important; -webkit-mask-image: none !important; mask-image: none !important; }
+  .mk-grid .pane-head .pane-title.mk-marquee .mk-tt { display: inline !important; animation: none !important; }
+}
+
+/* Fix: "+ Add agents" was cut off at the bottom of short empty panes.
+   fitEmpty() steps down until the whole landing fits. */
+.mk-grid .pane:is([data-mk-empty="short"], [data-mk-empty="tiny"]) .transcript { padding-block: 12px; }
+.mk-grid .pane:is([data-mk-empty="short"], [data-mk-empty="tiny"]) .empty { padding: 6px 12px; }
+.mk-grid .pane:is([data-mk-empty="short"], [data-mk-empty="tiny"]) .empty-copy > :is(.empty-emblem, .eyebrow, .where) { display: none; }
+.mk-grid .pane[data-mk-empty="tiny"] .empty-copy > p:not(.where) { display: none; }
+.mk-grid .pane[data-mk-empty="tiny"] .empty-copy h3 { font-size: 16px; margin-bottom: 8px; }
+
+#details-bots-body.mk-flash { outline: 2px solid var(--accent, #e8846b); outline-offset: 2px; border-radius: 8px; }
+
+/* Select all for agents */
+.quick-add-section { gap: 8px; }
+.quick-add-select-all { margin-left: auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 11px; line-height: 18px; cursor: pointer; }
+.quick-add-select-all:hover { color: var(--text); border-color: var(--text); }
+.quick-add-select-all[data-state="some"] { color: var(--text); border-color: var(--accent, #e8846b); }
+.quick-add-select-all[data-state="all"] { background: color-mix(in srgb, var(--accent, #e8846b) 14%, var(--panel)); color: var(--text); }
+
+/* ---------- New (2026-11-08): the thread map ----------
+   The panes beside the focus pane (every pane in Even grid) sit on a map that
+   scrolls like before at 100% and zooms toward the pointer. Real panes appear
+   once they're big enough on screen; smaller ones are drawn on the canvas. */
+.mk-map { position: absolute; overflow: hidden; outline: none; touch-action: none; overscroll-behavior: contain; }
+.mk-map:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent, #e8846b) 60%, transparent); border-radius: 8px; }
+.mk-map-cv { position: absolute; left: 0; top: 0; display: block; cursor: grab; }
+.mk-map-cv.mk-point { cursor: zoom-in; }
+.mk-map.mk-grabbing, .mk-map.mk-grabbing * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+.mk-live { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.mk-live > .pane { pointer-events: auto; background: var(--bg); }
+.mk-live > .pane.mk-leaving { opacity: 0; transition: opacity .14s ease; pointer-events: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .mk-live > .pane { animation: mk-live-in .16s ease-out both; }
+  @keyframes mk-live-in { from { opacity: 0; } }
+}
+/* Synthetic threads (scale test) say so in their title bar and transcript. */
+.pane-head .mk-syn-tag { flex: 0 0 auto; padding: 0 6px; border: 1px dashed color-mix(in srgb, var(--muted) 70%, transparent); border-radius: 999px; color: var(--muted); font-size: 10px; line-height: 15px; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.pane-head:is([data-fit="tight"], [data-fit="min"]) .mk-syn-tag { display: none; }
+.transcript .mk-syn-note { margin: 0 0 12px; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; }
+
+/* The map's bar: where you are, − 100% +, Fit, Back. It sits above the map in
+   line with the panes' 28px title bars, so it never covers a conversation. */
+.mk-mapbar { position: absolute; z-index: 5; display: flex; align-items: center; gap: 1px; box-sizing: border-box; height: 28px; padding: 0 3px 0 6px; border: 1px solid var(--line); border-radius: max(6px, calc(var(--deck-radius, 10px) * .6)); background: var(--bg); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; }
+.mk-mapbar[hidden] { display: none; }
+.mk-mapbar .mk-new { flex: 0 0 auto; margin: 0 6px 0 0; }
+.mk-mapbar button { flex: 0 0 auto; height: 20px; min-width: 22px; padding: 0 6px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; line-height: 20px; cursor: pointer; }
+.mk-mapbar button:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); }
+.mk-mapbar button:disabled { opacity: .38; cursor: default; }
+.mk-mapbar button:focus-visible { outline: 2px solid var(--accent, #e8846b); outline-offset: -2px; }
+.mk-mapbar .mk-hud-where { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding-inline: 4px; color: var(--text); }
+.mk-mapbar .mk-hud-grow { flex: 1 1 0; min-width: 4px; }
+.mk-mapbar .mk-hud-pct { min-width: 48px; color: var(--text); font-variant-numeric: tabular-nums; }
+.mk-mapbar button[data-act="out"], .mk-mapbar button[data-act="in"] { font-size: 15px; }
+.mk-hud-sep { flex: 0 0 auto; width: 1px; height: 14px; margin: 0 3px; background: var(--line); }
+.mk-mapbar[data-narrow] .mk-new, .mk-mapbar[data-narrow] .mk-hud-lbl { display: none; }
+.mk-mapbar[data-tiny] .mk-hud-sep { display: none; }
+.mk-mapbar[data-tiny] .mk-hud-pct { min-width: 40px; padding: 0 3px; }
+
+/* The small map: every thread here, with the part on screen outlined. */
+.mk-mini { position: absolute; right: 8px; bottom: 8px; z-index: 6; width: 148px; box-sizing: border-box; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--panel, #111) 95%, transparent); box-shadow: 0 6px 22px rgb(0 0 0 / .4); color: var(--muted); font-size: 11px; line-height: 1.35; }
+.mk-mini[hidden] { display: none; }
+.mk-mini canvas { display: block; margin: 0 auto; border-radius: 5px; cursor: crosshair; }
+.mk-mini-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px 3px; margin: 0 0 5px; }
+.mk-mini-crumbs[hidden] { display: none; }
+.mk-mini-crumbs button { padding: 0 3px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.mk-mini-crumbs button:last-child { color: var(--accent, #e8846b); }
+.mk-mini-crumbs button:hover, .mk-mini-crumbs button:focus-visible { background: color-mix(in srgb, var(--text) 10%, transparent); outline: none; }
+.mk-mini-stat { margin-top: 5px; }
+
+/* Buttons for drawn cards: invisible, laid over each card; focus shows on the card itself. */
+.mk-ax { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.mk-ax-btn { position: absolute; margin: 0; padding: 0; border: 0; background: transparent; color: transparent; font-size: 1px; opacity: 0; pointer-events: none; overflow: hidden; }
+
+/* Hover label on the map. */
+.mk-tip { position: absolute; z-index: 7; pointer-events: none; max-width: 280px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font-size: 12px; line-height: 1.35; box-shadow: 0 6px 18px rgb(0 0 0 / .45); }
+.mk-tip[hidden] { display: none; }
+.mk-tip strong { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-tip small { display: block; color: var(--muted); font-size: 11px; }
+
+/* Scale test (mockup only): one menu instead of two selects, so the centred tabs keep their room. */
+.badge.mk-scale-btn { margin-left: 8px; cursor: pointer; font: inherit; }
+.badge.mk-scale-btn.mk-on { border-color: var(--accent, #e8846b); color: var(--text); }
+@media (max-width: 1199px) { .badge.mk-scale-btn { display: none; } } /* test-only; the centred tabs need the room */
+.mk-scale-menu { z-index: 60; min-width: 230px; }
+.mk-scale-menu .mk-menu-head { display: block; padding: 7px 12px 3px; color: var(--muted); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+
+/* Multi-select: ⌘-click adds panes. Outline stays visible while zooming
+   because it is a class on the pane, not a canvas stroke; reduced motion
+   keeps the solid outline rather than the glow pulse. */
+.mk-grid .pane.mk-multi-selected { outline: 2px solid var(--accent, #e8846b); outline-offset: -2px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent, #e8846b) 22%, transparent), 0 10px 28px rgb(0 0 0 / .28); }
+.mk-grid .pane.mk-multi-selected.focused { outline-color: var(--accent, #e8846b); border-color: color-mix(in srgb, var(--accent, #e8846b) 65%, var(--line)); }
+.mk-grid .pane.mk-multi-selected.mk-lifted { outline: 2px solid var(--accent, #e8846b); }
+@media (prefers-reduced-motion: no-preference) {
+  .mk-grid .pane.mk-multi-selected { animation: mk-multi-pulse 1.6s ease-in-out infinite alternate; }
+  @keyframes mk-multi-pulse { from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent), 0 10px 28px rgb(0 0 0 / .28); } to { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 28%, transparent), 0 14px 32px rgb(0 0 0 / .32); } }
+}
+/* Temporary flash when user tries to send with missing agents */
+.mk-grid .pane.mk-multi-missing { outline: 2px solid var(--danger, #e5484d); outline-offset: -2px; }
+
+/* Composer when several panes are selected - collapsed by default to save height */
+#mk-shared.mk-multi .mk-to { flex-wrap: wrap; cursor: default; }
+#mk-shared.mk-multi .mk-to strong { cursor: default; }
+.mk-to-count { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; cursor: pointer; border-radius: 6px; }
+.mk-to-count .mk-to-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-to-count.mk-warn .mk-to-meta { color: var(--danger, #e5484d); }
+.mk-to-count:focus-visible { outline: 2px solid var(--accent, #e8846b); outline-offset: 2px; }
+.mk-multi-toggle { flex: 0 0 auto; color: var(--muted); font-size: 11px; line-height: 1; }
+.mk-to-count:hover .mk-multi-toggle { color: var(--text); }
+/* Hide composer chips in multi to keep composer short */
+#mk-shared.mk-multi .composer-bots { display:none !important; }
+.mk-multi-list { width: 100%; margin-top: 6px; display: grid; gap: 5px; }
+.mk-rich-input { min-height:44px; max-height:200px; overflow:auto; padding:8px; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text); font:inherit; line-height:1.7; }
+.mk-rich-input[hidden] { display:none; }
+.mk-rich-input:focus-visible { outline:1px solid var(--accent); border-radius:6px; }
+.mk-thread-tag { display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; border-radius:5px; padding:0 6px; background:#43526b; color:#fff; font-size:12px; }
+.mk-thread-tag.mk-bad { background:#882f36; outline:2px solid #f08080; }
+.mk-fail-demo { width:100%; font-size:11px; color:var(--muted); }
+.mk-pending { width:100%; display:grid; gap:5px; padding:6px; border:1px solid var(--danger,#e5484d); border-radius:6px; }
+.mk-pending pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+#mk-shared .mk-to { max-height: min(44vh,360px); overflow:auto; }
+.mk-slice-text { white-space:pre-wrap !important; overflow-wrap:anywhere; max-height:none !important; overflow:visible !important; }
+.mk-agent-menu, .mk-at-picker { max-height: min(280px,70vh); overflow:auto; }
+.mk-multi-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 12.5px; }
+.mk-multi-row.mk-bad { border-color: var(--danger, #e5484d); background: color-mix(in srgb, var(--danger, #e5484d) 10%, var(--panel)); }
+.mk-multi-row .mk-mr-title { appearance: none; border: 0; background: none; padding: 0; text-align: left; font: inherit; cursor: pointer; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
+.mk-multi-row .mk-mr-agent { flex: 0 0 auto; font-size: 11.5px; color: var(--muted); }
+.mk-multi-row .mk-mr-agent b { color: var(--text); font-weight: 600; }
+.mk-multi-row .mk-mr-agent em { font-style: normal; color: var(--danger, #e5484d); }
+.mk-multi-row button.mk-mr-x { flex: 0 0 auto; width: 20px; height: 20px; display: grid; place-items: center; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--muted); font-size: 13px; line-height: 1; padding: 0 0 1px; cursor: pointer; }
+.mk-multi-row button.mk-mr-x:hover { color: var(--text); background: color-mix(in srgb, var(--text) 14%, transparent); }
+.mk-multi-hint { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+.mk-multi-hint.mk-warn { color: var(--danger, #e5484d); }
+.mk-multi-draft { margin-top: 4px; font-size: 11px; color: var(--muted); }
+
+/* Last squeeze before a pane turns into a drawn card (only when the buttons
+   no longer fit): □ goes, then ⋯; the name shrinks; × stays to the end. */
+.mk-grid .pane-head:is([data-fit="nomax"], [data-fit="xonly"]) :is(.pane-ws, .pane-folder, .pane-counts, .server-chip, .mk-syn-tag, .mk-full-tag) { display: none; }
+.mk-grid .pane-head:is([data-fit="nomax"], [data-fit="xonly"]) > button.icon.small:not(:last-child), .mk-grid .pane-head[data-fit="xonly"] .pane-menu-wrap { display: none; }
+.mk-grid .pane-head:is([data-fit="nomax"], [data-fit="xonly"]) { gap: 4px; padding-left: 8px; padding-right: 4px; }
+.mk-grid .pane-head:is([data-fit="nomax"], [data-fit="xonly"]) .pane-title { flex: 1 1 0px; min-width: 2ch; }
+.mk-grid .pane-head > button.icon.small:last-child { flex-shrink: 0; }
+.pane.mk-tile .mk-tile-body { padding: clamp(4px, 1.2vh, 10px) 12px; }
+
+/* "→ Null" on each selected pane's title bar: who answers there. It never shrinks:
+   the thread name gives way first (and marquees on hover). Red when it can't receive. */
+.pane-head .mk-route { flex: 0 0 auto; white-space: nowrap; padding: 0 6px; border-radius: 999px; font-size: 10.5px; line-height: 16px; color: var(--accent-text, var(--text)); background: color-mix(in srgb, var(--accent, #e8846b) 18%, transparent); }
+.pane-head .mk-route.mk-bad { color: var(--danger, #e5484d); background: color-mix(in srgb, var(--danger, #e5484d) 14%, transparent); }
+.mk-multi-row .mk-mr-note { opacity: .7; }
+
+/* Agent dropdown + @ picker */
+.mk-agent-menu, .mk-at-picker { z-index: 65; min-width: 200px; max-width: 360px; }
+.mk-agent-menu .label, .mk-at-picker .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-at-picker { width: min(460px, calc(100vw - 32px)); max-width: calc(100vw - 32px); background: var(--panel-2); border: 1px solid var(--line); }
+.mk-at-picker .mk-menu-head { display:block; padding:8px 9px 5px; color:var(--muted); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; }
+.mk-at-picker button[role="option"], .mk-agent-menu button[role="menuitemradio"] { display:flex; align-items:center; gap:9px; width:100%; padding:7px 9px; border:0; border-radius:6px; background:transparent; color:var(--text); font:inherit; font-size:12.5px; text-align:left; cursor:pointer; }
+.mk-at-picker button[role="option"]:hover:not(:disabled), .mk-at-picker button[role="option"]:focus-visible, .mk-agent-menu button[role="menuitemradio"]:focus-visible { background:color-mix(in srgb, var(--accent) 18%, transparent); outline:1px solid var(--accent); outline-offset:-1px; }
+.mk-at-picker button:disabled { opacity:.45; cursor:default; }
+.mk-at-picker .label { flex:1 1 auto; min-width:0; }
+.mk-at-picker .keys { flex:0 1 auto; max-width:48%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; letter-spacing:normal; }
+.mk-rich-input { flex:1 1 100%; width:100%; min-width:0; box-sizing:border-box; border:0; }
+.mk-rich-input:focus-visible { outline:0; }
+.mk-route { border: 0; cursor: pointer; }
+.mk-route:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Slice preview per Null / Muck */
+.mk-multi-row { flex-wrap: wrap; }
+.mk-slice-preview { width: 100%; display: flex; gap: 6px; align-items: flex-start; margin-top: 4px; padding: 4px 6px; border-radius: 6px; background: color-mix(in srgb, var(--bg) 60%, var(--panel)); font-size: 11.5px; line-height: 1.35; }
+.mk-slice-badge { flex: 0 0 auto; padding: 0 5px; border-radius: 999px; background: var(--line); color: var(--muted); font-size: 10px; line-height: 16px; text-transform: uppercase; letter-spacing: .04em; }
+.mk-slice-badge.mk-cmd { background: color-mix(in srgb, var(--accent) 20%, var(--panel)); color: var(--accent); }
+.mk-slice-text { min-width: 0; flex: 1 1 auto; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-mr-agent-btn { appearance: none; border: 0; background: none; cursor: pointer; padding: 0; font: inherit; }
+.mk-mr-agent-btn:hover { text-decoration: underline; }
+.mk-mr-agent-btn:disabled { opacity: 1; cursor: default; text-decoration: none; }
+
+/* Attachments */
+.mk-att-panel { width: 100%; margin-top: 6px; display: grid; gap: 4px; max-height:min(28vh,220px); overflow:auto; }
+.mk-att-row { display: flex; gap: 8px; align-items: center; font-size: 11.5px; padding: 4px 6px; border: 1px dashed var(--line); border-radius: 6px; }
+.mk-att-dests { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-att-pick, .mk-add-att, .mk-retry { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font-size: 11px; cursor: pointer; }
+.mk-att-dest { flex: 0 1 auto; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk-add-att { margin-top: 6px; min-height: 24px; flex-shrink: 0; }
+#mk-shared.mk-multi .mk-to > * { flex-shrink: 0; }
+.mk-multi-row { flex-wrap: nowrap; }
+.mk-multi-row:has(.mk-slice-preview) { flex-wrap: wrap; }
+.mk-retry { margin-top: 6px; border-color: var(--accent); }
+
+/* Inline file references remain text-height; the tray occupies its own flow row. */
+.mk-attachment-tag { display:inline-block; vertical-align:middle; padding:0 5px; border-radius:5px; background:var(--panel); border:1px solid var(--line); font-size:12px; line-height:18px; white-space:nowrap; }
+.mk-att-row { flex-wrap:wrap; }
+.mk-att-row button { cursor:pointer; font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:2px 6px; }
+.mk-att-row button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.mk-att-dests { flex:1 1 160px; white-space:normal; }
+.mk-attachment-tag[draggable="true"], .mk-att-insert[draggable="true"] { cursor:grab; }
+.mk-file-drop-caret { position:fixed; width:2px; background:var(--accent); pointer-events:none; z-index:10000; }
+.mk-file-drop-caret[hidden], .mk-att-row[hidden] { display:none; }
+.mk-att-stack { display:flex; align-items:center; gap:12px; align-self:start; justify-self:start; border:0; background:transparent; color:var(--text); font:inherit; cursor:pointer; padding:4px; }
+.mk-att-stack:focus-visible { outline:2px solid var(--accent); border-radius:6px; }
+.mk-att-thumbs { display:block; position:relative; width:92px; height:62px; flex-shrink:0; }
+.mk-att-thumb { position:absolute; left:calc(var(--thumb-index) * 10px); top:calc(var(--thumb-index) * 4px); width:66px; height:48px; border:1px solid var(--line); border-radius:7px; background:linear-gradient(145deg,#32464b 40%,#6a7e70 41%,#293739 65%); color:#fff; display:flex; align-items:flex-end; padding:4px; box-sizing:border-box; font-size:10px; box-shadow:0 2px 5px #0006; transform:rotate(calc((var(--thumb-index) - 1) * 5deg)); }
+.mk-att-preview { width:96px; height:60px; display:flex; align-items:flex-end; padding:5px; box-sizing:border-box; flex-shrink:0; border:1px solid var(--line); border-radius:6px; background:linear-gradient(145deg,#32464b 40%,#6a7e70 41%,#293739 65%); color:#fff; font-size:10px; }
+
+/* Compact attachment stack lives inside the prompt, with its own flow space. */
+#mk-shared.mk-multi .composer-box { align-items:flex-end; }
+#mk-shared.mk-multi .composer-field { flex-direction:column; align-items:stretch; min-width:0; }
+#mk-shared .composer-field > .mk-att-panel { margin-top:2px; padding:2px; box-sizing:border-box; }
+.mk-att-stack { justify-self:end; gap:6px; padding:2px 4px; font-size:11px; color:var(--muted); }
+.mk-att-thumbs { width:62px; height:42px; }
+.mk-att-thumb { width:44px; height:32px; left:calc(var(--thumb-index) * 7px); top:calc(var(--thumb-index) * 3px); padding:3px; font-size:8px; border-radius:5px; }
+
+/* Expanded review and previews must leave space for the pane canvas. */
+#mk-shared.mk-multi .composer-input { max-height:60vh; overflow:auto; }
+
+/* Attachment previews share the existing action row without growing the prompt. */
+#mk-shared .composer-box > .mk-att-panel { width:auto; flex:0 0 auto; order:0; margin:0 6px 0 auto; padding:0; display:block; overflow:visible; max-height:none; align-self:flex-end; }
+#mk-shared .composer-box > .mk-att-panel .mk-att-thumbs { width:52px; height:28px; }
+#mk-shared .composer-box > .mk-att-panel .mk-att-thumb { width:34px; height:22px; top:calc(var(--thumb-index) * 2px); left:calc(var(--thumb-index) * 6px); font-size:7px; padding:2px; }
+.mk-att-popover { position:fixed; z-index:1000; width:min(420px,calc(100vw - 24px)); overflow:auto; display:grid; gap:6px; padding:8px; background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:0 6px 24px #0007; }
+.mk-att-popover[hidden] { display:none; }
+
+#mk-shared .composer-box > .mk-att-panel .mk-att-stack { height:28px; padding:0 4px; }
+
+/* Send with an empty thread slice: Send shakes, the empty thread's pane and #tag flash red once. */
+.pane.mk-empty-flash, .mk-grid .pane.mk-empty-flash { outline: 2px solid #f0626b; outline-offset: -2px; animation: mk-empty-flash 1.2s ease-out both; }
+.mk-thread-tag.mk-empty-flash { animation: mk-empty-chip 1.2s ease-out both; }
+@keyframes mk-empty-flash { 0%, 40% { box-shadow: inset 0 0 0 999px rgb(240 98 107 / .16), 0 0 0 4px rgb(240 98 107 / .35); outline-color: #f0626b; } 100% { box-shadow: none; outline-color: transparent; } }
+@keyframes mk-empty-chip { 0%, 40% { background: #b8323c; box-shadow: 0 0 0 2px #f08080; } 100% { } }
+@media (prefers-reduced-motion: no-preference) {
+  .round-send.mk-send-shake { animation: mk-send-shake .45s cubic-bezier(.36,.07,.19,.97) both; }
+  @keyframes mk-send-shake { 10%, 90% { transform: translateX(-1px); } 20%, 80% { transform: translateX(2px); } 30%, 50%, 70% { transform: translateX(-4px); } 40%, 60% { transform: translateX(4px); } }
+}
+
+/* Even grid › Horizontal | Vertical — submenu opens to the left of the popover. */
+/* Horizontal and Vertical: their own layouts above Even grid, drawn as three plain stripes. */
+.layout-preview.mk-layout-preview-rows { grid-template: repeat(3, 1fr) / 1fr; }
+.layout-preview.mk-layout-preview-cols { grid-template: 1fr / repeat(3, 1fr); }

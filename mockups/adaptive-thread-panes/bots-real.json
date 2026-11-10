@@ -1,0 +1,106 @@
+{
+ "null": {
+  "name": "Null",
+  "seed": "29f6fdcd-4269-4ea6-bb2b-6478721f66fa",
+  "color": "#a31aff",
+  "tool": "codex",
+  "model": "gpt-6.1-sol",
+  "access": "full"
+ },
+ "jigga": {
+  "name": "Jigga",
+  "seed": "jigga",
+  "color": "#1eff00",
+  "tool": "claude_code",
+  "model": "claude-opus-5-5",
+  "access": "full"
+ },
+ "forge": {
+  "name": "Forge",
+  "seed": "58a9b5b2-423f-4cce-b5e9-4ce2c62eaac1",
+  "color": "#eb2438",
+  "tool": "gemini",
+  "model": "gemini-4-argon",
+  "access": "full"
+ },
+ "luna": {
+  "name": "Luna",
+  "seed": "79255395-63ea-4604-8271-2122d9db0424",
+  "color": "#ffffff",
+  "tool": "codex",
+  "model": "gpt-6-luna",
+  "access": "full"
+ },
+ "muck": {
+  "name": "Muck",
+  "seed": "9cda8cbe-37aa-4696-8647-4cdb7c066492",
+  "color": "#60a5fa",
+  "tool": "muse",
+  "model": "muse-wonder-full-1.0",
+  "access": "full"
+ },
+ "dsfoe": {
+  "name": "Ds4",
+  "seed": "4055867a-4a06-4b3c-8a3f-a597c1350f37",
+  "color": "#00ff88",
+  "tool": "open_ai_compatible",
+  "model": "deepseek-v4-flash",
+  "access": "full"
+ },
+ "deepgeek": {
+  "name": "deepgeek",
+  "seed": "92614c2a-b2c4-4f1f-b325-4019fc86c067",
+  "color": "#2a01f9",
+  "tool": "open_ai_compatible",
+  "model": "deepseek-flash",
+  "access": "full"
+ },
+ "cast": {
+  "name": "Cast",
+  "seed": "23af0aa1-1e5a-4264-a097-247457062c7c",
+  "color": "#f59e0b",
+  "tool": "open_ai_compatible",
+  "model": "fast",
+  "access": "full"
+ },
+ "gronk": {
+  "name": "Gronk",
+  "seed": "1ed3c264-e90c-4aa4-940a-1fc6b1647c5a",
+  "color": "#808080",
+  "tool": "grok",
+  "model": "grok-4.7",
+  "access": "full"
+ },
+ "venice": {
+  "name": "Allison",
+  "seed": "a1b348da-fd9f-45ad-9ab9-29a0f84b2f5b",
+  "color": "#f472b6",
+  "tool": "open_ai_compatible",
+  "model": "zai-org-glm-5-2",
+  "access": "ask"
+ },
+ "qwen3.5-9b--4-bit": {
+  "name": "Gwen",
+  "seed": "83e8a6e6-59a5-4599-bd7a-c029314bc2ca",
+  "color": "#a3e635",
+  "tool": "open_ai_compatible",
+  "model": null,
+  "access": "ask"
+ },
+ "thadious": {
+  "name": "Thadious",
+  "seed": "f2c1c994-5ea2-41cf-a362-55ac6a28c863",
+  "color": "#2dd4bf",
+  "tool": "claude_code",
+  "model": "claude-sonnet-5-5",
+  "access": "ask"
+ },
+ "hyke": {
+  "name": "Hyke",
+  "seed": "24d247ca-93fb-4c91-9d6f-eaaac216ea45",
+  "color": "#fb7185",
+  "tool": "claude_code",
+  "model": "haiku",
+  "access": "ask"
+ }
+}

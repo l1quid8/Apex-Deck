@@ -246,7 +246,8 @@ pub enum Command {
     RoomTargets { id: String, text: String },
     RoomRefreshPlans { id: String },
     RoomApplyAccess { id: String, participant: ParticipantId },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "keep_default")] keep_default: bool, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
+    PostCapabilities {},
     VoiceCapabilities {},
     RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
     RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
@@ -730,18 +731,19 @@ impl Host {
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
             RoomRefreshPlans { id } => reply(self.room_refresh_plans(id)?),
             RoomApplyAccess { id, participant } => reply(self.room_apply_access(id, participant).await?),
-            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id } => {
+            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id, keep_default } => {
                 if let Some(request_id) = client_turn_id {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
                     if client_message_id.as_ref().is_some_and(|id| id != &request_id) { return Err("voice and client message IDs must match".into()); }
-                    reply(self.room_client_post(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability).await?)
+                    reply(self.room_client_post_keeping_default(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability, keep_default, &|| Ok(())).await?)
                 } else {
                     match client_message_id {
-                        Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability).await?),
-                        _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability).await?),
+                        Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post_keeping_default(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability, keep_default, &|| Ok(())).await?),
+                        _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability, keep_default).await?),
                     }
                 }
             },
+            PostCapabilities {} => reply(serde_json::json!({"keep_default_v1": true})),
             VoiceCapabilities {} => reply(serde_json::json!({"voice_turn_correlation_v1": true})),
             RoomStopRequest { id, participant, client_turn_id } => reply(self.room_voice_stop(id, participant, client_turn_id)?),
             RoomTurn { id, participants, hops, interactive_answers } => reply(self.room_turn_with_answer_guidance(id, participants, hops, interactive_answers, capability).await?),
@@ -1034,7 +1036,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 237);
+        assert_eq!(names.len(), 238);
         for name in [
             "personal_handoff_select",
             "personal_handoff_control",
@@ -1071,6 +1073,7 @@ mod tests {
         for name in ["project_memory_list", "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"room_plan_reset".to_string()));
         assert!(names.contains(&"voice_capabilities".to_string()));
+        assert!(names.contains(&"post_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));
         assert!(names.contains(&"file_write".to_string()));

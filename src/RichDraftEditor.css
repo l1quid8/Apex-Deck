@@ -1,0 +1,12 @@
+.rich-draft-editor { min-height: 44px; max-height: 240px; overflow-y: auto; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px 12px; line-height: 1.65; color: inherit; font: inherit; }
+.rich-draft-editor > div { min-height: 1.65em; }
+/* Tags as in the approved mockup: filled thread chips, outlined file chips. */
+.rich-draft-chip { display: inline-flex; align-items: center; gap: 5px; vertical-align: middle; padding: 0 6px; border-radius: 5px; font-size: 12px; line-height: 18px; cursor: grab; user-select: all; }
+.rich-draft-chip.thread { background: #43526b; color: #fff; }
+.rich-draft-chip.file { padding: 0 5px; border: 1px solid var(--line); background: var(--panel); }
+.rich-draft-chip.problem { background: #882f36; color: #fff; outline: 2px solid #f08080; }
+.rich-draft-chip.flash { animation: rich-draft-flash .8s ease-out; }
+.rich-draft-spinner { width: .7em; height: .7em; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rich-draft-spin 1s linear infinite; }
+@keyframes rich-draft-spin { to { transform: rotate(360deg); } }
+@keyframes rich-draft-flash { from { background: var(--danger); } }
+@media (prefers-reduced-motion: reduce) { .rich-draft-chip.flash, .rich-draft-spinner { animation: none; } }

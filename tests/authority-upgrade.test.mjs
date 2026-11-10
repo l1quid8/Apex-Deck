@@ -4,12 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 // macOS-only: the codesign authority inventory. Windows has no such API, and the app refuses
 // protected records there instead of pretending the check passed.
 const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the codesign authority inventory' };
 
-const inventory = new URL('../scripts/authority-inventory.sh', import.meta.url).pathname;
+const inventory = fileURLToPath(new URL('../scripts/authority-inventory.sh', import.meta.url));
 const entry = (inode = 10) => ({ inode, device: 1, uid: 0, gid: 0, mode: '0o600', bytes: 5, sha256: 'abc', symlink: false });
 function snapshot() {
   return {

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ToolServer } from "./types";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { availableMenuItems, boxKeyGoesToMenu, clickCloses, menuItems, type MenuItem, type MenuPerson, type Trigger } from "./composerMenu";
@@ -7,6 +8,8 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   participants: readonly MenuPerson[];
   servers: (ToolServer & {agent: string})[];
   serverStatus?: string;
+  threadItems?: Extract<MenuItem, { kind: "thread" }>[];
+  threadNotice?: ReactNode;
   /** Commands the running mods registered. */
   mods?: { mod: string; name: string; description: string }[];
   trigger: Trigger | null;
@@ -25,7 +28,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   /** Command key to reason when this surface cannot run it. */
   disabledCommands?: Record<string, string>;
   disabled?: boolean;
-}>(({ participants, servers, serverStatus, mods = [], trigger, choose, planOn = false, talkOnly = false, canAttach = true, canAttachFolder = true, canUseTools = true, includeAll = true, allMentionDetail, folderUnavailableReason, filesUnavailableReason, disabledCommands = {}, disabled = false }, ref) => {
+}>(({ participants, servers, serverStatus, threadItems, threadNotice, mods = [], trigger, choose, planOn = false, talkOnly = false, canAttach = true, canAttachFolder = true, canUseTools = true, includeAll = true, allMentionDetail, folderUnavailableReason, filesUnavailableReason, disabledCommands = {}, disabled = false }, ref) => {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -33,14 +36,14 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const signature = trigger ? `${trigger.kind}:${trigger.start}:${trigger.end}:${trigger.query}` : null;
-  const typing = !!trigger && signature !== dismissed && !open;
+  const typing = !!trigger && (trigger.kind !== "thread" || !!threadItems) && signature !== dismissed && !open;
   const visible = open || typing;
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
-  const entries = availableMenuItems(menuItems(open ? null : trigger, participants, servers, mods, planOn, includeAll, allMentionDetail), { talkOnly, attach: canAttach || !!filesUnavailableReason, folder: canAttachFolder || !!folderUnavailableReason, tools: canUseTools })
+  const entries = availableMenuItems(!open && trigger?.kind === "thread" ? threadItems ?? [] : menuItems(open ? null : trigger, participants, servers, mods, planOn, includeAll, allMentionDetail), { talkOnly, attach: canAttach || !!filesUnavailableReason, folder: canAttachFolder || !!folderUnavailableReason, tools: canUseTools })
     .filter(item => !open || `${item.label} ${item.detail}`.toLowerCase().includes(query.toLowerCase()));
   const close = () => { setOpen(false); setDismissed(signature); };
   const pick = (item: MenuItem) => {
-    if (disabled || (item.kind === 'command' && disabledCommands[item.key])) return;
+    if (disabled || (item.kind === 'thread' && item.disabledReason) || (item.kind === 'command' && disabledCommands[item.key])) return;
     close(); choose(item, open ? null : trigger);
   };
   useEffect(() => { setSelected(0); }, [signature, query]);
@@ -80,12 +83,13 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
       onClick={() => { if (visible) close(); else { setOpen(true); setQuery(""); setSelected(0); } }}>+</button>
     {visible && <div className="composer-menu" role="dialog" aria-label="Commands and mentions" onKeyDown={key}>
       {open && <input ref={search} disabled={disabled} aria-label="Find command or participant" placeholder="Find a tool, command or @name…" value={query} onChange={e => setQuery(e.target.value)} />}
-      <div role="listbox" aria-label="Available commands and mentions">
+      <div role="listbox" aria-label={trigger?.kind === "thread" ? "Threads" : "Available commands and mentions"}>
+        {!open && trigger?.kind === "thread" && threadNotice}
         {entries.map((item, index) => {
-          const disabledReason = item.kind === 'command' ? disabledCommands[item.key]
+          const disabledReason = item.kind === 'thread' ? item.disabledReason : item.kind === 'command' ? disabledCommands[item.key]
             : item.kind === 'attach' && !canAttach ? filesUnavailableReason
               : item.kind === 'attach-folder' && !canAttachFolder ? folderUnavailableReason : undefined;
-          return <button type="button" role="option" aria-selected={index === selected} aria-disabled={!!disabledReason || disabled} disabled={!!disabledReason || disabled} key={item.kind === "server" ? `${item.agent}:${item.label}` : item.label}
+          return <button type="button" role="option" aria-selected={index === selected} aria-disabled={!!disabledReason || disabled} disabled={!!disabledReason || disabled} key={item.kind === "thread" ? item.paneId : item.kind === "server" ? `${item.agent}:${item.label}` : item.label}
           onPointerDown={e => e.preventDefault()} onPointerMove={() => setSelected(index)} onClick={() => pick(item)}>
           <span>{item.label}</span><small>{disabledReason ?? item.detail}</small>
         </button>;

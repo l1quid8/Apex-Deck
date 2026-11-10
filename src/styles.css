@@ -480,13 +480,57 @@ html[data-platform="windows"] .titlebar {
   padding: 16px;
   display: flex;
 }
-/* Panes are placed inside this by position (see PaneLayout.tsx). Each one
-   is inset by half the gap, so the area reaches half a gap past the edge. */
+/* The canvas reaches half a gap past its outer edge. */
 .grid {
   flex: 1;
+  min-height: 0;
   min-width: 0;
   position: relative;
   margin: -4px;
+}
+.workspace-canvas-content { flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+.composer-dock { flex: none; min-width: 0; position: relative; background: var(--panel); border-top: 1px solid var(--line); }
+.composer-dock[hidden] { display: none; }
+.composer-dock-target { display: flex; align-items: baseline; gap: 8px; padding: 8px 16px 0; font-size: 12px; color: var(--muted); }
+.composer-dock-target strong { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-dock-target span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-dock .composer { border-top: 0; }
+.composer-dock-slot > .composer { padding-inline: max(24px, calc((100% - var(--deck-message-width, 44rem)) / 2)); }
+/* Adaptive pane map: all sessions keep the same keyed parent.
+   Keep ancestors free of transforms/filters/containment: panes own fixed pop-ups. */
+.pane-map-frame { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.pane-map {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  outline-offset: -2px;
+}
+.pane-map::-webkit-scrollbar { display: none; }
+.pane-map-space { position: absolute; left: 0; top: 0; pointer-events: none; visibility: hidden; }
+.pane-map-slot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  min-width: 0;
+  min-height: 0;
+  transition: left 220ms ease, top 220ms ease, width 220ms ease, height 220ms ease;
+}
+.pane-map-slot > .pane { width: 100%; height: 100%; }
+.pane-map-slot.pinned:not(.dragging) { position: sticky; z-index: 2; transition: margin-left 220ms ease, width 220ms ease, height 220ms ease; }
+.pane-map.resizing .pane-map-slot { transition: none; }
+.pane-map-slot.dragging { z-index: 5; transition: none; pointer-events: none; }
+.pane-map-slot.dragging .pane { box-shadow: 0 8px 24px #0004; }
+.pane-map-snap { position: absolute; pointer-events: none; scroll-snap-align: start; }
+.pane-map-divider { z-index: 3; }
+.pane-map.adjusting { user-select: none; }
+.pane-map-frame.adjusting .pane-body { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .pane-map-slot, .pane-map-slot.pinned { transition: none; }
 }
 .pane {
   min-width: 0;
@@ -501,6 +545,10 @@ html[data-platform="windows"] .titlebar {
 .pane.focused {
   border-color: #3d695c;
   box-shadow: 0 0 0 1px rgba(113, 230, 181, 0.05);
+}
+.pane.multi-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .pane-head {
   display: flex;
@@ -1804,29 +1852,15 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 }
 /* While a pane is being resized or moved, the panes must not take the
    pointer, or a terminal would swallow the drag. */
-.grid.adjusting .pane-body {
+.grid.resizing-sidebar .pane-body {
   pointer-events: none;
 }
-.grid.adjusting {
+.grid.resizing-sidebar {
   user-select: none;
   -webkit-user-select: none;
 }
 .pane-head {
   cursor: grab;
-}
-.pane.lifted {
-  opacity: 0.55;
-}
-.pane.lifted .pane-head {
-  cursor: grabbing;
-}
-.drop-preview {
-  z-index: 6;
-  pointer-events: none;
-  border: 2px solid var(--accent);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  transition: left 0.08s, top 0.08s, width 0.08s, height 0.08s;
 }
 .layout-presets {
   display: inline-flex;
@@ -1856,7 +1890,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   stroke-width: 1.3;
 }
 @media (prefers-reduced-motion: reduce) {
-  .drop-preview, .divider::after { transition: none; }
+  .divider::after { transition: none; }
 }
 
 /* Panes that want attention. The dot, a short flag beside the pane, a count
@@ -4425,3 +4459,53 @@ button.mod-status:hover { color: var(--text); }
   .settings-label { max-width: none; }
 }
 
+/* Adaptive pane layout picker previews. */
+.layout-picker-popover[hidden] { display: none; }
+.layout-preview-horizontal { grid-template: repeat(3, 1fr) / 1fr; }
+.layout-preview-vertical { grid-template: 1fr / repeat(3, 1fr); }
+.layout-preview-right { grid-template: 1fr 1fr / 1fr 1.45fr; }
+.layout-preview-right i:first-child { grid-column: 2; grid-row: 1 / -1; }
+
+/* Adaptive pane heads: title ellipsis first, then measured secondary parts. */
+.pane-head-adaptive { box-sizing: border-box; height: 28px; min-height: 28px; padding: 0 8px; gap: 4px; line-height: 1.2; font-size: 12px; }
+.pane-head-adaptive > [data-head-part] { flex: none; }
+.pane-head.pane-head-adaptive > [data-head-part][hidden] { display: none; }
+.pane-head-adaptive > .dot { width: 8px; height: 8px; }
+.pane-head-adaptive > .pane-head-title { flex: 1 1 0; min-width: 56px; overflow: hidden; }
+.pane-head-adaptive .pane-title { display: block; width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: default; }
+.pane-head-adaptive .thread-name-text { display: inline; white-space: nowrap; }
+.pane-head-adaptive .pane-ws { max-width: 22ch; min-width: 0; padding: 0 6px; font-size: 11px; line-height: 18px; }
+.pane-head-adaptive .pane-host { min-width: 0; font-size: 11px; }
+.pane-head-adaptive .pane-head-status { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.pane-head-adaptive .pane-folder, .pane-head-adaptive .program-title { font-size: 11px; }
+.pane-head-adaptive .pane-counts { display: inline-flex; }
+.pane-head-adaptive > .pane-voice { display: inline-flex; flex: none; min-width: 0; max-width: min(260px, calc(100% - 112px)); }
+.pane-head-adaptive > .pane-voice:empty, .pane-voice-fallback:empty { display: none; }
+.pane-head-adaptive .voice-capsule { max-width: 100%; height: 24px; padding: 0 2px; gap: 4px; font-size: 11px; }
+.pane-head-adaptive .voice-capsule-body { height: 20px; padding: 0 3px; gap: 4px; }
+.pane-head-adaptive .voice-capsule .voice-callbtn, .pane-head-adaptive .voice-capsule .voice-end.round { width: 20px; height: 20px; }
+.pane-voice-fallback { display: flex; flex: none; justify-content: center; padding: 4px 0; }
+.pane-voice-fallback .voice-capsule { flex: none; }
+.pane-voice-fallback .voice-capsule-body, .pane-voice-fallback .voice-timer { display: none; }
+.pane-head-adaptive .thread-counts button { padding: 0 5px; line-height: 16px; }
+.pane-head-adaptive button.icon.small { display: inline-grid; place-items: center; width: 20px; height: 20px; min-width: 20px; min-height: 20px; padding: 0; font-size: 12px; line-height: 1; }
+.pane-head-adaptive .thread-name-input { box-sizing: border-box; width: 100%; height: 22px; padding: 0 4px; }
+.pane-head-adaptive:is(:hover, :focus-within) .pane-title.marquee { text-overflow: clip; mask-image: linear-gradient(90deg, transparent, #000 6px, #000 calc(100% - 10px), transparent); }
+.pane-head-adaptive:is(:hover, :focus-within) .pane-title.marquee .thread-name-text { display: inline-block; padding-inline: 2px; animation: pane-title-marquee var(--title-duration, 5s) ease-in-out .35s infinite alternate; }
+@keyframes pane-title-marquee { 0%, 12% { transform: translateX(0); } 88%, 100% { transform: translateX(var(--title-shift, 0px)); } }
+@media (prefers-reduced-motion: reduce) {
+  .pane-head-adaptive .pane-title.marquee { text-overflow: ellipsis !important; mask-image: none !important; }
+  .pane-head-adaptive .pane-title.marquee .thread-name-text { display: inline !important; animation: none !important; }
+}
+
+
+/* Dock growth refits the existing grid immediately, keeping live previews live. */
+.pane-map.refitting .pane-map-slot { transition: none; }
+.composer-dock-target { width: min(var(--deck-message-width, 44rem), calc(100% - 48px)); margin-inline: auto; padding: 8px 0 0; border: 0; border-radius: 0; background: transparent; text-align: left; align-items: center; }
+.composer-dock-target .dot { flex: none; }
+.composer-dock .composer-box { position: relative; }
+:root .composer-dock .composer-box > .quick-add {
+  position: absolute; top: auto; bottom: calc(100% + 8px); left: 0;
+  width: 100%; max-height: var(--quick-add-max, 260px); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 14px 34px rgba(0,0,0,.45); animation: none;
+}

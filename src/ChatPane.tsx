@@ -11,6 +11,7 @@ import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
 import './runner/runner.css';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
+import { PaneVoicePortal } from './PaneHead';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
 import { composerButton } from './voice/callView';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
@@ -113,18 +114,18 @@ import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { copyText, plainCopy } from "./copyText";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHold, type TurnKind } from "./turnQueue";
 import { queueSync } from "./phoneQueue";
-import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
+import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, replyLead, replyWith, type ReplyQuote } from "./reply";
 import { SelectionActions } from "./SelectionActions";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
-import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
+import { mediaSendsFor, missingPicture, priceSend, sourceKey } from "./mediaPrice";
 import { ModelMetricPills } from "./ModelMetricPills";
 import { METRICS_CAPABILITY, metricsRequest } from "./modelMetrics.ts";
 import { botGroups, reasoningLevels } from "./phoneRules";
 import { AttachedImages, AttachedVideos } from "./AttachedImages";
 import { saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
-import { exampleRows, recipientName } from "./recipients";
+import { exampleRows, recipientName, pickLead, namedIn, keptNames, hasMention } from "./recipients";
 import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
@@ -153,7 +154,19 @@ export interface PlanFeed {
   stop: (who: string) => Promise<void>;
 }
 
+import { composeWire } from "./wireText";
+import { Unsent } from "./turnQueue";
+import type { PendingFile, QueueRef, ThreadSendApi } from "./threadSendApi";
+
 interface Props {
+  tagThreads?: { paneId: string; hostId: string; title: string; project: string; outside?: boolean }[];
+  onTagThread?: (fromPaneId: string, picked: { paneId: string; hostId: string }, draft: { text: string; tldr: boolean }, triggerStart: number, triggerEnd: number) => void;
+  multiWaiting?: boolean;
+  multiBlocked?: boolean;
+  onOpenMulti?: () => void;
+  onSendApi?: (paneId: string, api: ThreadSendApi | null) => void;
+  dock?: { target: boolean; slot: HTMLElement | null; multi?: boolean; since?: number };
+  onWantComposer?: (paneId: string) => boolean;
   /** Feeds the Plan tab. Left out where there is no tab, which keeps the approval card. */
   onPlanRuns?: (id: string, feed: PlanFeed) => void;
   onOpenPlan?: (paneId: string, request: string) => void;
@@ -477,7 +490,7 @@ interface TurnProgress {
 const COPIED_MS = 1500;
 const PLAN_REFRESH_MS = 60_000;
 /** Said beside a paused queued message, so Resume is never a mystery. */
-const HOLD_REASON: Record<Exclude<QueueHold, "connection">, string> = { stopped: "you stopped this bot", failed: "its last reply failed" };
+const HOLD_REASON: Record<Exclude<QueueHold, "connection">, string> = { stopped: "you stopped this bot", failed: "its last reply failed", behind: "a message ahead needs Retry or Remove" };
 
 function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   if (phase === "tool") return "Working";
@@ -602,7 +615,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiBlocked = false, onOpenMulti, onSendApi, dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -874,24 +887,63 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   const noticeKey = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const composerMounted = !dock || (dock.target && !!dock.slot);
+  const savedInput = useRef<{ start: number; end: number; direction: "forward" | "backward" | "none"; scroll: number; height: string; text: string } | null>(null);
+  const restoreInput = useRef(false);
+  const wantInputFocus = useRef(false);
+  const wantedCaret = useRef<number | 'end' | null>(null);
+  const bindInput = useCallback((node: HTMLTextAreaElement | null) => {
+    const old = input.current;
+    if (old) savedInput.current = { start: old.selectionStart, end: old.selectionEnd, direction: old.selectionDirection, scroll: old.scrollTop, height: old.style.height, text: old.value };
+    input.current = node;
+    restoreInput.current = !!node;
+  }, []);
+  const showComposer = () => {
+    if (onWantComposer && !onWantComposer(pane.id)) {
+      return false;
+    }
+    wantInputFocus.current = true;
+    input.current?.focus();
+    return true;
+  };
+  useLayoutEffect(() => {
+    const node = input.current;
+    if (!node) return;
+    if (restoreInput.current) {
+      restoreInput.current = false;
+      const saved = savedInput.current;
+      fitHeight(node);
+      if (saved) {
+        if (saved.text === node.value) node.style.height = saved.height;
+        node.setSelectionRange(saved.start, saved.end, saved.direction);
+        node.scrollTop = saved.scroll;
+      }
+    }
+    if (wantInputFocus.current) { wantInputFocus.current = false; node.focus(); }
+    if (wantedCaret.current !== null) {
+      const end = wantedCaret.current === 'end' ? node.value.length : wantedCaret.current;
+      wantedCaret.current = null;
+      node.focus(); node.setSelectionRange(end, end);
+    }
+  });
   useEffect(() => {
     const insert = (event: Event) => {
       const detail = (event as CustomEvent<{ paneId: string; text: string }>).detail;
-      if (detail?.paneId !== pane.id || !detail.text) return;
+      if (detail?.paneId !== pane.id || !detail.text || !showComposer()) return;
       const field = input.current;
-      const caret = field?.selectionStart ?? text.length;
+      const caret = field?.selectionStart ?? savedInput.current?.start ?? text.length;
       const next = insertAt(text, null, caret, detail.text);
       setText(next.text); setCaret(next.caret);
-      requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+      wantedCaret.current = next.caret;
     };
     window.addEventListener(INSERT_COMPOSER_EVENT, insert);
     return () => window.removeEventListener(INSERT_COMPOSER_EVENT, insert);
-  }, [pane.id, text]);
+  }, [pane.id, text, onWantComposer]);
   const composer = useRef<HTMLDivElement>(null);
   // Grow the message box with its text, up to the CSS max-height.
   useLayoutEffect(() => {
     if (input.current) fitHeight(input.current);
-  }, [text]);
+  }, [text, composerMounted, dock?.slot]);
   // Refit when its width changes: a pane opened from hiding, or resized so
   // the text wraps differently. Height changes are its own and are skipped.
   useEffect(() => {
@@ -905,7 +957,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
     });
     observer.observe(box);
     return () => observer.disconnect();
-  }, []);
+  }, [composerMounted, dock?.slot]);
   /** Whether the transcript sat at its bottom when it was last scrolled. New
    *  content follows only then; scrolled up, the transcript keeps your place. */
   const stuck = useRef(true);
@@ -922,7 +974,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
     const obs = new ResizeObserver(publish);
     obs.observe(box);
     return () => obs.disconnect();
-  }, [profileMode]);
+  }, [profileMode, composerMounted, dock?.slot]);
   /** Open approval cards wholly out of view, oldest first. */
   const [cardsAway, setCardsAway] = useState<CardBox[]>([]);
   /** Find the open cards on screen and note which are out of view. */
@@ -993,7 +1045,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
     const observer = new ResizeObserver(([entry]) => { if (entry.contentRect.width) setStacked(entry.contentRect.width < STACK_PX); });
     observer.observe(box);
     return () => observer.disconnect();
-  }, []);
+  }, [composerMounted, dock?.slot]);
   const saving = attached.some((a) => !a.path && !a.error);
   const sendable = attached.filter((a) => a.path);
   const activity = useRef(onActivity);
@@ -1645,6 +1697,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
     backend
       .roomClear(pane.id)
       .then(() => {
+        turnQueue.items.forEach(item => turnQueue.remove(item.id));
         discardAnswerSettingsAfter(answerCurrent.current, 0);
         messageNumbers.truncate(0);
         loadedSteps.current.clear();
@@ -1662,11 +1715,16 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
       .catch((error) => notify(`Could not clear the chat: ${String(error)}`, "error"));
   };
 
+  const queueContextJob = (command: string, kind: TurnKind, keep: boolean): number => {
+    const { id, done } = turnQueue.admit({ kind, routing: command, to: null, label: command, keep, prepare: async () => ({ text: command }) });
+    void done.catch(error => { if (!keep) notify(String(error), "error"); });
+    return id;
+  };
   const contextJob = (command: string, kind: TurnKind) => {
     setText("");
     setReplies([]);
     setBusy(true);
-    void turnQueue.send(command, kind).catch(error => notify(String(error), "error"));
+    queueContextJob(command, kind, false);
   };
   /** Have a model summarize the chat. The models then see the summary in
    *  place of the messages so far; the person still sees them all. */
@@ -1675,8 +1733,10 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   const curateChat = () => contextJob("/curate", "curate");
   const undoCuration = () => contextJob("/curate undo", "curate_undo");
 
-  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
-  dispatch.current = async (message, to, kind, hops) => {
+  const shownSendErrors = useRef(new Set<unknown>());
+  const finalCheck = useRef<(to: string[], item: ParticipantMessage) => string | null>(() => null);
+  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null, oneOff?: true, parts?: import("./turnQueue").WireParts) => Promise<void>>(async () => {});
+  dispatch.current = async (message, to, kind, hops, oneOff, parts) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
@@ -1695,13 +1755,19 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
         // A failed final save can leave what bots see changed, so show what the host has.
         const state = await backend.roomState?.(pane.id).catch(() => null);
         if (state) setEntries((list) => withCurationNotes(list, state.snapshot.curations ?? []));
+        shownSendErrors.current.add(error);
+        throw error;
       } finally {
         setDrafts({});
         setWorking({});
         to.forEach(id => turnQueue.idle(id));
       }
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
-    else await backend.roomPostTo(pane.id, message, to);
+    else if (oneOff) {
+      const named = namedIn(parts?.typed ?? message, participants);
+      const posted = pickLead(to.filter(id => !named.includes(id)), participants) + message;
+      await backend.roomPostTo(pane.id, posted, to, undefined, undefined, true);
+    } else await backend.roomPostTo(pane.id, message, to);
   };
   // The queue lives as long as the pane; a thread moved before it started runs somewhere else, so it asks the current backend.
   const current = useRef(backend);
@@ -1713,20 +1779,22 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   const voiceBridges = useRef(new Map<string, ReturnType<typeof createThreadVoiceBridge>>());
   const [turnQueue] = useState(() => new ParticipantQueues(
     async (message): Promise<string[]> => stickyFor(message, turnQueue.items) ?? current.current.roomTargets(pane.id, message),
-    async (message, to, kind, hops, voice) => {
-      if (!voice) return dispatch.current(message, to, kind, hops);
+    async (message, to, kind, hops, voice, oneOff, parts) => {
+      if (!voice) return dispatch.current(message, to, kind, hops, oneOff, parts);
       try { await current.current.roomPostTo(pane.id, message, to, false, {client_turn_id:voice.requestId,max_bot_hops:0}); }
       catch(error) { voiceBridges.current.get(to[0])?.fail(voice.requestId,error); throw error; }
     },
     id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); },
-    error => { notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
+    error => { if (shownSendErrors.current.delete(error)) return; if (error instanceof Unsent) { notify(error.message, "error"); return; } notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
     true, // A failed send keeps its message here, so the thread shows it and can retry.
     // Asked again when a queued message is actually sent, so a rule changed while it waited still applies.
     (message) => current.current.roomTargets(pane.id, message),
+    (to, item) => finalCheck.current(to, item),
   ));
+  useEffect(() => () => turnQueue.close(), [turnQueue]);
   useEffect(() => {
     const store = backend.host?.connection;
     if (!store) return;
@@ -1886,7 +1954,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   };
   const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => partQuote(p.message, p.text, (id) => names.get(id) ?? id);
   const addPicked = () => {
-    if (!picked) return;
+    if (!picked || !showComposer()) return;
     const next = pickedQuote(picked);
     setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]);
     setPicked(null);
@@ -1947,7 +2015,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
       const problem = failedLine(failed);
       if (problem) notify(problem, "error");
       else if (request.files.length) notify(`Put back ${request.files.length === 1 ? request.files[0] : `${request.files.length} files`}.`, "info");
-      if (kind === "revert" && request.chat) { setText(message.text); input.current?.focus(); }
+      if (kind === "revert" && request.chat && showComposer()) { setText(message.text); input.current?.focus(); }
       if (kind === "retry" && bot) { stuck.current = true; turnQueue.turn([bot], null); }
     }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
   };
@@ -1994,7 +2062,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   };
   /** Directional disclosure for message actions; the row wraps in a narrow pane. */
   const messageActions = (message: Message) => {
-    const quote = () => { const next = quoteFor(message, (id) => names.get(id) ?? id); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
+    const quote = () => { if (!showComposer()) return; const next = quoteFor(message, (id) => names.get(id) ?? id); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
     const copy = () => void copyMessage(message);
     const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
     const goBackKind: GoBack | null = message.speaker.kind === "bot" ? "retry" : message.speaker.kind === "human" ? "revert" : null;
@@ -2266,11 +2334,12 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   const autoStartKey = useMemo(() => latestGeneratedCardKey(messagesOf(entries)), [entries]);
   /** "Discuss these settings": the snapshot goes in the message box, never straight to the bots. */
   const discussCard = (snapshot: string) => {
+    if (!showComposer()) return;
     const next = discussDraft(text, snapshot);
     setText(next);
     setCaret(next.length);
     if (details?.overlay) details.close();
-    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
+    wantedCaret.current = next.length;
   };
   const cardIn = (message: Message) => (code: { language: string; text: string }) =>
     code.language === CARD_LANGUAGE
@@ -2425,6 +2494,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
         onStop={() => codeRuns.stop(key)} onDismiss={() => codeRuns.dismiss(key)}
         onOpenTerminal={onOpenTerminal && (() => onOpenTerminal(run.command))}
         onAddToMessage={() => {
+    if (!showComposer()) return;
           const block = outputForMessage(run);
           setText((current) => current.trim() ? `${current.replace(/\s+$/, "")}\n\n${block}\n` : `${block}\n`);
           input.current?.focus();
@@ -2455,6 +2525,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   useEffect(() => {
     const row = chipRow.current;
     if (!row) return;
+    fitChips(row);
     let width = row.clientWidth;
     let frame = 0;
     const observer = new ResizeObserver(() => {
@@ -2465,7 +2536,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
     });
     observer.observe(row);
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, []);
+  }, [composerMounted, dock?.slot]);
 
   // The newest local server address a bot mentioned, for the chip in the pane
   // head. Only finished replies are messages; text still streaming is not, so
@@ -2498,6 +2569,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
       });
   };
   const attachFiles = (files: Iterable<File>) => {
+    if (!showComposer()) return;
     if (talkOnly) return;
     for (const file of files) {
       const name = attachmentName(file.name, file.type);
@@ -2509,6 +2581,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   /** Ask for review: attach the thread's change as a patch for `id` and fill
    *  the composer with the request. It never sends. */
   const askForReview = (id: string, split: boolean) => {
+    if (!showComposer()) return;
     const files = diff?.files ?? [];
     const whole = reviewPatch(files);
     const parts = split ? reviewPatches(files) : whole ? [whole] : [];
@@ -2530,9 +2603,16 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   // The desktop window takes file drops itself and reports their paths.
   const attachDropped = useRef<(paths: string[], x: number, y: number) => void>(() => {});
   attachDropped.current = (paths, x, y) => {
-    if (talkOnly) return;
-    const box = composer.current?.parentElement?.getBoundingClientRect();
-    if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
+    if (talkOnly || dock?.multi) return;
+    const contains = (el: Element | null | undefined) => {
+      const box = el?.getBoundingClientRect();
+      return !!box && box.width > 0 && box.height > 0 && x >= box.left && x < box.right && y >= box.top && y < box.bottom;
+    };
+    const map = root.current?.closest('[data-pane-map-region]');
+    const hit = map
+      ? (contains(root.current) && contains(map)) || (!!dock?.target && contains(composer.current?.closest('.composer-dock')))
+      : contains(composer.current?.parentElement);
+    if (!hit || (dock && !dock.target && !showComposer())) return;
     for (const path of paths) {
       const name = path.replace(/\/+$/, "").split("/").pop() || path;
       track(name, undefined, () => backend.copyAttachment(pane.id, path));
@@ -2542,6 +2622,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   };
   /** Attach a file on this Mac by its path: Files' list and Browse all. A server thread gets a copy. */
   const attachPath = (path: string) => {
+    if (!showComposer()) return;
     const name = path.replace(/\/+$/, "").split("/").pop() || path;
     track(name, undefined, () => backend.copyAttachment(pane.id, path));
     recentFiles.remember(path);
@@ -2569,7 +2650,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
   useEffect(() => {
     if (countsSlot !== undefined) return;
     const head = headSlot?.closest<HTMLElement>(".pane-head");
-    if (!head) return;
+    if (!head || head.hasAttribute("data-adaptive-head")) return;
     fitHead(head);
     const resized = new ResizeObserver(() => fitHead(head));
     resized.observe(head);
@@ -2617,8 +2698,9 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
     if (!workTools.some((t) => t.token === server.token)) workTools.push({ token: server.token, label: server.label, bot: p.display_name });
   }
   const useTool = (token: string) => {
+    if (!showComposer()) return;
     setText((current) => appendToolToken(current, token));
-    requestAnimationFrame(() => { const end = input.current?.value.length ?? 0; input.current?.focus(); input.current?.setSelectionRange(end, end); });
+    wantedCaret.current = 'end';
   };
   const requestedServers = parseServerRequests(text).map(s => s.name);
   const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
@@ -2687,7 +2769,77 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
     }
     return true;
   };
+  const admittingOwn = useRef(false);
+  const [ownSending, setOwnSending] = useState(false);
+  const sendChecks = useRef({ participants, serverLists, providerModels });
+  sendChecks.current = { participants, serverLists, providerModels };
+  const checkSend = (to: string[], servers: string[], pictures: boolean): string | null => {
+    const now = sendChecks.current;
+    const unknown = to.length && to.every(id => now.serverLists[id] !== undefined)
+      ? resolveServerRequests(servers, to.flatMap(id => now.serverLists[id])).unknown : [];
+    if (unknown.length) return `No server, app or plugin called "${unknown[0]}" for ${to.map(id => now.participants.find(p => p.id === id)?.display_name ?? id).join(", ")}`;
+    const missing = missingPicture(mediaSendsFor(to, now.participants, now.providerModels, pictures));
+    return missing ? `${missing.name} needs a picture: attach one to animate.` : null;
+  };
+  finalCheck.current = (to, item) => item.routing === undefined ? null : checkSend(to, item.servers ?? [], (item.parts?.paths ?? []).some(isImage));
+  const submitDraft = (d: { body: string; routing: string; lead: string; servers: string[]; replies: ReplyQuote[] | null; paths: string[]; files: PendingFile[]; tldr: boolean; to: string[] | null }, keep: boolean) => turnQueue.admit({
+    kind: "message", routing: d.routing, servers: d.servers, to: d.to, label: d.body, keep,
+    prepare: async to => {
+      const refusal = checkSend(to, d.servers, d.paths.some(isImage) || d.files.some(file => isImage(file.name)));
+      if (refusal) throw new Unsent(refusal);
+      const hooked = d.body ? await modHost.promptSubmit(pane.id, d.body) : { text: d.body };
+      if (hooked.deny) throw new Unsent(hooked.deny);
+      const paths = [...d.paths];
+      for (const file of d.files) {
+        if (!file.bytes) throw new Unsent(`Still reading ${file.name}.`);
+        paths.push(await current.current.saveAttachment(pane.id, attachmentName(file.name), file.bytes));
+      }
+      const body = postable(hooked.text);
+      const named = keptNames(d.body, body, sendChecks.current.participants) + body;
+      const typed = (named.trim() || d.lead) ? replyWith(named, d.replies ?? [], d.lead) : "";
+      return { text: composeWire(typed, paths, d.tldr), parts: { typed, paths, tldr: d.tldr } };
+    },
+  });
+  const [canPickAgent, setCanPickAgent] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setCanPickAgent(false);
+    backend.postCapabilities?.().then(caps => { if (live) setCanPickAgent(caps.keep_default_v1); }).catch(() => {});
+    return () => { live = false; };
+  }, [backend]);
+  const apiState = useRef({ submitDraft, text, tldr, attached, replies, participants, clear: () => {} });
+  apiState.current = { submitDraft, text, tldr, attached, replies, participants, clear: () => {
+    setText(""); setReplies([]);
+    attached.forEach(a => a.preview && URL.revokeObjectURL(a.preview)); setAttached([]);
+  } };
+  useEffect(() => {
+    if (!onSendApi || profileMode || talkOnly) return;
+    const same = (ref: QueueRef) => ref.queue === turnQueue.instance;
+    const api: ThreadSendApi = {
+      paneId: pane.id, hostId: backend.host?.id ?? "local", queue: turnQueue.instance, canPickAgent,
+      agents: () => apiState.current.participants.map(p => ({ id: p.id, handle: mentionFor(p), name: p.display_name })),
+      defaultTargets: () => current.current.roomTargets(pane.id, ""),
+      submit: p => {
+        const { id, done } = apiState.current.submitDraft({ body: p.text, routing: p.routing, lead: "", servers: parseServerRequests(p.routing).map(s => s.name), replies: null, paths: [], files: p.files, tldr: p.tldr, to: p.to }, true);
+        void done.catch(() => {});
+        return { queue: turnQueue.instance, id };
+      },
+      command: name => ({ queue: turnQueue.instance, id: queueContextJob(name === "curate_undo" ? "/curate undo" : `/${name}`, name, true) }),
+      status: ref => same(ref) ? turnQueue.status(ref.id) : "unknown",
+      watch: (ref, cb) => { if (same(ref)) return turnQueue.watch(ref.id, cb); cb("unknown"); return () => {}; },
+      retry: ref => { if (!same(ref) || turnQueue.status(ref.id) !== "failed") return "gone"; turnQueue.retry(ref.id); return "retried"; },
+      remove: ref => { if (same(ref) && turnQueue.status(ref.id) === "failed") turnQueue.remove(ref.id); },
+      giveUp: ref => { if (same(ref)) turnQueue.giveUp(ref.id); },
+      unsent: () => turnQueue.unsent(), suspend: reason => turnQueue.suspend(reason),
+      draft: () => { const d = apiState.current; return { text: d.text, tldr: d.tldr, attachments: d.attached.length, quotes: d.replies.length }; },
+      clearDraft: () => apiState.current.clear(),
+    };
+    onSendApi(pane.id, api);
+    return () => onSendApi(pane.id, null);
+  }, [onSendApi, pane.id, backend, canPickAgent, turnQueue, profileMode, talkOnly]);
+
   const send = async (steer = false) => {
+    if (admittingOwn.current || (dock?.since && Date.now() - dock.since < 600)) return;
     if (!ready || chatReadOnly || chatBlocked) return;
     if (talkOnly && onChatSend) {
       const body = text.trim();
@@ -2702,10 +2854,6 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
       return;
     }
     panelDismissed.current = false;
-    const targetIds = stickyFor(text, turnQueue.items) ?? await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
-    const invalid = targetIds.length && targetIds.every(id => serverLists[id] !== undefined)
-      ? resolveServerRequests(parseServerRequests(text).map(s => s.name), targetIds.flatMap(id => serverLists[id])).unknown : [];
-    if (invalid.length) { notify(`No server, app or plugin called "${invalid[0]}" for ${targetIds.map(id => names.get(id) ?? id).join(", ")}`, "error"); return; }
     const body = text.trim();
     // A command a mod registered runs in the mod, never reaching the models.
     const modCommand = body && !sendable.length ? modHost.commandFor(body) : null;
@@ -2722,45 +2870,38 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
       return runCommand({name:runnerMode,arg:runnerMode==='loop'?`${runnerInterval} ${body}`:`start ${body}`});
     }
     if (participants.length === 0) return;
-    // A picture or video bot needs its picture. Each picture or video is asked for on the bot's own card, before it is made.
-    const sends = mediaSendsFor(targetIds, participants, providerModels, sendable.some(a => isImage(a.path!)));
-    if (sends.length) {
-      const { missing } = await priceSend(sends, backend);
-      if (missing) { notify(`${missing.name} needs a picture: attach one to animate.`, "error"); return; }
-    }
     // Sending takes you to the bottom, where your message and the replies land,
     // and clears "New since you looked".
     stuck.current = true;
     setUnread(0);
     setDividerAt(null);
-    // Mods allowed to see the session may rewrite the prompt or refuse it.
-    const hooked = parsed.text ? await modHost.promptSubmit(pane.id, parsed.text) : { text: parsed.text };
-    if (hooked.deny) { notify(hooked.deny, "error"); return; }
-    const message = withTldr(withAttachments(hooked.text && replyText(postable(hooked.text), replies.length ? replies : null, participants), sendable.map((a) => a.path!)), tldr);
-    if (!backend.host || hostCanMutate(backend.host.connection.get().status)) { /* rechecked by queue acceptance */ } else return;
+    const lead = replyLead(parsed.text, replies, participants);
+    const { done } = submitDraft({ body: parsed.text, routing: replyWith(parsed.text, replies, lead), lead, servers: parseServerRequests(text).map(s => s.name), replies, paths: sendable.map(a => a.path!), files: [], tldr, to: null }, false);
     if (tldr) wiggle(field.current);
-    // ⌘↵ queues it, then steers it from the queue, so a cancelled prompt leaves it queued.
     setSendingFirst(true);
-    void turnQueue.send(message).then(id => {
-      setText(current => current === text ? "" : current); setReplies([]);
+    admittingOwn.current = true; setOwnSending(true);
+    void done.then(id => {
+      setText(current => current === text ? "" : current);
+      setReplies(current => current.filter(quote => !replies.includes(quote)));
       attached.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
       setAttached(current => current.filter(a => !attached.includes(a)));
       const item = turnQueue.items.find(queuedItem => queuedItem.id === id);
       if (steer && item) askToSteer(item);
-      // A message queued while the person holds the phone tells waiting bots to end their turn.
-      // Only a message still in the queue counts: one to an idle bot was posted at once.
-      if (item) void backend.phone?.chatQueued(pane.id).catch(() => {});
-    }).catch(error => { setSendingFirst(false); notify(String(error), "error"); });
+      if (item) void current.current.phone?.chatQueued(pane.id).catch(() => {});
+    }).catch(error => { setSendingFirst(false); notify(String(error), "error"); })
+      .finally(() => { admittingOwn.current = false; setOwnSending(false); });
   };
 
   /** Put an example in the composer without sending it. */
   const insertExample = (example: string) => {
+    if (!showComposer()) return;
     const next = text.trim() ? `${text.trimEnd()} ${example}` : example;
     setText(next);
     setCaret(next.length);
-    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
+    wantedCaret.current = next.length;
   };
   const mention = (bot: ParticipantConfig) => {
+    if (!showComposer()) return;
     const handle = mentionFor(bot);
     setText((t) => (t && !t.endsWith(" ") ? `${t} @${handle} ` : `${t}@${handle} `));
     input.current?.focus();
@@ -3715,12 +3856,21 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
 
   const landing = entries.length === 0 && Object.keys(drafts).length === 0;
 
+  const threadTrigger = findTrigger(text, caret);
+  const threadBlock = multiBlocked ? "Retry or discard the failed batch first. Your own draft is kept."
+    : multiWaiting ? "A multi-thread message is waiting. Open it to add this thread there."
+      : attached.length || replies.length ? "Send or remove this thread's pictures and quotes first, or ⌘-click panes to start a multi-thread message." : null;
+  const threadItems = tagThreads?.filter(thread => `${thread.title} ${thread.project}`.toLowerCase().includes(threadTrigger?.query ?? "")).map(thread => ({
+    kind: "thread" as const, paneId: thread.paneId, hostId: thread.hostId, label: thread.title, detail: thread.project,
+    disabledReason: thread.outside ? "In its own window" : threadBlock ?? undefined,
+  }));
+  const renderComposer = (content: React.ReactNode) => dock ? (dock.slot ? createPortal(content, dock.slot) : null) : content;
   return (
     <div ref={root} data-bot-chip-style={chipParts.style ?? "classic"} className={`chat ${profileMode ? "" : `thread-chat${landing ? " thread-landing" : ""}`}`}>
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && <LegacyImportPanel backend={backend} />}
       {!profileMode && legacy && <div className="legacy-room-marker"><LegacyBadge scope="room" /></div>}
-      {!profileMode && !talkOnly && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
+      {!profileMode && !talkOnly && headSlot && createPortal(threadCounts, headSlot)}
 
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings textOnly={talkOnly} talkOnly={talkOnly} disabledReason={chatReadOnly ? "This chat moved to a Work thread." : undefined} accessPending={Boolean(pendingSettings[quickSettings.id])} accessChange={(() => {
         const from = accessFrom[quickSettings.id], bot = participants.find(p => p.id === quickSettings.id);
@@ -3957,25 +4107,33 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
           const hold = item.failed ? null : turnQueue.holdOf(item);
           return <div key={`q${item.id}`} className="queued-inline">
             {editingQueued === item.id
-              ? <textarea className="q-edit" aria-label={`Edit queued message ${item.id}`} autoFocus rows={2} defaultValue={item.text}
+              ? <textarea className="q-edit" aria-label={`Edit queued message ${item.id}`} autoFocus rows={2} defaultValue={item.parts?.typed ?? item.text}
                   onKeyDown={(e) => { if (e.key === "Escape" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); e.currentTarget.blur(); } }}
                   onBlur={(e) => {
                     setEditingQueued(null);
-                    if (e.target.value === item.text) return;
+                    if (e.target.value === (item.parts?.typed ?? item.text)) return;
                     const parsed = parseQueueEdit(e.target.value);
-                    if ("text" in parsed) turnQueue.edit(item.id, parsed.text);
+                    if ("text" in parsed) {
+                      if (item.parts) {
+                        if (!parsed.text.trim() && !item.parts.paths.length) return;
+                        const parts = { ...item.parts, typed: parsed.text };
+                        void turnQueue.edit(item.id, composeWire(parts.typed, parts.paths, parts.tldr), "message", { routing: e.target.value.trim(), parts, servers: parseServerRequests(e.target.value).map(s => s.name) }, !!item.oneOff && !hasMention(e.target.value, participants)).catch(error => notify(String(error), "error"));
+                      } else void turnQueue.edit(item.id, parsed.text).catch(error => notify(String(error), "error"));
+                    }
                     else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
                     else if (!talkOnly && parsed.command.name === "curate") turnQueue.edit(item.id, "/curate", "curate");
                     else if (!talkOnly && parsed.command.name === "curate_undo") turnQueue.edit(item.id, "/curate undo", "curate_undo");
                     else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
                   }} />
-              : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}
+              : <button type="button" className="q-text" title="Edit" disabled={!!item.unmade} onClick={() => setEditingQueued(item.id)}>{item.parts?.typed ?? splitTldr(item.text).text}</button>}
+            {item.parts && (item.parts.paths.length > 0 || item.parts.tldr) && <span className="q-added">{[item.parts.paths.length ? `+ ${item.parts.paths.length} attachment${item.parts.paths.length === 1 ? "" : "s"}` : "", item.parts.tldr ? "TL;DR" : ""].filter(Boolean).join(" · ")}</span>}
+            {(item.unmade || item.refused) && <span className="q-why">{item.refused ?? (turnQueue.status(item.id) === "preparing" ? "Preparing…" : item.failure ?? "Not sent")}</span>}
             <div className="q-meta">
-              <span className="q-for">{item.failed ? "Send unconfirmed for" : hold === "connection" ? "Waiting for the connection for" : hold ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span>{hold && hold !== "connection" && <span className="q-why"> · {HOLD_REASON[hold]}</span>}</span>
-              {hold && <><i className="q-sep" /><button type="button" onClick={() => turnQueue.resume()}>Resume</button></>}
+              <span className="q-for">{item.unmade || item.refused ? "Not sent for" : item.failed ? "Send unconfirmed for" : hold === "connection" ? "Waiting for the connection for" : hold ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span>{hold && hold !== "connection" && <span className="q-why"> · {HOLD_REASON[hold]}</span>}</span>
+              {hold && hold !== "behind" && <><i className="q-sep" /><button type="button" onClick={() => turnQueue.resume()}>Resume</button></>}
               {steerable && <><i className="q-sep" /><button type="button" title={`Send to ${who} now, mid-turn (⌘↵)`} onClick={() => askToSteer(item)}>Steer <SteerArrow /></button></>}
               <i className="q-sep" />
-              {item.failed && <button type="button" title="The host may already have received this message. Check the chat before retrying." onClick={() => turnQueue.retry(item.id)}>Retry send</button>}
+              {item.failed && <button type="button" title={item.unmade || item.refused ? "Try sending again" : "The host may already have received this message. Check the chat before retrying."} onClick={() => turnQueue.retry(item.id)}>Retry send</button>}
               <button type="button" className="q-trash" aria-label="Remove queued message" title="Remove" onClick={() => turnQueue.remove(item.id)}><TrashIcon /></button>
               {steerAsking === item.id && <div className="steer-pop" role="dialog" aria-label="Steer now?"
                 onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); answerSteer(item, "cancel"); } }}>
@@ -4036,9 +4194,9 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
       {!profileMode && !talkOnly && !(panel && !artifactsHost) && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
       </div>}
 
-      {!profileMode && <div className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
+      {!profileMode && composerMounted && renderComposer(<div data-bot-chip-style={chipParts.style ?? "classic"} data-room-ready={roomReady ? "" : undefined} className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
-        onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attachFiles(e.dataTransfer.files); } }}>
+        onDrop={(e) => { if (dock?.multi) return; if (e.dataTransfer.files.length) { e.preventDefault(); attachFiles(e.dataTransfer.files); } }}>
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
@@ -4085,14 +4243,20 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
+        {!profileMode && !talkOnly && <PaneVoicePortal countsSlot={headSlot}><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} /></PaneVoicePortal>}
         {!talkOnly && <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />}
-        <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock"} ref={field}>
+        <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock" && !dock} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
           <RunnerDrawer snapshot={runner} hostNowOffsetMs={runnerHostOffset} composerRef={input} platform="desktop" endRequest={runnerEndRequest} showRequest={runnerShowRequest} onEndCancel={()=>{runnerClear.current=false;}}
             onAction={(action,limits)=>{if(!runner)return;void runnerAction(backend,pane.id,runner,action,limits,runnerClear.current).then(next=>{runnerClear.current=false;setRunner(next);}).catch(error=>notify(String(error),'error'));}}
             onReviewChanges={()=>{setTurnPaths(runner?.changedPaths??[]);setFocusPath(null);details?.show("changes");loadDiff();}}/>
           {runnerMode&&!runnerUnfinished&&<RunnerSetup config={runnerConfig} onConfig={setRunnerConfig} participants={participants.map(p=>({id:p.id,name:p.display_name}))} kind={runnerMode} interval={runnerInterval} onInterval={setRunnerInterval} limits={runnerLimits} onLimits={setRunnerLimits} onCancel={()=>setRunnerMode(null)}/>}
-          <ComposerMenu talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} disabledCommands={runnerUnfinished?{goal:`A ${runner!.kind} is unfinished here. End it first.`,loop:`A ${runner!.kind} is unfinished here. End it first.`}:planOn?{goal:'Turn off Plan first',loop:'Turn off Plan first'}:backend.supports?.('room_runner_v1')===false?{goal:'Update this host to use goals and loops',loop:'Update this host to use goals and loops'}:{}} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          <ComposerMenu threadItems={threadItems} threadNotice={threadBlock && <div role="status" className="muted">{threadBlock}{multiWaiting && !multiBlocked && <button type="button" onPointerDown={event => event.preventDefault()} onClick={onOpenMulti}>Open it</button>}</div>} talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} disabledCommands={runnerUnfinished?{goal:`A ${runner!.kind} is unfinished here. End it first.`,loop:`A ${runner!.kind} is unfinished here. End it first.`}:planOn?{goal:'Turn off Plan first',loop:'Turn off Plan first'}:backend.supports?.('room_runner_v1')===false?{goal:'Update this host to use goals and loops',loop:'Update this host to use goals and loops'}:{}} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={threadTrigger} choose={(item, trigger) => {
+            if (item.kind === "thread") {
+              if (!trigger || threadBlock || item.disabledReason || !onTagThread) return;
+              onTagThread(pane.id, { paneId: item.paneId, hostId: item.hostId }, { text, tldr }, trigger.start, trigger.end);
+              return;
+            }
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)));
             if (item.kind === "command" && (item.key === 'goal' || item.key === 'loop') && !trigger) { armRunner(item.key); return; }
@@ -4110,7 +4274,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
           }} />
           <div className="composer-field">
         <textarea
-          ref={input}
+          ref={bindInput}
           aria-label="Message the room"
           aria-invalid={unknownServers.length > 0}
           onPaste={(e) => {
@@ -4143,7 +4307,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
           {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
           {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
-          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
+          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title={ownSending ? "Sending…" : "Send (↵)"} onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={ownSending || chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
@@ -4153,7 +4317,7 @@ export function ChatPane({ onPlanRuns, onOpenPlan, talkOnly = false, chatDraft =
         {chatDelivery}
         {botChips}
         </div>
-      </div>}
+      </div>)}
     </div>
   );
 }

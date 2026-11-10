@@ -1,7 +1,6 @@
 // Where a popped-out pane or side-panel tab sat, so it can go back.
 // Pure data + pure functions: no windows, no React, tested on its own.
 
-import { addLeaf, insertBeside, leafIds, MIN_SHARE, normalize, removeLeaf, type Dir, type LayoutNode } from "./layout.ts";
 import type { PanelTab, RightPanelState, TabKind } from "./rightPanelModel.ts";
 import type { ChipParts } from "./botChip";
 import type { DashboardDestination, DashRow } from "./dashboardModel";
@@ -104,21 +103,27 @@ export interface PopoutSnapshot {
   appearance?: AppearanceValues | AppearanceSettings;
 }
 
-/** Which side of its neighbour a pane sat on. */
-export type PopoutSide = "left" | "right" | "top" | "bottom";
-
-/** Where a pane sat in its workspace layout. */
+/** Where a pane sat in its section's computed order. */
 export interface PaneSpot {
   workspaceId: string;
-  /** The neighbour in the pane's own split, nearest pane first: one pane, or every pane of a
-   *  neighbouring group, so the return goes beside the whole group. Empty when the layout was left empty. */
-  neighborIds: string[];
-  /** Which side of the neighbour the pane sat on. */
-  side: PopoutSide;
-  /** The pane's share of its parent split (0 to 1), so a return keeps its size. */
-  share: number;
-  /** The layout with the pane still in place; an unchanged layout comes back exactly. */
-  before: LayoutNode | null;
+  index: number;
+  before: string[];
+}
+
+/** Return beside the nearest surviving old neighbour, then fall back to its index. */
+export function restoreOrder(order: string[], paneId: string, spot: PaneSpot): string[] {
+  if (order.includes(paneId)) return order;
+  const next = [...order];
+  const oldIndex = spot.before.indexOf(paneId);
+  const preceding = oldIndex < 0 ? [] : spot.before.slice(0, oldIndex).reverse();
+  const following = oldIndex < 0 ? [] : spot.before.slice(oldIndex + 1);
+  const prior = preceding.find(id => order.includes(id));
+  const after = following.find(id => order.includes(id));
+  const index = prior !== undefined ? order.indexOf(prior) + 1
+    : after !== undefined ? order.indexOf(after)
+    : Number.isFinite(spot.index) ? Math.trunc(spot.index) : next.length;
+  next.splice(Math.max(0, Math.min(index, next.length)), 0, paneId);
+  return next;
 }
 
 /** Where a tab sat in the side-panel tab strip. */
@@ -194,112 +199,10 @@ export interface PopoutUpdate {
   appearance?: AppearanceValues | AppearanceSettings;
 }
 
-export interface PaneTakeout {
-  layout: LayoutNode | null;
-  spot: PaneSpot;
-}
-
 export interface TabTakeout {
   panel: RightPanelState;
   tab: PanelTab;
   spot: TabSpot;
-}
-
-type Split = Extract<LayoutNode, { kind: "split" }>;
-
-/** A pane's parent split and the pane's seat in it. */
-function parentSplit(node: LayoutNode, id: string): { split: Split; index: number } | null {
-  if (node.kind === "leaf") return null;
-  for (let i = 0; i < node.children.length; i++) {
-    const child = node.children[i];
-    if (child.kind === "leaf" && child.id === id) return { split: node, index: i };
-    if (child.kind === "split") {
-      const found = parentSplit(child, id);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-/** Give a leaf a share of its parent split, scaling its siblings to fit. */
-function setLeafShare(node: LayoutNode, id: string, share: number): LayoutNode {
-  if (!Number.isFinite(share)) return node;
-  const want = Math.min(1 - MIN_SHARE, Math.max(MIN_SHARE, share));
-  const place = (n: LayoutNode): LayoutNode => {
-    if (n.kind === "leaf" || n.children.length < 2) return n;
-    const at = n.children.findIndex((c) => c.kind === "leaf" && c.id === id);
-    if (at >= 0) {
-      const old = n.sizes[at] > 0 ? n.sizes[at] : 1 / n.children.length;
-      const rest = 1 - old;
-      const sizes = n.sizes.map((s, i) => (i === at ? want : rest > 0 ? (s / rest) * (1 - want) : (1 - want) / (n.children.length - 1)));
-      return { ...n, sizes };
-    }
-    return { ...n, children: n.children.map(place) };
-  };
-  return place(node);
-}
-
-/** Put a pane against one side of a group of panes: the subtree holding exactly them, or a run
- *  of children in one split holding exactly them, which is where a pop-out folds a two-child
- *  split's group. A group broken up meanwhile falls back to its nearest pane. */
-function insertBesideGroup(node: LayoutNode, group: string[], newId: string, side: PopoutSide): LayoutNode {
-  const want = new Set(group);
-  const exactly = (ids: string[]) => ids.length === want.size && ids.every((id) => want.has(id));
-  const dir: Dir = side === "left" || side === "right" ? "row" : "column";
-  const pane: LayoutNode = { kind: "leaf", id: newId };
-  const wrap = (target: LayoutNode): LayoutNode => ({ kind: "split", dir, children: side === "left" || side === "top" ? [pane, target] : [target, pane], sizes: [0.5, 0.5] });
-  let placed = false;
-  const place = (n: LayoutNode): LayoutNode => {
-    if (placed) return n;
-    if (exactly(leafIds(n))) {
-      placed = true;
-      return wrap(n);
-    }
-    if (n.kind === "leaf") return n;
-    const holds = n.children.map((c) => leafIds(c).some((id) => want.has(id)));
-    const from = holds.indexOf(true);
-    const to = holds.lastIndexOf(true);
-    const run = n.children.slice(from, to + 1);
-    if (from >= 0 && from < to && exactly(run.flatMap(leafIds))) {
-      placed = true;
-      const runSizes = n.sizes.slice(from, to + 1);
-      const total = runSizes.reduce((a, b) => a + b, 0);
-      const regrouped: LayoutNode = { kind: "split", dir: n.dir, children: run, sizes: runSizes.map((s) => s / total) };
-      return { ...n, children: [...n.children.slice(0, from), wrap(regrouped), ...n.children.slice(to + 1)], sizes: [...n.sizes.slice(0, from), total, ...n.sizes.slice(to + 1)] };
-    }
-    return { ...n, children: n.children.map(place) };
-  };
-  const next = place(node);
-  return placed ? (normalize(next) ?? pane) : insertBeside(node, group[0], newId, side);
-}
-
-/** Take a pane leaf out of its layout, remembering the neighbour in its own split to return beside. */
-export function takePaneOut(layout: LayoutNode | null, workspaceId: string, paneId: string): PaneTakeout {
-  const next = layout ? removeLeaf(layout, paneId) : null;
-  const parent = layout ? parentSplit(layout, paneId) : null;
-  // Prefer the sibling after the pane, which the pane sat before; else the one before it.
-  const after = parent?.split.children[parent.index + 1];
-  const sibling = after ?? parent?.split.children[parent.index - 1];
-  const neighborIds = !sibling ? [] : after ? leafIds(sibling) : leafIds(sibling).reverse();
-  const dir = parent?.split.dir ?? "row";
-  const side: PopoutSide = dir === "column" ? (after ? "top" : "bottom") : (after ? "left" : "right");
-  const share = parent ? parent.split.sizes[parent.index] : 0.5;
-  return { layout: next, spot: { workspaceId, neighborIds, side, share, before: layout } };
-}
-
-/** Put a popped-out pane back where it was, or beside the workspace root when the neighbour is gone. */
-export function restorePane(layout: LayoutNode | null, paneId: string, spot: PaneSpot): LayoutNode {
-  if (layout && leafIds(layout).includes(paneId)) return layout;
-  if (!layout) return { kind: "leaf", id: paneId };
-  // Nothing changed since the pop-out: put the exact layout back, side and sizes intact.
-  if (spot.before && JSON.stringify(layout) === JSON.stringify(removeLeaf(spot.before, paneId))) return spot.before;
-  // Something changed: return to the remembered side of the neighbour's panes still open, at the remembered size.
-  const open = new Set(leafIds(layout));
-  const group = spot.neighborIds.filter((id) => open.has(id));
-  if (group.length > 0) return setLeafShare(insertBesideGroup(layout, group, paneId, spot.side), paneId, spot.share);
-  const ids = leafIds(layout);
-  if (ids.length === 0) return { kind: "leaf", id: paneId };
-  return addLeaf(layout, paneId);
 }
 
 /** Take a side-panel tab out, remembering its strip index and which tab was active. */

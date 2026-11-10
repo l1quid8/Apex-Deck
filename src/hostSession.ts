@@ -1,6 +1,6 @@
 import type { AppSession, Pane, Workspace } from "./types";
-import { loadedPanes, paneSection, restoredLayouts } from "./closing.ts";
-import { sync, type LayoutNode } from "./layout.ts";
+import { loadedPanes, paneSection, restoredLayouts, restoredArrangements } from "./closing.ts";
+import { arrangementFromSaved, type Arrangement } from "./paneArrangement.ts";
 import { pathBase, trimTrailingSlash } from "./paths.ts";
 
 export function workspaceHost(workspace: Workspace): string { return workspace.hostId ?? "local"; }
@@ -64,13 +64,15 @@ export function mergeHostSession(local: AppSession, hostId: string, remote: unkn
 }
 
 export function migrateCanvasLayouts(session: AppSession): AppSession {
-  if (session.canvasVersion === 1) return session;
-  const visible: Pane[] = session.panes.filter(p => !p.closed && session.workspaces.some(w => w.id === p.workspaceId && !w.hidden));
+  const visible: Pane[] = session.panes.filter(p => !p.closed && !p.archived && session.workspaces.some(w => w.id === p.workspaceId && !w.hidden));
   const legacy = restoredLayouts(session.layouts, visible);
-  const layouts: Record<string, LayoutNode> = {};
+  const restored = restoredArrangements(session.arrangements, visible);
+  const arrangements: Record<string, Arrangement> = {};
   for (const section of ["threads", "code"] as const) {
-    const tree = sync(legacy[`:${section}`] ?? legacy[`${session.activeWorkspace}:${section}`] ?? null, visible.filter(p => paneSection(p) === section).map(p => p.id));
-    if (tree) layouts[`:${section}`] = tree;
+    const key = `:${section}`;
+    const tree = legacy[key] ?? legacy[`${session.activeWorkspace}:${section}`] ?? null;
+    arrangements[key] = restored[key] ?? arrangementFromSaved(tree, session.layout, visible.filter(p => paneSection(p) === section).map(p => p.id));
   }
-  return { ...session, layouts, canvasVersion: 1 };
+  const { layouts: _layouts, layout: _layout, ...current } = session;
+  return { ...current, arrangements, canvasVersion: 1 };
 }

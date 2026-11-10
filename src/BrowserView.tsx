@@ -6,7 +6,8 @@ import { covered, MODAL, OVERLAYS, viewBounds } from "./browserGeometry";
 // The Electron app's docked browser: a placeholder in the layout, with the
 // real page (a native view drawn above the whole window) kept over it. The
 // view steps aside while the pane is off screen, and shows a picture of
-// itself while a menu or dialog is drawn over the pane.
+// itself while a menu or dialog is drawn over the pane, or its pane map is
+// moving or clips any part of it. Native views aren't clipped by the DOM.
 
 interface Props {
   pane: string;
@@ -44,8 +45,16 @@ export function BrowserView({ pane, url, browser, visible, onState }: Props) {
       const { url, visible } = wanted.current;
       const rect = el.getBoundingClientRect();
       const offScreen = !visible || !url || rect.width < 1 || rect.height < 1 || document.visibilityState === "hidden";
+      // Full-window Preview stays in its pane's DOM, but its fixed layer and
+      // native page use the window. Only the docked page is clipped by the map.
+      const region = el.closest(".preview.full-window") ? null : el.closest("[data-pane-map-region]");
+      const regionRect = region?.getBoundingClientRect();
+      const moving = el.closest("[data-pinned]") ? "data-focus-moving" : "data-moving";
+      const mapCovered = region !== null && (region.hasAttribute(moving) || (regionRect !== undefined && (
+        rect.left < regionRect.left || rect.top < regionRect.top || rect.right > regionRect.right || rect.bottom > regionRect.bottom
+      )));
       const overlays = [...document.querySelectorAll(OVERLAYS)].filter((o) => !el.contains(o)).map((o) => o.getBoundingClientRect());
-      const under = !offScreen && (document.querySelector(MODAL) !== null || covered(rect, overlays));
+      const under = !offScreen && (mapCovered || document.querySelector(MODAL) !== null || covered(rect, overlays));
       if (offScreen || under) {
         if (!shown) return;
         shown = false;
@@ -83,10 +92,12 @@ export function BrowserView({ pane, url, browser, visible, onState }: Props) {
     const resize = new ResizeObserver(() => schedule.current());
     resize.observe(el);
     const changes = new MutationObserver(() => schedule.current());
-    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "class", "style", "hidden"] });
+    changes.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "class", "style", "hidden", "data-moving", "data-focus-moving", "data-pinned"] });
     const moved = () => schedule.current();
     window.addEventListener("resize", moved);
     window.addEventListener("scroll", moved, true);
+    window.addEventListener("scrollend", moved, true);
+    window.addEventListener("transitionend", moved, true);
     document.addEventListener("visibilitychange", moved);
     // Anything the observers can't see, such as a pane sliding over.
     const fallback = setInterval(moved, 1000);
@@ -99,6 +110,8 @@ export function BrowserView({ pane, url, browser, visible, onState }: Props) {
       changes.disconnect();
       window.removeEventListener("resize", moved);
       window.removeEventListener("scroll", moved, true);
+      window.removeEventListener("scrollend", moved, true);
+      window.removeEventListener("transitionend", moved, true);
       document.removeEventListener("visibilitychange", moved);
       void chain.then(() => browser.close(pane));
     };

@@ -262,6 +262,15 @@ impl ConcurrentRoom {
         commit: &(dyn Fn(&crate::RoomSnapshot) -> Result<(), String> + Send + Sync),
         sink: Sink<'_>,
     ) -> Result<(Option<TurnBatch>, crate::ClientMessageRecord), String> {
+        self.begin_client_post_keeping_default(text, targets, request_id, voice, hops, false, commit, sink).await
+    }
+
+    pub async fn begin_client_post_keeping_default(
+        &self, text: &str, targets: Option<Vec<ParticipantId>>, request_id: String,
+        voice: bool, hops: Option<usize>, keep_default: bool,
+        commit: &(dyn Fn(&crate::RoomSnapshot) -> Result<(), String> + Send + Sync),
+        sink: Sink<'_>,
+    ) -> Result<(Option<TurnBatch>, crate::ClientMessageRecord), String> {
         let mut room = self.room.lock().await;
         self.check_open()?;
         // Check the tombstone before resolving recipients: removed bots and
@@ -276,7 +285,7 @@ impl ConcurrentRoom {
         let mut unique = Vec::new();
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         if voice && unique.len() != 1 { return Err("voice requires one recipient".into()); }
-        let message = room.accept_client_message(&request_id, text, unique.clone(), voice, commit)?.expect("new request accepted");
+        let message = room.accept_client_message(&request_id, text, unique.clone(), voice, keep_default, commit)?.expect("new request accepted");
         let record = room.client_message(&request_id).unwrap().clone();
         let mut batch = self.batch(unique.clone(), !voice && room.options().policy == TurnPolicy::RoundRobin, if voice { Some(0) } else { hops.or(room.options().max_bot_hops) }, room.configs().into_iter().map(|c| c.id).collect(), !voice && room.answers_handle().load(Ordering::SeqCst));
         batch.client_message_id = Some(request_id.clone());
@@ -308,6 +317,14 @@ impl ConcurrentRoom {
         commit: &(dyn Fn(&crate::RoomSnapshot) -> Result<(), String> + Send + Sync),
         sink: Sink<'_>,
     ) -> Result<TurnBatch, String> {
+        self.begin_post_with_commit_keeping_default(speaker, text, targets, false, commit, sink).await
+    }
+
+    pub async fn begin_post_with_commit_keeping_default(
+        &self, speaker: Speaker, text: &str, targets: Option<Vec<ParticipantId>>, keep_default: bool,
+        commit: &(dyn Fn(&crate::RoomSnapshot) -> Result<(), String> + Send + Sync),
+        sink: Sink<'_>,
+    ) -> Result<TurnBatch, String> {
         let mut room = self.room.lock().await;
         self.check_open()?;
         let resolved = room.resolve_targets(text);
@@ -318,7 +335,7 @@ impl ConcurrentRoom {
         let mut unique = Vec::new();
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         let targets = unique;
-        let message = room.accept_post(speaker, text, targets.clone(), commit)?;
+        let message = room.accept_post(speaker, text, targets.clone(), keep_default, commit)?;
         sink(RoomEvent::MessageAdded { message });
         Ok(self.batch(
             targets,

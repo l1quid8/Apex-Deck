@@ -16,10 +16,19 @@ function subscribe(channel, cb) {
 // a picture dragged from a page) goes on to the page's own handlers. A drop
 // never navigates the window.
 const dropped = new Set();
+// Kept in the isolated preload, never in the page. A path is readable only
+// briefly after Electron identifies it as a real file in a window drop.
+const recentDrops = new Map();
+function pruneDrops() {
+  const cutoff = Date.now() - 60_000;
+  for (const [file, at] of recentDrops) if (at < cutoff) recentDrops.delete(file);
+}
 window.addEventListener('dragover', (event) => event.preventDefault(), true);
 window.addEventListener('drop', (event) => {
   event.preventDefault();
   const paths = [...(event.dataTransfer?.files ?? [])].map((file) => webUtils.getPathForFile(file)).filter(Boolean);
+  pruneDrops();
+  for (const file of paths) recentDrops.set(file, Date.now());
   if (paths.length === 0 || dropped.size === 0) return;
   event.stopPropagation();
   // Each chat pane listens and takes the drops that land on it.
@@ -104,6 +113,11 @@ contextBridge.exposeInMainWorld('apexDeck', {
     attention: (critical) => ipcRenderer.invoke('shell:attention', critical),
     startupFolders: () => ipcRenderer.invoke('shell:startupFolders'),
     readLocalFile: (hostId, path) => ipcRenderer.invoke('shell:readLocalFile', hostId, path),
+    snapshotDrop: async (path) => {
+      pruneDrops();
+      if (!recentDrops.has(path)) throw new Error('Only a file dropped on this window can be read.');
+      return ipcRenderer.invoke('shell:snapshotDrop', path);
+    },
     onFileDrop: (cb) => {
       dropped.add(cb);
       return () => { dropped.delete(cb); };

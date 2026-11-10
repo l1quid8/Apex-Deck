@@ -118,3 +118,9 @@ test("Tools in the Work bar adds !token at the end of what was typed", async () 
   assert.equal(appendToolToken("look at the PR  ", "github"), "look at the PR !github ");
   assert.equal(appendToolToken("use !vercel ", "github"), "use !vercel !github ");
 });
+
+test('thread trigger tracks only a hash word at the caret',()=>{
+  assert.deepEqual(findTrigger('please check this #Lin',22),{kind:'thread',query:'lin',start:18,end:22});
+  assert.equal(findTrigger('path#Lin',8),null);
+  assert.equal(findTrigger('please #Linux after',19),null);
+});

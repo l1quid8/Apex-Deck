@@ -1,13 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { GAP } from "../src/paneArrangement.ts";
 
 const css = readFileSync(new URL("../src/glass-theme.css", import.meta.url), "utf8");
-const layout = readFileSync(new URL("../src/PaneLayout.tsx", import.meta.url), "utf8");
 
 test("the outer frame matches the gap between panes", () => {
-  const gap = Number(layout.match(/export const GAP = (\d+);/)[1]);
-  assert.match(css, new RegExp(`--deck-gap: ${gap}px;`));
+  assert.match(css, new RegExp(`--deck-gap: ${GAP}px;`));
 });
 
 test("the sidebar and docked details sit inside the same frame as the panes", () => {

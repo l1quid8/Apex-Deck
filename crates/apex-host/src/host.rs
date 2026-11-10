@@ -1477,6 +1477,10 @@ impl Host {
     }
 
     pub(crate) async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
+        self.prepare_post_keeping_default(id, handle, text, targets, false).await
+    }
+
+    pub(crate) async fn prepare_post_keeping_default(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>, keep_default: bool) -> Result<TurnBatch, String> {
         self.refuse_moved_chat(id)?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         {
@@ -1503,8 +1507,8 @@ impl Host {
         // Publish only after the complete snapshot (including routing) is
         // committed. A client refreshing on MessageAdded must not see the new
         // transcript paired with the previous message's responders.
-        let batch = handle.runtime.begin_post_with_commit(
-            apex_core::Speaker::Human, text, targets,
+        let batch = handle.runtime.begin_post_with_commit_keeping_default(
+            apex_core::Speaker::Human, text, targets, keep_default,
             &|snapshot| self.commit_client_snapshot(id, handle, snapshot),
             &|event| {
                 // The human message is already durable. Do not abandon an
@@ -1592,18 +1596,18 @@ impl Host {
 
     /// Saves the user message once, then runs targets in the background.
     pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>) -> Result<(), String> {
-        self.room_post_to_with_answer_guidance(id, text, targets, None, apex_core::GeneratedUiCapability::Unsupported).await
+        self.room_post_to_with_answer_guidance(id, text, targets, None, apex_core::GeneratedUiCapability::Unsupported, false).await
     }
 
-    pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
-        if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None, answers, capability).await? { return Ok(()); }
+    pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability, keep_default: bool) -> Result<(), String> {
+        if self.assistant_continue_thread_keeping_default(&id, Some(text.clone()), targets.clone(), answers, capability, keep_default).await? { return Ok(()); }
         let gate = self.runner_gate(&id);
         let guard = gate.lock().await;
         let handle = self.handle(&id)?;
         let interrupted = self.runner_service.lock().unwrap().yield_to_human(&id)?;
         if interrupted { handle.runtime.stop(None); handle.approvals.reject_all(); }
         self.runner_changed(&id);
-        let batch = self.prepare_post(&id, &handle, &text, Some(targets)).await?.with_answer_guidance(answers, capability);
+        let batch = self.prepare_post_keeping_default(&id, &handle, &text, Some(targets), keep_default).await?.with_answer_guidance(answers, capability);
         drop(guard);
         self.run_batch_in_background(id, handle, batch);
         Ok(())
@@ -1630,6 +1634,11 @@ impl Host {
     /// Revalidate the caller's authority after waiting for the room and at acceptance.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn room_client_post_checked(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability, check: &(dyn Fn() -> Result<(), String> + Send + Sync)) -> Result<serde_json::Value, String> {
+        self.room_client_post_keeping_default(id, text, targets, request_id, voice, background, hops, answers, capability, false, check).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn room_client_post_keeping_default(self: &Arc<Self>, id: String, text: String, targets: Option<Vec<ParticipantId>>, request_id: String, voice: bool, background: bool, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability, keep_default: bool, check: &(dyn Fn() -> Result<(), String> + Send + Sync)) -> Result<serde_json::Value, String> {
         if self.assistant_tasks.execution(&id).map_err(|error| error.to_string())?.is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
         if !self.rooms.lock().unwrap().contains_key(&id) { self.room_open(id.clone(), vec![], RoomOptions::default(), None, true)?; }
         let runner_gate = self.runner_gate(&id);
@@ -1649,7 +1658,7 @@ impl Host {
         }
         // Acceptance already committed this event. Publishing it must not do
         // a second fallible save and abandon an accepted batch before launch.
-        let (batch, record) = handle.runtime.begin_client_post(&text, targets, request_id.clone(), voice, hops, &|snapshot| { check()?; self.commit_client_snapshot(&id, &handle, snapshot) }, &|event| {
+        let (batch, record) = handle.runtime.begin_client_post_keeping_default(&text, targets, request_id.clone(), voice, hops, keep_default, &|snapshot| { check()?; self.commit_client_snapshot(&id, &handle, snapshot) }, &|event| {
             if let RoomEvent::MessageAdded { message } = &event { update_chat_message_meta(&self.store, &id, handle.checkpoint.lock().unwrap().snapshot.kind.is_chat(), message); }
             self.room_event(&id, event);
         }).await
@@ -4986,7 +4995,7 @@ mod host_tests {
             let verified = apex_core::GeneratedUiCapability::Verified;
             let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None, client_message_id: None };
             host.call_with_client_capability_assuming_verified_ui_for_test(post, verified).await.unwrap();
-            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None, client_message_id: None };
+            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], interactive_answers: None, client_turn_id: None, max_bot_hops: None, client_message_id: None, keep_default: false };
             host.call_with_client_capability_assuming_verified_ui_for_test(post_to, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }

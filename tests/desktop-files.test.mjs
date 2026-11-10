@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { appFile } from '../desktop/files.mjs';
+import * as files from '../desktop/files.mjs';
 
 test('app:// serves files inside dist and nothing outside it', () => {
   // Windows resolves '/d/dist' onto the current drive and joins with '\', so the
@@ -22,6 +23,28 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { safeName, writeNew, startupFolders } from '../desktop/files.mjs';
+
+test('a dropped file is classified before reading and its returned bytes are a snapshot', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-snapshot-'));
+  const limit = 20 * 1024 * 1024;
+  try {
+    const folder = path.join(dir, 'folder');fs.mkdirSync(folder);
+    const large = path.join(dir, 'large.bin');fs.writeFileSync(large, '');fs.truncateSync(large,21*1024*1024);
+    const file = path.join(dir, 'shot.png');fs.writeFileSync(file, Buffer.from([1,2,3,255]));
+    const read = fs.promises.readFile.bind(fs.promises);
+    let reads = 0;t.mock.method(fs.promises, 'readFile', (...args)=>{reads++;return read(...args);});
+    assert.deepEqual(await files.snapshotFile?.(folder,limit), {kind:'folder',name:'folder'});
+    assert.deepEqual(await files.snapshotFile?.(large,limit), {kind:'too-big',name:'large.bin'});
+    assert.equal(reads,0,'folders and oversize files are never read');
+    const result = await files.snapshotFile(file,limit);
+    assert.equal(result.kind,'file');assert.equal(result.name,'shot.png');
+    assert.deepEqual([...result.bytes],[1,2,3,255]);assert.equal(reads,1,'snapshot reads exactly once');
+    fs.writeFileSync(file,'changed');fs.unlinkSync(file);
+    assert.deepEqual([...result.bytes],[1,2,3,255],'editing or deleting source cannot change snapshot');
+    const missing = path.join(dir,'missing.png');
+    await assert.rejects(files.snapshotFile(missing,limit),error=>error.message.includes(missing));
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
 
 test('a saved file keeps only a plain name', () => {
   assert.equal(safeName('../../etc/passwd'), 'passwd');

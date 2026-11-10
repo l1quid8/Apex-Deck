@@ -7,6 +7,7 @@ import { appComposerCommands } from './composerCommandRegistry.ts';
 /** What the composer's "+" menu offers. Typing `/` at the start of the
  *  message or `@` at the start of a word opens it filtered to that kind. */
 export type MenuItem =
+  | { kind: "thread"; paneId: string; hostId: string; label: string; detail: string; disabledReason?: string }
   | { kind: "mention"; id: string; label: string; detail: string }
   | { kind: "command"; key: string; label: string; detail: string; command: Command | null }
   | { kind: "server"; agent: string; label: string; detail: string }
@@ -16,7 +17,7 @@ export type MenuItem =
 
 /** The `/word` or `@word` being typed at the caret. */
 export interface Trigger {
-  kind: "command" | "mention" | "server";
+  kind: "command" | "mention" | "server" | "thread";
   query: string;
   start: number;
   end: number;
@@ -32,6 +33,8 @@ export function findTrigger(text: string, caret: number): Trigger | null {
   if (command && !text.startsWith("//")) return { kind: "command", query: command[1].toLowerCase(), start: 0, end: caret };
   const mention = /(^|\s)@([\w-]*)$/.exec(before);
   if (mention) return { kind: "mention", query: mention[2].toLowerCase(), start: caret - mention[2].length - 1, end: caret };
+  const thread = /(^|\s)#([\p{L}\p{N}_.-]*)$/u.exec(before);
+  if (thread) return { kind: "thread", query: thread[2].toLowerCase(), start: caret - thread[2].length - 1, end: caret };
   const bang = /(^|\s)!([A-Za-z0-9._-]*)$/.exec(before);
   if (bang && proseMask(before).slice(caret - bang[2].length - 1) === before.slice(caret - bang[2].length - 1))
     return { kind: "server", query: bang[2], start: caret - bang[2].length - 1, end: caret };
@@ -64,6 +67,7 @@ export function menuItems(trigger: Trigger | null, people: readonly MenuPerson[]
     : { kind: "command", key: "plan", label: "Plan", detail: "Bots plan and ask; nothing gets changed", command: { name: "plan" } };
   // Tools types the ! that opens the list of servers, apps and plugins.
   if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, { kind: "tools", label: "Tools", detail: "Pick a server, app or plugin to use" }, plan, ...commands.filter(c=>c.key==='goal'||c.key==='loop').map(c=>({...c,label:c.key==='goal'?'Goal':'Loop'})), ...mentions, ...commands.filter(c=>c.key!=='goal'&&c.key!=='loop')];
+  if (trigger.kind === "thread") return [];
   const q = trigger.query;
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return commands.filter((c) => c.key.startsWith(q));

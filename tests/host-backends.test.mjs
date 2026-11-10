@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 const mod=await import('../src/hostBackends.ts').catch(()=>({}));
 const store=await import('../src/hostConnections.ts').catch(()=>({}));
 
+test('one-send capabilities and keep-default posts follow the selected machine', async () => {
+  const connection = store.hostConnectionStore('server', 'Server'); connection.setStatus({kind:'connected',hostId:'server'});
+  const calls = [];
+  const registry = mod.createHostBackends({local:{postCapabilities:async()=>({keep_default_v1:false})},hosts:[{id:'server',name:'Server'}],make:()=>({backend:{
+    postCapabilities:async()=>({keep_default_v1:true}), roomPostTo:async(...args)=>calls.push(args),
+  },connection,start:async()=>{},close(){}})});
+  assert.deepEqual(await registry.get('server').postCapabilities(), {keep_default_v1:true});
+  assert.deepEqual(await registry.get().postCapabilities(), {keep_default_v1:false});
+  await registry.get('server').roomPostTo('r','@null hello',['null'],undefined,undefined,true);
+  assert.deepEqual(calls, [['r','@null hello',['null'],true,undefined,true]]);
+});
+
 test('curation methods and raw commands reject offline writes without replay', async () => {
   const connection = store.hostConnectionStore('server','Server');
   const calls = [];

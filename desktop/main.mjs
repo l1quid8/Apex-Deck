@@ -14,7 +14,7 @@ import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
 import { siteMemory } from './browserPermissions.mjs';
-import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
+import { appFile, safeName, snapshotFile, startupFolders, writeNew } from './files.mjs';
 import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, assertHostUnused } from './hosts.mjs';
 import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
@@ -537,6 +537,8 @@ handle('shell:openExternal', async (_entry, url) => openExternally(url));
 
 /** The most a dropped file sent to another machine may be. */
 const SEND_LIMIT = 20 * 1024 * 1024;
+
+handle('shell:snapshotDrop', async (_entry, file) => snapshotFile(String(file), SEND_LIMIT));
 
 handle('shell:readLocalFile', async (_entry, host, file) => {
   // Only for sending a dropped file to another machine.

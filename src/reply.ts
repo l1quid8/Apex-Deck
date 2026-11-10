@@ -30,7 +30,7 @@ export function quoteLead(body: string, quote: ReplyQuote, people: readonly Ment
 }
 
 /** Who stacked quotes lead with: the first explicit Send to, else the first quote that names someone. */
-export function quoteTarget(body: string, quotes: ReplyQuote[], people: readonly Mentionable[]): string | null {
+export function quoteTarget(body: string, quotes: readonly ReplyQuote[], people: readonly Mentionable[]): string | null {
   for (const item of quotes) {
     if (item.to && here(item.to, people)) return item.to;
   }
@@ -43,17 +43,25 @@ export function quoteTarget(body: string, quotes: ReplyQuote[], people: readonly
 
 /** Quote mentions are context, not instructions to summon another participant.
  *  The lead is written as the bot's current mention, so `people` is the chat's bots. */
-export function replyText(text: string, quote: ReplyQuote | ReplyQuote[] | null, people: readonly Mentionable[]): string {
+export function replyLead(text: string, quotes: readonly ReplyQuote[], people: readonly Mentionable[]): string {
+  const lead = quoteTarget(text.trim(), quotes, people);
+  const bot = lead && lead !== "all" ? people.find((p) => p.id === lead) : undefined;
+  const handle = lead === "all" ? "all" : bot ? mentionFor(bot) : null;
+  return handle ? `@${handle} ` : "";
+}
+
+export function replyWith(text: string, quotes: readonly ReplyQuote[], lead: string): string {
   const body = text.trim();
-  const quotes = !quote ? [] : Array.isArray(quote) ? quote : [quote];
-  if (quotes.length === 0) return body;
+  if (!quotes.length) return body;
   const blocks = quotes.map((item) =>
     `${item.name} wrote:\n${item.text}`.replaceAll('@', '＠').split('\n').map((line) => `> ${line}`).join('\n'),
   );
-  const lead = quoteTarget(body, quotes, people);
-  const bot = lead && lead !== "all" ? people.find((p) => p.id === lead) : undefined;
-  const handle = lead === "all" ? "all" : bot ? mentionFor(bot) : null;
-  return `${handle ? `@${handle} ` : ""}${body}\n\n${blocks.join('\n> \n')}`;
+  return `${lead}${body}\n\n${blocks.join('\n> \n')}`;
+}
+
+export function replyText(text: string, quote: ReplyQuote | ReplyQuote[] | null, people: readonly Mentionable[]): string {
+  const quotes = !quote ? [] : Array.isArray(quote) ? quote : [quote];
+  return replyWith(text, quotes, replyLead(text, quotes, people));
 }
 
 /** The quote for a message: a bot's reply under its name, or one of yours ("I wrote:" to the models). */

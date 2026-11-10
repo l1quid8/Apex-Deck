@@ -18,7 +18,7 @@ export interface Transport {
 
 export type Shell = Pick<Backend, "pickFolder" | "pickPath" | "startupFolders" | "artifactSave"
   | "artifactOpenExternal" | "exportThread" | "exportPdf" | "openTarget" | "copyAttachment" | "flagAttention"
-  | "requestCriticalAttention" | "onFileDrop" | "onQuitRequested" | "quitHeard" | "quitApp"
+  | "requestCriticalAttention" | "onFileDrop" | "snapshotDrop" | "onQuitRequested" | "quitHeard" | "quitApp"
   | "quitStopsWork">;
 
 export function commandBackend(transport: Transport, shell: Shell): Backend {
@@ -114,9 +114,10 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomTargets: (id, text) => call<string[]>("room_targets", { id, text }),
     roomRefreshPlans: (id) => call<void>("room_refresh_plans", { id }),
     roomApplyAccess: (id, participant) => call<void>("room_apply_access", { id, participant }),
-    roomPostTo: (id, text, targets, interactiveAnswers, voice) => call("room_post_to", { id, text, targets, ...voice, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }) }),
+    roomPostTo: (id, text, targets, interactiveAnswers, voice, keepDefault) => call("room_post_to", { id, text, targets, ...voice, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }), ...(keepDefault ? {keep_default: true} : {}) }),
     roomTurn: (id, participants, hops, interactiveAnswers) => call("room_turn", { id, participants, hops, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }) }),
     voiceCapabilities: () => call("voice_capabilities", {}),
+    postCapabilities: () => call("post_capabilities", {}),
     roomStopRequest: (id, participant, client_turn_id) => call("room_stop_request", {id,participant,client_turn_id}),
     roomStop: (id, participant) => call("room_stop", { id, participant: participant ?? null }),
     roomDecide: (id, request, approve, always = false, skip) => call("room_decide", { id, request, approve, always, ...(skip ? { skip } : {}) }),

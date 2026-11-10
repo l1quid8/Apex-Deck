@@ -1205,10 +1205,11 @@ impl Room {
     /// Save a legacy post before publishing it, restoring admission state if
     /// storage refuses the complete snapshot.
     pub(crate) fn accept_post(
-        &mut self, speaker: Speaker, text: &str, targets: Vec<ParticipantId>,
+        &mut self, speaker: Speaker, text: &str, targets: Vec<ParticipantId>, keep_default: bool,
         commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync),
     ) -> Result<Message, String> {
-        let previous_targets = std::mem::replace(&mut self.last_targets, targets);
+        let previous_targets = self.last_targets.clone();
+        if !keep_default { self.last_targets = targets; }
         let previous_origin = self.next_origin_seq;
         let reply_record = self.reply_client_message_id.as_ref()
             .and_then(|id| self.client_messages.get(id).map(|record| (id.clone(), record.clone())));
@@ -1240,7 +1241,7 @@ impl Room {
     /// Called while the concurrent room holds its transcript mutex. Saving is
     /// part of acceptance: a failed commit restores all request state.
     pub(crate) fn accept_client_message(
-        &mut self, id: &str, text: &str, targets: Vec<ParticipantId>, voice: bool,
+        &mut self, id: &str, text: &str, targets: Vec<ParticipantId>, voice: bool, keep_default: bool,
         commit: &(dyn Fn(&RoomSnapshot) -> Result<(), String> + Send + Sync),
     ) -> Result<Option<Message>, String> {
         if id.is_empty() || id.len() > 128 || text.trim().is_empty() { return Err("invalid client message".into()); }
@@ -1251,7 +1252,7 @@ impl Room {
             return Ok(None);
         }
         let previous_targets = self.last_targets.clone();
-        self.last_targets = request.targets.clone();
+        if !keep_default { self.last_targets = request.targets.clone(); }
         let seq = self.transcript.len();
         self.client_messages.insert(id.into(), ClientMessageRecord { state: ClientMessageState::Running, reply_seqs: vec![], human_seq: Some(seq), request: Some(request.clone()) });
         self.push(Speaker::Human, text.into(), &|_| {});
@@ -2099,6 +2100,38 @@ mod approver_tests {
         room.clear();
         assert_eq!(room.snapshot().untagged_responders, vec![ParticipantId::new("jigga")]);
         assert_eq!(serde_json::to_value(Room::new(vec![], RoomOptions::default()).snapshot()).unwrap()["untagged_responders"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn one_send_acceptance_preserves_default_and_compaction_and_rolls_back_failed_commits() {
+        for client in [false, true] {
+            for keep_default in [false, true] {
+                for fail in [false, true] {
+                    let mut room = Room::new(vec![
+                        Arc::new(crate::testing::ScriptedParticipant::new("a", &[])),
+                        Arc::new(crate::testing::ScriptedParticipant::new("b", &[])),
+                    ], RoomOptions::default());
+                    room.targets_for_human("@a initial");
+                    let before = room.snapshot();
+                    let commit = |_: &RoomSnapshot| if fail { Err("storage refused".to_string()) } else { Ok(()) };
+                    let result = if client {
+                        room.accept_client_message("pick", "@b hello", vec![ParticipantId::new("b")], false, keep_default, &commit).map(|_| ())
+                    } else {
+                        room.accept_post(Speaker::Human, "@b hello", vec![ParticipantId::new("b")], keep_default, &commit).map(|_| ())
+                    };
+                    assert_eq!(result.is_err(), fail);
+                    let expected = ParticipantId::new(if keep_default || fail { "a" } else { "b" });
+                    assert_eq!(room.last_targets, vec![expected.clone()]);
+                    assert_eq!(room.untagged_responders(), vec![expected.clone()]);
+                    assert_eq!(room.summarizer().unwrap().id, expected);
+                    if fail {
+                        assert_eq!(serde_json::to_value(room.snapshot()).unwrap(), serde_json::to_value(before).unwrap());
+                    } else {
+                        assert_eq!(room.transcript().last().unwrap().text, "@b hello");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -40,7 +40,7 @@
 .composer-bots[data-chip-style="keycap"] .chip.to { border-color: var(--who); box-shadow: inset 3px 0 0 var(--who); }
 
 /* The composer is above the row: tabs attach at their top edge. */
-.chat[data-bot-chip-style="tab"] .composer-box { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+[data-bot-chip-style="tab"] .composer-box { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .composer-bots[data-chip-style="tab"] { margin-top: 0; padding-top: 0; align-items: flex-start; }
 .composer-bots[data-chip-style="tab"] .chip { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; background: var(--panel); }
 .composer-bots[data-chip-style="tab"] .chip-name { padding: 7px 8px 6px 4px; }
