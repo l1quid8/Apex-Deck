@@ -2,7 +2,7 @@ const { app, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show:false, width:1200, height:800, useContentSize:true, webPreferences:{ offscreen:true, backgroundThrottling:false } });
+  const win = new BrowserWindow({ show:false, width:1200, height:800, useContentSize:true, enableLargerThanScreen:true, webPreferences:{ offscreen:true, backgroundThrottling:false } });
   const run = code => win.webContents.executeJavaScript(code);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const frame = () => run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');

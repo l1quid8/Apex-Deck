@@ -28,8 +28,11 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     await until('!!document.querySelector(".rich-draft-editor")');
     const doc=()=>run('window.editorState.doc');
     const set=async(value)=>{await run('window.setEditorState('+JSON.stringify(value)+')');await frame();};
-    const key=async(keyCode,modifiers=[])=>{win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await frame();};
-    const type=async(text)=>{for(const char of text){win.webContents.sendInputEvent({type:'char',keyCode:char});}await frame();};
+    // Undo grouping follows the person's edit times, not a hosted runner's
+    // time to deliver six native keys and twelve compositor frames.
+    const tick=async(ms=20)=>run('window.editTestClock??={now:10000,original:Date.now};window.editTestClock.now+='+ms+';Date.now=()=>window.editTestClock.now;true');
+    const key=async(keyCode,modifiers=[])=>{await tick();win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await frame();};
+    const type=async(text)=>{await tick();for(const char of text){win.webContents.sendInputEvent({type:'char',keyCode:char});}await frame();};
     const mods=[process.platform==='darwin'?'meta':'control'];
     assert.equal(await run('document.activeElement===document.querySelector(".rich-draft-editor")'),true,'editor focuses on mount');
     await type('hello');
@@ -39,6 +42,11 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     await key('z',mods);
     assert.deepEqual(await doc(),[[{kind:'thread',paneId:'a',hostId:'local'},{kind:'text',text:'hello'}]]);
     await key('z',[...mods,'shift']);assert.deepEqual(await doc(),[[]]);
+    // A real pause must still split delete groups, independently of wall time.
+    await set({draftId:'undo-pause',doc:[[{kind:'text',text:'ab'}]],caret:{line:0,offset:2}});
+    await key('Backspace');await tick(1001);await key('Backspace');
+    await key('z',mods);assert.deepEqual(await doc(),[[{kind:'text',text:'a'}]],'a pause starts a separate undo group');
+    await key('z',mods);assert.deepEqual(await doc(),[[{kind:'text',text:'ab'}]],'the earlier delete remains independently undoable');
     // Native DOM insertion during IME is read once, rather than replayed.
     await set({draftId:'native-composition',doc:[[{kind:'thread',paneId:'a',hostId:'local'}]],caret:{line:0,offset:1}});
     await run('(()=>{const e=document.querySelector(".rich-draft-editor");e.dispatchEvent(new CompositionEvent("compositionstart",{bubbles:true}));e.firstChild.append(document.createTextNode("é"));e.dispatchEvent(new InputEvent("beforeinput",{inputType:"insertCompositionText",data:"é",bubbles:true}));e.dispatchEvent(new CompositionEvent("compositionend",{bubbles:true,data:"é"}));})()');await frame();
@@ -78,7 +86,7 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     await run('document.querySelector(".rich-draft-editor").dispatchEvent(new CompositionEvent("compositionend",{data:"に",bubbles:true}))');await frame();
     assert.deepEqual(await doc(),[[{kind:'thread',paneId:'a',hostId:'local'},{kind:'text',text:'に'}]]);
     // Reload the isolated fixture to restore its known-file registry.
-    await load();await until('!!document.querySelector(".rich-draft-editor")');
+    await load();await until('!!document.querySelector(".rich-draft-editor")');await tick(0);
     await run('document.querySelector(".rich-draft-editor").focus()');
     await set({draftId:'copy',doc:[[{kind:'file',fileId:'f1'}],[]],caret:{line:0,offset:0}});
     await run('(()=>{const e=document.querySelector(".rich-draft-editor"),r=document.createRange();r.selectNodeContents(e.firstChild);const s=getSelection();s.removeAllRanges();s.addRange(r);const data=new DataTransfer();e.dispatchEvent(new ClipboardEvent("copy",{bubbles:true,cancelable:true,clipboardData:data}));window.copied={plain:data.getData("text/plain"),json:data.getData("application/x-apex-deck-draft+json")};})()');
@@ -112,5 +120,6 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     await set({draftId:'sent',doc:[[]],caret:{line:0,offset:0}});
     await run('document.querySelector(".rich-draft-editor").dispatchEvent(new CompositionEvent("compositionend",{bubbles:true,data:"old"}))');await frame();
     assert.deepEqual(await doc(),[[]]);
+    await run('Date.now=window.editTestClock.original;true');
   `, { plugins: [fixture], width: 900, height: 600 });
 });

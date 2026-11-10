@@ -5,7 +5,7 @@ const path = require('node:path');
 
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1200, height: 800, useContentSize: true, webPreferences: { offscreen: true, backgroundThrottling: false } });
+  const win = new BrowserWindow({ show: false, width: 1200, height: 800, useContentSize: true, enableLargerThanScreen: true, webPreferences: { offscreen: true, backgroundThrottling: false } });
   win.webContents.setFrameRate(60);
   const run = code => win.webContents.executeJavaScript(code);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

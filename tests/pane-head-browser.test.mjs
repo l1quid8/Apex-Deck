@@ -55,7 +55,7 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
     fs.writeFileSync(main, `
       const {app,BrowserWindow}=require('electron');const assert=require('node:assert/strict');const fs=require('node:fs');
       app.whenReady().then(async()=>{
-        const win=new BrowserWindow({show:false,width:900,height:500,webPreferences:{contextIsolation:true}});
+        const win=new BrowserWindow({show:false,width:900,height:500,webPreferences:{contextIsolation:true,backgroundThrottling:false}});
         const run=code=>win.webContents.executeJavaScript(code);const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
         const until=async(code)=>{for(let i=0;i<300;i++){if(await run(code))return;await sleep(20)}throw Error('Timed out: '+code)};
         const key=async keyCode=>{win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await sleep(40)};

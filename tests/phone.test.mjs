@@ -224,13 +224,13 @@ test('the bot bar hides while the keyboard is up and comes back as it was chosen
   assert.equal(crewOpen(true, true), false);
 });
 
-test('a held bot shows context and each plan window as bars, with "—" until a figure arrives', () => {
+test('a held bot shows context and each plan window as bars, with "Not reported" until a figure arrives', () => {
   const now = new Date('2026-10-06T12:00:00Z');
   const at = now.getTime() / 1000;
   const empty = botMeters('claude_code', undefined, undefined, now);
   assert.deepEqual(empty.map((row) => [row.label, row.left, row.value, row.detail]), [
-    ['Context', null, '—', 'Shows after its next reply'],
-    ['Plan', null, '—', 'Shows after its next reply'],
+    ['Context', null, 'Not reported', 'Not reported'],
+    ['Plan', null, 'Not reported', 'Not reported'],
   ]);
   const windows = [
     { name: 'seven_day', used_percent: 19, window_minutes: 10_080, resets_at: at + 3 * 86_400 + 4 * 3600 },
@@ -244,8 +244,8 @@ test('a held bot shows context and each plan window as bars, with "—" until a 
     ['Weekly', '81%', 'Resets in 3d4h', false],
   ]);
   const scripted = botMeters(null, undefined, undefined, now);
-  assert.deepEqual(scripted.map((row) => row.detail), ['Not reported by this provider', 'Not reported by this provider']);
-  assert.equal(botMeters('grok', undefined, undefined, now)[0].detail, 'Not reported by this provider');
+  assert.deepEqual(scripted.map((row) => row.detail), ['Not reported', 'Not reported']);
+  assert.equal(botMeters('grok', undefined, undefined, now)[0].detail, 'Not reported');
   assert.deepEqual(pillMeter('claude_code', { used: 50_000, window: 200_000 }, windows, now), { context: 0.75, low: false, planLow: true });
   assert.deepEqual(pillMeter(null, undefined, undefined, now), { context: null, low: false, planLow: false });
 });
@@ -347,6 +347,6 @@ test('a DeepSeek bot on the phone gets its provider\'s models, levels and balanc
   // A model change keeps Max, which the generic levels would have dropped.
   assert.equal(withPhoneChange(deep, { model: 'deepseek-flash' }, [], listed).effort, 'max');
   const meters = botMeters(null, undefined, undefined, new Date(), 9.87);
-  assert.deepEqual(meters.map((row) => [row.label, row.value]), [['Context', '—'], ['Balance', '$9.87']]);
+  assert.deepEqual(meters.map((row) => [row.label, row.value]), [['Context', 'Not reported'], ['Balance', '$9.87'], ['Plan', 'Not reported']]);
   assert.equal(botMeters(null, undefined, undefined, new Date()).at(-1).label, 'Plan');
 });

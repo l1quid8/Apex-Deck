@@ -3,10 +3,11 @@
 //
 // What it makes: `release/Apex-Deck-Setup.exe`, an NSIS installer with
 // apex-daemon.exe inside it, plus `release/Apex-Deck-Setup.exe.sha256` so a
-// download can be checked. With APEX_DECK_WIN_SIGN=1 it is signed through Azure
-// Artifact Signing, which needs a live Azure login; any other build is unsigned,
-// so Windows shows "unknown publisher". `--compile` and `--package` split the run
-// so CI can sign in right before packaging: its Azure login lasts only minutes.
+// download can be checked. With APEX_DECK_WIN_SIGN=1 the installer is signed
+// through Azure Artifact Signing, which needs a live Azure login; any other build
+// is unsigned, so Windows shows "unknown publisher". `--compile` builds everything
+// into release/win-unpacked and `--package` wraps that in the installer, so CI can
+// sign in a job that never runs build code.
 //
 // Why Windows only: the service and the app must be compiled for the machine
 // they run on, and this project has no Windows cross-compiler. GitHub's
@@ -114,14 +115,12 @@ function main(phase = process.argv[2]) {
     // tsc --noEmit then vite build, so a type error stops the run before packaging.
     run('npm', ['run', 'build'], { env, shell: process.platform === 'win32' });
   }
+  const builder = resolve('node_modules/electron-builder/cli.js');
+  if (phase !== '--package') run(process.execPath, [builder, '--win', 'dir', '--publish', 'never'], { env });
   if (phase === '--compile') return 0;
   const signed = process.env.APEX_DECK_WIN_SIGN === '1';
   log(`building the ${signed ? 'signed' : 'unsigned'} NSIS installer`);
-  run(
-    process.execPath,
-    [resolve('node_modules/electron-builder/cli.js'), ...builderArgs()],
-    { env },
-  );
+  run(process.execPath, [builder, ...builderArgs(), '--prepackaged', resolve(release, 'win-unpacked')], { env });
 
   // A moved checkout makes a mixed package, which installs fine and then
   // reports mismatched builds, so fail here instead.

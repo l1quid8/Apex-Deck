@@ -126,6 +126,8 @@ pub enum RoomEvent {
         id: ParticipantId,
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cached_input_tokens: Option<u64>,
         /// Millionths of a US dollar, when the backend reports a cost.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost_micros: Option<u64>,
@@ -134,7 +136,7 @@ pub enum RoomEvent {
         cost_estimated: bool,
     },
     /// How full a participant's context window is, from its latest request.
-    ContextUsage { id: ParticipantId, used_tokens: u64, window_tokens: u64 },
+    ContextUsage { id: ParticipantId, used_tokens: u64, window_tokens: u64, #[serde(default, skip_serializing_if = "is_false")] estimated: bool },
     /// How much of a provider account's plan is used. Shared by every agent
     /// on that provider. With `partial`, windows not listed keep their last
     /// value.
@@ -186,9 +188,10 @@ pub(crate) fn progress_event(id: &ParticipantId, update: Progress<'_>) -> RoomEv
         Progress::Activity(text) => RoomEvent::Activity { id: id.clone(), text: text.to_string() },
         Progress::Change(change) => RoomEvent::Changed { id: id.clone(), change: change.clone() },
         Progress::Context(use_) => {
-            RoomEvent::ContextUsage { id: id.clone(), used_tokens: use_.used_tokens, window_tokens: use_.window_tokens }
+            RoomEvent::ContextUsage { id: id.clone(), used_tokens: use_.used_tokens, window_tokens: use_.window_tokens, estimated: use_.estimated }
         }
         Progress::Plan(plan) => plan_event(plan),
+        Progress::RemotePlan { plan, model } => RoomEvent::plan_for(plan, Some(model.into())),
         Progress::Work(step) => RoomEvent::WorkStep { id: id.clone(), step: step.clone() },
         Progress::Todo(items) => RoomEvent::Todo { id: id.clone(), items: items.to_vec() },
     }
@@ -207,7 +210,7 @@ impl RoomEvent {
             provider: plan.provider,
             windows: plan.windows.clone(),
             partial: plan.partial,
-            model: model.map(|model| model.trim().to_lowercase()).filter(|model| !model.is_empty()),
+            model: model.map(|model| { let model = model.trim(); if model.starts_with("gateway:") { model.to_owned() } else { model.to_lowercase() } }).filter(|model| !model.is_empty()),
             reset_credits: plan.reset_credits.clone(),
         }
     }
@@ -943,9 +946,10 @@ impl Room {
             return Ok(());
         }
         let reply = outcome.map_err(|error| error.to_string())?;
-        if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
+        if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cached_input_tokens.is_some() || reply.cost_micros.is_some() {
             self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
-            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros, cost_estimated: reply.cost_estimated });
+            if let Some(cached) = reply.cached_input_tokens { let totals = self.usage.entry(id.clone()).or_default(); totals.cached_input = Some(totals.cached_input.unwrap_or(0).saturating_add(cached)); }
+            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cached_input_tokens: reply.cached_input_tokens, cost_micros: reply.cost_micros, cost_estimated: reply.cost_estimated });
         }
         let summary = reply.text.trim();
         if summary.is_empty() || summary.eq_ignore_ascii_case(PASS_TOKEN) {
@@ -1042,6 +1046,7 @@ impl Room {
             outcome.map_err(|e| e.to_string()).and_then(|reply| {
                 if reply.input_tokens.is_some()
                     || reply.output_tokens.is_some()
+                    || reply.cached_input_tokens.is_some()
                     || reply.cost_micros.is_some()
                 {
                     self.usage.entry(id.clone()).or_default().add_turn(
@@ -1050,10 +1055,15 @@ impl Room {
                         reply.cost_micros,
                         reply.cost_estimated,
                     );
+                    if let Some(cached) = reply.cached_input_tokens {
+                        let totals = self.usage.entry(id.clone()).or_default();
+                        totals.cached_input = Some(totals.cached_input.unwrap_or(0).saturating_add(cached));
+                    }
                     on_event(RoomEvent::Usage {
                         id: id.clone(),
                         input_tokens: reply.input_tokens,
                         output_tokens: reply.output_tokens,
+                        cached_input_tokens: reply.cached_input_tokens,
                         cost_micros: reply.cost_micros,
                         cost_estimated: reply.cost_estimated,
                     });
@@ -1417,12 +1427,17 @@ impl Room {
                 Vec::new()
             }
             Ok(reply) => {
-                if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
+                if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cached_input_tokens.is_some() || reply.cost_micros.is_some() {
                     self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
+                    if let Some(cached) = reply.cached_input_tokens {
+                        let totals = self.usage.entry(id.clone()).or_default();
+                        totals.cached_input = Some(totals.cached_input.unwrap_or(0).saturating_add(cached));
+                    }
                     on_event(RoomEvent::Usage {
                         id: id.clone(),
                         input_tokens: reply.input_tokens,
                         output_tokens: reply.output_tokens,
+                        cached_input_tokens: reply.cached_input_tokens,
                         cost_micros: reply.cost_micros,
                         cost_estimated: reply.cost_estimated,
                     });
@@ -1657,7 +1672,7 @@ mod approver_tests {
         let id = ParticipantId::new("bot");
         let events = Mutex::new(Vec::new());
         room.settle(&id, 0, Ok(Reply {
-            text: "picture".into(), input_tokens: None, output_tokens: None, cost_micros: Some(40_000), cost_estimated: true,
+            text: "picture".into(), input_tokens: None, output_tokens: None, cost_micros: Some(40_000), cost_estimated: true, cached_input_tokens: None,
         }), &|event| events.lock().unwrap().push(event));
         let totals = room.usage()[&id];
         assert_eq!((totals.estimated_cost_micros, totals.cost_micros, totals.turns), (40_000, 0, 1), "a quote is an estimate, not reported spend");
@@ -1671,7 +1686,7 @@ mod approver_tests {
         let id = ParticipantId::new("bot");
         let events = Mutex::new(Vec::new());
         room.settle(&id, 0, Ok(Reply {
-            text: "reply".into(), input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000), cost_estimated: false,
+            text: "reply".into(), input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000), cost_estimated: false, cached_input_tokens: None,
         }), &|event| events.lock().unwrap().push(event));
         assert_eq!(room.usage()[&id].cost_micros, 1_000_000);
         assert!(events.lock().unwrap().iter().any(|event| matches!(event, RoomEvent::Usage { input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000), .. })));
@@ -1682,7 +1697,7 @@ mod approver_tests {
     impl Participant for CostOnlyParticipant {
         fn config(&self) -> &ParticipantConfig { &self.config }
         async fn respond(&self, _request: TurnRequest, _on_delta: crate::participant::DeltaSink<'_>) -> Result<Reply, ParticipantError> {
-            Ok(Reply { text: "summary".into(), input_tokens: None, output_tokens: None, cost_micros: Some(2_000_000), cost_estimated: false })
+            Ok(Reply { text: "summary".into(), input_tokens: None, output_tokens: None, cost_micros: Some(2_000_000), cost_estimated: false, cached_input_tokens: None })
         }
     }
 

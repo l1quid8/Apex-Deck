@@ -36,7 +36,10 @@ try {
 `$held=Start-Process -FilePath ping.exe -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
 & '$helperLiteral' protect-process `$held.Id
 if (`$LASTEXITCODE -ne 0) { Write-Output 'protect-process failed'; exit 11 }
-Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ApexProbe { [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid); }'
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ApexProbe { [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid); [DllImport("kernel32.dll")] public static extern IntPtr OpenThread(uint access, bool inherit, int tid); }'
+# Reported, not enforced: threads are objects of their own, not covered by the process's list.
+`$thread=[ApexProbe]::OpenThread(0x10,`$false,`$held.Threads[0].Id)
+Write-Output "thread probe: a standard user `$(if (`$thread -eq [IntPtr]::Zero) { 'could not' } else { 'could' }) open a protected process's thread to change it"
 foreach (`$access in 0x20,0x2,0x40000) {
   if ([ApexProbe]::OpenProcess(`$access,`$false,`$held.Id) -ne [IntPtr]::Zero) { Write-Output "a standard user opened a protected process with `$access"; exit 12 }
 }

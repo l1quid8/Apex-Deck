@@ -1,12 +1,12 @@
 //! Loopback tests against the real daemon (no relay).
 use super::*;
 use apex_daemon::{
-    devices::{Devices, Threads, Tier},
+    devices::{Threads, Tier},
     pairing::invites::HostInfo,
     protocol::Daemon,
     remote,
 };
-use apex_host::{test_support::isolated_host_assuming_verified_ui, HostPaths};
+use apex_host::HostPaths;
 use std::{path::PathBuf, time::Instant};
 
 /// A throwaway data folder, removed on drop.
@@ -97,20 +97,11 @@ struct Server {
 impl Server {
     async fn start() -> Server {
         let data = Folder::new();
-        let host = isolated_host_assuming_verified_ui(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon {
-            host,
-            host_id: "host-1".into(),
-            boot_id: "boot-1".into(),
-            token: None,
-            devices: Arc::new(Devices::open(&data.0)),
-            data: data.0.clone(),
-            invites: Default::default(),
-            voice: apex_daemon::voice::VoiceServer::new(&data.0),
-            gateway_keys: Arc::new(apex_daemon::gateway_keys::GatewayKeys::load(&data.0).unwrap()),
-            gateway: Default::default(),
-            remote: Default::default(),
-        });
+        std::fs::write(data.0.join("host-id"), "host-1\n").unwrap();
+        // This test process owns the fixture; production construction still
+        // requires the verified-UI broker and initializes its private guards.
+        apex_daemon::test_support::assume_verified_ui_for_this_process();
+        let daemon = Daemon::start(&HostPaths { data: data.0.clone(), downloads: None }, None).unwrap();
         let endpoint = remote::bind(remote::key(&data.0).unwrap(), None, 0).await.unwrap();
         tokio::spawn(remote::accept(Arc::clone(&daemon), endpoint.clone()));
         Server { daemon, endpoint, _data: data }

@@ -95,11 +95,30 @@
 !macro customInit
   ; Stop the protected service before replacing its executable or pinned UI.
   ; A first install has no service; sc returns 1060 and needs no repair.
-  nsExec::Exec '"$SYSDIR\sc.exe" stop ApexDeckProvenance'
-  Pop $R0
-  ; The image is SYSTEM-owned. Do not race a still-running service replacement.
-  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "apex-provenance.exe"'
-  Pop $R0
+  ; A kill counts as a crash, so Windows would restart the service mid-install:
+  ; wait for it to stop on request, and kill it only if it never does.
+  StrCpy $R6 0
+  ${Do}
+    nsExec::Exec '"$SYSDIR\sc.exe" stop ApexDeckProvenance'
+    Pop $R5
+    nsExec::Exec '"$SYSDIR\sc.exe" query ApexDeckProvenance'
+    Pop $R5
+    ${If} $R5 != 0
+      ${ExitDo}
+    ${EndIf}
+    nsExec::Exec `"$SYSDIR\cmd.exe" /c ""$SYSDIR\sc.exe" query ApexDeckProvenance | "$SYSDIR\find.exe" "STOPPED""`
+    Pop $R5
+    ${If} $R5 == 0
+      ${ExitDo}
+    ${EndIf}
+    IntOp $R6 $R6 + 1
+    ${If} $R6 >= 60
+      nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "apex-provenance.exe"'
+      Pop $R5
+      ${ExitDo}
+    ${EndIf}
+    Sleep 500
+  ${Loop}
   !insertmacro StopDaemon
 
   ; Say what to do instead of failing later with a locked-file error nobody can
@@ -130,13 +149,19 @@
 !macroend
 
 !macro customUnInstall
-  nsExec::Exec '"$INSTDIR\resources\bin\apex-provenance.exe" uninstall'
-  Pop $R0
+  ; An update replaces files and reinstalls over this service. Deleting it here
+  ; would leave Deck without one if removing the old files then failed.
+  ${IfNot} ${isUpdated}
+    nsExec::Exec '"$INSTDIR\resources\bin\apex-provenance.exe" uninstall'
+    Pop $R0
+  ${EndIf}
   ; An uninstall must not fail on a running image either, and the logon task must
   ; go too: left behind it would point at a binary this is about to delete, and
   ; fail at every sign-in from then on. Ending it is not enough, so remove the
   ; definition as well.
   !insertmacro StopDaemon
-  nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /TN "${APEX_DAEMON_TASK}" /F'
-  Pop $R0
+  ${IfNot} ${isUpdated}
+    nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /TN "${APEX_DAEMON_TASK}" /F'
+    Pop $R0
+  ${EndIf}
 !macroend
