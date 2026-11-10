@@ -46,7 +46,15 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     // Undo grouping follows the person's edit times, not a hosted runner's
     // time to deliver six native keys and twelve compositor frames.
     const tick=async(ms=20)=>run('window.editTestClock??={now:10000,original:Date.now};window.editTestClock.now+='+ms+';Date.now=()=>window.editTestClock.now;true');
-    const key=async(keyCode,modifiers=[])=>{await tick();win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await frame();};
+    const key=async(keyCode,modifiers=[])=>{
+      await tick();
+      console.log('[rich editor] '+phase+': native '+keyCode+' down');
+      win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});
+      console.log('[rich editor] '+phase+': native '+keyCode+' up');
+      win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});
+      console.log('[rich editor] '+phase+': native '+keyCode+' frames');
+      await frame();
+    };
     const type=async(text)=>{await tick();for(const char of text){win.webContents.sendInputEvent({type:'char',keyCode:char});}await frame();};
     const mods=[process.platform==='darwin'?'meta':'control'];
     assert.equal(await run('document.activeElement===document.querySelector(".rich-draft-editor")'),true,'editor focuses on mount');
@@ -70,17 +78,24 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     assert.deepEqual(await doc(),[[{kind:'thread',paneId:'a',hostId:'local'},{kind:'text',text:'é'}]]);
     stage('line edits and clipboard');
     await set({draftId:'lines',doc:[[{kind:'thread',paneId:'a',hostId:'local'},{kind:'text',text:'one'}],[{kind:'text',text:'two'}]],caret:{line:0,offset:1}});
+    stage('forward delete');
     await key('Delete');assert.equal((await doc())[0][1].text,'ne');
+    stage('line join');
     await set({caret:{line:1,offset:0}});await key('Backspace');
     assert.deepEqual(await doc(),[[{kind:'thread',paneId:'a',hostId:'local'},{kind:'text',text:'netwo'}]]);
+    stage('select cut range');
     await run('(()=>{const e=document.querySelector(".rich-draft-editor"),r=document.createRange();r.setStart(e.firstChild.firstChild,0);r.setEnd(e.firstChild.lastChild,2);const s=getSelection();s.removeAllRanges();s.addRange(r);})()');
     await set({}); // A metadata render must retain the person's selected range.
+    stage('cut');
     await run('(()=>{const e=document.querySelector(".rich-draft-editor"),data=new DataTransfer();e.dispatchEvent(new ClipboardEvent("cut",{bubbles:true,cancelable:true,clipboardData:data}));window.cutText=data.getData("text/plain");})()');await frame();
     assert.equal(await run('window.cutText'),'#Thread Ane');
     assert.deepEqual(await doc(),[[{kind:'text',text:'two'}]]);
+    stage('cut undo');
     await key('z',mods);assert.equal((await doc())[0][0].kind,'thread');
+    stage('beforeinput redo');
     assert.equal(await run('(()=>{const e=new InputEvent("beforeinput",{inputType:"historyRedo",bubbles:true,cancelable:true});document.querySelector(".rich-draft-editor").dispatchEvent(e);return e.defaultPrevented;})()'),true);
     await frame();assert.deepEqual(await doc(),[[{kind:'text',text:'two'}]]);
+    stage('cross draft paste');
     await run('(()=>{const data=new DataTransfer();data.setData("text/plain","Image1");data.setData("application/x-apex-deck-draft+json",JSON.stringify({version:1,draftId:"other-draft",doc:[[{kind:"file",fileId:"f1"}]]}));document.querySelector(".rich-draft-editor").dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}));})()');await frame();
     assert.equal((await doc()).flat().some(t=>t.kind==='file'),false);
     stage('drag copy');
