@@ -50,3 +50,38 @@ test("Apply now doesn't restart when the Access save failed", async () => {
   assert.equal(await queue.afterSaves(async () => { restarted = true; }), true);
   assert.equal(restarted, true);
 });
+
+test("A pick made while Apply now waits is the one the bot restarts with", async () => {
+  // Review case: pick Edit, tap Apply now, pick Read-only before the Edit save lands.
+  const queue = saveQueue();
+  let finishEdit, finishRead;
+  const order = [];
+  queue.track(new Promise((resolve) => { finishEdit = resolve; }).then(() => order.push("edit saved")));
+  const applied = queue.afterSaves(async () => { order.push("restart"); });
+  queue.track(new Promise((resolve) => { finishRead = resolve; }).then(() => order.push("read saved")));
+  finishEdit();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(order, ["edit saved"], "restarted before the later Read-only save landed");
+  finishRead();
+  assert.equal(await applied, true);
+  assert.deepEqual(order, ["edit saved", "read saved", "restart"]);
+});
+
+test("A failed pick made while Apply now waits stops the restart", async () => {
+  const queue = saveQueue();
+  let finishEdit;
+  queue.track(new Promise((resolve) => { finishEdit = resolve; }));
+  let restarted = false;
+  const applied = queue.afterSaves(async () => { restarted = true; });
+  queue.track(Promise.reject(new Error("offline")));
+  finishEdit();
+  assert.equal(await applied, false);
+  assert.equal(restarted, false);
+});
+
+import { readFileSync } from "node:fs";
+
+test("The phone's bot settings are locked while Apply now runs", () => {
+  const source = readFileSync(new URL("../src/phone/PhoneApp.tsx", import.meta.url), "utf8");
+  assert.ok(source.includes('<fieldset className="ph-group ph-turn" disabled={Boolean(props.offline) || applying === "…"}'), "settings stay editable during Apply now");
+});

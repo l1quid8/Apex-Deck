@@ -3387,7 +3387,7 @@ function BotSheet(props: {
       {props.resets}
       {editable ? <>
         <div className="ph-section">Model and reasoning</div>
-        <fieldset className="ph-group ph-turn" disabled={Boolean(props.offline)} aria-busy={result.saving}>
+        <fieldset className="ph-group ph-turn" disabled={Boolean(props.offline) || applying === "…"} aria-busy={result.saving}>
           {choices ? (
             <button type="button" className="ph-srow" aria-haspopup="menu" onClick={() => setView("models")}>
               <span className="ph-grow"><strong>Model</strong></span>

@@ -29,9 +29,18 @@ export function saveQueue() {
       // The newest save decides the outcome; earlier ones only have to be finished.
       pending = pending.then(() => landed);
     },
-    /** Runs `restart` once every tracked save has landed. False, without restarting, if the newest failed. */
+    /**
+     * Runs `restart` once every tracked save has landed, including saves tracked while it waits.
+     * False, without restarting, if the newest failed.
+     */
     async afterSaves(restart: () => Promise<void>): Promise<boolean> {
-      if (!(await pending)) return false;
+      let waited: Promise<boolean>;
+      let ok: boolean;
+      do {
+        waited = pending;
+        ok = await waited;
+      } while (waited !== pending);
+      if (!ok) return false;
       await restart();
       return true;
     },
