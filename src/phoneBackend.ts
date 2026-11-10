@@ -40,7 +40,7 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
   });
   connection.setFinishResync(() => client.finishResync());
   const backend = guardHostWrites({
-    ...commandBackend(guardPhoneCommands(daemonTransport(client), machine.name), shell),
+    ...commandBackend(guardPhoneCommands(daemonTransport(client)), shell),
     host: { id: machine.id, name: machine.name, connection },
   }, connection);
   return {

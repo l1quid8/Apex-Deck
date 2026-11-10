@@ -1,32 +1,27 @@
 import type { Transport } from "../commandBackend.ts";
-import { requireFaceId } from "./biometric.ts";
 
-// Mirror apex-daemon authority::access_effect. These commands may carry access
-// in snapshots/profiles as well as explicit levels: never inspect args to skip
-// authentication. The wire-boundary drift test checks all daemon Raises arms.
-const raisingCommands = new Set([
-  "room_add_participant", "room_update_participant", "room_create", "room_import",
-  "room_fork", "chat_promote", "room_mount", "folder_accept", "session_save",
-  "settings_save", "monitor_watch_save",
-  "agent_profile_save",
-]);
+// The phone no longer stops to ask Face ID before a command. Every action the phone can take —
+// raising a bot's access, adding one to a thread, saving the thread list, deleting a thread — goes
+// straight to the machine, and the app asks once for Face ID when it opens instead.
+//
+// What still decides whether a phone may do something is the machine: apex-daemon classifies each
+// command in authority::access_effect and refuses anything this device's level doesn't cover
+// (raisingCommands used to mirror that list here, so the read-only phone got a prompt it could not
+// have satisfied anyway). A local prompt was never proof of anything — biometric.ts says as much:
+// the result was never sent to the machine. So it added a step, not protection.
+//
+// tests/phone-command-guard.test.mjs still reads the daemon's Raises arms and checks each one reaches
+// the wire intact, so a command the daemon treats as privileged can't be silently mangled on the way.
 
-/** Guard the shared command path so typed methods and raw calls obey one rule. */
-export function guardPhoneCommands(transport: Transport, machineName: string): Transport {
+/** Guard the shared command path: one rule, the same for typed methods and raw calls. */
+export function guardPhoneCommands(transport: Transport): Transport {
   return {
     ...transport,
     async call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+      // The command name reaches transport.call to be framed and sent. Anything that isn't a string
+      // would be stringified into a command nobody asked for, so refuse it here.
       if (typeof cmd !== "string") throw new Error("Invalid phone command. Nothing was sent.");
-      if (!raisingCommands.has(cmd)) return transport.call<T>(cmd, args);
-      // Capture precisely the JSON intent before yielding to native UI. The
-      // caller must not change a nested profile/folder during authentication.
-      const intent = args === undefined ? undefined : JSON.parse(JSON.stringify(args)) as Record<string, unknown>;
-      // Each invocation owns its attempt. No shared promise, cached success or
-      // reuse interval can release a different intent after this one succeeds.
-      if (!await requireFaceId(`Allow ${cmd.replaceAll("_", " ")} on ${machineName}.`)) {
-        throw new Error("Biometric authentication is required. Nothing was sent.");
-      }
-      return transport.call<T>(cmd, intent);
+      return transport.call<T>(cmd, args);
     },
   };
 }
