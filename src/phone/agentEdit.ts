@@ -25,9 +25,13 @@ export function agentTool(config: ParticipantConfig): string {
   return config.backend.kind === "agent" ? config.backend.tool : "";
 }
 
-/** Access a tool can take: the Mac's own list, so Grok and Muse have no Ask on either. */
-export function agentAccessChoices(tool: string): { id: Access; text: string }[] {
-  return accessOptions(tool).map(({ value, text }) => ({ id: value, text }));
+/**
+ * Access a tool can take: the Mac's own list, so Grok and Muse have no Ask on either. The title is
+ * the Mac's one-line explanation, kept so the phone can say what a level means in the same words
+ * instead of inventing a second description.
+ */
+export function agentAccessChoices(tool: string): { id: Access; text: string; title: string }[] {
+  return accessOptions(tool).map(({ value, text, title }) => ({ id: value, text, title }));
 }
 
 const modelOf = (config: ParticipantConfig) => ("model" in config.backend ? config.backend.model ?? "" : "");

@@ -101,6 +101,7 @@ export function AgentSheet(props: {
         <button key={choice.id} type="button" role="radio" aria-checked={draft.access === choice.id} onClick={() => set({ access: choice.id })}>{choice.text}</button>
       ))}
     </div>
+    <p className="ph-sheet-text">{access.find((choice) => choice.id === draft.access)?.title}</p>
     <p className="ph-sheet-text ph-quiet">Voice, look and picture settings stay as {props.agent ? "the Mac has them" : "the bot you started from"}.</p>
     {problem && <p className="ph-sheet-text ph-amber">{problem}</p>}
     {props.saveProblem && <p className="ph-sheet-text ph-amber">{props.saveProblem}</p>}

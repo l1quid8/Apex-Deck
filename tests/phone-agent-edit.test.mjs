@@ -7,6 +7,7 @@ import fs from 'node:fs';
 // the agent list ends up exactly as the sheet left it.
 const mod = await import(new URL('../src/phone/agentEdit.ts', import.meta.url).href);
 const { agentAccessChoices, agentDraft, agentFromDraft, agentProblem, agentReasoning, agentTemplateDraft, agentTool, removeAgent, upsertAgent } = mod;
+const { accessOptions } = await import(new URL('../src/accessChange.ts', import.meta.url).href);
 
 const agent = (over = {}) => ({
   id: 'claude', display_name: 'Claude',
@@ -97,6 +98,18 @@ test('Grok and Muse have no Ask, as on the Mac; the rest do', () => {
   // A scripted agent runs no tool, so it keeps every choice.
   assert.equal(agentTool(agent({ backend: { kind: 'cli', program: 'say', args: [] } })), '');
   assert.equal(agentAccessChoices('').length, 4);
+});
+
+test('each access choice carries the Mac’s own explanation, so the phone explains it the same way', () => {
+  const [read, ask] = agentAccessChoices('claude_code');
+  assert.match(read.text, /^Read-only$/);
+  assert.match(read.title, /Read files/);
+  assert.match(ask.title, /Ask before edits/);
+  // The Mac's wording, not a second copy of it: the list comes from accessOptions.
+  assert.deepEqual(
+    agentAccessChoices('claude_code').map((choice) => choice.title),
+    accessOptions('claude_code').map((choice) => choice.title),
+  );
 });
 
 test('the saved list gains an agent at the end, replaces one where it was, and drops one on delete', () => {
