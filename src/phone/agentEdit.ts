@@ -1,6 +1,7 @@
 import type { Access, ParticipantConfig, Speed } from "../types.ts";
 import { botIdentity, slug } from "../slug.ts";
 import { botGroups, phoneSpeed, reasoningLevels } from "../phoneRules.ts";
+import { accessOptions } from "../accessChange.ts";
 
 /**
  * The Agents tab creates, changes and deletes the agents saved on the Mac. Those live in the
@@ -18,21 +19,15 @@ import { botGroups, phoneSpeed, reasoningLevels } from "../phoneRules.ts";
 /** What the sheet edits. The Mac's form has more; these are the ones that pay for themselves on a phone. */
 export type AgentDraft = { name: string; brief: string; access: Access; model: string; effort: string; speed: string };
 
-const ACCESS: { id: Access; text: string }[] = [
-  { id: "read", text: "Read-only" },
-  { id: "ask", text: "Ask" },
-  { id: "edits", text: "Edit" },
-  { id: "full", text: "Full" },
-];
 
 /** The CLI tool an agent runs, or "" for a scripted or API agent: the phone offers models only for tools. */
 export function agentTool(config: ParticipantConfig): string {
   return config.backend.kind === "agent" ? config.backend.tool : "";
 }
 
-/** Access a tool can take. Grok and Muse have no Ask, exactly as on the Mac. */
+/** Access a tool can take: the Mac's own list, so Grok and Muse have no Ask on either. */
 export function agentAccessChoices(tool: string): { id: Access; text: string }[] {
-  return tool === "grok" || tool === "muse" ? ACCESS.filter((choice) => choice.id !== "ask") : ACCESS;
+  return accessOptions(tool).map(({ value, text }) => ({ id: value, text }));
 }
 
 const modelOf = (config: ParticipantConfig) => ("model" in config.backend ? config.backend.model ?? "" : "");
