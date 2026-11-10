@@ -17,6 +17,7 @@ const fixture = { name: 'reply-steps-fixture', enforce: 'pre', transform(code, i
     export function App(){
       const [offer,setOffer]=React.useState({by:'jigga',pending:false,steps:[{label:'Review changes',prompt:'Review the changes.'},{label:'Check edge cases',prompt:'Check edge cases.'},{label:'Plan next step',prompt:'Plan the next step.'}]});
       window.replaceOffer=()=>setOffer({...offer,steps:[{label:'New suggestion',prompt:'New prompt'}]});
+      window.setSteps=steps=>setOffer(o=>({...o,steps}));
       window.sent=window.sent||[];
       return <main className="rail" style={{display:'block',width:'100%',padding:20}}><article style={{width:'100%'}}><p>Sample response</p><ReplyNextSteps key={JSON.stringify(offer)} offer={offer} onStep={(step,by)=>window.sent.push({step,by})}/></article><textarea defaultValue="Keep this draft"/></main>;
     }`;
@@ -26,6 +27,78 @@ const appHooks = { name: 'reply-steps-app-hooks', enforce: 'pre', transform(code
   if (!id.endsWith('/src/App.tsx')) return;
   return `import {recordQuestion as recordTestQuestion} from './questions'; window.recordTestQuestion=recordTestQuestion;\n`+code;
 }};
+
+/** Geometry of the suggestion row: how many lines it uses, whether it
+ *  overflows, whether a separator was pushed to the start of a line, the gap
+ *  after each separator, and where the chevron sits. */
+const MEASURE = `(()=>{
+  const box=document.querySelector('.reply-next-steps-links');
+  const rects=el=>{const r=document.createRange();r.selectNodeContents(el);return [...r.getClientRects()].filter(x=>x.width>0).map(x=>({left:x.left,right:x.right,top:x.top,bottom:x.bottom}));};
+  const buttons=[...document.querySelectorAll('.reply-next-step')];
+  const dots=[...document.querySelectorAll('.reply-next-steps-dot')];
+  const t=document.querySelector('.reply-next-steps-toggle').getBoundingClientRect();
+  const last=rects(buttons.at(-1)).at(-1);
+  return {
+    lines:[...new Set(buttons.flatMap(rects).map(r=>Math.round(r.top)))].length,
+    broken:buttons.filter(b=>new Set(rects(b).map(r=>Math.round(r.top))).size>1).length,
+    overflow:box.scrollWidth>box.clientWidth+1,
+    dotsLeadRow:dots.filter((d,i)=>Math.abs(d.getBoundingClientRect().top-rects(buttons[i]).at(-1).top)>1).length,
+    dotGaps:dots.map((d,i)=>Math.round(d.getBoundingClientRect().left-rects(buttons[i]).at(-1).right)),
+    toggleGap:Math.round(t.left-last.right),
+    toggleOnLastLine:Math.abs((t.top+t.height/2)-(last.top+last.bottom)/2)<5
+  };})()`;
+
+const LONG_STEPS = [
+  {label:"Stop learned positions, start Null's fixes",prompt:"Stop learned positions and start Null's fixes instead."},
+  {label:'Plan the branch-and-join reasoning test',prompt:'Plan the branch-and-join reasoning test and write the criteria down.'},
+  {label:'Commit round-4 README and HANDOFF §18',prompt:'Commit the round-4 README and the HANDOFF §18 section.'}
+];
+
+test('long suggestions run together on one line instead of orphaning a row', {timeout:150000}, async () => {
+  await withAppearanceApp('reply-next-steps-flow', String.raw`
+    await until('!!document.querySelector(".reply-next-steps-toggle")');
+    await run(${JSON.stringify(`window.setSteps(${JSON.stringify(LONG_STEPS)})`)});await frame();
+    await run('document.querySelector("article").style.width="900px"');await frame();
+    const wide=await run(${JSON.stringify(MEASURE)});
+    assert.equal(wide.overflow,false,'nothing spills out of the reply');
+    assert.equal(wide.lines,1,'three suggestions fit on one flowing line');
+    assert.deepEqual(wide.dotGaps,[10,10],'each separator sits 10px after the suggestion it follows');
+    assert.equal(wide.toggleGap,4,'the chevron stays 4px after the last suggestion');
+    assert.equal(wide.toggleOnLastLine,true);
+    await shot('reply-next-steps-flow-wide');
+    await run('document.querySelector("article").style.width="420px"');await frame();
+    const narrow=await run(${JSON.stringify(MEASURE)});
+    assert.ok(narrow.lines>1,'narrow panes still wrap');
+    assert.ok(narrow.broken>0,'a long suggestion runs on across the line break instead of being pushed whole to the next row');
+    assert.equal(narrow.overflow,false);
+    assert.equal(narrow.dotsLeadRow,0,'a wrapped line never starts with a separator');
+    assert.equal(narrow.toggleGap,4);
+    await shot('reply-next-steps-flow-narrow');
+  `,{width:900,height:650,plugins:[fixture]});
+});
+
+test('hovering or focusing a suggestion previews the prompt it sends', {timeout:150000}, async () => {
+  await withAppearanceApp('reply-next-steps-preview', String.raw`
+    await until('!!document.querySelector(".reply-next-steps-toggle")');
+    const at=await run('(()=>{const b=document.querySelectorAll(".reply-next-step")[1].getBoundingClientRect();return {x:Math.round(b.left+6),y:Math.round(b.top+b.height/2)}})()');
+    win.webContents.sendInputEvent({type:'mouseMove',x:at.x,y:at.y});
+    await until('!!document.querySelector(".reply-next-steps-tip")','the hover preview');
+    const tip=await run('(()=>{const t=document.querySelector(".reply-next-steps-tip"),b=document.querySelectorAll(".reply-next-step")[1].getBoundingClientRect();return {text:t.textContent,role:t.getAttribute("role"),above:t.getBoundingClientRect().bottom<=b.top+1}})()');
+    assert.deepEqual(tip,{text:'Check edge cases.',role:'tooltip',above:true},'the preview names the prompt and sits above the suggestion');
+    assert.equal(await run('(()=>{const id=document.querySelectorAll(".reply-next-step")[1].getAttribute("aria-describedby");return id&&document.getElementById(id).textContent})()'),'Check edge cases.','screen readers get the same description');
+    win.webContents.sendInputEvent({type:'mouseMove',x:4,y:4});
+    await sleep(300);
+    assert.equal(await run('!!document.querySelector(".reply-next-steps-tip")'),false,'leaving hides the preview');
+    await run('document.querySelectorAll(".reply-next-step")[2].focus()');
+    // A hidden test window never fires focus itself; send what Chromium would.
+    await run('document.querySelectorAll(".reply-next-step")[2].dispatchEvent(new FocusEvent("focusin",{bubbles:true}))');await frame();
+    await until('!!document.querySelector(".reply-next-steps-tip")','focus shows the preview');
+    assert.equal(await run('document.querySelector(".reply-next-steps-tip").textContent'),'Plan the next step.');
+    await run('document.querySelectorAll(".reply-next-step")[2].dispatchEvent(new FocusEvent("focusout",{bubbles:true}))');await frame();
+    assert.equal(await run('!!document.querySelector(".reply-next-steps-tip")'),false,'blur hides the preview');
+    await shot('reply-next-steps-preview');
+  `,{width:900,height:650,plugins:[fixture]});
+});
 
 test('App puts suggestions beneath the correct reply and leaves composer typing alone', {timeout:150000}, async () => {
   await withAppearanceApp('reply-next-steps-app',String.raw`
@@ -67,8 +140,11 @@ test('reply suggestions collapse, expand, route and wrap without changing the dr
     assert.deepEqual(await run('window.sent'),[{step:{label:'Review changes',prompt:'Review the changes.'},by:'jigga'}]);
     assert.equal(await run('document.querySelector("textarea").value'),'Keep this draft');
     await run('document.querySelector("article").style.width="280px"');await frame();
-    const layout=await run('(()=>{const box=document.querySelector(".reply-next-steps"),r=[...box.querySelectorAll(".reply-next-step")].map(b=>b.getBoundingClientRect());const t=box.querySelector(".reply-next-steps-toggle").getBoundingClientRect();return {aligned:r.every(x=>Math.abs(x.left-r[0].left)<1),rows:r[1].top>r[0].top,attached:Math.abs(t.left-r[2].right-4)<1,overflow:box.scrollWidth>box.clientWidth}})()');
-    assert.deepEqual(layout,{aligned:true,rows:true,attached:true,overflow:false});
+    const layout=await run(` + JSON.stringify(MEASURE) + `);
+    assert.equal(layout.overflow,false);
+    assert.ok(layout.lines>1,'the narrow layout still wraps');
+    assert.equal(layout.dotsLeadRow,0,'no separator starts a wrapped line');
+    assert.equal(layout.toggleGap,4);
     await shot('reply-next-steps-narrow');
     await run('document.querySelector("article").style.width="100%"');await frame();await shot('reply-next-steps-wide');
     await run(toggle+'.click()');await frame();
