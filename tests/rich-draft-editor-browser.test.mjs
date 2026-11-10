@@ -28,6 +28,7 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
   await withAppearanceApp('rich-draft-editor', String.raw`
     // Report a stuck renderer/frame while Electron can still return its output.
     let phase='mount';
+    win.webContents.on('console-message',event=>{if(event.message?.startsWith('[rich editor]'))console.log('[renderer] '+event.message);});
     const stage=name=>{phase=name;console.log('[rich editor] '+name);};
     const bounded=async(label,pending)=>{
       let timer;
@@ -87,7 +88,7 @@ test('rich editor handles atomic edits, filtered history, IME, clipboard and dra
     await run('(()=>{const e=document.querySelector(".rich-draft-editor"),r=document.createRange();r.setStart(e.firstChild.firstChild,0);r.setEnd(e.firstChild.lastChild,2);const s=getSelection();s.removeAllRanges();s.addRange(r);})()');
     await set({}); // A metadata render must retain the person's selected range.
     stage('cut');
-    await run('(()=>{const e=document.querySelector(".rich-draft-editor"),data=new DataTransfer();e.dispatchEvent(new ClipboardEvent("cut",{bubbles:true,cancelable:true,clipboardData:data}));window.cutText=data.getData("text/plain");})()');await frame();
+    await run('(()=>{const e=document.querySelector(".rich-draft-editor");console.log("[rich editor] cut: DataTransfer constructor");const data=new DataTransfer();console.log("[rich editor] cut: ClipboardEvent constructor");const event=new ClipboardEvent("cut",{bubbles:true,cancelable:true,clipboardData:data});console.log("[rich editor] cut: dispatch");e.dispatchEvent(event);console.log("[rich editor] cut: read plain text");window.cutText=data.getData("text/plain");console.log("[rich editor] cut: complete");})()');await frame();
     assert.equal(await run('window.cutText'),'#Thread Ane');
     assert.deepEqual(await doc(),[[{kind:'text',text:'two'}]]);
     stage('cut undo');

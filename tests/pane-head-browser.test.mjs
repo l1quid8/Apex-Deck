@@ -103,7 +103,8 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
           await pointerOff();
           assert.equal(await animation(),'none');
           win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);
-          assert.notEqual(await animation(),'none','cut-off title marquees on hover');
+          const hoverState=await run("(()=>{const head=document.querySelector('.pane-head'),title=head.querySelector('.pane-title'),text=head.querySelector('.thread-name-text');return {hover:head.matches(':hover'),focus:head.matches(':focus-within'),marquee:title.classList.contains('marquee'),reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches,titleWidth:title.clientWidth,textWidth:text.getBoundingClientRect().width}})()");
+          assert.notEqual(await animation(),'none','cut-off title marquees on hover: '+JSON.stringify(hoverState));
           await pointerOff();assert.equal(await animation(),'none','leaving resets marquee');
           win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
           win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);assert.equal(await animation(),'none','reduced motion keeps ellipsis');
