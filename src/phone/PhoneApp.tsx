@@ -89,6 +89,7 @@ import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTick
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { PhoneArtifacts } from "./ArtifactSheet";
+import { LockRow } from "./LockRow";
 import { deleteThreadGate, deleteThreadWords, removeThreadFrom } from "./threadDelete";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
 import { carriedEntry } from "../threadState";
@@ -2539,6 +2540,7 @@ export function PhoneApp() {
             <div className="ph-list">
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
+              <LockRow />
             </div>
           </main>
         ) : tab === "appearance" ? (

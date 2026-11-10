@@ -10,6 +10,7 @@ class AppBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(ApexSshPlugin())
         bridge?.registerPluginInstance(ApexScannerPlugin())
         bridge?.registerPluginInstance(ApexAppearancePlugin())
+        bridge?.registerPluginInstance(AppLockPlugin())
     }
 }
 
@@ -52,6 +53,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window?.rootViewController = AppBridgeViewController()
         window?.makeKeyAndVisible()
 
+        // The lock draws its cover in this window, so it needs the window before the first frame.
+        AppLock.shared.window = window
+        AppLock.shared.started()
+
         SceneDelegateProxy.shared.scene(scene, willConnectTo: session, options: connectionOptions)
     }
 
@@ -61,5 +66,28 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
         SceneDelegateProxy.shared.scene(scene, continue: userActivity)
+    }
+
+    // MARK: - The app lock. These fire before the app-switcher snapshot and before any prompt could
+    // be shown outside the foreground, so the cover is up in time and the asking is left until the
+    // app is active again.
+    func sceneWillResignActive(_ scene: UIScene) {
+        AppLock.shared.willResignActive()
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        AppLock.shared.didEnterBackground()
+    }
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        AppLock.shared.willEnterForeground()
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        AppLock.shared.didBecomeActive()
+    }
+
+    func sceneDidDisconnect(_ scene: UIScene) {
+        if AppLock.shared.window === window { AppLock.shared.window = nil }
     }
 }

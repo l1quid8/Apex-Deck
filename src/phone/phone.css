@@ -556,6 +556,11 @@
 .ph-srow > svg { color: var(--muted); }
 .ph-srow-icon { display: flex; color: var(--mint); width: 24px; justify-content: center; flex: none; }
 .ph-tap { cursor: pointer; min-height: 44px; }
+/* Settings → Lock. The switch is the composer's own, so the two read the same; the row is a div
+   rather than a button, because the switch inside it is the thing you press. */
+.ph-lock-row .ph-grow { min-width: 0; }
+.ph-lock-row .ph-composer-switch { margin: -6px -4px -6px 0; }
+.ph-lock-problem { color: var(--red) !important; }
 
 .ph-card { background: var(--panel-2); border-radius: 14px; padding: 12px 14px; margin-bottom: 6px; font-size: 14px; }
 .ph-card p { overflow-wrap: anywhere; }

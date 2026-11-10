@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Authenticates access changes and opens SSH sign-ins you chose to keep.</string>
+	<string>Unlocks Apex Deck when it opens, and opens SSH sign-ins you chose to keep.</string>
 	<key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>
