@@ -33,7 +33,7 @@ import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phoneTask
 import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState, type AssistantVisiblePane } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { SPEED_OPTIONS, speedHint } from "../speed";
-import { accessOptions, applyNowFirst } from "../accessChange";
+import { accessOptions, applyNowFirst, saveQueue } from "../accessChange";
 import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
@@ -3240,6 +3240,8 @@ function BotSheet(props: {
   // Once saved they're dropped, so a later write doesn't undo a change made on the Mac since.
   const touched = useRef<TurnChange>({});
   const version = useRef(0);
+  // Apply now restarts the bot with the Access its machine holds, so it waits for these to land.
+  const saves = useRef(saveQueue());
   const saved = useRef(props.config);
   saved.current = props.config;
   // Bumped once a save lands and its picks leave `touched`, so the effect below runs again after that.
@@ -3282,7 +3284,9 @@ function BotSheet(props: {
     const mine = ++version.current;
     setResult({ saving: true, error: "", saved: false });
     try {
-      await props.onSave(sent);
+      const save = props.onSave(sent);
+      saves.current.track(save);
+      await save;
       const left: TurnChange = { ...touched.current };
       if (left.model === sent.model) delete left.model;
       if (left.effort === sent.effort) delete left.effort;
@@ -3313,8 +3317,10 @@ function BotSheet(props: {
   };
   const applyNow = () => {
     if (!props.onApplyAccess) return;
+    const restart = props.onApplyAccess;
     setApplying("…");
-    props.onApplyAccess().then(() => { setAccessFrom(null); setApplying(""); }, (error) => setApplying(`Couldn't apply now: ${words(error)}`));
+    // A failed save has already put the old Access back and said why, so there's nothing to restart.
+    saves.current.afterSaves(restart).then((applied) => { if (applied) setAccessFrom(null); setApplying(""); }, (error) => setApplying(`Couldn't apply now: ${words(error)}`));
   };
   const accessWaits = accessFrom !== null && accessFrom !== access && props.working;
   const pick = (id: string) => {
