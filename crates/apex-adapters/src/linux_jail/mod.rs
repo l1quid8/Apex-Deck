@@ -281,6 +281,9 @@ pub fn build_spec(
             protected: paths::standard_protected(home, data_dir),
             path_dirs: std::env::split_paths(path).collect(),
             executables: Vec::new(),
+            // A turn inside a bot copy runs in `<data>/bot-copies/<thread>/<bot>/work`,
+            // which is inside the data folder the guard protects.
+            bot_copy: paths::copy_work(data_dir, room, bot),
         };
         paths::check_writable(cwd, &guard, &mounts)?;
     } else {
@@ -472,5 +475,34 @@ mod tests {
         assert!(!env.iter().any(|(_, v)| v == "/evil"));
         let names = env.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
         assert!(names.contains(&"NO_PROXY") && names.contains(&"PATH"));
+    }
+
+    /// A spec for a turn in `work`, the room and bot being the ones the host
+    /// names a copy after.
+    fn spec_for(work: &Path, data: &Path, room: &str, bot: &str) -> Result<JailSpec, JailError> {
+        build_spec(
+            Path::new("/usr/bin/claude"), &[], work, apex_core::Access::Edits, None,
+            &data.parent().unwrap().parent().unwrap().parent().unwrap(), data, room, bot,
+            std::ffi::OsStr::new("/usr/bin"), &[], &[],
+        )
+    }
+
+    #[test]
+    fn a_bot_copys_work_tree_launches_and_its_neighbours_do_not() {
+        // The host makes a copy at `<data>/bot-copies/<thread>/<bot>/work`, so the
+        // launch has to let that one folder in where it refuses the rest.
+        let root = std::env::temp_dir().join(format!("apex-jail-spec-{}-copy", std::process::id()));
+        let data = root.join("me/.local/share/apex");
+        let mine = data.join("bot-copies/t1/bot1/work");
+        let theirs = data.join("bot-copies/t1/bot2/work");
+        for folder in [&mine, &theirs, &data.join("keys")] { std::fs::create_dir_all(folder).unwrap(); }
+
+        assert!(spec_for(&mine, &data, "t1", "bot1").is_ok());
+        assert!(spec_for(&theirs, &data, "t1", "bot1").is_err());
+        assert!(spec_for(&mine, &data, "t1", "bot2").is_err());
+        assert!(spec_for(&data.join("keys"), &data, "t1", "bot1").is_err());
+        assert!(spec_for(&data, &data, "t1", "bot1").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
