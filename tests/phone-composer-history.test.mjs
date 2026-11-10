@@ -30,6 +30,7 @@ test('phone composer hardware arrows recall local history and preserve native ed
         callSlot:{live:false,look:'pill',hint:''}, participants:[{id:'bot',display_name:'Bot',look:{seed:1,color:'#777'}}],
         working:{}, cut:{}, approvals:[], meters:{}, pins:[], quotes, onQuotes:setQuotes, queued:[],
         gate:{enabled:true,reason:''}, endRef:{current:null}, runner:null,
+        swipe:{next:null,previous:null,position:''}, onSwipe(){},
         onDraft:window.replaceDraft, onResized() {}, onScrolled() {},
         onSend(){window.sends++; window.replaceDraft('');}
       });

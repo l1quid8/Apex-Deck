@@ -100,7 +100,8 @@ import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } 
 import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
-import { archivedDetail, foldChoice, readFolds } from "./threadListRules";
+import { archivedDetail, foldChoice, machineGroups, machineNote, readFolds, threadState } from "./threadListRules";
+import { edgeSwipe, holdStrip, neighbour, roomFits, stripPosition, swipeBlocked, swipeIntent, swipeRelease, swipeStrip, type StripHold, type SwipePane } from "./threadSwipe";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
@@ -2135,11 +2136,75 @@ export function PhoneApp() {
   }
 
   const draft = openKey ? draftFor(openKey) : emptyDraft();
+  // ---- Swiping between threads ---------------------------------------------------------------
+  // The Code tab swipes between terminals; a thread swipes the same way, in the order the Threads
+  // list shows them. Swiping is how the single thread on screen is chosen, where the Mac has one
+  // pane focused and the others beside it. The order is held while a thread is open, so a reply
+  // that starts another thread can't move the one under your thumb.
+  const swipeKeyOf = (pane: SwipePane) => threadKey(pane, sessionHost(pane as AssistantVisiblePane));
+  const swipeList = useMemo(() => swipeStrip([
+    sections.pinned,
+    ...machineGroups(sections.projects, (block) => workspaceHost(block.workspace), links).flatMap((group) => group.projects.map((block) => block.panes)),
+    chatPlaces.panes,
+  ], swipeKeyOf),
+    // sessionHost reads the projects, so they are part of what this order is made from.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sections, links, chatPlaces, workspaces]);
+  const stripHold = useRef<StripHold | null>(null);
+  stripHold.current = holdStrip(stripHold.current, swipeList, openKey ?? null);
+  const swipeKeys = stripHold.current.keys;
+  /** What a peek shows of a thread not on screen: its name, where it lives, and what it is doing. */
+  const swipeRow = (pane: SwipePane): SwipeRow => {
+    const hostId = sessionHost(pane as AssistantVisiblePane);
+    const at = queueKey(hostId, pane.id);
+    const state = threadState({
+      down: machineNote(linkOf(hostId) ?? null).down,
+      waiting: (waiting[at]?.length ?? 0) > 0,
+      working: (busy[at] ?? []).map((id) => session?.profiles.find((profile) => profile.id === id)?.display_name ?? id),
+      unread: Boolean((pane as Pane).unread),
+    });
+    return {
+      id: pane.id, hostId, title: (pane as Pane).title || "Thread",
+      where: [workspaces.find((item) => item.id === (pane as Pane).workspaceId)?.name, linkOf(hostId)?.name].filter(Boolean).join(" · "),
+      words: state.words,
+    };
+  };
+  const swipeRows = useMemo(() => {
+    const rows = new Map<string, SwipeRow>();
+    for (const pane of [...sections.pinned, ...sections.projects.flatMap((block) => block.panes), ...chatPlaces.panes]) {
+      if (pane.kind !== "chat" || pane.archived) continue;
+      const key = swipeKeyOf(pane);
+      if (!rows.has(key)) rows.set(key, swipeRow(pane));
+    }
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sections, chatPlaces, workspaces, links, waiting, busy, session]);
+  const swipePeek = (to: "next" | "previous") => {
+    const key = neighbour(swipeKeys, openKey ?? null, to);
+    return (key && swipeRows.get(key)) || null;
+  };
+  /** A swipe, or the end that says nothing opens: the thread on that side, if there is one. */
+  const swipeTo = (to: "next" | "previous") => {
+    const target = swipePeek(to);
+    if (!target) return;
+    // The next thread starts at its newest message, as opening it from the list does.
+    stuckRef.current = true;
+    const saved = panes.find((pane) => pane.id === target.id && sessionHost(pane) === target.hostId);
+    if (saved) { openThread(saved.id); return; }
+    // A Work thread made from a chat belongs to its machine, not to the Mac's saved session.
+    setOpenHost(target.hostId);
+    setOpenId(target.id);
+    setTab("threads");
+    setSheet(null);
+    setMenu(null);
+    setAsk(null);
+  };
   // The open thread's queued messages, and whether Send would queue: everyone it goes to is mid-reply.
   // The room on screen is the open thread's only when it came from that thread's machine too. Everything
   // drawn from it (messages, working bots, the question form and its Next buttons) reads this, so a room
-  // still showing while another machine's thread loads can never be acted on as the new one.
-  const openRoom = room && openPane && room.id === openPane.id && room.hostId === openHostId ? room : null;
+  // still showing while another machine's thread loads can never be acted on as the new one — and a fast
+  // swipe can never show one thread's messages under another thread's title.
+  const openRoom = roomFits(room, openPane?.id ?? null, openHostId) ? room : null;
   const openQueue = openPane ? queued[queueKey(openHostId, openPane.id)] : undefined;
   const queuedRows = openQueue && openLink ? queuedViews(openQueue.items, Object.keys(openRoom?.working ?? {}), openQueue.paused, openQueue.lost,
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
@@ -2328,6 +2393,8 @@ export function PhoneApp() {
             crewShut={crewShut}
             onCrew={foldCrew}
             onBots={() => { if (openPane && !viewingPending) { setBotChange(null); setMenu({ kind: "bots", id: openPane.id }); } }}
+            swipe={{ next: swipePeek("next"), previous: swipePeek("previous"), position: stripPosition(swipeKeys, openKey ?? null) }}
+            onSwipe={swipeTo}
             onBot={setBotSheet}
             meters={openRoom ? Object.fromEntries(openRoom.configs.map((config) => {
               const provider = config.backend.kind === "agent" ? config.backend.tool : null;
@@ -3200,6 +3267,9 @@ function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: s
   );
 }
 
+/** The thread on either side of the open one, for the peek shown while a finger drags. */
+interface SwipeRow { id: string; hostId: string; title: string; where: string; words: string }
+
 function ThreadView(props: {
   /** The mic beside Send and the call's sheet; `button` is false while the box shows Send in its place. */
   call?: (button: boolean) => ReactNode;
@@ -3234,6 +3304,9 @@ function ThreadView(props: {
   onUnqueue(id: number): void; onRemoveQueued(id: number): void; onResume(): void;
   /** The question or next steps, above the composer. */
   form: ReactNode; plan: boolean; onStopPlanning(): void;
+  /** Swiping between threads: the ones on either side, and where this one sits ("3 of 9"). */
+  swipe: { next: SwipeRow | null; previous: SwipeRow | null; position: string };
+  onSwipe(to: "next" | "previous"): void;
   runner: RunnerSnapshot|null; runnerHostOffset:number; runnerEndRequest:number; runnerShowRequest:number; onRunnerEndCancel():void; onRunnerAction(action:RunnerActionTag,limits?:RunnerLimits):void; onRunnerReview():void; runnerSetup:ReactNode;
 
   /** TL;DR mode: every bot is asked for a short answer. */
@@ -3382,15 +3455,54 @@ function ThreadView(props: {
       const style = getComputedStyle(line);
       const icons = parts.filter((part) => !part.classList.contains("ph-context-project") && !part.classList.contains("ph-context-machine"))
         .reduce((sum, part) => sum + part.getBoundingClientRect().width, 0);
-      // Three gaps once the machine is in: icon, project, machine, chevron.
-      const room = line.clientWidth - icons - project.scrollWidth - 3 * (parseFloat(style.columnGap) || 0);
+      // Three gaps once the machine is in: icon, project, machine, chevron — and two more when the
+      // thread's place ("3 of 9") sits between the machine and the chevron.
+      const room = line.clientWidth - icons - project.scrollWidth - (props.swipe.position ? 5 : 3) * (parseFloat(style.columnGap) || 0);
       setMachineFits(room >= 5.5 * parseFloat(style.fontSize));
     };
     fit();
     const watch = new ResizeObserver(fit);
     watch.observe(line);
     return () => watch.disconnect();
-  }, [props.project, props.machine, props.started]);
+  }, [props.project, props.machine, props.started, props.swipe.position]);
+  // ---- Swiping to the thread on either side ----------------------------------------------------
+  // The Code tab's own detector (swipeIntent, in swipeRelease), so a thumb works the same in both.
+  // The messages follow the finger a quarter of the way, as a terminal does, and the thread on that
+  // side shows in the gap; letting go past a quarter of the width, or with a flick, opens it.
+  const [dragX, setDragX] = useState(0);
+  const swiping = useRef<{ x: number; y: number; id: number; at: number; width: number; active: boolean } | null>(null);
+  const swipeDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    swiping.current = null;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    // The left edge is iOS's own back gesture, and anything that scrolls sideways keeps its swipe.
+    if (edgeSwipe(event.clientX) || swipeBlocked(event.target as Element)) return;
+    swiping.current = { x: event.clientX, y: event.clientY, id: event.pointerId, at: Date.now(), width: event.currentTarget.clientWidth || window.innerWidth, active: false };
+  };
+  const swipeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = swiping.current;
+    if (!start || start.id !== event.pointerId) return;
+    const dx = event.clientX - start.x, dy = event.clientY - start.y;
+    if (!start.active) {
+      // A tap, a scroll up or down, or a wiggle is not a swipe.
+      if (swipeIntent(dx, dy) === null) return;
+      start.active = true;
+      // From here the gesture is this box's even if the finger leaves it, so the release is never
+      // missed and a tap can't fire under a swipe.
+      try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* older WebViews */ }
+    }
+    setDragX(dx);
+  };
+  const swipeDrop = () => { swiping.current = null; setDragX(0); };
+  const swipeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = swiping.current;
+    if (!start || start.id !== event.pointerId) return;
+    swipeDrop();
+    if (!start.active) return;
+    const way = swipeRelease({ dx: event.clientX - start.x, dy: event.clientY - start.y, width: start.width, ms: Date.now() - start.at });
+    if (way !== "back") props.onSwipe(way);
+  };
+  /** The thread the finger is dragging towards, or null at the end of the strip. */
+  const peek = dragX === 0 ? null : dragX < 0 ? props.swipe.next : props.swipe.previous;
   const lost = cut.filter(([id, part]) => !part.ended && !(id in props.working)).map(([id]) => id);
   const ended = cut.filter(([, part]) => part.ended).map(([id]) => id);
   // Count working seconds and keep message dates current while idle or after sleep.
@@ -3434,12 +3546,13 @@ function ThreadView(props: {
             </button>
             {props.callCapsule}
           </div>
-        ) : <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
+        ) : <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}${props.swipe.position ? `, ${props.swipe.position}` : ""}. Change where this runs`} onClick={() => props.onSheet("where")}>
           <h2>{props.draftThread ? "New thread" : props.title}</h2>
           <p ref={contextRef} className="ph-context">
             {props.started ? <Lock size={11} /> : props.hostIcon}
             <span className="ph-context-project">{props.project}</span>
             {machineFits && <span className="ph-context-machine">· {props.machine}</span>}
+            {props.swipe.position && <span className="ph-context-pos">· {props.swipe.position}</span>}
             <ChevronDown size={12} />
           </p>
         </button>}
@@ -3511,6 +3624,8 @@ function ThreadView(props: {
           </div>
         </details>
       )}
+      <div className={`ph-swap${dragX !== 0 ? " dragging" : ""}`} style={dragX !== 0 ? { transform: `translateX(${dragX / 4}px)` } : undefined}
+        onPointerDown={swipeDown} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeDrop} onLostPointerCapture={swipeDrop}>
       <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {!paused && props.link.mismatch && (
@@ -3666,6 +3781,16 @@ function ThreadView(props: {
         ))}
         <div ref={props.endRef} />
       </main>
+        {/* The thread on that side, while the finger is down: its name, where it lives and what it is
+            doing. Not read out — the title line says "3 of 9" and the thread speaks for itself once open. */}
+        {dragX !== 0 && (
+          <div className={`ph-swap-peek ${dragX < 0 ? "next" : "previous"}`} aria-hidden="true">
+            {peek
+              ? <><b>{peek.title}</b>{peek.where && <span>{peek.where}</span>}{peek.words && <em>{peek.words}</em>}</>
+              : <span className="ph-swap-end">{dragX < 0 ? "Last thread" : "First thread"}</span>}
+          </div>
+        )}
+      </div>
       {/* Text picked inside one message: the desktop's Add to chat and More details, clear of iPhone's own menu. */}
       {props.actions && <PickedText key={`${props.link.id}:${props.paneId}`} chat={chatRef} covered={props.covered} canExplain={!paused && props.participants.length > 0}
         onAdd={(seq, text) => {
