@@ -114,6 +114,12 @@ impl Daemon {
     pub(crate) fn uses_linux_device_policy(&self) -> bool {
         #[cfg(test)]
         if let Some(policy) = self.linux_device_policy { return policy; }
+        // A test that spawns the daemon has no way to pair a device, so it can't
+        // raise access on a Linux host. The fixture twin's own main opts in, and
+        // no environment variable, CLI option or RPC does: compiling the feature
+        // opts nothing in, and the production binary never calls it.
+        #[cfg(all(not(test), feature = "test-support"))]
+        if crate::test_support::assumed() { return false; }
         cfg!(target_os = "linux")
     }
 
