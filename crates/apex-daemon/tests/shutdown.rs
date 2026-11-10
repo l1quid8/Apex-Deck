@@ -11,14 +11,15 @@ use serde_json::json;
 #[test]
 fn sigterm_ends_agents_and_terminals_keeps_the_chat_and_cleans_up() {
     let data = temp_dir();
+    let agent_pid = data.0.join("agent.pid");
+    let slow = shell("slow", &format!("echo $$ > {}; exec sleep 30", agent_pid.display()));
+    saved_room(&data.0, "t1", vec![slow]);
     let mut served = Served::start(&data.0, &[]);
     let token = std::fs::read_to_string(data.0.join("daemon-token")).unwrap().trim().to_string();
     let mut web = websocket(served.port());
     web.hello_frame(json!({ "token": token }));
 
-    let agent_pid = data.0.join("agent.pid");
-    let slow = shell("slow", &format!("echo $$ > {}; exec sleep 30", agent_pid.display()));
-    web.call("room_create", json!({ "id": "t1", "participants": [slow], "options": options(), "cwd": null })).1.unwrap();
+    web.call("room_state", json!({ "id": "t1" })).1.unwrap();
     web.send(json!({ "id": 99, "cmd": "room_post", "args": { "id": "t1", "text": "@slow go" } }));
     let agent = read_pid(&agent_pid);
 
@@ -38,8 +39,8 @@ fn sigterm_ends_agents_and_terminals_keeps_the_chat_and_cleans_up() {
     let token = std::fs::read_to_string(data.0.join("daemon-token")).unwrap().trim().to_string();
     let mut web = websocket(again.port());
     web.hello_frame(json!({ "token": token }));
-    let restored = web.call("room_create", json!({ "id": "t1", "participants": [], "options": options(), "cwd": null })).1.unwrap();
-    assert_eq!(restored["transcript"][0]["text"], "@slow go");
+    let restored = web.call("room_state", json!({ "id": "t1" })).1.unwrap();
+    assert_eq!(restored["snapshot"]["transcript"][0]["text"], "@slow go");
 }
 
 #[test]
@@ -55,11 +56,12 @@ fn sigint_shuts_down_the_same_way() {
 #[test]
 fn an_in_process_stdio_session_ends_its_agents_on_sigterm() {
     let data = temp_dir();
-    let mut ssh = StdioClient::spawn(&["--stdio"], &data.0);
-    ssh.hello(None);
     let agent_pid = data.0.join("agent.pid");
     let slow = shell("slow", &format!("echo $$ > {}; exec sleep 30", agent_pid.display()));
-    ssh.call("room_create", json!({ "id": "t1", "participants": [slow], "options": options(), "cwd": null })).1.unwrap();
+    saved_room(&data.0, "t1", vec![slow]);
+    let mut ssh = StdioClient::spawn(&["--stdio"], &data.0);
+    ssh.hello(None);
+    ssh.call("room_state", json!({ "id": "t1" })).1.unwrap();
     ssh.send(json!({ "id": 99, "cmd": "room_post", "args": { "id": "t1", "text": "@slow go" } }));
     let agent = read_pid(&agent_pid);
     ssh.process.signal("TERM");

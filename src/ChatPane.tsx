@@ -9,6 +9,7 @@ import { defaultLimits, type RunnerKind, type RunnerConfig } from './runner/type
 import { RunnerSetup } from './runner/RunnerSetup.tsx';
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
 import { isWindows, pathBase } from "./paths";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
 import './runner/runner.css';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
@@ -2465,7 +2466,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const run = codeRuns.runs[key];
     if (!run) return null;
     return (
-      <CodeRunBox run={run} host={backend.host?.name ?? "This Mac"}
+      <CodeRunBox run={run} host={backend.host?.name ?? LOCAL_HOST_NAME}
         onStop={() => codeRuns.stop(key)} onDismiss={() => codeRuns.dismiss(key)}
         onOpenTerminal={onOpenTerminal && (() => onOpenTerminal(run.command))}
         onAddToMessage={() => {
@@ -3906,7 +3907,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 {/* Codex's opening question: the project's name opens the picker. */}
                 <h3 className="ask">What should we work on in <button type="button" className="pick-name" onClick={() => setAskPicker((n) => n + 1)}>{work.project.name}</button>?</h3>
                 <p className="where">{!work.project.path ? "No project: the bots work without a project folder."
-                  : work.project.hostId === "local" ? `On This Mac · ${work.project.path}`
+                  : work.project.hostId === "local" ? `On ${LOCAL_HOST_NAME} · ${work.project.path}`
                   : `On ${work.project.hostName} · ${work.project.path}${work.workRows.some((r) => r.hostId === "local" && r.workspaceId) ? " · a separate copy from your Mac's" : ""}`}</p>
               </> : <h3>{participants.length === 0 ? "Build your thinking team." : "The room is yours."}</h3>}
               <p>
@@ -4051,7 +4052,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 )}
                 {(asks[id] ?? []).filter((ask) => !planShowsChip(ask.action, ask.request, planRuns, planTab)).map((ask) => (
                   <ApprovalCard
-                    hostName={backend.host?.name ?? "This Mac"} disabled={!ready}
+                    hostName={backend.host?.name ?? LOCAL_HOST_NAME} disabled={!ready}
                     key={ask.request}
                     request={ask.request}
                     by={id}
@@ -4286,7 +4287,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
           {roundButton.send && <button type="button" className="round-send" aria-label="Send" title={ownSending ? "Sending…" : "Send (↵)"} onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={ownSending || chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
-            toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
+            toolsWhere={`on ${backend.host?.name ?? LOCAL_HOST_NAME}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
             onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         </ThreadComposerBox>

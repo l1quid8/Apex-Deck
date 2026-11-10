@@ -16,7 +16,7 @@ export function ConnectionBanner({ backend }: { backend: Backend }) {
     return () => clearInterval(timer);
   }, [status]);
   if (status.kind === "connected") {
-    const mismatch = buildNotice(host, __APP_BUILD__, build) ?? helperNotice(host, __APP_VERSION__, helper);
+    const mismatch = buildNotice(host, __APP_BUILD__, build) ?? helperNotice(host, __APP_VERSION__, helper, !backend.host || backend.host.id === "local");
     if (!mismatch) return null;
     return (
       <div className="connection-banner mismatch" role="status" aria-live="polite">

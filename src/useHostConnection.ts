@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from "react";
 import type { Backend } from "./backend";
 import { hostConnectionStore } from "./hostConnections";
-const demo = hostConnectionStore("local", "This Mac");
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
+const demo = hostConnectionStore("local", LOCAL_HOST_NAME);
 demo.setStatus({ kind: "connected", hostId: "demo" });
 export function useHostConnection(backend: Backend) {
   const store = backend.host?.connection ?? demo;

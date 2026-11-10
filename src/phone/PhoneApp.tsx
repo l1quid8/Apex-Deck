@@ -628,7 +628,7 @@ export function PhoneApp() {
 
   const links: LinkView[] = hosts.map((host) => {
     const { status, helper, build } = host.connection.get();
-    const mismatch = status.kind === "connected" ? buildNotice(host.machine.name, __APP_BUILD__, build) ?? helperNotice(host.machine.name, __APP_VERSION__, helper) : null;
+    const mismatch = status.kind === "connected" ? buildNotice(host.machine.name, __APP_BUILD__, build) ?? helperNotice(host.machine.name, __APP_VERSION__, helper, false) : null;
     return {
       id: host.machine.id, name: host.machine.name, kind: host.machine.kind, status: toLink(status),
       ...(status.kind === "failed" ? { problem: refusalLine(host.machine.name, status.reason) } : {}),

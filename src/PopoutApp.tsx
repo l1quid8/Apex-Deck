@@ -14,6 +14,7 @@ import type { DashRow } from "./dashboardModel";
 import { detailsOverlay, type DetailsSection } from "./detailsLayout";
 import { electronBackend } from "./electronShell";
 import { HostPane } from "./HostPane";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { changedProfiles, createForkChannel, type ChatBundle, type PopoutAction, type PopoutSnapshot } from "./popoutModel.ts";
 import { PreviewPane } from "./PreviewPane";
@@ -547,7 +548,7 @@ function TabBody({ snapshot, backend, route, title, url, rows, taskRows, taskPro
     return <RightWorktreesTab root={cwd || null} backend={route} visible mounted={cwd} pendingMount={snapshot.pendingMount ?? undefined} busyTurn={snapshot.busyTurn} onMount={activeChatId ? path => send({type:"mount-worktree",id:activeChatId,path}) : undefined} onCancelMount={() => { if(activeChatId) send({type:"cancel-mount",id:activeChatId}); }} onOpen={openPath} />;
   }
   if (tabKind === "assistantbrowser") {
-    return <SharedBrowser call={(cmd, args) => route.call(cmd, args)} hostName={route.host?.name ?? "This Mac"} visible roomName={() => undefined} assistantName="Assistant" />;
+    return <SharedBrowser call={(cmd, args) => route.call(cmd, args)} hostName={route.host?.name ?? LOCAL_HOST_NAME} visible roomName={() => undefined} assistantName="Assistant" />;
   }
   if (tabKind === "browser") {
     return (

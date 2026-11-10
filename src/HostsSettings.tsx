@@ -66,7 +66,7 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
 function HostItem({ backend, host, problem, clearProblem, edit, remove }: { backend: Backend; host: HostEntry; problem: string; clearProblem(): void; edit?: () => void; remove(): void }) {
   const c = backend.machines?.connection(host.id);
   const state = useSyncExternalStore(c?.subscribe ?? (() => () => {}), c?.get ?? (() => null));
-  const line = hostLine(host.name, state, { version: __APP_VERSION__, build: __APP_BUILD__ }, time);
+  const line = hostLine(host.name, state, { version: __APP_VERSION__, build: __APP_BUILD__ }, time, host.id === "local");
   const retry = () => { clearProblem(); backend.machines?.get(host.id); c?.retryNow(); };
   const label = line.action === "connect" ? "Connect" : "Retry";
   const tone = line.tone === "plain" ? "" : ` ${line.tone}`;

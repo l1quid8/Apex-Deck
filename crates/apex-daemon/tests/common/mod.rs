@@ -39,6 +39,41 @@ pub fn daemon(args: &[&str], data: &Path) -> Command {
     command
 }
 
+/// Persist authorized fixtures before starting a daemon. Its local and legacy
+/// token clients can use saved rooms on Linux, but cannot create authority.
+fn with_saved_host(data: &Path, save: impl FnOnce(&Arc<apex_host::Host>)) {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let host = apex_host::test_support::isolated_host_assuming_verified_ui(
+        apex_host::HostPaths { data: data.to_path_buf(), downloads: None },
+        runtime.handle().clone(),
+    );
+    save(&host);
+    host.shutdown();
+}
+
+pub fn saved_room(data: &Path, id: &str, participants: Vec<Value>) {
+    with_saved_host(data, |host| {
+        let participants = participants.into_iter().map(|p| serde_json::from_value(p).unwrap()).collect();
+        host.room_create(id.into(), participants, Default::default(), None).unwrap();
+    });
+}
+
+pub fn chat_session() -> Value {
+    json!({ "version": 1, "panes": [{ "id": "t1", "kind": "chat" }] })
+}
+
+#[cfg(target_os = "linux")]
+pub fn saved_chat_session(data: &Path) {
+    with_saved_host(data, |host| {
+        let participant = serde_json::from_value(scripted("null", &["hello human"])).unwrap();
+        host.room_create("t1".into(), vec![participant], Default::default(), None).unwrap();
+        host.session_save(chat_session()).unwrap();
+    });
+}
+
+#[cfg(target_os = "linux")]
+const LOCAL_ACCESS_RAISE_REFUSAL: &str = "Raising access is only allowed from a paired device on this Linux host; local socket, CLI and SSH calls cannot authorize it.";
+
 /// Frames read on a thread, so reads can time out.
 pub struct Frames {
     rx: Receiver<Value>,
@@ -389,10 +424,18 @@ pub fn websocket(port: u16) -> Conn {
 }
 
 /// One chat with a scripted agent, an approval answer and a terminal, the
-/// same over every transport. Ends by saving a session.
+/// same over every transport. Linux preserves its pre-authorized session;
+/// other platforms finish by saving it through the connection.
 pub fn chat_terminal_and_approval(conn: &mut Conn) {
     let (_, snapshot) = conn.call("room_create", json!({ "id": "t1", "participants": [scripted("null", &["hello human"])], "options": options(), "cwd": null }));
-    assert_eq!(snapshot.unwrap()["transcript"], json!([]));
+    #[cfg(target_os = "linux")]
+    let snapshot = {
+        assert_eq!(snapshot, Err(LOCAL_ACCESS_RAISE_REFUSAL.into()));
+        conn.call("room_state", json!({ "id": "t1" })).1.unwrap()["snapshot"].clone()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let snapshot = snapshot.unwrap();
+    assert_eq!(snapshot["transcript"], json!([]));
     let (events, posted) = conn.call("room_post", json!({ "id": "t1", "text": "@null hi" }));
     assert_eq!(posted, Ok(json!(null)));
     assert_eq!(added_texts(&events, "t1"), vec!["@null hi", "hello human"]);
@@ -442,16 +485,29 @@ pub fn chat_terminal_and_approval(conn: &mut Conn) {
     }
     conn.call("pty_kill", json!({ "id": "term" })).1.unwrap();
 
-    conn.call("session_save", json!({ "session": { "version": 1, "panes": [{ "id": "t1", "kind": "chat" }] } })).1.unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        // Even a harmless-looking session replacement uses the same route as
+        // profile access changes. Refusal must leave the authorized session.
+        let saved = conn.call("session_save", json!({ "session": { "version": 1, "panes": [] } })).1;
+        assert_eq!(saved, Err(LOCAL_ACCESS_RAISE_REFUSAL.into()));
+        assert_eq!(conn.call("session_load", json!({})).1, Ok(chat_session()));
+    }
+    #[cfg(not(target_os = "linux"))]
+    conn.call("session_save", json!({ "session": chat_session() })).1.unwrap();
 }
 
 /// After a restart: the chat from `chat_terminal_and_approval` and its session are back.
 pub fn chat_restored(conn: &mut Conn) {
+    #[cfg(target_os = "linux")]
+    let restored = conn.call("room_state", json!({ "id": "t1" })).1.unwrap()["snapshot"].clone();
+    #[cfg(not(target_os = "linux"))]
     let (_, restored) = conn.call("room_create", json!({ "id": "t1", "participants": [], "options": options(), "cwd": null }));
+    #[cfg(not(target_os = "linux"))]
     let restored = restored.unwrap();
     let texts: Vec<&str> = restored["transcript"].as_array().unwrap().iter().filter_map(|m| m["text"].as_str()).collect();
     assert_eq!(texts, vec!["@null hi", "hello human"]);
-    assert_eq!(conn.call("session_load", json!({})).1, Ok(json!({ "version": 1, "panes": [{ "id": "t1", "kind": "chat" }] })));
+    assert_eq!(conn.call("session_load", json!({})).1, Ok(chat_session()));
 }
 
 pub fn scripted(id: &str, lines: &[&str]) -> Value {

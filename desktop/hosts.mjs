@@ -4,9 +4,9 @@
 
 import fs from 'node:fs';
 
-/** This Mac's id; it's always there and never saved. */
+/** This computer's id; it's always there and never saved. */
 export const LOCAL = 'local';
-export const LOCAL_NAME = 'This Mac';
+export const LOCAL_NAME = process.platform === 'win32' ? 'This PC' : 'This Mac';
 
 const COMMAND = /^[\w@%+=:,./~-]+$/;
 
@@ -27,7 +27,9 @@ export function validHost({ name, ssh, command }, taken) {
   if (!label) throw new Error('Give the host a name.');
   if (label.length > 40) throw new Error('Keep the name to 40 characters.');
   const lower = label.toLowerCase();
-  if (lower === LOCAL_NAME.toLowerCase() || taken.some((other) => other.toLowerCase() === lower)) throw new Error(`There's already a host called ${label}.`);
+  // Keep the saved-name rule stable across platforms. A saved server named
+  // This PC must retain its name and identity when opened on Windows.
+  if (lower === 'this mac' || taken.some((other) => other.toLowerCase() === lower)) throw new Error(`There's already a host called ${label}.`);
   return { name: label, ssh: destination, command: daemon };
 }
 
@@ -46,7 +48,7 @@ export function sshArgs(host) {
 export function windowsAtLaunch(_state) { return [LOCAL]; }
 
 export function assertHostUnused(id, session, references) {
-  if (id === LOCAL) throw new Error("This Mac cannot be removed.");
+  if (id === LOCAL) throw new Error(`${LOCAL_NAME} cannot be removed.`);
   if (!session || !Array.isArray(session.workspaces) || references == null) throw new Error("Could not verify the saved workspace list; the server was kept.");
   if (session.workspaces.some(w => w.hostId === id) || references.includes(id)) throw new Error("This server has saved workspaces or threads. Remove those references before removing it.");
 }

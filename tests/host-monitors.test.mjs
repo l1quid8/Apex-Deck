@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
+import { LOCAL_HOST_NAME } from '../src/hostFacts.ts';
 
 const source = await fs.readFile(new URL('../src/HostPane.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/export function/g, 'function'), {
@@ -22,9 +23,9 @@ function componentHarness(hostConnectionStore) {
       }
     },
   };
-  const component = new Function('React', 'useRef', 'useSyncExternalStore', 'useEffect', 'ProjectMonitor', 'startHub', 'hostConnectionStore', 'setTimeout', 'clearTimeout', `${compiled}; return HostMonitors;`)(
+  const component = new Function('React', 'useRef', 'useSyncExternalStore', 'useEffect', 'ProjectMonitor', 'startHub', 'hostConnectionStore', 'setTimeout', 'clearTimeout', 'LOCAL_HOST_NAME', `${compiled}; return HostMonitors;`)(
     React, hooks.useRef, hooks.useSyncExternalStore, hooks.useEffect, {}, async () => () => {}, hostConnectionStore,
-    setTimeoutFake, clearTimeoutFake,
+    setTimeoutFake, clearTimeoutFake, LOCAL_HOST_NAME,
   );
   let props;
   function render(nextProps = props) {

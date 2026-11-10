@@ -43,8 +43,7 @@ fn busy(data: &std::path::Path) -> (Conn, String, String) {
     let mut conn = local(data);
     conn.hello(None);
     let agent_pid = data.join("agent.pid");
-    let slow = shell("slow", &format!("echo $$ > {}; exec sleep 30", agent_pid.display()));
-    conn.call("room_create", json!({ "id": "t1", "participants": [slow], "options": options(), "cwd": null })).1.unwrap();
+    conn.call("room_state", json!({ "id": "t1" })).1.unwrap();
     conn.send(json!({ "id": 99, "cmd": "room_post", "args": { "id": "t1", "text": "@slow go" } }));
     let agent = read_pid(&agent_pid);
     let shell_pid = data.join("shell.pid");
@@ -52,6 +51,13 @@ fn busy(data: &std::path::Path) -> (Conn, String, String) {
     conn.call("pty_write", json!({ "id": "term", "data": format!("echo $$ > {}; exec sleep 600\n", shell_pid.display()) })).1.unwrap();
     let terminal = read_pid(&shell_pid);
     (conn, agent, terminal)
+}
+
+#[cfg(unix)]
+fn saved_busy_room(data: &std::path::Path) {
+    let agent_pid = data.join("agent.pid");
+    let slow = shell("slow", &format!("echo $$ > {}; exec sleep 30", agent_pid.display()));
+    saved_room(data, "t1", vec![slow]);
 }
 
 /// The daemon exits 0 within the wind-down and clears its readiness file.
@@ -81,6 +87,8 @@ fn gone_cleanly(process: &mut Process, data: &std::path::Path, agent: &str, term
 #[test]
 fn serve_exits_when_its_stdin_closes() {
     let data = temp_dir();
+    #[cfg(unix)]
+    saved_busy_room(&data.0);
     let (mut process, stdin, _) = Process::spawn(&["serve", "--exit-on-stdin-close"], &data.0, &[]);
     wait_ready(&mut process, &data.0);
     let mut conn = local(&data.0);
@@ -102,6 +110,7 @@ fn serve_exits_when_its_stdin_closes() {
 #[test]
 fn serve_exits_when_the_process_holding_its_stdin_is_killed() {
     let data = temp_dir();
+    saved_busy_room(&data.0);
     // The shell holds the write end of the daemon's stdin; nobody else does.
     let fifo = data.0.join("lifeline");
     std::fs::create_dir_all(&data.0).unwrap();
@@ -192,6 +201,7 @@ fn serve_without_the_option_ignores_its_stdin() {
 #[test]
 fn serve_cleans_up_when_the_app_reading_its_stderr_is_killed() {
     let data = temp_dir();
+    saved_busy_room(&data.0);
     std::fs::create_dir_all(&data.0).unwrap();
     let (input, output) = (data.0.join("in"), data.0.join("err"));
     for fifo in [&input, &output] {

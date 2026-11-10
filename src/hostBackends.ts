@@ -1,5 +1,6 @@
 import type { Backend, HostEntry } from "./backend";
 import { hostConnectionStore, type HostConnectionStore } from "./hostConnections.ts";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 import type { AgentInfo } from "./types";
 
 export interface HostBackends {
@@ -60,7 +61,7 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
   let known = new Map(hosts.filter(h => h.id !== "local").map(h => [h.id, h]));
   const runtimes = new Map<string, HostRuntime>(); const backends = new Map<string, Backend>();
   const idle = new Map<string, ReturnType<typeof hostConnectionStore>>();
-  const localStore = local.host?.connection ?? hostConnectionStore("local", "This Mac");
+  const localStore = local.host?.connection ?? hostConnectionStore("local", LOCAL_HOST_NAME);
   if (!local.host) (localStore as ReturnType<typeof hostConnectionStore>).setStatus({ kind: "connected", hostId: "local" });
   function runtime(hostId: string) {
     const host = known.get(hostId); if (!host) throw new Error("This host is unavailable or was removed.");
@@ -109,7 +110,7 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
             const wrapped = (...args: unknown[]) => {
               if (key === "supports" && !known.has(hostId)) return false;
               if (!known.has(hostId)) return Promise.reject(new Error("This host was removed."));
-              if (key === "call" && ["session_save", "settings_save"].includes(String(args[0]))) return Promise.reject(new Error("App preferences are owned by This Mac."));
+              if (key === "call" && ["session_save", "settings_save"].includes(String(args[0]))) return Promise.reject(new Error(`App preferences are owned by ${LOCAL_HOST_NAME}.`));
               if (["roomPost", "roomPostTo", "roomTurn"].includes(key)) {
                 if (r.connection.get().status.kind !== "connected") return Promise.reject(new Error("Not connected to the host; nothing was queued."));
                 if (!known.has(hostId)) return Promise.reject(new Error("This host was removed."));
