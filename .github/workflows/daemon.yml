@@ -35,6 +35,12 @@ jobs:
       - name: Install bubblewrap
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # The host's libtest executable cannot answer the jail's init/probe commands.
+      - name: Build the Linux jail init for host tests
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p apex-daemon --features remote --bin apex-daemon
+          echo "APEX_JAIL_INIT=$GITHUB_WORKSPACE/target/debug/apex-daemon" >> "$GITHUB_ENV"
       - run: cargo test --locked -p apex-core -p apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote
       - name: Test provenance platform boundary
         run: cargo test --locked -p apex-provenance --lib
