@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { latestSaveQueue } from '../src/settingsSave.ts';
 import { applyTurnChange } from '../src/participantSettings.ts';
+import { accessOptions as accessOptionsFor } from '../src/accessChange.ts';
 const { transform } = createRequire(import.meta.url)('sucrase');
 const source = fs.readFileSync(new URL('../src/BotSettings.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
@@ -17,7 +18,7 @@ function mount(extra = {}) {
   const state = []; let cursor = 0;
   const useState = initial => { const i = cursor++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], value => state[i] = typeof value === 'function' ? value(state[i]) : value]; };
   const useRef = initial => { const i = cursor++; return state[i] ??= { current: initial }; };
-  const bindings = { document: { body: {} }, window: { innerWidth: 1200, innerHeight: 900 }, menuPlacement: () => ({}), React, Fragment: 'fragment', useState, useRef, useEffect() {}, useLayoutEffect() {}, createPortal: tree => tree, latestSaveQueue, applyTurnChange, Segmented, ReasoningSlider, supportsSpeed: () => true, SPEED_OPTIONS: [], speedHint: () => '', AGENT_EFFORTS: { codex: [] }, API_EFFORTS: [], modelGroups: () => [{ models: [{ id: 'old' }] }], apiModelGroups: () => [], effortsFor: () => ['low', 'high'], findModel: () => ({ id: 'old' }), mediaKind: () => null };
+  const bindings = { document: { body: {} }, window: { innerWidth: 1200, innerHeight: 900 }, menuPlacement: () => ({}), React, Fragment: 'fragment', useState, useRef, useEffect() {}, useLayoutEffect() {}, createPortal: tree => tree, latestSaveQueue, applyTurnChange, accessOptionsFor, Segmented, ReasoningSlider, supportsSpeed: () => true, SPEED_OPTIONS: [], speedHint: () => '', AGENT_EFFORTS: { codex: [] }, API_EFFORTS: [], modelGroups: () => [{ models: [{ id: 'old' }] }], apiModelGroups: () => [], effortsFor: () => ['low', 'high'], findModel: () => ({ id: 'old' }), mediaKind: () => null };
   const Component = new Function(...Object.keys(bindings), compiled + '\nreturn BotSettings;')(...Object.values(bindings));
   return { saves, rooms, render() { cursor = 0; return Component(props); } };
 }
