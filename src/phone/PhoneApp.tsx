@@ -45,7 +45,8 @@ import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
 import { cardVersions } from "../interactiveAnswers/share.ts";
 import { ThreadCard } from "../interactiveAnswers/ThreadCard.tsx";
 import { QuestionForm } from "../QuestionForm";
-import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from "../questions";
+import { ReplyNextSteps } from "../ReplyNextSteps";
+import { applyQuestionEvent, formView, questionOnly, restoreQuestions, type Offer, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
 import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
 import { appendToolToken } from "../composerMenu";
@@ -2584,7 +2585,12 @@ export function PhoneApp() {
             onRemoveFile={(id) => openKey && setDrafts((all) => { const now = all[openKey] ?? emptyDraft(); return { ...all, [openKey]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
             onSend={() => { void send(); }}
             onDecide={decide}
-            form={<QuestionForm phone view={formView(openRoom?.asks)} nameOf={(pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid}
+            // Questions wait above the composer; next steps follow the reply that offered them, as on the Mac.
+            steps={(() => {
+              const view = formView(openRoom?.asks);
+              return view.kind === "steps" && openRoom ? { offer: view.offer, onStep: (step: NextStep, by: string) => { void sendStep(step, by, { id: openRoom.id, hostId: openRoom.hostId }); } } : null;
+            })()}
+            form={<QuestionForm phone view={questionOnly(formView(openRoom?.asks))} nameOf={(pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid}
               highlighted={-1} collapsed={false} notice={null} onHighlight={() => {}} onExpand={() => {}}
               onAnswer={(request, answers) => { if (openRoom) void answer(request, answers, { id: openRoom.id, hostId: openRoom.hostId }); }}
               onStep={(step, by) => { if (openRoom) void sendStep(step, by, { id: openRoom.id, hostId: openRoom.hostId }); }}
@@ -3501,8 +3507,10 @@ function ThreadView(props: {
   /** The queued message whose Steer now is asking first. */
   steerAsk: number | null; onSteerAsk(id: number | null): void; onSteer(id: number): void;
   onUnqueue(id: number): void; onRemoveQueued(id: number): void; onResume(): void;
-  /** The question or next steps, above the composer. */
-  form: ReactNode; plan: boolean; onStopPlanning(): void;
+  /** The question, above the composer. */
+  form: ReactNode;
+  /** The next steps the newest reply offered, drawn under that reply. */
+  steps: { offer: Offer; onStep(step: NextStep, by: string): void } | null; plan: boolean; onStopPlanning(): void;
   /** Swiping between threads: the ones on either side, and where this one sits among the open ones. */
   swipe: { next: SwipeRow | null; previous: SwipeRow | null; place: { at: number; of: number } | null };
   onSwipe(to: "next" | "previous"): void;
@@ -3544,6 +3552,12 @@ function ThreadView(props: {
   const pill = usePillPress();
   // Cards show read-only on the phone for now, at their defaults.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
+  // Each bot's newest reply, by seq: only that one carries its next steps.
+  const newestReply = useMemo(() => {
+    const newest = new Map<string, number>();
+    for (const message of props.messages) if (message.speaker.kind === "bot") newest.set(message.speaker.id, message.seq);
+    return newest;
+  }, [props.messages]);
   // The message whose › (or ‹) is open, and the one whose Copy reads "Copied" for a moment, by seq.
   const [messageMenu, setMessageMenu] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
@@ -3906,6 +3920,8 @@ function ThreadView(props: {
                 const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
                 return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
               })()}
+              {props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
+                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} onStep={props.steps.onStep} />}
             </div>
             {actionsFor(message, message.text)}
           </section>

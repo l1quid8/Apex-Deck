@@ -152,3 +152,29 @@ test('reply suggestions collapse, expand, route and wrap without changing the dr
     assert.equal(await run(toggle+'.getAttribute("aria-expanded")'),'true','new suggestions start expanded');
   `,{width:900,height:650,plugins:[fixture]});
 });
+
+test('on a touch screen a hold previews the prompt and does not send it; a tap sends', {timeout:150000}, async () => {
+  await withAppearanceApp('reply-next-steps-touch', String.raw`
+    await until('!!document.querySelector(".reply-next-steps-toggle")');
+    const step='document.querySelectorAll(".reply-next-step")[1]';
+    const touch=(type)=>run('(()=>{const el='+step+',b=el.getBoundingClientRect();el.dispatchEvent(new PointerEvent("'+type+'",{bubbles:'+(type!=='pointerenter')+',pointerType:"touch",isPrimary:true,pointerId:7,clientX:b.left+6,clientY:b.top+4}));})()');
+    await touch('pointerenter');await touch('pointerdown');
+    await sleep(150);
+    assert.equal(await run('!!document.querySelector(".reply-next-steps-tip")'),false,'a touch does not preview straight away, so a tap stays a tap');
+    await until('!!document.querySelector(".reply-next-steps-tip")','a hold previews the prompt');
+    assert.equal(await run('document.querySelector(".reply-next-steps-tip").textContent'),'Check edge cases.');
+    await touch('pointerup');await run(step+'.click()');await frame();
+    assert.deepEqual(await run('window.sent'),[],'lifting the finger after a hold does not send the suggestion');
+    assert.equal(await run('!!document.querySelector(".reply-next-steps-tip")'),false,'lifting the finger hides the preview');
+    await touch('pointerenter');await touch('pointerdown');await sleep(80);await touch('pointerup');await run(step+'.click()');await frame();
+    assert.deepEqual(await run('window.sent'),[{step:{label:'Check edge cases',prompt:'Check edge cases.'},by:'jigga'}],'a quick tap sends');
+    assert.equal(await run('!!document.querySelector(".reply-next-steps-tip")'),false,'a tap never leaves a preview behind');
+  `,{width:390,height:650,plugins:[fixture]});
+});
+
+test('phone suggestions follow the offering reply, and only a question waits above the composer', () => {
+  const src = fs.readFileSync('src/phone/PhoneApp.tsx', 'utf8');
+  assert.match(src, /props\.steps\.offer\.by === message\.speaker\.id && newestReply\.get\(message\.speaker\.id\) === message\.seq &&\s*<ReplyNextSteps/);
+  assert.match(src, /<QuestionForm phone view=\{questionOnly\(formView\(openRoom\?\.asks\)\)\}/);
+  assert.doesNotMatch(src, /<QuestionForm phone view=\{formView\(/);
+});

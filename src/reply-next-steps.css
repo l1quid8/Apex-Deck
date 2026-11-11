@@ -25,3 +25,7 @@
   .reply-next-steps-label { line-height: 44px; }
   .reply-next-steps .reply-next-steps-toggle { width: 44px; height: 44px; }
 }
+/* A hold previews the prompt, so iOS must not open its own text callout. */
+@media (pointer: coarse) {
+  .reply-next-steps .reply-next-step { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+}

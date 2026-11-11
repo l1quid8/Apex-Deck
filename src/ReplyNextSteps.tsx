@@ -6,6 +6,8 @@ import './reply-next-steps.css';
 
 /** How long the pointer rests on a suggestion before its prompt shows. */
 const PREVIEW_MS = 320;
+/** How long a finger holds a suggestion before its prompt shows instead of sending. */
+const HOLD_MS = 450;
 
 interface Preview { text: string; left: number; top: number; bottom: number }
 
@@ -14,6 +16,9 @@ export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: N
   const [expanded, setExpanded] = useState(true);
   const [preview, setPreview] = useState<Preview | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // A touch screen has no hover: a hold shows the prompt, and the tap that
+  // ends a hold must not send it.
+  const held = useRef(false);
   const id = useId();
   useEffect(() => () => clearTimeout(timer.current), []);
   // The preview is anchored where the suggestion was when it opened, so a
@@ -54,8 +59,21 @@ export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: N
           {/* A span, not a button: Chromium lays an inline button out as one
               atomic box, so its label could never continue across a line. */}
           <span className="reply-next-step" role="button" tabIndex={0} aria-describedby={`${id}-${i}`}
-            onPointerEnter={event => show(step, event.currentTarget, PREVIEW_MS)}
-            onClick={() => onStep(step, offer.by)}
+            onPointerEnter={event => { if (event.pointerType === 'mouse') show(step, event.currentTarget, PREVIEW_MS); }}
+            onPointerDown={event => {
+              held.current = false;
+              if (event.pointerType === 'mouse') return;
+              const el = event.currentTarget;
+              hide();
+              timer.current = setTimeout(() => { held.current = true; show(step, el, 0); }, HOLD_MS);
+            }}
+            onPointerUp={event => { if (event.pointerType !== 'mouse') hide(); }}
+            onPointerCancel={() => { held.current = false; hide(); }}
+            onContextMenu={event => { if (held.current) event.preventDefault(); }}
+            onClick={() => {
+              if (held.current) { held.current = false; return; }
+              onStep(step, offer.by);
+            }}
             onKeyDown={event => {
               if (event.key !== 'Enter' && event.key !== ' ') return;
               event.preventDefault();

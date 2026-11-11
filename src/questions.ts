@@ -66,6 +66,11 @@ export function formView(asks: ThreadAsks | undefined): FormView {
   return { kind: "none" };
 }
 
+/** What waits above the composer: only a question. Next steps follow the reply that offered them. */
+export function questionOnly(view: FormView): FormView {
+  return view.kind === "question" ? view : { kind: "none" };
+}
+
 export type FormAct =
   | { act: "none" } | { act: "pick"; index: number } | { act: "move"; index: number }
   | { act: "dismiss" } | { act: "collapse" } | { act: "fill"; index: number };
