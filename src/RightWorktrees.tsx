@@ -83,7 +83,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
     finally { setBusy(""); }
   };
   const branchChanged = (branch: string) => {
-    const rootPath = trimTrailingSlash(listing?.root ?? root ?? "").replaceAll("\\", "/");
+    const rootPath = trimTrailingSlash(worktreeHome(listing, root)).replaceAll("\\", "/");
     const parent = pathDir(rootPath);
     const name = pathBase(rootPath);
     setRequest((current) => ({ ...current, branch, folder: `${parent}/${name}-worktrees/${branch.replaceAll("/", "-")}` }));
@@ -113,6 +113,10 @@ export function RightWorktreesTab({ root, backend, visible, onOpen, mounted, pen
     {listing && <ul className="right-worktrees-list">{listing.items.map((item) => <WorktreeRow key={item.path} item={item} mounted={item.path === mounted} pending={item.path === pendingMount} busyTurn={busyTurn} onMount={onMount} onCancelMount={onCancelMount} busy={busy === item.path} confirm={confirm?.path === item.path && confirm.action === "remove"} pruneConfirm={confirm?.path === item.path && confirm.action === "prune"} onOpen={onOpen} onCopy={(path) => void copyPathname(path)} onRemove={(force) => void doRemove(item.path, force)} onPrune={(force) => { void doPruneOne(item.path, force); }} onCancel={() => setConfirm(null)} />)}</ul>}
     {listing?.items.some((item) => item.prunable) && <button type="button" className="right-worktrees-prune" onClick={() => void doPrune()} disabled={!!busy}>{busy === "prune" ? "Cleaning…" : "Clean up missing"}</button>}
   </section>;
+}
+/** The folder new worktrees go beside: the main checkout, also from a thread in another worktree or a subfolder. */
+export function worktreeHome(listing: WorktreeList | null, root: string | null | undefined): string {
+  return listing?.items.find((item) => item.main)?.path || listing?.root || root || "";
 }
 export function WorktreeRow({ item, busy, confirm, pruneConfirm, mounted = false, pending = false, busyTurn = false, onMount, onCancelMount, onOpen, onCopy, onRemove, onPrune, onCancel }: { item: Worktree; busy: boolean; confirm: boolean; pruneConfirm?: boolean; mounted?: boolean; pending?: boolean; onOpen: (path: string) => void; onCopy: (path: string) => void; onRemove: (force: boolean) => void; onPrune?: (force: boolean) => void; onCancel: () => void } & Omit<MountProps, "mounted">) {
   const copy = item.copy;

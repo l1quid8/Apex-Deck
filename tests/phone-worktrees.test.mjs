@@ -70,6 +70,15 @@ test('a thread in a subfolder still puts a new worktree beside the whole project
   assert.equal(projectTop(null, '/Users/you/Downloads/apex-deck/crates'), '/Users/you/Downloads/apex-deck/crates');
 });
 
+test('a thread in another worktree still puts a new worktree beside the main project', () => {
+  // The Mac lists from the thread's own worktree, so its root is that worktree; the main checkout is marked.
+  const listing = { root: '/Users/you/Downloads/apex-deck-worktrees/windows-desktop-parity', items: [
+    tree({ path: '/Users/you/Downloads/apex-deck', main: true, branch: 'main' }),
+    tree({ path: '/Users/you/Downloads/apex-deck-worktrees/windows-desktop-parity', branch: 'feat/windows-desktop-parity' }),
+  ] };
+  assert.equal(newWorktreeFolder(projectTop(listing, listing.root), 'fix/x'), '/Users/you/Downloads/apex-deck-worktrees/fix-x');
+});
+
 test('paths shorten to ~ and cut from the left', () => {
   assert.equal(shortPath('/home/ops/code'), '~/code');
   assert.equal(shortPath('/Users/you'), '~');
