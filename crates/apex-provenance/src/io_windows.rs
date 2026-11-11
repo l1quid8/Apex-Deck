@@ -101,12 +101,27 @@ pub fn finish(data_dir: &Path, key_id: &str, error: Option<&str>) -> Result<(), 
     Ok(())
 }
 pub fn consume_device(
-    _data_dir: &Path,
-    _endpoint: &str,
-    _session: &str,
-    _id: u64,
-    _command: Value,
-    _assistant_room: bool,
+    data_dir: &Path,
+    endpoint: &str,
+    session: &str,
+    id: u64,
+    command: Value,
+    assistant_room: bool,
 ) -> Result<Receipt, String> {
-    Err("Phone authority is unavailable on Windows".into())
+    let canonical = data_dir.canonicalize().map_err(|e| e.to_string())?;
+    let _ownership = crate::ownership::require(&canonical)?;
+    let folder = windows::folder(&canonical)?;
+    let nonce = challenge()?;
+    let expected = crate::phone_command(endpoint, session, id, command.clone())?;
+    let ack = checked(&json!({"op":"phone_claim","dataDir":folder,"endpoint":endpoint,"session":session,"requestId":id,"command":command,"assistantRoom":assistant_room,"nonce":nonce}))?;
+    let receipt: Receipt =
+        serde_json::from_value(ack["receipt"].clone()).map_err(|e| e.to_string())?;
+    if ack != json!({"domain":DOMAIN,"kind":"claim","nonce":nonce,"receipt":receipt})
+        || receipt.uid != 0
+        || receipt.data_dir != folder
+        || receipt.command != expected
+    {
+        return Err("Phone admission response binding mismatch".into());
+    }
+    Ok(receipt)
 }

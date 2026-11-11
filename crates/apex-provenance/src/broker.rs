@@ -57,6 +57,17 @@ pub fn transaction(
                 serde_json::from_value(value["receipt"].clone()).map_err(|e| e.to_string())?;
             next.claim(uid, folder, &receipt, nonce)?
         }
+        Some("phone_claim") if daemon => next.claim_device_command(
+            uid,
+            folder,
+            request["endpoint"].as_str().ok_or("Missing phone identity")?,
+            request["session"].as_str().ok_or("Missing phone session")?,
+            request["requestId"].as_u64().ok_or("Missing phone request ID")?,
+            request["command"].clone(),
+            request["assistantRoom"].as_bool().ok_or("Missing assistant scope")?,
+            nonce,
+            true,
+        )?,
         Some("finish") if daemon => {
             if nonce.len() != 32 || !nonce.bytes().all(|c| c.is_ascii_hexdigit()) {
                 return Err("Invalid outcome challenge".into());
@@ -109,6 +120,26 @@ mod tests {
         assert!(transaction(&claimed, &key, FOLDER, &claim, false, true).is_err());
         assert!(transaction(&Journal::new(), &key, FOLDER, &request, false, true).is_err());
         assert!(transaction(&Journal::new(), &key, FOLDER, &request, false, false).is_err());
+    }
+    #[test]
+    fn windows_phone_claim_checks_protected_grant_and_is_daemon_only() {
+        let key = new_key().unwrap();
+        let endpoint = "ab".repeat(32);
+        let session = "cd".repeat(16);
+        let grant = json!({"op":"write","name":"devices.json","nonce":"ab".repeat(16),"expectedRevision":0,
+            "value":{"version":1,"devices":[{"endpointId":endpoint,"tier":"full","threads":"all"}],"revoked":[]}});
+        let (journal, _) = transaction(&Journal::new(), &key, FOLDER, &grant, false, true).unwrap();
+        let command = json!({"cmd":"room_create","args":{"id":"phone-room"}});
+        let claim = json!({"op":"phone_claim","endpoint":endpoint,"session":session,"requestId":7,
+            "command":command,"assistantRoom":false,"nonce":"ef".repeat(16)});
+        assert!(transaction(&journal, &key, FOLDER, &claim, true, false).is_err());
+        assert!(transaction(&Journal::new(), &key, FOLDER, &claim, false, true).is_err());
+        let (claimed, ack) = transaction(&journal, &key, FOLDER, &claim, false, true).unwrap();
+        let ack = verify(key.public_key().as_ref(), &ack).unwrap();
+        assert_eq!(ack["kind"], "claim");
+        assert_eq!(ack["receipt"]["uid"], 0);
+        assert_eq!(ack["receipt"]["command"], crate::phone_command(&endpoint, &session, 7, command).unwrap());
+        assert!(transaction(&claimed, &key, FOLDER, &claim, false, true).is_err());
     }
     #[test]
     fn windows_ledgers_require_daemon_and_compare_and_swap_revision() {
