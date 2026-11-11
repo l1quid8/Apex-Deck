@@ -641,7 +641,7 @@ fn modules(process: RawHandle) -> Result<Vec<String>, String> {
     }
     Ok(names)
 }
-fn module_signature(file: &File, path: &Path) -> Result<(), String> {
+fn embedded_module_signature(file: &File, path: &Path) -> i32 {
     use windows_sys::Win32::Security::WinTrust::*;
     let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut info = WINTRUST_FILE_INFO {
@@ -657,7 +657,10 @@ fn module_signature(file: &File, path: &Path) -> Result<(), String> {
         Anonymous: WINTRUST_DATA_0 { pFile: &mut info },
         ..Default::default()
     };
-    let result = verify_trust(data);
+    verify_trust(data)
+}
+fn module_signature(file: &File, path: &Path) -> Result<(), String> {
+    let result = embedded_module_signature(file, path);
     if result == 0 {
         return Ok(());
     }

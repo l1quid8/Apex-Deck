@@ -3,7 +3,7 @@ use super::*;
 
 const SERVICE: &str = "S-1-5-80-1-2-3-4-5";
 
-fn restore_privilege() {
+fn privilege(name: &str) {
     let mut raw = ptr::null_mut();
     assert_ne!(
         unsafe {
@@ -18,9 +18,7 @@ fn restore_privilege() {
     let token = unsafe { OwnedHandle::from_raw_handle(raw) };
     let mut luid = unsafe { std::mem::zeroed() };
     assert_ne!(
-        unsafe {
-            LookupPrivilegeValueW(ptr::null(), wide("SeRestorePrivilege").as_ptr(), &mut luid)
-        },
+        unsafe { LookupPrivilegeValueW(ptr::null(), wide(name).as_ptr(), &mut luid) },
         0
     );
     let privileges = TOKEN_PRIVILEGES {
@@ -44,11 +42,7 @@ fn restore_privilege() {
         },
         0
     );
-    assert_eq!(
-        unsafe { GetLastError() },
-        0,
-        "requires elevated SeRestorePrivilege"
-    );
+    assert_eq!(unsafe { GetLastError() }, 0, "requires elevated {name}");
 }
 
 fn acl(path: &Path, owner: &str, extra: &str) {
@@ -80,7 +74,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new(name: &str) -> Self {
-        restore_privilege();
+        privilege("SeRestorePrivilege");
         let base = program_files()
             .unwrap()
             .join(format!("Apex-DLL-test-{}-{name}", std::process::id()));
@@ -121,6 +115,38 @@ fn signed_service_owned_module_in_protected_tree_is_accepted() {
     assert!(
         protected_handle(&File::open(&fixture.file).unwrap()).is_err(),
         "service ownership must never extend to authority files"
+    );
+}
+
+#[test]
+#[ignore = "requires elevated Windows and PowerShell 7; windows-dll-safety CI"]
+fn embedded_signed_service_module_works_but_tampered_bytes_are_refused() {
+    use std::io::{Seek, SeekFrom};
+    let fixture = Fixture::new("embedded");
+    let source = program_files().unwrap().join(r"PowerShell\7\pwsh.exe");
+    std::fs::copy(source, &fixture.file).unwrap();
+    acl(&fixture.file, SERVICE, &format!("(A;;FA;;;{SERVICE})"));
+    assert_eq!(
+        embedded_module_signature(&File::open(&fixture.file).unwrap(), &fixture.file),
+        0,
+        "fixture must have a valid embedded signature"
+    );
+    assert!(fixture.accepted());
+    let mut bytes = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fixture.file)
+        .unwrap();
+    bytes.seek(SeekFrom::Start(0x50)).unwrap();
+    let mut value = [0u8];
+    bytes.read_exact(&mut value).unwrap();
+    value[0] ^= 1;
+    bytes.seek(SeekFrom::Start(0x50)).unwrap();
+    bytes.write_all(&value).unwrap();
+    drop(bytes);
+    assert!(
+        !fixture.accepted(),
+        "valid owner/ACL cannot excuse a damaged signature"
     );
 }
 
@@ -194,6 +220,40 @@ fn previously_safe_ancestor_becoming_writable_is_refused() {
     assert!(fixture.accepted());
     acl(&fixture.base, ADMIN, "(A;;FA;;;BU)");
     assert!(!fixture.accepted());
+}
+
+#[test]
+#[ignore = "requires elevated Windows; windows-dll-safety CI"]
+fn protected_windows_process_passes_full_peer_check() {
+    // Production runs as SYSTEM. CI uses an elevated debug privilege to inspect
+    // the closed child without relaxing the child's production process ACL.
+    privilege("SeDebugPrivilege");
+    let image = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\ping.exe");
+    let mut child = std::process::Command::new(image)
+        .args(["-n", "30", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let result = (|| {
+        assert!(
+            peer_intact(child.id()).is_err(),
+            "unprotected process must fail"
+        );
+        protect_process(child.id())?;
+        // Wait for the loader before asking PSAPI to enumerate its images.
+        let mut last = Err("Windows process did not finish loading".to_owned());
+        for _ in 0..50 {
+            last = peer_intact(child.id());
+            if last.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        last
+    })();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    result.unwrap();
 }
 
 #[test]
