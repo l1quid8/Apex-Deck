@@ -46,6 +46,9 @@ import { cardVersions } from "../interactiveAnswers/share.ts";
 import { ThreadCard } from "../interactiveAnswers/ThreadCard.tsx";
 import { QuestionForm } from "../QuestionForm";
 import { ReplyNextSteps } from "../ReplyNextSteps";
+import { PhonePictures } from "./PhonePictures";
+import { PictureCache, pictureBlock } from "./pictureRules";
+import { attachedImages, replyImages } from "../attachments";
 import { applyQuestionEvent, formView, questionOnly, restoreQuestions, type Offer, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
 import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
@@ -134,6 +137,8 @@ import {
 import { PhoneResets } from "./PhoneResets";
 
 const NO_ASKS: ThreadAsks = { questions: [], offer: null };
+/** Pictures shown lately, across threads, so swiping back doesn't fetch them again. */
+const PICTURES = new PictureCache();
 
 const SESSION_KEY = "apex-deck.phone.session.v1";
 const DRAFT_KEY = "apex-deck.phone.drafts.v1";
@@ -714,6 +719,19 @@ export function PhoneApp() {
 
   const workspaces = session?.workspaces ?? [];
   const phoneHost = (id: string) => hosts.find((host) => host.machine.id === id) ?? null;
+  // A reader per thread, kept stable so a picture's tile doesn't reload on every render.
+  const pictureReaders = useRef(new Map<string, (path: string, by: string | null) => Promise<ArrayBuffer>>());
+  const readPictureFor = (hostId: string, paneId: string) => {
+    const key = `${hostId}\n${paneId}`;
+    let read = pictureReaders.current.get(key);
+    if (!read) pictureReaders.current.set(key, read = (path, by) => PICTURES.get(`${key}\n${by ?? ""}\n${path}`, async () => {
+      const host = hostsRef.current.find((item) => item.machine.id === hostId);
+      if (!host) throw new Error("That machine isn't paired");
+      // A reply's picture is copied into the thread's attachments first, as the Mac does, then read.
+      return host.backend.readAttachment(by ? await host.backend.importReplyImage(paneId, path, by) : path);
+    }));
+    return read;
+  };
   const assistantProjects = useMemo(() => workspaces.filter((workspace) => !workspace.hidden).map((workspace) => {
     const hostId = workspaceHost(workspace);
     const host = hosts.find((item) => item.machine.id === hostId);
@@ -2585,6 +2603,10 @@ export function PhoneApp() {
             onRemoveFile={(id) => openKey && setDrafts((all) => { const now = all[openKey] ?? emptyDraft(); return { ...all, [openKey]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
             onSend={() => { void send(); }}
             onDecide={decide}
+            pictures={{
+              blocked: pictureBlock({ access: phoneHost(openHostId)?.access(), online: openLink.status === "online", machine: openLink.name }),
+              read: readPictureFor(openHostId, openPane?.id ?? ""),
+            }}
             // Questions wait above the composer; next steps follow the reply that offered them, as on the Mac.
             steps={(() => {
               const view = formView(openRoom?.asks);
@@ -3510,7 +3532,9 @@ function ThreadView(props: {
   /** The question, above the composer. */
   form: ReactNode;
   /** The next steps the newest reply offered, drawn under that reply. */
-  steps: { offer: Offer; onStep(step: NextStep, by: string): void } | null; plan: boolean; onStopPlanning(): void;
+  steps: { offer: Offer; onStep(step: NextStep, by: string): void } | null;
+  /** Reads a picture a message carries: `by` names the bot for a reply's picture, null for one you sent. */
+  pictures: { read(path: string, by: string | null): Promise<ArrayBuffer>; blocked: string | null }; plan: boolean; onStopPlanning(): void;
   /** Swiping between threads: the ones on either side, and where this one sits among the open ones. */
   swipe: { next: SwipeRow | null; previous: SwipeRow | null; place: { at: number; of: number } | null };
   onSwipe(to: "next" | "previous"): void;
@@ -3552,6 +3576,14 @@ function ThreadView(props: {
   const pill = usePillPress();
   // Cards show read-only on the phone for now, at their defaults.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
+  // One stable reader per sender, so a picture isn't read again on every render.
+  const pictureReaders = useMemo(() => new Map<string, (path: string) => Promise<ArrayBuffer>>(), [props.pictures.read]);
+  const readPicture = (by: string | null) => {
+    const key = by ?? "";
+    let read = pictureReaders.get(key);
+    if (!read) pictureReaders.set(key, read = (path) => props.pictures.read(path, by));
+    return read;
+  };
   // Each bot's newest reply, by seq: only that one carries its next steps.
   const newestReply = useMemo(() => {
     const newest = new Map<string, number>();
@@ -3905,7 +3937,7 @@ function ThreadView(props: {
         {props.messages.flatMap((message,index)=>{
           const renderMessage=(message:Message)=>message.speaker.kind === "human" ? (
           <section key={message.seq} className="ph-said mine" data-seq={message.seq}>
-            <div className="ph-msg human"><p>{splitTldr(message.text).text}</p></div>
+            <div className="ph-msg human"><p>{splitTldr(message.text).text}</p><PhonePictures paths={attachedImages(message.text)} read={readPicture(null)} blocked={props.pictures.blocked} /></div>
             {actionsFor(message, splitTldr(message.text).text)}
           </section>
         ) : (
@@ -3916,6 +3948,7 @@ function ThreadView(props: {
               <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
                 ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
                 : undefined)} /></div>
+              <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {(() => {
                 const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
                 return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
