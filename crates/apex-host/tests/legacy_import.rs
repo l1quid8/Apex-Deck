@@ -437,7 +437,12 @@ fn apply_refuses_hashes_the_preview_did_not_show() {
 fn room_state_labels_imported_rooms_from_protected_authority_after_restart_and_save() {
     let mut f = Fixture::new("room-marker", |data| {
         let mut room = legacy_room();
-        room["cwd"] = json!(data.to_string_lossy());
+        // A project is separate from Deck's private data. Otherwise the room's
+        // background checkpoint Git process can hold the private root as its
+        // working directory while restart reapplies that root's Windows ACL.
+        let project = data.parent().unwrap().join("project");
+        std::fs::create_dir(&project).unwrap();
+        room["cwd"] = json!(project.to_string_lossy());
         room["mounts"] = json!([]);
         room["snapshot"]["participants"] = json!([]);
         // Editable room files cannot establish the label's protected identity.
