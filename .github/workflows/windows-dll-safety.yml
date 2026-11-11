@@ -16,4 +16,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Exercise real signatures, ACLs and path replacements
-        run: cargo test --locked -p apex-provenance --lib windows::module_tests -- --ignored --nocapture --test-threads=1
+        run: cargo test --locked -p apex-provenance --lib -- --include-ignored --nocapture --test-threads=1

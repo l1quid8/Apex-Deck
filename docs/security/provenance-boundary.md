@@ -39,7 +39,23 @@ The design narrows this without closing it. Packaged Deck refuses runtime
 switches in every Windows spelling. Deck's main process and the daemon close
 their process objects to their own user, including the owner's implicit rights.
 The service refuses a pinned client that isn't closed, has a debugger attached,
-or has loaded a module from outside Windows and Program Files. Deck's renderers
+or has loaded a module whose file or ancestry an untrusted account can replace.
+For loaded code only, a per-service SID may own or write the file/ancestry if
+Windows also verifies the module's Authenticode signature and certificate chain,
+including revocation. Ordinary user owners and writers are refused even when
+the file is signed. A missing/unreadable ACL, reparse point, unknown granting
+ACE or unverifiable signature fails closed. Known deny-only ACE variants do not
+grant permissions and may be ignored. Authority keys and receipts do not gain
+this service-account exception.
+
+Every approval rechecks the file and ancestry without a path cache. Read handles
+pin the directory chain against rename while the final file is checked, and
+signature verification uses that same file handle, opened without write/delete
+sharing. This does not establish the identity of an image already mapped into
+memory; administrator or service tampering remains outside this boundary.
+The implementation uses [WinVerifyTrust](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust)
+and its [open-file handle](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_file_info)
+support. Deck's renderers
 stay open, a process started suspended can be altered first, and code injected
 without a file passes these checks.
 

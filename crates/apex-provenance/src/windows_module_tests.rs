@@ -86,8 +86,8 @@ impl Fixture {
             .join(format!("Apex-DLL-test-{}-{name}", std::process::id()));
         secure_directory(&base, false).unwrap();
         let file = base.join("module.dll");
-        // This Windows component has an embedded Authenticode signature. Copying
-        // it preserves signed bytes while allowing independent owner/ACL tests.
+        // This Windows component is catalog-signed. Copying preserves its
+        // signed hash while allowing independent owner/ACL tests.
         let source = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
         std::fs::copy(source, &file).unwrap();

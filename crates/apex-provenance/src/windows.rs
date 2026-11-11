@@ -650,15 +650,32 @@ fn module_signature(file: &File, path: &Path) -> Result<(), String> {
         hFile: file.as_raw_handle(),
         ..Default::default()
     };
-    let mut data = WINTRUST_DATA {
+    let data = WINTRUST_DATA {
         cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
         dwUIChoice: WTD_UI_NONE,
         dwUnionChoice: WTD_CHOICE_FILE,
         Anonymous: WINTRUST_DATA_0 { pFile: &mut info },
-        dwStateAction: WTD_STATEACTION_VERIFY,
-        dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | WTD_DISABLE_MD2_MD4,
         ..Default::default()
     };
+    let result = verify_trust(data);
+    if result == 0 {
+        return Ok(());
+    }
+    // A catalog signature binds this same handle's SHA-256 Authenticode hash
+    // to a signed catalog. Never use catalog fallback to override an embedded
+    // signature with a bad digest, revoked chain or other trust failure.
+    if result as u32 == 0x800b0100 || result as u32 == 0x800b0003 {
+        return module_catalog_signature(file, path);
+    }
+    Err(format!(
+        "Invalid or unverifiable module signature (WinVerifyTrust {:#010x})",
+        result as u32
+    ))
+}
+fn verify_trust(mut data: windows_sys::Win32::Security::WinTrust::WINTRUST_DATA) -> i32 {
+    use windows_sys::Win32::Security::WinTrust::*;
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | WTD_DISABLE_MD2_MD4;
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     // Verify the same locked handle whose ACL was inspected, not a second
     // path lookup. Only zero is success; an unavailable trust/revocation chain
@@ -678,14 +695,94 @@ fn module_signature(file: &File, path: &Path) -> Result<(), String> {
             (&mut data as *mut WINTRUST_DATA).cast(),
         );
     }
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "Invalid or unverifiable module signature (WinVerifyTrust {:#010x})",
-            result as u32
-        ))
+    result
+}
+fn module_catalog_signature(file: &File, path: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Security::{Cryptography::Catalog::*, WinTrust::*};
+    let mut admin = 0;
+    if unsafe {
+        CryptCATAdminAcquireContext2(
+            &mut admin,
+            ptr::null(),
+            wide("SHA256").as_ptr(),
+            ptr::null(),
+            0,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "Cannot inspect signature catalog: {}",
+            std::io::Error::last_os_error()
+        ));
     }
+    let mut catalog = 0;
+    let result = (|| {
+        let mut hash = [0u8; 32];
+        let mut size = hash.len() as u32;
+        if unsafe {
+            CryptCATAdminCalcHashFromFileHandle2(
+                admin,
+                file.as_raw_handle(),
+                &mut size,
+                hash.as_mut_ptr(),
+                0,
+            )
+        } == 0
+            || size != 32
+        {
+            return Err("Cannot hash module for signature catalog".into());
+        }
+        catalog = unsafe {
+            CryptCATAdminEnumCatalogFromHash(admin, hash.as_ptr(), size, 0, ptr::null_mut())
+        };
+        if catalog == 0 {
+            return Err("Module has neither an embedded signature nor a registered SHA-256 catalog signature".into());
+        }
+        let mut info = CATALOG_INFO {
+            cbStruct: std::mem::size_of::<CATALOG_INFO>() as u32,
+            ..Default::default()
+        };
+        if unsafe { CryptCATCatalogInfoFromContext(catalog, &mut info, 0) } == 0 {
+            return Err("Cannot read module signature catalog".into());
+        }
+        let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let tag = wide(&hash.iter().map(|b| format!("{b:02X}")).collect::<String>());
+        let mut member = WINTRUST_CATALOG_INFO {
+            cbStruct: std::mem::size_of::<WINTRUST_CATALOG_INFO>() as u32,
+            pcwszCatalogFilePath: info.wszCatalogFile.as_ptr(),
+            pcwszMemberTag: tag.as_ptr(),
+            pcwszMemberFilePath: name.as_ptr(),
+            hMemberFile: file.as_raw_handle(),
+            pbCalculatedFileHash: hash.as_mut_ptr(),
+            cbCalculatedFileHash: size,
+            hCatAdmin: admin,
+            ..Default::default()
+        };
+        let status = verify_trust(WINTRUST_DATA {
+            cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+            dwUIChoice: WTD_UI_NONE,
+            dwUnionChoice: WTD_CHOICE_CATALOG,
+            Anonymous: WINTRUST_DATA_0 {
+                pCatalog: &mut member,
+            },
+            ..Default::default()
+        });
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "Invalid or unverifiable catalog signature (WinVerifyTrust {:#010x})",
+                status as u32
+            ))
+        }
+    })();
+    unsafe {
+        if catalog != 0 {
+            CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
+        }
+        CryptCATAdminReleaseContext(admin, 0);
+    }
+    result
 }
 /// No path cache: a loaded image can be renamed and another file can occupy
 /// its path. Recheck ACLs on every approval and hold each ancestor against
