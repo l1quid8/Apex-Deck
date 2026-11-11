@@ -142,6 +142,7 @@ import {
   More, Paperclip, Plug, Plus, Settings, Terminal, X,
 } from "./icons";
 import { PhoneResets } from "./PhoneResets";
+import { placeToRestore, type ReadingPlace } from "./readingPlace";
 
 const NO_ASKS: ThreadAsks = { questions: [], offer: null };
 /** Pictures shown lately, across threads, so swiping back doesn't fetch them again. */
@@ -1569,6 +1570,9 @@ export function PhoneApp() {
   // older reply comes back to that reply, where one you left at the end comes back to the end.
   const stuckRef = useRef(true);
   const stuckByKey = useRef(new Map<string, boolean>());
+  // Where you were reading each thread lives here with stuckByKey, not in the thread screen: Back to
+  // Threads closes that screen, and a thread you left mid-reply must not come back at its top.
+  const readingPlaces = useRef(new Map<string, ReadingPlace>());
   const stick = (near: boolean) => { stuckRef.current = near; if (openKey) stuckByKey.current.set(openKey, near); };
   const shownRef = useRef<string | null>(null);
   const streamed = room ? Object.values(room.working).reduce((sum, turn) => sum + turn.text.length + turn.steps.length + turn.work.steps.length + turn.work.todo.length + 1, 0) : 0;
@@ -2667,6 +2671,7 @@ export function PhoneApp() {
             other={links.find((link) => link.kind === "server" && link.status === "online" && link.id !== openLink.id) ?? null}
             endRef={endRef}
             onScrolled={(near) => stick(near)}
+            places={readingPlaces.current}
             onResized={(chat) => { if (stuckRef.current) chat.scrollTop = chat.scrollHeight; }}
             covered={covered}
             worktrees={worktreesShown ? { needsYou: copyNeedsYou(worktreeState.listing), open: worktreesOpen, onOpen: () => setWorktreesOpen(true) } : undefined}
@@ -3621,6 +3626,8 @@ function ThreadView(props: {
   meters: Record<string, PillMeter>;
   fork?: Pane["fork"]; approvalStays: boolean; other: LinkView | null; endRef: RefObject<HTMLDivElement | null>;
   onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(id: string): void; onScrolled(near: boolean): void; onResized(chat: HTMLElement): void;
+  /** Where you were reading each thread, kept by the app so it outlives this screen. */
+  places: Map<string, ReadingPlace>;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
   onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void; onOpenComposer(): void;
   /** Messages waiting on the phone for a bot to finish, oldest first. */
@@ -3799,26 +3806,29 @@ function ThreadView(props: {
   // A thread's place is kept as the reply at the top of the screen and how far into it you were, not
   // as a pixel offset: replies that arrived while you were away push the page without moving what you
   // were reading. Swiping back, or reopening the app, finds that reply again. A thread with nothing
-  // remembered — or one you left at the end — follows the newest message as before.
+  // remembered, or whose reply is gone, follows the newest message; one you left at the end does too.
   const placeKey = `${props.link.id}\u0000${props.paneId}`;
-  const places = useRef(new Map<string, { seq: number; gap: number }>());
+  const places = props.places;
   const restoredFor = useRef<string | null>(null);
   const rememberPlace = (box: HTMLElement) => {
     if (restoredFor.current !== placeKey) return;
+    // At the end there is no place to keep: the thread follows the newest message from there.
+    if (box.scrollHeight - box.scrollTop - box.clientHeight < 80) { places.delete(placeKey); return; }
     const top = [...box.querySelectorAll<HTMLElement>("[data-seq]")].find((el) => el.offsetTop + el.offsetHeight > box.scrollTop + 1);
     const seq = Number(top?.dataset.seq);
     if (!top || !Number.isFinite(seq)) return;
-    places.current.set(placeKey, { seq, gap: top.offsetTop - box.scrollTop });
+    places.set(placeKey, { seq, gap: top.offsetTop - box.scrollTop });
   };
   useLayoutEffect(() => {
     const box = chatRef.current;
     if (!box || restoredFor.current === placeKey) return;
-    const kept = places.current.get(placeKey);
-    if (!kept) { restoredFor.current = placeKey; return; }
-    const at = box.querySelector<HTMLElement>(`[data-seq="${kept.seq}"]`);
+    const place = placeToRestore(places.get(placeKey), props.messages.map((message) => message.seq));
     // Its replies are still arriving: this runs again when they do, and until then nothing moves.
-    if (!at) return;
-    box.scrollTop = at.offsetTop - kept.gap;
+    if (place === "wait") return;
+    const at = place === "end" ? null : box.querySelector<HTMLElement>(`[data-seq="${place.seq}"]`);
+    if (place !== "end" && at) box.scrollTop = at.offsetTop - place.gap;
+    // Hand the thread back to following the newest message; the thread scrolls there as it does for new replies.
+    else { places.delete(placeKey); props.onScrolled(true); }
     restoredFor.current = placeKey;
   }, [placeKey, props.messages.length]);
   // ---- Jump to the newest message ------------------------------------------------------------------
