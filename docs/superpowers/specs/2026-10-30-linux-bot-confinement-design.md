@@ -278,14 +278,21 @@ protected path.
   provider used below Full, and the Sign in button for a below-Full bot signs in this login.
   The account shown for it can differ from the person's, and Settings shows it.
 - **Refreshing is the daemon's job, outside the jail.** Before staging a login a launch would
-  refuse, the daemon runs the provider's own CLI as the person, in that login's folder: Claude's
-  `auth status --json`, and Codex's app-server `account/read` with `refreshToken: true`. `HOME`,
-  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` all point there, Deck's minimal settings are rewritten
-  around the login first, and the environment is cleared to a short allowlist, so the person's
-  `apiKeyHelper`, hooks, plugins and MCP servers never load. The CLI saves its own new login, so
-  a crash can't strand a spent refresh token. Refreshes run one at a time, and each daemon has
-  its own data folder, so nothing else writes these files. A failed refresh refuses the launch
-  with the refresh message. Gemini has no proven command yet, and its logins last about an hour,
+  refuse, the daemon runs the provider's own CLI as the person: Codex's app-server
+  `account/read` with `refreshToken: true` in that login's folder. Claude renews a login only
+  in its last 5 minutes, and `claude auth status` never renews one (checked on Claude 2.1.288,
+  2026-11-11), so the daemon gives Claude a copy of the login marked as already expired, in a
+  `renewal` folder beside it, and sends one tiny request there; Claude renews the copy and saves
+  it, and the daemon puts it in place only if the login hasn't changed meanwhile. A copy Claude
+  renewed but the daemon couldn't put in place is used first next time, so a crash can't strand
+  a spent refresh token. A refused renewal empties only the copy. Each daemon also renews its
+  Claude login every 5 minutes once under an hour is left, so a launch or a gateway request
+  rarely has to. `HOME`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` point at the folder the CLI runs in,
+  Deck's minimal settings are written there first, and the environment is cleared to a short
+  allowlist, so the person's `apiKeyHelper`, hooks, plugins and MCP servers never load.
+  Refreshes run one at a time, and each daemon has its own data folder, so nothing else writes
+  these files. A failed refresh refuses the launch with the refresh message and the CLI's reason,
+  and a Claude login that just failed isn't retried for 4 minutes unless it changes. Gemini has no proven command yet, and its logins last about an hour,
   so Gemini bots are refused once under 20 minutes until Task 5 settles one. Grok and Muse are
   the same. A live session whose access token runs out is restarted on a newly staged login.
 - **The home is hostile to the daemon.** A jail can write it, so the daemon opens every path

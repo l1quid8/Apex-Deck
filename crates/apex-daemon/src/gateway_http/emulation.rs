@@ -129,11 +129,54 @@ async fn run_text(
     Ok((message, usage))
 }
 
+/// On Linux, Deck's own Claude login, renewed first if a request would refuse
+/// it, as a copy without its renewal part in this request's scratch folder.
+/// Claude there can then neither renew nor empty the login every request
+/// shares. `None` when Deck has no Claude login, so Claude uses the one it
+/// finds itself.
+#[cfg(target_os = "linux")]
+async fn deck_claude_login(state: &GatewayHttpState, scratch: &Path) -> Result<Option<PathBuf>, String> {
+    use apex_adapters::linux_jail::{home, refresh};
+    let path = state.login_path.as_deref();
+    let search = path.map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+    let program = apex_adapters::executable_program("claude", path);
+    refresh::ensure(&apex_adapters::OwnedProcessRegistry::default(), &state.data_dir, AgentTool::ClaudeCode, &program, &search)
+        .await
+        .map_err(|error| error.to_string())?;
+    let folder = scratch.join("claude-login");
+    home::claude_request_config(&state.data_dir, &folder)
+        .map(|made| made.then_some(folder))
+        .map_err(|error| error.to_string())
+}
+
+/// Claude keeps its login in the system's keychain off Linux.
+#[cfg(not(target_os = "linux"))]
+async fn deck_claude_login(_: &GatewayHttpState, _: &Path) -> Result<Option<PathBuf>, String> {
+    Ok(None)
+}
+
+/// Claude's own words for a failed request, as Deck shows them for a turn, on
+/// one short line.
+fn claude_said(result: &Value) -> Option<String> {
+    if result["is_error"] != true {
+        return None;
+    }
+    let listed = result["errors"].as_array().map(|errors| errors.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" | "));
+    let text = result["result"].as_str().filter(|text| !text.trim().is_empty()).map(str::to_owned).or(listed)?;
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match text.char_indices().nth(300) {
+        _ if text.is_empty() => None,
+        Some((cut, _)) => Some(format!("{}…", &text[..cut])),
+        None => Some(text),
+    }
+}
+
 fn command(
     state: &GatewayHttpState,
     scratch: &Path,
     body: &Value,
     target: &ResolvedTarget,
+    login: Option<&Path>,
 ) -> Result<Command, String> {
     let Backend::Agent {
         tool: AgentTool::ClaudeCode,
@@ -161,6 +204,9 @@ fn command(
     }
     if let Some(path) = &state.login_path {
         command.env("PATH", path);
+    }
+    if let Some(folder) = login {
+        command.env("CLAUDE_CONFIG_DIR", folder);
     }
     command
         .current_dir(scratch)
@@ -214,7 +260,12 @@ async fn run(
     } else if let Some(proxy) = &proxy {
         (None, proxy.command(state, scratch, target, body)?)
     } else {
-        (None, command(state, scratch, body, target)?)
+        let login = if matches!(target.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
+            deck_claude_login(state, scratch).await?
+        } else {
+            None
+        };
+        (None, command(state, scratch, body, target, login.as_deref())?)
     };
     command
         .stdin(Stdio::piped())
@@ -268,7 +319,11 @@ async fn run(
             .record_spend(&key.id, (cost * 1_000_000.).round() as u64);
     }
     if !status.success() || result["is_error"] == true || result.get("status").is_some_and(|s| s != "SUCCESS") {
-        return Err("Subscription CLI returned an error".into());
+        let claude = matches!(target.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. });
+        return Err(match claude_said(&result).filter(|_| claude) {
+            Some(said) => format!("Subscription CLI returned an error: {said}"),
+            None => "Subscription CLI returned an error".into(),
+        });
     }
     let envelope = result
         .get("structured_output")

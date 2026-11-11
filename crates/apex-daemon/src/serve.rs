@@ -77,6 +77,15 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     let token = identity::random_hex(32);
     files::write_private(&paths.data.join("daemon-token"), &format!("{token}\n"))?;
     let daemon = Daemon::start(&paths, Some(token))?;
+    #[cfg(target_os = "linux")]
+    let _claude = StopOnDrop(tokio::spawn({
+        let data = paths.data.clone();
+        async move {
+            // Reading the login shell's PATH can take a moment; startup doesn't wait for it.
+            let path = tokio::task::spawn_blocking(apex_host::agents::login_path).await.unwrap_or_default();
+            keep_claude_signed_in(data, path, std::time::Duration::from_secs(5 * 60)).await
+        }
+    }));
 
     let listener = if options.local_only { None } else { Some(TcpListener::bind((options.bind, options.port)).await.map_err(|e| format!("could not listen on {}:{}: {e}", options.bind, options.port))?) };
     let port = listener.as_ref().map(|l| l.local_addr().map(|a| a.port())).transpose().map_err(|e|e.to_string())?;
@@ -237,6 +246,40 @@ async fn serve_local(daemon: Arc<Daemon>, stream: ipc::Stream) {
     protocol::serve(daemon, Trust::Local, input, output).await;
 }
 
+/// Keeps Deck's own Claude login renewed ahead of time, every `every`, so no
+/// jailed bot or gateway request finds it stale. The log says when it renews,
+/// and once per reason when it can't.
+#[cfg(target_os = "linux")]
+async fn keep_claude_signed_in(data: PathBuf, path: Option<String>, every: std::time::Duration) {
+    let search = path.as_deref().map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+    let program = apex_adapters::executable_program("claude", path.as_deref());
+    let registry = apex_adapters::OwnedProcessRegistry::default();
+    let mut said = None;
+    let mut ticks = tokio::time::interval(every);
+    loop {
+        ticks.tick().await;
+        match apex_adapters::linux_jail::refresh::keep_fresh(&registry, &data, &program, &search).await {
+            Ok(renewed) => {
+                if renewed { eprintln!("[apex-deck] Renewed Deck's Claude sign-in."); }
+                said = None;
+            }
+            Err(reason) => {
+                if said.as_ref() != Some(&reason) { eprintln!("[apex-deck] Couldn't renew Deck's Claude sign-in: {reason}"); }
+                said = Some(reason);
+            }
+        }
+    }
+}
+
+/// Stops a background task when the daemon stops, however `serve` returns.
+#[cfg(target_os = "linux")]
+struct StopOnDrop(tokio::task::JoinHandle<()>);
+
+#[cfg(target_os = "linux")]
+impl Drop for StopOnDrop {
+    fn drop(&mut self) { self.0.abort(); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +287,33 @@ mod tests {
     #[test]
     fn bots_are_pointed_at_the_socket_the_daemon_listens_on() {
         assert_eq!(SOCKET, apex_adapters::DAEMON_SOCKET);
+    }
+
+    /// No jailed bot or gateway request has to ask for it first.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_daemon_renews_decks_claude_login_on_its_own() {
+        use std::time::Duration;
+        let root = std::env::temp_dir().join(format!("apex-serve-claude-{}", identity::random_hex(8)));
+        let login = root.join("data/logins/claude/.claude/.credentials.json");
+        std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+        let soon = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 50 * 60) * 1000;
+        std::fs::write(&login, json!({"claudeAiOauth":{"accessToken":"deck","refreshToken":"r-deck","expiresAt":soon}}).to_string()).unwrap();
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude"), concat!("#!/bin/sh\n",
+            "printf '{\"claudeAiOauth\":{\"accessToken\":\"renewed\",\"refreshToken\":\"r-renewed\",\"expiresAt\":%s}}' ",
+            "$(( ($(date +%s) + 28800) * 1000 )) > \"$CLAUDE_CONFIG_DIR/.credentials.json\"\n")).unwrap();
+        std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let renewer = tokio::spawn(keep_claude_signed_in(root.join("data"), Some(format!("{}:/usr/bin:/bin", bin.display())), Duration::from_millis(50)));
+        let renewed = async {
+            while !std::fs::read_to_string(&login).unwrap().contains("r-renewed") {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        let done = tokio::time::timeout(Duration::from_secs(10), renewed).await;
+        renewer.abort();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(done.is_ok(), "the daemon didn't renew the login");
     }
 }
