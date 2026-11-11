@@ -2,7 +2,9 @@ const { app, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show:false, width:1200, height:800, useContentSize:true, webPreferences:{ offscreen:true, backgroundThrottling:false } });
+  const win = new BrowserWindow({ show:false, width:1200, height:800, useContentSize:true, enableLargerThanScreen:true, webPreferences:{ offscreen:true, backgroundThrottling:false } });
+  // Restore the fixture bounds after Windows centers and clamps the constructor bounds.
+  win.setContentSize(1200, 800);
   const run = code => win.webContents.executeJavaScript(code);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const frame = () => run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
@@ -25,6 +27,9 @@ app.whenReady().then(async () => {
     const scenario = new URL(fixtureUrl).search.slice(1);
     if (scenario !== 'full-window') assert.deepEqual(nativeBounds(await snapshot()), expected, 'at rest the native view matches its placeholder, ignoring a moving outer map');
     if (scenario === 'clipped') {
+      // Native wheel hit testing needs the offscreen compositor's first paint,
+      // not only a mounted DOM and completed renderer animation frames.
+      await win.webContents.capturePage();
       win.webContents.sendInputEvent({ type:'mouseMove', x:700, y:400 });
       win.webContents.sendInputEvent({ type:'mouseWheel', x:700, y:400, deltaX:0, deltaY:-180, canScroll:true, hasPreciseScrollingDeltas:true });
       await until('fixture.snapshot().scrollTop>80', 'native wheel clips the placeholder');

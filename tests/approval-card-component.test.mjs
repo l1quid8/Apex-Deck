@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { transform } from 'sucrase';
 import * as choices from '../src/approvalChoices.ts';
+import { LOCAL_HOST_NAME } from '../src/hostFacts.ts';
 
 const source = readFileSync(new URL('../src/ApprovalCard.tsx', import.meta.url), 'utf8');
 const code = transform(source.replace(/^import .*;\n/gm, '').replaceAll('export ', ''), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
@@ -16,7 +17,7 @@ function harness(kind = 'plan') {
   const states = []; let cursor = 0; const decisions = [];
   const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
   const useState = initial => { const i = cursor++; if (!(i in states)) states[i] = initial; return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value; }]; };
-  const Card = new Function('React', 'useState', 'useRef', 'useId', 'Markdown', ...Object.keys(choices), `${code}; return ApprovalCard;`)(React, useState, value => ({ current: value }), () => 'test-id', 'Markdown', ...Object.values(choices));
+  const Card = new Function('React', 'useState', 'useRef', 'useId', 'Markdown', 'LOCAL_HOST_NAME', ...Object.keys(choices), `${code}; return ApprovalCard;`)(React, useState, value => ({ current: value }), () => 'test-id', 'Markdown', LOCAL_HOST_NAME, ...Object.values(choices));
   return { decisions, render() { cursor = 0; return Card({ action: { kind, title: 'Start the work?', detail: '# Full plan\n\nReview every step.', risky: false }, name: 'Builder', onDecide: (...args) => decisions.push(args) }); } };
 }
 test('plan expands and collapses without answering the approval', () => {

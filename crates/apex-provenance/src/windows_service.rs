@@ -378,27 +378,19 @@ fn manager() -> Result<ServiceManager, String> {
     .map_err(|e| e.to_string())
 }
 fn stop_service(service: &Service) -> Result<(), String> {
-    if service
-        .query_status()
-        .map_err(|e| e.to_string())?
-        .current_state
-        != ServiceState::Stopped
-    {
-        service.stop().map_err(|e| e.to_string())?;
-    }
     let deadline = Instant::now() + Duration::from_secs(30);
-    while service
-        .query_status()
-        .map_err(|e| e.to_string())?
-        .current_state
-        != ServiceState::Stopped
-    {
+    loop {
+        let state = service.query_status().map_err(|e| e.to_string())?.current_state;
+        if state == ServiceState::Stopped {
+            return Ok(());
+        }
         if Instant::now() > deadline {
             return Err("Authority did not stop".into());
         }
+        // A service still starting refuses this, so keep asking.
+        let _ = service.stop();
         std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
 }
 fn install() -> Result<(), String> {
     let executable = std::env::current_exe()

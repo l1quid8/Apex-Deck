@@ -50,6 +50,7 @@ pub struct Reply {
     /// Token counts, when the backend reports them.
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
     /// What the turn cost in millionths of a US dollar, when known.
     pub cost_micros: Option<u64>,
     /// True when `cost_micros` is an estimate (such as a price quote), not a figure the provider reported.
@@ -104,6 +105,8 @@ pub enum Progress<'a> {
     Context(ContextUse),
     /// How much of the provider account's plan is used.
     Plan(&'a PlanUsage),
+    /// A remote account report, isolated by endpoint, credential reference and model.
+    RemotePlan { plan: &'a PlanUsage, model: &'a str },
     /// A step of the work behind the reply, new or updated by key.
     Work(&'a crate::work_steps::WorkStep),
     /// The participant's to-do list, whole.

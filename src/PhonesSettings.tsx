@@ -6,6 +6,7 @@ import { PairPhoneSheet } from "./PairPhoneSheet";
 import { TIERS, devicesApi, lastSeenText, shortId, threadsText, type PairedDevice, type Tier } from "./pairedDevices";
 import { pairingApi, parseAddresses, phonesStatus, type RemoteInfo } from "./pairing";
 import { TrustHostSettings } from "./TrustHostSettings";
+import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 
 // Settings → Phones: Pair phone, whether phones can connect at all, each
 // paired phone with its access level and Revoke, and under Advanced the
@@ -129,7 +130,7 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
       <div className="settings-row">
         <div className="settings-label">
           <strong>Endpoint ID</strong>
-          <small>How phones find this Mac. It stays the same across restarts.</small>
+          <small>How phones find {LOCAL_HOST_REFERENCE}. It stays the same across restarts.</small>
           <small className="mono muted" title={info.endpoint_id ?? undefined}>{info.endpoint_id ?? "…"}</small>
         </div>
       </div>
@@ -143,7 +144,7 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
       <div className="settings-row remote-addresses">
         <div className="settings-label">
           <strong>Advertised addresses</strong>
-          <small>Optional. A public name or address with that port forwarded to this Mac, like myhome.ddns.net:41641. New pairing codes carry it, and paired phones learn it when they connect.</small>
+          <small>Optional. A public name or address with that port forwarded to {LOCAL_HOST_REFERENCE}, like myhome.ddns.net:41641. New pairing codes carry it, and paired phones learn it when they connect.</small>
           <input aria-label="Advertised addresses" placeholder="myhome.ddns.net:41641" spellCheck={false} value={addresses} onChange={(e) => { setAddresses(e.target.value); setSavedNote(""); }} onKeyDown={(e) => { if (e.key === "Enter" && changed) saveAddresses(); }} />
           {savedNote && <small className="muted" role="status">{savedNote}</small>}
         </div>

@@ -20,13 +20,16 @@ for (const [width,height] of [[1512,945],[1100,650]]) test(`App dock: drops, ste
  const shape=()=>run('(()=>{const m=document.querySelector(".pane-map"),r=m.getBoundingClientRect();return {level:m.dataset.level,h:r.height,lefts:[...m.querySelectorAll(".pane-map-slot")].map(s=>s.style.left)}})()');
  const type=async text=>{await until('!!document.querySelector(".composer textarea")');await run('document.querySelector(".composer textarea").focus()');await win.webContents.insertText(text);await sleep(70);};
  const clear=async()=>{await run('(()=>{const t=document.querySelector(".composer textarea");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(t,"");t.dispatchEvent(new Event("input",{bubbles:true}))})()');await sleep(100);};
+ const settledMap=()=>until('(()=>{const m=document.querySelector(".pane-map");return !m.hasAttribute("data-moving")&&!m.hasAttribute("data-focus-moving")&&[...m.querySelectorAll(".pane-map-slot")].every(s=>s.getAnimations().every(a=>a.playState!=="running"))})()','pane map motion to finish');
+ const scrollMap=async top=>{await run('new Promise(resolve=>{const m=document.querySelector(".pane-map"),before=m.scrollTop;m.addEventListener("scrollend",()=>resolve(),{once:true});m.scrollTop='+top+';if(m.scrollTop===before)resolve()})');await settledMap();};
  const initial=await shape();
  await run('[...document.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="Add teammate").click()');
  await until('getComputedStyle(document.querySelector(".workspace-canvas-content")).display==="none"');await sleep(100);
  await run('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="Threads").click()');await sleep(250);
  assert.equal((await shape()).level,initial.level,'hidden dock must not become the resting height');
  assert.deepEqual((await shape()).lefts,initial.lefts);
- await run('document.querySelector(".pane-map").scrollTop=10000');await sleep(300);
+ // Read after the native snap and map motion finish, before testing a refit.
+ await scrollMap(10000);
  const lastVisible=()=>run('(()=>{const m=document.querySelector(".pane-map").getBoundingClientRect(),r=document.querySelector("[data-pane-id=dock-13]").getBoundingClientRect();return r.top<m.bottom&&r.bottom>m.top})()');
  assert.equal(await lastVisible(),true);
  await type('one\ntwo\nthree\nfour\nfive');await sleep(200);

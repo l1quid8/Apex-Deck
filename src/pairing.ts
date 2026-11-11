@@ -8,6 +8,7 @@
 
 import qrcode from "qrcode-generator";
 import type { RemoteAccessApi } from "./backend";
+import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import type { PairedDevice, Tier } from "./pairedDevices";
 
 /** What a new phone may do unless the person picks otherwise. */
@@ -99,7 +100,7 @@ export interface PhonesStatus { line: string; action: "Turn off" | "Turn on" | n
 
 /** What Settings → Phones says about phone connections. `phones`: how many are paired. */
 export function phonesStatus(on: boolean, phones: number): PhonesStatus {
-  if (on) return { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null };
+  if (on) return { line: `Phones can reach ${LOCAL_HOST_REFERENCE} from anywhere.`, action: "Turn off", note: null };
   if (phones > 0) return { line: "Phone connections are off.", action: "Turn on", note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi." };
   return { line: "Phone connections are off. Pairing turns them on.", action: null, note: null };
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { CLASS_LABEL, MODE_LABEL, TASK_STATUS } from '../src/personalAssistant.ts';
+import { LOCAL_HOST_NAME, LOCAL_HOST_REFERENCE } from '../src/hostFacts.ts';
 
 const require = createRequire(import.meta.url);
 const { transform } = require('sucrase');
@@ -66,7 +67,7 @@ function mount(props) {
   };
   const useEffect = (effect) => { cursor++; effect(); };
   const useRef = initial => { const i = cursor++; return states[i] ??= { current: initial }; };
-  const component = new Function('React', 'useState', 'useEffect', 'useRef', 'PersonalBrowser', 'ProjectMemoryPanel', 'AssistantPermissions', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, useRef, () => null, () => null, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL);
+  const component = new Function('React', 'useState', 'useEffect', 'useRef', 'PersonalBrowser', 'ProjectMemoryPanel', 'AssistantPermissions', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', 'LOCAL_HOST_NAME', 'LOCAL_HOST_REFERENCE', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, useRef, () => null, () => null, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL, LOCAL_HOST_NAME, LOCAL_HOST_REFERENCE);
   return { render() { cursor = 0; return component({ onClose() {}, ...props }); } };
 }
 

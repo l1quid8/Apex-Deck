@@ -15,7 +15,7 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-head-'));
   const shots = process.env.PANE_HEAD_SHOTS || '';
   if (shots) fs.mkdirSync(shots, { recursive: true });
-  const html = `<html><body style="padding:20px"><div id="root"></div><script type="module">
+  const html = `<!doctype html><html><body style="padding:20px"><div id="root"></div><script type="module">
     import React,{useState,useEffect} from 'react';import {createRoot} from 'react-dom/client';import {createPortal} from 'react-dom';
     import {PaneHead,PaneVoicePortal} from '/src/PaneHead.tsx';import {ThreadName} from '/src/ThreadName.tsx';import '/src/styles.css';import '/src/glass-theme.css';import '/src/clay-theme.css';import '/src/voice/voice.css';
     window.renames=[];window.dragStarts=0;window.sidebarRenames=[];window.voiceActions=[];
@@ -55,18 +55,28 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
     fs.writeFileSync(main, `
       const {app,BrowserWindow}=require('electron');const assert=require('node:assert/strict');const fs=require('node:fs');
       app.whenReady().then(async()=>{
-        const win=new BrowserWindow({show:false,width:900,height:500,webPreferences:{contextIsolation:true}});
+        const win=new BrowserWindow({show:false,width:900,height:500,webPreferences:{contextIsolation:true,backgroundThrottling:false,offscreen:true}});
         const run=code=>win.webContents.executeJavaScript(code);const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
         const until=async(code)=>{for(let i=0;i<300;i++){if(await run(code))return;await sleep(20)}throw Error('Timed out: '+code)};
-        const key=async keyCode=>{win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await sleep(40)};
+        // Flush the render and its effect listeners before delivering a native key.
+        const key=async keyCode=>{await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await sleep(40);await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')};
         const point=selector=>run("(()=>{const r=document.querySelector("+JSON.stringify(selector)+").getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()");
         const mouse=async(selector,clicks=1)=>{const p=await point(selector);win.webContents.sendInputEvent({type:'mouseMove',...p});for(let clickCount=1;clickCount<=clicks;clickCount++){win.webContents.sendInputEvent({type:'mouseDown',...p,button:'left',clickCount});win.webContents.sendInputEvent({type:'mouseUp',...p,button:'left',clickCount})}await sleep(50)};
         const setWidth=async width=>{await run('window.fixture.setWidth('+width+')');await sleep(100);await run('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')};
         const visible=()=>run("[...document.querySelectorAll('[data-head-part]')].filter(node=>node.getBoundingClientRect().width>0).map(node=>node.dataset.headPart)");
         const animation=()=>run("getComputedStyle(document.querySelector('.pane-head .thread-name-text')).animationName");
+        const pointerOff=async()=>{
+          // Retire native hover explicitly; a move inside a hidden Windows window
+          // can leave its previous hover target active after a menu closes.
+          win.webContents.sendInputEvent({type:'mouseLeave',x:-10,y:-10});
+          await run('document.activeElement.blur()');
+          await until("!document.querySelector('.pane-head').matches(':hover, :focus-within')");
+        };
         try{
           await win.loadURL(${JSON.stringify(`http://localhost:${server.httpServer.address().port}/__pane_head_test`)});
           await until("!!document.querySelector('.pane-head')");
+          // Quirks mode changes :hover matching inside :is(), unlike the real app.
+          assert.equal(await run('document.compatMode'),'CSS1Compat','fixture uses production standards mode');
           for(const width of [600,190,125]){
             await setWidth(width);
             assert.equal(await run("document.querySelector('.pane-head').getBoundingClientRect().height"),28,'28px at '+width);
@@ -93,13 +103,17 @@ test('compact heads preserve controls, maximize from the title, marquee, and ren
           assert.equal(await run("!!document.querySelector('#head-menu')"),false,'menu Escape closes the menu first');
           assert.equal(await run("document.querySelector('#maximized').textContent"),'true','menu Escape keeps full screen');
           await key('Escape');assert.equal(await run("document.querySelector('#maximized').textContent"),'false');
-          win.webContents.sendInputEvent({type:'mouseMove',x:850,y:400});await run('document.activeElement.blur()');await sleep(60);
+          await pointerOff();
           assert.equal(await animation(),'none');
           win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);
-          assert.notEqual(await animation(),'none','cut-off title marquees on hover');
-          win.webContents.sendInputEvent({type:'mouseMove',x:850,y:400});await sleep(60);assert.equal(await animation(),'none','leaving resets marquee');
+          const hoverState=await run("(()=>{const head=document.querySelector('.pane-head'),title=head.querySelector('.pane-title'),text=head.querySelector('.thread-name-text');return {hover:head.matches(':hover'),focus:head.matches(':focus-within'),marquee:title.classList.contains('marquee'),reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches,titleWidth:title.clientWidth,textWidth:text.getBoundingClientRect().width}})()");
+          assert.equal(hoverState.hover,true,'native pointer returns to the head: '+JSON.stringify(hoverState));
+          assert.notEqual(await animation(),'none','cut-off title marquees on hover: '+JSON.stringify(hoverState));
+          await pointerOff();assert.equal(await animation(),'none','leaving resets marquee');
           win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
-          win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);assert.equal(await animation(),'none','reduced motion keeps ellipsis');
+          win.webContents.sendInputEvent({type:'mouseMove',...await point('.pane-head')});await sleep(450);
+          assert.equal(await run("document.querySelector('.pane-head').matches(':hover')"),true,'reduced-motion check also hovers the head');
+          assert.equal(await animation(),'none','reduced motion keeps ellipsis');
           await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});win.webContents.debugger.detach();
           await mouse('.pane-head .pane-title',2);
           await mouse('.pane-head [aria-haspopup=menu]');await mouse('#head-menu button');

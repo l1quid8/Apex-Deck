@@ -19,8 +19,10 @@ test('multi composer previews routing, blocks the entire empty/duplicate batch a
     const closed=await run(gap);
     await run('window.fixture.empty()');await frame();
     assert.equal(await run('document.querySelector(".composer-send").disabled'),false);
-    await run('document.querySelector(".composer-send").click()');await frame();
-    assert.equal(await run('window.calls.length'),0);assert.equal(await run('document.querySelector(".composer-send").classList.contains("shake")'),true);
+    // Capture the real feedback transition before slow runner frames can
+    // outlast its 1200ms lifetime. The blocked batch must still send nothing.
+    const blocked=await run('new Promise(resolve=>{const b=document.querySelector(".composer-send");let timer;const observer=new MutationObserver(()=>{if(b.classList.contains("shake")){clearTimeout(timer);observer.disconnect();resolve({calls:window.calls.length,shake:true})}});observer.observe(b,{attributes:true,attributeFilter:["class"]});timer=setTimeout(()=>{observer.disconnect();resolve({calls:window.calls.length,shake:false})},10000);b.click()})');
+    assert.equal(blocked.calls,0);assert.equal(blocked.shake,true);
     await run('window.fixture.duplicate()');await frame();
     assert.equal(await run('document.querySelector(".composer-send").disabled'),true);
     assert.match(await run('document.querySelector(".multi-summary").textContent'),/^To 1 thread · duplicate: Thread A$/,'the To line names the problem');

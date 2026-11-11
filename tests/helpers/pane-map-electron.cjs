@@ -5,7 +5,9 @@ const path = require('node:path');
 
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1200, height: 800, useContentSize: true, webPreferences: { offscreen: true, backgroundThrottling: false } });
+  const win = new BrowserWindow({ show: false, width: 1200, height: 800, useContentSize: true, enableLargerThanScreen: true, webPreferences: { offscreen: true, backgroundThrottling: false } });
+  // Restore the fixture bounds after Windows centers and clamps the constructor bounds.
+  win.setContentSize(1200, 800);
   win.webContents.setFrameRate(60);
   const run = code => win.webContents.executeJavaScript(code);
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -68,13 +70,17 @@ app.whenReady().then(async () => {
             if(!held){held=true;const end=performance.now()+60;while(performance.now()<end){}}
             const map=document.querySelector('[data-pane-map-region]');
             const gliding=[...map.querySelectorAll('.pane-map-slot')].some(slot=>slot.getAnimations().some(a=>a.playState==='running'));
-            samples.push({gliding,moving:map.hasAttribute('data-moving')});
+            samples.push({gliding,moving:map.hasAttribute('data-moving'),committed:map.querySelector('[data-pane-id=p5]').style.left==='0px'});
             if(time-start<850)requestAnimationFrame(tick);else resolve(samples);
           };requestAnimationFrame(tick);
         })`);
         assert.ok(samples.some(s=>s.gliding), 'reorder produces real slot transitions');
         assert.deepEqual(samples.filter(s=>s.gliding&&!s.moving), [], 'motion covers every delayed transition frame');
-        const settled=samples.findIndex(s=>!s.moving);
+        // A frame before React commits the reorder still belongs to the old, idle layout.
+        const committed=samples.findIndex(s=>s.committed);
+        assert.ok(committed>=0, 'reorder commits');
+        assert.equal(samples[committed].moving, true, 'motion starts with the committed reorder');
+        const settled=samples.findIndex((s,i)=>i>=committed&&!s.moving);
         assert.ok(settled>=0, 'motion eventually settles');
         assert.ok(samples.slice(settled).every(s=>!s.moving), 'motion never restarts after settling');
         await run(`document.querySelector('.pane-map-slot').dispatchEvent(new TransitionEvent('transitionend',{bubbles:true,propertyName:'top'}))`);

@@ -58,7 +58,7 @@ async fn call(host: &Arc<Host>, mut value: Value) -> Result<Value, String> {
 fn one_send_picks_keep_the_default_for_legacy_and_client_message_posts() {
     for client in [false, true] {
         for field in [None, Some("keepDefault"), Some("keep_default")] {
-            let (runtime, host, path) = fixture(&format!("one-off-{client}-{field:?}"));
+            let (runtime, host, path) = fixture(&format!("one-off-{client}-{}", field.unwrap_or("default")));
             runtime.block_on(async {
                 let handle = host.handle("r").unwrap();
                 let _ = host.prepare_post("r", &handle, "@a initial", Some(vec![ParticipantId::new("a")])).await.unwrap();

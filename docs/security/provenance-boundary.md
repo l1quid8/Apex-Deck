@@ -39,7 +39,8 @@ The design narrows this without closing it. Packaged Deck refuses runtime
 switches in every Windows spelling. Deck's main process and the daemon close
 their process objects to their own user, including the owner's implicit rights.
 The service refuses a pinned client that isn't closed, has a debugger attached,
-or has loaded a module from outside Windows and Program Files. Deck's renderers
+or has loaded a file an ordinary user could replace, so a per-user File Explorer
+add-on pulled in by a file dialog stops approvals until Deck restarts. Renderers
 stay open, a process started suspended can be altered first, and code injected
 without a file passes these checks.
 

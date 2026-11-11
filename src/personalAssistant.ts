@@ -3,7 +3,7 @@
 // and receipt (crates/apex-host/src/personal.rs).
 
 import { usePersonalAssistants, type PersonalAssistantsOptions } from "./usePersonalAssistants.ts";
-import "./paths.ts";
+import { isWindows } from "./paths.ts";
 import type { Backend } from "./backend";
 import type { ParticipantConfig } from "./types";
 import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity.ts";
@@ -201,7 +201,7 @@ export async function linkThisMacOn({ local, vps, assistantId, assistantHostId, 
   assertOwner();
   const allow = await local.call<Allow>("personal_machine_allow", { assistantId, assistantHostId, folder });
   assertOwner();
-  const linked = await vps.call<{ assistant: PersonalAssistantRecord }>("personal_machine_link", { assistantId, hostId: allow.hostId, name: "Mac", folder: allow.folder });
+  const linked = await vps.call<{ assistant: PersonalAssistantRecord }>("personal_machine_link", { assistantId, hostId: allow.hostId, name: isWindows ? "PC" : "Mac", folder: allow.folder });
   return { hostId: allow.hostId, assistant: linked.assistant };
 }
 

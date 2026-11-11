@@ -1,4 +1,5 @@
-//! Wire-preserving API proxy. Tool execution belongs to the caller.
+//! API proxy. OpenAI uses Responses translation; compatible providers preserve
+//! their wire format. Tool execution always belongs to the caller.
 use super::*;
 use futures::StreamExt;
 
@@ -124,14 +125,30 @@ pub(super) async fn proxy(
             body["reasoning_effort"] = effort;
         }
     }
+    let responses = responses::applies(target, base_url);
+    if responses {
+        body = match responses::request(&body) {
+            Ok(body) => body,
+            Err(why) => {
+                state.keys.release_turn(&key.id);
+                write_openai_error(stream, 400, "invalid_request_error", why).await;
+                return;
+            }
+        };
+    }
     let mut request = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(600))
         .build()
         .unwrap()
         .post(format!(
-            "{}/chat/completions",
-            base_url.trim_end_matches('/')
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            if responses {
+                "responses"
+            } else {
+                "chat/completions"
+            }
         ))
         .json(&body);
     if let Some(name) = api_key_env.as_deref().filter(|s| !s.is_empty()) {
@@ -151,6 +168,7 @@ pub(super) async fn proxy(
     let mut revocations = state.keys.subscribe_revocations();
     let mut revoke_open = true;
     let started = std::sync::atomic::AtomicBool::new(false);
+    let consumed = std::sync::atomic::AtomicBool::new(false);
     if !state.keys.is_active(&key.id) {
         write_auth_error(stream, AuthError::Revoked).await;
         return;
@@ -163,14 +181,39 @@ pub(super) async fn proxy(
                 .send()
                 .await
                 .map_err(|_| "Provider request failed")?;
-            let status = response.status().as_u16();
+            let mut status = response.status().as_u16();
             if status != 200 || !streaming {
-                let bytes = response
+                let mut bytes = response
                     .bytes()
                     .await
-                    .map_err(|_| "Provider reply failed")?;
+                    .map_err(|_| "Provider reply failed")?
+                    .to_vec();
+                if status == 200 && responses {
+                    let value: Value = serde_json::from_slice(&bytes)
+                        .map_err(|_| "Invalid OpenAI Responses reply")?;
+                    if let Some(accounting) = responses::accounting(&value) {
+                        spend(
+                            state,
+                            &key.id,
+                            &accounting,
+                            base_url,
+                            api_key_env.as_deref(),
+                            model,
+                        )
+                        .await;
+                        consumed.store(true, Ordering::Relaxed);
+                    }
+                    if value["status"] == "failed" && value["error"].is_object() {
+                        status = 502;
+                        bytes = serde_json::to_vec(&json!({"error":value["error"]}))
+                            .map_err(|_| "Invalid provider error")?;
+                    } else {
+                        bytes = serde_json::to_vec(&responses::completion(&value)?)
+                            .map_err(|_| "Invalid translated reply")?;
+                    }
+                }
                 if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                    if status == 200 {
+                    if status == 200 && !responses {
                         spend(
                             state,
                             &key.id,
@@ -184,7 +227,7 @@ pub(super) async fn proxy(
                 }
                 let header=format!("HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",status_reason(status),bytes.len());
                 started.store(true, Ordering::Relaxed);
-                if status != 200 {
+                if status != 200 && !consumed.load(Ordering::Relaxed) {
                     state.keys.release_turn(&key.id);
                 }
                 writer
@@ -199,6 +242,68 @@ pub(super) async fn proxy(
                 started.store(true, Ordering::Relaxed);
                 writer.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n").await.map_err(|_|"Client disconnected")?;
                 let mut chunks = response.bytes_stream();
+                if responses {
+                    let mut translator = responses::Stream::default();
+                    while let Some(chunk) = chunks.next().await {
+                        let result = match chunk {
+                            Ok(chunk) => translator.push(&chunk),
+                            Err(_) => Err("Provider stream failed"),
+                        };
+                        // Settle terminal usage even when partial calls are refused.
+                        if let Some(accounting) = translator.accounting.take() {
+                            spend(
+                                state,
+                                &key.id,
+                                &accounting,
+                                base_url,
+                                api_key_env.as_deref(),
+                                model,
+                            )
+                            .await;
+                            consumed.store(true, Ordering::Relaxed);
+                        }
+                        let frames = match result {
+                            Ok(frames) => frames,
+                            Err(why) => {
+                                let frame =
+                                    json!({"error":{"type":"provider_error","message":why}});
+                                writer
+                                    .write_all(format!("data: {frame}\n\n").as_bytes())
+                                    .await
+                                    .map_err(|_| "Client disconnected")?;
+                                return Err(why);
+                            }
+                        };
+                        for frame in frames {
+                            writer
+                                .write_all(format!("data: {frame}\n\n").as_bytes())
+                                .await
+                                .map_err(|_| "Client disconnected")?;
+                        }
+                        writer.flush().await.map_err(|_| "Client disconnected")?;
+                        if translator.done {
+                            writer
+                                .write_all(b"data: [DONE]\n\n")
+                                .await
+                                .map_err(|_| "Client disconnected")?;
+                            return Ok(());
+                        }
+                    }
+                    if let Err(why) = translator.end() {
+                        writer
+                            .write_all(
+                                format!(
+                                    "data: {}\n\n",
+                                    json!({"error":{"type":"provider_error","message":why}})
+                                )
+                                .as_bytes(),
+                            )
+                            .await
+                            .map_err(|_| "Client disconnected")?;
+                        return Err(why);
+                    }
+                    return Ok(());
+                }
                 let mut pending = Vec::new();
                 let mut final_usage = json!({"usage":{}});
                 let mut settled = false;
@@ -263,7 +368,9 @@ pub(super) async fn proxy(
     };
     if let Err(why) = result {
         if !started.load(Ordering::Relaxed) {
-            state.keys.release_turn(&key.id);
+            if !consumed.load(Ordering::Relaxed) {
+                state.keys.release_turn(&key.id);
+            }
             if !state.keys.is_active(&key.id) {
                 write_auth_error(stream, AuthError::Revoked).await;
             } else {

@@ -1,4 +1,5 @@
 import { useComposerHistory } from "./useComposerHistory";
+import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import { assistantHistoryTexts } from "./composerHistory";
 import { PersonalAlwaysPermission } from './PersonalApprovalActions';
 import { PersonalTaskTiming } from './PersonalTaskTiming';
@@ -332,7 +333,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const runCommand = (command: Command, lane: string) => {
     if(embedded&&command.name==='plan'){setPlanOn(!planOn);return;}
     if (command.name === 'clear') {
-      if (onClear && window.confirm('Hide this conversation on this Mac? Tasks and notifications stay available.')) onClear();
+      if (onClear && window.confirm(`Hide this conversation on ${LOCAL_HOST_REFERENCE}? Tasks and notifications stay available.`)) onClear();
       return;
     }
     if (command.name === 'export') { exportConversation(command.format); return; }
@@ -616,7 +617,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label={`More ${conversationName} options`}>⋯</summary><div role="menu">
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume project watching' : 'Pause project watching'}{anyPaused && <small>Start checking your project folders again.</small>}</button>}
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy || !active.some((monitor) => !monitor.paused)} onClick={() => void run(async () => { await batch(active.filter((monitor) => !monitor.paused), 'monitor_check_now', {}); })}>Check now</button>}
-          {onClear && !!entries.length && <button type="button" role="menuitem" onClick={() => { if (window.confirm('Hide this conversation on this Mac? Tasks and notifications stay available.')) onClear(); }}>Clear conversation</button>}
+          {onClear && !!entries.length && <button type="button" role="menuitem" onClick={() => { if (window.confirm(`Hide this conversation on ${LOCAL_HOST_REFERENCE}? Tasks and notifications stay available.`)) onClear(); }}>Clear conversation</button>}
           {assistant && (['activity', 'scheduled', 'memory', 'rules', 'settings', 'costs', 'connections'] as const).map((name) => <button type="button" role="menuitem" key={name} onClick={(event) => openPanel(name, event)}>{{ activity: 'Activity', scheduled: 'Scheduled', memory: 'Memory', rules: 'Rules', settings: 'Assistant settings', costs: 'Costs', connections: 'Connections' }[name]}</button>)}
           {assistant && personal?.pause && <button type="button" role="menuitem" disabled={busy || personal.offline} onClick={() => void run(() => personal.pause!(!assistant.paused))}>{assistant.paused ? 'Resume assistant' : 'Pause assistant'}</button>}
           {personal?.setUp && <button type="button" role="menuitem" disabled={busy || personal.offline} onClick={() => void run(personal.setUp!)}>Set up assistant on {personal.hostName}</button>}
@@ -780,7 +781,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         </article>
       )}
       {!filterWorkspaceId && personal?.problem && <article className="assistant-chat-message assistant"><small>{personal.name} · {personal.hostName}</small><p>{personal.problem}</p></article>}
-      {!filterWorkspaceId && personal?.setUp && !monitors.length && <div className="apex-agent-intro"><strong>Your assistant can live on {personal.hostName}.</strong><p>It keeps one conversation that stays there when this Mac is closed. Choose “Set up assistant on {personal.hostName}” from ⋯.</p></div>}
+      {!filterWorkspaceId && personal?.setUp && !monitors.length && <div className="apex-agent-intro"><strong>Your assistant can live on {personal.hostName}.</strong><p>It keeps one conversation that stays there when {LOCAL_HOST_REFERENCE} is closed. Choose “Set up assistant on {personal.hostName}” from ⋯.</p></div>}
       {!monitors.length && !assistant && !personal?.setUp && <div className="apex-agent-intro"><strong>Hi, I’m {conversationName}.</strong><p>I keep up with all your projects in one conversation. Pick a project to watch from ⋯ and tell me what to keep on track.</p></div>}
       {!!monitors.length && !!unwatched.length && entries.length === 0 && <p className="apex-agent-muted">Not watching yet: {unwatched.map((workspace) => workspace.name).join(', ')}.</p>}
       </> : view === 'tasks' ? tasksSlot : notificationsSlot}

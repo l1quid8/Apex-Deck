@@ -62,7 +62,7 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
 
         // On, one phone: the anywhere line, Turn off, and a closed Advanced with the endpoint.
         await wait(()=>document.querySelector('.phones-advanced'),'Advanced while on');
-        assert.equal(await status(),'Phones can reach this Mac from anywhere.');
+        assert.equal(await status(),'Phones can reach ${process.platform === 'win32' ? 'this PC' : 'this Mac'} from anywhere.');
         assert.deepEqual(await buttons(),['Pair phone','Turn off']);
         assert.equal(await run(()=>document.querySelector('.phones-advanced').open),false,'Advanced starts closed');
         assert.match(await run(()=>document.querySelector('.phones-advanced').textContent),/Endpoint ID.*UDP port.*41641.*Advertised addresses/s);

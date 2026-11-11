@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { Writable } from 'node:stream';
+import { assertTrustedStartup } from '../desktop/provenance.mjs';
 import {
   FEED_URL, RESULT_MESSAGE_LIMIT, RESULT_NOTE_LIMIT, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
-  packageFor, packageVerifier, parseManifest, teamFrom,
+  packageFor, packageVerifier, parseManifest, teamFrom, WINDOWS_FEED_URL, windowsInstaller, windowsLauncher, windowsSignerFrom, windowsVerifier,
 } from '../desktop/updater.mjs';
 
 const bytes = Buffer.from('apex deck 0.9.1 package');
@@ -337,3 +339,139 @@ test('the package check pins this app’s team and the promised version', async 
   assert.deepEqual(fs.readdirSync(scratch), [], 'each check clears its unpacked copy');
 });
 
+
+test('the Windows feed takes only installers, and a Mac feed never does', () => {
+  const windows = { schemaVersion: 1, version: '0.9.8', packages: [{ arch: 'x64', minimumSystemVersion: '10.0.22000', name: 'Apex-Deck-0.9.8-x64-Setup.exe', size: 10, sha256: 'a'.repeat(64) }] };
+  const manifest = parseManifest(windows, { extension: '.exe' });
+  assert.ok(packageFor(manifest, { arch: 'x64', osVersion: '10.0.26100' }));
+  assert.equal(packageFor(manifest, { arch: 'x64', osVersion: '10.0.19045' }), null);
+  assert.throws(() => parseManifest(windows));
+  assert.throws(() => parseManifest({ ...windows, packages: [{ ...windows.packages[0], name: 'Apex.pkg' }] }, { extension: '.exe' }));
+  assert.match(assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe'), /\/v0\.9\.8\/Apex-Deck-0\.9\.8-x64-Setup\.exe$/);
+  assert.throws(() => assetUrl('0.9.8', 'a/b.exe', '.exe'));
+  assert.notEqual(WINDOWS_FEED_URL, FEED_URL);
+});
+
+test('Windows updates run only from a signed, installed copy', () => {
+  const ok = { packaged: true, platform: 'win32', dataDir: undefined, smoke: false, protectedCopy: true, team: 'CN=Tyler Caldwell' };
+  assert.equal(disabledReason(ok), null);
+  assert.match(disabledReason({ ...ok, team: null }), /isn’t signed/);
+  assert.match(disabledReason({ ...ok, protectedCopy: false }), /protected copy/);
+});
+
+const signature = (fields = {}) => JSON.stringify({
+  status: 'Valid', subject: 'CN=Tyler Caldwell, O=Tyler Caldwell, L=Rancho Cucamonga, S=ca, C=US',
+  issuer: 'CN=Microsoft ID Verified CS AOC CA 01, O=Microsoft Corporation, C=US', version: '0.9.8', ...fields,
+});
+
+test('a Windows signature counts only when Windows calls it valid', () => {
+  assert.equal(windowsSignerFrom(signature()).issuer, 'Microsoft Corporation');
+  for (const bad of [signature({ status: 'NotSigned' }), signature({ status: 'HashMismatch' }), signature({ subject: null }), signature({ issuer: 'CN=Self' }), '', 'nonsense']) {
+    assert.equal(windowsSignerFrom(bad), null, bad);
+  }
+});
+
+test('an installer must match this app\'s publisher and the promised version', async () => {
+  const signer = windowsSignerFrom(signature());
+  const verifying = (output) => windowsVerifier({ run: async () => output, signer });
+  await verifying(signature())('C:/x.exe', { version: '0.9.8' });
+  await assert.rejects(verifying(signature({ subject: 'CN=Tyler Caldwell, O=Someone Else' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ issuer: 'CN=Other, O=Other CA' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ status: 'NotSigned' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ version: '0.9.7' }))('C:/x.exe', { version: '0.9.8' }), /holds version 0\.9\.7/);
+  await assert.rejects(windowsVerifier({ run: async () => signature(), signer: null })('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+});
+
+test('Restart to update checks again, waits for Windows, and survives a No', async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-win-update-'));
+  const resultFile = path.join(folder, 'result.json');
+  const ready = { package: "C:/cache/it's; calc.exe", version: '0.9.8' };
+  const timers = { setTimeout: (done) => setImmediate(done) };
+  const installing = (answer, extra = {}) => windowsInstaller({
+    verify: async () => {},
+    launch: (_file, env) => { if (answer) fs.writeFileSync(env.APEX_UPDATE_STARTED, answer); },
+    resultFile, app: 'C:/Deck.exe', timers, ...extra,
+  });
+  const calls = [];
+  const id = await installing('started', {
+    verify: async (file, facts) => { calls.push(['verify', file, facts.version]); },
+  })(ready);
+  assert.match(id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(calls[0], ['verify', ready.package, '0.9.8']);
+  await assert.rejects(installing('declined')(ready), /nothing was changed/);
+  let time = 0;
+  await assert.rejects(installing('', { now: () => (time += 1000), promptWait: 3000 })(ready), /nothing was changed/);
+  let launched = false;
+  await assert.rejects(installing('started', { verify: async () => { throw new Error('bad signature'); }, launch: () => { launched = true; } })(ready), /bad signature/);
+  assert.equal(launched, false);
+  fs.rmSync(folder, { recursive: true, force: true });
+});
+
+test('the update script runs apart from Deck and never holds the path as code', () => {
+  const started = [];
+  const unref = () => started.push('unref');
+  windowsLauncher((command, args, options) => { started.push({ command, args, options }); return { unref }; })("C:/cache/it's; calc.exe", { APEX_UPDATE_ID: 'one' });
+  const { args, options } = started[0];
+  assert.equal(options.detached, true);
+  assert.equal(started[1], 'unref');
+  assert.ok(!args.join(' ').includes('calc.exe'));
+  assert.match(args.join(' '), /-Verb RunAs/);
+  assert.match(args.join(' '), /'\/S','--updated','--force-run'/);
+  assert.equal(options.env.APEX_UPDATE_FILE, "C:/cache/it's; calc.exe");
+  assert.equal(options.env.APEX_UPDATE_ID, 'one');
+});
+
+test('real PowerShell: update success and failure children inherit no temporary updater overrides', { skip: process.platform !== 'win32' }, (t) => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-update-env-'));
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const installer = path.join(folder, "it's; $literal installer.exe");
+  const app = path.join(folder, "it's; $literal Apex Deck.exe");
+  const temporary = ['APEX_UPDATE_FILE', 'APEX_UPDATE_ID', 'APEX_UPDATE_RESULT', 'APEX_UPDATE_STARTED', 'APEX_UPDATE_APP'];
+  // Run the production script in Windows PowerShell. Only process creation is
+  // replaced: capture what each child would inherit, without UAC or installing.
+  const stub = `
+function Start-Process {
+  param([string]$FilePath, [string[]]$ArgumentList, [string]$Verb, [switch]$PassThru)
+  $childEnv = [ordered]@{}
+  foreach ($name in @('APEX_UPDATE_FILE','APEX_UPDATE_ID','APEX_UPDATE_RESULT','APEX_UPDATE_STARTED','APEX_UPDATE_APP','APEX_DECK_DATA_DIR','UPDATER_TEST_KEEP')) {
+    $childEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+  }
+  [pscustomobject]@{ file = $FilePath; args = @($ArgumentList); verb = $Verb; env = $childEnv } | ConvertTo-Json -Compress -Depth 4 | Add-Content -LiteralPath $env:UPDATER_TEST_CHILDREN -Encoding utf8
+  if ($PassThru) {
+    $process = [pscustomobject]@{ Handle = 1; ExitCode = [int]$env:UPDATER_TEST_EXIT_CODE }
+    $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {}
+    return $process
+  }
+};
+`;
+  for (const exitCode of [0, 2]) {
+    const resultFile = path.join(folder, `result-${exitCode}.json`);
+    const startedFile = `${resultFile}.started`;
+    const childrenFile = path.join(folder, `children-${exitCode}.jsonl`);
+    let launch;
+    windowsLauncher((command, args, options) => {
+      launch = { command, args, options };
+      return { unref() {} };
+    })(installer, { APEX_UPDATE_ID: `request-${exitCode}`, APEX_UPDATE_RESULT: resultFile, APEX_UPDATE_STARTED: startedFile, APEX_UPDATE_APP: app });
+    const args = [...launch.args];
+    args[args.length - 1] = stub + args.at(-1);
+    execFileSync(launch.command, args, {
+      ...launch.options, detached: false, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 15_000,
+      env: { ...launch.options.env, APEX_DECK_DATA_DIR: folder, UPDATER_TEST_KEEP: 'preserved', UPDATER_TEST_EXIT_CODE: String(exitCode), UPDATER_TEST_CHILDREN: childrenFile },
+    });
+    const children = fs.readFileSync(childrenFile, 'utf8').replace(/^\uFEFF/, '').trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.equal(children.length, exitCode === 0 ? 1 : 2);
+    assert.equal(children[0].file, installer, 'installer path stays literal');
+    assert.deepEqual(children[0].args, ['/S', '--updated', '--force-run']);
+    assert.equal(children[0].verb, 'RunAs');
+    for (const child of children) {
+      for (const name of temporary) assert.equal(child.env[name], null, `${name} must not reach ${child.file}`);
+      assert.equal(child.env.APEX_DECK_DATA_DIR, folder, 'preserve the existing data directory');
+      assert.equal(child.env.UPDATER_TEST_KEEP, 'preserved');
+      assert.doesNotThrow(() => assertTrustedStartup(true, [app, '--updated'], child.env, 'win32'));
+    }
+    if (exitCode !== 0) assert.equal(children[1].file, app, 'failed install reopens the literal app path');
+    assert.equal(fs.readFileSync(startedFile, 'utf8').trim(), 'started');
+    assert.deepEqual(JSON.parse(fs.readFileSync(resultFile, 'utf8').replace(/^\uFEFF/, '')), { id: `request-${exitCode}`, outcome: exitCode === 0 ? 'installed' : 'failed' });
+  }
+});

@@ -6,13 +6,14 @@ import { getBackend } from "../backend";
 import type { ProposedAction, RoomEvent } from "../types";
 import type { ModNode } from "./runtime";
 import { deckClipboard } from "../copyText";
+import { LOCAL_HOST_REFERENCE } from "../hostFacts.ts";
 
 /** A host command, through whichever backend the app runs on. */
 const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => (await getBackend()).call<T>(cmd, args);
 
 export type Grant = "process" | "network" | "files" | "session";
 export const GRANTS: { id: Grant; label: string }[] = [
-  { id: "process", label: "Run programs on this Mac" },
+  { id: "process", label: `Run programs on ${LOCAL_HOST_REFERENCE}` },
   { id: "network", label: "Make network requests" },
   { id: "files", label: "Read file details and write files" },
   { id: "session", label: "See and change your messages, and see and block agents' tool calls" },
