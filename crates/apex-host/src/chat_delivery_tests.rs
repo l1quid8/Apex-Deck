@@ -34,6 +34,8 @@ async fn hold_bot(host: &Host, id: &str) -> Arc<HeldParticipant> {
 
 fn fixture(name: &str) -> (tokio::runtime::Runtime, Arc<Host>, PathBuf) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    // Windows refuses quotes and other punctuation in folder names.
+    let name: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
     let path = std::env::temp_dir().join(format!("apex-chat-delivery-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     let host = Host::new(HostPaths { data: path.clone(), downloads: None }, runtime.handle().clone());

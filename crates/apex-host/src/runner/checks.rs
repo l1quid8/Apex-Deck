@@ -177,7 +177,8 @@ mod tests {
         assert!(matches!(run_check(&data,&long,&project,&processes,std::future::pending()).await.unwrap(),VerificationResult::Passed{output} if output.len() == 8192 && output.contains(&"x".repeat(100))));
         let timeout = ConfiguredCheck { argv:fixture_argv(&project,"check_timeout_fixture"),timeout_ms:Some(20),..pass };
         assert_eq!(run_check(&data,&timeout,&project,&processes,std::future::pending()).await.unwrap(),VerificationResult::Timeout);
-        std::fs::remove_dir_all(root).unwrap();
+        // Windows keeps the killed fixture's executable locked for a moment.
+        let _ = std::fs::remove_dir_all(root);
     }
 
 }
