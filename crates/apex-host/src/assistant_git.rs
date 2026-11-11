@@ -17,7 +17,9 @@ const MAX_NEW_FILE: u64 = 50 * 1024 * 1024;
 pub(crate) const SAVE_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// Cancel waits 30 seconds, so a stopped job's save must end well inside that.
 /// A healthy save usually fits, and pause and retry want its snapshot.
-pub(crate) const STOP_GRACE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 15 });
+// Windows CI starts many Git processes concurrently; exercise the production
+// grace there rather than aborting a healthy snapshot after only two seconds.
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(if cfg!(all(test, not(windows))) { 2 } else { 15 });
 /// TERM lets Git remove its own lock files before anything is killed.
 pub(crate) const SAVE_TOO_LONG: &str = "Saving the result took too long, so Deck stopped Git. The work is still in its folder.";
 pub(crate) const SAVE_STOPPED: &str = "The job was stopped before its result finished saving. The work is still in its folder.";
