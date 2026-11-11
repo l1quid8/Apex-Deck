@@ -1,8 +1,12 @@
 //! Windows authority primitives. Identity comes from kernel tokens, never env.
+#[cfg(test)]
+#[path = "windows_module_tests.rs"]
+mod module_tests;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     ffi::c_void,
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -13,6 +17,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use windows_sys::Win32::{
@@ -552,55 +557,51 @@ fn process_closed(process: RawHandle) -> Result<bool, String> {
     }
     Ok(owner_limited)
 }
-fn known_folder(id: &windows_sys::core::GUID) -> Result<String, String> {
-    use windows_sys::Win32::{System::Com::CoTaskMemFree, UI::Shell::SHGetKnownFolderPath};
-    let mut raw = ptr::null_mut();
-    if unsafe { SHGetKnownFolderPath(id, 0, ptr::null_mut(), &mut raw) } < 0 {
-        return Err("Cannot locate a protected Windows folder".into());
-    }
-    let mut len = 0;
-    unsafe {
-        while *raw.add(len) != 0 {
-            len += 1;
-        }
-    }
-    let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(raw, len) });
-    unsafe {
-        CoTaskMemFree(raw.cast());
-    }
-    Ok(path)
-}
-/// Code a normal user can't replace: Windows itself and installed programs.
-fn system_module(module: &str, folders: &[String]) -> bool {
-    let module = module.strip_prefix(r"\\?\").unwrap_or(module).to_lowercase();
-    folders
-        .iter()
-        .any(|folder| module.starts_with(&format!("{}\\", folder.trim_end_matches('\\').to_lowercase())))
-}
 fn modules(process: RawHandle) -> Result<Vec<String>, String> {
-    let mut handles = vec![ptr::null_mut(); 1024];
+    let mut handles = vec![ptr::null_mut(); 4096];
     let mut used = 0;
     let size = (handles.len() * std::mem::size_of::<HMODULE>()) as u32;
     if unsafe { EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut used, LIST_MODULES_ALL) } == 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
-    handles.truncate((used as usize / std::mem::size_of::<HMODULE>()).min(1024));
+    if used > size {
+        return Err("Too much code is loaded to inspect".into());
+    }
+    handles.truncate(used as usize / std::mem::size_of::<HMODULE>());
     let mut names = Vec::with_capacity(handles.len());
     for module in handles {
         let mut buffer = vec![0u16; 32768];
         let len = unsafe { GetModuleFileNameExW(process, module, buffer.as_mut_ptr(), buffer.len() as u32) };
         if len != 0 {
             names.push(String::from_utf16_lossy(&buffer[..len as usize]));
+        } else if unsafe { GetLastError() } != ERROR_INVALID_HANDLE {
+            // That error is a module unloading now; anything else hides what's there.
+            return Err(std::io::Error::last_os_error().to_string());
         }
     }
     Ok(names)
 }
+/// Whether a user could have replaced this file. Results are kept because a
+/// loaded file can't be swapped, and a pinned client loads hundreds of them.
+fn module_protected(module: &str) -> bool {
+    static CHECKED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let checked = CHECKED.get_or_init(Default::default);
+    if checked.lock().is_ok_and(|known| known.contains(module)) {
+        return true;
+    }
+    let safe = File::open(module).is_ok_and(|file| protected_handle(&file).is_ok());
+    if safe {
+        if let Ok(mut known) = checked.lock() {
+            known.insert(module.to_owned());
+        }
+    }
+    safe
+}
 /// Refuse a pinned client that shows signs of tampering: not closed to other
-/// programs, being debugged, or running code from a folder a user can write to.
+/// programs, being debugged, or running code from a file a user could replace.
 /// Code injected without a file leaves none of these, so this narrows the attack
 /// rather than ending it; see docs/security/provenance-boundary.md.
 pub fn peer_intact(pid: u32) -> Result<(), String> {
-    use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Windows};
     let raw = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | READ_CONTROL, 0, pid) };
     if raw.is_null() {
         return Err(std::io::Error::last_os_error().to_string());
@@ -613,13 +614,8 @@ pub fn peer_intact(pid: u32) -> Result<(), String> {
     if unsafe { CheckRemoteDebuggerPresent(process.as_raw_handle(), &mut debugged) } == 0 || debugged != 0 {
         return Err("Apex Deck is being debugged, so it can't approve commands.".into());
     }
-    let folders = [
-        known_folder(&FOLDERID_Windows)?,
-        known_folder(&FOLDERID_ProgramFiles)?,
-        known_folder(&FOLDERID_ProgramFilesX86)?,
-    ];
     for module in modules(process.as_raw_handle())? {
-        if !system_module(&module, &folders) {
+        if !module_protected(&module) {
             return Err(format!("Apex Deck has outside code loaded, so it can't approve commands: {module}"));
         }
     }
@@ -709,13 +705,13 @@ pub fn identity(path: &Path) -> Result<Value, String> {
 mod tests {
     use super::*;
     #[test]
-    fn only_windows_and_installed_programs_count_as_system_code() {
-        let folders = [r"C:\Windows".to_owned(), r"C:\Program Files".to_owned()];
-        assert!(system_module(r"c:\windows\system32\ntdll.dll", &folders));
-        assert!(system_module(r"\\?\C:\Program Files\Apex Deck\ffmpeg.dll", &folders));
-        assert!(!system_module(r"C:\Users\me\AppData\Local\Temp\evil.dll", &folders));
-        assert!(!system_module(r"C:\Windows-evil\x.dll", &folders));
-        assert!(!system_module(r"C:\Program Files Evil\x.dll", &folders));
+    #[ignore = "requires an elevated Windows token; run by installer CI"]
+    fn system_code_is_protected_and_a_users_file_is_not() {
+        assert!(module_protected(&format!("{}\\System32\\ntdll.dll", std::env::var("SystemRoot").unwrap())));
+        let file = std::env::temp_dir().join(format!("apex-module-{}.dll", std::process::id()));
+        std::fs::write(&file, b"not really code").unwrap();
+        assert!(!module_protected(file.to_str().unwrap()));
+        std::fs::remove_file(file).unwrap();
     }
     #[test]
     #[ignore = "requires an elevated Windows token; run by installer CI"]
