@@ -78,6 +78,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 #[cfg(test)]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    tests::record_write(path);
     local_write(path, bytes)
 }
 #[cfg(all(not(test), not(target_os = "linux")))]
@@ -151,6 +152,25 @@ pub(crate) mod tests {
 
     thread_local! {
         static READS: std::cell::RefCell<Option<Vec<std::path::PathBuf>>> = const { std::cell::RefCell::new(None) };
+        static WRITES: std::cell::RefCell<Option<Vec<std::path::PathBuf>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(crate) fn record_write(path: &Path) {
+        WRITES.with(|writes| {
+            if let Some(writes) = writes.borrow_mut().as_mut() { writes.push(path.to_path_buf()); }
+        });
+    }
+
+    pub(crate) fn track_writes<T>(f: impl FnOnce() -> T) -> (T, Vec<std::path::PathBuf>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) { WRITES.with(|writes| { writes.borrow_mut().take(); }); }
+        }
+        WRITES.with(|writes| assert!(writes.borrow_mut().replace(vec![]).is_none()));
+        let _reset = Reset;
+        let result = f();
+        let writes = WRITES.with(|writes| writes.borrow_mut().take().unwrap());
+        (result, writes)
     }
 
     pub(crate) fn record_read(path: &Path) {

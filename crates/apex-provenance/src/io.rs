@@ -56,6 +56,133 @@ pub fn read_frame(stream: &mut UnixStream) -> Result<Value, String> {
     serde_json::from_slice(&line).map_err(|e| e.to_string())
 }
 
+// The serial broker can be busy validating peers or syncing another ledger.
+// Continue reading this SAME response after an idle socket timeout: resending
+// an uncertain mutation could duplicate a claim or overwrite a newer revision.
+const REPLY_BUDGET: Duration = Duration::from_secs(120);
+fn read_reply(stream: &mut UnixStream, budget: Duration) -> Result<Value, String> {
+    let deadline = std::time::Instant::now() + budget;
+    let idle = stream.read_timeout().map_err(|e| e.to_string())?
+        .unwrap_or(Duration::from_secs(30));
+    let mut reader = BufReader::new(stream);
+    let mut line = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("Protected provenance reply timed out; request was not resent because it may already have committed".into());
+        }
+        if let Err(error) = reader.get_mut().set_read_timeout(Some(idle.min(remaining))) {
+            // Darwin rejects SO_RCVTIMEO with EINVAL once the peer has closed,
+            // even when its complete response is still queued for reading.
+            // Drain that response/EOF normally; all other setup failures stop.
+            if !(cfg!(target_os = "macos") && error.raw_os_error() == Some(libc::EINVAL)) {
+                return Err(error.to_string());
+            }
+        }
+        let available = match reader.fill_buf() {
+            Ok(bytes) => bytes,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
+            Err(e) => return Err(format!("Could not read protected provenance reply: {e}")),
+        };
+        if available.is_empty() { return Err("Invalid or truncated provenance reply frame".into()); }
+        let bounded = &available[..available.len().min(MAX_BYTES + 1 - line.len())];
+        let newline = bounded.iter().position(|&b| b == b'\n');
+        let count = newline.map_or(bounded.len(), |at| at + 1);
+        line.extend_from_slice(&bounded[..count]);
+        reader.consume(count);
+        if line.len() > MAX_BYTES { return Err("Oversized provenance reply frame".into()); }
+        if newline.is_some() { return serde_json::from_slice(&line).map_err(|e| e.to_string()); }
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    #[test]
+    fn delayed_reply_keeps_partial_frame_without_resending_request() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+        broker.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        client.write_all(b"request\n").unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut request = [0; 8];
+            broker.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"request\n");
+            broker.write_all(b"{\"saved\":").unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            let _ = broker.write_all(b"true}\n");
+            let mut extra = [0; 1];
+            assert_eq!(broker.read(&mut extra).unwrap(), 0, "request must never be replayed");
+        });
+        let result = read_reply(&mut client, Duration::from_secs(1));
+        drop(client);
+        worker.join().unwrap();
+        assert_eq!(result.unwrap(), json!({"saved":true}));
+    }
+
+    #[test]
+    fn stalled_reply_has_bounded_wait_and_actionable_error() {
+        let (mut client, _broker) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+        let start = std::time::Instant::now();
+        let error = read_reply(&mut client, Duration::from_millis(60)).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("reply timed out") && error.contains("not resent"), "{error}");
+    }
+
+    #[test]
+    fn truncated_reply_is_not_accepted() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        broker.write_all(b"{\"saved\":true}").unwrap();
+        drop(broker);
+        let error = read_reply(&mut client, Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("frame"), "{error}");
+    }
+
+    #[test]
+    fn delayed_first_byte_survives_idle_timeouts() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            let _ = broker.write_all(b"{\"saved\":true}\n");
+        });
+        let result = read_reply(&mut client, Duration::from_secs(1));
+        worker.join().unwrap();
+        assert_eq!(result.unwrap(), json!({"saved":true}));
+    }
+
+    #[test]
+    fn oversized_reply_is_rejected_before_waiting_for_newline() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        broker.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let worker = std::thread::spawn(move || {
+            // No newline: the reader must enforce its byte limit independently.
+            let _ = broker.write_all(&vec![b' '; MAX_BYTES + 1]);
+        });
+        let result = read_reply(&mut client, Duration::from_secs(5));
+        drop(client);
+        worker.join().unwrap();
+        assert!(result.unwrap_err().contains("Oversized"));
+    }
+
+    #[test]
+    fn malformed_reply_is_not_accepted() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        broker.write_all(b"not JSON\n").unwrap();
+        assert!(read_reply(&mut client, Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn complete_reply_is_accepted_after_broker_closes() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        broker.write_all(b"{\"saved\":true}\n").unwrap();
+        drop(broker);
+        assert_eq!(read_reply(&mut client, Duration::from_secs(1)).unwrap(), json!({"saved":true}));
+    }
+}
+
 /// Verify issuance, then consume once in the root-owned journal. Local ledger
 /// flags, data-dir keys, CLI tokens and caller-supplied author fields are ignored.
 /// A crash after consumption is uncertain, never permission to replay a write.
@@ -96,7 +223,7 @@ pub fn consume(signed: &Signed, data_dir: &Path) -> Result<Receipt, String> {
         return Err("Provenance request exceeds limit".into());
     }
     stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    let response = read_frame(&mut stream)?;
+    let response = read_reply(&mut stream, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.to_owned());
     }
@@ -148,7 +275,7 @@ pub fn document(
         .set_write_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
     stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    let response = read_frame(&mut stream)?;
+    let response = read_reply(&mut stream, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.into());
     }
@@ -199,7 +326,7 @@ pub fn finish(data_dir: &Path, key_id: &str, error: Option<&str>) -> Result<(), 
     let mut bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
     stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    let response = read_frame(&mut stream)?;
+    let response = read_reply(&mut stream, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.into());
     }
@@ -280,7 +407,7 @@ pub(crate) fn exchange(request: &Value) -> Result<Value, String> {
         .set_write_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
     stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    read_frame(&mut stream)
+    read_reply(&mut stream, REPLY_BUDGET)
 }
 
 /// Only the authenticated device branch of the pinned daemon calls this.

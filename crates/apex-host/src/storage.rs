@@ -525,7 +525,9 @@ impl Store {
         }
     }
     fn save_room_authority(&self,id:&str,room:&SavedRoom)->Result<(),String>{
-        let mut authorities=self.room_authorities()?;
+        self.save_room_authority_held(id, room, self.room_authorities()?)
+    }
+    fn save_room_authority_held(&self,id:&str,room:&SavedRoom,mut authorities:serde_json::Map<String,serde_json::Value>)->Result<(),String>{
         if let Some(existing) = authorities.get(id) {
             let previous_kind: apex_core::RoomKind = existing.get("kind").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
             if previous_kind.is_chat() && !room.snapshot.kind.is_chat() {
@@ -535,7 +537,11 @@ impl Store {
         // A room restored from legacy data keeps saying so after later saves.
         let legacy=authorities.get(id).and_then(|entry|entry.get("legacy")).and_then(|marker|serde_json::from_value(marker.clone()).ok());
         let manifest=RoomAuthority{kind:room.snapshot.kind,cwd:room.cwd.clone(),participants:room.snapshot.participants.clone(),options:room.snapshot.options.clone(),allowed:room.snapshot.allowed.clone(),plan:room.snapshot.plan,mounts:room.mounts.clone(),legacy};
-        authorities.insert(id.into(),serde_json::to_value(manifest).map_err(|e|e.to_string())?);
+        let manifest = serde_json::to_value(manifest).map_err(|e|e.to_string())?;
+        // Usage, messages and file changes do not change permissions. Avoid
+        // rewriting the entire protected ledger on every streamed checkpoint.
+        if authorities.get(id) == Some(&manifest) { return Ok(()); }
+        authorities.insert(id.into(),manifest);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
     }
 
@@ -604,7 +610,6 @@ impl Store {
 
     pub fn save_room(&self, id: &str, room: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
-        let previous = self.room(id)?.map(|saved| saved.snapshot.transcript.len()).unwrap_or(0);
         // Invariant: the manifest never claims permissions the saved room didn't get.
         // `room()` takes permission fields from the manifest and the transcript from
         // the room file, so the room file goes first (a newer file under an older
@@ -616,8 +621,18 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("Could not read saved data: {e}")),
         };
+        // One fresh broker read for this transaction, shared by validation and
+        // the eventual permission update. Never cache authority across saves.
+        let authorities = self.room_authorities()?;
+        let previous = match &before {
+            Some(bytes) => {
+                let saved = serde_json::from_slice(bytes).map_err(|e| format!("Could not read saved data: {e}"))?;
+                self.apply_room_authority(id, saved, &authorities)?.snapshot.transcript.len()
+            }
+            None => 0,
+        };
         self.write_held(&room_path, room)?;
-        if let Err(why) = self.save_room_authority(id,room) {
+        if let Err(why) = self.save_room_authority_held(id,room,authorities) {
             let restored = match &before {
                 Some(bytes) => self.write_bytes_held(&room_path, bytes),
                 None => std::fs::remove_file(&room_path).map_err(|e| e.to_string()),
@@ -1517,6 +1532,31 @@ mod tests {
         let manifest = root.join("room-authority-v1.json");
         crate::authority_file::write(&manifest, b"not JSON").unwrap();
         assert!(store.chat_list().is_err(), "A failed protected read must never fall back to editable room authority");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkpoint_reads_authority_once_and_only_writes_permission_changes() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut room = Room::new(vec![], RoomOptions::default());
+        let mut saved = SavedRoom { cwd: None, mounts: vec![], snapshot: room.snapshot() };
+        store.save_room("r", &saved).unwrap();
+        room.post_human("new transcript", &|_| {}).await;
+        saved.snapshot = room.snapshot();
+        let (((), reads), writes) = crate::authority_file::tests::track_writes(|| {
+            crate::authority_file::tests::track_reads(|| store.save_room("r", &saved).unwrap())
+        });
+        assert_eq!(reads, vec![root.join("room-authority-v1.json")]);
+        assert!(writes.is_empty(), "transcript checkpoints must not rewrite permissions: {writes:?}");
+        assert_eq!(store.room("r").unwrap().unwrap().snapshot.transcript[0].text, "new transcript");
+        saved.snapshot.plan = true;
+        let ((), writes) = crate::authority_file::tests::track_writes(|| store.save_room("r", &saved).unwrap());
+        assert_eq!(writes, vec![root.join("room-authority-v1.json")]);
+        assert!(store.room("r").unwrap().unwrap().snapshot.plan);
+        // A later externally changed/corrupted manifest is still read afresh.
+        crate::authority_file::write(&root.join("room-authority-v1.json"), b"broken").unwrap();
+        assert!(store.save_room("r", &saved).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
