@@ -1100,7 +1100,12 @@ async fn the_real_command_tool_runs_argv_without_a_shell() {
     let run = run_command(fixture.host.data_dir(), OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["echo".into(), "a;b $HOME".into()], plan: None }, Arc::new(|_| {})).await.unwrap();
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.output.trim(), "a;b $HOME");
-    assert!(run_command(fixture.host.data_dir(), OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["/no/such/program".into()], plan: None }, Arc::new(|_| {})).await.is_err());
+    // Unjailed, the spawn itself fails; in the Linux jail the program is
+    // started from inside, so a missing one comes back as a failed run.
+    match run_command(fixture.host.data_dir(), OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["/no/such/program".into()], plan: None }, Arc::new(|_| {})).await {
+        Err(_) => {}
+        Ok(missing) => assert_ne!(missing.exit_code, 0, "a missing program must not look like success"),
+    }
 }
 
 fn result_message(at: u64) -> PersonalMessage {
