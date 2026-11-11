@@ -51,6 +51,22 @@ pub struct BotCopy {
     /// The bot's display name, for notes. Older copies have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The thread's folder when it sits inside `root` rather than being it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_dir: Option<PathBuf>,
+}
+
+/// Files a fold brought back from outside the thread's folder, so the thread
+/// can say so: an agent on `crates/` that edited `package.json` changed more
+/// than the thread shows.
+fn outside_thread_dir(copy: &BotCopy, files: &[String]) -> Vec<String> {
+    let Some(rel) = copy.thread_dir.as_deref().and_then(|dir| dir.strip_prefix(&copy.root).ok()) else {
+        return Vec::new();
+    };
+    if rel.as_os_str().is_empty() {
+        return Vec::new();
+    }
+    files.iter().filter(|f| !Path::new(f).starts_with(rel)).cloned().collect()
 }
 
 static SNAPSHOT_INDEX_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -95,7 +111,7 @@ fn run_git(project_data: &Path,
     // A copy's work tree lives in the data folder, where the jail writes nothing
     // unless the launch names the folder: the command's own folder is that one.
     let data = std::fs::canonicalize(project_data).unwrap_or_else(|_| project_data.to_path_buf());
-    if root.starts_with(&data) { cmd.writable(root); }
+    if root.starts_with(&data) || is_copy_work_path(root) { cmd.writable(root); }
     cmd.current_dir(root);
     for (k, v) in envs {
         if *k == "GIT_INDEX_FILE" {
@@ -141,9 +157,12 @@ fn verify_git_repo(project_data: &Path, root: &Path) -> Result<PathBuf, String> 
     };
     let toplevel = std::fs::canonicalize(Path::new(&toplevel_str))
         .map_err(|e| format!("Cannot resolve git toplevel: {e}"))?;
-    if toplevel != root {
-        return Err("The folder is not a Git repository root.".into());
+    // A thread on a folder inside the project copies the whole project; the
+    // agent then starts in the matching folder inside its copy.
+    if !root.starts_with(&toplevel) {
+        return Err("The folder is not inside its Git checkout.".into());
     }
+    let root = toplevel;
     let mut nested_checkouts = 0;
     if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries.flatten() {
@@ -277,6 +296,43 @@ fn cleanup_copy_artifacts(root: &Path, data: &Path, thread: &str, bot: &str, wor
     }
 }
 
+/// The folder name of an agent's copy, beside the user's own worktrees.
+fn copy_folder_name(thread: &str, bot: &str) -> String {
+    format!("agent-{bot}-{thread}")
+}
+
+/// Where an agent's copy goes: `<main>-worktrees/agent-<bot>-<thread>`, the same
+/// folder the Worktrees tab adds the user's own worktrees to. Its state stays in
+/// `<data>/bot-copies/<thread>/<bot>/copy.json`.
+fn copy_work_dir(data: &Path, root: &Path, thread: &str, bot: &str) -> PathBuf {
+    let main = run_git(data, root, &[], &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .ok()
+        .map(PathBuf::from)
+        .filter(|common| common.file_name() == Some(std::ffi::OsStr::new(".git")))
+        .and_then(|common| common.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| root.to_path_buf());
+    let parent = main.parent().unwrap_or(&main);
+    let name = main.file_name().unwrap_or_default().to_string_lossy();
+    parent.join(format!("{name}-worktrees")).join(copy_folder_name(thread, bot))
+}
+
+/// True when `copy.work` is where Deck puts this agent's copy: beside the
+/// worktrees, or in the data folder for copies made before the move. A
+/// `copy.json` pointing anywhere else is not trusted.
+pub fn is_copy_work(data: &Path, copy: &BotCopy) -> bool {
+    let legacy = data.join("bot-copies").join(&copy.thread).join(&copy.bot).join("work");
+    if copy.work == legacy {
+        return true;
+    }
+    copy.work.file_name() == Some(std::ffi::OsStr::new(&copy_folder_name(&copy.thread, &copy.bot)))
+        && copy.work.parent().and_then(Path::file_name).is_some_and(|n| n.to_string_lossy().ends_with("-worktrees"))
+}
+
+fn is_copy_work_path(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("agent-"))
+        && path.parent().and_then(Path::file_name).is_some_and(|n| n.to_string_lossy().ends_with("-worktrees"))
+}
+
 pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<BotCopy, String> {
     validate_identifier(thread, "thread")?;
     validate_identifier(bot, "bot")?;
@@ -284,11 +340,14 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
     let root = verify_git_repo(data, root)?;
 
     let copy_dir = data.join("bot-copies").join(thread).join(bot);
-    let work = copy_dir.join("work");
+    let work = copy_work_dir(data, &root, thread, bot);
     let copy_json = copy_dir.join("copy.json");
 
-    if work.exists() || copy_json.exists() {
+    if copy_json.exists() {
         return Err("this bot already has a copy".into());
+    }
+    if std::fs::symlink_metadata(&work).is_ok() {
+        return Err(format!("{} already exists.", work.display()));
     }
 
     let base = snapshot_tree(data, &root)?;
@@ -342,6 +401,7 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
             base,
             state: CopyState::Working,
             name: None,
+            thread_dir: None,
         };
         save_state(data, &copy)?;
         Ok(copy)
@@ -791,15 +851,12 @@ pub fn merge_main_into_copy(project_data: &Path, copy: &BotCopy) -> Result<FoldO
         }
     }
 
-    // <data>/bot-copies/<thread>/<bot>/work, so four levels up is <data>.
     // Update base ref to M: work has now received M's changes (cleanly or with conflict markers)
     run_git(project_data, &root, &[], &["update-ref", &base_ref, &m_commit])?;
 
-    if let Some(data_dir) = work.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()) {
-        let mut updated = copy.clone();
-        updated.base = m_commit.clone();
-        save_state(data_dir, &updated)?;
-    }
+    let mut updated = copy.clone();
+    updated.base = m_commit.clone();
+    save_state(project_data, &updated)?;
 
     if !conflicts.is_empty() {
         conflicts.sort();
@@ -1071,6 +1128,10 @@ impl FoldQueue {
             eprintln!("bot copy {}/{}: could not save its Needs you state: {e}", copy.thread, copy.bot);
         }
         let note = human_note_line(copy.name.as_deref().unwrap_or(&copy.bot), files, reason);
+        Self::post_note(task, note);
+    }
+
+    fn post_note(task: &FoldTask, note: String) {
         (task.event_sink)(RoomEvent::MessageAdded {
             message: Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                 servers: Vec::new(),
@@ -1181,6 +1242,14 @@ impl FoldQueue {
                             let data_clone = self.data.clone();
                             let copy_clone = copy.clone();
                             let _ = tokio::task::spawn_blocking(move || remove_copy(&data_clone, &copy_clone)).await;
+                            let outside = outside_thread_dir(&copy, &applied);
+                            if !outside.is_empty() {
+                                let who = copy.name.as_deref().unwrap_or(&copy.bot);
+                                Self::post_note(&task, format!(
+                                    "{who} also changed files outside this thread's folder: {}.",
+                                    outside.join(", ")
+                                ));
+                            }
                             for f in applied {
                                 (task.event_sink)(RoomEvent::Changed {
                                     id: ParticipantId::new(&copy.bot),
@@ -1288,6 +1357,21 @@ impl BotCopies {
         }
     }
 
+    /// Where the agent starts inside its copy: the folder matching the thread's,
+    /// which is the copy's top folder unless the thread sits deeper in the project.
+    fn agent_dir(&self, copy: &BotCopy) -> Result<PathBuf, String> {
+        let thread = std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+        let rel = thread
+            .strip_prefix(&copy.root)
+            .map_err(|_| "The thread's folder is outside its project copy.".to_string())?;
+        let dir = copy.work.join(rel);
+        if dir.is_dir() {
+            Ok(dir)
+        } else {
+            Err("Git doesn't track the thread's folder, so a copy wouldn't contain it.".into())
+        }
+    }
+
     /// Looks up a bot's display name for the notes a fold posts.
     pub fn with_names(mut self, name_of: Arc<dyn Fn(&ParticipantId) -> Option<String> + Send + Sync>) -> Self {
         self.name_of = Some(name_of);
@@ -1301,7 +1385,7 @@ impl CopyProvider for BotCopies {
             {
                 let active = self.active.lock().unwrap();
                 if let Some(c) = active.get(id) {
-                    return Some(c.work.clone());
+                    return self.agent_dir(c).ok();
                 }
             }
             let existing = {
@@ -1315,8 +1399,9 @@ impl CopyProvider for BotCopies {
                     copy.state,
                     CopyState::Working | CopyState::Folding | CopyState::Reconciling { .. }
                 ) {
-                    self.active.lock().unwrap().insert(id.clone(), copy.clone());
-                    return Some(copy.work);
+                    let dir = self.agent_dir(&copy).ok();
+                    self.active.lock().unwrap().insert(id.clone(), copy);
+                    return dir;
                 }
             }
             None
@@ -1328,7 +1413,7 @@ impl CopyProvider for BotCopies {
             {
                 let active = self.active.lock().unwrap();
                 if let Some(c) = active.get(id) {
-                    return Ok(c.work.clone());
+                    return self.agent_dir(c);
                 }
             }
             let existing = {
@@ -1342,8 +1427,9 @@ impl CopyProvider for BotCopies {
                     copy.state,
                     CopyState::Working | CopyState::Folding | CopyState::Reconciling { .. }
                 ) {
-                    self.active.lock().unwrap().insert(id.clone(), copy.clone());
-                    return Ok(copy.work);
+                    let dir = self.agent_dir(&copy);
+                    self.active.lock().unwrap().insert(id.clone(), copy);
+                    return dir;
                 }
             }
             let root = self.root.clone();
@@ -1353,16 +1439,26 @@ impl CopyProvider for BotCopies {
             let name = self.name_of.as_ref().and_then(|f| f(id));
             let copy = tokio::task::spawn_blocking(move || {
                 let mut copy = create_copy(&root, &data, &thread, &bot)?;
-                if name.is_some() {
+                let thread_dir = std::fs::canonicalize(&root).ok().filter(|dir| *dir != copy.root);
+                if name.is_some() || thread_dir.is_some() {
                     copy.name = name;
+                    copy.thread_dir = thread_dir;
                     save_state(&data, &copy)?;
                 }
                 Ok::<_, String>(copy)
             })
             .await
             .map_err(|e| e.to_string())??;
-            self.active.lock().unwrap().insert(id.clone(), copy.clone());
-            Ok(copy.work)
+            let dir = match self.agent_dir(&copy) {
+                Ok(dir) => dir,
+                Err(reason) => {
+                    let data = self.data.clone();
+                    let _ = tokio::task::spawn_blocking(move || remove_copy(&data, &copy)).await;
+                    return Err(reason);
+                }
+            };
+            self.active.lock().unwrap().insert(id.clone(), copy);
+            Ok(dir)
         })
     }
 
@@ -2341,6 +2437,69 @@ mod tests {
         assert_eq!(fs::read_to_string(&outside).unwrap(), "outside\n");
         assert_eq!(fs::read_link(copy.work.join("f.txt")).unwrap(), outside);
         assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), "one\ntwo changed\n");
+    }
+
+    #[tokio::test]
+    async fn thread_on_a_subfolder_gets_a_copy_that_lands_in_that_subfolder() {
+        let (_tmp, root, data) = init_repo("subfolder-copy");
+        let sub = root.join("crates").join("app");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("lib.rs"), "one\n").unwrap();
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()).with_quiet_duration(std::time::Duration::from_millis(10)));
+        let notes = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = Arc::clone(&notes);
+        let sink: Arc<dyn Fn(RoomEvent) + Send + Sync> = Arc::new(move |event| {
+            if let RoomEvent::MessageAdded { message } = event { seen.lock().unwrap().push(message.text); }
+        });
+        let copies = BotCopies::new(
+            data.clone(),
+            "thread-sub".into(),
+            sub.clone(),
+            Arc::new(Mutex::new(None)),
+            sink,
+            Arc::clone(&fold_queue),
+        );
+        let id = ParticipantId::new("bot1");
+        let dir = copies.copy_for(&id).await.unwrap();
+        let copy = load_copies(&data).into_iter().find(|c| c.bot == "bot1").unwrap();
+        assert_eq!(copy.root, fs::canonicalize(&root).unwrap(), "the copy is of the whole project");
+        assert_eq!(dir, copy.work.join("crates").join("app"), "the agent starts in the thread's folder");
+        assert_eq!(
+            copy.work,
+            fs::canonicalize(&root).unwrap().parent().unwrap().join("repo-worktrees").join("agent-bot1-thread-sub"),
+            "the copy sits beside the user's worktrees"
+        );
+        assert!(!data.join("bot-copies/thread-sub/bot1/work").exists());
+        assert_eq!(copies.active_copy(&id).await, Some(dir.clone()));
+        fs::write(dir.join("lib.rs"), "two\n").unwrap();
+        fs::write(copy.work.join("outside.txt"), "root\n").unwrap();
+        copies.turn_finished(&id, false).await;
+        fold_queue.wait_idle().await;
+        assert_eq!(fs::read_to_string(sub.join("lib.rs")).unwrap(), "two\n");
+        assert_eq!(fs::read_to_string(root.join("outside.txt")).unwrap(), "root\n", "outside changes come back too");
+        let notes = notes.lock().unwrap();
+        assert!(notes.iter().any(|n| n.contains("outside this thread's folder: outside.txt")), "{notes:?}");
+        assert!(!copy.work.exists(), "the copy folder is removed");
+        assert!(load_copies(&data).is_empty(), "the folded copy is removed");
+    }
+
+    #[test]
+    fn untracked_thread_folder_gets_no_copy() {
+        let (_tmp, root, data) = init_repo("subfolder-untracked");
+        let empty = root.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let copies = BotCopies::new(
+            data.clone(),
+            "thread-empty".into(),
+            empty,
+            Arc::new(Mutex::new(None)),
+            Arc::new(|_| {}),
+            Arc::new(FoldQueue::new(data.clone())),
+        );
+        let err = rt.block_on(copies.copy_for(&ParticipantId::new("bot1"))).unwrap_err();
+        assert!(err.contains("doesn't track"), "{err}");
+        assert!(load_copies(&data).is_empty(), "the half-made copy is cleaned up");
     }
 
     #[tokio::test]

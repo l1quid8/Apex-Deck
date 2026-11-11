@@ -289,8 +289,11 @@ fn second_writer_gets_copy_and_keeps_write_access() {
         let expected_line = apex_core::copy_turn_line(&copy_path);
         assert!(req.system.contains(&expected_line));
 
-        let finished_calls = finished.lock().unwrap().clone();
-        assert_eq!(finished_calls, vec![(ParticipantId::new("B"), false)]);
+        // With two agents in the thread, the first gets its own copy too.
+        assert_eq!(bot_a.requests()[0].cwd, Some(copy_path.clone()));
+        let mut finished_calls = finished.lock().unwrap().clone();
+        finished_calls.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        assert_eq!(finished_calls, vec![(ParticipantId::new("A"), false), (ParticipantId::new("B"), false)]);
     });
 }
 

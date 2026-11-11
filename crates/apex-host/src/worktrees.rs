@@ -336,20 +336,14 @@ pub fn add(project_data: &Path, project: &Path, req: AddRequest) -> Result<Workt
     row.changes = Some(0);
     Ok(row)
 }
-fn protect_copy(target: &Path) -> Result<(), String> {
-    if let Some(parent) = target.parent() {
-        if let Ok(bytes) = std::fs::read(parent.join("copy.json")) {
-            if let Ok(copy) = serde_json::from_slice::<crate::bot_copies::BotCopy>(&bytes) {
-                if same_path(&copy.work, target) {
-                    return Err("Deck manages this bot copy. Use Discard copy when it needs you.".into());
-                }
-            }
-        }
+fn protect_copy(project_data: &Path, target: &Path) -> Result<(), String> {
+    if crate::bot_copies::load_copies(project_data).iter().any(|copy| same_path(&copy.work, target)) {
+        return Err("Deck manages this agent copy. Use Discard copy when it needs you.".into());
     }
     Ok(())
 }
 pub fn remove(project_data: &Path, project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
-    protect_copy(target)?;
+    protect_copy(project_data, target)?;
     let (_, repos) = repos(project_data, project, task_dir)?;
     if std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("The worktree folder was replaced.".into());
@@ -398,7 +392,7 @@ pub fn remove(project_data: &Path, project: &Path, target: &Path, force: bool, t
 /// Unregister only the selected worktree, retaining its working files.
 /// A separate command prevents older hosts from interpreting Prune as deletion.
 pub fn forget(project_data: &Path, project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
-    protect_copy(target)?;
+    protect_copy(project_data, target)?;
     let (_, repos) = repos(project_data, project, task_dir)?;
     let (project, row) = repos.iter()
         .find_map(|repo| repo.items.iter().find(|w| same_path(Path::new(&w.path), target)).map(|row| (repo.dir.as_path(), row)))

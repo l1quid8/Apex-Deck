@@ -687,6 +687,24 @@ impl ConcurrentRoom {
             None
         };
 
+        // With another agent in the thread, every editing turn starts in the
+        // agent's own copy, so no one waits for the folder or goes read-only.
+        // The shared folder is the fallback when a copy can't be made.
+        let mut copy_refused: Option<String> = None;
+        let existing_active_copy = match existing_active_copy {
+            Some(path) => Some(path),
+            None if !request.plan && request.access != Some(Access::Read) => match &self.copies {
+                Some(provider) if self.room.lock().await.configs().len() > 1 => {
+                    match provider.copy_for(&ticket.id).await {
+                        Ok(path) => Some(path),
+                        Err(reason) => { copy_refused = Some(reason); None }
+                    }
+                }
+                _ => None,
+            },
+            None => None,
+        };
+
         let (mut editor, held_by, mut is_copy_turn) = if let Some(copy_path) = existing_active_copy {
             request.cwd = Some(copy_path.clone());
             let copy_line = copy_turn_line(&copy_path);
@@ -712,8 +730,8 @@ impl ConcurrentRoom {
         };
         if let Some(held_by) = held_by {
             let mut copy_granted = false;
-            let mut read_only_reason = None;
-            if !request.plan {
+            let mut read_only_reason = copy_refused.take();
+            if !request.plan && read_only_reason.is_none() {
                 if let Some(provider) = &self.copies {
                     match provider.copy_for(&ticket.id).await {
                         Ok(copy_path) => {
