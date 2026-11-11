@@ -48,10 +48,22 @@ ACE or unverifiable signature fails closed. Known deny-only ACE variants do not
 grant permissions and may be ignored. Authority keys and receipts do not gain
 this service-account exception.
 
-Every approval rechecks the file and ancestry without a path cache. Read handles
+Every approval rechecks the file and ancestry without a path cache. If any
+ancestor grants an untrusted principal permission to add files, the module must
+have exactly one hard link. This prevents planting a link to a protected file at
+the former path of a renamed loaded image, while preserving Windows' hard links
+in protected trees. Read handles
 pin the directory chain against rename while the final file is checked, and
 signature verification uses that same file handle, opened without write/delete
-sharing. This does not establish the identity of an image already mapped into
+sharing. Successful signature checks alone are cached for at most 60 seconds,
+keyed by volume, 128-bit file ID, change time, last-write time and size; failed
+checks are never cached. Permissions and link counts are always checked again.
+Revocation checks use only Windows' cached revocation data, with unavailable or
+invalid trust data failing closed; no network retrieval runs in the approval
+path. Peer checks run on blocking workers with a five-second response deadline
+and at most four outstanding checks. A timed-out worker retains its slot until
+it returns, so slow trust providers cannot create unbounded background work.
+This does not establish the identity of an image already mapped into
 memory; administrator or service tampering remains outside this boundary.
 The implementation uses [WinVerifyTrust](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust)
 and its [open-file handle](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_file_info)

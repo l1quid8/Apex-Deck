@@ -220,14 +220,20 @@ fn protected_hard_link_in_addable_folder_is_refused() {
     let original = fixture.base.join("original.dll");
     std::fs::rename(&fixture.file, &original).unwrap();
     std::fs::hard_link(&original, &fixture.file).unwrap();
-    assert!(fixture.accepted(), "protected trees permit Windows hard links");
+    assert!(
+        fixture.accepted(),
+        "protected trees permit Windows hard links"
+    );
     // FILE_ADD_FILE alone does not let a user change existing protected
     // files, but does let them plant a hard link to one at a vacated path.
     acl(&fixture.base, ADMIN, "(A;;0x2;;;BU)");
     let error = verify_module(fixture.file.to_str().unwrap()).unwrap_err();
     assert!(error.contains("link"), "{error}");
     std::fs::remove_file(original).unwrap();
-    assert!(fixture.accepted(), "one link under an add-only ancestor is safe");
+    assert!(
+        fixture.accepted(),
+        "one link under an add-only ancestor is safe"
+    );
 }
 
 #[test]
@@ -243,6 +249,68 @@ fn checked_module_replaced_with_protected_hard_link_is_refused() {
     std::fs::hard_link(&genuine, &fixture.file).unwrap();
     let error = verify_module(fixture.file.to_str().unwrap()).unwrap_err();
     assert!(error.contains("link"), "{error}");
+}
+
+#[test]
+#[ignore = "requires elevated Windows; windows-dll-safety CI"]
+fn signature_cache_reuses_same_file_but_reverifies_replacement() {
+    let fixture = Fixture::new("signature-cache-replacement");
+    let mut cache = SignatureCache::default();
+    let file = File::open(&fixture.file).unwrap();
+    let key = module_identity(&file).unwrap();
+    cache
+        .verify(key, Instant::now(), || {
+            module_signature(&file, &fixture.file)
+        })
+        .unwrap();
+    cache
+        .verify(module_identity(&file).unwrap(), Instant::now(), || {
+            Err("unchanged file signature was checked again".into())
+        })
+        .unwrap();
+    std::fs::rename(&fixture.file, fixture.base.join("previous.dll")).unwrap();
+    std::fs::write(&fixture.file, b"unsigned replacement").unwrap();
+    acl(&fixture.file, SERVICE, "");
+    let replacement = File::open(&fixture.file).unwrap();
+    let new_key = module_identity(&replacement).unwrap();
+    assert_ne!(key.id, new_key.id);
+    assert!(cache
+        .verify(new_key, Instant::now(), || module_signature(
+            &replacement,
+            &fixture.file
+        ))
+        .is_err());
+    drop((file, replacement));
+    assert!(
+        !fixture.accepted(),
+        "production cache must reject the replacement too"
+    );
+}
+
+#[test]
+#[ignore = "requires elevated Windows; windows-dll-safety CI"]
+fn signature_cache_reverifies_modified_file_with_same_id() {
+    let fixture = Fixture::new("signature-cache-modified");
+    let mut cache = SignatureCache::default();
+    let file = File::open(&fixture.file).unwrap();
+    let before = module_identity(&file).unwrap();
+    cache
+        .verify(before, Instant::now(), || {
+            module_signature(&file, &fixture.file)
+        })
+        .unwrap();
+    drop(file);
+    std::fs::write(&fixture.file, b"modified in place").unwrap();
+    let file = File::open(&fixture.file).unwrap();
+    let after = module_identity(&file).unwrap();
+    assert_eq!(before.id, after.id);
+    assert_ne!(before, after);
+    assert!(cache
+        .verify(after, Instant::now(), || module_signature(
+            &file,
+            &fixture.file
+        ))
+        .is_err());
 }
 
 #[test]

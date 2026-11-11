@@ -2,6 +2,7 @@
 #[cfg(test)]
 #[path = "windows_module_tests.rs"]
 mod module_tests;
+use crate::signature_cache::{ModuleIdentity, SignatureCache};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -16,7 +17,8 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
-    time::Duration,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -227,7 +229,7 @@ fn inspect_handle(
     private: bool,
     ancestor: bool,
     module: bool,
-) -> Result<bool, String> {
+) -> Result<ModulePermissions, String> {
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err("Authority reparse points are forbidden".into());
@@ -259,6 +261,7 @@ fn inspect_handle(
     }
     let owner = sid_string(owner)?;
     let mut needs_signature = module && !trusted_sid(&owner) && service_sid(&owner);
+    let mut allows_creation = false;
     if !trusted_sid(&owner) && !needs_signature {
         return Err(format!("Untrusted file owner: {owner}"));
     }
@@ -286,6 +289,12 @@ fn inspect_handle(
         }
         let allow = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
         let sid = sid_string(ptr::addr_of!(allow.SidStart).cast_mut().cast())?;
+        if ancestor
+            && !trusted_sid(&sid)
+            && allow.Mask & (GENERIC_ALL | GENERIC_WRITE | FILE_ADD_FILE) != 0
+        {
+            allows_creation = true;
+        }
         let dangerous = if ancestor {
             GENERIC_ALL | GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER | FILE_DELETE_CHILD
         } else {
@@ -311,7 +320,15 @@ fn inspect_handle(
             }
         }
     }
-    Ok(needs_signature)
+    Ok(ModulePermissions {
+        needs_signature,
+        allows_creation,
+    })
+}
+
+struct ModulePermissions {
+    needs_signature: bool,
+    allows_creation: bool,
 }
 pub fn protected_ancestry(path: &Path) -> Result<(), String> {
     for ancestor in path.ancestors() {
@@ -678,11 +695,13 @@ fn module_signature(file: &File, path: &Path) -> Result<(), String> {
 fn verify_trust(mut data: windows_sys::Win32::Security::WinTrust::WINTRUST_DATA) -> i32 {
     use windows_sys::Win32::Security::WinTrust::*;
     data.dwStateAction = WTD_STATEACTION_VERIFY;
-    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | WTD_DISABLE_MD2_MD4;
+    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT
+        | WTD_CACHE_ONLY_URL_RETRIEVAL
+        | WTD_DISABLE_MD2_MD4;
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     // Verify the same locked handle whose ACL was inspected, not a second
-    // path lookup. Only zero is success; an unavailable trust/revocation chain
-    // fails closed. Always close provider state, including on verification errors.
+    // path lookup. Revocation uses Windows' local cache and never the network;
+    // unavailable trust/revocation data still fails closed. Always close state.
     let result = unsafe {
         WinVerifyTrust(
             INVALID_HANDLE_VALUE,
@@ -787,6 +806,50 @@ fn module_catalog_signature(file: &File, path: &Path) -> Result<(), String> {
     }
     result
 }
+fn module_identity(file: &File) -> Result<ModuleIdentity, String> {
+    let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+        || unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&mut basic as *mut FILE_BASIC_INFO).cast(),
+                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        } == 0
+    {
+        return Err(format!(
+            "Cannot read module file identity: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(ModuleIdentity {
+        volume: id.VolumeSerialNumber,
+        id: id.FileId.Identifier,
+        changed: basic.ChangeTime,
+        written: basic.LastWriteTime,
+        size: file.metadata().map_err(|e| e.to_string())?.len(),
+    })
+}
+
+fn cached_module_signature(file: &File, path: &Path) -> Result<(), String> {
+    static CACHE: OnceLock<Mutex<SignatureCache>> = OnceLock::new();
+    let key = module_identity(file)?;
+    CACHE
+        .get_or_init(|| Mutex::new(SignatureCache::default()))
+        .lock()
+        .map_err(|_| "Module signature cache unavailable")?
+        .verify(key, Instant::now(), || module_signature(file, path))
+}
+
 /// No path cache: a loaded image can be renamed and another file can occupy
 /// its path. Recheck ACLs on every approval and hold each ancestor against
 /// rename while checking its child. This also refuses all reparse points.
@@ -806,6 +869,7 @@ fn verify_module(module: &str) -> Result<(), String> {
     }
     let mut pinned = Vec::new();
     let mut needs_signature = false;
+    let mut allows_creation = false;
     let ancestors: Vec<_> = path.ancestors().collect();
     for entry in ancestors.into_iter().rev() {
         let directory = entry != path;
@@ -821,7 +885,7 @@ fn verify_module(module: &str) -> Result<(), String> {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
             .open(entry)
             .map_err(|e| format!("Cannot pin {}: {e}", entry.display()))?;
-        needs_signature |= inspect_handle(&handle, false, directory, true).map_err(|e| {
+        let permissions = inspect_handle(&handle, false, directory, true).map_err(|e| {
             format!(
                 "{} {}: {e}",
                 if directory {
@@ -832,10 +896,25 @@ fn verify_module(module: &str) -> Result<(), String> {
                 entry.display()
             )
         })?;
+        needs_signature |= permissions.needs_signature;
+        allows_creation |= permissions.allows_creation;
         pinned.push(handle);
     }
+    let file = pinned.last().ok_or("Missing module handle")?;
+    if allows_creation {
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(format!(
+                "Cannot inspect module link count: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if info.nNumberOfLinks != 1 {
+            return Err("Module under an addable ancestor must have exactly one hard link".into());
+        }
+    }
     if needs_signature {
-        module_signature(pinned.last().ok_or("Missing module handle")?, path)?;
+        cached_module_signature(file, path)?;
     }
     Ok(())
 }

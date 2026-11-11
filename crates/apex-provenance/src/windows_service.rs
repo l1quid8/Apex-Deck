@@ -277,7 +277,20 @@ async fn answer(stream: &mut NamedPipeServer, config: &Config) -> Result<Value, 
         return Err("Untrusted provenance peer".into());
     }
     if ui || daemon {
-        win::peer_intact(pid)?;
+        // PSAPI, ACL and Authenticode checks must not block the async pipe
+        // runtime. Bound outstanding checks even if a trust provider stalls.
+        static CHECKS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+        let permit = CHECKS.try_acquire().map_err(|_| "Peer verification busy")?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                win::peer_intact(pid)
+            }),
+        )
+        .await
+        .map_err(|_| "Peer verification timed out")?
+        .map_err(|e| format!("Peer verification worker failed: {e}"))??;
     }
     let mut bytes = Vec::new();
     BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))
