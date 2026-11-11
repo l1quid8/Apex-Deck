@@ -85,6 +85,15 @@ mod tests {
         let executable = project.join(if cfg!(windows) { "check-fixture.exe" } else { "check-fixture" });
         if !executable.exists() {
             std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+            // A process another test forks while the copy is open for writing
+            // keeps that handle until it execs, and running the copy meanwhile
+            // fails with "text file busy". Wait until it runs.
+            for _ in 0..100 {
+                match std::process::Command::new(&executable).arg("--list").stdout(std::process::Stdio::null()).status() {
+                    Err(error) if error.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                    _ => break,
+                }
+            }
         }
         vec![
             executable.to_str().unwrap().into(),
