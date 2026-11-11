@@ -126,7 +126,7 @@ import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
 import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
 import { phoneTrace, roughKb } from "./phoneTrace";
-import { copyAge, createThreadCopies, LOAD_DEADLINE_MS, LoadTimeout, loadRetryDelay, RESUME_CHECK_MS, withDeadline } from "./threadCopies";
+import { copyAge, createThreadCopies, loadRetryDelay, RESUME_CHECK_MS, SLOW_LOAD_MS, whenSlow } from "./threadCopies";
 import { ConnectionLog } from "./ConnectionLog";
 import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
@@ -196,6 +196,8 @@ type Room = {
   pins: string[];
   /** Where /compact cut in: the models see `summary` instead of the messages before `upto`. A saved one does not say who wrote it. */
   compaction: { by: string | null; summary: string; upto: number } | null;
+  /** The folder the thread works in, as its machine said when it loaded. */
+  cwd?: string | null;
   /** The copy kept from the last visit, shown while the fresh one loads. It has no approvals, questions or
    *  working bots, so nothing on it can be acted on until the machine's answer replaces it. */
   stale?: boolean;
@@ -574,8 +576,8 @@ export function PhoneApp() {
   /** The last copy of each recently opened thread, by machine and thread, shown at once when it opens again. */
   const threadCopies = useRef(createThreadCopies<Room>());
   useEffect(() => { if (room && !room.stale) threadCopies.current.put(machineThreadKey(room.hostId, room.id), room); }, [room]);
-  /** The open thread's load, while it hasn't arrived: still on its way, or failed and being tried again. */
-  const [threadLoad, setThreadLoad] = useState<{ key: string; failed: string | null } | null>(null);
+  /** The open thread's load, while it hasn't arrived: on its way (slow once it passes 10 s), or failed and being tried again. */
+  const [threadLoad, setThreadLoad] = useState<{ key: string; failed: string | null; slow?: boolean } | null>(null);
   const retryThreadLoad = useRef<() => void>(() => {});
   const machineKey = connectionKey(machines);
 
@@ -1503,7 +1505,8 @@ export function PhoneApp() {
     }
     let live = true;
     let stop = () => {};
-    // A load that fails or hangs is tried again after a wait, until it arrives or the thread closes.
+    // A load that fails is tried again after a wait, until it arrives or the thread closes. A slow one is
+    // waited for: a dead link shows up as a dropped connection or on coming back to the app, not here.
     let tries = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     setThreadLoad({ key: copyKey, failed: null });
@@ -1566,6 +1569,7 @@ export function PhoneApp() {
         used: state.snapshot.usage ?? {},
         pins: state.snapshot.pins ?? [],
         compaction: state.snapshot.compaction ? { by: null, ...state.snapshot.compaction } : null,
+        cwd: state.cwd ?? null,
       });
       // Connection log: how long the phone takes to draw the thread once it has it.
       const handed = Date.now();
@@ -1608,23 +1612,24 @@ export function PhoneApp() {
     };
     const recovery = createRoomRecovery<RoomState, RoomEvent>({
       load: async () => {
-        // Connection log: how long the thread took and how big it was. One with no answer in 10 s gives up and is
-        // tried again, allowing twice as long each time (up to 80 s) so a big thread on a slow link still arrives.
+        // Connection log: how long the thread took and how big it was. One still on its way after 10 s says
+        // "Still loading…" and keeps waiting for the same answer. Asking the machine whether it is there, or
+        // asking for the thread again, would only queue behind the thread it is still sending.
         const trace = phoneTrace();
         const began = Date.now();
         trace.add(`${traceName}: loading`);
         try {
-          const state = await withDeadline(chatHost
+          const state = await whenSlow(chatHost
             ? (async () => ({ ...await (host.backend.roomState ? host.backend.roomState(paneId) : host.backend.call<RoomState>("room_state", { id: paneId })), live: true }))()
-            : loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openPath), LOAD_DEADLINE_MS * 2 ** Math.min(tries, 3));
+            : loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openPath), SLOW_LOAD_MS, () => {
+            if (!live) return;
+            trace.add(`${traceName}: still loading after ${SLOW_LOAD_MS / 1000} s; waiting for it`);
+            setThreadLoad({ key: copyKey, failed: null, slow: true });
+          });
           trace.add(`${traceName}: loaded ${state.snapshot.transcript.length} messages (~${roughKb(state.snapshot.transcript)} KB of text) in ${Date.now() - began} ms${live ? "" : ", but this thread was already closed"}`);
           return state;
         } catch (error) {
           trace.add(`${traceName}: load failed after ${Date.now() - began} ms: ${words(error)}${live ? "" : ", but this thread was already closed"}`);
-          // A machine that hasn't answered in this long may be on a dead link: ask it, and dial again if it stays quiet.
-          if (error instanceof LoadTimeout && live) {
-            void host.check(RESUME_CHECK_MS).then((how) => { if (how === "replaced") trace.add(`${host.machine.name}: no answer in ${RESUME_CHECK_MS / 1000} s; connecting again`); });
-          }
           throw error;
         }
       },
@@ -2561,13 +2566,14 @@ export function PhoneApp() {
     return true;
   };
   // The title bar's Worktrees pane: a project thread on a machine that gives this phone Full access to
-  // every thread (the Mac lists worktrees for nothing less). Read again whenever a reply finishes.
+  // every thread (the Mac lists worktrees for nothing less). Read when the thread opens and when a reply
+  // finishes, for the icon's amber dot; the folder in use comes from the thread already loaded.
   const [worktreesOpen, setWorktreesOpen] = useState(false);
   useEffect(() => { setWorktreesOpen(false); }, [openId, openHostId]);
   const worktreeHost = openPane && !openChat && !openWork && !viewingPending && !openPane.assistantTaskId && openWorkspace?.path ? phoneHost(openHostId) : null;
   const worktreesShown = Boolean(worktreeHost && canManageWorktrees(worktreeHost.access()));
   const worktreeState = useWorktrees(worktreeHost?.backend ?? null, openWorkspace?.path ?? "", openPane?.id ?? "", worktreesShown && openLink?.status === "online",
-    `${openRoom?.messages.length ?? 0}:${Object.keys(openRoom?.working ?? {}).length}`);
+    Object.keys(openRoom?.working ?? {}).length > 0, openRoom?.cwd);
   const openQueue = openPane ? queued[queueKey(openHostId, openPane.id)] : undefined;
   const queuedRows = openQueue && openLink ? queuedViews(openQueue.items, Object.keys(openRoom?.working ?? {}), openQueue.paused, openQueue.lost,
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
@@ -3752,8 +3758,8 @@ function ThreadView(props: {
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
-  /** The thread hasn't arrived yet: on its way, or failed with why and being tried again. Null once it is here. */
-  load?: { failed: string | null } | null;
+  /** The thread hasn't arrived yet: on its way (slow past 10 s), or failed with why and being tried again. Null once it is here. */
+  load?: { failed: string | null; slow?: boolean } | null;
   /** The messages shown are the copy from the last visit, until the fresh thread replaces them. */
   stale?: boolean;
   onRetryLoad?(): void;
@@ -4234,7 +4240,7 @@ function ThreadView(props: {
         {/* An old copy on screen says so only if the fresh one is slow, so a quick open doesn't flicker. */}
         {props.stale && !paused && props.messages.length > 0 && (props.load?.failed
           ? <p className="ph-stale failed" role="status">Showing an earlier copy · {props.load.failed.replace(/\.$/, "")} · <button type="button" onClick={props.onRetryLoad}>Try again</button></p>
-          : <p className="ph-stale" role="status">Updating…</p>)}
+          : <p className="ph-stale" role="status">{props.load?.slow ? "Still updating…" : "Updating…"}</p>)}
         {props.load && !props.stale && props.messages.length === 0 && working.length === 0 && !paused && (props.chat?.outbox.length ?? 0) === 0 && (
           props.load.failed
             ? <div className="ph-empty ph-loading failed" role="status">
@@ -4242,7 +4248,7 @@ function ThreadView(props: {
               <p>{props.load.failed}</p>
               <button type="button" onClick={props.onRetryLoad}>Try again</button>
             </div>
-            : <div className="ph-empty ph-loading" role="status"><p>Loading…</p></div>
+            : <div className="ph-empty ph-loading" role="status"><p>{props.load.slow ? "Still loading…" : "Loading…"}</p></div>
         )}
         {!props.load && props.messages.length === 0 && working.length === 0 && (!paused || props.chat) && (props.chat?.outbox.length ?? 0) === 0 && (
           <div className="ph-empty">
