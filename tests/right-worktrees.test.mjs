@@ -7,7 +7,7 @@ import { transform } from 'sucrase';
 
 const source = await fs.readFile(new URL('../src/RightWorktrees.tsx', import.meta.url), 'utf8');
 const code = transform(source.replace(/^import .*;\n/gm, '').replace(/export function/g, 'function'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-const { RightWorktreesTab, WorktreeRow, worktreeErrorMessage } = new Function('React', 'useEffect', 'useRef', 'useState', code + '; return { RightWorktreesTab, WorktreeRow, worktreeErrorMessage };')(React, React.useEffect, React.useRef, React.useState);
+const { RightWorktreesTab, WorktreeRow, worktreeErrorMessage, worktreeHome } = new Function('React', 'useEffect', 'useRef', 'useState', code + '; return { RightWorktreesTab, WorktreeRow, worktreeErrorMessage, worktreeHome };')(React, React.useEffect, React.useRef, React.useState);
 const render = (node) => renderToStaticMarkup(node);
 const row = (overrides = {}) => ({ path: '/repo', head: '12345678abcdef', branch: 'main', main: false, locked: false, prunable: false, changes: 0, task: false, ...overrides });
 
@@ -89,4 +89,13 @@ test('busy chat queues Mount while missing worktrees cannot mount', () => {
   assert.ok(html.indexOf('Mount after this turn') < html.indexOf('Open folder'));
   const missing = render(React.createElement(WorktreeRow, { ...props, item: row({ prunable: true }) }));
   assert.doesNotMatch(missing, /Mount after this turn|>Mount</);
+});
+
+test('New worktree goes beside the main checkout, also from a thread in another worktree', () => {
+  const main = row({ path: '/Users/you/Downloads/apex-deck', main: true });
+  const other = row({ path: '/Users/you/Downloads/apex-deck-worktrees/windows-desktop-parity', branch: 'feat/windows-desktop-parity' });
+  // The Mac lists from the thread's worktree, so its root is that worktree, not the project.
+  assert.equal(worktreeHome({ root: other.path, items: [main, other] }, other.path), '/Users/you/Downloads/apex-deck');
+  assert.equal(worktreeHome({ root: '/Users/you/Downloads/apex-deck', items: [] }, '/Users/you/Downloads/apex-deck/crates'), '/Users/you/Downloads/apex-deck');
+  assert.equal(worktreeHome(null, '/repo'), '/repo');
 });

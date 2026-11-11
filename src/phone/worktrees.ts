@@ -84,11 +84,12 @@ export function newWorktreeFolder(root: string, branch: string): string {
 }
 
 /**
- * The project folder new worktrees go beside: its top folder as the Mac lists it, even for a thread in one
- * of its subfolders, as the Mac's tab does. The thread's own folder only until the Mac has answered.
+ * The project folder new worktrees go beside: the main checkout as the Mac lists it, so a thread in a
+ * subfolder or in another worktree still suggests <project>-worktrees, as the Mac's tab does. Then the
+ * listed top folder, and the thread's own folder only until the Mac has answered.
  */
-export function projectTop(listing: Pick<WorktreeList, "root"> | null, threadFolder: string): string {
-  return listing?.root || threadFolder;
+export function projectTop(listing: Pick<WorktreeList, "root" | "items"> | null, threadFolder: string): string {
+  return listing?.items.find((item) => item.main)?.path || listing?.root || threadFolder;
 }
 
 /** The project's checked-out branch, for New worktree's "Start from"; HEAD when it can't tell. */
