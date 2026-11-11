@@ -224,6 +224,9 @@
 .right-worktrees-label.needs-you { color:var(--warn); border:1px solid currentColor; border-radius:4px; padding:1px 5px; }
 
 .right-worktrees-row.is-bot-copy .right-worktrees-heading > strong { white-space:normal; overflow-wrap:anywhere; line-height:1.5; }
+.right-worktrees-row.is-bot-copy .right-worktrees-heading > strong { color:var(--muted); font-weight:500; }
+.right-worktrees-row.is-bot-copy .right-worktrees-heading > strong::before { content:""; display:inline-block; width:8px; height:8px; margin-right:8px; border-radius:50%; background:var(--accent); vertical-align:middle; }
+.right-worktrees-label.agent-copy { color:var(--accent); }
 
 /* Right terminal */
 .right-terminal { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }

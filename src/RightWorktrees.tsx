@@ -143,6 +143,6 @@ export function WorktreeRow({ item, busy, confirm, pruneConfirm, mounted = false
       </>}
     </div></div>
     {copy && <div className="right-worktrees-copy-state"><span className={`right-worktrees-label${needsYou ? " needs-you" : ""}`}>{needsYou ? "Needs you" : copy.state === "reconciling" ? "Fixing a clash" : copy.state === "folding" ? "Folding back" : copy.state === "folded" ? "Folded" : "Working"}</span>{needsYou && copy.reason && <p>{copy.reason}</p>}</div>}
-    <div className="right-worktrees-meta"><span title={item.path}>{shorten(item.path)}</span>{labels.map((label) => <span key={label} className="right-worktrees-label">{label}</span>)}</div>
+    <div className="right-worktrees-meta"><span title={item.path}>{shorten(item.path)}</span>{copy && <span className="right-worktrees-label agent-copy" title="Deck made this copy for one agent turn and removes it after copying the changes back.">Temporary agent copy</span>}{labels.map((label) => <span key={label} className="right-worktrees-label">{label}</span>)}</div>
   </li>;
 }

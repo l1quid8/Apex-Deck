@@ -29,12 +29,7 @@ fn same(a: &Path, b: &Path) -> bool {
 fn valid_copy(data: &Path, copy: &BotCopy) -> bool {
     bot_copies::validate_identifier(&copy.thread, "thread").is_ok()
         && bot_copies::validate_identifier(&copy.bot, "bot").is_ok()
-        && copy.work
-            == data
-                .join("bot-copies")
-                .join(&copy.thread)
-                .join(&copy.bot)
-                .join("work")
+        && bot_copies::is_copy_work(data, copy)
 }
 pub fn list(root: &Path, data: &Path) -> Result<WorktreeList, String> {
     let mut listing = worktrees::list(data, root, &data.join("apex-agent/tasks"))?;

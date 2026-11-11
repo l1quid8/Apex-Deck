@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent copies: how a turn gets its folder</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #2a2f3a; --text: #e6e8ee;
+    --muted: #9aa3b2; --radius: 12px;
+    --yes: #4fbf8a; --no: #e0796b; --copy: #6ea8fe; --new: #c79bff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; padding: 32px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .legend { display: flex; gap: 16px; margin-bottom: 24px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+    margin-right: 6px; vertical-align: -1px; background: var(--c); }
+  .flow { display: grid; grid-template-columns: 420px 40px 340px; row-gap: 0; align-items: center; }
+  .node { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+  .node b { display: block; margin-bottom: 2px; }
+  .node small { color: var(--muted); display: block; }
+  .node code { font: 12px ui-monospace, Menlo, monospace; color: var(--copy); }
+  .q { border-color: #3a4152; background: #1b1f28; }
+  .q b::before { content: "◆ "; color: var(--muted); font-size: 11px; }
+  .end-shared { border-color: #3d5a4a; }
+  .end-ro { border-color: #5a3d3d; }
+  .end-copy { border-color: #2f4a73; }
+  .new { border-color: var(--new); border-style: dashed; }
+  .tag { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+    padding: 1px 6px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }
+  .tag.new { color: var(--new); border: 1px solid var(--new); }
+  .tag.now { color: var(--yes); border: 1px solid var(--yes); }
+  .down { height: 30px; position: relative; grid-column: 1; }
+  .down::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 6px; border-left: 2px solid var(--line); }
+  .down::after { content: ""; position: absolute; left: calc(50% - 5px); bottom: 0; border: 5px solid transparent;
+    border-top: 6px solid var(--line); border-bottom: 0; }
+  .down em { position: absolute; left: calc(50% + 8px); top: 6px; font-style: normal; font-size: 11px; color: var(--yes); }
+  .side { height: 2px; background: var(--line); position: relative; }
+  .side::after { content: ""; position: absolute; right: -1px; top: -5px; border: 6px solid transparent;
+    border-left: 7px solid var(--line); border-right: 0; }
+  .side em { position: absolute; top: -18px; left: 4px; font-style: normal; font-size: 11px; color: var(--no); }
+  .side.yes em { color: var(--yes); }
+  .gap { grid-column: 2 / 4; }
+  .sidebar { margin-top: 40px; display: grid; grid-template-columns: 300px 1fr; gap: 24px; align-items: start; max-width: 820px; }
+  .sb { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }
+  .sb h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 4px 6px 8px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; }
+  .row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .row .name { flex: 1; }
+  .row .meta { color: var(--muted); font-size: 12px; }
+  .row.agent .dot { background: var(--copy); }
+  .row.agent .name { color: var(--muted); }
+  .row.agent .meta { color: var(--copy); }
+  .notes { color: var(--muted); }
+  .notes li { margin-bottom: 6px; }
+  .open { margin-top: 32px; max-width: 820px; border: 1px solid #5a4a2a; border-radius: var(--radius); padding: 14px 16px; background: #1d1a13; }
+  .open b { color: #e6c37a; }
+</style>
+</head>
+<body>
+<h1>Agent copies: how each turn gets its folder</h1>
+<p class="sub">Branch <code>fix/bot-copy-subfolder</code>. Runs at the start of every agent turn, on any branch, any checkout.</p>
+<div class="legend">
+  <span style="--c: var(--yes)">works in the thread's folder</span>
+  <span style="--c: var(--copy)">works in its own copy</span>
+  <span style="--c: var(--no)">read-only</span>
+  <span style="--c: var(--new)">dashed = changes on this branch</span>
+</div>
+
+<div class="flow">
+  <!-- 1 -->
+  <div class="node"><b>An agent's turn starts</b><small>e.g. Muck is asked to edit; thread is on <code>apex-deck/crates</code></small></div><div></div><div></div>
+  <div class="down"></div><div></div><div></div>
+
+  <!-- 2 -->
+  <div class="node q"><b>Plan-only turn, or agent set to Read access?</b></div>
+  <div class="side yes"><em>yes</em></div>
+  <div class="node end-shared"><b>Reads the thread's folder</b><small>No copy needed; it won't edit.</small></div>
+  <div class="down"><em>no</em></div><div></div><div></div>
+
+  <!-- 3 -->
+  <div class="node q"><b>Already has a copy from an unfinished turn?</b></div>
+  <div class="side yes"><em>yes</em></div>
+  <div class="node end-copy"><b>Reuses that copy</b><small>Picks up where it left off.</small></div>
+  <div class="down"><em>no</em></div><div></div><div></div>
+
+  <!-- 4 -->
+  <div class="node q new"><b>More than one agent in the thread?</b><span class="tag new">new</span>
+    <small>Before: a copy was made only if the folder was already busy.</small></div>
+  <div class="side"><em>no</em></div>
+  <div class="node end-shared"><b>Works straight in the thread's folder</b><small>Solo agent: same as today, no copy overhead.</small></div>
+  <div class="down"><em>yes → make a copy by default</em></div><div></div><div></div>
+
+  <!-- 5 -->
+  <div class="node new"><b>Find the project's top folder</b><span class="tag new">new</span>
+    <small>Ask Git for the top of whatever checkout the thread is in: <code>apex-deck</code>, or a worktree in <code>apex-deck-worktrees/</code>.</small></div><div></div><div></div>
+  <div class="down"></div><div></div><div></div>
+
+  <!-- 6 -->
+  <div class="node q"><b>Can the copy be made?</b>
+    <small>Fails if: thread folder isn't inside a Git checkout · other checkouts nested inside the project · Git doesn't track the thread's folder</small></div>
+  <div class="side"><em>no</em></div>
+  <div class="node end-ro"><b>Fallback</b><small>Folder free → works in the thread's folder.<br>Folder busy → read-only, with the reason shown.</small></div>
+  <div class="down"><em>yes</em></div><div></div><div></div>
+
+  <!-- 7 -->
+  <div class="node new end-copy"><b>Create the copy as a Git worktree</b><span class="tag new">moved</span>
+    <small><code>apex-deck-worktrees/agent-muck-&lt;thread&gt;</code><br>Before: hidden in Deck's data folder (<code>bot-copies/…/work</code>).</small></div><div></div><div></div>
+  <div class="down"></div><div></div><div></div>
+
+  <!-- 8 -->
+  <div class="node new end-copy"><b>Agent starts in the matching folder inside its copy</b><span class="tag now">built</span>
+    <small>Thread on <code>apex-deck/crates</code> → agent starts in <code>agent-muck-…/crates</code></small></div><div></div><div></div>
+  <div class="down"></div><div></div><div></div>
+
+  <!-- 9 -->
+  <div class="node end-copy"><b>Agent edits freely</b><small>Other agents in the thread do the same in their own copies at the same time. Nobody waits, nobody goes read-only.</small></div><div></div><div></div>
+  <div class="down"><em>turn ends</em></div><div></div><div></div>
+
+  <!-- 10 -->
+  <div class="node"><b>Changes are folded back into the thread's folder</b><small>One copy at a time, through the fold queue.</small></div>
+  <div class="side"><em>clash</em></div>
+  <div class="node end-ro"><b>Conflict card in the thread</b><small>Copy is kept until it's sorted out.</small></div>
+  <div class="down"><em>clean</em></div><div></div><div></div>
+
+  <!-- 11 -->
+  <div class="node"><b>Copy is removed</b><small>Its row disappears from the Worktrees sidebar.</small></div><div></div><div></div>
+</div>
+
+<div class="sidebar">
+  <div class="sb">
+    <h3>Worktrees</h3>
+    <div class="row"><span class="dot"></span><span class="name">apex-deck</span><span class="meta">main</span></div>
+    <div class="row"><span class="dot"></span><span class="name">feat-phone-parity</span><span class="meta">feat/phone-parity</span></div>
+    <div class="row agent"><span class="dot"></span><span class="name">agent-muck-a3f1</span><span class="meta">Muck · working</span></div>
+    <div class="row agent"><span class="dot"></span><span class="name">agent-jigga-a3f1</span><span class="meta">Jigga · folding</span></div>
+  </div>
+  <ul class="notes">
+    <li><b>Same folder, one list.</b> Your worktrees and agent copies both live in <code>apex-deck-worktrees/</code>.</li>
+    <li><b>Agent copies are marked.</b> Grey name, blue dot, the agent's name and what it's doing.</li>
+    <li><b>Hands off while in use.</b> No switch-to or delete on an agent copy; Deck removes it itself after the fold.</li>
+  </ul>
+</div>
+
+<div class="open">
+  <b>One decision for you:</b> when the thread is on a subfolder like <code>apex-deck/crates</code> and the agent edits a file outside it (say <code>package.json</code> at the top), should that change still be folded back? My recommendation: <b>yes, fold everything</b>, and note in the thread which files outside the folder changed. Dropping those edits silently would lose work.
+</div>
+</body>
+</html>
