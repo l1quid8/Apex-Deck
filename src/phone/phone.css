@@ -627,6 +627,9 @@
 .qform-steps.phone .qform-chips button { min-height: 36px; font-size: 14px; flex: none; color: var(--muted); }
 .qform-steps.phone .qform-x { min-width: 36px; min-height: 36px; padding: 0; color: var(--muted); }
 .qform.phone .qform-x { min-width: 44px; min-height: 44px; }
+/* Next steps under a reply: on a phone each suggestion stays whole on its own line rather than breaking
+   halfway through. One wider than the screen ends in "…"; holding it shows the full prompt. */
+.ph-chat .reply-next-steps .reply-next-step { display: inline-block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; vertical-align: top; }
 .ph-composer .plan-chip { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; }
 .ph-composer .plan-chip .plan-chip-x { width: auto; opacity: .8; font-size: 11px; }
 
