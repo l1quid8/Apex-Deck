@@ -7,6 +7,8 @@ on:
     paths:
       - 'crates/apex-provenance/**'
       - '.github/workflows/windows-dll-safety.yml'
+      - 'tests/response-next-steps.test.mjs'
+      - 'tests/helpers/appearance-app.mjs'
 jobs:
   native-dll-boundary:
     runs-on: windows-latest
@@ -17,3 +19,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Exercise real signatures, ACLs and path replacements
         run: cargo test --locked -p apex-provenance --all-targets -- --include-ignored --nocapture --test-threads=1
+  native-ui-fixtures:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Fetch Electron before tests start
+        run: node -e "import('electron').then(m => console.log(m.default))"
+      - name: Check native hover and focus fixtures independently of the full suite
+        run: node --experimental-strip-types --test tests/response-next-steps.test.mjs
