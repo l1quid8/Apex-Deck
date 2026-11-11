@@ -356,14 +356,31 @@ async fn full_access_uncertain_command_blocks_without_replay_or_card_while_ask_k
         // The command really changes a file, then the service loses the result
         // before it can commit a receipt. A replay would append a second x.
         let execute=WorkerTools::real(f.host.data_dir()).execute;
+        let executed=Arc::new(tokio::sync::Notify::new());
+        let signal=executed.clone();
         let mut crashing=fake.tools();crashing.execute=Arc::new(move |operation,mark| {
             let execute=execute.clone();
+            let signal=signal.clone();
             Box::pin(async move {
+                // Exercise a command slower than the former 100 ms crash timer.
+                tokio::time::sleep(Duration::from_millis(150)).await;
                 execute(operation,mark).await?;
+                signal.notify_one();
                 std::future::pending::<Result<ToolRun,String>>().await
             })
         });
-        f.step_and_crash(&crashing).await;
+        // Cancel only after the real side effect, never on a machine-speed timer.
+        // Returning from this scope drops the in-flight step before its receipt.
+        {
+            let step=f.host.personal_step(&crashing);
+            tokio::pin!(step);
+            tokio::select! {
+                result=&mut step=>panic!("step finished before the simulated crash: {result:?}"),
+                result=tokio::time::timeout(Duration::from_secs(10),executed.notified())=>{
+                    result.expect("command did not complete its side effect before the crash");
+                }
+            }
+        }
         let effect=std::path::Path::new(&project.cwd).join("uncertain-effect");
         assert_eq!(std::fs::read_to_string(&effect).unwrap(),"x");
         assert_eq!(f.task().receipts[0].phase,OpPhase::Attempted);
