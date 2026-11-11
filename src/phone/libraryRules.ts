@@ -3,7 +3,7 @@ import type { RemoteAccess } from "../phoneRules";
 
 /** A picture's caption: the bot and the date, plus the time when asked. A missing bot name reads "A bot". */
 export function libraryCaption(item: LibraryItem, withTime: boolean): string {
-  const who = item.by?.trim() || "A bot";
+  const who = item.by?.trim() || "An agent";
   const when = new Date(item.created);
   return `${who} · ${withTime ? when.toLocaleString() : when.toLocaleDateString()}`;
 }

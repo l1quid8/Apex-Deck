@@ -364,7 +364,7 @@ fn room_plans(copies: &[(String, Vec<u8>)]) -> (Vec<crate::storage::LegacyRoom>,
         match crate::storage::plan_legacy_room(&id, bytes) {
             Ok((room, allowed, dropped)) => {
                 let plural = |n: usize| if n == 1 { "" } else { "s" };
-                let mut reason = "Restores with its folder and supported bots. Full and Edits access returns to Ask; allow it again in bot settings.".to_string();
+                let mut reason = "Restores with its folder and supported agents. Full and Edits access returns to Ask; allow it again in agent settings.".to_string();
                 if allowed > 0 { reason += &format!(" {allowed} remembered permission{} left ungranted; allow again when asked.", plural(allowed)); }
                 if dropped > 0 { reason += &format!(" {dropped} folder{} outside its own history dropped.", plural(dropped)); }
                 let title = serde_json::from_slice::<Value>(bytes).ok().and_then(|v| v["cwd"].as_str().map(str::to_owned)).unwrap_or_else(|| "(no folder)".into());
@@ -373,7 +373,7 @@ fn room_plans(copies: &[(String, Vec<u8>)]) -> (Vec<crate::storage::LegacyRoom>,
                     rows.push(Row {
                         id: format!("participant:{id}/{}", participant.id), kind: "grant", title: crate::legacy_import::title(&participant.display_name),
                         original_status: "custom command".into(), import_status: "notImported".into(),
-                        reason: "Custom commands are not started from old files. The original is in the saved copy; add this bot again to approve its command.".into(),
+                        reason: "Custom commands are not started from old files. The original is in the saved copy; add this agent again to approve its command.".into(),
                     });
                 }
                 rooms.push(room);

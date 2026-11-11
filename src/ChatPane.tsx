@@ -492,7 +492,7 @@ interface TurnProgress {
 const COPIED_MS = 1500;
 const PLAN_REFRESH_MS = 60_000;
 /** Said beside a paused queued message, so Resume is never a mystery. */
-const HOLD_REASON: Record<Exclude<QueueHold, "connection">, string> = { stopped: "you stopped this bot", failed: "its last reply failed", behind: "a message ahead needs Retry or Remove" };
+const HOLD_REASON: Record<Exclude<QueueHold, "connection">, string> = { stopped: "you stopped this agent", failed: "its last reply failed", behind: "a message ahead needs Retry or Remove" };
 
 function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   if (phase === "tool") return "Working";
@@ -554,7 +554,7 @@ const SAMPLE_BOTS: ParticipantConfig[] = [
   { id: "ada", display_name: "Ada", persona: "", access: "read", effort: null, appearance: { seed: "sample-ada", color: "#a78bfa" },
     backend: { kind: "scripted", lines: ["Hi, I'm Ada. Mention me with @ada, or everyone with @all.", "Ben sees everything I say, and I see what he says.", "[pass]"] } },
   { id: "ben", display_name: "Ben", persona: "", access: "read", effort: null, appearance: { seed: "sample-ben", color: "#60a5fa" },
-    backend: { kind: "scripted", lines: ["I'm Ben. I answer when you @ben me. Try @all to hear from both of us.", "Add a real model with + Add bot when you're ready.", "[pass]"] } },
+    backend: { kind: "scripted", lines: ["I'm Ben. I answer when you @ben me. Try @all to hear from both of us.", "Add a real model with + Add agent when you're ready.", "[pass]"] } },
 ];
 
 
@@ -1592,7 +1592,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if (!takesKey(draft.preset)) return draft;
     const name = keyNameOf(draft);
     if (draft.apiKey?.trim()) {
-      if (!name) throw new Error("Give the bot a name first, so its key can be saved.");
+      if (!name) throw new Error("Give the agent a name first, so its key can be saved.");
       await backend.apiKeySave(name, draft.apiKey);
       setDraft((d) => ({ ...d, keyEnv: name, apiKey: "" }));
       setKeyState("saved");
@@ -1602,7 +1602,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   };
 
   const saveParticipant = async () => {
-    if (!editing && !providerEnabled(draft.preset, disabledProviders)) return setFormError("This provider is disabled. Enable it in Providers to add a bot.");
+    if (!editing && !providerEnabled(draft.preset, disabledProviders)) return setFormError("This provider is disabled. Enable it in Providers to add an agent.");
     let ready: Draft;
     try { ready = await withKey(draft); } catch (error) { return setFormError(error instanceof Error ? error.message : String(error)); }
     const built = draftToConfig(ready);
@@ -1651,7 +1651,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       const next = participants.filter((p) => p.id !== id);
       if (profileMode) { setParticipants(next); onProfilesChange(next); }
       else setParticipants(list => list.filter(p => p.id !== id));
-    } catch (error) { notify(`Could not remove the bot: ${String(error)}`, "error"); return; }
+    } catch (error) { notify(`Could not remove the agent: ${String(error)}`, "error"); return; }
     if (editing === id) closeForm(draft.preset);
   };
   /** Kick: take a bot out from its chip at once, with Undo in the thread instead of a confirm box. */
@@ -1984,7 +1984,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   /** Retry on a bot's reply, Revert on your message: delete from there, put this thread's files back. */
   const goBack = (message: Message) => {
     if (!ready || chatReadOnly) return;
-    if (busy) return notify("Stop the bots first.", "error");
+    if (busy) return notify("Stop the agents first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
@@ -2032,7 +2032,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const goBackPop = (message: Message) => {
     if (!goingBack || goingBack.message.seq !== message.seq) return null;
     const { kind, plan, scope, ticked } = goingBack;
-    const who = names.get(message.speaker.kind === "bot" ? message.speaker.id : "") ?? "the bot";
+    const who = names.get(message.speaker.kind === "bot" ? message.speaker.id : "") ?? "the agent";
     const showFiles = plan.available && plan.files.length > 0 && !(kind === "revert" && scope === "chat");
     const toggle = (path: string) => setGoingBack((g) => g && { ...g, ticked: g.ticked.includes(path) ? g.ticked.filter((p) => p !== path) : [...g.ticked, path] });
     return <div className="steer-pop goback-pop" role="dialog" aria-label={kind === "retry" ? "Retry?" : "Revert?"}
@@ -2070,7 +2070,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
     const goBackKind: GoBack | null = message.speaker.kind === "bot" ? "retry" : message.speaker.kind === "human" ? "revert" : null;
     const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";
-    const goBackHint = busy ? "Stop the bots first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
+    const goBackHint = busy ? "Stop the agents first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
     const copiedHere = copied === message.seq;
     const pinIndex = pins.findIndex(pin => pinSource(pin) === message.seq);
     const pinned = pinIndex >= 0;
@@ -3164,7 +3164,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const accessNote = preset.agent?.enforcesAccess
     ? "Enforced with the tool's own permission settings."
     : enforcesAccess(preset)
-      ? "Enforced by Apex Deck, which runs this bot's tools: files, commands, web pages and your MCP servers."
+      ? "Enforced by Apex Deck, which runs this agent's tools: files, commands, web pages and your MCP servers."
       : "Stated to the model as an instruction. Not enforced.";
 
   /** Open the full form for a new bot or agent. */
@@ -3284,7 +3284,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   <summary>Key name</summary>
                   <div className="key-name-body">
                   <input name="key-env" aria-label="Key name" value={draft.keyEnv} onChange={(e) => set("keyEnv", e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))} placeholder={keyNameOf({ ...draft, keyEnv: "" }) || "e.g. MY_PROVIDER_API_KEY"} />
-                  <span className="hint">Bots that share a name share one key. An environment variable with this name also works.</span>
+                  <span className="hint">Agents that share a name share one key. An environment variable with this name also works.</span>
                   </div>
                 </details>
                 </div>
@@ -3443,14 +3443,14 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const submitBatch = async (): Promise<boolean> => {
     setFormError("");
     if (editorOpen && !providerEnabled(draft.preset, disabledProviders)) {
-      setFormError("This provider is disabled. Enable it in Providers to add a bot.");
+      setFormError("This provider is disabled. Enable it in Providers to add an agent.");
       return false;
     }
     const saved = savedToAdd;
     let rows = queuedBots;
     const offRow = rows.find((d) => !providerEnabled(d.preset, disabledProviders));
     if (offRow) {
-      setFormError(`${offRow.name.trim() || "New bot"}: this provider is disabled. Enable it in Providers or remove the bot.`);
+      setFormError(`${offRow.name.trim() || "New agent"}: this provider is disabled. Enable it in Providers or remove the agent.`);
       return false;
     }
     if (editorOpen) {
@@ -3468,7 +3468,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     for (let i = 0; i < rows.length; i++) {
       const built = draftToConfig(rows[i]);
       if (typeof built === "string") {
-        setFormError(`${rows[i].name.trim() || "New bot"}: ${built}`);
+        setFormError(`${rows[i].name.trim() || "New agent"}: ${built}`);
         return false;
       }
       const look = built.appearance ?? createAppearance(taken);
@@ -3531,7 +3531,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   /** Up to three tools for the quick menu: installed coding agents, then local models. */
   const quickTools = availablePresets.filter((p) => (p.agent && installed(p)) || p.key === "ollama").slice(0, 3);
   const quickAddMenu = (
-    <form ref={quickAddForm} className="quick-add" role="dialog" aria-label="Add a bot" onSubmit={async (e) => { e.preventDefault(); if (await submitBatch()) { closeForm(draft.preset); setQuickAdd(null); } }}>
+    <form ref={quickAddForm} className="quick-add" role="dialog" aria-label="Add an agent" onSubmit={async (e) => { e.preventDefault(); if (await submitBatch()) { closeForm(draft.preset); setQuickAdd(null); } }}>
       <header className="quick-add-head">
         <h3>Who's in this thread?</h3>
         <p>Pick saved agents, or set up new ones below.</p>
@@ -3549,10 +3549,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           })}
         </div>
       </>}
-      <div className="quick-add-section"><span className="quick-add-label">New bots</span><span className="quick-add-count">Up to {MAX_NEW_BOTS}</span></div>
+      <div className="quick-add-section"><span className="quick-add-label">New agents</span><span className="quick-add-count">Up to {MAX_NEW_BOTS}</span></div>
       {queuedBots.map((d, i) => (
         <div className="quick-add-row" key={`${d.name}-${i}`}>
-          <button type="button" className="quick-add-row-open" title="Edit this bot" onClick={() => openRow(i)}>
+          <button type="button" className="quick-add-row-open" title="Edit this agent" onClick={() => openRow(i)}>
             <span className="quick-add-face" aria-hidden="true">{(d.name.trim()[0] ?? "?").toUpperCase()}</span>
             <span className="quick-add-row-text">{PRESETS.find((p) => p.key === d.preset)?.label.replace(/\s*\(.*\)$/, "") ?? d.preset} · {d.name} · {d.effort ? effortLabel(d.effort) : "Default"} · {accessLabel(d.access)}</span>
           </button>
@@ -3560,7 +3560,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         </div>
       ))}
       {editorOpen && (<div className="quick-add-editor">
-        <button type="button" className="quick-add-row-x quick-add-editor-x" aria-label="Remove this bot" onClick={() => { setEditorOpen(false); setFormError(""); }}>×</button>
+        <button type="button" className="quick-add-row-x quick-add-editor-x" aria-label="Remove this agent" onClick={() => { setEditorOpen(false); setFormError(""); }}>×</button>
       <div className="quick-add-tools" role="radiogroup" aria-label="Tool">
         {quickTools.map((p) => (
           <button type="button" role="radio" aria-checked={draft.preset === p.key} key={p.key} className={draft.preset === p.key ? "qa-tool on" : "qa-tool"} title={p.label} onClick={() => choosePreset(p.key)}>
@@ -3653,7 +3653,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         write={(writer, idea, taken) => backend.personaDraft(writer, idea, taken)}
       />
       </div>)}
-        <button type="button" className="ghost quick-add-another" disabled={queuedBots.length + (editorOpen ? 1 : 0) >= MAX_NEW_BOTS} title={`Up to ${MAX_NEW_BOTS} new bots at a time`} onClick={anotherBot}>+ Another bot</button>
+        <button type="button" className="ghost quick-add-another" disabled={queuedBots.length + (editorOpen ? 1 : 0) >= MAX_NEW_BOTS} title={`Up to ${MAX_NEW_BOTS} new agents at a time`} onClick={anotherBot}>+ Another agent</button>
       </div>{/* end quick-add-scroll */}
       <div className="quick-add-foot">
         <span className="quick-add-faces" aria-hidden="true">
@@ -3668,7 +3668,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   );
   const quickAddButton = (where: "details", primary: boolean) => (
     <span className={`quick-add-wrap ${where}`}>
-      <button className={primary ? "primary" : "ghost"} disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={(e) => openQuickAdd(where, e.currentTarget)}>+ Add bot</button>
+      <button className={primary ? "primary" : "ghost"} disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={(e) => openQuickAdd(where, e.currentTarget)}>+ Add agent</button>
       {quickAdd === where && quickAddMenu}
     </span>
   );
@@ -3797,7 +3797,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
         >
             <span data-editing={editor === p.id} className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
-              <button className="chip-name" aria-label={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
+              <button className="chip-name" aria-label={`${stateLabel}${accessSummary} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open agent settings" : "mention agent"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
                   setCard(null);
                   setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
@@ -3811,7 +3811,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 <span className="chip-details">
                 {(chipParts.style === "ledger" || chipParts.style === "two-line") && <span className="chip-phase">{phase === "idle" ? "Idle" : "Working"}</span>}
                 {pendingSettings[p.id] && <span className="settings-pending" role="status" aria-label="Settings pending for next reply" title="Settings apply to the next reply" />}
-                {queueCount > 0 && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queueCount}<span className="chip-queued-word"> queued</span></span>}
+                {queueCount > 0 && <span className="chip-meta chip-queued" title="Messages waiting for this agent">{queueCount}<span className="chip-queued-word"> queued</span></span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{chipDescription(p, chipParts)}</span>
                 {hasAccess && <span className="chip-meta chip-access" title={`Access: ${chipAccess}${pendingSettings[p.id] ? ' · after this reply' : ''}`}>
@@ -3839,13 +3839,13 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           this seat an empty thread would have no way to add a bot back. */}
       {(participants.length > 0 || entries.length > 0) && (
         <span className="quick-add-wrap roster">
-          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready || chatReadOnly || (talkOnly && !onChatAddBot)} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => { if (talkOnly) return onChatAddBot?.(); if (availablePresets.length === 0 && availableProfiles.length === 0) openNewForm(); else openQuickAdd("dock", e.currentTarget); }}>
-            <PersonPlus /><span className="chip-add-label">Add bot</span>
+          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready || chatReadOnly || (talkOnly && !onChatAddBot)} aria-label="Add agent" title="Add agent" aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => { if (talkOnly) return onChatAddBot?.(); if (availablePresets.length === 0 && availableProfiles.length === 0) openNewForm(); else openQuickAdd("dock", e.currentTarget); }}>
+            <PersonPlus /><span className="chip-add-label">Add agent</span>
           </button>
         </span>
       )}
       {participants.length > 0 && !profileMode && (
-        <button type="button" className="chips-fold" aria-pressed={folded} aria-label={folded ? "Show bot details" : "Fold bots to avatars"} title={folded ? "Show bot details" : "Fold bots to avatars"}
+        <button type="button" className="chips-fold" aria-pressed={folded} aria-label={folded ? "Show agent details" : "Fold agents to avatars"} title={folded ? "Show agent details" : "Fold agents to avatars"}
           onPointerDown={(event) => event.preventDefault()} onClick={toggleFolded}>{folded ? "›" : "‹"}</button>
       )}
     </div>
@@ -3889,7 +3889,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           if (before && before !== actual.access) setAccessFrom(all => ({ ...all, [config.id]: all[config.id] ?? before }));
         }
       }} /> }
-      {!profileMode && !talkOnly && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
+      {!profileMode && !talkOnly && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 agent" : `${participants.length} agents`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
       {profileMode && !adding && participants.length > 0 && <div className="chat-bar"><div className="chips">{addButton}</div></div>}
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -3902,7 +3902,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           <h3>No agents yet</h3>
           <p>Build one from scratch — give it a name, a model, and a brief.</p>
           <div className="starters-foot">
-            <span className="muted">Or save a bot from a thread with Save to Agents.</span>
+            <span className="muted">Or save an agent from a thread with Save to Agents.</span>
             <button className="primary" onClick={openNewForm} disabled={availablePresets.length === 0}>+ New agent</button>
           </div>
         </div>}
@@ -3927,7 +3927,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
               {work ? <>
                 {/* Codex's opening question: the project's name opens the picker. */}
                 <h3 className="ask">What should we work on in <button type="button" className="pick-name" onClick={() => setAskPicker((n) => n + 1)}>{work.project.name}</button>?</h3>
-                <p className="where">{!work.project.path ? "No project: the bots work without a project folder."
+                <p className="where">{!work.project.path ? "No project: the agents work without a project folder."
                   : work.project.hostId === "local" ? `On This Mac · ${work.project.path}`
                   : `On ${work.project.hostName} · ${work.project.path}${work.workRows.some((r) => r.hostId === "local" && r.workspaceId) ? " · a separate copy from your Mac's" : ""}`}</p>
               </> : <h3>{participants.length === 0 ? "Build your thinking team." : "The room is yours."}</h3>}
@@ -3936,7 +3936,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   ? "Add two or more models, then ask them something. Each one sees the whole conversation."
                   : "Type a message below. Use @name to pick who answers, or @all for everyone."}
               </p>
-              {participants.length === 0 && <button className="primary" disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => openQuickAdd("dock", e.currentTarget)}>+ Add bots</button>}
+              {participants.length === 0 && <button className="primary" disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => openQuickAdd("dock", e.currentTarget)}>+ Add agents</button>}
               {participants.length > 0 && <div className="example-rows" aria-label="Examples">
                 {exampleRows(participants).map((row) => (
                   <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>

@@ -159,12 +159,12 @@ export function findRoom(catalog: ChatCatalog, hostId: string, id: string): Chat
 
 /** "Jigga · Null", the first line under a chat's title. */
 export function botNames(row: Pick<ChatEntry, "bots">): string {
-  return row.bots.length ? row.bots.map((bot) => bot.name).join(" · ") : "No bots";
+  return row.bots.length ? row.bots.map((bot) => bot.name).join(" · ") : "No agents";
 }
 
 /** A machine's `chat_profiles` answer: its saved bots and whether each can join a chat. */
 export function parseChatProfiles(raw: unknown): ChatProfile[] {
-  if (!record(raw) || !Array.isArray(raw.profiles)) throw new Error("The machine sent a bot list this phone can't read.");
+  if (!record(raw) || !Array.isArray(raw.profiles)) throw new Error("The machine sent an agent list this phone can't read.");
   return raw.profiles.flatMap((item) => {
     if (!record(item) || !record(item.profile) || typeof item.profile.id !== "string" || !item.profile.id) return [];
     return [{ profile: item.profile as unknown as ParticipantConfig, ok: item.chatOk === true, reason: typeof item.reason === "string" ? item.reason : null, ...(typeof item.signIn === "string" ? { signIn: item.signIn } : {}) }];

@@ -50,15 +50,15 @@ test("addInOrder with no failure returns failed null", async () => {
 
 test("batchLabel counts the batch on the submit button", async () => {
   const { batchLabel } = await import("../src/batchAdd.ts");
-  assert.equal(batchLabel(0), "Pick a bot");
-  assert.equal(batchLabel(1), "Add 1 bot");
-  assert.equal(batchLabel(4), "Add 4 bots");
+  assert.equal(batchLabel(0), "Pick an agent");
+  assert.equal(batchLabel(1), "Add 1 agent");
+  assert.equal(batchLabel(4), "Add 4 agents");
 });
 
 test("checkBatch words a clash inside the batch as the batch, not the chat", () => {
   const result = checkBatch([bot("Opus"), { id: "opus-x", display_name: "opus" }], { others: [bot("Gwen")], agents: [] });
   assert.equal(result.index, 1);
-  assert.equal(result.error, "Another bot in this batch already answers to @opus. Pick a different name.");
+  assert.equal(result.error, "Another agent in this batch already answers to @opus. Pick a different name.");
 });
 
 test("checkBatch still words a clash with the chat as the chat", () => {
@@ -76,7 +76,7 @@ test("splitAdded says how many saved agents and new rows went in", async () => {
 
 test("lineupText says who will join the thread", async () => {
   const { lineupText } = await import("../src/batchAdd.ts");
-  assert.equal(lineupText([]), "Pick at least one bot");
-  assert.equal(lineupText(["Null"]), "1 bot will join: Null");
-  assert.equal(lineupText(["Null", "  ", "Opus"]), "3 bots will join: Null, New bot, Opus");
+  assert.equal(lineupText([]), "Pick at least one agent");
+  assert.equal(lineupText(["Null"]), "1 agent will join: Null");
+  assert.equal(lineupText(["Null", "  ", "Opus"]), "3 agents will join: Null, New agent, Opus");
 });

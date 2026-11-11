@@ -171,7 +171,7 @@ pub(crate) fn explain(status: u16, body: &str) -> String {
         return format!("{plain}{suggestion}");
     }
     match status {
-        401 | 403 => format!("Venice refused the saved API key ({said}). Open this bot's settings and paste a new one into API key."),
+        401 | 403 => format!("Venice refused the saved API key ({said}). Open this agent's settings and paste a new one into API key."),
         402 => "Your Venice balance is too low for this. Top up at venice.ai, then send it again.".into(),
         409 => {
             let docs = value["docs_url"].as_str().map(|u| format!(" See {u}.")).unwrap_or_default();

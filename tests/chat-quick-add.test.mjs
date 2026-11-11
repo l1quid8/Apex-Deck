@@ -34,7 +34,7 @@ test('inline Add bot replaces the box; docked Add bot keeps its controls under t
 
 test('the welcome block steps aside while the add menu is open', () => {
   assert.match(source, /<div className=\{`empty\$\{quickAdd === "dock" \? " away" : ""\}`\}/);
-  assert.match(source, /onClick=\{\(e\) => openQuickAdd\("dock", e\.currentTarget\)\}>\+ Add bots<\/button>/, 'the welcome button opens the menu in the message box');
+  assert.match(source, /onClick=\{\(e\) => openQuickAdd\("dock", e\.currentTarget\)\}>\+ Add agents<\/button>/, 'the welcome button opens the menu in the message box');
   const css = fs.readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
   assert.match(css, /\.transcript \.empty\.away \{[^}]*pointer-events: none;/);
   assert.match(css, /\.composer-box\.adding > :not\(\.quick-add\) \{ display: none; \}/, 'the message box hides its own controls while it is the menu');
@@ -122,7 +122,7 @@ test('saved agents in the quick add menu are toggles, not instant adds', () => {
 
 test('the quick add submit counts the batch', () => {
   assert.match(quickMenu(), /batchLabel\(/);
-  assert.match(quickMenu(), /\+ Another bot/);
+  assert.match(quickMenu(), /\+ Another agent/);
 });
 
 test('a queued row never keeps a typed key', () => {

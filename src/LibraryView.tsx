@@ -135,7 +135,7 @@ export function LibraryView({ machines, backendOf, threads, workspaces, onOpenTh
 
   return <section className="library-section">
     <header className="section-intro">
-      <span className="eyebrow">Every picture your bots made</span>
+      <span className="eyebrow">Every picture your agents made</span>
       <h1>Library</h1>
       <p>{several ? "Pictures stay on the machine that made them, and stay after their thread is gone." : "Pictures stay here after their thread is gone."}</p>
     </header>
@@ -154,8 +154,8 @@ export function LibraryView({ machines, backendOf, threads, workspaces, onOpenTh
           <option value="">All machines</option>
           {machines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
       </select></label>}
-      <label>Bot <select aria-label="Filter by bot" value={filter.bot ?? ""} onChange={(e) => setFilter({ ...filter, bot: e.target.value || null })}>
-          <option value="">All bots</option>
+      <label>Agent <select aria-label="Filter by agent" value={filter.bot ?? ""} onChange={(e) => setFilter({ ...filter, bot: e.target.value || null })}>
+          <option value="">All agents</option>
           {bots.map((bot) => <option key={bot} value={bot}>{bot}</option>)}
       </select></label>
       <label>Workspace <select aria-label="Filter by workspace" value={filter.workspace ?? ""} onChange={(e) => setFilter({ ...filter, workspace: e.target.value || null })}>
@@ -166,7 +166,7 @@ export function LibraryView({ machines, backendOf, threads, workspaces, onOpenTh
     <div className="library-scroll">
       {error && <p className="library-error" role="alert">{error}</p>}
       {notes.length > 0 && <div className="library-notes">{notes.map((note) => <p key={note} className="library-note">{note}</p>)}</div>}
-      {loaded && items.length === 0 && <div className="library-empty"><p className="muted">Pictures your bots make will appear here.</p></div>}
+      {loaded && items.length === 0 && <div className="library-empty"><p className="muted">Pictures your agents make will appear here.</p></div>}
       {items.length > 0 && <>
       {shown.length === 0 && <p className="muted library-none">{filtering || query ? "No pictures match your search and filters." : "No pictures to show."}</p>}
       <div className={`library-grid${layout === "list" ? " is-list" : ""}`}>
@@ -227,7 +227,7 @@ function LibraryTile({ item, backend, machine, onOpen, onBeginRename, onRename, 
       <span className="library-thumb">{url && (video ? <video src={url} muted preload="metadata" aria-label={item.name ?? item.file} /> : <img src={url} alt={item.name ?? item.file} />)}{video && <span className="library-play" aria-hidden="true">▶</span>}</span>
       <span className="library-caption">
         <strong className="library-file">{item.name ?? item.file}</strong>
-        <span className="library-meta"><span>{item.by ?? "A bot"}</span><span>{details.join(" · ")}</span></span>
+        <span className="library-meta"><span>{item.by ?? "An agent"}</span><span>{details.join(" · ")}</span></span>
       </span>
     </button>
     <LibraryActions onBeginRename={onBeginRename} onSaveAs={onSaveAs} onOpenThread={onOpenThread} onDelete={onDelete} />
@@ -295,7 +295,7 @@ function LibraryViewer({ item, backend, bot, when, openable, workspace, machine,
       {url ? (isVideoItem(item) ? <video key={url} src={url} controls autoPlay aria-label={item.name ?? item.file} /> : <img key={url} ref={imageRef} src={url} alt={item.name ?? item.file} draggable={false} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />) : <span className="muted" role="status">Loading preview…</span>}
     </div>
     <div className="library-viewer-bar">
-      <span className="library-caption"><strong>{item.name ?? item.file}</strong><span>{bot ?? "A bot"} · {new Date(when).toLocaleString()}{workspace && ` · ${workspace}`}{machine && ` · ${machine}`}</span><small>Original file: {item.file}</small></span>
+      <span className="library-caption"><strong>{item.name ?? item.file}</strong><span>{bot ?? "An agent"} · {new Date(when).toLocaleString()}{workspace && ` · ${workspace}`}{machine && ` · ${machine}`}</span><small>Original file: {item.file}</small></span>
       <span className="library-viewer-actions">
         {!isVideoItem(item) && <><button aria-label="Zoom out" onClick={() => setScale(zoom - 0.25)}>−</button><span className="library-zoom-label">{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => setScale(zoom + 0.25)}>+</button><button onClick={() => { setScale(1); setPan({ x: 0, y: 0 }); }}>Fit</button><button onClick={() => { const image = imageRef.current; if (image) { setScale(image.naturalWidth / Math.max(1, image.clientWidth)); setPan({ x: 0, y: 0 }); } }}>Actual size</button></>}
         <button onClick={() => void save()} disabled={!url}>Save as…</button>

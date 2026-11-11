@@ -21,18 +21,18 @@ const bots = [
 ];
 
 test("a thread reports who is replying and who is stopped on a card", () => {
-  assert.deepEqual(threadStatusOf(bots, ["null", "jigga"], ["null"]), { text: "3 bots · replying", replying: ["Jigga"], waiting: ["Null"], who: bots.map((b) => b.display_name) });
-  assert.deepEqual(threadStatusOf(bots, [], []), { text: "3 bots", replying: [], waiting: [], who: bots.map((b) => b.display_name) });
+  assert.deepEqual(threadStatusOf(bots, ["null", "jigga"], ["null"]), { text: "3 agents · replying", replying: ["Jigga"], waiting: ["Null"], who: bots.map((b) => b.display_name) });
+  assert.deepEqual(threadStatusOf(bots, [], []), { text: "3 agents", replying: [], waiting: [], who: bots.map((b) => b.display_name) });
 });
 
 test("the head's words stay as they were", () => {
-  assert.equal(threadStatusOf([], [], []).text, "No bots yet");
-  assert.equal(threadStatusOf(bots.slice(0, 1), [], []).text, "1 bot");
-  assert.equal(threadStatusOf(bots.slice(0, 1), ["null"], ["null"]).text, "1 bot · replying");
+  assert.equal(threadStatusOf([], [], []).text, "No agents yet");
+  assert.equal(threadStatusOf(bots.slice(0, 1), [], []).text, "1 agent");
+  assert.equal(threadStatusOf(bots.slice(0, 1), ["null"], ["null"]).text, "1 agent · replying");
 });
 
 test("names follow the room's order, and bots no longer in the room are left out", () => {
-  assert.deepEqual(threadStatusOf(bots, ["ada", "null", "gone"], ["gone"]), { text: "3 bots · replying", replying: ["Null", "Ada"], waiting: [], who: bots.map((b) => b.display_name) });
+  assert.deepEqual(threadStatusOf(bots, ["ada", "null", "gone"], ["gone"]), { text: "3 agents · replying", replying: ["Null", "Ada"], waiting: [], who: bots.map((b) => b.display_name) });
 });
 
 const bot = (name, doing, startedAt = 0, heardAt = null) => ({ name, doing, startedAt, heardAt });
@@ -47,9 +47,9 @@ test("two or more at work: how many, and what one of them is doing", () => {
 });
 
 test("nobody at work: how many bots", () => {
-  assert.equal(headLine(0, [], 0), "No bots yet");
-  assert.equal(headLine(1, [], 0), "1 bot");
-  assert.equal(headLine(2, [], 0), "2 bots");
+  assert.equal(headLine(0, [], 0), "No agents yet");
+  assert.equal(headLine(1, [], 0), "1 agent");
+  assert.equal(headLine(2, [], 0), "2 agents");
 });
 
 test("a command-line bot silent for 5 minutes reads as quiet, with the cutoff", () => {
@@ -127,7 +127,7 @@ test("quoting and an empty room keep their own placeholders", () => {
 });
 
 test("with Plan on, the empty box says nothing gets changed", () => {
-  assert.equal(composerCopy(false, false, { plan: true }).placeholder, "Plan with the bots — nothing gets changed…");
-  assert.equal(composerCopy(false, false, { plan: true, tldr: true }).placeholder, "Plan with the bots — nothing gets changed…", "planning matters more than short answers");
+  assert.equal(composerCopy(false, false, { plan: true }).placeholder, "Plan with the agents — nothing gets changed…");
+  assert.equal(composerCopy(false, false, { plan: true, tldr: true }).placeholder, "Plan with the agents — nothing gets changed…", "planning matters more than short answers");
   assert.equal(composerCopy(true, false, { plan: true }).placeholder, "Queue a message… (⌘↵ steers)");
 });

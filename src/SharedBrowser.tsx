@@ -9,7 +9,7 @@ const MAC = navigator.platform.toLowerCase().includes("mac");
 /** The tab last shown on each machine, for coming back to it. */
 const lastTab = new Map<string, string>();
 const PROBLEMS: Record<string, string> = {
-  tab_held_by_bot: "A bot has this tab. Take over to use it.",
+  tab_held_by_bot: "An agent has this tab. Take over to use it.",
   browser_selection_unavailable: "That selection couldn't be read, so nothing was copied or cut.",
 };
 type Frame = { seq: number; image?: string; width?: number; height?: number; tab?: BrowserTab };
@@ -206,16 +206,16 @@ export function SharedBrowser({ call, hostName, hostId = hostName, visible, thre
     {tab && <div className="shared-browser-control">
       <span>{held ? `${name(tab)} has this tab` : human ? "You have this tab" : "Nobody has this tab"}</span>
       {held && <button type="button" className="primary" onClick={() => act(live.current.call("browser_tab_control", { tab: tab.id, take: true }))}>Take over</button>}
-      {tab.control.kind === "bot" && <button type="button" onClick={() => act(live.current.call("browser_tab_stop", { tab: tab.id }))}>Stop this bot</button>}
+      {tab.control.kind === "bot" && <button type="button" onClick={() => act(live.current.call("browser_tab_stop", { tab: tab.id }))}>Stop this agent</button>}
       {human && (tab.rooms.length > 0 || tab.assistant) && <button type="button" onClick={() => act(live.current.call("browser_tab_control", { tab: tab.id, take: false }))}>Hand back</button>}
-      {thread && !tab.assistant && <button type="button" title={shared ? `Bots in ${thread.title} can no longer reach this tab` : `Bots in ${thread.title} can use this tab. It doesn't hand them your control.`} onClick={() => act(live.current.call("browser_tab_share", { tab: tab.id, thread: thread.id, share: !shared }))}>{shared ? "Remove from this thread" : "Share with this thread"}</button>}
+      {thread && !tab.assistant && <button type="button" title={shared ? `Agents in ${thread.title} can no longer reach this tab` : `Agents in ${thread.title} can use this tab. It doesn't hand them your control.`} onClick={() => act(live.current.call("browser_tab_share", { tab: tab.id, thread: thread.id, share: !shared }))}>{shared ? "Remove from this thread" : "Share with this thread"}</button>}
       {anyBot && onStopAll && <button type="button" className="shared-browser-stop" onClick={onStopAll}>Stop all</button>}
     </div>}
     {problem && <p role="alert" className="shared-browser-problem">{PROBLEMS[problem] ?? problem}</p>}
     {tab?.dialogOpen && <div className="shared-browser-dialog" role="alertdialog" aria-label="Page dialog">
       {question && <p className="shared-browser-question"><strong>{asker || "This page"} says</strong>{question.message}</p>}
       {!question && <span>This page is showing a dialog.</span>}
-      {!human && <span>Take over to answer it. Bots leave it alone.</span>}
+      {!human && <span>Take over to answer it. Agents leave it alone.</span>}
       {human && <>{choices.answer && <input aria-label="Dialog answer" value={reply} onChange={(event) => setReply(event.target.value)} />}<button type="button" className="primary" onClick={() => send({ kind: "dialog", accept: true, ...(choices.answer ? { text: reply } : {}) })}>{choices.ok}</button>{choices.cancel && <button type="button" onClick={() => send({ kind: "dialog", accept: false })}>{choices.cancel}</button>}</>}
     </div>}
     {tab?.fileChooser && human && <label className="shared-browser-dialog">This page is asking for a file (6 MB at most). <input type="file" aria-label="File for the page" onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); }} /></label>}

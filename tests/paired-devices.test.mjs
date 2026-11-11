@@ -5,7 +5,7 @@ import { TIERS, devicesApi, lastSeenText, shortId, threadsText } from "../src/pa
 test("each tier says plainly what it lets a phone do, and Chat says bots can run code", () => {
   assert.deepEqual(TIERS.map((t) => t.id), ["read_only", "chat", "full"]);
   const chat = TIERS.find((t) => t.id === "chat");
-  assert.match(chat.note, /bots/);
+  assert.match(chat.note, /agents/);
   assert.match(chat.note, /run code/);
   assert.match(chat.note, /threads you already set up/);
   assert.match(TIERS.find((t) => t.id === "full").note, /terminals/);

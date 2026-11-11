@@ -61,6 +61,6 @@ test('who has the phone, in plain words', () => {
   assert.equal(holderLine({ ...base, on: false, holder: { kind: 'free' } }), 'Off');
   assert.equal(holderLine({ ...base, on: false, starting: true, holder: { kind: 'free' } }), 'Turning on…');
   assert.equal(holderLine({ ...base, holder: { kind: 'free' } }), 'Free. Tap the screen to take it.');
-  assert.equal(holderLine({ ...base, holder: { kind: 'human', secondsLeft: 7 } }), 'You have the phone. The bots get it back after 7s without a tap.');
+  assert.equal(holderLine({ ...base, holder: { kind: 'human', secondsLeft: 7 } }), 'You have the phone. The agents get it back after 7s without a tap.');
   assert.equal(holderLine({ ...base, holder: { kind: 'bot', name: 'Jigga' } }), 'Jigga is using the phone. Tap the screen to take over.');
 });

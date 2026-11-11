@@ -63,8 +63,8 @@ export function menuItems(trigger: Trigger | null, people: readonly MenuPerson[]
   ];
   // Plan switches every bot in the thread to planning, or back.
   const plan: MenuItem = planOn
-    ? { kind: "command", key: "plan", label: "Stop planning", detail: "Let the bots change things again", command: { name: "plan" } }
-    : { kind: "command", key: "plan", label: "Plan", detail: "Bots plan and ask; nothing gets changed", command: { name: "plan" } };
+    ? { kind: "command", key: "plan", label: "Stop planning", detail: "Let the agents change things again", command: { name: "plan" } }
+    : { kind: "command", key: "plan", label: "Plan", detail: "Agents plan and ask; nothing gets changed", command: { name: "plan" } };
   // Tools types the ! that opens the list of servers, apps and plugins.
   if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, { kind: "tools", label: "Tools", detail: "Pick a server, app or plugin to use" }, plan, ...commands.filter(c=>c.key==='goal'||c.key==='loop').map(c=>({...c,label:c.key==='goal'?'Goal':'Loop'})), ...mentions, ...commands.filter(c=>c.key!=='goal'&&c.key!=='loop')];
   if (trigger.kind === "thread") return [];

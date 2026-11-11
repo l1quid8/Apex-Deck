@@ -1824,7 +1824,7 @@ impl Host {
             // give a bot Read only.
             for bot in access.keys() {
                 if !snapshot.participants.iter().any(|participant| participant.id.as_str() == bot.as_str()) {
-                    return Err(format!("This chat has no bot named `{bot}`, so its access can't be set."));
+                    return Err(format!("This chat has no agent named `{bot}`, so its access can't be set."));
                 }
             }
             // Rebuild every bot from this machine's own saved profiles, at the
@@ -1849,7 +1849,7 @@ impl Host {
                     .map_err(|why| format!("Can't put `{}` in the Work thread: {why}", bot.display_name))?;
                 rebuilt.access = access.get(bot.id.as_str()).copied().unwrap_or(Access::Read);
                 if participants.iter().any(|prior| prior.id == rebuilt.id) {
-                    return Err(format!("Two bots in this chat are both named `{}`.", rebuilt.display_name));
+                    return Err(format!("Two agents in this chat are both named `{}`.", rebuilt.display_name));
                 }
                 if let Some(why) = apex_core::mention_clash(&rebuilt, &participants) {
                     return Err(why);
@@ -1881,7 +1881,7 @@ impl Host {
             // with it, or finds this handle closed and the chat moved. Never
             // mid-reply, or the reply would land in the old chat.
             Some(handle) => {
-                const ANSWERING: &str = "A bot is still answering. Move the chat once it has finished.";
+                const ANSWERING: &str = "An agent is still answering. Move the chat once it has finished.";
                 if handle.busy() { return Err(ANSWERING.into()); }
                 let already = handle
                     .runtime
@@ -2354,11 +2354,11 @@ impl Host {
         check()?;
         if let Some((old_level, folder)) = binding {
             if old_level.is_some_and(|old| old != current.access) {
-                return Err("The bot's access changed. Refresh its settings before trying again.".into());
+                return Err("The agent's access changed. Refresh its settings before trying again.".into());
             }
             if next.access != current.access {
                 if old_level.is_none() {
-                    return Err("An access change must name the bot's old_level.".into());
+                    return Err("An access change must name the agent's old_level.".into());
                 }
                 if next.access == Access::Full {
                     let cwd = context.cwd.as_deref().ok_or("Full access needs the thread's folder.")?;
@@ -2672,7 +2672,7 @@ impl Host {
                         && apex_adapters::curator_profile_ok(candidate, context.path.as_deref()).is_ok()
                 });
                 let next = alternative.map_or_else(
-                    || "Message another bot".to_owned(),
+                    || "Message another agent".to_owned(),
                     |candidate| format!("Message @{}", apex_core::mention_for(&candidate)),
                 );
                 format!("{} can't pick without tools. {error} {next}, then run /curate again.", config.display_name)
@@ -2794,7 +2794,7 @@ impl Host {
             let handle = self.handle(room)?;
             let saved = handle.checkpoint.lock().unwrap();
             if !saved.snapshot.participants.iter().any(|p| matches!(p.backend, apex_core::Backend::Agent { tool: t, .. } if t == tool)) {
-                return Err("no bot in this chat uses that provider".to_string());
+                return Err("no agent in this chat uses that provider".to_string());
             }
             handle.context.clone()
         };
@@ -6114,7 +6114,7 @@ done
         let ghost = host
             .chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), cwd.clone(), None, Some(std::collections::BTreeMap::from([("ghost".to_string(), Access::Full)])), None)
             .unwrap_err();
-        assert!(ghost.contains("no bot named `ghost`"), "{ghost}");
+        assert!(ghost.contains("no agent named `ghost`"), "{ghost}");
         // Deck's own data folder is not a project folder.
         let inside_data = host.chat_promote("11111111-1111-1111-1111-111111111111".into(), "22222222-2222-2222-2222-222222222222".into(), host.store.root().to_string_lossy().into_owned(), None, None, None).unwrap_err();
         assert!(inside_data.contains("belongs to Deck"), "{inside_data}");

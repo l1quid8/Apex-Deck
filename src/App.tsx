@@ -3001,7 +3001,7 @@ export function App() {
       <div className="empty-emblem"><DeckIcon name={section === "threads" ? "chat" : "spark"} size={30} /></div>
       <span className="eyebrow">{current?.name} / {section === "threads" ? "Threads" : "Code"}</span>
       <h2>{section === "threads" ? "Great work starts with a conversation." : "Your next idea. Ready to run."}</h2>
-      <p className="muted">{section === "threads" ? "Bring your bots into one conversation. Chats are saved automatically." : `Run your coding tools side by side in ${current?.name}.`}</p>
+      <p className="muted">{section === "threads" ? "Bring your agents into one conversation. Chats are saved automatically." : `Run your coding tools side by side in ${current?.name}.`}</p>
       <div className={`picker-grid ${section === "threads" ? "single" : ""}`}>
         {section === "code" && pickerAgents.filter((agent) => providerEnabled(agent.key, disabledProviders)).map((agent) => (
           <button key={agent.key} disabled={!agent.found} onClick={() => addPane("terminal", agent.label, agent.key)} title={agent.found ? `Runs ${agent.program}` : `${agent.program} was not found on this computer`}>
@@ -3155,7 +3155,7 @@ export function App() {
                 <DeckIcon name="folder" /> Add a workspace <DeckIcon name="arrow" size={16} />
               </button>
               <button onClick={trySample}>Try a sample thread</button>
-              <span className="muted welcome-note">Scripted bots. No keys needed.</span>
+              <span className="muted welcome-note">Scripted agents. No keys needed.</span>
               <div className="welcome-capabilities"><span>01 / Agents</span><span>02 / Code</span><span>03 / Threads</span></div>
             </div>
           )}

@@ -134,7 +134,7 @@ impl std::fmt::Display for JailError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(refused) => refused.fmt(f),
-            Self::Io(error) => write!(f, "could not start the bot's sandbox: {error}"),
+            Self::Io(error) => write!(f, "could not start the agent's sandbox: {error}"),
             Self::Login(message) => f.write_str(message),
         }
     }

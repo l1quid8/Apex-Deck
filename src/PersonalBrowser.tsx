@@ -119,7 +119,7 @@ export function PersonalBrowser({ lane, onClose, presentation = 'expanded', onEx
       </div>
       {lane.offline && <p className="personal-browser-hint">Reconnect {lane.hostName} to view the page and use browser controls.</p>}
       {!lane.browserView && <p role="alert" className="personal-browser-alert">This host does not support the assistant browser.</p>}
-      {view?.dialogOpen && <p role="status" className="personal-browser-hint">A page dialog is waiting. Take over, then choose Escape to dismiss it. Bots leave the dialog alone.</p>}
+      {view?.dialogOpen && <p role="status" className="personal-browser-hint">A page dialog is waiting. Take over, then choose Escape to dismiss it. Agents leave the dialog alone.</p>}
       {error && <p role="alert" className="personal-browser-alert">{error}</p>}
       {view && !lane.offline ? (
         <div className="personal-browser-page">

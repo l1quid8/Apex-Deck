@@ -1172,7 +1172,7 @@ pub async fn list_servers(
             return result;
         }
         #[cfg(not(target_os = "linux"))]
-        return Err("Couldn’t start codex for tool discovery: Linux bot jail is only available on Linux".into());
+        return Err("Couldn’t start codex for tool discovery: Linux agent jail is only available on Linux".into());
     }
     let mut command = tokio::process::Command::new(crate::executable::program("codex", path.as_deref()));
     if let Some(path) = path {

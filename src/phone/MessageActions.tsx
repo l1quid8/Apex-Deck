@@ -52,7 +52,7 @@ export function MessageActions(props: {
   const mine = message.speaker.kind === "human";
   const goBackKind: GoBack = mine ? "revert" : "retry";
   const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";
-  const goBackHint = props.busy ? "Stop the bots first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
+  const goBackHint = props.busy ? "Stop the agents first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
   const pinLabel = `${props.pinned ? "Unpin" : "Pin"} ${mine ? "your message" : "response"}`;
   const disclosure = <button key="more" type="button" className="msg-action action-disclosure" data-message-more={message.seq}
     title={props.expanded ? "Hide message actions" : "Show message actions"}

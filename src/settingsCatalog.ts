@@ -104,7 +104,7 @@ export const CATALOG_ENTRIES: CatalogEntry[] = [
   // Threads
   { id: 'answers', section: 'threads', label: 'Who answers', keywords: ['answers','who','addressed','turn','policy','mention','everyone','round robin'], scope: 'new-thread', scopeLabel: SCOPE_LABEL['new-thread'], anchorId: 'answers' },
   { id: 'rounds', section: 'threads', label: 'Model-to-model rounds', keywords: ['rounds','model','unlimited','hops','agent'], scope: 'new-thread', scopeLabel: SCOPE_LABEL['new-thread'], anchorId: 'rounds' },
-  { id: 'access', section: 'threads', label: 'Access for new bots Read/Ask/Edits/Full', keywords: ['access','read','ask','edits','full','permissions'], scope: 'new-thread', scopeLabel: SCOPE_LABEL['new-thread'], anchorId: 'access' },
+  { id: 'access', section: 'threads', label: 'Access for new agents Read/Ask/Edits/Full', keywords: ['access','read','ask','edits','full','permissions'], scope: 'new-thread', scopeLabel: SCOPE_LABEL['new-thread'], anchorId: 'access' },
   { id: 'steer', section: 'threads', label: 'Confirm before steering', keywords: ['steer','confirm','interrupting'], scope: 'new-thread', scopeLabel: SCOPE_LABEL['new-thread'], anchorId: 'steer' },
 
   // Terminal

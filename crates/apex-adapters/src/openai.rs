@@ -244,7 +244,7 @@ pub fn cost_micros(
 
 /// What to tell someone whose bot has no key under `name`.
 pub(crate) fn no_key(name: &str) -> String {
-    format!("no API key is saved for {name}. Open this bot's settings and paste your key into API key, or add it in Settings → Providers → API keys.")
+    format!("no API key is saved for {name}. Open this agent's settings and paste your key into API key, or add it in Settings → Providers → API keys.")
 }
 
 /// The models an OpenAI-compatible server offers, sorted by id, with what
@@ -431,8 +431,8 @@ impl Participant for OpenAiCompatParticipant {
                 }
                 let snippet = provider_text(&text, 300, computer_content);
                 let hint = match status.as_u16() {
-                    401 | 403 if key.is_none() => " This server wants an API key. Open this bot's settings and paste one into API key.",
-                    401 | 403 => " The saved API key was refused. Open this bot's settings and paste a new one into API key.",
+                    401 | 403 if key.is_none() => " This server wants an API key. Open this agent's settings and paste one into API key.",
+                    401 | 403 => " The saved API key was refused. Open this agent's settings and paste a new one into API key.",
                     _ => "",
                 };
                 fail!(ParticipantError::Failed(format!("{url} returned {status}: {snippet}{hint}")));

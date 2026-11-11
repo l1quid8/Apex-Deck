@@ -424,7 +424,7 @@ impl<'a> Turn<'a> {
         }
         let card = || ProposedAction { kind: ActionKind::Edit, title: format!("{verb} {}", resolved.shown), detail: diff.to_string(), expires_at: None, risky: false };
         match self.access {
-            Access::Read => Need::Refuse("This bot has read-only access, so it can't change files.".into()),
+            Access::Read => Need::Refuse("This agent has read-only access, so it can't change files.".into()),
             Access::Ask => Need::Ask(card()),
             // Settings that start programs (MCP servers, Claude Code hooks,
             // git config) can turn an edit into a command, so they ask.
@@ -438,7 +438,7 @@ impl<'a> Turn<'a> {
             return Need::Refuse("Plan mode is on, so no commands may be run. Present the plan with exit_plan_mode.".into());
         }
         match self.access {
-            Access::Read => Need::Refuse("This bot has read-only access, so it can't run commands.".into()),
+            Access::Read => Need::Refuse("This agent has read-only access, so it can't run commands.".into()),
             Access::Ask | Access::Edits => Need::Ask(ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: command.to_string(), expires_at: None, risky: false }),
             Access::Full => Need::Free,
         }
@@ -637,7 +637,7 @@ impl<'a> Turn<'a> {
                     return (step, Err("Plan mode isn't on.".into()));
                 }
                 if self.own == Access::Read {
-                    return (step, Err("This bot has read-only access, so it can't start the work. Give the plan as your reply.".into()));
+                    return (step, Err("This agent has read-only access, so it can't start the work. Give the plan as your reply.".into()));
                 }
                 (self.progress)(Progress::Activity("Waiting for you: start the work?"));
                 let action = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: plan, expires_at: None, risky: false };

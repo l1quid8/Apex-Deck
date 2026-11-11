@@ -254,7 +254,7 @@ function EmptyPage({ servers, onPick }: { servers: ServerChoice[]; onPick: (serv
   return (
     <div className="preview-empty">
       <h2>Open a page.</h2>
-      <p>{servers.length > 0 ? "Pick a server from a terminal or thread, or type an address above." : "Type an address above. Servers your terminals start, and ones bots mention, show up here."}</p>
+      <p>{servers.length > 0 ? "Pick a server from a terminal or thread, or type an address above." : "Type an address above. Servers your terminals start, and ones agents mention, show up here."}</p>
       {servers.length > 0 && (
         <>
           <span className="preview-label">Servers in this workspace</span>

@@ -811,7 +811,7 @@ pub async fn open_text(url: &str) -> Result<(i32, String), String> {
     let tab = primary();
     let refused = |control: Control| match control {
         Control::Human => Some("You're using the browser right now (Take over). I'll leave it alone until you hand it back."),
-        Control::Bot { .. } => Some("A Work bot is using the browser right now. Try again when it finishes."),
+        Control::Bot { .. } => Some("A Work agent is using the browser right now. Try again when it finishes."),
         _ => None,
     };
     if let Some(refusal) = refused(tab.info.lock().unwrap().holder(Instant::now())) { return Err(refusal.into()); }

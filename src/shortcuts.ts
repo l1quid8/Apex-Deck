@@ -90,7 +90,7 @@ export function threadKeys(mac: boolean): Record<ThreadKey, string> {
 export function shortcutList(mac: boolean): { label: string; keys: string; composer?: true; thread?: true }[] {
   return [
     ...BINDINGS.map((b) => (b.action.kind === "thread" ? { label: b.label, keys: keysOf(b, mac), thread: true as const } : { label: b.label, keys: keysOf(b, mac) })),
-    { label: "Steer a working bot, in the composer", keys: mac ? "⌘↩" : "Ctrl+Enter", composer: true },
+    { label: "Steer a working agent, in the composer", keys: mac ? "⌘↩" : "Ctrl+Enter", composer: true },
   ];
 }
 

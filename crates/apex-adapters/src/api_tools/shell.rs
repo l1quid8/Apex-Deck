@@ -302,7 +302,7 @@ fn start(env: &Env, registry: &Registry, script: &str) -> Result<Started, String
                 return Ok((child, output, readers));
             }
             #[cfg(not(target_os = "linux"))]
-            return Err("Linux bot jail is only available on Linux".into());
+            return Err("Linux agent jail is only available on Linux".into());
         }
     }
     let mut command = env.command(script)?;

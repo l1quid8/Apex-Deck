@@ -43,7 +43,7 @@ test('stopped run says where it stopped', () => {
 });
 
 test('running without reporting is called out', () => {
-  assert.equal(planView(run('running', undefined, { reporting: false }), new Set()).note, "This bot isn't reporting steps");
+  assert.equal(planView(run('running', undefined, { reporting: false }), new Set()).note, "This agent isn't reporting steps");
   assert.equal(planView(run('running'), new Set()).note, null);
 });
 

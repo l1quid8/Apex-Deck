@@ -53,7 +53,7 @@ export function ChatRows(props: {
           <button key={`${row.hostId}/${row.id}`} type="button" className="ph-tl-thread" aria-haspopup="menu"
             aria-label={`${row.title}. ${botNames(row)} on ${where?.name ?? "a machine this phone no longer has"}`}
             onContextMenu={(event) => { event.preventDefault(); props.onMenu(row); }} onClick={() => props.onOpen(row)}>
-            {waiting ? <i className="ph-tl-dot wait" role="img" aria-label="Waiting to send" /> : busy ? <i className="ph-tl-dot work" role="img" aria-label="A bot is answering" /> : null}
+            {waiting ? <i className="ph-tl-dot wait" role="img" aria-label="Waiting to send" /> : busy ? <i className="ph-tl-dot work" role="img" aria-label="An agent is answering" /> : null}
             <span className="ph-tl-l1"><span className="ph-tl-name">{row.title}</span><span className="ph-tl-age">{row.archived ? "Archived" : row.updatedAt ? ageWords(props.now - row.updatedAt) : "New"}</span></span>
             <span className="ph-tl-l2">
               <span className="ph-chat-stack" aria-hidden="true">{row.bots.slice(0, 3).map((bot) => { const face = legacyAppearance(bot.id); return <Avatar key={bot.id} seed={face.seed} color={face.color} size="sm" />; })}</span>
@@ -164,21 +164,21 @@ export function NewChatBody(props: {
       </button>
     ))}</div>
     {machine && <>
-      <div className="ph-section">Bots on {machine.name}</div>
+      <div className="ph-section">Agents on {machine.name}</div>
       {profiles?.error && <p className="ph-sheet-text ph-red" role="alert">{profiles.error}</p>}
-      {!profiles?.list && !profiles?.error && <p className="ph-sheet-text">Asking {machine.name} for its bots…</p>}
-      {profiles?.list && profiles.list.length === 0 && <p className="ph-sheet-text">{machine.name} has no bots set up yet. Add one in Deck on that machine.</p>}
+      {!profiles?.list && !profiles?.error && <p className="ph-sheet-text">Asking {machine.name} for its agents…</p>}
+      {profiles?.list && profiles.list.length === 0 && <p className="ph-sheet-text">{machine.name} has no agents set up yet. Add one in Deck on that machine.</p>}
       {profiles?.list && <div className="ph-bot-list">{profiles.list.map((item) => (
         <ProfileRow key={item.profile.id} item={item} picked={picked.includes(item.profile.id)} onToggle={() => { setEdited(true); setPicked((now) => now.includes(item.profile.id) ? now.filter((id) => id !== item.profile.id) : [...now, item.profile.id]); }} onSignIn={hostId && props.onSignIn ? (agent) => props.onSignIn!(hostId, agent) : undefined} />
       ))}</div>}
-      <p className="ph-sheet-text ph-quiet"><Lock size={13} /> Talk only: bots in a chat can't see or change your files.</p>
+      <p className="ph-sheet-text ph-quiet"><Lock size={13} /> Talk only: agents in a chat can't see or change your files.</p>
     </>}
     {result.error && <p className="ph-sheet-text ph-red" role="alert">{result.error}</p>}
     <button type="button" className="primary ph-wide" disabled={!ready} onClick={() => {
       if (!hostId) return;
       setResult({ busy: true, error: "" });
       props.onStart(hostId, picked).catch((error) => setResult({ busy: false, error: words(error) }));
-    }}>{result.busy ? "Starting…" : machine && machine.status !== "online" ? `${machine.name} isn't connected` : picked.length ? `Start with ${picked.length} ${picked.length === 1 ? "bot" : "bots"}` : "Pick at least one bot"}</button>
+    }}>{result.busy ? "Starting…" : machine && machine.status !== "online" ? `${machine.name} isn't connected` : picked.length ? `Start with ${picked.length} ${picked.length === 1 ? "agent" : "agents"}` : "Pick at least one agent"}</button>
   </>;
 }
 
@@ -214,8 +214,8 @@ export function ChatBotsBody(props: {
     </>}
     {state.error && <p className="ph-sheet-text ph-red" role="alert">{state.error}</p>}
     {props.locked ? <p className="ph-sheet-text ph-amber">{props.locked}</p>
-      : !online && <p className="ph-sheet-text ph-amber">{props.machine.name} isn't connected. Bots can change once it's back.</p>}
-    <p className="ph-sheet-text ph-quiet">Bots are set up on each machine, so this list shows the ones on {props.machine.name}.</p>
+      : !online && <p className="ph-sheet-text ph-amber">{props.machine.name} isn't connected. Agents can change once it's back.</p>}
+    <p className="ph-sheet-text ph-quiet">Agents are set up on each machine, so this list shows the ones on {props.machine.name}.</p>
   </>;
 }
 
@@ -240,7 +240,7 @@ export function ChatWhereBody(props: {
     props.onPick(hostId, pending).then(() => setState({ busy: "", error: "" }), (error) => setState({ busy: "", error: words(error), ask: error instanceof Error && error.name === "ChatPendingAnswersError" ? hostId : undefined }));
   };
   return <>
-    <p className="ph-sheet-text">The whole group moves with the chat. A bot that isn't set up on the new machine stays behind, and this phone tells you which.</p>
+    <p className="ph-sheet-text">The whole group moves with the chat. An agent that isn't set up on the new machine stays behind, and this phone tells you which.</p>
     <div className="ph-list">{props.machines.map((item) => (
       <button key={item.id} type="button" className="ph-srow" aria-pressed={item.id === props.current} disabled={!item.chats || state.busy !== ""} onClick={() => { if (item.id !== props.current) go(item.id); }}>
         <span className="ph-srow-icon">{props.machineIcon(item.id, 18)}</span>
@@ -282,7 +282,7 @@ export function MoveToWorkBody(props: {
   if (left) {
     const leftName = left.cwd.split(/[\\/]/).filter(Boolean).pop() ?? left.cwd;
     return <>
-      <p className="ph-sheet-text">A move to <b>{leftName}</b> on {props.machine.name} was sent, but {props.machine.name} never confirmed it. Finish it with the same choices, so it can't make a second thread or change what the bots may do.</p>
+      <p className="ph-sheet-text">A move to <b>{leftName}</b> on {props.machine.name} was sent, but {props.machine.name} never confirmed it. Finish it with the same choices, so it can't make a second thread or change what the agents may do.</p>
       <p className="ph-path">{left.cwd}</p>
       <div className="ph-bot-list">{props.bots.map((bot) => { const face = look(bot); const level = left.access[bot.id] ?? "read"; return (
         <div className="ph-bot-entry" key={bot.id}><div className="ph-bot-row">
@@ -302,7 +302,7 @@ export function MoveToWorkBody(props: {
     </>;
   }
   return <>
-    <p className="ph-sheet-text">Pick a folder on <b>{props.machine.name}</b>. The Work thread starts with this chat's messages and the same bots. This chat keeps a link to it.</p>
+    <p className="ph-sheet-text">Pick a folder on <b>{props.machine.name}</b>. The Work thread starts with this chat's messages and the same agents. This chat keeps a link to it.</p>
     {props.machine.status !== "online" && <p className="ph-sheet-text ph-amber">{props.machine.name} isn't connected. Folders show once it's back.</p>}
     {listing && <p className="ph-path">{listing.path}</p>}
     {listing && <div className="ph-list">
@@ -313,7 +313,7 @@ export function MoveToWorkBody(props: {
         </button>
       ))}
     </div>}
-    <div className="ph-section">What each bot may do in the folder</div>
+    <div className="ph-section">What each agent may do in the folder</div>
     <div className="ph-bot-list">{props.bots.map((bot) => { const face = look(bot); return (
       <div className="ph-bot-entry" key={bot.id}><div className="ph-bot-row">
         <span className="ph-bot-info"><Avatar seed={face.seed} color={face.color} size="sm" /><span className="ph-bot-label"><strong>{bot.display_name}</strong></span></span>
@@ -343,7 +343,7 @@ export function LegacyImportBody(props: {
   const [state, setState] = useState<{ busy: boolean; error: string; confirm: boolean }>({ busy: false, error: "", confirm: false });
   const count = props.chats.length;
   return <>
-    <p className="ph-sheet-text">This phone still has {count === 1 ? "a conversation" : `${count} conversations`} from the old Local chat screen with real replies in {count === 1 ? "it" : "them"}. Copy {count === 1 ? "it" : "them"} into Chats on a machine to keep {count === 1 ? "it" : "them"}. The bots don't answer the old messages again.</p>
+    <p className="ph-sheet-text">This phone still has {count === 1 ? "a conversation" : `${count} conversations`} from the old Local chat screen with real replies in {count === 1 ? "it" : "them"}. Copy {count === 1 ? "it" : "them"} into Chats on a machine to keep {count === 1 ? "it" : "them"}. The agents don't answer the old messages again.</p>
     <ul className="ph-sheet-text">{props.chats.map((chat) => <li key={chat.id}>{chat.title} · {chat.messages.length} messages</li>)}</ul>
     {able.length === 0 && <p className="ph-sheet-text ph-amber">No machine that can hold chats is connected right now. Nothing is lost: this phone asks again next time.</p>}
     <div className="ph-list">{able.map((item) => (

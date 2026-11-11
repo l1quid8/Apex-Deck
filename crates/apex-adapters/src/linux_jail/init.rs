@@ -47,7 +47,7 @@ pub fn run(control: RawFd, port: u16, argv: Vec<OsString>) -> ! {
         0 => forward(control, proxy, hook),
         _ => {
             drop((control, proxy, hook));
-            give_up("could not start the bot", Command::new(program).args(args).exec())
+            give_up("could not start the agent", Command::new(program).args(args).exec())
         }
     }
 }

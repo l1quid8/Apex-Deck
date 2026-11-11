@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::local_call::through_daemon;
 
 const UNKNOWN: &str = "Unknown phone command. Run: \"$APEX_DECK_BIN\" phone help";
-const NOT_IN_A_TURN: &str = "This command only works inside an Apex Deck bot turn.";
+const NOT_IN_A_TURN: &str = "This command only works inside an Apex Deck agent turn.";
 const NOT_REACHABLE: &str = "Deck isn't reachable. Is the Apex Deck app running?";
 /// `phone wait` that has to give up: the bot should ask again.
 const WAIT_EXIT: i32 = 75;

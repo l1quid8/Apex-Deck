@@ -112,7 +112,7 @@ export function AnswerCard({ card, version, author, values, onChange, onDiscuss,
       {onChange && (
         <footer className="answer-foot">
           <button type="button" className="ghost small" onClick={() => onChange(resolveInputs(card, null))}>Reset</button>
-          <span className="answer-hint">{status ?? "Saved in this thread. Bots see these settings only when you discuss them."}</span>
+          <span className="answer-hint">{status ?? "Saved in this thread. Agents see these settings only when you discuss them."}</span>
           {onDiscuss && <button type="button" className="primary small" onClick={() => onDiscuss(snapshotText(card, ev.inputs, version, author))}>Discuss these settings</button>}
         </footer>
       )}

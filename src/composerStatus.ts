@@ -22,7 +22,7 @@ export function composerCopy(busy: boolean, empty: boolean, extra: { quoting?: b
   // While quoting, the placeholder suggests what to ask about the quote.
   const placeholder = extra.quoting ? "e.g. Check this against the tests and say what breaks"
     : busy ? (to ? `Queue for ${to}… (⌘↵ steers)` : "Queue a message… (⌘↵ steers)")
-    : extra.plan ? "Plan with the bots — nothing gets changed…"
+    : extra.plan ? "Plan with the agents — nothing gets changed…"
     : extra.tldr ? (to ? `TL;DR to ${to}: short answers` : "TL;DR mode: short answers")
     : to ? `Message ${to}…` : "Message the room…";
   return { placeholder };
@@ -34,7 +34,7 @@ export function composerCopy(busy: boolean, empty: boolean, extra: { quoting?: b
  * every bot with an open approval card. Names follow the room's order.
  */
 export function threadStatusOf(bots: { id: string; display_name: string }[], working: string[], asking: string[]): ThreadStatus {
-  const count = bots.length === 0 ? "No bots yet" : bots.length === 1 ? "1 bot" : `${bots.length} bots`;
+  const count = bots.length === 0 ? "No agents yet" : bots.length === 1 ? "1 agent" : `${bots.length} agents`;
   return {
     text: `${count}${working.length > 0 ? " · replying" : ""}`,
     replying: bots.filter((bot) => working.includes(bot.id) && !asking.includes(bot.id)).map((bot) => bot.display_name),
@@ -112,7 +112,7 @@ export interface BotProgress {
  * warning in place of its step.
  */
 export function headLine(bots: number, replying: readonly BotProgress[], now: number): string {
-  if (replying.length === 0) return bots === 0 ? "No bots yet" : bots === 1 ? "1 bot" : `${bots} bots`;
+  if (replying.length === 0) return bots === 0 ? "No agents yet" : bots === 1 ? "1 agent" : `${bots} agents`;
   if (replying.length === 1) {
     const bot = replying[0];
     return `${bot.name} · ${quietLine(bot.heardAt, now) ?? `${bot.doing} · ${elapsed(now - bot.startedAt)}`}`;

@@ -196,7 +196,7 @@ impl JailHome {
 fn settings(path: &Path, label: &str, notices: &mut Vec<String>) -> Option<Value> {
     let bytes = std::fs::read(path).ok()?;
     let parsed = serde_json::from_slice(&bytes).ok();
-    if parsed.is_none() { notices.push(format!("{label} settings couldn't be read, so this bot uses defaults.")); }
+    if parsed.is_none() { notices.push(format!("{label} settings couldn't be read, so this agent uses defaults.")); }
     parsed
 }
 
@@ -240,7 +240,7 @@ fn codex_files(tree: &Tree, model: Option<&str>, values: &HomeValues, home: &mut
     let path = values.host.codex_dir.join("config.toml");
     let chosen = std::fs::read_to_string(&path).ok().and_then(|text| {
         let parsed = text.parse::<DocumentMut>().ok();
-        if parsed.is_none() { home.notices.push("Codex settings couldn't be read, so this bot uses defaults.".into()); }
+        if parsed.is_none() { home.notices.push("Codex settings couldn't be read, so this agent uses defaults.".into()); }
         parsed
     });
     let host = |name: &str| chosen.as_ref().and_then(|doc| doc.get(name)).and_then(Item::as_str);

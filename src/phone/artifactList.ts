@@ -36,7 +36,7 @@ export function artifactRows(file: ArtifactFile, now: number): ArtifactRow[] {
 
 /** What the list says when the thread has none: not "loading", and not an error. */
 export function artifactListNote(count: number): string {
-  return count === 0 ? "No artifacts yet. When a reply's code or a file a bot writes can be shown, it's kept here." : "";
+  return count === 0 ? "No artifacts yet. When a reply's code or a file an agent writes can be shown, it's kept here." : "";
 }
 
 function latestAt(artifact: Artifact): number {

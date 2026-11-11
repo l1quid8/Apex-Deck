@@ -8,8 +8,8 @@ test("captions name the bot and date, and say A bot when no name is set", () => 
   const day = new Date(1_700_000_000_000);
   assert.equal(libraryCaption(item("Null"), false), `Null · ${day.toLocaleDateString()}`);
   assert.equal(libraryCaption(item("Gronk"), true), `Gronk · ${day.toLocaleString()}`);
-  assert.equal(libraryCaption(item(undefined), false), `A bot · ${day.toLocaleDateString()}`);
-  assert.equal(libraryCaption(item("   "), false).startsWith("A bot · "), true);
+  assert.equal(libraryCaption(item(undefined), false), `An agent · ${day.toLocaleDateString()}`);
+  assert.equal(libraryCaption(item("   "), false).startsWith("An agent · "), true);
 });
 
 test("a missing-access error gets the plain Full access line", () => {

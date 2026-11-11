@@ -97,7 +97,7 @@ impl Target {
         if matches!(tool,SEND|ASSIGN) && text.is_none_or(|t| t.trim().is_empty()) { return Some("there is no message to send".into()); }
         if text.is_some_and(|t| t.chars().count() > MAX_TEXT_CHARS) { return Some("that message is too long".into()); }
         let ids = ids.map(|ids| split(ids)).unwrap_or_default();
-        if matches!(tool, SEND | RESUME | ASSIGN) && ids.is_empty() { return Some("name the bots to message".into()); }
+        if matches!(tool, SEND | RESUME | ASSIGN) && ids.is_empty() { return Some("name the agents to message".into()); }
         ids.iter().find(|id| !self.workers.iter().any(|(worker, _)| worker == *id)).map(|id| format!("{id} isn't in that chat"))
     }
 
@@ -570,7 +570,7 @@ impl Host {
                 let bots = op.argv.get(1).map(|ids| split(ids)).unwrap_or_default();
                 if bots.is_empty() { self.room_stop(room.thread.clone(), None); }
                 for bot in &bots { self.room_stop(room.thread.clone(), Some(ParticipantId::new(*bot))); }
-                let who = if bots.is_empty() { "every bot".to_owned() } else { bots.join(", ") };
+                let who = if bots.is_empty() { "every agent".to_owned() } else { bots.join(", ") };
                 Ok(ToolRun { exit_code: 0, output: format!("Stop sent to {who} in {}.", room.title) })
             }
             SEND | RESUME | ASSIGN => self.room_deliver(&assistant, task_id, &room, op).await,

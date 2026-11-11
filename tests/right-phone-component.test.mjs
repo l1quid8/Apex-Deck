@@ -46,7 +46,7 @@ test('a phone that is off offers Turn on', () => {
   assert.match(html, />Turn on</);
   assert.match(html, /role="alert"[^>]*>Xcode isn&#x27;t installed\./);
   assert.match(html, />Phone</);
-  assert.match(html, /One simulated iPhone that you and the bots share\. The first start takes about a minute\./);
+  assert.match(html, /One simulated iPhone that you and the agents share\. The first start takes about a minute\./);
 });
 
 test('a phone that is turning on says so', () => {
@@ -63,7 +63,7 @@ test('a phone that is on shows who has it, its buttons and the typing note', () 
   assert.match(html, /Typing and pasting work while the screen is selected\. Plain keyboard characters only\./);
   const mine = render({ visible: true, phone: fakePhone(), initial: on({ kind: 'human', secondsLeft: 7 }) });
   assert.match(mine, />Give back</);
-  assert.match(mine, /You have the phone\. The bots get it back after 7s without a tap\./);
+  assert.match(mine, /You have the phone\. The agents get it back after 7s without a tap\./);
 });
 
 // A small stand-in for React that keeps hook state between calls and runs effects with their cleanups,

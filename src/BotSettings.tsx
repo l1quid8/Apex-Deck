@@ -69,7 +69,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
   loadCurrentRef.current = loadCurrent;
   const orderedSave = useRef(latestSaveQueue<{ change: Change; base: ParticipantConfig }>(async value => {
     const current = loadCurrentRef.current ? await loadCurrentRef.current() : roomId ? (await backend.roomCreate(roomId, [], { policy: 'mention', max_bot_hops: 0 }, '')).participants.find(p => p.id === value.base.id) : undefined;
-    if (!current) throw new Error('This bot is no longer in the thread.');
+    if (!current) throw new Error('This agent is no longer in the thread.');
     await saveRef.current(applyTurnChange(current, value.change), current);
   }));
   const touched = useRef<Change>({});
@@ -337,7 +337,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
         <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
         {accessPending && accessChange && !laterChosen
           ? <div className="bot-access-choice" role="group" aria-label="When to apply this access">
-              <p className="muted bot-access-note">Applies after this reply. Apply now stops this bot and restarts it from the chat, so it loses track of its current steps and a running command is cut off.</p>
+              <p className="muted bot-access-note">Applies after this reply. Apply now stops this agent and restarts it from the chat, so it loses track of its current steps and a running command is cut off.</p>
               <div>
                 <button type="button" className={applyNowFirst(accessChange.from, accessChange.to) ? "primary" : ""} onClick={onApplyAccess}>Apply now</button>
                 <button type="button" className={applyNowFirst(accessChange.from, accessChange.to) ? "" : "primary"} onClick={() => setLaterChosen(true)}>After this reply</button>

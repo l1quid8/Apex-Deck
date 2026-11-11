@@ -502,7 +502,7 @@ function demoBackend(): Backend {
         if (lastHuman && /\bfail\b/i.test(lastHuman.text) && !failedOnce.has(failKey)) {
           failedOnce.add(failKey);
           await sleep(400); if (!active) return [];
-          emit({ type: "failed", id: p.id, error: "Preview: this bot failed on purpose. Try again runs it once more." });
+          emit({ type: "failed", id: p.id, error: "Preview: this agent failed on purpose. Try again runs it once more." });
           continue;
         }
         if (p.backend.kind === "agent") {
@@ -575,7 +575,7 @@ function demoBackend(): Backend {
         let reply = [
           `## Preview reply from ${p.display_name}`,
           "This is **preview mode**: the desktop app sends your message to the *real* model. See [README.md](README.md) or `npm run desktop:dev`.",
-          "1. Steps appear while a bot works\n2. Text is written live\n   - nested point with `code`\n3. The final reply replaces the draft",
+          "1. Steps appear while an agent works\n2. Text is written live\n   - nested point with `code`\n3. The final reply replaces the draft",
           "| Tool | Live text |\n|---|---|\n| Claude Code | yes |\n| Codex | yes |",
           "```sh\ncd ~/Downloads/apex-deck\nnpm run desktop:dev\n```",
         ].join("\n\n");
@@ -1075,7 +1075,7 @@ function demoBackend(): Backend {
           else hidden.push([message.seq, message.seq]);
         }
         (room.curations ??= []).push({ by: by.id, at: room.transcript.length, hidden,
-          reason: "Preview picks the oldest half of eligible messages. The desktop app asks a bot to choose.", when: Date.now() });
+          reason: "Preview picks the oldest half of eligible messages. The desktop app asks an agent to choose.", when: Date.now() });
         saveRoom(id);
         emitRoom(id, { type: "curations_changed", curations: structuredClone(room.curations) });
         return { by: by.id, status: "hidden", count: picks.length, unchecked: 0 };

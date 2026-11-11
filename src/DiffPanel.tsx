@@ -88,7 +88,7 @@ export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf,
           aria-haspopup="dialog"
           aria-expanded={asking}
           disabled={loading || files.length === 0 || reviewers.length === 0}
-          title={reviewers.length === 0 ? "Add a bot to ask for a review" : undefined}
+          title={reviewers.length === 0 ? "Add an agent to ask for a review" : undefined}
           onClick={() => setAsking((now) => !now)}
         >
           Ask for review <span aria-hidden="true">▾</span>

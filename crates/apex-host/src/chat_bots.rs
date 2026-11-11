@@ -53,7 +53,7 @@ const MAX_SETTING: usize = 128;
 
 fn check_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > MAX_NAME || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(format!("`{id}` isn't a usable bot id: use 1 to {MAX_NAME} letters, digits, - or _."));
+        return Err(format!("`{id}` isn't a usable agent id: use 1 to {MAX_NAME} letters, digits, - or _."));
     }
     Ok(())
 }
@@ -61,7 +61,7 @@ fn check_id(id: &str) -> Result<(), String> {
 fn check_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_NAME || name.chars().any(char::is_control) {
-        return Err(format!("A bot name needs 1 to {MAX_NAME} characters."));
+        return Err(format!("An agent name needs 1 to {MAX_NAME} characters."));
     }
     Ok(name.to_string())
 }
@@ -86,11 +86,11 @@ fn set_model(config: &mut ParticipantConfig, model: Option<String>) -> Result<()
     match &mut config.backend {
         Backend::Agent { model: slot, .. } => *slot = model,
         Backend::OpenAiCompatible { model: slot, .. } => {
-            *slot = model.ok_or("This bot needs a model name.")?;
+            *slot = model.ok_or("This agent needs a model name.")?;
         }
         Backend::Cli { .. } | Backend::Scripted { .. } => {
             if model.is_some() {
-                return Err("This bot has no model to choose.".into());
+                return Err("This agent has no model to choose.".into());
             }
         }
     }
@@ -111,7 +111,7 @@ pub fn resolve(profiles: &[ParticipantConfig], request: ChatBotRequest) -> Resul
         .iter()
         .find(|p| p.id.as_str() == request.profile)
         .cloned()
-        .ok_or_else(|| format!("This machine has no saved bot `{}`.", request.profile))?;
+        .ok_or_else(|| format!("This machine has no saved agent `{}`.", request.profile))?;
     if let Some(id) = request.id {
         check_id(id.as_str())?;
         config.id = id;
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn resolve_refuses_unknown_profiles_and_flag_like_values() {
         let unknown = ChatBotRequest { profile: "nope".into(), id: None, display_name: None, model: None, effort: None, speed: None };
-        assert!(resolve(&[api_profile()], unknown).unwrap_err().contains("no saved bot"));
+        assert!(resolve(&[api_profile()], unknown).unwrap_err().contains("no saved agent"));
         for (model, effort, id) in [
             (Some("--dangerously-skip-permissions"), None, None),
             (Some("two words"), None, None),

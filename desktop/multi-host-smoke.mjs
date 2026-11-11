@@ -85,7 +85,7 @@ export async function runMultiHostSmoke(win) {
     await page("__deck.backend.machines.connection('at').setStatus({kind:'connected',hostId:'fixture'});return true;");
   }
   await page('const row=[...document.querySelectorAll(".pane-row")].find(r=>r.textContent.includes("Server thread"));row.click();return true;');
-  await until('both rooms loaded',()=>page(`return [${pane('mac-thread')},${pane('server-thread')}].every(p=>p.offsetWidth>0&&p.querySelector('[aria-label="Add bot"]')&&!p.querySelector('[aria-label="Add bot"]').disabled)`));
+  await until('both rooms loaded',()=>page(`return [${pane('mac-thread')},${pane('server-thread')}].every(p=>p.offsetWidth>0&&p.querySelector('[aria-label="Add agent"]')&&!p.querySelector('[aria-label="Add agent"]').disabled)`));
   await sleep(650);
   await send('mac-thread','@bot local first');await send('server-thread','@bot remote first');
   await until('Mac positive reply',()=>page(`return ${pane('mac-thread')}.querySelector('.transcript').innerText.includes('mac-native-reply')`));
@@ -133,7 +133,7 @@ export async function runMultiHostSmoke(win) {
   await page(`const b=__deck.backend.machines.get('at');b.roomState=async()=>{throw Error('smoke interrupted room load');};__deck.backend.machines.connection('at').setStatus({kind:'resync'});return true;`);
   await until('interrupted room load',()=>page(`return ${pane('server-thread')}.innerText.includes('smoke interrupted room load')`));
   await page(`const b=__deck.backend.machines.get('at');b.roomState=window.__loadRoomState;const c=__deck.backend.machines.connection('at');c.setStatus({kind:'reconnecting',attempt:1,reason:'smoke resume',retryAt:0});c.setStatus({kind:'connected',hostId:'fixture'});return true;`);
-  await until('failed room retried on resume',()=>page(`return !${pane('server-thread')}.querySelector('[aria-label="Add bot"]').disabled`));
+  await until('failed room retried on resume',()=>page(`return !${pane('server-thread')}.querySelector('[aria-label="Add agent"]').disabled`));
   // Inject only the read-only snapshot; answering still reaches the real daemon,
   // which rejects the nonexistent request. This checks UI rejection and expiry.
   async function approval(request, expiresAt) {
@@ -177,7 +177,7 @@ export async function runMultiHostSmoke(win) {
   fs.writeFileSync(path.join(root,'restart'),'1');
   await until('fixture daemon restarted',()=>fs.existsSync(path.join(root,'restart-done')));
   await page("__deck.backend.machines.connection('at').retryNow();return true;");
-  await until('daemon restart snapshot recovered',()=>page(`return __deck.backend.machines.connection('at').get().revision>${revision}&&__deck.backend.machines.connection('at').get().status.kind==='connected'&&!${pane('server-thread')}.querySelector('[aria-label="Add bot"]').disabled`));
+  await until('daemon restart snapshot recovered',()=>page(`return __deck.backend.machines.connection('at').get().revision>${revision}&&__deck.backend.machines.connection('at').get().status.kind==='connected'&&!${pane('server-thread')}.querySelector('[aria-label="Add agent"]').disabled`));
   assert.equal(await page(`return ${pane('server-thread')}.querySelector('textarea').value`),'@bot offline draft kept');
   await shot('daemon-restart-recovered');
   const remoteBackend="__deck.backend.machines.get('at')";
@@ -330,7 +330,7 @@ export async function runMultiHostSmoke(win) {
   assert.match(await page('return document.querySelector(".pane-submenu .menu-note").textContent'),/hasn't started/);
   await page(`document.querySelector('.pane-submenu [data-key="${serverProject}"]').click();return true;`);
   await until('the thread moved to the server',()=>page(`return ${pane(draft)}.dataset.hostId==='at'`));
-  await until('it reopened there with its bot',()=>page(`return [...${pane(draft)}.querySelectorAll('.composer .chip')].some(c=>c.textContent.includes('Bot'))&&!${pane(draft)}.querySelector('[aria-label="Add bot"]').disabled`));
+  await until('it reopened there with its bot',()=>page(`return [...${pane(draft)}.querySelectorAll('.composer .chip')].some(c=>c.textContent.includes('Bot'))&&!${pane(draft)}.querySelector('[aria-label="Add agent"]').disabled`));
   assert.equal(await page(`return ${pane(draft)}.querySelector('textarea').value`),'@bot hello there');
   await assert.rejects(page(`return await __deck.backend.roomState(${JSON.stringify(draft)})`));
   await send(draft,'@bot hello there');
@@ -410,7 +410,7 @@ export async function runMultiHostSmoke(win) {
   await pickOriginal();
   await until('moved to the other folder there, without the question',()=>page(`const p=${pane(fresh)};return p.querySelector('.pane-ws').title.endsWith(${JSON.stringify(serverCopy)})&&!p.querySelector('.move-ask')`));
   assert.equal(JSON.parse(fs.readFileSync(path.join(root,'server','saved-chats-v1','rooms',`${Buffer.from(fresh).toString('hex')}.json`),'utf8')).cwd,serverCopy);
-  await until('it reopened there',()=>page(`return !${pane(fresh)}.querySelector('[aria-label="Add bot"]')?.disabled`));
+  await until('it reopened there',()=>page(`return !${pane(fresh)}.querySelector('[aria-label="Add agent"]')?.disabled`));
   // ⌥⇧⌘O opens the picker of the thread in use.
   await page(`${pane('mac-thread')}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;`);
   const macDraft=await newDraft();
@@ -437,7 +437,7 @@ export async function runMultiHostSmoke(win) {
   await until('file attached',()=>page(`return [...${pane(macDraft)}.querySelectorAll('.attachments .attachment')].some(a=>a.textContent.includes('README.md')&&a.getAttribute('aria-busy')!=='true')&&${tray(macDraft)}.querySelector('.tray-chip.files .count')?.textContent==='1'`));
   // Tools lists the bots' servers, apps and plugins here; these shell bots have none.
   await page(`${tray(fresh)}.querySelector('.tray-chip.tools').click();return true;`);
-  await until('Tools',()=>page(`return document.querySelector('.tray-pop.tools')?.textContent.includes('From the bots in this thread, on Frankfurt')`));
+  await until('Tools',()=>page(`return document.querySelector('.tray-pop.tools')?.textContent.includes('From the agents in this thread, on Frankfurt')`));
   await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
   // Offline: the server's Work in row is disabled, and the current one keeps its ✓.
   fs.writeFileSync(path.join(root,'offline'),'1');

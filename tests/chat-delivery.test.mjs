@@ -701,14 +701,14 @@ test('a bot left behind by a move is named, never shown by its raw id', () => {
     snapshot: { participants: [{ id: 'codex-2', display_name: 'Codex' }, { id: 'grok', display_name: 'Grok' }] },
     skipped: [
       { participant: 'codex-2', reason: 'Codex is not installed here.' },
-      { participant: 'muse-7', reason: 'The saved profile for this bot is unknown.' },
+      { participant: 'muse-7', reason: 'The saved profile for this agent is unknown.' },
     ],
   };
   // The phone's catalog row can be older than the chat: the chat's own roster still names the bot.
   assert.deepEqual(leftBehindWords(move, () => undefined), [
     'Codex stayed behind: Codex is not installed here.',
-    'A bot stayed behind: The saved profile for this bot is unknown.',
+    'An agent stayed behind: The saved profile for this agent is unknown.',
   ]);
   // A name the catalog does know is used as it is.
-  assert.equal(leftBehindWords(move, (id) => (id === 'muse-7' ? 'Muse' : undefined))[1], 'Muse stayed behind: The saved profile for this bot is unknown.');
+  assert.equal(leftBehindWords(move, (id) => (id === 'muse-7' ? 'Muse' : undefined))[1], 'Muse stayed behind: The saved profile for this agent is unknown.');
 });

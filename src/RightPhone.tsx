@@ -201,7 +201,7 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
   if (!status.on && !status.starting) {
     return <div className="right-phone">
       <h3>Phone</h3>
-      <p className="muted">One simulated iPhone that you and the bots share. The first start takes about a minute.</p>
+      <p className="muted">One simulated iPhone that you and the agents share. The first start takes about a minute.</p>
       <div className="right-phone-actions"><button onClick={() => act(() => api.start())}>Turn on</button></div>
       {alert}
     </div>;

@@ -81,7 +81,7 @@ function Asking(props: QuestionFormProps & { view: Extract<FormView, { kind: "qu
         <span className="qform-who" style={props.colorOf ? { "--agent-color": props.colorOf(ask.id) } as CSSProperties : undefined}>{props.who} asks</span>
         {of > 1 && <span className="qform-count">{position} of {of}</span>}
         {ask.questions.length > 1 && <span className="qform-count">Question {step + 1} of {ask.questions.length}</span>}
-        <button type="button" className="qform-x" aria-label="Skip this question" title="Skip: the bot hears you skipped it" onClick={() => props.onAnswer(ask.request, null)}>✕</button>
+        <button type="button" className="qform-x" aria-label="Skip this question" title="Skip: the agent hears you skipped it" onClick={() => props.onAnswer(ask.request, null)}>✕</button>
       </div>
       {q.header && <div className="qform-tag">{q.header}</div>}
       <p className="qform-q">{q.question}</p>

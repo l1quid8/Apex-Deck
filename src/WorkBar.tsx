@@ -198,14 +198,14 @@ export function WorkBar({ work, attachedCount, files, tools, toolsWhere, canCopy
     <div className="proj-picker tools-pop" role="dialog" aria-label="Tools">
       <Searchable label="Search tools" placeholder="Search tools…" items={tools} keyOf={(t) => `${t.bot}:${t.token}`}
         matches={(t, q) => `${t.label} ${t.token} ${t.bot}`.toLowerCase().includes(q.trim().toLowerCase())}
-        none={tools.length ? "No tools match." : "The bots here have no servers, apps or plugins yet."}
+        none={tools.length ? "No tools match." : "The agents here have no servers, apps or plugins yet."}
         onPick={(t) => { close(); onTool(t.token); }}
         row={(t, lit) => (
           <button className={`pk-row ${lit ? "hl" : ""}`} role="option" aria-selected={false} onClick={() => { close(); onTool(t.token); }}>
             <Glyph name="plug" size={15} /><span className="nm">{t.label}</span><span className="host mono">!{t.token}</span><span className="end">{t.bot}</span>
           </button>
         )}>
-        <div className="pop-head">From the bots in this thread, {toolsWhere}</div>
+        <div className="pop-head">From the agents in this thread, {toolsWhere}</div>
       </Searchable>
     </div>
   );

@@ -17,7 +17,7 @@ export function threadState(input: { down: boolean; waiting: boolean; working: r
   const [first, second] = input.working;
   if (input.working.length === 1) return { dot: "work", words: `${first} is working`, tone: "work" };
   if (input.working.length === 2) return { dot: "work", words: `${first} and ${second} are working`, tone: "work" };
-  if (input.working.length > 2) return { dot: "work", words: `${input.working.length} bots are working`, tone: "work" };
+  if (input.working.length > 2) return { dot: "work", words: `${input.working.length} agents are working`, tone: "work" };
   return { dot: input.unread ? "unread" : "", words: "", tone: "" };
 }
 

@@ -125,7 +125,7 @@ export function Clock({ since }: { since?: number }) {
 function Mute({ muted, wave }: { muted: boolean; wave?: WaveMode }) {
   return (
     <button type="button" className="voice-callbtn" aria-pressed={muted} aria-label={muted ? "Unmute microphone" : "Mute microphone"}
-      title={muted ? "Unmute" : "Mute · the bot keeps talking"} onClick={() => voiceController.mute(!muted)}>
+      title={muted ? "Unmute" : "Mute · the agent keeps talking"} onClick={() => voiceController.mute(!muted)}>
       {wave ? <Wave mode={wave} /> : muted ? Icon.micOff : Icon.mic}
     </button>
   );
@@ -497,7 +497,7 @@ export function VoiceSessionStrip(props: Props) {
         className="voice-callbtn"
         aria-pressed={call.state.muted}
         aria-label={call.state.muted ? "Unmute microphone" : "Mute microphone"}
-        title={call.state.muted ? "Unmute" : "Mute · the bot keeps talking"}
+        title={call.state.muted ? "Unmute" : "Mute · the agent keeps talking"}
         onClick={(e) => {
           e.stopPropagation();
           voiceController.mute(!call.state.muted);

@@ -425,7 +425,7 @@ impl CliParticipant {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (bwrap, hook);
-            Err(ParticipantError::Failed("Linux bot jail is only available on Linux".into()))
+            Err(ParticipantError::Failed("Linux agent jail is only available on Linux".into()))
         }
     }
 
@@ -1007,7 +1007,7 @@ impl Participant for CliParticipant {
                     }
                     staged = Some(files);
                 }
-                Backend::Cli { .. } => return Err(ParticipantError::Failed("This custom command has no image input protocol. Use Claude, Codex, Gemini, Grok or a vision-capable API bot for attached images.".into())),
+                Backend::Cli { .. } => return Err(ParticipantError::Failed("This custom command has no image input protocol. Use Claude, Codex, Gemini, Grok or a vision-capable API agent for attached images.".into())),
                 _ => {}
             }
         }

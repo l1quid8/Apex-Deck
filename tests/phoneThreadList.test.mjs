@@ -14,7 +14,7 @@ test("a thread shows one dot, strongest state first", () => {
 
 test("the working line names one or two bots and counts more", () => {
   assert.equal(threadState({ ...calm, working: ["Null", "Gronk"] }).words, "Null and Gronk are working");
-  assert.equal(threadState({ ...calm, working: ["Null", "Gronk", "Jigga"] }).words, "3 bots are working");
+  assert.equal(threadState({ ...calm, working: ["Null", "Gronk", "Jigga"] }).words, "3 agents are working");
 });
 
 test("a closed project takes its strongest thread's dot", () => {

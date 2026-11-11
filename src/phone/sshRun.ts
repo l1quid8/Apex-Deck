@@ -227,7 +227,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
           const scope = running.scope === "user" ? "user" : "system";
           const script = switchVersion(scope, running.service);
           const switched = report((scope === "system" ? await asRoot(script) : await ssh.exec(script)).stdout).switched;
-          if (switched === "later") notes += ` ${where} shows "Updating Deck" until its bots finish.`;
+          if (switched === "later") notes += ` ${where} shows "Updating Deck" until its agents finish.`;
         }
       }
       step("start", "Deck is running, set to start on boot");

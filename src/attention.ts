@@ -132,7 +132,7 @@ export class Burst {
  */
 export function afterRound(failed: string[], lastReply: string | null): Omit<Signal, "at"> | null {
   if (failed.length > 0) {
-    const who = failed.length === 1 ? failed[0] : `${failed.length} bots`;
+    const who = failed.length === 1 ? failed[0] : `${failed.length} agents`;
     return { kind: "failed", note: `${who} could not reply` };
   }
   if (lastReply === null) return null;

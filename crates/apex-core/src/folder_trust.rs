@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 const FILE: &str = "folder-trust.json";
-const REFUSAL: &str = "This folder has bots with lower access writing to it. A Full bot here can run code they wrote, now or later, as you.";
+const REFUSAL: &str = "This folder has agents with lower access writing to it. A Full agent here can run code they wrote, now or later, as you.";
 // A daemon owns its data folder; this also serializes all room/adapter tasks
 // within that owner, across the entire read-modify-persist transaction.
 static STORE_WRITES: Mutex<()> = Mutex::new(());

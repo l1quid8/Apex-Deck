@@ -15,16 +15,16 @@ const summary = upto => ({ kind: 'summary', summary: { upto } });
 const note = curation => ({ kind: 'curation', curation });
 
 test('a live note', () => {
-  assert.equal(noteTitle(curation, 'Null'), '221 older messages hidden from bots · chosen by Null');
+  assert.equal(noteTitle(curation, 'Null'), '221 older messages hidden from agents · chosen by Null');
   const lines = noteLines(curation, 'Null', false, time);
   assert.ok(lines.includes('Messages #120–#340 · Null’s reason: old Linux test debugging, finished and merged.'));
-  assert.ok(lines.includes('Bots now see one short line there, [#120–#340 hidden, 221 messages], and can look up any of it.'));
+  assert.ok(lines.includes('Agents now see one short line there, [#120–#340 hidden, 221 messages], and can look up any of it.'));
   assert.ok(lines.includes('Your pins and the newest 20 messages are never hidden.'));
 });
 
 test('an undone note', () => {
   assert.equal(noteTitle(undone, 'Null'), '221 messages were hidden here · undone');
-  assert.deepEqual(noteLines(undone, 'Null', false, time), ['Null hid messages #120–#340 at 10:41 AM. You brought them back at 10:52 AM, so bots see them again.']);
+  assert.deepEqual(noteLines(undone, 'Null', false, time), ['Null hid messages #120–#340 at 10:41 AM. You brought them back at 10:52 AM, so agents see them again.']);
 });
 
 test('a sealed note', () => {
@@ -32,29 +32,29 @@ test('a sealed note', () => {
   assert.ok(lines.includes('Messages #120–#340 · Null’s reason: old Linux test debugging, finished and merged.'));
   assert.ok(lines.includes('These messages were hidden before the latest /compact. Originals remain in your chat and available for lookup.'));
   assert.ok(lines.includes('Undo can’t restore messages to active context from before the latest /compact.'));
-  assert.equal(lines.some(line => line.startsWith('Bots now see')), false);
+  assert.equal(lines.some(line => line.startsWith('Agents now see')), false);
 });
 
 test('an undone note becomes historical after compact', () => {
   const lines = noteLines(undone, 'Null', true, time).join(' ');
   assert.ok(lines.includes('You restored these messages at 10:52 AM.'));
   assert.ok(lines.includes('before the latest /compact'));
-  assert.ok(!lines.includes('bots see them again'));
+  assert.ok(!lines.includes('agents see them again'));
 });
 
 test('several ranges read as a list', () => {
   const lines = noteLines(twoRanges, 'Null', false, time);
   assert.ok(lines[0].startsWith('Messages #120–#340, #355 · '));
-  assert.ok(lines.includes('Bots now see a short line for each range, like [#120–#340 hidden, 221 messages], and can look up any of it.'));
-  assert.equal(noteTitle(twoRanges, 'Null'), '222 older messages hidden from bots · chosen by Null');
+  assert.ok(lines.includes('Agents now see a short line for each range, like [#120–#340 hidden, 221 messages], and can look up any of it.'));
+  assert.equal(noteTitle(twoRanges, 'Null'), '222 older messages hidden from agents · chosen by Null');
 });
 
 test('one hidden message reads singular', () => {
-  assert.equal(noteTitle(one, 'Null'), '1 older message hidden from bots · chosen by Null');
+  assert.equal(noteTitle(one, 'Null'), '1 older message hidden from agents · chosen by Null');
   assert.equal(noteTitle({ ...one, undone: 2 }, 'Null'), '1 message was hidden here · undone');
   const lines = noteLines(one, 'Null', false, time);
   assert.ok(lines[0].startsWith('Message #355 · '));
-  assert.ok(lines.includes('Bots now see one short line there, [#355 hidden, 1 message], and can look up any of it.'));
+  assert.ok(lines.includes('Agents now see one short line there, [#355 hidden, 1 message], and can look up any of it.'));
   assert.ok(noteLines({ ...one, undone: 2 }, 'Null', false, time)[0].startsWith('Null hid message #355 at '));
   assert.ok(noteLines(one, 'Null', true, time).includes('This message was hidden before the latest /compact. The original remains in your chat and available for lookup.'));
 });
@@ -71,16 +71,16 @@ test('a curation is sealed once a summary covers its position', () => {
 });
 
 test('undo says what happened', () => {
-  assert.deepEqual(undoNotice({ restored: 221, sealed: 0 }), { text: '221 messages are back for the bots.', tone: 'info' });
-  assert.deepEqual(undoNotice({ restored: 40, sealed: 221 }), { text: '40 messages are back for the bots. The 221 older messages can’t be restored to active context: they’re before the latest /compact. Originals remain in your chat and available for lookup.', tone: 'info' });
+  assert.deepEqual(undoNotice({ restored: 221, sealed: 0 }), { text: '221 messages are back for the agents.', tone: 'info' });
+  assert.deepEqual(undoNotice({ restored: 40, sealed: 221 }), { text: '40 messages are back for the agents. The 221 older messages can’t be restored to active context: they’re before the latest /compact. Originals remain in your chat and available for lookup.', tone: 'info' });
   assert.deepEqual(undoNotice({ restored: 0, sealed: 221 }), { text: 'Can’t restore these 221 messages to active context: they’re before the latest /compact. Originals remain in your chat and available for lookup.', tone: 'error' });
   assert.deepEqual(undoNotice({ restored: 0, sealed: 0 }), { text: 'Nothing is hidden in this chat.', tone: 'error' });
 });
 
 test('one message reads singular', () => {
-  assert.equal(undoNotice({ restored: 1, sealed: 0 }).text, '1 message is back for the bots.');
+  assert.equal(undoNotice({ restored: 1, sealed: 0 }).text, '1 message is back for the agents.');
   assert.equal(undoNotice({ restored: 0, sealed: 1 }).text, 'Can’t restore this message to active context: it’s before the latest /compact. The original remains in your chat and available for lookup.');
-  assert.equal(undoNotice({ restored: 2, sealed: 1 }).text, '2 messages are back for the bots. The 1 older message can’t be restored to active context: it’s before the latest /compact. The original remains in your chat and available for lookup.');
+  assert.equal(undoNotice({ restored: 2, sealed: 1 }).text, '2 messages are back for the agents. The 1 older message can’t be restored to active context: it’s before the latest /compact. The original remains in your chat and available for lookup.');
 });
 
 test('curate says what happened', () => {

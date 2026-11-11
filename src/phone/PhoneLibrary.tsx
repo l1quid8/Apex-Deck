@@ -116,8 +116,8 @@ export function PhoneLibrary({ machines, threads, workspaces, onOpenThread }: Pr
         <option value="">All machines</option>
         {machines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
       </select>
-      <select className="ph-lib-select" aria-label="Filter by bot" value={filter.bot ?? ""} onChange={(e) => setFilter({ ...filter, bot: e.target.value || null })}>
-        <option value="">All bots</option>
+      <select className="ph-lib-select" aria-label="Filter by agent" value={filter.bot ?? ""} onChange={(e) => setFilter({ ...filter, bot: e.target.value || null })}>
+        <option value="">All agents</option>
         {bots.map((bot) => <option key={bot} value={bot}>{bot}</option>)}
       </select>
       <select className="ph-lib-select" aria-label="Filter by workspace" value={filter.workspace ?? ""} onChange={(e) => setFilter({ ...filter, workspace: e.target.value || null })}>
@@ -130,7 +130,7 @@ export function PhoneLibrary({ machines, threads, workspaces, onOpenThread }: Pr
     {machines.map((m) => notes[m.id] && <div key={m.id} className="ph-banner" role="status"><p>{notes[m.id]}</p></div>)}
     {Object.values(pending).some(Boolean) && <p className="ph-muted">Loading pictures…</p>}
     {machines.length > 0 && !Object.values(pending).some(Boolean) && items.length === 0 && <div className="ph-empty">
-      <Folder size={30} /><h3>No pictures available</h3><p>Pictures your bots make on your paired machines will appear here.</p>
+      <Folder size={30} /><h3>No pictures available</h3><p>Pictures your agents make on your paired machines will appear here.</p>
     </div>}
     {items.length > 0 && shown.length === 0 && <p className="ph-muted ph-lib-none">{filtering ? "No pictures match these filters." : ""}</p>}
     {shown.length > 0 && <div className={`ph-lib-grid${layout === "list" ? " is-list" : ""}`} style={layout === "list" ? undefined : { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>

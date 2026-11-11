@@ -72,7 +72,7 @@ export function TalkOnlyChat(props: Props) {
         ...((bot.backend.kind==='agent'||bot.backend.kind==='open_ai_compatible') ? {model:bot.backend.model,effort:bot.effort} : {}),speed:bot.speed};}),
       entries:state.snapshot.transcript.filter(message=>upto===null || message.seq<upto),options:state.snapshot.options,
     });
-    if (result.skipped?.length) setProblem('The copied chat has bots that need setup on this machine.');
+    if (result.skipped?.length) setProblem('The copied chat has agents that need setup on this machine.');
     await chats.refresh(row.hostId);
     // App opens by machine+room, and resolves the fresh catalog on its next render.
     live.current.onOpenChat(result.id);
@@ -111,7 +111,7 @@ export function TalkOnlyChat(props: Props) {
     {!online && <p className="desktop-chat-banner">Reconnecting to {machine.name}. Messages wait here and go when it's back.</p>}
     {chats.deliveryHeld(row) && !row.trashedAt && <p className="desktop-chat-banner">Queued messages stay paused after Trash. Sending a new message also resumes delivery. <button type="button" className="ghost" disabled={!online} onClick={()=>act(chats.resumeDelivery(row))}>Resume queued messages</button></p>}
     {moving && <MoveToWorkDialog row={row} bots={bots} chats={chats} onClose={()=>setMoving(false)} onMoved={work=>{setMoving(false);onOpenWork(row,work.id,work);}} />}
-    {adding && <div className="desktop-chat-banner">{adding.length ? adding.map(item=><button key={item.profile.id} onClick={()=>{setAdding(null);act(chats.addBot(row,item.profile.id));}}>{item.profile.display_name}</button>) : 'No other saved bots on this machine.'}<button className="ghost" onClick={()=>setAdding(null)}>Cancel</button></div>}
+    {adding && <div className="desktop-chat-banner">{adding.length ? adding.map(item=><button key={item.profile.id} onClick={()=>{setAdding(null);act(chats.addBot(row,item.profile.id));}}>{item.profile.display_name}</button>) : 'No other saved agents on this machine.'}<button className="ghost" onClick={()=>setAdding(null)}>Cancel</button></div>}
     {problem && <p className="chat-problem" role="status">{problem}</p>}
     <div className="pane-body">{backend ? <ChatPane key={key} talkOnly attach pane={{id:row.id,kind:'chat',workspaceId:'',title:row.title}} cwd="" backend={backend}
       chatDraft={props.draft} onChatDraft={props.onDraft} onChatSend={send} chatBlocked={blocked} chatReadOnly={!!row.promotedTo || !!ticket || moving} onChatAddBot={online?addBot:undefined} chatDelivery={delivery} onChatParticipants={setBots}

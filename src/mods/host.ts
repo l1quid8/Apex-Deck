@@ -15,7 +15,7 @@ export const GRANTS: { id: Grant; label: string }[] = [
   { id: "process", label: "Run programs on this Mac" },
   { id: "network", label: "Make network requests" },
   { id: "files", label: "Read file details and write files" },
-  { id: "session", label: "See and change your messages, and see and block bots' tool calls" },
+  { id: "session", label: "See and change your messages, and see and block agents' tool calls" },
 ];
 
 export interface UserConfigField {

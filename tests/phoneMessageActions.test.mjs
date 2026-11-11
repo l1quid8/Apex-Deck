@@ -59,7 +59,7 @@ test("Copy reads Copied for a moment after it copies", () => {
 });
 
 test("Retry and Revert wait while a bot works", () => {
-  assert.match(row(bot, { expanded: true, busy: true }), /<button[^>]*class="msg-action retry"[^>]*disabled=""[^>]*title="Stop the bots first"/);
+  assert.match(row(bot, { expanded: true, busy: true }), /<button[^>]*class="msg-action retry"[^>]*disabled=""[^>]*title="Stop the agents first"/);
   assert.match(row(mine, { expanded: true, busy: true }), /<button[^>]*class="msg-action revert"[^>]*disabled=""/);
 });
 

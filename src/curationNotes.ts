@@ -38,7 +38,7 @@ export function noteTitle(curation: Curation, name: string): string {
   const count = countOf(curation);
   return curation.undone != null
     ? `${count} ${count === 1 ? "message was" : "messages were"} hidden here · undone`
-    : `${count} older ${count === 1 ? "message" : "messages"} hidden from bots · chosen by ${name}`;
+    : `${count} older ${count === 1 ? "message" : "messages"} hidden from agents · chosen by ${name}`;
 }
 
 export function noteLines(curation: Curation, name: string, sealed: boolean, time: (ms: number) => string): string[] {
@@ -47,7 +47,7 @@ export function noteLines(curation: Curation, name: string, sealed: boolean, tim
   if (curation.undone != null) {
     if (sealed) return [`${name} hid ${count === 1 ? "message" : "messages"} ${ranges} at ${time(curation.when)}. You restored ${count === 1 ? "this message" : "these messages"} at ${time(curation.undone)}. ${count === 1 ? "It’s" : "They’re"} now before the latest /compact. ${originals(count)}`];
     const them = count === 1 ? "it" : "them";
-    return [`${name} hid ${count === 1 ? "message" : "messages"} ${ranges} at ${time(curation.when)}. You brought ${them} back at ${time(curation.undone)}, so bots see ${them} again.`];
+    return [`${name} hid ${count === 1 ? "message" : "messages"} ${ranges} at ${time(curation.when)}. You brought ${them} back at ${time(curation.undone)}, so agents see ${them} again.`];
   }
   const reason = curation.reason.trim();
   const picked = `${count === 1 ? "Message" : "Messages"} ${ranges}${reason ? ` · ${name}’s reason: ${reason}` : "."}`;
@@ -59,7 +59,7 @@ export function noteLines(curation: Curation, name: string, sealed: boolean, tim
   const first = hiddenLine(curation.hidden[0]);
   return [
     picked,
-    `Bots now see ${curation.hidden.length === 1 ? `one short line there, ${first},` : `a short line for each range, like ${first},`} and can look up any of it.`,
+    `Agents now see ${curation.hidden.length === 1 ? `one short line there, ${first},` : `a short line for each range, like ${first},`} and can look up any of it.`,
     "Your pins and the newest 20 messages are never hidden.",
   ];
 }
@@ -67,7 +67,7 @@ export function noteLines(curation: Curation, name: string, sealed: boolean, tim
 export function undoNotice({ restored, sealed }: CurationUndo): Notice {
   const blocked = `${sealed === 1 ? "it’s" : "they’re"} before the latest /compact. ${originals(sealed)}`;
   if (restored > 0) {
-    const back = `${restored} ${restored === 1 ? "message is" : "messages are"} back for the bots.`;
+    const back = `${restored} ${restored === 1 ? "message is" : "messages are"} back for the agents.`;
     return { text: sealed > 0 ? `${back} The ${sealed} older ${sealed === 1 ? "message" : "messages"} can’t be restored to active context: ${blocked}` : back, tone: "info" };
   }
   if (sealed > 0) return { text: `Can’t restore ${sealed === 1 ? "this message" : `these ${sealed} messages`} to active context: ${blocked}`, tone: "error" };

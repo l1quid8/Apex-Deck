@@ -45,7 +45,7 @@ export function chatThreadBackend(backend: Backend, route: ChatThreadRoute): Bac
     roomUpdateParticipant: async (_room, config, base) => {
       writable();
       const current = (await state()).snapshot.participants.find(p => p.id === config.id);
-      if (!current) throw new Error('This bot is no longer in the chat.');
+      if (!current) throw new Error('This agent is no longer in the chat.');
       writable();
       const fields = (p: ParticipantConfig) => p.backend.kind === 'agent' || p.backend.kind === 'open_ai_compatible' ? p.backend : null;
       // Compare with the edit base, so another device's unrelated edits survive.
@@ -62,7 +62,7 @@ export function chatThreadBackend(backend: Backend, route: ChatThreadRoute): Bac
     roomAddParticipant: async (_room, config) => {
       writable();
       const profile = route.profile(config.id);
-      if (!profile) throw new Error('Choose a saved bot from this machine.');
+      if (!profile) throw new Error('Choose a saved agent from this machine.');
       await backend.call('chat_add_participant', {id:route.room, participant:{profile, id:config.id}});
     },
     roomRemoveParticipant: async (_room, participant) => {

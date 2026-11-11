@@ -238,7 +238,7 @@ pub fn snapshot_tree_and_id(project_data: &Path, root: &Path) -> Result<(String,
     // fixed identity instead of depending on one being set in the project.
     let mut args = vec![
         "-c", "user.name=Deck", "-c", "user.email=deck@localhost",
-        "commit-tree", &tree, "-m", "Deck bot copy snapshot",
+        "commit-tree", &tree, "-m", "Deck agent copy snapshot",
     ];
     let head_commit = run_git(project_data, &root, &[], &["rev-parse", "--verify", "HEAD"]).ok();
     if let Some(head) = &head_commit {
@@ -344,7 +344,7 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
     let copy_json = copy_dir.join("copy.json");
 
     if copy_json.exists() {
-        return Err("this bot already has a copy".into());
+        return Err("this agent already has a copy".into());
     }
     if std::fs::symlink_metadata(&work).is_ok() {
         return Err(format!("{} already exists.", work.display()));
@@ -356,11 +356,11 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
 
     let res = (|| -> Result<BotCopy, String> {
         std::fs::create_dir_all(&copy_dir)
-            .map_err(|e| format!("Could not create bot copy directory: {e}"))?;
+            .map_err(|e| format!("Could not create agent copy directory: {e}"))?;
         // `git worktree add` reuses an empty folder, and the jail can only expose
         // a folder that already exists: make the work tree here, on the real disk.
         std::fs::create_dir_all(&work)
-            .map_err(|e| format!("Could not create bot copy work tree: {e}"))?;
+            .map_err(|e| format!("Could not create agent copy work tree: {e}"))?;
 
         run_git(data, &root, &[], &["update-ref", &ref_name, &base])?;
 

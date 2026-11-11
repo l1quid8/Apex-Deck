@@ -225,14 +225,14 @@ export function chatProfileMapping(snapshot: ChatDeliverySnapshot, catalog: Reco
  */
 export function leftBehindWords(move: Pick<ChatMoveRecord, 'snapshot' | 'skipped'>, known: (id: string) => string | undefined): string[] {
   const names = new Map(move.snapshot.participants.map(person => [person.id, person.display_name]));
-  return move.skipped.map(item => `${known(item.participant) ?? names.get(item.participant) ?? 'A bot'} stayed behind: ${item.reason}`);
+  return move.skipped.map(item => `${known(item.participant) ?? names.get(item.participant) ?? 'An agent'} stayed behind: ${item.reason}`);
 }
 function importParticipants(snapshot: ChatDeliverySnapshot): { participants: ChatBotRequest[]; skipped: { participant: string; reason: string }[] } {
   const participants: ChatBotRequest[] = [], skipped: { participant: string; reason: string }[] = [];
   for (const participant of snapshot.participants) {
     const profile = Object.hasOwn(snapshot.importProfiles ?? {}, participant.id) ? snapshot.importProfiles![participant.id] : undefined;
     if (!profile) {
-      skipped.push({ participant: participant.id, reason: 'The saved profile for this bot is unknown. Open this chat on its original machine to refresh its profile mapping.' });
+      skipped.push({ participant: participant.id, reason: 'The saved profile for this agent is unknown. Open this chat on its original machine to refresh its profile mapping.' });
       continue;
     }
     participants.push({ profile, id: participant.id, display_name: participant.display_name,
@@ -433,7 +433,7 @@ export class ChatDeliveryController {
           if (!routeMatches(item, record.from.id, record.sourceRoom) || (item.state !== 'unsent' && !(item.accepted === 'fenced' && item.fenceClaimed))) continue;
           const hadTargets = item.targets.length > 0;
           item.targets = item.targets.filter(target => !skipped.has(target));
-          if (hadTargets && !item.targets.length) item.blockedReason = 'The bots this message is for are not set up on this machine.';
+          if (hadTargets && !item.targets.length) item.blockedReason = 'The agents this message is for are not set up on this machine.';
           item.machine = copy(record.to); item.room = record.targetRoom; item.state = 'unsent'; delete item.accepted; delete item.fenceClaimed; item.replySeqs = [];
         }
       });
@@ -480,7 +480,7 @@ export class ChatDeliveryController {
           const hadTargets = item.targets.length > 0;
           const available = new Set(chat.snapshot.participants.map(participant => participant.id));
           item.targets = item.targets.filter(target => available.has(target));
-          if (hadTargets && !item.targets.length) item.blockedReason = 'The bots this message is for are not set up on this machine.';
+          if (hadTargets && !item.targets.length) item.blockedReason = 'The agents this message is for are not set up on this machine.';
         }
       });
     }

@@ -125,7 +125,7 @@ export function pasteText(raw: string): { pieces: string[]; dropped: number } {
 export function holderLine(status: PhoneStatus): string {
   if (!status.on) return status.starting ? "Turning on…" : "Off";
   const holder = status.holder;
-  if (holder.kind === "human") return `You have the phone. The bots get it back after ${holder.secondsLeft}s without a tap.`;
+  if (holder.kind === "human") return `You have the phone. The agents get it back after ${holder.secondsLeft}s without a tap.`;
   if (holder.kind === "bot") return `${holder.name} is using the phone. Tap the screen to take over.`;
   return "Free. Tap the screen to take it.";
 }

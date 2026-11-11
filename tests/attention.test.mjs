@@ -102,7 +102,7 @@ test("echoed typing, short runs and small output are not finished work", () => {
 
 test("a chat round ends as failed, a question, a new reply, or nothing", () => {
   assert.deepEqual(afterRound(["Null"], "fine"), { kind: "failed", note: "Null could not reply" });
-  assert.deepEqual(afterRound(["Null", "Jigga"], null), { kind: "failed", note: "2 bots could not reply" });
+  assert.deepEqual(afterRound(["Null", "Jigga"], null), { kind: "failed", note: "2 agents could not reply" });
   assert.deepEqual(afterRound([], "Which file should I change?"), { kind: "needs_input", note: "Asked you a question" });
   assert.deepEqual(afterRound([], 'Did you mean **"main"**?  '), { kind: "needs_input", note: "Asked you a question" });
   assert.deepEqual(afterRound([], "Done. Tests pass."), { kind: "done", note: "New reply" });

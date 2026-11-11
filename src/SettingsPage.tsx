@@ -434,7 +434,7 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
   return <>
     <SitePermissions />
     <div className="settings-card">
-      <Row id="user-name" label="Name" note="Optional. Your bots see this in every thread on this machine.">
+      <Row id="user-name" label="Name" note="Optional. Your agents see this in every thread on this machine.">
         <input aria-label="Name" maxLength={60} value={settings.userName} onChange={e=>onChange({ ...settings, userName: e.target.value })} />
       </Row>
       <Row id="user-nickname" label="What agents should call you" note={'Optional. Used in plans and group chats. Left empty, they use your name, or "the user".'}>
@@ -442,18 +442,18 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
       </Row>
     </div>
     <div className="settings-card">
-      <Row id="artifacts" label="New artifacts" note="When a bot writes a file, the artifacts pane can show.">
+      <Row id="artifacts" label="New artifacts" note="When an agent writes a file, the artifacts pane can show.">
         <select aria-label="New artifacts" value={autoOpen ? "open" : "notify"} onChange={(e)=>{ const on=e.target.value==='open'; setArtifactAutoOpen(on); setAutoOpen(on); }}>
           <option value="open">Open the pane</option>
           <option value="notify">Just notify</option>
         </select>
       </Row>
-      <Row id="run-buttons" label="Run buttons on code blocks" note="Shell blocks in a bot's reply get a Run button. Clicking it runs the block in the thread's folder on the thread's host.">
+      <Row id="run-buttons" label="Run buttons on code blocks" note="Shell blocks in an agent's reply get a Run button. Clicking it runs the block in the thread's folder on the thread's host.">
         <input type="checkbox" aria-label="Run buttons on code blocks" checked={settings.codeRunButtons} onChange={e=>onChange({ ...settings, codeRunButtons: e.target.checked })} />
       </Row>
     </div>
     {isWindows && <div className="settings-card">
-      <Row label="Windows safety limit" note="On Windows, approvals can’t fully stop a program running under your account. A bot could start or control Apex Deck and approve its own commands. Deck blocks the common ways of doing this, but not all of them, so only run bots you trust here." />
+      <Row label="Windows safety limit" note="On Windows, approvals can’t fully stop a program running under your account. An agent could start or control Apex Deck and approve its own commands. Deck blocks the common ways of doing this, but not all of them, so only run agents you trust here." />
     </div>}
     <div className="section-title">Looking for something else?</div>
     <div className="settings-card">
@@ -519,7 +519,7 @@ function DataSection({ backend }: { backend: Backend; settings: AppSettings; onC
       {importing && <LegacyImportPanel backend={backend} startOpen onClose={()=>setImporting(false)} />}
     </div>
     <Advanced title="Maintenance" id="maintenance" defaultOpen>
-      <Row id="remembered" label="Remembered models" note={remembered===0 ? "None yet. Model names you type in the bot form are offered again next time." : `Model names from ${remembered} ${remembered===1 ? "provider" : "providers"}, offered again in the bot form.`}>
+      <Row id="remembered" label="Remembered models" note={remembered===0 ? "None yet. Model names you type in the agent form are offered again next time." : `Model names from ${remembered} ${remembered===1 ? "provider" : "providers"}, offered again in the agent form.`}>
         <button disabled={remembered===0} onClick={()=>{ forgetModels(); setRemembered(0); }}>Clear suggestions</button>
       </Row>
       <p className="settings-note">Keys and paired devices are managed in their own settings. Thread defaults are in New threads, chip styling in Appearance.</p>
@@ -588,7 +588,7 @@ const EXTRAS = [
   { key: "deepseek", label: "DeepSeek", detail: "DeepSeek API models" },
   { key: "ollama", label: "Ollama", detail: "Local models" },
   { key: "api", label: "Other API", detail: "OpenAI-compatible servers" },
-  { key: "command", label: "Custom command", detail: "Your own command-line bot" },
+  { key: "command", label: "Custom command", detail: "Your own command-line agent" },
   { key: "scripted", label: "Scripted", detail: "Offline testing" },
 ];
 
@@ -610,7 +610,7 @@ function ProvidersSection({ settings, onChange, agents, profiles, backend, highl
   },[backend,names]);
   useEffect(()=>{ refresh(); },[refresh]);
   return <>
-    <div className="settings-subhead"><h3>Visibility in bot creation</h3><p>Choose which tools appear when adding terminals and bots. Existing chats and terminals keep working.</p></div>
+    <div className="settings-subhead"><h3>Visibility in agent creation</h3><p>Choose which tools appear when adding terminals and agents. Existing chats and terminals keep working.</p></div>
     <div className={`settings-card provider-grid ${highlightId?.includes('provider') ? 'search-highlight' : ''}`} id="provider-list">
       {rows.map(row=><label key={row.key} className="provider-toggle">
         <input type="checkbox" checked={providerEnabled(row.key, disabled)} onChange={e=>setDisabled(e.target.checked ? disabled.filter(id=>id!==row.key) : [...disabled, row.key])} />
@@ -620,12 +620,12 @@ function ProvidersSection({ settings, onChange, agents, profiles, backend, highl
     <div className="settings-actions">
       <button className="ghost" onClick={()=>setDisabled([])}>Enable all</button>
       <button className="ghost" onClick={()=>setDisabled([...new Set([...disabled, ...agents.filter(a=>!a.found).map(a=>a.key)])])}>Hide uninstalled tools</button>
-      <span>Installed vs hidden is about the creation menu, not whether a saved bot still runs.</span>
+      <span>Installed vs hidden is about the creation menu, not whether a saved agent still runs.</span>
     </div>
     <Advanced title="All tools & provider visibility" id="all-tools">
       <p className="settings-note">All 14 provider/tool categories are listed above. Hidden items stay usable in existing chats.</p>
     </Advanced>
-    <div className="settings-subhead"><h3>Provider credentials</h3><p>Keys your bots and /image use. Saved in this Mac's Keychain, or a private file on Linux servers. Deck never shows a saved key again.</p></div>
+    <div className="settings-subhead"><h3>Provider credentials</h3><p>Keys your agents and /image use. Saved in this Mac's Keychain, or a private file on Linux servers. Deck never shows a saved key again.</p></div>
     <div className={`settings-card ${highlightId==='api-key' ? 'search-highlight' : ''}`} id="api-key">
       {names.map(name=><KeyRow key={name} name={name} note={usageNote(uses.get(name)?.agents ?? 0, uses.get(name)?.image)} state={states[name]} backend={backend} onChanged={refresh} />)}
       {names.length===0 && <Row label="No API keys referenced yet" note="Add an OpenAI-compatible provider or use a saved agent that references an API key env var." />}
@@ -643,22 +643,22 @@ function ThreadsSection({ settings, onChange, highlightId }: { settings: AppSett
         <option value="round_robin">Everyone in turn</option>
       </select>
     </Row>
-    <Row id="rounds" label="Model-to-model rounds" note="How many times bots may answer each other after one of your messages. Step past 10 for unlimited (∞), which runs until you press Stop." highlight={highlightId==='rounds'}>
+    <Row id="rounds" label="Model-to-model rounds" note="How many times agents may answer each other after one of your messages. Step past 10 for unlimited (∞), which runs until you press Stop." highlight={highlightId==='rounds'}>
       <span className="stepper">
         <button type="button" aria-label="Less rounds" disabled={thread.max_bot_hops!==null && thread.max_bot_hops<=0} onClick={()=>onChange({ ...settings, newThread: { ...thread, max_bot_hops: thread.max_bot_hops===null ? MAX_ROUNDS : thread.max_bot_hops-1 } })}>−</button>
         <output aria-label="rounds">{thread.max_bot_hops ?? "∞"}</output>
         <button type="button" aria-label="More rounds" disabled={thread.max_bot_hops===null} onClick={()=>onChange({ ...settings, newThread: { ...thread, max_bot_hops: thread.max_bot_hops!==null && thread.max_bot_hops>=MAX_ROUNDS ? null : (thread.max_bot_hops ?? 0)+1 } })}>+</button>
       </span>
     </Row>
-    <Row id="access" label="Access for new bots" note="Ask first only works with tools that can enforce it. Others start at Read only." highlight={highlightId==='access'}>
-      <select aria-label="Access for new bots" value={settings.newBotAccess} onChange={e=>onChange({ ...settings, newBotAccess: e.target.value as Access })}>
+    <Row id="access" label="Access for new agents" note="Ask first only works with tools that can enforce it. Others start at Read only." highlight={highlightId==='access'}>
+      <select aria-label="Access for new agents" value={settings.newBotAccess} onChange={e=>onChange({ ...settings, newBotAccess: e.target.value as Access })}>
         <option value="read">Read only</option>
         <option value="ask">Ask first</option>
         <option value="edits">Can edit files</option>
         <option value="full">Full access</option>
       </select>
     </Row>
-    <Row id="steer" label="Confirm before steering" note="Steering stops a bot mid-turn. Threads can override this in Thread details." highlight={highlightId==='steer'}>
+    <Row id="steer" label="Confirm before steering" note="Steering stops an agent mid-turn. Threads can override this in Thread details." highlight={highlightId==='steer'}>
       <input type="checkbox" aria-label="Confirm before steering" checked={settings.confirmSteer} onChange={e=>onChange({ ...settings, confirmSteer: e.target.checked })} />
     </Row>
     <p className="settings-note">Existing threads keep their own settings. Agent chip styling moved to Appearance since it affects current chats too.</p>

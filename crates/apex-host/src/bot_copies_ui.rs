@@ -127,7 +127,7 @@ pub fn remove(root: &Path, target: &Path, force: bool, data: &Path) -> Result<()
         return worktrees::remove(data, root, target, force, &data.join("apex-agent/tasks"));
     };
     if !matches!(copy.state, CopyState::NeedsYou { .. }) {
-        return Err("Deck manages this active bot copy. Wait until it needs you.".into());
+        return Err("Deck manages this active agent copy. Wait until it needs you.".into());
     }
     if !force {
         return Err("has-changes:Discard this copy and all its changes?".into());

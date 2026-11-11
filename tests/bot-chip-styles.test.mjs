@@ -62,7 +62,7 @@ test('all chip styles preserve the live composer and bot actions in wide, narrow
           assert.equal(await run(()=>document.querySelector('textarea').value),'Keep this draft',style+' draft');
           assert.equal(await run(()=>window.fixture.count('roomCreate')),creates,style+' must not restart the room');
           assert.equal(await run(()=>document.querySelector('.chip-name').getAttribute('aria-label').includes('Bot')),true,style+' accessible name');
-          assert.equal(await run(()=>!!document.querySelector('[aria-label="Add bot"]')),true,style+' add bot');
+          assert.equal(await run(()=>!!document.querySelector('[aria-label="Add agent"]')),true,style+' add bot');
           assert.equal(await run(()=>!!document.querySelector('[aria-label="Kick Bot"]')),true,style+' kick bot');
           await run(()=>{const r=document.querySelector('.composer-bots').cloneNode(true);r.dataset.fit='full';r.querySelector('.chip').classList.add('to');r.querySelector('.chip').dataset.editing='true';for(const [cls,text] of [['chip-meta chip-queued','2'],['editor-badge','editing']]){const e=document.createElement('span');e.className=cls;e.textContent=text;r.querySelector('.chip-details').append(e);}window.gallery.push({style:r.dataset.chipStyle,row:r.outerHTML});});
           await run(()=>document.querySelector('.chip-name').click());

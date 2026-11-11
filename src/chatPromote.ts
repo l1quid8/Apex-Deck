@@ -92,7 +92,7 @@ export function promoteWait(outbox: readonly { machine: { id: string }; room: st
   if (here.some((item) => item.accepted === "fenced" && (!item.id || !resolved.has(item.id)))) {
     return "A message was not sent. Retry it successfully before moving the chat, so the Work thread gets it.";
   }
-  if (here.some((item) => item.accepted === "running")) return "A bot is still answering. Move the chat once it has finished, so the reply goes with it.";
+  if (here.some((item) => item.accepted === "running")) return "An agent is still answering. Move the chat once it has finished, so the reply goes with it.";
   return null;
 }
 

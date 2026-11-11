@@ -22,7 +22,7 @@ export interface DeviceRegistry {
 
 export const TIERS: { id: Tier; label: string; note: string }[] = [
   { id: "read_only", label: "Read only", note: "Sees threads and their replies. Can't post or answer." },
-  { id: "chat", label: "Chat and approvals", note: "Posts and answers approval cards. Posting wakes the thread's bots, which can run code on this machine, but only in threads you already set up, with the folder and permissions you gave them." },
+  { id: "chat", label: "Chat and approvals", note: "Posts and answers approval cards. Posting wakes the thread's agents, which can run code on this machine, but only in threads you already set up, with the folder and permissions you gave them." },
   { id: "full", label: "Full", note: "Everything Chat can do, plus new threads, terminals, files and settings." },
 ];
 

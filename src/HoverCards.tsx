@@ -79,6 +79,6 @@ export function ThreadCard({ title, project, hostName, remote, tint, twin, age, 
     <div className="card-row title"><span className="grow">{title}</span>
       <span className="side">{remote && <span style={{ color: tint }} title={hostName}><Glyph name="globe" size={14} /></span>}{age}</span></div>
     <div className="card-row">{folder}<span className="grow">{project} · {remote ? hostName : "This Mac"}{twin && <> · <span className="mono">{twin}</span></>}</span></div>
-    <div className="card-row"><Glyph name="chat" size={14} /><span className="grow">Threads · {who.length ? who.join(", ") : "No bots yet"}</span></div>
+    <div className="card-row"><Glyph name="chat" size={14} /><span className="grow">Threads · {who.length ? who.join(", ") : "No agents yet"}</span></div>
   </>;
 }

@@ -101,7 +101,7 @@ fn spec(name: &str, entry: &Value, lookup: &dyn Fn(&str) -> Option<String>) -> S
             Some(url) => Transport::Http { url: expand(url, lookup), headers: pairs(&entry["headers"], lookup) },
             None => Transport::Unsupported("its entry has no url".into()),
         },
-        "sse" => Transport::Unsupported("it uses the older SSE transport, which Apex Deck's API bots don't speak".into()),
+        "sse" => Transport::Unsupported("it uses the older SSE transport, which Apex Deck's API agents don't speak".into()),
         other => Transport::Unsupported(format!("its type `{other}` isn't known")),
     };
     ServerSpec { name: name.to_string(), transport }
@@ -353,7 +353,7 @@ impl Connection {
                         child
                     }
                     #[cfg(all(unix, not(target_os = "linux")))]
-                    return Err(format!("The MCP server `{}` couldn't start: Linux bot jail is only available on Linux", spec.name));
+                    return Err(format!("The MCP server `{}` couldn't start: Linux agent jail is only available on Linux", spec.name));
                 } else {
                     let executable_path = env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
                         .map(|(_, value)| value.as_str()).or(path);
@@ -528,7 +528,7 @@ impl Connection {
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(format!(
-                "The MCP server `{name}` needs a sign-in. API bots can only use remote servers whose entry gives the access token in its headers; a Claude Code bot can use this one."
+                "The MCP server `{name}` needs a sign-in. API agents can only use remote servers whose entry gives the access token in its headers; a Claude Code agent can use this one."
             ));
         }
         if let Some(session) = response.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {

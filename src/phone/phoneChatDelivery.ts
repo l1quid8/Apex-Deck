@@ -80,7 +80,7 @@ function chatSnapshot(value: unknown): ChatDeliverySnapshot {
 
 /** Project the wire request explicitly even if a JavaScript caller supplies extra fields. */
 function importParticipant(value: ChatBotRequest): ChatBotRequest {
-  if (typeof value.profile !== "string" || !value.profile.trim()) throw new Error("A saved profile is required to move this bot safely.");
+  if (typeof value.profile !== "string" || !value.profile.trim()) throw new Error("A saved profile is required to move this agent safely.");
   return { profile: value.profile,
     ...(value.id !== undefined ? { id: value.id } : {}),
     ...(value.display_name !== undefined ? { display_name: value.display_name } : {}),

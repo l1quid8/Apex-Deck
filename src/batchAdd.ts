@@ -5,9 +5,9 @@ export const MAX_NEW_BOTS = 4;
 
 /** The batch submit button's text for `total` bots. */
 export function batchLabel(total: number): string {
-  if (total === 0) return "Pick a bot";
-  if (total === 1) return "Add 1 bot";
-  return `Add ${total} bots`;
+  if (total === 0) return "Pick an agent";
+  if (total === 1) return "Add 1 agent";
+  return `Add ${total} agents`;
 }
 
 export function checkBatch(
@@ -37,7 +37,7 @@ export function checkBatch(
         }
       );
       if (!("error" in secondResult)) {
-        return { index: i, error: `Another bot in this batch already answers to @${mentionFor(items[i])}. Pick a different name.` };
+        return { index: i, error: `Another agent in this batch already answers to @${mentionFor(items[i])}. Pick a different name.` };
       }
       return { index: i, error: result.error };
     }
@@ -71,7 +71,7 @@ export function splitAdded(added: number, savedCount: number): { saved: number; 
 /** The add menu's bottom strip: how many bots will join, and who. */
 export function lineupText(names: string[]): string {
   const n = names.length;
-  if (n === 0) return "Pick at least one bot";
-  const list = names.map(name => name.trim() === "" ? "New bot" : name.trim()).join(", ");
-  return n === 1 ? `1 bot will join: ${list}` : `${n} bots will join: ${list}`;
+  if (n === 0) return "Pick at least one agent";
+  const list = names.map(name => name.trim() === "" ? "New agent" : name.trim()).join(", ");
+  return n === 1 ? `1 agent will join: ${list}` : `${n} agents will join: ${list}`;
 }

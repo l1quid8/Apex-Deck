@@ -1074,7 +1074,7 @@ export function PhoneApp() {
         const link = linkOf(row.hostId);
         if (!host || !link || link.status !== "online") throw new Error(link ? `${downLine(link)}. Nothing changed.` : "That machine isn't paired with this phone.");
         const saved = roomRef.current?.id === row.id && roomRef.current.hostId === row.hostId ? roomRef.current.configs.find((config) => config.id === botId) : undefined;
-        if (!saved) throw new Error("This bot is no longer in the chat.");
+        if (!saved) throw new Error("This agent is no longer in the chat.");
         const next = withPhoneChange(saved, change, reported, apiModels);
         const model = (config: ParticipantConfig) => config.backend.kind === "agent" || config.backend.kind === "open_ai_compatible" ? config.backend.model : null;
         const patch: Record<string, unknown> = {};
@@ -1607,7 +1607,7 @@ export function PhoneApp() {
       let participants = loaded ? loaded.participants : [];
       let transcriptLength = loaded ? loaded.messages.length : 0;
       if (viewingPending && pending) {
-        if (!starter) { setNotice("This phone has no saved bot to start a thread with. Add one on the Mac first."); return; }
+        if (!starter) { setNotice("This phone has no saved agent to start a thread with. Add one on the Mac first."); return; }
         const made = pendingRoomIds.current[pending.id] ?? { id: `pane-${Date.now().toString(36)}`, workspaceId: pending.workspaceId, kind: "chat" as const, title: "New thread" };
         pendingRoomIds.current[pending.id] = made;
         // Open the room before saving or showing it, so a second open keeps this bot.
@@ -1641,7 +1641,7 @@ export function PhoneApp() {
       const sentPane = pane;
       // The box key for the thread that actually gets this, which is a new thread when the draft started one.
       const sentBox = threadKey(sentPane, host.machine.id);
-      if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
+      if (participants.length === 0) { setNotice("This thread has no agents yet, so nothing would answer. Add one from Agents in the thread’s ⋯ menu."); return; }
       const parsed=parseComposer(draft.text.trim());
       if ('command' in parsed || runnerMode) {
         const command='command' in parsed?parsed.command:{name:runnerMode!,arg:runnerMode==='loop'?`${runnerInterval} ${draft.text.trim()}`:`start ${draft.text.trim()}`};
@@ -1789,7 +1789,7 @@ export function PhoneApp() {
         if (!host || !link || link.status !== "online") throw new Error(link ? `${downLine(link)}. Nothing changed.` : "That machine isn't paired with this phone.");
         const now = await host.backend.roomCreate(paneId, [], { policy: "mention", max_bot_hops: 0 }, "");
         const saved = now.participants.find((config) => config.id === botId);
-        if (!saved) throw new Error("This bot is no longer in the thread.");
+        if (!saved) throw new Error("This agent is no longer in the thread.");
         const next = withPhoneChange(saved, change, reported, apiModels);
         const result = await host.backend.roomUpdateParticipant(paneId, next, saved);
         const actual = result || (await host.backend.roomCreate(paneId, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(config => config.id === botId) || next;
@@ -1860,16 +1860,16 @@ export function PhoneApp() {
         setNotice(CLEARED);
         return;
       case "compact": case "curate": case "curate_undo": {
-        if (busy) { setNotice("Wait for the bots to finish before changing what they see."); return; }
+        if (busy) { setNotice("Wait for the agents to finish before changing what they see."); return; }
         const typed = command.name === "compact" ? "/compact" : command.name === "curate" ? "/curate" : "/curate undo";
         clearBox();
-        setNotice(command.name === "compact" ? "Compacting: a bot is summing up the chat…" : command.name === "curate" ? "Curating: a bot is picking old messages to hide…" : "Bringing hidden messages back…");
+        setNotice(command.name === "compact" ? "Compacting: an agent is summing up the chat…" : command.name === "curate" ? "Curating: an agent is picking old messages to hide…" : "Bringing hidden messages back…");
         try {
-          if (command.name === "compact") { await host.backend.roomCompact(pane.id); setNotice("Compacted. The bots now see a summary; you still see every message."); }
+          if (command.name === "compact") { await host.backend.roomCompact(pane.id); setNotice("Compacted. The agents now see a summary; you still see every message."); }
           else if (command.name === "curate") {
             const reply = await host.backend.roomCurate(pane.id);
             const name = shown?.participants.find((who) => who.id === reply.by)?.display_name ?? reply.by;
-            setNotice(curateNotice({ ...reply, by: name })?.text ?? "Done. Old messages are hidden from the bots.");
+            setNotice(curateNotice({ ...reply, by: name })?.text ?? "Done. Old messages are hidden from the agents.");
           } else setNotice(undoNotice(await host.backend.roomCurateUndo(pane.id)).text);
         } catch (error) { setNotice(failedNotice(typed, error)); }
         return;
@@ -2225,7 +2225,7 @@ export function PhoneApp() {
     const shown = roomRef.current;
     if (!shown || shown.id !== paneId) return;
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
-    if (Object.keys(shown.working).length > 0) { setNotice("Stop the bots first."); return; }
+    if (Object.keys(shown.working).length > 0) { setNotice("Stop the agents first."); return; }
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     if (kind === "retry" && !shown.participants.some((p) => p.id === bot)) { setNotice(`${bot} isn't in this thread any more, so it can't answer again.`); return; }
     const host = changeHost(kind === "retry" ? "Retry" : "Revert");
@@ -2502,7 +2502,7 @@ export function PhoneApp() {
     if (chatOnline && openRights && !openRights.post) return { enabled: false, reason: openRights.postWhy };
     if (!chatOnline && openRights && !openRights.queue) return { enabled: false, reason: openRights.queueWhy };
     if (!mayPostIn(phoneHost(openChat.hostId)?.access(), openChat.id)) return { enabled: false, reason: `This phone isn't allowed to use this chat on ${chatMachine(openChat.hostId).name} any more.` };
-    if ((roomFor(openChat)?.participants.length ?? openChat.bots.length) === 0) return { enabled: false, reason: "This chat has no bots yet. Add one from Bots in the ⋯ menu." };
+    if ((roomFor(openChat)?.participants.length ?? openChat.bots.length) === 0) return { enabled: false, reason: "This chat has no agents yet. Add one from Agents in the ⋯ menu." };
     return { enabled: draft.text.trim().length > 0, reason: "" };
   })();
   const backupMachine = openChat && !chatOnline ? chatMachines.find((item) => item.id !== openChat.hostId && item.chats && item.status === "online") ?? null : null;
@@ -2511,7 +2511,7 @@ export function PhoneApp() {
       {openChat.promotedTo && (
         <div className="ph-banner" role="status">
           <strong>Continued as a Work thread</strong>
-          <p>Same bots, now with a folder. This chat stays as it was.</p>
+          <p>Same agents, now with a folder. This chat stays as it was.</p>
           <div className="ph-banner-actions"><button type="button" onClick={() => openChatRow({ hostId: openChat.hostId, id: openChat.promotedTo! })}>Open Work thread</button></div>
         </div>
       )}
@@ -3012,7 +3012,7 @@ export function PhoneApp() {
               status={asking ? "Waiting on your answer" : turn ? `${toolLine(turnWords(turn, false, room.plan))} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}
               statusWarn={asking} working={Boolean(turn)} asking={asking}
               meters={botMeters(provider, room.fill[who.id], planOf(room.plans, provider, config.backend.kind === "agent" ? config.backend.model : null), new Date(), account?.balance ?? null)}
-              shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${TOOL_WORDS[provider] ?? provider} bots in this thread.` : ""}
+              shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${TOOL_WORDS[provider] ?? provider} agents in this thread.` : ""}
               tokens={tokenWords(room.used[who.id])}
               resets={(() => {
                 const credits = provider ? room.credits[provider] : undefined;
@@ -3058,7 +3058,7 @@ export function PhoneApp() {
               <MenuRow label="Close thread" detail="Closes its window. Stays in Threads" onClick={() => closeThread(threadKey(menuPane, sessionHost(menuPane)))} />
               {menuPane.id === openId && room && room.id === openPane?.id && (
                 <button type="button" className="ph-srow ph-bots-menu" onClick={() => { setBotChange(null); setMenu({ kind: "bots", id: menuPane.id }); }}>
-                  <span className="ph-grow"><strong>Bots</strong><small>{room.participants.length} in this thread</small></span>
+                  <span className="ph-grow"><strong>Agents</strong><small>{room.participants.length} in this thread</small></span>
                   <span className="ph-bots-preview">{room.participants.slice(0, 4).map((who) => <Avatar key={who.id} seed={who.look.seed} color={who.look.color} size="sm" />)}</span>
                   <ChevronRight size={18} />
                 </button>
@@ -3108,18 +3108,18 @@ export function PhoneApp() {
                   {state?.pending ? <span className="ph-bot-spinner" aria-label="Saving" /> : member ? <span aria-hidden="true">−</span> : <Plus size={18} />}
                 </button>
               </div>
-              {member && (busy[queueKey(room.hostId, room.id)] ?? []).includes(config.id) && <p className="ph-meta">Stop this bot’s reply before removing it.</p>}
+              {member && (busy[queueKey(room.hostId, room.id)] ?? []).includes(config.id) && <p className="ph-meta">Stop this agent’s reply before removing it.</p>}
               {state?.error && <p className="ph-bot-error" role="alert">{state.error} <button type="button" disabled={!!reason} onClick={() => void change(config, member)}>Retry</button></p>}
             </div>;
           };
           return (
-            <Sheet title="Bots" onClose={() => setMenu(null)}>
+            <Sheet title="Agents" onClose={() => setMenu(null)}>
               {!full && <p className="ph-sheet-text">{botChangeGate(false, false, false)}</p>}
               <div className="ph-section">In this thread</div>
-              {room.configs.length === 0 ? <div className="ph-card"><strong>No bots yet</strong><p className="ph-meta">Add a bot below to send a message.</p></div> : <div className="ph-bot-list">{room.configs.map((config) => row(config, true))}</div>}
-              <div className="ph-section">Add a bot</div>
+              {room.configs.length === 0 ? <div className="ph-card"><strong>No agents yet</strong><p className="ph-meta">Add an agent below to send a message.</p></div> : <div className="ph-bot-list">{room.configs.map((config) => row(config, true))}</div>}
+              <div className="ph-section">Add an agent</div>
               <div className="ph-bot-list">{absent.map((profile) => row(profile, false))}</div>
-              {absent.length === 0 && <p className="ph-meta">Every saved bot is already here. Make new ones on the Mac.</p>}
+              {absent.length === 0 && <p className="ph-meta">Every saved agent is already here. Make new ones on the Mac.</p>}
             </Sheet>
           );
         })()}
@@ -3213,7 +3213,7 @@ export function PhoneApp() {
             {(() => {
               const start = newChatStart(catalog, chatMachines, (hostId) => chatProfiles.current.get(hostId));
               const where = start ? chatMachine(start.hostId).name : null;
-              return <NewMenuBody chatLine={start ? `On ${where}. No folder; bots talk only.` : null} workLine={newAllowed ? "Pick a folder. Bots can read or edit files there." : null}
+              return <NewMenuBody chatLine={start ? `On ${where}. No folder; agents talk only.` : null} workLine={newAllowed ? "Pick a folder. Agents can read or edit files there." : null}
                 onChat={() => setChatSheet({ kind: "new-chat" })} onWork={() => { setChatSheet(null); setQuery(""); setMenu({ kind: "new" }); }} />;
             })()}
           </Sheet>
@@ -3232,7 +3232,7 @@ export function PhoneApp() {
               <p className="ph-meta">{botNames(sheetChat)} · Talk only</p>
             </div>
             <MenuRow label="Close chat" detail="Closes its window. Stays in Threads" onClick={() => closeThread(threadKey({ id: sheetChat.id, hostId: sheetChat.hostId }, sheetChat.hostId))} />
-            <MenuRow label="Bots" detail={`${sheetChat.bots.length} in this chat`} onClick={() => setChatSheet({ kind: "bots", hostId: sheetChat.hostId, id: sheetChat.id })} />
+            <MenuRow label="Agents" detail={`${sheetChat.bots.length} in this chat`} onClick={() => setChatSheet({ kind: "bots", hostId: sheetChat.hostId, id: sheetChat.id })} />
             {sheetRights?.post ? <>
               <MenuRow label="Where this chat runs" detail={chatMachine(sheetChat.hostId).name} onClick={() => setChatSheet({ kind: "where", hostId: sheetChat.hostId, id: sheetChat.id })} />
               {!sheetChat.promotedTo && <MenuRow label="Move to a Work thread…" onClick={() => setChatSheet({ kind: "move", hostId: sheetChat.hostId, id: sheetChat.id })} />}
@@ -3259,7 +3259,7 @@ export function PhoneApp() {
                 updateChatMeta(row, { archived: !row.archived }).then(() => { setChatSheet(null); if (!row.archived && openId === row.id) setOpenId(null); }, (error) => setNotice(words(error)));
               }} />
             </> : <p className="ph-sheet-text ph-quiet">{sheetRights?.postWhy}</p>}
-            <p className="ph-sheet-text ph-quiet">Tap a bot in the bar to change its model, reasoning or Speed.</p>
+            <p className="ph-sheet-text ph-quiet">Tap an agent in the bar to change its model, reasoning or Speed.</p>
           </Sheet>
         )}
         {chatSheet?.kind === "rename" && sheetChat && (
@@ -3272,7 +3272,7 @@ export function PhoneApp() {
           </Sheet>
         )}
         {chatSheet?.kind === "bots" && sheetChat && (
-          <Sheet title="Bots in this chat" onClose={() => setChatSheet(null)}>
+          <Sheet title="Agents in this chat" onClose={() => setChatSheet(null)}>
             <ChatBotsBody machine={chatMachine(sheetChat.hostId)} locked={sheetRights?.post ? "" : sheetRights?.postWhy ?? ""} bots={chatBots(sheetChat)} working={[...(busy[queueKey(sheetChat.hostId, sheetChat.id)] ?? [])]} loadProfiles={chatProfilesOn}
               onOpen={(botId) => { if (openId === sheetChat.id) { setChatSheet(null); setBotSheet(botId); } else openChatRow(sheetChat); }}
               onAdd={(profile) => changeChatBots(sheetChat, { add: profile })} onRemove={(botId) => changeChatBots(sheetChat, { remove: botId })} />
@@ -3576,11 +3576,11 @@ function BotSheet(props: {
             : result.saved ? props.working ? `Saved. ${name} finishes this reply first, then uses it.` : `Saved. ${name} uses it from its next reply.`
             : "Changes save as you pick them, for this thread only."}
         </p>
-      </> : <p className="ph-sheet-text ph-quiet">This bot has no model or reasoning to change.</p>}
+      </> : <p className="ph-sheet-text ph-quiet">This agent has no model or reasoning to change.</p>}
       {props.extra}
       <button type="button" className="primary ph-wide" onClick={props.onMention}>Mention {name}</button>
       {props.working && !props.offline && <button type="button" className="ph-wide" onClick={props.onStop}>Stop {name}</button>}
-      <p className="ph-sheet-text ph-quiet">Add or remove bots from Bots in the thread’s ⋯ menu.</p>
+      <p className="ph-sheet-text ph-quiet">Add or remove agents from Agents in the thread’s ⋯ menu.</p>
     </Sheet>
   );
 }
@@ -3751,7 +3751,7 @@ function ThreadView(props: {
         busy={working.length > 0} onGoBack={() => actions.onGoBack(message)}
         onFork={actions.onFork && (() => actions.onFork?.(message.seq))}
         asking={going !== null} />
-      {going && <GoBackAsk going={going} who={who || "the bot"} nameOf={(id) => person(id).display_name}
+      {going && <GoBackAsk going={going} who={who || "the agent"} nameOf={(id) => person(id).display_name}
         onScope={(scope) => props.onGoingBack({ ...going, scope })}
         onTick={(path) => props.onGoingBack({ ...going, ticked: going.ticked.includes(path) ? going.ticked.filter((p) => p !== path) : [...going.ticked, path] })}
         onAnswer={props.onAnswerGoBack} onCancel={() => props.onGoingBack(null)} />}
@@ -3991,7 +3991,7 @@ function ThreadView(props: {
           </p>
         </button>}
         {!crew && props.participants.length > 0 && (
-          <button type="button" className="ph-cluster" aria-label={`Show the bots: ${props.participants.map((p) => p.display_name).join(", ")}`} onClick={() => { inputRef.current?.blur(); props.onCrew(false); }}>
+          <button type="button" className="ph-cluster" aria-label={`Show the agents: ${props.participants.map((p) => p.display_name).join(", ")}`} onClick={() => { inputRef.current?.blur(); props.onCrew(false); }}>
             {props.participants.slice(0, 3).map((participant) => (
               <Avatar key={participant.id} seed={participant.look.seed} color={participant.look.color} size="sm" working={participant.id in props.working && !asking(participant.id)} />
             ))}
@@ -4010,7 +4010,7 @@ function ThreadView(props: {
       {/* The thread's bots, pinned under the title: tap to @tag, hold or pull down for details. Folds into the title bar, and while the keyboard is up. */}
       {props.participants.length > 0 && (
         <div className={`ph-crew${crew ? "" : " shut"}`} inert={props.covered || !crew} aria-hidden={!crew}>
-          <div className="ph-crew-row" role="group" aria-label="Bots in this thread">
+          <div className="ph-crew-row" role="group" aria-label="Agents in this thread">
             {props.participants.length > 1 && (
               <button type="button" className={`ph-crew-pill${everyone ? " to" : ""}`} aria-label={everyone ? "Everyone. Answers your next message" : "Tag everyone"} onClick={() => tag("all")}>
                 <span className="ph-crew-chip"><span className="ph-mention-all" aria-hidden="true">@</span>Everyone</span>
@@ -4041,12 +4041,12 @@ function ThreadView(props: {
             })}
             {/* Adding and removing bots used to be two levels into ⋯ → Bots, and only while this thread was open. Now it is where the bots are. */}
             {!props.draftThread && (
-              <button type="button" className="ph-crew-pill ph-crew-add" aria-label="Add or remove bots in this thread" onClick={() => { inputRef.current?.blur(); props.onBots(); }}>
-                <span className="ph-crew-chip"><Plus size={15} /><span className="ph-crew-name">Bots</span></span>
+              <button type="button" className="ph-crew-pill ph-crew-add" aria-label="Add or remove agents in this thread" onClick={() => { inputRef.current?.blur(); props.onBots(); }}>
+                <span className="ph-crew-chip"><Plus size={15} /><span className="ph-crew-name">Agents</span></span>
               </button>
             )}
           </div>
-          <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the bots into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
+          <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the agents into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
         </div>
       )}
       {/* Pinned for every model, folded to one line; a pin from a message jumps to it. */}
@@ -4088,7 +4088,7 @@ function ThreadView(props: {
           <div className="ph-empty">
             <MessageSquare size={30} />
             <h3>{props.chat ? "Start the group chat" : "What are we working on?"}</h3>
-            <p>{props.chat ? `${props.participants.map((who) => who.display_name).join(" · ") || "No bots yet"} · ${props.machine}` : <>{props.project} · {props.machine}{props.path && <><br />{props.path}</>}</>}</p>
+            <p>{props.chat ? `${props.participants.map((who) => who.display_name).join(" · ") || "No agents yet"} · ${props.machine}` : <>{props.project} · {props.machine}{props.path && <><br />{props.path}</>}</>}</p>
           </div>
         )}
         {/* Each message, then its actions under it: a bot's at the left, yours at the right, as on the desktop. */}
@@ -4298,7 +4298,7 @@ function ThreadView(props: {
         {props.runnerSetup}
         {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {picking && picking.picks.length > 0 && (
-          <div className="ph-mentions" role="listbox" aria-label="Mention a bot">
+          <div className="ph-mentions" role="listbox" aria-label="Mention an agent">
             {picking.picks.map((pick) => {
               const who = pick.id === "all" ? null : person(pick.id);
               return (
@@ -4322,7 +4322,7 @@ function ThreadView(props: {
           </button>}
           <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
-              placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
+              placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the agents — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
               onChange={(event) => { composerHistory.setText(event.target.value); setCaret(event.target.selectionStart); }}
               onKeyDown={(event) => {
                 if (picking && picking.picks.length > 0) return;
@@ -4587,7 +4587,7 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
         <div className="ph-list">
           {/* Making one comes first, so the agent you want is never hidden behind a scroll of the ones you have. */}
           <button type="button" className="ph-srow ph-project-assistant" disabled={!canEditAgents} onClick={onNewAgent}>
-            <span className="ph-grow"><strong>+ New agent</strong><small>{canEditAgents ? "Start from a bot your Mac has, then name it." : "Making agents needs Full access on your Mac: Settings → Phones."}</small></span>
+            <span className="ph-grow"><strong>+ New agent</strong><small>{canEditAgents ? "Start from a saved agent on your Mac, then name it." : "Making agents needs Full access on your Mac: Settings → Phones."}</small></span>
             {canEditAgents && <ChevronRight size={15} />}
           </button>
           {bots.map((bot) => {
@@ -4601,7 +4601,7 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
             );
           })}
         </div>
-        {bots.length === 0 && <p className="ph-list-note">No agents yet. Make one with + New agent, or from a bot in a thread on the Mac.</p>}
+        {bots.length === 0 && <p className="ph-list-note">No agents yet. Make one with + New agent, or save one from a thread on the Mac.</p>}
       </>}
       {tab === "agents" && personal && <>
         <div className="ph-section">Your assistant</div>

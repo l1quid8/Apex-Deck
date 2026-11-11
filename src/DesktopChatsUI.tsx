@@ -95,16 +95,16 @@ export function NewChatDialog({ chats, onClose, onStarted }: { chats: DesktopCha
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="confirm new-chat" role="dialog" aria-modal="true" aria-labelledby="new-chat-title">
         <strong id="new-chat-title">New chat</strong>
-        <p className="muted">Talk only: the bots can't read or change files, run commands or search the web.</p>
+        <p className="muted">Talk only: the agents can't read or change files, run commands or search the web.</p>
         <label className="new-chat-field">Machine
           <select value={hostId} onChange={(event) => setHostId(event.target.value)}>
             {choices.map((machine) => <option key={machine.id} value={machine.id}>{chats.machineName(machine.id)}{chats.online(machine.id) ? "" : " (not connected)"}</option>)}
           </select>
         </label>
         <fieldset className="new-chat-bots">
-          <legend>Bots</legend>
-          {profiles === null && !problem && <p className="muted">Asking {chats.machineName(hostId)} for its bots…</p>}
-          {profiles?.length === 0 && <p className="muted">No saved bots on {chats.machineName(hostId)}.</p>}
+          <legend>Agents</legend>
+          {profiles === null && !problem && <p className="muted">Asking {chats.machineName(hostId)} for its agents…</p>}
+          {profiles?.length === 0 && <p className="muted">No saved agents on {chats.machineName(hostId)}.</p>}
           {profiles?.map((item) => <label key={item.profile.id} className={item.ok ? "" : "muted"} title={item.reason ?? undefined}>
             <input type="checkbox" disabled={!item.ok} checked={picked.includes(item.profile.id)}
               onChange={(event) => setPicked((all) => event.target.checked ? [...all, item.profile.id] : all.filter((id) => id !== item.profile.id))} />
@@ -153,8 +153,8 @@ export function MoveToWorkDialog({ row, bots, chats, onClose, onMoved }: { row: 
       <div className="confirm move-to-work" role="dialog" aria-modal="true" aria-labelledby="move-to-work-title">
         <strong id="move-to-work-title">Move to a Work thread</strong>
         {left
-          ? <p className="muted">A move to <b>{folderTail(left.cwd)}</b> on {name} was sent, but {name} never confirmed it. Finish it with the same choices, so it can't make a second thread or change what the bots may do.</p>
-          : <p className="muted">Pick a folder on <b>{name}</b>. The Work thread starts with this chat's messages and the same bots. This chat stays listed, read-only, with a link to it.</p>}
+          ? <p className="muted">A move to <b>{folderTail(left.cwd)}</b> on {name} was sent, but {name} never confirmed it. Finish it with the same choices, so it can't make a second thread or change what the agents may do.</p>
+          : <p className="muted">Pick a folder on <b>{name}</b>. The Work thread starts with this chat's messages and the same agents. This chat stays listed, read-only, with a link to it.</p>}
         <div className="move-to-work-folder">
           {left ? <code title={left.cwd}>{left.cwd}</code> : <>
             <code title={folder || undefined}>{folder || "No folder picked"}</code>
@@ -162,7 +162,7 @@ export function MoveToWorkDialog({ row, bots, chats, onClose, onMoved }: { row: 
           </>}
         </div>
         <fieldset className="move-to-work-bots">
-          <legend>What each bot may do in the folder</legend>
+          <legend>What each agent may do in the folder</legend>
           {bots.map((bot) => <div key={bot.id} className="move-to-work-bot">
             <span>{bot.display_name}</span>
             {left ? <span className="muted">{ACCESS.find((choice) => choice.id === level(bot))?.text ?? level(bot)}</span>

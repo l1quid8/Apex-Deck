@@ -122,7 +122,7 @@ pub(crate) fn plan_exit_response(
     };
     let response = match (decision.approved(), mode) {
         (_, None) => {
-            json!({ "behavior": "deny", "message": "This bot can only read, so it can't start the work. The person can hand your plan to another bot." })
+            json!({ "behavior": "deny", "message": "This agent can only read, so it can't start the work. The person can hand your plan to another agent." })
         }
         (true, Some(mode)) => json!({
             "behavior": "allow",
@@ -480,7 +480,7 @@ pub async fn list_servers(
             return Ok(entries);
         }
         #[cfg(not(target_os = "linux"))]
-        return Err("Couldn't list Claude tool servers: Linux bot jail is only available on Linux".into());
+        return Err("Couldn't list Claude tool servers: Linux agent jail is only available on Linux".into());
     }
     let claude = |args: &[&str]| {
         let mut command = tokio::process::Command::new(crate::executable::program("claude", path.as_deref()));

@@ -62,7 +62,7 @@ export function handoffBatch(id: string, originalRequest: string, assignments: H
       || new Set(destination.workers).size !== destination.workers.length || !destination.workers.every((id) => thread.workers.some((worker) => worker.id === id))
       || (assignment.mode !== undefined && assignment.mode !== 'isolated' && assignment.mode !== 'read_only')
       || (assignment.reviewCriteria !== undefined && (!Array.isArray(assignment.reviewCriteria) || assignment.reviewCriteria.length > 20 || assignment.reviewCriteria.some((item) => typeof item !== 'string' || item.length > 2000)))) {
-      throw new Error('A handoff target is offline, changed, or has no eligible saved worker. Ask again with the project and bot.');
+      throw new Error('A handoff target is offline, changed, or has no eligible saved worker. Ask again with the project and agent.');
     }
     return { project: project.name, status: 'pending' as const, payload: { batchId: id, requestId: `${id}:${index}`, originalRequest,
       owner: { ...assignment.owner }, revision: assignment.revision, brief: assignment.brief, destination: { ...destination, workers: [...destination.workers] },

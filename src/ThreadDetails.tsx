@@ -34,7 +34,7 @@ export function ThreadDetails({ host, title, cwd, subtitle, bots, form, room, al
   </section>;
   return <>
     <header className="details-head"><div><strong>{title}</strong><p className="muted" title={cwd || "No workspace folder"}>{subtitle}</p></div><button className="icon" aria-label="Close thread details" onClick={host.close}>×</button></header>
-    {section("bots", "Bots", bots)}
+    {section("bots", "Agents", bots)}
     {form && section("form", "Add or edit model", form)}
     {section("room", "Room", room)}
     {section("allowed", "Always allowed", allowed)}

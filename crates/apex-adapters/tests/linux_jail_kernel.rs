@@ -437,7 +437,7 @@ fn a_bad_launch_never_runs_the_bot_or_outlives_its_failure() {
     let spec = spec(&tree, &tree.project, true, tree.project.clone(), "/no/such/program", vec![]);
     let output = Runtime::new().unwrap().block_on(async { finish(start(&spec, Stdio::null()).0).await });
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("could not start the bot"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not start the agent"));
     let _ = std::fs::remove_dir_all(&tree.root);
 }
 

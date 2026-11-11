@@ -40,10 +40,10 @@ export function AgentSheet(props: {
   if (!template || !draft) {
     const ready = (props.templates ?? []).filter((item) => item.ok);
     return <>
-      <p className="ph-sheet-text">An agent starts from a bot its machine already knows. Pick one, then name it and adjust what it does.</p>
-      {!props.templates && !props.templatesProblem && <p className="ph-sheet-text">Asking for this machine's bots…</p>}
+      <p className="ph-sheet-text">An agent starts from a saved agent its machine already knows. Pick one, then name it and adjust what it does.</p>
+      {!props.templates && !props.templatesProblem && <p className="ph-sheet-text">Asking for this machine's agents…</p>}
       {props.templatesProblem && <p className="ph-sheet-text ph-amber">{props.templatesProblem}</p>}
-      {props.templates && ready.length === 0 && <p className="ph-sheet-text">This machine has no bots to start from. Set one up on the Mac first.</p>}
+      {props.templates && ready.length === 0 && <p className="ph-sheet-text">This machine has no agents to start from. Set one up on the Mac first.</p>}
       <div className="ph-list">{ready.map((item) => (
         <button key={item.profile.id} type="button" className="ph-srow ph-project-assistant" onClick={() => { const start = agentTemplateDraft(item.profile); setTemplate(item.profile); setInitial(start); setDraft(start); }}>
           <span className="ph-grow"><strong>{item.profile.display_name}</strong><small>{profileLine(item.profile)}</small></span>
@@ -108,7 +108,7 @@ export function AgentSheet(props: {
       ))}
     </div>
     <p className="ph-sheet-text">{access.find((choice) => choice.id === draft.access)?.title}</p>
-    <p className="ph-sheet-text ph-quiet">Voice, look and picture settings stay as {props.agent ? "the Mac has them" : "the bot you started from"}.</p>
+    <p className="ph-sheet-text ph-quiet">Voice, look and picture settings stay as {props.agent ? "the Mac has them" : "the agent you started from"}.</p>
     {problem && <p className="ph-sheet-text ph-amber">{problem}</p>}
     {props.saveProblem && <p className="ph-sheet-text ph-amber">{props.saveProblem}</p>}
     <button type="button" className="primary ph-wide" disabled={props.saving || Boolean(problem) || !draft.name.trim()} onClick={save}>{props.saving ? "Saving…" : props.agent ? "Save agent" : "Create agent"}</button>
