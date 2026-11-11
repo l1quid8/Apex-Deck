@@ -385,3 +385,48 @@ test('old hosts rejecting monitoring commands report an actionable compatibility
   await check;
   client.close();
 });
+
+test('check: any answer, even a refusal, means the link works', async () => {
+  const { daemon, client } = await connected();
+  const asked = client.check(3000);
+  const ping = daemon.last().sent.at(-1);
+  assert.equal(ping.cmd, 'ping');
+  daemon.last().receive({ id: ping.id, err: 'unknown variant `ping`' });
+  assert.equal(await asked, 'answered');
+  assert.equal(daemon.links.length, 1, 'no new link');
+});
+
+test('check: a quiet link is dropped and dialed again at once, failing what was waiting on it', async () => {
+  const { daemon, timers, client, statuses } = await connected();
+  const waiting = client.call('room_state', { id: 'r' });
+  const asked = client.check(3000);
+  timers.advance(3000);
+  assert.equal(await asked, 'replaced');
+  await assert.rejects(waiting, /connection to the host was lost/);
+  assert.equal(daemon.links[0].closed, true);
+  assert.equal(statuses.at(-1).kind, 'reconnecting');
+  await tick();
+  assert.equal(daemon.links.length, 2, 'dialed again without a backoff wait');
+  const hello = daemon.last().sent[0];
+  assert.equal(hello.cmd, 'hello');
+  daemon.last().receive({ id: hello.id, ok: welcome({ resumed: true }) });
+  assert.equal(statuses.at(-1).kind, 'connected');
+});
+
+test('check: with no link there is nothing to ask', async () => {
+  const daemon = fakeDaemon(); const timers = fakeTimers();
+  const client = new DaemonClient(daemon.connect, { timers });
+  assert.equal(await client.check(3000), 'offline');
+});
+
+test('check: a link that drops while asking is not replaced twice', async () => {
+  const { daemon, timers, client } = await connected();
+  const asked = client.check(3000);
+  daemon.last().drop('reset by peer');
+  assert.equal(await asked, 'offline');
+  // The check's own timer is gone: only the ordinary 1 s retry is left to dial again.
+  assert.deepEqual(timers.pending(), [1000]);
+  timers.advance(999);
+  await tick();
+  assert.equal(daemon.links.length, 1);
+});

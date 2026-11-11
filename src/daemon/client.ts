@@ -216,6 +216,49 @@ export class DaemonClient {
     void this.open();
   }
 
+  /**
+   * Is the host still answering? Asks it something and waits up to `ms`. A link that stays quiet is
+   * dropped and dialed again at once, instead of waiting for the transport to notice it died (an
+   * iPhone app back from the background can sit on a dead link for half a minute).
+   * "offline" means there was no working link to ask.
+   */
+  check(ms: number): Promise<"answered" | "replaced" | "offline"> {
+    const link = this.link;
+    if (!link || !this.ready || this.closed) return Promise.resolve("offline");
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (how: "answered" | "replaced" | "offline") => { if (!done) { done = true; this.timers.clearTimeout(timer); resolve(how); } };
+      const timer = this.timers.setTimeout(() => {
+        this.pending.delete(id);
+        if (this.link !== link || done) return finish("offline");
+        this.relink(`no answer in ${Math.round(ms / 1000)} s`);
+        finish("replaced");
+      }, ms);
+      // Any reply proves the link works, a refusal too: "ping" isn't a command, so the host answers it
+      // with an error at once, old hosts included, and runs nothing.
+      this.pending.set(id, {
+        command: "ping",
+        resolve: () => finish("answered"),
+        reject: (error) => finish(error.message === LOST ? "offline" : "answered"),
+      });
+      try { link.send(JSON.stringify({ id, cmd: "ping", args: {} })); }
+      catch { this.pending.delete(id); finish("offline"); }
+    });
+  }
+
+  /** Drop the current link and dial again now, not after a backoff. */
+  private relink(reason: string) {
+    const link = this.link;
+    this.drop(LOST);
+    link?.close();
+    if (this.closed) return;
+    this.cancelRetry();
+    this.attempt = 1;
+    this.setStatus({ kind: "reconnecting", attempt: this.attempt, reason, retryAt: this.timers.now() });
+    void this.open();
+  }
+
   close(): void {
     this.closed = true;
     this.dialGeneration += 1;

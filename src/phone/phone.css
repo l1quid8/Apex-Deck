@@ -298,6 +298,15 @@
 .ph-empty { padding: 44px 10px; text-align: center; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .ph-empty h3 { color: var(--text); margin: 10px 0 4px; }
 .ph-empty p { font-size: 13px; }
+/* A thread on its way. Both lines wait a moment before showing, so a quick load never flickers them. */
+.ph-loading { animation: ph-show-late 0s linear 0.35s both; }
+.ph-loading.failed { animation: none; }
+.ph-loading button { margin-top: 8px; }
+.ph-stale { position: sticky; top: 0; z-index: 2; width: fit-content; max-width: 100%; padding: 4px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 12px; text-align: center; animation: ph-show-late 0s linear 0.6s both; }
+.ph-stale.failed { animation: none; }
+.ph-chat > .ph-stale { margin: 0 auto 8px; }
+.ph-stale button { margin: 0 0 0 6px; padding: 0; border: 0; background: none; color: var(--accent, var(--text)); font: inherit; text-decoration: underline; }
+@keyframes ph-show-late { from { visibility: hidden; } to { visibility: visible; } }
 
 /* An open thread. */
 .ph-nav {
@@ -1490,3 +1499,10 @@
 .ph-wt-form .ph-label input { font-size: 16px; }
 .ph-wt-form .ph-label input.ph-wt-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (prefers-reduced-motion: reduce) { .ph-wt-pane, .ph-wt-back, .ph-jump { animation: none; transition: none; } }
+
+/* Settings › Connection log */
+.ph-log-actions { display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; }
+.ph-log-btn { min-height: 44px; padding: 0 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); font-size: 15px; }
+.ph-log-btn:disabled { opacity: .45; }
+.ph-log-actions small { color: var(--mint); font-size: 13px; }
+.ph-log { margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
