@@ -89,6 +89,16 @@ test('packaged provenance refuses code injection switches and development URLs',
   assert.doesNotThrow(()=>mod.assertTrustedStartup(false,['app'],{APEX_DECK_DEV_URL:'http://localhost:5173'}));
 });
 
+test('only the exact inert Windows installer update marker is accepted',()=>{
+  assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app','--updated'],{},'win32'));
+  for (const flag of ['--updated=true','--Updated','-updated','/updated','--remote-debugging-port=9222']) {
+    assert.throws(()=>mod.assertTrustedStartup(true,['app',flag],{},'win32'),undefined,flag);
+  }
+  assert.throws(()=>mod.assertTrustedStartup(true,['app','--updated','--remote-debugging-port=9222'],{},'win32'));
+  for (const platform of ['darwin','linux']) assert.throws(()=>mod.assertTrustedStartup(true,['app','--updated'],{},platform));
+  assert.throws(()=>mod.assertTrustedStartup(true,['app','--updated'],{APEX_UPDATE_FILE:'C:/cache/update.exe'},'win32'),'temporary updater variables remain forbidden in the app');
+});
+
 test('delivery IDs stay outside strict command argument objects',async()=>{
   const {publicKey,privateKey}=generateKeyPairSync('ed25519');
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);

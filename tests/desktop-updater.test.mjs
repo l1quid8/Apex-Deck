@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { Writable } from 'node:stream';
+import { assertTrustedStartup } from '../desktop/provenance.mjs';
 import {
   FEED_URL, RESULT_MESSAGE_LIMIT, RESULT_NOTE_LIMIT, Updater, assetUrl, compareVersions, disabledReason, fetchDownload, fetchManifest,
   packageFor, packageVerifier, parseManifest, teamFrom, WINDOWS_FEED_URL, windowsInstaller, windowsLauncher, windowsSignerFrom, windowsVerifier,
@@ -417,4 +419,59 @@ test('the update script runs apart from Deck and never holds the path as code', 
   assert.match(args.join(' '), /'\/S','--updated','--force-run'/);
   assert.equal(options.env.APEX_UPDATE_FILE, "C:/cache/it's; calc.exe");
   assert.equal(options.env.APEX_UPDATE_ID, 'one');
+});
+
+test('real PowerShell: update success and failure children inherit no temporary updater overrides', { skip: process.platform !== 'win32' }, (t) => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-update-env-'));
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const installer = path.join(folder, "it's; $literal installer.exe");
+  const app = path.join(folder, "it's; $literal Apex Deck.exe");
+  const temporary = ['APEX_UPDATE_FILE', 'APEX_UPDATE_ID', 'APEX_UPDATE_RESULT', 'APEX_UPDATE_STARTED', 'APEX_UPDATE_APP'];
+  // Run the production script in Windows PowerShell. Only process creation is
+  // replaced: capture what each child would inherit, without UAC or installing.
+  const stub = `
+function Start-Process {
+  param([string]$FilePath, [string[]]$ArgumentList, [string]$Verb, [switch]$PassThru)
+  $childEnv = [ordered]@{}
+  foreach ($name in @('APEX_UPDATE_FILE','APEX_UPDATE_ID','APEX_UPDATE_RESULT','APEX_UPDATE_STARTED','APEX_UPDATE_APP','APEX_DECK_DATA_DIR','UPDATER_TEST_KEEP')) {
+    $childEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+  }
+  [pscustomobject]@{ file = $FilePath; args = @($ArgumentList); verb = $Verb; env = $childEnv } | ConvertTo-Json -Compress -Depth 4 | Add-Content -LiteralPath $env:UPDATER_TEST_CHILDREN -Encoding utf8
+  if ($PassThru) {
+    $process = [pscustomobject]@{ Handle = 1; ExitCode = [int]$env:UPDATER_TEST_EXIT_CODE }
+    $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {}
+    return $process
+  }
+};
+`;
+  for (const exitCode of [0, 2]) {
+    const resultFile = path.join(folder, `result-${exitCode}.json`);
+    const startedFile = `${resultFile}.started`;
+    const childrenFile = path.join(folder, `children-${exitCode}.jsonl`);
+    let launch;
+    windowsLauncher((command, args, options) => {
+      launch = { command, args, options };
+      return { unref() {} };
+    })(installer, { APEX_UPDATE_ID: `request-${exitCode}`, APEX_UPDATE_RESULT: resultFile, APEX_UPDATE_STARTED: startedFile, APEX_UPDATE_APP: app });
+    const args = [...launch.args];
+    args[args.length - 1] = stub + args.at(-1);
+    execFileSync(launch.command, args, {
+      ...launch.options, detached: false, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 15_000,
+      env: { ...launch.options.env, APEX_DECK_DATA_DIR: folder, UPDATER_TEST_KEEP: 'preserved', UPDATER_TEST_EXIT_CODE: String(exitCode), UPDATER_TEST_CHILDREN: childrenFile },
+    });
+    const children = fs.readFileSync(childrenFile, 'utf8').replace(/^\uFEFF/, '').trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.equal(children.length, exitCode === 0 ? 1 : 2);
+    assert.equal(children[0].file, installer, 'installer path stays literal');
+    assert.deepEqual(children[0].args, ['/S', '--updated', '--force-run']);
+    assert.equal(children[0].verb, 'RunAs');
+    for (const child of children) {
+      for (const name of temporary) assert.equal(child.env[name], null, `${name} must not reach ${child.file}`);
+      assert.equal(child.env.APEX_DECK_DATA_DIR, folder, 'preserve the existing data directory');
+      assert.equal(child.env.UPDATER_TEST_KEEP, 'preserved');
+      assert.doesNotThrow(() => assertTrustedStartup(true, [app, '--updated'], child.env, 'win32'));
+    }
+    if (exitCode !== 0) assert.equal(children[1].file, app, 'failed install reopens the literal app path');
+    assert.equal(fs.readFileSync(startedFile, 'utf8').trim(), 'started');
+    assert.deepEqual(JSON.parse(fs.readFileSync(resultFile, 'utf8').replace(/^\uFEFF/, '')), { id: `request-${exitCode}`, outcome: exitCode === 0 ? 'installed' : 'failed' });
+  }
 });

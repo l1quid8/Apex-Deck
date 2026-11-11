@@ -5163,7 +5163,7 @@ mod host_tests {
         impl apex_core::Participant for StubbornBot {
             fn config(&self) -> &ParticipantConfig { &self.config }
             async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> {
-                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cost_micros: None, cost_estimated: false })
+                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cached_input_tokens: None, cost_micros: None, cost_estimated: false })
             }
             async fn cancel_active_turn(&self) -> Result<bool, String> {
                 Err("process refused to exit".into())
@@ -5202,7 +5202,7 @@ mod host_tests {
         impl apex_core::Participant for McpBot {
             fn config(&self) -> &ParticipantConfig { &self.config }
             async fn respond(&self, _: apex_core::TurnRequest, _: apex_core::DeltaSink<'_>) -> Result<apex_core::Reply, apex_core::ParticipantError> {
-                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cost_micros: None, cost_estimated: false })
+                Ok(apex_core::Reply { text: "ok".into(), input_tokens: None, output_tokens: None, cached_input_tokens: None, cost_micros: None, cost_estimated: false })
             }
             async fn cancel_active_turn(&self) -> Result<bool, String> {
                 self.pool.terminate_all().await

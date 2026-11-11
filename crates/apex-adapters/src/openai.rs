@@ -355,6 +355,7 @@ impl Participant for OpenAiCompatParticipant {
         // server turns that down.
         let mut echo_thinking = true;
         let mut rounds: Vec<Usage> = Vec::new();
+        let mut last_context_reported = false;
         let mut stopped_early = false;
         let mut failure: Option<ParticipantError> = None;
         // Sticky for this request's entire history, including failed calls and
@@ -466,6 +467,7 @@ impl Participant for OpenAiCompatParticipant {
                 Ok(streamed) => streamed,
                 Err(error) => fail!(error),
             };
+            last_context_reported = streamed.context.is_some();
             if let Some(context) = streamed.context { on_progress(Progress::Context(context)); }
             rounds.push(streamed.usage);
             thinking.push_str(&streamed.reasoning);
@@ -545,12 +547,14 @@ impl Participant for OpenAiCompatParticipant {
             .iter()
             .filter_map(|u| cost_micros(u.cost_usd, info.as_ref(), u.input, u.cached, u.output))
             .reduce(|a, b| a.saturating_add(b));
-        // The next request carries this whole exchange, so the context in
-        // use is what the last request sent plus what came back.
-        if let (Some(window), Some(last)) = (info.as_ref().and_then(|m| m.context_tokens), rounds.last()) {
-            if let Some(input) = last.input {
-                let used = input.saturating_add(last.output.unwrap_or(0));
-                on_progress(Progress::Context(ContextUse { estimated: true, used_tokens: used.min(window), window_tokens: window }));
+        // Estimate only when the latest request did not report its own context.
+        // The next request carries its input plus what came back.
+        if !last_context_reported {
+            if let (Some(window), Some(last)) = (info.as_ref().and_then(|m| m.context_tokens), rounds.last()) {
+                if let Some(input) = last.input {
+                    let used = input.saturating_add(last.output.unwrap_or(0));
+                    on_progress(Progress::Context(ContextUse { estimated: true, used_tokens: used.min(window), window_tokens: window }));
+                }
             }
         }
         // Gateway telemetry is an optional capability. Older/other APIs may not

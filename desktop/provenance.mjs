@@ -30,7 +30,9 @@ export function assertTrustedStartup(packaged,argv,env,platform=process.platform
   // ordinary file/open event arguments and approved OS launch flags are allowed.
   if(env.APEX_DECK_DATA_DIR && !path.isAbsolute(env.APEX_DECK_DATA_DIR)) throw new Error('Apex data directory must be absolute.');
   // Chromium on Windows also reads switches written as -name and /name.
-  const badArg=argv.slice(1).some(a=>(platform==='win32'?/^[-/]/.test(a):a.startsWith('--')) && !['--allow-file-access-from-files'].includes(a));
+  // NSIS passes this inert marker when it reopens the app after an update.
+  const allowedArg=a=>a==='--allow-file-access-from-files' || (platform==='win32' && a==='--updated');
+  const badArg=argv.slice(1).some(a=>(platform==='win32'?/^[-/]/.test(a):a.startsWith('--')) && !allowedArg(a));
   if(badEnv || badArg) throw new Error('Trusted Apex UI refuses development overrides and runtime switches. Use a development build for diagnostics.');
 }
 

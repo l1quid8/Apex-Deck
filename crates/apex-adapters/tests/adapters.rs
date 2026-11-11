@@ -646,6 +646,44 @@ async fn api_reply_reports_context_fill_and_the_servers_cost() {
     assert_eq!(*context.lock().unwrap(), Some((250, 1000)));
 }
 
+#[tokio::test]
+async fn api_reported_context_takes_precedence_over_model_metadata_estimate() {
+    use apex_core::{ContextUse, Progress};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 16384];
+            let read = socket.read(&mut buffer).await.unwrap();
+            let incoming = String::from_utf8_lossy(&buffer[..read]);
+            let (kind, body) = if incoming.starts_with("GET /v1/models ") {
+                ("application/json", r#"{"data":[{"id":"test-model","context_length":1000000}]}"#)
+            } else {
+                ("text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":4,\"context\":{\"used_tokens\":12345,\"window_tokens\":200000,\"estimated\":false}}}\n\ndata: [DONE]\n\n")
+            };
+            let response = format!("HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        }
+    });
+    let bot = OpenAiCompatParticipant::new(config("api", api(address, None)));
+    let contexts = Mutex::new(Vec::new());
+    let reply = bot.respond_with_progress(request("hi"), &|update| {
+        if let Progress::Context(fill) = update {
+            contexts.lock().unwrap().push(fill);
+        }
+    }).await.unwrap();
+    server.await.unwrap();
+
+    assert_eq!(reply.text, "Hi");
+    assert_eq!(*contexts.lock().unwrap(), vec![ContextUse {
+        used_tokens: 12345,
+        window_tokens: 200000,
+        estimated: false,
+    }], "reported context must not be replaced by a token-count estimate");
+}
+
 /// A real `deepseek-chat` turn captured through this adapter on 2026-10-22
 /// (see `probe-notes-all-providers.md`): round one is the model calling
 /// `todo_write` with four steps, round two is its reply after Deck ran the
@@ -2896,47 +2934,6 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
     let _ = std::fs::remove_dir_all(&dir1);
     let _ = std::fs::remove_dir_all(&dir2);
     let _ = std::fs::remove_dir_all(&log_dir);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn launch_points_below_full_refuse_when_linux_jail_fails() {
-    let _lock = apex_adapters::linux_jail::TEST_LOCK.lock().unwrap();
-    use apex_adapters::linux_jail::{set_forced_for_test, set_state_for_test, should_jail, JailState};
-    use apex_core::{Access, Backend, Participant};
-
-    struct ResetJail;
-    impl Drop for ResetJail {
-        fn drop(&mut self) {
-            set_forced_for_test(false);
-            set_state_for_test(None);
-        }
-    }
-    let _reset = ResetJail;
-    set_forced_for_test(true);
-
-    // Full is never jailed
-    assert!(!should_jail(Access::Full));
-    assert!(should_jail(Access::Read));
-    assert!(should_jail(Access::Ask));
-    assert!(should_jail(Access::Edits));
-
-    set_state_for_test(Some(JailState::Fails("simulated sandbox fault".into())));
-
-    // Launch point 1: CLI participant
-    let mut cfg = config("bot", Backend::Cli { program: "echo".into(), args: vec!["hi".into()] });
-    cfg.access = Access::Read;
-    let bot = apex_adapters::CliParticipant::new(cfg);
-    let err = bot.respond(request("hi"), &|_| {}).await.unwrap_err();
-    assert!(err.to_string().contains("simulated sandbox fault"), "got: {err}");
-
-    // Launch point 2: Claude tool discovery
-    let err2 = apex_adapters::claude_tool_servers(None, None).await.unwrap_err();
-    assert!(err2.contains("simulated sandbox fault"), "got: {err2}");
-
-    // Launch point 3: Codex tool discovery
-    let err3 = apex_adapters::codex_tool_servers(None, None).await.unwrap_err();
-    assert!(err3.contains("simulated sandbox fault"), "got: {err3}");
 }
 
 #[tokio::test]

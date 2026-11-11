@@ -39,10 +39,11 @@ fn serve_owns_the_folder_and_listens_on_a_private_socket() {
 #[test]
 fn stdio_attaches_to_the_running_daemon_and_shares_its_rooms() {
     let data = temp_dir();
+    saved_room(&data.0, "t1", vec![scripted("null", &["hello human"])]);
     let served = Served::start(&data.0, &[]);
     let mut web = websocket(served.port());
     web.hello_frame(json!({ "token": token(&data.0) }));
-    web.call("room_create", json!({ "id": "t1", "participants": [scripted("null", &["hello human"])], "options": options(), "cwd": null })).1.unwrap();
+    web.call("room_state", json!({ "id": "t1" })).1.unwrap();
 
     let mut ssh = StdioClient::spawn(&["--stdio"], &data.0);
     let hello = ssh.hello(None);
@@ -58,11 +59,12 @@ fn stdio_attaches_to_the_running_daemon_and_shares_its_rooms() {
 #[test]
 fn an_ssh_session_that_drops_mid_reply_does_not_stop_the_agent() {
     let data = temp_dir();
+    let slow = shell("slow", "cat >/dev/null; sleep 1; echo slow reply");
+    saved_room(&data.0, "t2", vec![slow]);
     let served = Served::start(&data.0, &[]);
     let mut web = websocket(served.port());
     web.hello_frame(json!({ "token": token(&data.0) }));
-    let slow = shell("slow", "cat >/dev/null; sleep 1; echo slow reply");
-    web.call("room_create", json!({ "id": "t2", "participants": [slow], "options": options(), "cwd": null })).1.unwrap();
+    web.call("room_state", json!({ "id": "t2" })).1.unwrap();
 
     let mut ssh = StdioClient::spawn(&["--stdio", "--attach"], &data.0);
     ssh.hello(None);

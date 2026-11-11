@@ -213,11 +213,15 @@ const SIGNATURE_SCRIPT = [
  */
 const INSTALL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
-  "try { $installer = Start-Process -FilePath $env:APEX_UPDATE_FILE -ArgumentList '/S','--updated','--force-run' -Verb RunAs -PassThru; $null = $installer.Handle; Set-Content -LiteralPath $env:APEX_UPDATE_STARTED -Value started } catch { Set-Content -LiteralPath $env:APEX_UPDATE_STARTED -Value declined; exit 1 }",
+  // Children must not inherit these transport variables: the installed app
+  // deliberately refuses APEX_* runtime overrides, including after an update.
+  '$updateFile = $env:APEX_UPDATE_FILE; $updateId = $env:APEX_UPDATE_ID; $updateResult = $env:APEX_UPDATE_RESULT; $updateStarted = $env:APEX_UPDATE_STARTED; $updateApp = $env:APEX_UPDATE_APP',
+  "Remove-Item -LiteralPath 'Env:APEX_UPDATE_FILE','Env:APEX_UPDATE_ID','Env:APEX_UPDATE_RESULT','Env:APEX_UPDATE_STARTED','Env:APEX_UPDATE_APP' -ErrorAction SilentlyContinue",
+  "try { $installer = Start-Process -FilePath $updateFile -ArgumentList '/S','--updated','--force-run' -Verb RunAs -PassThru; $null = $installer.Handle; Set-Content -LiteralPath $updateStarted -Value started } catch { Set-Content -LiteralPath $updateStarted -Value declined; exit 1 }",
   '$installer.WaitForExit()',
   "$outcome = if ($installer.ExitCode -eq 0) { 'installed' } else { 'failed' }",
-  '[pscustomobject]@{ id = $env:APEX_UPDATE_ID; outcome = $outcome } | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:APEX_UPDATE_RESULT -Encoding ascii',
-  "if ($outcome -ne 'installed') { Start-Process -FilePath $env:APEX_UPDATE_APP }",
+  '[pscustomobject]@{ id = $updateId; outcome = $outcome } | ConvertTo-Json -Compress | Set-Content -LiteralPath $updateResult -Encoding ascii',
+  "if ($outcome -ne 'installed') { Start-Process -FilePath $updateApp }",
 ].join('; ');
 /** Long enough to read Windows' prompt and answer it. */
 const PROMPT_WAIT_MS = 5 * 60 * 1000;

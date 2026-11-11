@@ -27,6 +27,9 @@ app.whenReady().then(async () => {
     const scenario = new URL(fixtureUrl).search.slice(1);
     if (scenario !== 'full-window') assert.deepEqual(nativeBounds(await snapshot()), expected, 'at rest the native view matches its placeholder, ignoring a moving outer map');
     if (scenario === 'clipped') {
+      // Native wheel hit testing needs the offscreen compositor's first paint,
+      // not only a mounted DOM and completed renderer animation frames.
+      await win.webContents.capturePage();
       win.webContents.sendInputEvent({ type:'mouseMove', x:700, y:400 });
       win.webContents.sendInputEvent({ type:'mouseWheel', x:700, y:400, deltaX:0, deltaY:-180, canScroll:true, hasPreciseScrollingDeltas:true });
       await until('fixture.snapshot().scrollTop>80', 'native wheel clips the placeholder');
