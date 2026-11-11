@@ -100,3 +100,12 @@ export function swipeRelease({ dx, dy, width, ms }: SwipeRelease): "next" | "pre
 export function roomFits(room: { id: string; hostId: string } | null, paneId: string | null, hostId: string): boolean {
   return Boolean(room && paneId && room.id === paneId && room.hostId === hostId);
 }
+
+/**
+ * Whether a lost-capture event ends the swipe. On iOS a finger already belongs to whatever it touched,
+ * so when the swipe box takes it over, the text underneath loses it — and that event bubbles up to the
+ * box. Only the box itself losing the finger means the swipe is over.
+ */
+export function swipeLostCapture(event: { target: unknown; currentTarget: unknown }): boolean {
+  return event.target === event.currentTarget;
+}

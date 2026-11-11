@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  EDGE_GUARD, edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeRelease,
+  EDGE_GUARD, edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeLostCapture, swipeRelease,
 } from "../src/phone/threadSwipe.ts";
 
 // The strip itself — which threads a swipe moves through, and in what order — is the phone's open set:
@@ -94,4 +94,22 @@ test("a reply is drawn only under its own thread's title, on its own machine", (
   assert.equal(roomFits({ id: "t1", hostId: "studio" }, "t1", "mac"), false, "a same-id thread on another machine must not show");
   assert.equal(roomFits(null, "t1", "mac"), false);
   assert.equal(roomFits(room, null, "mac"), false);
+});
+
+// On iOS a finger already belongs to whatever it touched (implicit pointer capture). When the swipe
+// box takes it over, the message text underneath loses it, and that "lost capture" event bubbles up to
+// the box. Treating it as the end of the swipe threw every swipe away before the finger lifted:
+// seen on the simulator as got-capture P → got-capture DIV → lost-capture P → pointerup ignored.
+test("only the swipe box losing the finger ends a swipe, not the text it took the finger from", () => {
+  const box = { name: "ph-swap" };
+  const text = { name: "p" };
+  assert.equal(swipeLostCapture({ target: text, currentTarget: box }), false, "the message text handing over the finger is how a swipe starts");
+  assert.equal(swipeLostCapture({ target: box, currentTarget: box }), true, "the box itself losing the finger ends the swipe");
+});
+
+test("the thread's swipe box ends a swipe only on its own lost capture", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/phone/PhoneApp.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /onLostPointerCapture=\{swipeDrop\}/, "a bubbled lost-capture from a child must not drop the swipe");
+  assert.match(source, /onLostPointerCapture=\{\(event\) => \{ if \(swipeLostCapture\(event\)\) swipeDrop\(\); \}\}/);
 });

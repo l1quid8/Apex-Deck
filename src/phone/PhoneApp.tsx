@@ -113,7 +113,7 @@ import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
-import { edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeIntent, swipeRelease } from "./threadSwipe";
+import { edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeIntent, swipeLostCapture, swipeRelease } from "./threadSwipe";
 import { afterClose, openKeyParts, openStrip, pruneOpenThreads, readOpenThreads, withOpenThread, withoutOpenThread, writeOpenThreads, type OpenKey } from "./openThreads";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
 import { serialEdits, stopProjectPanes } from "./sessionEdits";
@@ -3983,7 +3983,7 @@ function ThreadView(props: {
         </details>
       )}
       <div className={`ph-swap${dragX !== 0 ? " dragging" : ""}`} style={dragX !== 0 ? { transform: `translateX(${dragX / 4}px)` } : undefined}
-        onPointerDown={swipeDown} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeDrop} onLostPointerCapture={swipeDrop}>
+        onPointerDown={swipeDown} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeDrop} onLostPointerCapture={(event) => { if (swipeLostCapture(event)) swipeDrop(); }}>
       <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; rememberPlace(box); props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {!paused && props.link.mismatch && (
