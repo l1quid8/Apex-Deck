@@ -228,7 +228,7 @@ pub fn bwrap_args(spec: &JailSpec, mounts: &paths::Mounts, is_dir: impl Fn(&Path
 /// rewrite, so it is only believed when the folder it names is
 /// `<common>/worktrees/<name>` and that folder names this checkout back: the
 /// bot can't point the jail at a folder it couldn't already write.
-pub(crate) fn linked_git_common(checkout: &Path) -> Option<PathBuf> {
+pub fn linked_git_common(checkout: &Path) -> Option<PathBuf> {
     let checkout = checkout.canonicalize().ok()?;
     let text = std::fs::read_to_string(checkout.join(".git")).ok()?;
     let gitdir = Path::new(text.lines().next()?.strip_prefix("gitdir:")?.trim());
@@ -241,6 +241,45 @@ pub(crate) fn linked_git_common(checkout: &Path) -> Option<PathBuf> {
     let common = if common.is_absolute() { common.to_path_buf() } else { gitdir.join(common) };
     let common = common.canonicalize().ok()?;
     (gitdir.parent()? == common.join("worktrees")).then_some(common)
+}
+
+/// The Git folders a writable launch in `cwd` (resolved: `real`) needs from
+/// outside it, and whether Git has to look across a mount to find them.
+///
+/// A project that is a subfolder of a repository needs that repository's
+/// `.git`; a linked worktree — a bot copy, a task checkout, or one the person
+/// made beside their project — needs its `.git` pointer and the shared `.git`
+/// it names. Nothing else of the repository comes in. Each is checked as a
+/// project folder would be, and the repository's own work tree has to be one
+/// too, so a dotfiles repository at home, or one holding the data folder, brings
+/// nothing: Git there simply finds no repository, as before.
+fn repository_binds(cwd: &Path, real: &Path, guard: &paths::Guard, mounts: &paths::Mounts) -> (Vec<Bind>, bool) {
+    let none = (Vec::new(), false);
+    for top in real.ancestors() {
+        let dot = top.join(".git");
+        let Ok(meta) = std::fs::symlink_metadata(&dot) else { continue };
+        // Bound where Git, walking up from the launch's own path, will look.
+        let up = real.strip_prefix(top).map(|rest| rest.components().count()).unwrap_or(0);
+        let Some(seen) = cwd.ancestors().nth(up).map(|top| top.join(".git")) else { return none };
+        let above = top != real;
+        if meta.is_dir() {
+            if !above || paths::check_writable(top, guard, mounts).is_err() { return none; }
+            return (vec![Bind { source: dot, target: seen, writable: true }], true);
+        }
+        if !meta.is_file() { return none; }
+        let Some(common) = linked_git_common(top) else { return none };
+        if paths::check_writable(&common, guard, mounts).is_err() { return none; }
+        // A repository's `.git` speaks for the checkout around it.
+        if common.file_name() == Some(std::ffi::OsStr::new(".git"))
+            && common.parent().is_some_and(|main| paths::check_writable(main, guard, mounts).is_err()) {
+            return none;
+        }
+        let mut out = Vec::new();
+        if above { out.push(Bind { source: dot, target: seen, writable: false }); }
+        out.push(Bind { source: common.clone(), target: common, writable: true });
+        return (out, above);
+    }
+    none
 }
 
 /// Names that hand a bot a way out, whatever a provider's settings ask for.
@@ -306,10 +345,17 @@ pub fn build_spec(
     // tree a copy or a task checkout is about to be created in. They have to
     // exist, because a jail can only expose a folder that does.
     let mut own: Vec<PathBuf> = Vec::new();
+    // Folders outside the data folder Deck's own Git is about to create a
+    // worktree in, beside the project. Checked below exactly like a project.
+    let mut outside: Vec<PathBuf> = Vec::new();
     if writable {
         let data = data_dir.canonicalize().unwrap_or_else(|_| data_dir.to_path_buf());
         for folder in writable_extra {
             let folder = folder.canonicalize()?;
+            if !folder.starts_with(&data) && !data.starts_with(&folder) {
+                outside.push(folder);
+                continue;
+            }
             // Only the checkout Deck makes for itself: a copy's work tree or a
             // task's worktree. Keys, sessions and the records beside a checkout
             // are not that shape, so no caller can open them here.
@@ -326,7 +372,8 @@ pub fn build_spec(
     // A copy or task checkout is a linked Git worktree: its history, index and
     // refs live in the project's `.git`, outside the checkout. Git inside the
     // checkout needs that one folder, never the project's files.
-    let mut git_common: Option<PathBuf> = None;
+    let mut git_binds: Vec<Bind> = Vec::new();
+    let mut across_filesystems = false;
     if writable {
         // Taint before any check that could fail, per spec: on disk before jail starts.
         // Must not start jail if taint write fails (Task 6)
@@ -345,16 +392,15 @@ pub fn build_spec(
         };
         let real = paths::check_writable(cwd, &guard, &mounts)?;
         in_own = guard.own_folder.as_deref().map(paths::resolved).is_some_and(|folder| real.starts_with(folder));
-        if in_own {
-            if let Some(common) = guard.own_folder.as_deref().and_then(linked_git_common) {
-                // Checked as a project folder: no exception for anything protected.
-                let plain = paths::Guard { own_folder: None, ..guard.clone() };
-                git_common = Some(paths::check_writable(&common, &plain, &mounts)?);
-            }
-        }
+        // Checked as a project folder: no exception for anything protected.
+        let plain = paths::Guard { own_folder: None, ..guard.clone() };
+        (git_binds, across_filesystems) = repository_binds(cwd, &real, &plain, &mounts);
         for folder in &own {
             let opening = paths::Guard { own_folder: Some(folder.clone()), ..guard.clone() };
             paths::check_writable(folder, &opening, &mounts)?;
+        }
+        for folder in &outside {
+            paths::check_writable(folder, &plain, &mounts)?;
         }
     } else {
         paths::check_read(cwd, &paths::standard_protected(home, data_dir), &mounts)?;
@@ -362,12 +408,14 @@ pub fn build_spec(
 
     let project = Bind { source: cwd.to_path_buf(), target: cwd.to_path_buf(), writable };
     let mut own: Vec<Bind> = own.into_iter().map(|folder| Bind { source: folder.clone(), target: folder, writable: true }).collect();
-    let folders = if in_own {
+    let mut folders = if in_own {
         if !own.iter().any(|item| paths::resolved(&item.source) == paths::resolved(&project.source)) { own.push(project); }
-        git_common.into_iter().map(|common| Bind { source: common.clone(), target: common, writable: true }).collect()
+        Vec::new()
     } else {
         vec![project]
     };
+    folders.extend(outside.into_iter().map(|folder| Bind { source: folder.clone(), target: folder, writable: true }));
+    folders.extend(git_binds);
 
     let safe_room = folder_name(room);
     let safe_bot = folder_name(bot);
@@ -385,6 +433,11 @@ pub fn build_spec(
         provider_env = jail_home.env().to_vec();
     } else {
         std::fs::create_dir_all(&private_home)?;
+    }
+    if across_filesystems {
+        // The repository's `.git` is its own mount above the project's, and Git
+        // stops looking for it at a mount boundary unless told otherwise.
+        provider_env.push(("GIT_DISCOVERY_ACROSS_FILESYSTEM".into(), "1".into()));
     }
 
     let mut read_only = Vec::new();
@@ -641,6 +694,90 @@ mod tests {
         assert!(spec_for(&mine, &data, "t1", "bot1").unwrap().folders.is_empty());
         assert!(spec_for(&data.join("keys"), &data, "t1", "bot1").is_err());
         assert!(spec_for(&data, &data, "t1", "bot1").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn git_env(spec: &JailSpec) -> bool {
+        spec.provider_env.iter().any(|(name, value)| name == "GIT_DISCOVERY_ACROSS_FILESYSTEM" && value == "1")
+    }
+
+    #[test]
+    fn a_project_inside_a_repository_brings_only_that_repositorys_git() {
+        let root = std::env::temp_dir().join(format!("apex-jail-spec-{}-repo", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data = root.join("me/.local/share/apex");
+        let repo = root.join("me/work/repo");
+        let sub = repo.join("packages/app");
+        for folder in [&data, &sub, &repo.join(".git"), &root.join("me/.ssh")] { std::fs::create_dir_all(folder).unwrap(); }
+        let (root, repo, sub) = (root.canonicalize().unwrap(), repo.canonicalize().unwrap(), sub.canonicalize().unwrap());
+        let dot = repo.join(".git");
+
+        // The repository itself is the project: its `.git` is already inside.
+        let whole = spec_for(&repo, &data, "r", "b").unwrap();
+        assert_eq!(whole.folders, vec![Bind { source: repo.clone(), target: repo.clone(), writable: true }]);
+        assert!(!git_env(&whole));
+        // A folder inside it gets the `.git` above, and none of its neighbours.
+        let inner = spec_for(&sub, &data, "r", "b").unwrap();
+        assert_eq!(inner.folders, vec![
+            Bind { source: sub.clone(), target: sub.clone(), writable: true },
+            Bind { source: dot.clone(), target: dot.clone(), writable: true },
+        ]);
+        assert!(git_env(&inner));
+        assert!(bwrap_args(&inner, &none(), all_dirs).is_ok());
+
+        // A dotfiles repository at home would bring home's history: nothing comes.
+        std::fs::create_dir_all(root.join("me/.git")).unwrap();
+        let loose = root.join("me/notes");
+        std::fs::create_dir_all(&loose).unwrap();
+        let spec = spec_for(&loose, &data, "r", "b").unwrap();
+        assert_eq!(spec.folders.len(), 1, "only the project: {:?}", spec.folders);
+        assert!(!git_env(&spec));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_worktree_beside_its_project_brings_the_shared_git_and_deck_may_make_one() {
+        let root = std::env::temp_dir().join(format!("apex-jail-spec-{}-beside", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data = root.join("me/.local/share/apex");
+        let repo = root.join("me/work/repo");
+        let wt = root.join("me/work/repo-worktrees/feat");
+        let link = repo.join(".git/worktrees/feat");
+        for folder in [&data, &wt.join("src"), &link, &root.join("me/.ssh")] { std::fs::create_dir_all(folder).unwrap(); }
+        let (root, repo, wt) = (root.canonicalize().unwrap(), repo.canonicalize().unwrap(), wt.canonicalize().unwrap());
+        let common = repo.join(".git");
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", common.join("worktrees/feat").display())).unwrap();
+        std::fs::write(common.join("worktrees/feat/gitdir"), format!("{}\n", wt.join(".git").display())).unwrap();
+        std::fs::write(common.join("worktrees/feat/commondir"), "../..\n").unwrap();
+
+        let spec = spec_for(&wt, &data, "r", "b").unwrap();
+        assert_eq!(spec.folders, vec![
+            Bind { source: wt.clone(), target: wt.clone(), writable: true },
+            Bind { source: common.clone(), target: common.clone(), writable: true },
+        ]);
+        // From a folder inside the worktree, Git also needs the pointer above it.
+        let src = wt.join("src");
+        let inner = spec_for(&src, &data, "r", "b").unwrap();
+        assert!(inner.folders.contains(&Bind { source: wt.join(".git"), target: wt.join(".git"), writable: false }));
+        assert!(inner.folders.contains(&Bind { source: common.clone(), target: common.clone(), writable: true }));
+        assert!(git_env(&inner));
+
+        // Deck's own Git may be handed the empty folder it is about to fill
+        // beside the project, checked like a project: never home or a login folder.
+        let next = root.join("me/work/repo-worktrees/next");
+        std::fs::create_dir_all(&next).unwrap();
+        let making = spec_writing(&repo, &data, "project-operations", "1", &[next.clone()]).unwrap();
+        assert!(making.folders.contains(&Bind { source: next.clone(), target: next.clone(), writable: true }));
+        assert!(making.writable.is_empty());
+        for refused in [root.join("me"), root.join("me/.ssh"), root.join("me/.local")] {
+            assert!(spec_writing(&repo, &data, "project-operations", "1", &[refused.clone()]).is_err(), "{refused:?}");
+        }
+
+        // A pointer the bot rewrote to a folder that doesn't name it back brings nothing.
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", root.join("me/.ssh").display())).unwrap();
+        assert_eq!(spec_for(&wt, &data, "r", "b").unwrap().folders.len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
     }
