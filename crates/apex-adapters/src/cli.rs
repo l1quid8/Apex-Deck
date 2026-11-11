@@ -978,8 +978,9 @@ impl Participant for CliParticipant {
             }
         }
         let program = program.as_str();
-        let images = crate::attachments::for_request(&request, &self.attachment_roots)?;
-        let mut prompt = render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &request.turns);
+        let loaded = crate::attachments::for_request(&request, &self.attachment_roots)?;
+        let mut prompt = render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &loaded.with_note(&request.turns));
+        let images = loaded.images;
         let mut staged = None;
         if !images.is_empty() {
             match &self.config.backend {
@@ -1177,7 +1178,7 @@ exit 1
         let request = apex_core::TurnRequest { turns: vec![apex_core::ViewTurn {
             role: apex_core::Role::User, content: format!("Attached image: {}", image.display())
         }], ..Default::default() };
-        let images = crate::attachments::for_request(&request, &bot.attachment_roots).unwrap();
+        let images = crate::attachments::for_request(&request, &bot.attachment_roots).unwrap().images;
         assert_eq!(crate::attachments::claude_content("describe", &images)[1]["source"]["data"], "iVBORw0KGgpmaXh0dXJl");
         assert!(bot.tools_disabled && bot.mcp_disabled);
         assert_eq!(bot.config.access, apex_core::Access::Read);

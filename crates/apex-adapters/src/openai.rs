@@ -114,16 +114,18 @@ fn apply_speed(body: &mut Value, base_url: &str, speed: Option<apex_core::Speed>
 
 /// The JSON body for one turn.
 pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequest, roots: &[std::path::PathBuf]) -> Result<Value, ParticipantError> {
-    let images = crate::attachments::for_request(request, roots)?;
+    let loaded = crate::attachments::for_request(request, roots)?;
+    let turns = loaded.with_note(&request.turns);
+    let images = &loaded.images;
     let mut messages = vec![json!({ "role": "system", "content": request.system })];
-    for (index, turn) in request.turns.iter().enumerate() {
+    for (index, turn) in turns.iter().enumerate() {
         let role = match turn.role {
             Role::User => "user",
             Role::Assistant => "assistant",
         };
         let attached = crate::attachments::paths(&turn.content);
         let current: Vec<_> = images.iter().filter(|image| turn.role == Role::User && attached.contains(&image.path)
-            && !request.turns[index + 1..].iter().any(|later| later.role == Role::User && crate::attachments::paths(&later.content).contains(&image.path))).collect();
+            && !turns[index + 1..].iter().any(|later| later.role == Role::User && crate::attachments::paths(&later.content).contains(&image.path))).collect();
         let content = if current.is_empty() { json!(turn.content) } else {
             let mut parts = vec![json!({ "type": "text", "text": turn.content })];
             parts.extend(current.iter().map(|image| json!({ "type": "image_url", "image_url": { "url": image.url() } })));
@@ -1166,6 +1168,24 @@ done
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");
         assert!(body["messages"][2]["content"].is_string());
+    }
+
+    #[test]
+    fn a_left_out_older_image_is_noted_with_the_messages_not_in_the_system_prompt() {
+        let stale = "Attached image: /nowhere/asst-1/Pasted-Graphic.png";
+        let message = |seq, text: &str| apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None,
+            reply_to_client_message_id: None, seq, speaker: apex_core::Speaker::Human, text: text.into(), servers: vec![], at: None };
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
+            turns: vec![apex_core::ViewTurn { role: Role::User, content: stale.into() },
+                apex_core::ViewTurn { role: Role::User, content: "please reply".into() }],
+            unseen: vec![message(1, stale), message(2, "please reply")], plan: false, cwd: None };
+        let body = request_body("vision", None, &request, &[]).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["content"], "s");
+        assert_eq!(messages.len(), 4);
+        let note = messages[3]["content"].as_str().unwrap();
+        assert_eq!(messages[3]["role"], "user");
+        assert!(note.contains("left out") && note.contains("Pasted-Graphic.png"), "{note}");
     }
 
 }
