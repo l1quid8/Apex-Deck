@@ -31,6 +31,7 @@ test('phone composer hardware arrows recall local history and preserve native ed
         working:{}, cut:{}, approvals:[], meters:{}, pins:[], quotes, onQuotes:setQuotes, queued:[],
         gate:{enabled:true,reason:''}, endRef:{current:null}, runner:null,
         swipe:{next:null,previous:null,position:''}, onSwipe(){},
+        steps:null, pictures:{read:async()=>new ArrayBuffer(0),blocked:null},
         onDraft:window.replaceDraft, onResized() {}, onScrolled() {},
         onSend(){window.sends++; window.replaceDraft('');}
       });

@@ -85,6 +85,7 @@ import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { QuestionForm } from "./QuestionForm";
 import { ReplyNextSteps } from "./ReplyNextSteps";
+import { CLEAR_BUSY, CLEARED, commandRefusal, imageLabel, imageMessage, unknownCommand } from "./commandRules";
 import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, type FormView } from "./questions";
 import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
@@ -1712,7 +1713,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         lastSeenRef.current = -1;
         onSeen?.(pane.id, -1);
         forgetContext();
-        notify("Chat cleared. The models start fresh; participants are kept.");
+        notify(CLEARED);
       })
       .catch((error) => notify(`Could not clear the chat: ${String(error)}`, "error"));
   };
@@ -2172,13 +2173,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   };
   /** Commands run locally and never reach the models. */
   const runCommand = (command: Command) => {
-    if (talkOnly && ['diff', 'plan', 'image'].includes(command.name)) {
-      notify('Move to a Work thread to use files, tools or Plan.', 'info'); return;
-    }
-    if (talkOnly && (command.name === 'curate' || command.name === 'curate_undo')) {
-      notify('Move to a Work thread to use /curate.', 'info'); return;
-    }
-    if (chatReadOnly && !['fork', 'export'].includes(command.name)) return;
+    const refused = commandRefusal(command, { talkOnly, readOnly: chatReadOnly });
+    if (refused) { if (refused.reason === "talk_only") notify(refused.text, 'info'); return; }
 
     switch (command.name) {
       case "goal":
@@ -2196,7 +2192,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         })();return;
       }
       case "clear":
-        if (busy || turnQueue.active) return notify("Wait for the models to finish before clearing the chat.");
+        if (busy || turnQueue.active) return notify(CLEAR_BUSY);
         return clearChat();
       case "compact":
         return compactChat();
@@ -2217,15 +2213,14 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         // The picture is posted as your message, so every model can see it,
         // without asking anyone to reply.
         setText("");
-        const who = command.provider.split(":")[0];
-        const label = who === "grok" || who === "xai" ? "Grok" : who === "venice" ? "Venice" : "ChatGPT";
+        const label = imageLabel(command.provider);
         notify(`Making a picture with ${label}…`);
         return void backend.generateImage(pane.id, command.provider, command.prompt)
-          .then((path) => backend.roomPostTo(pane.id, withAttachments(`Picture from ${label}: ${command.prompt}`, [path]), []))
+          .then((path) => backend.roomPostTo(pane.id, withAttachments(imageMessage(label, command.prompt), [path]), []))
           .catch((error) => notify(`Could not make the picture: ${String(error)}`, "error"));
       }
       case "unknown":
-        return notify(`${command.typed} isn't a command. Start with // to send it as a message.`, "error");
+        return notify(unknownCommand(command.typed), "error");
 
     }
   };

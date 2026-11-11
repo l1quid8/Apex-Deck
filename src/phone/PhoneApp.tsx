@@ -6,7 +6,11 @@ import { runnerCommand, runnerAction } from '../runner/client.ts';
 import { RunnerDrawer } from '../runner/RunnerDrawer.tsx';
 import { RunnerSetup } from '../runner/RunnerSetup.tsx';
 import { defaultLimits, type RunnerKind, type RunnerSnapshot, type RunnerActionTag, type RunnerLimits, type RunnerConfig } from '../runner/types.ts';
-import { parseComposer, postable } from '../commands.ts';
+import { parseComposer, postable, type Command as SlashCommand } from '../commands.ts';
+import { CLEAR_BUSY, CLEARED, chatCommandRefusal, commandRefusal, imageLabel, imageMessage, unknownCommand } from "../commandRules";
+import { curateNotice, failedNotice, undoNotice } from "../curationNotes";
+import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "../exportThread";
+import { shareThreadFile } from "./threadShare";
 import { createPhoneVoice, type PhoneVoice } from './phoneVoice.ts';
 import { postFromPhone } from './phonePost.ts';
 import { keepAwake } from './callScreen.ts';
@@ -1636,7 +1640,8 @@ export function PhoneApp() {
           setRunner(result.snapshot??null);if(result.confirmEnd){runnerClear.current=true;setRunnerEndRequest(v=>v+1);}if(result.show)setRunnerShowRequest(v=>v+1);if(result.message)setNotice(result.message);
           setDraft(sentBox,{...draft,text:''});setRunnerMode(null);return;
         }
-        throw Error('Use /goal or /loop controls here. Other slash commands are available on desktop. Start with // to send literal text.');
+        await runCommand(command, host, sentPane, () => setDraft(sentBox, { ...draft, text: "" }));
+        return;
       }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
@@ -1826,6 +1831,75 @@ export function PhoneApp() {
       onError: (error) => setNotice(words(error)),
       onFinish: () => { readingRef.current -= 1; setReading(readingRef.current); },
     });
+  }
+
+  /** A /command typed in a Work thread, other than /goal and /loop. The rules are the Mac's (commandRules.ts); this runs them on the phone. */
+  async function runCommand(command: SlashCommand, host: PhoneHost, pane: Pane, clearBox: () => void) {
+    const refused = commandRefusal(command, { talkOnly: false, readOnly: host.access()?.tier === "read_only" });
+    if (refused) { setNotice(refused.text); return; }
+    const shown = room && room.id === pane.id && room.hostId === host.machine.id ? room : null;
+    const busy = !!shown && Object.keys(shown.working).length > 0;
+    switch (command.name) {
+      case "goal": case "loop": return;
+      case "clear":
+        if (busy) { setNotice(CLEAR_BUSY); return; }
+        await host.backend.roomClear(pane.id);
+        clearBox();
+        setRoom((current) => current && current.id === pane.id && current.hostId === host.machine.id ? { ...current, messages: [], pins: [], asks: NO_ASKS } : current);
+        setNotice(CLEARED);
+        return;
+      case "compact": case "curate": case "curate_undo": {
+        if (busy) { setNotice("Wait for the bots to finish before changing what they see."); return; }
+        const typed = command.name === "compact" ? "/compact" : command.name === "curate" ? "/curate" : "/curate undo";
+        clearBox();
+        setNotice(command.name === "compact" ? "Compacting: a bot is summing up the chat…" : command.name === "curate" ? "Curating: a bot is picking old messages to hide…" : "Bringing hidden messages back…");
+        try {
+          if (command.name === "compact") { await host.backend.roomCompact(pane.id); setNotice("Compacted. The bots now see a summary; you still see every message."); }
+          else if (command.name === "curate") {
+            const reply = await host.backend.roomCurate(pane.id);
+            const name = shown?.participants.find((who) => who.id === reply.by)?.display_name ?? reply.by;
+            setNotice(curateNotice({ ...reply, by: name })?.text ?? "Done. Old messages are hidden from the bots.");
+          } else setNotice(undoNotice(await host.backend.roomCurateUndo(pane.id)).text);
+        } catch (error) { setNotice(failedNotice(typed, error)); }
+        return;
+      }
+      case "fork": {
+        const last = shown?.messages.at(-1);
+        if (!last) { setNotice("Nothing to fork yet."); return; }
+        clearBox();
+        await forkFrom(pane, last.seq, command.title || undefined);
+        return;
+      }
+      case "export": {
+        const at = new Date();
+        const thread: ThreadExport = { title: pane.title, participants: shown?.configs ?? [], transcript: shown?.messages ?? [], pins: shown?.pins ?? [], compaction: null };
+        const json = command.format === "json";
+        const shared = await shareThreadFile({ name: exportFileName(pane.title, command.format, at), text: json ? exportJson(thread, at) : exportMarkdown(thread, at), type: json ? "application/json" : "text/markdown" }, pane.title);
+        if (shared) clearBox();
+        return;
+      }
+      case "diff":
+        setNotice("Changes open on your Mac for now. The phone gets its own changes view in a later update.");
+        return;
+      case "plan":
+        clearBox();
+        await changeComposerPlan(!(shown?.plan ?? false));
+        return;
+      case "image": {
+        const label = imageLabel(command.provider);
+        clearBox();
+        setNotice(`Making a picture with ${label}…`);
+        try {
+          const path = await host.backend.generateImage(pane.id, command.provider, command.prompt);
+          await host.backend.roomPostTo(pane.id, withAttachments(imageMessage(label, command.prompt), [path]), []);
+          setNotice("");
+        } catch (error) { setNotice(`Could not make the picture: ${words(error)}`); }
+        return;
+      }
+      case "unknown":
+        setNotice(unknownCommand(command.typed));
+        return;
+    }
   }
 
   async function stopPlanning() {
@@ -2037,7 +2111,7 @@ export function PhoneApp() {
   }
 
   /** Fork from one message on the same machine and project: the new thread keeps the history up to and including it. */
-  async function forkFrom(source: Pane, seq: number) {
+  async function forkFrom(source: Pane, seq: number, title?: string) {
     const fromWorkspace = workspaces.find((workspace) => workspace.id === source.workspaceId);
     const host = fromWorkspace ? phoneHost(workspaceHost(fromWorkspace)) : null;
     if (!fromWorkspace || !host) { setNotice("That machine isn't paired with this phone."); return; }
@@ -2048,7 +2122,7 @@ export function PhoneApp() {
       const upto = forkUpto(seq);
       await host.backend.roomFork(source.id, id, upto);
       try {
-        await saveSession((current) => ({ ...current, panes: [...current.panes, forkedPane(source, id, seq, host.machine.name)] }));
+        await saveSession((current) => ({ ...current, panes: [...current.panes, { ...forkedPane(source, id, seq, host.machine.name), ...(title ? { title } : {}) }] }));
       } catch (error) {
         await host.backend.roomDelete(id).catch(() => {});
         throw error;
@@ -2473,8 +2547,11 @@ export function PhoneApp() {
     const id = openKey;
     if (!id || !chatGate.enabled) { if (chatGate.reason) setNotice(chatGate.reason); return; }
     const sent = draftFor(id);
+    // Chats on the phone run no /commands yet; one must not reach the bots as a message.
+    const parsed = parseComposer(sent.text.trim());
+    if ("command" in parsed) { setNotice(chatCommandRefusal(parsed.command)); return; }
     const sentQuotes = quotes[id] ?? [];
-    const body = withTldr(outgoingText(sent.text, sentQuotes, roomFor(row)?.participants ?? []), tldrOf(id));
+    const body = withTldr(outgoingText(postable(sent.text), sentQuotes, roomFor(row)?.participants ?? []), tldrOf(id));
     const queued = enqueueChat(row, body, []);
     if (!queued) return;
     const { chatId, messageId } = queued;

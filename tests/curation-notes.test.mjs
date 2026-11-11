@@ -142,7 +142,8 @@ test('ChatPane runs the commands, keeps notes current and lets queued edits beco
   assert.match(source, /case "curate_undo":\s+return undoCuration\(\);/);
   assert.match(source, /case "curations_changed":/);
   assert.match(source, /withCurationNotes\(transcript, saved\.curations \?\? \[\]\)/);
-  assert.match(source, /Move to a Work thread to use \/curate\./);
+  assert.match(source, /commandRefusal\(command, \{ talkOnly, readOnly: chatReadOnly \}\)/);
+  assert.match(fs.readFileSync('src/commandRules.ts', 'utf8'), /Move to a Work thread to use \/curate\./);
   assert.match(source, /backend\.roomState\?\.\(pane\.id\)/);
   assert.doesNotMatch(source, /refreshRoom/);
   assert.match(source, /turnQueue\.edit\(item\.id, "\/curate", "curate"\)/);
