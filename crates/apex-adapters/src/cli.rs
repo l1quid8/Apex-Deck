@@ -395,6 +395,7 @@ impl CliParticipant {
             &path_os,
             &self.attachment_roots,
             &[],
+            &[],
         ).map_err(|e| ParticipantError::Failed(e.to_string()))?;
 
         for (k, v) in env {

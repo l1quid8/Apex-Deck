@@ -67,7 +67,9 @@ pub struct Daemon {
     /// The data folder (`remote.json` lives here).
     pub data: std::path::PathBuf,
     pub(crate) confinement: tokio::sync::OnceCell<Result<(), String>>,
-    #[cfg(test)]
+    /// A harness that isn't testing the Linux device policy turns it off;
+    /// `None` decides from the target OS. Only `for_harness` sets it, and that
+    /// needs the `test-support` feature — which opts nothing in by itself.
     pub(crate) linux_device_policy: Option<bool>,
     /// Pairing invitations handed out since this daemon started.
     #[cfg(feature = "remote")]
@@ -112,8 +114,13 @@ impl Daemon {
     }
 
     pub(crate) fn uses_linux_device_policy(&self) -> bool {
-        #[cfg(test)]
         if let Some(policy) = self.linux_device_policy { return policy; }
+        // A test that spawns the daemon has no way to pair a device, so it can't
+        // raise access on a Linux host. The fixture twin's own main opts in, and
+        // no environment variable, CLI option or RPC does: compiling the feature
+        // opts nothing in, and the production binary never calls it.
+        #[cfg(all(not(test), feature = "test-support"))]
+        if crate::test_support::assumed() { return false; }
         cfg!(target_os = "linux")
     }
 
@@ -152,11 +159,40 @@ impl Daemon {
                 "[apex-deck] personal assistant worker unavailable ({why}); starting without it. Install or re-pin the provenance broker for this build."
             );
         }
-        Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(), confinement: Default::default(),
-            #[cfg(test)] linux_device_policy: None,
+        Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(), confinement: Default::default(), linux_device_policy: None,
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] remote: crate::remote_control::RemoteController::serving(),
         }))
+    }
+
+    /// A daemon for a harness in another crate that drives the real thing over a
+    /// transport of its own (`crates/iroh-mobile` pairs a phone against it).
+    ///
+    /// The confinement probe, the Linux device policy and the invitation and
+    /// remote controllers stay private to this crate, so a harness asks for the
+    /// built-for-test defaults here instead of spelling out the struct literal.
+    /// Adding another private field then can't break a crate that builds one.
+    /// This is not a way in for the app: it needs the `test-support` feature,
+    /// which no packaged build enables.
+    #[cfg(feature = "test-support")]
+    pub fn for_harness(host: Arc<Host>, paths: &apex_host::HostPaths) -> Result<Daemon, String> {
+        Ok(Daemon {
+            voice: crate::voice::VoiceServer::new(&paths.data),
+            host,
+            host_id: crate::identity::host_id(&paths.data)?,
+            boot_id: crate::identity::boot_id(),
+            token: None,
+            devices: Arc::new(Devices::open(&paths.data)),
+            gateway_keys: Arc::new(GatewayKeys::load(&paths.data)?),
+            gateway: Default::default(),
+            data: paths.data.clone(),
+            confinement: Default::default(),
+            linux_device_policy: Some(false),
+            #[cfg(feature = "remote")]
+            invites: Default::default(),
+            #[cfg(feature = "remote")]
+            remote: crate::remote_control::RemoteController::serving(),
+        })
     }
 }
 
@@ -1655,6 +1691,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn connected_device_cannot_spawn_a_terminal_after_trust_reset() {
+        // trust-host takes the data lock; a sibling test's fork can hold it until exec.
+        if crate::trust_host::tests::isolated_process() { return; }
         for reset in ["epoch", "pending", "missing", "corrupt"] {
             let (mut daemon, _data) = daemon();
             Arc::get_mut(&mut daemon).unwrap().linux_device_policy = Some(true);

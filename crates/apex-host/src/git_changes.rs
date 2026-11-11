@@ -56,7 +56,13 @@ pub struct Outcome {
 }
 
 fn git(project_data: &Path, cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    git_writing(project_data, cwd, index, None, args)
+}
+/// Git that may also write `target`, a scratch checkout outside the project:
+/// the Linux jail shows a command only the folders it is handed.
+fn git_writing(project_data: &Path, cwd: &Path, index: Option<&Path>, target: Option<&Path>, args: &[&str]) -> Result<String, String> {
     let mut command = crate::project_process::git_command(project_data, cwd)?;
+    if let Some(target) = target { command.writable(target); }
     command
         .arg("-C")
         .arg(crate::assistant_git::external_path(cwd).as_os_str())
@@ -374,11 +380,17 @@ impl HeadCheckout {
                 .as_nanos()
         ));
         let path = dir.to_string_lossy().to_string();
-        git(project_data,
+        // Made empty first, so the jail can be handed it; Git fills an empty folder.
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create a scratch checkout: {e}"))?;
+        if let Err(error) = git_writing(project_data,
             root,
             None,
+            Some(&dir),
             &["worktree", "add", "--detach", "--force", &path, head],
-        )?;
+        ) {
+            let _ = std::fs::remove_dir(&dir);
+            return Err(error);
+        }
         let checkout = Self {
             data: project_data.to_path_buf(),
             root: root.to_path_buf(),
@@ -409,13 +421,14 @@ impl HeadCheckout {
 impl Drop for HeadCheckout {
     fn drop(&mut self) {
         let dir = self.dir.to_string_lossy().to_string();
-        let _ = git(&self.data,
+        let _ = git_writing(&self.data,
             &self.root,
             None,
+            Some(&self.dir),
             &["worktree", "remove", "--force", &dir],
         );
         let _ = std::fs::remove_dir_all(&self.dir);
-        let _ = git(&self.data, &self.root, None, &["worktree", "prune"]);
+        let _ = crate::project_process::prune_worktrees(&self.data, &self.root);
     }
 }
 struct PrivateIndex(PathBuf);
@@ -575,6 +588,11 @@ fn merge(project_data: &Path, cwd: &Path, expected: &State) -> Result<String, St
 }
 async fn run(project_data: &Path, cwd: &Path, program: &str, args: &[&str]) -> Result<String, String> {
     let mut command = crate::project_process::tokio_command_in(project_data, program, cwd)?;
+    // A scratch checkout links the project's installed packages; the jail has
+    // to show where that link leads.
+    if let Ok(modules) = std::fs::canonicalize(cwd.join("node_modules")) {
+        if modules.is_dir() && !modules.starts_with(cwd.canonicalize().unwrap_or_default()) { command.readable(modules); }
+    }
     command
         .args(args)
         .stdin(Stdio::null())
@@ -719,7 +737,7 @@ pub async fn perform(project_data: &Path, cwd: PathBuf, action: Action) -> Resul
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    struct Repo(PathBuf);
+    struct Repo(PathBuf, crate::project_process::TestDataDir);
     impl Repo {
         fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -733,7 +751,7 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir_all(&root).unwrap();
-            let repo = Self(root);
+            let repo = Self(root, crate::project_process::TestDataDir::new());
             repo.git(&["init", "-q", "-b", "main"]);
             repo.git(&["config", "user.name", "Fixture"]);
             repo.git(&["config", "user.email", "fixture@localhost"]);
@@ -789,7 +807,7 @@ mod tests {
         std::fs::remove_file(r.0.join("one.txt")).unwrap();
         r.write("two.txt", "changed\n");
         r.git(&["add", "two.txt"]);
-        let state = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let state = status(r.1.path(), &r.0).unwrap();
         assert_eq!(state.branch.as_deref(), Some("feat/test"));
         assert_eq!(state.target.as_deref(), Some("main"));
         assert_eq!(
@@ -823,9 +841,9 @@ mod tests {
         r.write("one.txt", "reviewed\n");
         r.git(&["add", "one.txt"]);
         r.git(&["update-index", "--assume-unchanged", "one.txt"]);
-        let reviewed = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let reviewed = status(r.1.path(), &r.0).unwrap();
         r.write("one.txt", "unreviewed\n");
-        assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &reviewed, &["one.txt".into()], "must reject").is_err());
+        assert!(commit(r.1.path(), &r.0, &reviewed, &["one.txt".into()], "must reject").is_err());
         assert_eq!(r.git(&["show", "HEAD:one.txt"]), "one");
     }
 
@@ -842,7 +860,7 @@ mod tests {
         r.write("one.txt", "staged\n");
         r.git(&["add", "one.txt"]);
         r.write("one.txt", "one\n");
-        let state = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let state = status(r.1.path(), &r.0).unwrap();
         assert!(!state.clean);
         assert!(state
             .files
@@ -852,7 +870,7 @@ mod tests {
             .files
             .iter()
             .any(|f| f.path == "one.txt" && f.staged_only));
-        assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &state, &["one.txt".into()], "staged only").is_err());
+        assert!(commit(r.1.path(), &r.0, &state, &["one.txt".into()], "staged only").is_err());
     }
 
     #[test]
@@ -862,8 +880,8 @@ mod tests {
         r.write("two.txt", "staged\n");
         r.git(&["add", "two.txt"]);
         r.write("new file.txt", "new\n");
-        let before = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
-        commit(std::path::Path::new("/nonexistent-apex-test-data"),
+        let before = status(r.1.path(), &r.0).unwrap();
+        commit(r.1.path(),
             &r.0,
             &before,
             &["one.txt".into(), "new file.txt".into()],
@@ -873,19 +891,19 @@ mod tests {
         assert_eq!(r.git(&["show", "HEAD:two.txt"]), "two");
         assert_eq!(r.git(&["diff", "--cached", "--name-only"]), "two.txt");
         assert_eq!(r.git(&["show", "HEAD:one.txt"]), "selected");
-        assert_eq!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().files.len(), 1);
+        assert_eq!(status(r.1.path(), &r.0).unwrap().files.len(), 1);
     }
 
     #[test]
     fn stale_tree_and_invalid_paths_are_rejected_before_commit() {
         let r = Repo::new();
         r.write("one.txt", "reviewed\n");
-        let before = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let before = status(r.1.path(), &r.0).unwrap();
         r.write("one.txt", "unreviewed\n");
-        assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &before, &["one.txt".into()], "stale").is_err());
-        let now = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        assert!(commit(r.1.path(), &r.0, &before, &["one.txt".into()], "stale").is_err());
+        let now = status(r.1.path(), &r.0).unwrap();
         for path in ["../escape", ":(glob)**", "/tmp/file", "two.txt"] {
-            assert!(commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &now, &[path.into()], "invalid").is_err());
+            assert!(commit(r.1.path(), &r.0, &now, &[path.into()], "invalid").is_err());
         }
         assert_eq!(r.git(&["log", "-1", "--format=%s"]), "initial");
     }
@@ -894,19 +912,19 @@ mod tests {
     fn merge_fast_forwards_with_dirty_files_and_host_verified_current_check() {
         let r = Repo::new();
         r.write("one.txt", "changed\n");
-        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap()).is_err());
+        assert!(merge(r.1.path(), &r.0, &status(r.1.path(), &r.0).unwrap()).is_err());
         r.git(&["add", "."]);
         r.git(&["commit", "-qm", "feature"]);
-        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap()).is_err());
-        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        assert!(merge(r.1.path(), &r.0, &status(r.1.path(), &r.0).unwrap()).is_err());
+        let checked = status(r.1.path(), &r.0).unwrap();
         remember_check(&checked);
-        assert!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed);
+        assert!(status(r.1.path(), &r.0).unwrap().checks_passed);
         // Unrelated dirty work after checks pass neither revokes them nor blocks
         // the merge; a stale snapshot is still rejected before anything moves.
         r.write("two.txt", "later\n");
-        assert!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed);
-        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).is_err());
-        merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap()).unwrap();
+        assert!(status(r.1.path(), &r.0).unwrap().checks_passed);
+        assert!(merge(r.1.path(), &r.0, &checked).is_err());
+        merge(r.1.path(), &r.0, &status(r.1.path(), &r.0).unwrap()).unwrap();
         assert_eq!(r.git(&["branch", "--show-current"]), "main");
         assert!(!r
             .git(&["branch", "--list", "feat/test"])
@@ -925,12 +943,12 @@ mod tests {
         let r = Repo::new();
         r.write("one.txt", "feature\n");
         r.git(&["commit", "-qam", "feature"]);
-        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let checked = status(r.1.path(), &r.0).unwrap();
         remember_check(&checked);
         let main_before = r.git(&["rev-parse", "refs/heads/main"]);
         let sibling = r.0.with_extension("sibling");
         r.git(&["worktree", "add", "-q", sibling.to_str().unwrap(), "main"]);
-        let error = merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).unwrap_err();
+        let error = merge(r.1.path(), &r.0, &checked).unwrap_err();
         assert!(error.contains("checked out in another worktree"), "{error}");
         assert_eq!(
             r.git(&["rev-parse", "refs/heads/main"]),
@@ -955,14 +973,14 @@ mod tests {
         let r = Repo::new();
         r.write("one.txt", "feature\n");
         r.git(&["commit", "-qam", "feature"]);
-        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let checked = status(r.1.path(), &r.0).unwrap();
         remember_check(&checked);
         let main_before = r.git(&["rev-parse", "refs/heads/main"]);
         // A held index lock fails the switch that follows the ref update, which is
         // the same recovery path a worktree checked out mid-merge would take.
         let lock = r.0.join(".git/index.lock");
         std::fs::write(&lock, "").unwrap();
-        let error = merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).unwrap_err();
+        let error = merge(r.1.path(), &r.0, &checked).unwrap_err();
         std::fs::remove_file(&lock).unwrap();
         assert!(!error.is_empty());
         assert_eq!(
@@ -983,8 +1001,8 @@ mod tests {
         let r = Repo::new();
         std::fs::create_dir_all(r.0.join("node_modules/typescript")).unwrap();
         r.write("node_modules/typescript/marker.txt", "installed\n");
-        let head = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().head;
-        let checkout = HeadCheckout::new(&r.0.join("data"), &r.0, &head).unwrap();
+        let head = status(r.1.path(), &r.0).unwrap().head;
+        let checkout = HeadCheckout::new(r.1.path(), &r.0, &head).unwrap();
         assert_eq!(
             std::fs::read_to_string(checkout.dir.join("node_modules/typescript/marker.txt")).unwrap(),
             "installed\n"
@@ -1006,10 +1024,10 @@ mod tests {
         r.git(&["commit", "-qam", "broken"]);
         r.write("one.txt", "FIXED\n");
         let probe = ["sh", "-c", "test \"$(cat one.txt)\" = FIXED"];
-        let dirty = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
-        assert!(check_commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &dirty, &probe).await.is_err());
+        let dirty = status(r.1.path(), &r.0).unwrap();
+        assert!(check_commit(r.1.path(), &r.0, &dirty, &probe).await.is_err());
         assert!(
-            !status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed,
+            !status(r.1.path(), &r.0).unwrap().checks_passed,
             "an uncommitted fix must not record a pass for the broken commit"
         );
         // Isolation leaves the user's checkout and their uncommitted file alone.
@@ -1022,9 +1040,9 @@ mod tests {
             "M one.txt"
         );
         r.git(&["commit", "-qam", "fixed"]);
-        let fixed = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
-        assert!(check_commit(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &fixed, &probe).await.is_ok());
-        let after = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let fixed = status(r.1.path(), &r.0).unwrap();
+        assert!(check_commit(r.1.path(), &r.0, &fixed, &probe).await.is_ok());
+        let after = status(r.1.path(), &r.0).unwrap();
         assert!(after.checks_passed);
         assert_eq!(r.git(&["status", "--porcelain"]), "");
     }
@@ -1034,12 +1052,12 @@ mod tests {
         let r = Repo::new();
         r.write("one.txt", "feature\n");
         r.git(&["commit", "-am", "feature"]);
-        let checked = status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap();
+        let checked = status(r.1.path(), &r.0).unwrap();
         remember_check(&checked);
         r.git(&["update-ref", "refs/heads/main", &checked.head]);
-        assert!(!status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().checks_passed);
-        assert!(merge(std::path::Path::new("/nonexistent-apex-test-data"), &r.0, &checked).is_err());
+        assert!(!status(r.1.path(), &r.0).unwrap().checks_passed);
+        assert!(merge(r.1.path(), &r.0, &checked).is_err());
         r.git(&["checkout", "--detach"]);
-        assert_eq!(status(std::path::Path::new("/nonexistent-apex-test-data"), &r.0).unwrap().branch, None);
+        assert_eq!(status(r.1.path(), &r.0).unwrap().branch, None);
     }
 }

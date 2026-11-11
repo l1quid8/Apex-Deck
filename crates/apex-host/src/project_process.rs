@@ -2,7 +2,7 @@
 //! Tainted automatic operations are refused until an Edits jail can be established.
 //! Also provides a source-scanning guard: no raw `Command::new("git")` outside this module.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::folder_trust;
@@ -55,7 +55,58 @@ fn harden_git(cmd: &mut Command) {
         .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
         .env("GIT_ATTR_NOSYSTEM", "1")
         .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-               "-c", "core.attributesFile=", "-c", "diff.external="]);
+               "-c", "core.attributesFile=", "-c", "diff.external=",
+               // A jail sees only its own worktrees, so an automatic gc there
+               // would prune every other one; `prune_worktrees` does it instead.
+               "-c", "gc.worktreePruneExpire=never"]);
+}
+
+/// Drop the registrations of `root`'s repository whose worktree folder is gone.
+///
+/// On Linux every project Git runs in a jail that shows only its own folders,
+/// so `git worktree prune` there would see every other worktree — bot copies,
+/// task checkouts, the person's own — as missing and forget them all. The
+/// registry is read here instead, with the host's view of what exists. Locked
+/// entries and ones whose record can't be read are left alone.
+pub fn prune_worktrees(data: &Path, root: &Path) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        let out = git_command(data, root)?.args(["worktree", "prune"]).output().map_err(|e| e.to_string())?;
+        return if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) };
+    }
+    let Some(common) = git_common_dir(root) else { return Ok(()) };
+    let registry = common.join("worktrees");
+    if !std::fs::symlink_metadata(&registry).is_ok_and(|meta| meta.is_dir()) { return Ok(()); }
+    for entry in std::fs::read_dir(&registry).map_err(|e| e.to_string())?.flatten() {
+        // `file_type` doesn't follow links: a planted link is never entered.
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) { continue; }
+        let admin = entry.path();
+        if std::fs::symlink_metadata(admin.join("locked")).is_ok() { continue; }
+        let Ok(gitdir) = std::fs::read_to_string(admin.join("gitdir")) else { continue };
+        let gitdir = gitdir.trim();
+        if gitdir.is_empty() { continue; }
+        let pointer = Path::new(gitdir);
+        let pointer = if pointer.is_absolute() { pointer.to_path_buf() } else { admin.join(pointer) };
+        if std::fs::symlink_metadata(&pointer).is_err() {
+            std::fs::remove_dir_all(&admin).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// The shared `.git` of the repository holding `folder`, read from disk: the
+/// nearest `.git` folder above it, or the one a linked worktree's pointer names
+/// when that folder names the checkout back.
+fn git_common_dir(folder: &Path) -> Option<PathBuf> {
+    let folder = folder.canonicalize().ok()?;
+    for top in folder.ancestors() {
+        let dot = top.join(".git");
+        let Ok(meta) = std::fs::symlink_metadata(&dot) else { continue };
+        if meta.is_dir() { return dot.canonicalize().ok(); }
+        #[cfg(unix)]
+        if meta.is_file() { return apex_adapters::linux_jail::linked_git_common(top); }
+        return None;
+    }
+    None
 }
 
 /// Reserved for checkpoints, which independently isolate all Git inputs.
@@ -67,6 +118,51 @@ pub(crate) fn isolated_git_command() -> Command {
 
 #[cfg(test)]
 pub(crate) fn fixture_git_command() -> Command { isolated_git_command() }
+
+/// Protected host state for a fixture, kept outside its mounted project folders.
+#[cfg(test)]
+pub(crate) struct TestDataDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDataDir {
+    pub(crate) fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!("apex-test-data-{}-{}-{}", std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    pub(crate) fn path(&self) -> &Path { &self.0 }
+}
+
+#[cfg(test)]
+impl Drop for TestDataDir {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+/// Resolve a jailed fixture's PID before checking it from the host namespace.
+#[cfg(all(test, unix))]
+pub(crate) fn fixture_host_pid(project: &Path, pid: i32) -> Option<i32> {
+    #[cfg(target_os = "linux")]
+    {
+        let project = project.canonicalize().unwrap();
+        let mut found = std::fs::read_dir("/proc").unwrap().flatten().filter_map(|entry| {
+            let host_pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+            if std::fs::read_link(entry.path().join("cwd")).ok()? != project { return None; }
+            let status = std::fs::read_to_string(entry.path().join("status")).ok()?;
+            let namespace_pids: Vec<i32> = status.lines().find_map(|line| line.strip_prefix("NSpid:"))?
+                .split_whitespace().filter_map(|value| value.parse().ok()).collect();
+            (namespace_pids.last() == Some(&pid)).then_some(host_pid)
+        });
+        let pid = found.next();
+        assert!(found.next().is_none(), "fixture PID must identify exactly one jailed process");
+        pid
+    }
+    #[cfg(not(target_os = "linux"))]
+    { let _ = project; Some(pid) }
+}
 
 /// Construct Git only after checking the host's protected data-folder taint.
 pub fn git_command(data: &Path, folder: &Path) -> Result<ProjectCommand, String> {
@@ -108,7 +204,6 @@ pub fn ensure_allowed_for_access(data: &Path, folder: &Path, access: apex_core::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Tmp(PathBuf);

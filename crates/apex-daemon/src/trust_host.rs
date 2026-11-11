@@ -301,7 +301,7 @@ fn run_with_boot_id(data: &Path, no_reboot: bool, current_boot: Option<String>) 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Tmp(std::path::PathBuf);
@@ -313,8 +313,35 @@ mod tests {
         std::fs::create_dir_all(&p).unwrap();
         Tmp(p)
     }
+
+    /// Reruns the calling test alone in a fresh process; true in the parent.
+    pub(crate) fn isolated_process() -> bool {
+        // A sibling test's fork can briefly inherit a dropped owner lock until
+        // exec. Create the fixture only after exec, with no sibling test threads.
+        const CHILD_MARKER: &str = "APEX_DECK_TRUST_HOST_TEST_CHILD";
+        let thread = std::thread::current();
+        let name = thread.name().expect("libtest names the running test");
+        if std::env::var(CHILD_MARKER).as_deref() == Ok(name) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--test-threads=1", "--nocapture"])
+            .env(CHILD_MARKER, name)
+            .output()
+            .expect("the isolated trust-host test starts");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("running 1 test"),
+            "isolated trust-host test exited {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status,
+        );
+        true
+    }
+
     #[test]
     fn trust_and_epoch_roundtrip() {
+        if isolated_process() { return; }
         let t = tmp();
         assert!(!is_trusted(&t.0));
         let epoch = run_no_reboot(&t.0, true).unwrap();
@@ -324,6 +351,7 @@ mod tests {
     }
     #[test]
     fn normal_trust_does_not_complete_on_a_second_run_without_reboot() {
+        if isolated_process() { return; }
         let t = tmp();
         run(&t.0, false).unwrap();
         assert!(!is_trusted(&t.0));
@@ -333,6 +361,7 @@ mod tests {
 
     #[test]
     fn missing_previous_boot_id_does_not_authorize_normal_trust() {
+        if isolated_process() { return; }
         let t = tmp();
         let pending = TrustRecord { trusted: false, epoch: String::new(), trusted_at_ms: now_ms(), boot_id: None };
         std::fs::write(path_for(&t.0), serde_json::to_vec(&pending).unwrap()).unwrap();
@@ -342,6 +371,7 @@ mod tests {
 
     #[test]
     fn trust_refuses_an_unknown_lock_owner_without_removing_its_socket() {
+        if isolated_process() { return; }
         let t = tmp();
         let _lock = apex_host::lock::DataLock::acquire(&t.0, "some other application").unwrap();
         std::fs::write(t.0.join("daemon.sock"), "owned by another app").unwrap();
@@ -352,6 +382,7 @@ mod tests {
 
     #[test]
     fn normal_trust_requires_a_changed_readable_boot_id() {
+        if isolated_process() { return; }
         let t = tmp();
         run_with_boot_id(&t.0, false, Some("boot-one".into())).unwrap();
         assert!(!is_trusted(&t.0));
@@ -369,6 +400,7 @@ mod tests {
 
     #[test]
     fn newly_readable_boot_id_first_establishes_a_baseline() {
+        if isolated_process() { return; }
         let t = tmp();
         run_with_boot_id(&t.0, false, None).unwrap();
         assert!(run_with_boot_id(&t.0, false, Some("boot-one".into())).is_err());
@@ -380,6 +412,7 @@ mod tests {
 
     #[test]
     fn resetting_previously_trusted_host_requires_a_new_reboot() {
+        if isolated_process() { return; }
         let t = tmp();
         run_with_boot_id(&t.0, true, Some("original-boot".into())).unwrap();
         run_with_boot_id(&t.0, false, Some("reset-boot".into())).unwrap();
@@ -392,6 +425,7 @@ mod tests {
 
     #[test]
     fn explicit_no_reboot_rotates_epoch_even_without_a_boot_id() {
+        if isolated_process() { return; }
         let t = tmp();
         run_with_boot_id(&t.0, false, None).unwrap();
         run_with_boot_id(&t.0, true, None).unwrap();

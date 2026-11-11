@@ -62,12 +62,40 @@ impl Drop for TempIndexGuard {
     }
 }
 
+/// Git that creates `checkout`, a folder inside the data folder: the jail is
+/// handed that folder and no other, so the checkout lands on the real disk.
+fn run_git_writing(
+    project_data: &Path,
+    root: &Path,
+    checkout: &Path,
+    args: &[&str],
+) -> Result<String, String> {
+    let mut cmd = crate::project_process::git_command(project_data, root)?;
+    cmd.writable(checkout).current_dir(root).args(args);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("Could not run git {}: {e}", args.first().unwrap_or(&"")))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!(
+            "Git {} failed: {}",
+            args.first().unwrap_or(&"command"),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 fn run_git(project_data: &Path,
     root: &Path,
     envs: &[(&str, &std::ffi::OsStr)],
     args: &[&str],
 ) -> Result<String, String> {
     let mut cmd = crate::project_process::git_command(project_data, root)?;
+    // A copy's work tree lives in the data folder, where the jail writes nothing
+    // unless the launch names the folder: the command's own folder is that one.
+    let data = std::fs::canonicalize(project_data).unwrap_or_else(|_| project_data.to_path_buf());
+    if root.starts_with(&data) { cmd.writable(root); }
     cmd.current_dir(root);
     for (k, v) in envs {
         if *k == "GIT_INDEX_FILE" {
@@ -229,11 +257,11 @@ fn cleanup_copy_artifacts(root: &Path, data: &Path, thread: &str, bot: &str, wor
     let work_path = crate::assistant_git::external_path(work);
     let work_str = work_path.to_str().unwrap_or_default();
     let _ = run_git(data, root, &[], &["worktree", "unlock", work_str]);
-    let _ = run_git(data, root, &[], &["worktree", "remove", "--force", "--force", work_str]);
-    let _ = run_git(data, root, &[], &["worktree", "prune"]);
+    let _ = run_git_writing(data, root, work, &["worktree", "remove", "--force", "--force", work_str]);
     if work.exists() {
         let _ = std::fs::remove_dir_all(work);
     }
+    let _ = crate::project_process::prune_worktrees(data, root);
 
     let ref_name = format!("refs/apex-copies/{thread}/{bot}/base");
     let _ = run_git(data, root, &[], &["update-ref", "-d", &ref_name]);
@@ -270,14 +298,18 @@ pub fn create_copy(root: &Path, data: &Path, thread: &str, bot: &str) -> Result<
     let res = (|| -> Result<BotCopy, String> {
         std::fs::create_dir_all(&copy_dir)
             .map_err(|e| format!("Could not create bot copy directory: {e}"))?;
+        // `git worktree add` reuses an empty folder, and the jail can only expose
+        // a folder that already exists: make the work tree here, on the real disk.
+        std::fs::create_dir_all(&work)
+            .map_err(|e| format!("Could not create bot copy work tree: {e}"))?;
 
         run_git(data, &root, &[], &["update-ref", &ref_name, &base])?;
 
         let work_path = crate::assistant_git::external_path(&work);
         let work_str = work_path.to_str().ok_or("Invalid UTF-8 in worktree path")?;
-        run_git(data,
+        run_git_writing(data,
             &root,
-            &[],
+            &work,
             &[
                 "-c",
                 "core.hooksPath=/dev/null",
@@ -513,7 +545,10 @@ fn is_binary(bytes: &[u8]) -> bool {
 
 fn get_ignored_new_in_work(project_data: &Path, root: &Path, work: &Path) -> Result<Vec<String>, String> {
     let mut skipped = Vec::new();
-    let out = match crate::project_process::git_command(project_data, work)?
+    let mut command = crate::project_process::git_command(project_data, work)?;
+    let data = std::fs::canonicalize(project_data).unwrap_or_else(|_| project_data.to_path_buf());
+    if work.starts_with(&data) { command.writable(work); }
+    let out = match command
         .current_dir(work)
         .args(["status", "--ignored", "--porcelain", "-z"])
         .output()
@@ -726,7 +761,10 @@ pub fn merge_main_into_copy(project_data: &Path, copy: &BotCopy) -> Result<FoldO
             std::fs::write(&m_file, &m_bytes)
                 .map_err(|e| format!("Could not write temp m: {e}"))?;
 
+            // The three sides sit in the host's temp folder, which the Linux
+            // jail replaces with its own unless it is handed this one.
             let res = crate::project_process::git_command(project_data, &root)?
+                .readable(&temp_dir)
                 .args(["merge-file", "-p", "-L", "copy", "-L", "base", "-L", "main"])
                 .arg(&c_file)
                 .arg(&base_file)
@@ -1454,7 +1492,7 @@ mod tests {
 
     #[test]
     fn copy_snapshot_never_contains_node_modules_symlink() {
-        let (_tmp, root, _data) = init_repo("nm-symlink");
+        let (_tmp, root, data) = init_repo("nm-symlink");
         fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
         let run = |args: &[&str]| {
             let out = crate::project_process::fixture_git_command()
@@ -1475,8 +1513,8 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&external_dir, root.join("node_modules")).unwrap();
 
-        let commit = snapshot_tree(std::path::Path::new("/nonexistent-apex-test-data"), &root).unwrap();
-        let tree_listing = run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["ls-tree", "--name-only", &commit]).unwrap();
+        let commit = snapshot_tree(&data, &root).unwrap();
+        let tree_listing = run_git(&data, &root, &[], &["ls-tree", "--name-only", &commit]).unwrap();
         assert!(
             !tree_listing.lines().any(|l| l.trim() == "node_modules"),
             "Snapshot tree unexpectedly contained node_modules: {tree_listing}"
@@ -1496,8 +1534,8 @@ mod tests {
         fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
 
-        let commit = snapshot_tree(std::path::Path::new("/nonexistent-apex-test-data"), &root).unwrap();
-        let listing = run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["ls-tree", "-r", "--name-only", &commit]).unwrap();
+        let commit = snapshot_tree(&data, &root).unwrap();
+        let listing = run_git(&data, &root, &[], &["ls-tree", "-r", "--name-only", &commit]).unwrap();
         assert!(!listing.lines().any(|l| l.starts_with("node_modules")), "{listing}");
 
         let copy = create_copy(&root, &data, "t1", "bot-a").unwrap();
@@ -1517,7 +1555,7 @@ mod tests {
 
     #[test]
     fn snapshot_includes_uncommitted_and_untracked_but_not_ignored() {
-        let (_tmp, root, _data) = init_repo("snapshot-content");
+        let (_tmp, root, data) = init_repo("snapshot-content");
         fs::write(root.join(".gitignore"), "ignored.log\n").unwrap();
         let run = |args: &[&str]| {
             let out = crate::project_process::fixture_git_command().arg("-C").arg(&root).args(args).output().unwrap();
@@ -1539,9 +1577,9 @@ mod tests {
         // Ignored file
         fs::write(root.join("ignored.log"), "should not be snapshotted").unwrap();
 
-        let commit = snapshot_tree(std::path::Path::new("/nonexistent-apex-test-data"), &root).unwrap();
+        let commit = snapshot_tree(&data, &root).unwrap();
 
-        let show = |path: &str| run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["show", &format!("{commit}:{path}")]);
+        let show = |path: &str| run_git(&data, &root, &[], &["show", &format!("{commit}:{path}")]);
         assert_eq!(show("seed.txt").unwrap(), "modified seed");
         assert_eq!(show("staged.txt").unwrap(), "staged file");
         assert_eq!(show("untracked.txt").unwrap(), "untracked file");
@@ -1550,9 +1588,9 @@ mod tests {
 
     #[test]
     fn snapshot_rehashes_same_size_edits_when_the_index_is_racy_clean() {
-        let (_tmp, root, _data) = init_repo("snapshot-racy-clean");
-        run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["config", "core.trustctime", "false"]).unwrap();
-        run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["config", "core.checkstat", "minimal"]).unwrap();
+        let (_tmp, root, data) = init_repo("snapshot-racy-clean");
+        run_git(&data, &root, &[], &["config", "core.trustctime", "false"]).unwrap();
+        run_git(&data, &root, &[], &["config", "core.checkstat", "minimal"]).unwrap();
         let cached_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let set_modified = |path: &Path| {
             fs::OpenOptions::new().write(true).open(path).unwrap()
@@ -1561,8 +1599,8 @@ mod tests {
         let file = root.join("seed.txt");
         fs::write(&file, "old\n").unwrap();
         set_modified(&file);
-        run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["add", "seed.txt"]).unwrap();
-        run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["commit", "-m", "cache old contents"]).unwrap();
+        run_git(&data, &root, &[], &["add", "seed.txt"]).unwrap();
+        run_git(&data, &root, &[], &["commit", "-m", "cache old contents"]).unwrap();
 
         // Git must rehash this entry: its cached stat still matches, but the
         // original index timestamp marks it as potentially racy clean.
@@ -1573,8 +1611,8 @@ mod tests {
         let original_index = fs::read(&index).unwrap();
         let original_mtime = fs::metadata(&index).unwrap().modified().unwrap();
 
-        let (commit, _) = snapshot_tree_and_id(std::path::Path::new("/nonexistent-apex-test-data"), &root).unwrap();
-        let contents = run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["show", &format!("{commit}:seed.txt")]).unwrap();
+        let (commit, _) = snapshot_tree_and_id(&data, &root).unwrap();
+        let contents = run_git(&data, &root, &[], &["show", &format!("{commit}:seed.txt")]).unwrap();
         assert_eq!(contents, "new", "the snapshot must include changed bytes");
         assert_eq!(fs::read(&index).unwrap(), original_index, "the real index bytes changed");
         assert_eq!(fs::metadata(&index).unwrap().modified().unwrap(), original_mtime, "the real index timestamp changed");
@@ -1582,7 +1620,7 @@ mod tests {
 
     #[test]
     fn snapshot_leaves_index_head_and_status_untouched() {
-        let (_tmp, root, _data) = init_repo("snapshot-untouched");
+        let (_tmp, root, data) = init_repo("snapshot-untouched");
         let run = |args: &[&str]| {
             let out = crate::project_process::fixture_git_command().arg("-C").arg(&root).args(args).output().unwrap();
             assert!(out.status.success());
@@ -1601,7 +1639,7 @@ mod tests {
         let status_before = run(&["status", "--porcelain=v2"]);
         let stash_before = run(&["stash", "list"]);
 
-        let _commit = snapshot_tree(std::path::Path::new("/nonexistent-apex-test-data"), &root).unwrap();
+        let _commit = snapshot_tree(&data, &root).unwrap();
 
         let index_bytes_after = fs::read(&index_path).unwrap();
         let head_after = run(&["rev-parse", "HEAD"]);
@@ -1627,7 +1665,7 @@ mod tests {
         assert_eq!(copy.state, CopyState::Working);
 
         // Verify git worktree list --porcelain
-        let wt_list = run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["worktree", "list", "--porcelain"]).unwrap();
+        let wt_list = run_git(&data, &root, &[], &["worktree", "list", "--porcelain"]).unwrap();
         let work_canonical = fs::canonicalize(&copy.work).unwrap();
         let listed_worktree = wt_list.lines().find_map(|line| {
             let path = line.strip_prefix("worktree ")?;
@@ -1681,7 +1719,7 @@ mod tests {
         assert!(copy.work.exists());
 
         let ref_name = format!("refs/apex-copies/{}/{}/base", copy.thread, copy.bot);
-        assert!(run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["rev-parse", "--verify", &ref_name]).is_ok());
+        assert!(run_git(&data, &root, &[], &["rev-parse", "--verify", &ref_name]).is_ok());
 
         remove_copy(&data, &copy).unwrap();
 
@@ -1689,7 +1727,7 @@ mod tests {
         assert!(copies_after.is_empty(), "Copies list not empty after remove");
         assert!(!copy.work.exists(), "Worktree directory still exists");
         assert!(
-            run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["rev-parse", "--verify", &ref_name]).is_err(),
+            run_git(&data, &root, &[], &["rev-parse", "--verify", &ref_name]).is_err(),
             "Ref was not deleted"
         );
     }
@@ -1803,7 +1841,7 @@ mod tests {
         fs::write(copy.work.join("a.txt"), "a modified by bot").unwrap();
         fs::write(root.join("b.txt"), "b modified by human").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Clean { files, .. } => {
                 assert_eq!(files, vec!["a.txt".to_string()]);
@@ -1811,7 +1849,7 @@ mod tests {
             other => panic!("Expected Clean, got {:?}", other),
         }
 
-        let apply_outcome = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply_outcome = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply_outcome, FoldOutcome::Clean { .. }));
 
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "a modified by bot");
@@ -1835,10 +1873,10 @@ mod tests {
         fs::write(copy.work.join("file.txt"), "line 1 - bot\nline 2\nline 3\nline 4\nline 5\n").unwrap();
         fs::write(root.join("file.txt"), "line 1\nline 2\nline 3\nline 4\nline 5 - human\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         let merged = fs::read_to_string(root.join("file.txt")).unwrap();
@@ -1862,7 +1900,7 @@ mod tests {
         fs::write(copy.work.join("file.txt"), "bot line\n").unwrap();
         fs::write(root.join("file.txt"), "human line\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Conflicts { files } => {
                 assert!(files.contains(&"file.txt".to_string()));
@@ -1899,7 +1937,7 @@ mod tests {
         fs::write(copy.work.join("file.txt"), "edited by bot\n").unwrap();
         fs::remove_file(root.join("file.txt")).unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Conflicts { files } => {
                 assert!(files.contains(&"file.txt".to_string()));
@@ -1916,10 +1954,10 @@ mod tests {
         fs::write(copy.work.join("new.txt"), "identical\n").unwrap();
         fs::write(root.join("new.txt"), "identical\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "identical\n");
@@ -1941,7 +1979,7 @@ mod tests {
         fs::write(copy.work.join("data.bin"), [0u8, 1, 99, 0, 4]).unwrap();
         fs::write(root.join("data.bin"), [0u8, 1, 88, 0, 4]).unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Conflicts { files } => {
                 assert!(files.contains(&"data.bin".to_string()));
@@ -1968,10 +2006,10 @@ mod tests {
         fs::write(root.join("human.txt"), "human changed\n").unwrap();
         fs::write(root.join("human2.txt"), "human added\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         assert_eq!(fs::read_to_string(root.join("bot.txt")).unwrap(), "bot changed\n");
@@ -1993,13 +2031,13 @@ mod tests {
         run_copy(&["add", "."]);
         run_copy(&["commit", "-m", "bot feature commit"]);
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
-        let current_branch = run_git(std::path::Path::new("/nonexistent-apex-test-data"), &root, &[], &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap();
+        let current_branch = run_git(&data, &root, &[], &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap();
         assert_eq!(current_branch, "main");
         assert_eq!(fs::read_to_string(root.join("feature.txt")).unwrap(), "feature by bot\n");
     }
@@ -2020,7 +2058,7 @@ mod tests {
         fs::write(copy.work.join(".env"), "SECRET=true\n").unwrap();
         fs::write(copy.work.join("allowed.txt"), "allowed\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Clean { ignored_skipped, .. } => {
                 assert!(ignored_skipped.contains(&".env".to_string()));
@@ -2028,7 +2066,7 @@ mod tests {
             other => panic!("Expected Clean, got {:?}", other),
         }
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         match apply {
             FoldOutcome::Clean { ignored_skipped, .. } => {
                 assert!(ignored_skipped.contains(&".env".to_string()));
@@ -2047,13 +2085,13 @@ mod tests {
 
         fs::write(copy.work.join("bot.txt"), "bot edit\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
         // Main moves after merge
         fs::write(root.join("new_main.txt"), "main edit\n").unwrap();
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert_eq!(apply, FoldOutcome::MainMoved);
     }
 
@@ -2076,10 +2114,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(copy.work.join("changed.txt"), "changed\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         let mtime_after = fs::metadata(root.join("untouched.txt")).unwrap().modified().unwrap();
@@ -2099,10 +2137,10 @@ mod tests {
 
         fs::write(copy.work.join("file.txt"), "normal file\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         assert!(root.join("node_modules").is_dir());
@@ -2121,7 +2159,7 @@ mod tests {
         fs::write(copy.work.join("café.txt"), "cafe content\n").unwrap();
         fs::write(copy.work.join(" lead.txt"), "lead content\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Clean { files, .. } => {
                 assert!(files.contains(&"café.txt".to_string()));
@@ -2130,7 +2168,7 @@ mod tests {
             other => panic!("Expected Clean, got {:?}", other),
         }
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         assert_eq!(
@@ -2161,10 +2199,10 @@ mod tests {
             .unwrap();
         }
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Clean { .. }));
 
-        let apply = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let apply = apply_copy_to_main(&data, &copy).unwrap();
         assert!(matches!(apply, FoldOutcome::Clean { .. }));
 
         let link_working = root.join("link_working.txt");
@@ -2188,21 +2226,21 @@ mod tests {
         );
     }
 
-    fn stage_directory_link_without_symlink_privileges(repo: &Path) {
-        run_git(std::path::Path::new("/nonexistent-apex-test-data"), repo, &[], &["config", "core.symlinks", "false"]).unwrap();
+    fn stage_directory_link_without_symlink_privileges(data: &Path, repo: &Path) {
+        run_git(data, repo, &[], &["config", "core.symlinks", "false"]).unwrap();
         fs::write(repo.join("z-link"), "target-dir").unwrap();
-        let blob = run_git(std::path::Path::new("/nonexistent-apex-test-data"), repo, &[], &["hash-object", "-w", "--", "z-link"]).unwrap();
-        run_git(std::path::Path::new("/nonexistent-apex-test-data"), repo, &[], &["update-index", "--add", "--cacheinfo", "120000", &blob, "z-link"]).unwrap();
-        let snapshot = snapshot_tree(std::path::Path::new("/nonexistent-apex-test-data"), repo).unwrap();
-        let entry = run_git(std::path::Path::new("/nonexistent-apex-test-data"), repo, &[], &["ls-tree", &snapshot, "--", "z-link"]).unwrap();
+        let blob = run_git(data, repo, &[], &["hash-object", "-w", "--", "z-link"]).unwrap();
+        run_git(data, repo, &[], &["update-index", "--add", "--cacheinfo", "120000", &blob, "z-link"]).unwrap();
+        let snapshot = snapshot_tree(data, repo).unwrap();
+        let entry = run_git(data, repo, &[], &["ls-tree", &snapshot, "--", "z-link"]).unwrap();
         assert!(entry.starts_with("120000 "), "fixture lost symlink mode: {entry}");
     }
 
     #[test]
     fn snapshots_preserve_git_symlink_mode_without_os_symlink_privileges() {
-        let (_tmp, root, _data) = init_repo("link-index-mode");
+        let (_tmp, root, data) = init_repo("link-index-mode");
         fs::create_dir(root.join("target-dir")).unwrap();
-        stage_directory_link_without_symlink_privileges(&root);
+        stage_directory_link_without_symlink_privileges(&data, &root);
     }
 
     #[cfg(windows)]
@@ -2215,9 +2253,9 @@ mod tests {
         fs::write(root.join("a.txt"), "before").unwrap();
         let copy = create_copy(&root, &data, "thread", "bot").unwrap();
         fs::write(root.join("a.txt"), "after").unwrap();
-        stage_directory_link_without_symlink_privileges(&root);
+        stage_directory_link_without_symlink_privileges(&data, &root);
 
-        let error = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap_err();
+        let error = merge_main_into_copy(&data, &copy).unwrap_err();
         assert!(error.contains("symlink materialization is not supported on Windows"), "{error}");
         assert_eq!(fs::read(copy.work.join("z-link")).unwrap(), b"existing file");
         assert_eq!(fs::read(copy.work.join("a.txt")).unwrap(), b"before");
@@ -2234,9 +2272,9 @@ mod tests {
         fs::write(root.join("a.txt"), "before").unwrap();
         let copy = create_copy(&root, &data, "thread", "bot").unwrap();
         fs::write(copy.work.join("a.txt"), "after").unwrap();
-        stage_directory_link_without_symlink_privileges(&copy.work);
+        stage_directory_link_without_symlink_privileges(&data, &copy.work);
 
-        let error = apply_copy_to_main(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap_err();
+        let error = apply_copy_to_main(&data, &copy).unwrap_err();
         assert!(error.contains("symlink materialization is not supported on Windows"), "{error}");
         assert_eq!(fs::read(root.join("z-link")).unwrap(), b"existing file");
         assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"before");
@@ -2265,7 +2303,7 @@ mod tests {
         fs::remove_file(root.join("link")).unwrap();
         std::os::unix::fs::symlink(Path::new("elsewhere"), root.join("link")).unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Conflicts { files } => assert_eq!(files, vec!["link".to_string()]),
             other => panic!("Expected Conflicts, got {:?}", other),
@@ -2295,7 +2333,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, copy.work.join("f.txt")).unwrap();
         fs::write(root.join("f.txt"), "one\ntwo changed\n").unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Conflicts { files } => assert_eq!(files, vec!["f.txt".to_string()]),
             other => panic!("Expected Conflicts, got {:?}", other),
@@ -3025,7 +3063,7 @@ mod tests {
         fs::write(copy.work.join("f2.txt"), "f2 new").unwrap();
 
         // Perform merge only
-        let merge_outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let merge_outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(merge_outcome, FoldOutcome::Clean { .. }));
 
         // Simulate kill before apply: main is completely untouched
@@ -3064,7 +3102,7 @@ mod tests {
         fs::write(root.join("seed.txt"), "line 1 human\nline 2\n").unwrap();
 
         // First fold: this clashes and writes conflict markers to copy's seed.txt
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         assert!(matches!(outcome, FoldOutcome::Conflicts { .. }));
 
         // Now update copy state to Reconciling with the clashed file
@@ -3080,7 +3118,7 @@ mod tests {
 
         // Merge main into copy again (takes the slow path because other.txt changed in main)
         // With conflict markers still in seed.txt, this MUST NOT report Clean
-        let outcome2 = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy_reconciling).unwrap();
+        let outcome2 = merge_main_into_copy(&data, &copy_reconciling).unwrap();
         match outcome2 {
             FoldOutcome::Conflicts { files } => {
                 assert!(files.contains(&"seed.txt".to_string()));
@@ -3185,7 +3223,7 @@ mod tests {
         let doc_content = "// This doc explains conflicts: <<<<<<< copy is a marker\n// along with =======\n// and >>>>>>> main\n";
         fs::write(copy.work.join("doc.txt"), doc_content).unwrap();
 
-        let outcome = merge_main_into_copy(std::path::Path::new("/nonexistent-apex-test-data"), &copy).unwrap();
+        let outcome = merge_main_into_copy(&data, &copy).unwrap();
         match outcome {
             FoldOutcome::Clean { files, .. } => {
                 assert_eq!(files, vec!["doc.txt".to_string()]);

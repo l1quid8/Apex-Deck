@@ -81,7 +81,7 @@ mod tests {
         let (root,host,id)=fixture();host.personal_send(&id,"pending-before-archive","Question").unwrap();
         host.change_assistant(&id,|assistant|{assistant.archived_at=Some(10);assistant.paused=true;assistant.schedules.push(serde_json::from_value(json!({"id":"s-1","goal":"Scheduled","argv":["true"],"everyMs":1000,"nextAt":1,"status":"active","createdAt":1,"runs":0,"paramsHash":"hash"})).unwrap());Ok(())}).unwrap();
         let before=serde_json::to_value(host.personal_get(&id).unwrap()).unwrap();
-        assert!(host.personal_claim(&crate::personal_worker::WorkerTools::real(std::path::Path::new("/nonexistent-apex-test-data")),&std::collections::HashSet::new(),10,10).unwrap().is_empty());host.personal_tick(10000).unwrap();assert_eq!(serde_json::to_value(host.personal_get(&id).unwrap()).unwrap(),before);let _=std::fs::remove_dir_all(root);
+        assert!(host.personal_claim(&crate::personal_worker::WorkerTools::real(&root.join("data")),&std::collections::HashSet::new(),10,10).unwrap().is_empty());host.personal_tick(10000).unwrap();assert_eq!(serde_json::to_value(host.personal_get(&id).unwrap()).unwrap(),before);let _=std::fs::remove_dir_all(root);
     }
     #[tokio::test]
     async fn archive_requires_own_project_tasks_to_be_cancelled_and_keeps_their_ledger() {

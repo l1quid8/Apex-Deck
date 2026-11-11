@@ -231,13 +231,14 @@ mod tests {
 
     #[test]
     fn concurrent_snapshots_use_independent_indexes() {
+        let project_data = crate::project_process::TestDataDir::new();
         let dir = repo();
         std::fs::write(dir.join("parallel.txt"), "unchanged\n").unwrap();
         let ready = std::sync::Barrier::new(8);
         std::thread::scope(|scope| {
             let jobs: Vec<_> = (0..8).map(|_| scope.spawn(|| {
                 ready.wait();
-                snapshot(std::path::Path::new("/nonexistent-apex-test-data"), &dir).unwrap()
+                snapshot(project_data.path(), &dir).unwrap()
             })).collect();
             let trees: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
             assert!(trees.iter().all(|tree| tree == &trees[0]));
@@ -247,9 +248,10 @@ mod tests {
 
     #[test]
     fn snapshot_rehashes_same_size_edits_without_changing_real_index() {
+        let project_data = crate::project_process::TestDataDir::new();
         let dir = repo();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &dir, None, &["config", "core.trustctime", "false"]).unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &dir, None, &["config", "core.checkstat", "minimal"]).unwrap();
+        git(project_data.path(), &dir, None, &["config", "core.trustctime", "false"]).unwrap();
+        git(project_data.path(), &dir, None, &["config", "core.checkstat", "minimal"]).unwrap();
         let cached_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let set_modified = |path: &Path| {
             std::fs::OpenOptions::new().write(true).open(path).unwrap()
@@ -258,8 +260,8 @@ mod tests {
         let file = dir.join("a.txt");
         std::fs::write(&file, "old\n").unwrap();
         set_modified(&file);
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &dir, None, &["add", "a.txt"]).unwrap();
-        git(std::path::Path::new("/nonexistent-apex-test-data"), &dir, None, &["commit", "-qm", "cache old contents"]).unwrap();
+        git(project_data.path(), &dir, None, &["add", "a.txt"]).unwrap();
+        git(project_data.path(), &dir, None, &["commit", "-qm", "cache old contents"]).unwrap();
 
         // The cached stat still matches, but the original index timestamp
         // requires Git to rehash this potentially racy-clean file.
@@ -270,8 +272,8 @@ mod tests {
         let original_index = std::fs::read(&index).unwrap();
         let original_mtime = std::fs::metadata(&index).unwrap().modified().unwrap();
 
-        let tree = snapshot(std::path::Path::new("/nonexistent-apex-test-data"), &dir).unwrap();
-        assert_eq!(git(std::path::Path::new("/nonexistent-apex-test-data"), &dir, None, &["show", &format!("{tree}:a.txt")]).unwrap(), "new\n");
+        let tree = snapshot(project_data.path(), &dir).unwrap();
+        assert_eq!(git(project_data.path(), &dir, None, &["show", &format!("{tree}:a.txt")]).unwrap(), "new\n");
         assert_eq!(std::fs::read(&index).unwrap(), original_index, "the real index bytes changed");
         assert_eq!(std::fs::metadata(&index).unwrap().modified().unwrap(), original_mtime, "the real index timestamp changed");
         std::fs::remove_dir_all(dir).unwrap();
@@ -283,18 +285,19 @@ mod tests {
 
     #[test]
     fn diff_since_start_includes_new_files_attributes_them_and_leaves_git_alone() {
+        let project_data = crate::project_process::TestDataDir::new();
         let dir = repo();
         std::fs::write(dir.join("staged.txt"), "s\n").unwrap();
         crate::project_process::fixture_git_command().arg("-C").arg(&dir).args(["add", "staged.txt"]).status().unwrap();
         let status_before = crate::project_process::fixture_git_command().arg("-C").arg(&dir).args(["status", "--porcelain"]).output().unwrap().stdout;
 
-        let start = snapshot(std::path::Path::new("/nonexistent-apex-test-data"), &dir).unwrap();
+        let start = snapshot(project_data.path(), &dir).unwrap();
         std::fs::write(dir.join("a.txt"), "two\n").unwrap();
         std::fs::write(dir.join("new file.txt"), "hi\n").unwrap();
         std::fs::create_dir_all(dir.join("target")).unwrap();
         std::fs::write(dir.join("target/out"), "ignored\n").unwrap();
 
-        let diff = thread_diff(std::path::Path::new("/nonexistent-apex-test-data"), &dir, Some(&start), &[record("jigga", "a.txt")]);
+        let diff = thread_diff(project_data.path(), &dir, Some(&start), &[record("jigga", "a.txt")]);
         assert_eq!(diff.note, None);
         let paths: Vec<_> = diff.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["a.txt", "new file.txt"]);
@@ -312,16 +315,17 @@ mod tests {
 
     #[test]
     fn nested_folder_captures_untracked_baseline_and_normalizes_report_paths() {
+        let project_data = crate::project_process::TestDataDir::new();
         let dir = repo();
         let nested = dir.join("nested");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("initial.txt"), "before\n").unwrap();
         let index = std::fs::read(dir.join(".git/index")).unwrap();
-        let start = snapshot(std::path::Path::new("/nonexistent-apex-test-data"), &nested).unwrap();
+        let start = snapshot(project_data.path(), &nested).unwrap();
         std::fs::write(nested.join("initial.txt"), "after\n").unwrap();
         std::fs::write(dir.join("outside.txt"), "outside\n").unwrap();
         let absolute = nested.join("initial.txt").to_string_lossy().into_owned();
-        let diff = thread_diff(std::path::Path::new("/nonexistent-apex-test-data"), &nested, Some(&start), &[record("a", &absolute), record("b", "./initial.txt")]);
+        let diff = thread_diff(project_data.path(), &nested, Some(&start), &[record("a", &absolute), record("b", "./initial.txt")]);
         assert_eq!(diff.note, None);
         assert_eq!(diff.files.len(), 1);
         assert_eq!(diff.files[0].path, "initial.txt");
@@ -333,10 +337,11 @@ mod tests {
 
     #[test]
     fn no_repository_lists_reported_edits_with_a_note() {
+        let project_data = crate::project_process::TestDataDir::new();
         let dir = std::env::temp_dir().join(format!("apex-nogit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(snapshot(std::path::Path::new("/nonexistent-apex-test-data"), &dir).is_err());
-        let diff = thread_diff(std::path::Path::new("/nonexistent-apex-test-data"), &dir, None, &[record("null", "x.rs"), record("jigga", "x.rs")]);
+        assert!(snapshot(project_data.path(), &dir).is_err());
+        let diff = thread_diff(project_data.path(), &dir, None, &[record("null", "x.rs"), record("jigga", "x.rs")]);
         assert_eq!(diff.files.len(), 1);
         assert_eq!(diff.files[0].by, vec![ParticipantId::new("null"), ParticipantId::new("jigga")]);
         assert_eq!(diff.files[0].patch, "");
@@ -346,11 +351,12 @@ mod tests {
 
     #[test]
     fn missing_baseline_object_falls_back_with_a_note() {
+        let project_data = crate::project_process::TestDataDir::new();
         let dir = repo();
-        let diff = thread_diff(std::path::Path::new("/nonexistent-apex-test-data"), &dir, Some("0123456789012345678901234567890123456789"), &[record("a", "a.txt")]);
+        let diff = thread_diff(project_data.path(), &dir, Some("0123456789012345678901234567890123456789"), &[record("a", "a.txt")]);
         assert_eq!(diff.files.len(), 1);
         assert!(diff.note.unwrap().contains("starting snapshot is gone"));
-        let diff = thread_diff(std::path::Path::new("/nonexistent-apex-test-data"), &dir, None, &[]);
+        let diff = thread_diff(project_data.path(), &dir, None, &[]);
         assert!(diff.note.unwrap().contains("next message"));
         std::fs::remove_dir_all(dir).unwrap();
     }

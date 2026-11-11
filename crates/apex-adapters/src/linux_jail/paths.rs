@@ -26,6 +26,11 @@ pub struct Guard {
     /// Refused if the folder contains one of these.
     pub path_dirs: Vec<PathBuf>,
     pub executables: Vec<PathBuf>,
+    /// The one folder inside a protected one this launch may write: a bot copy's
+    /// work tree, a task's worktree, or — for Deck's own Git — the empty folder
+    /// it is about to create. Copies and task checkouts are made in the data
+    /// folder, and a jailed process may write to nothing else in there.
+    pub own_folder: Option<PathBuf>,
 }
 
 /// The longest existing part resolved, with the missing rest put back, so a
@@ -157,13 +162,60 @@ fn touches(real: &Path, item: &Path, mounts: &Mounts) -> bool {
     })
 }
 
+/// This bot copy's own work tree: `<data>/bot-copies/<thread>/<bot>/work`.
+///
+/// `None` unless both names are a single plain component, so no thread or bot id
+/// can point the exception at another folder — or the guard would allow exactly
+/// the folder it names.
+pub fn copy_work(data_dir: &Path, thread: &str, bot: &str) -> Option<PathBuf> {
+    let plain = |name: &str| !name.is_empty() && name != "." && name != ".."
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (plain(thread) && plain(bot)).then(|| data_dir.join("bot-copies").join(thread).join(bot).join("work"))
+}
+
+/// The folder Deck itself makes inside the data folder for a checkout: a bot
+/// copy's `<thread>/<bot>/work`, or a task's `worktree`, `integration` or
+/// `recovery` checkout.
+///
+/// `None` for everything else in there — keys, sessions, jail homes and the
+/// `copy.json` or task records beside a checkout — so a launch can only be
+/// handed a folder of this shape, whatever a caller passes.
+pub fn deck_checkout(data_dir: &Path, path: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(data_dir).ok()?;
+    let parts: Vec<&std::ffi::OsStr> = rest.iter().collect();
+    let plain = |part: &std::ffi::OsStr| part.to_str().is_some_and(|name| !name.is_empty()
+        && name != "." && name != ".."
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')));
+    let named = |part: &std::ffi::OsStr, name: &str| part == std::ffi::OsStr::new(name);
+    let copy = parts.len() == 4 && named(parts[0], "bot-copies") && plain(parts[1]) && plain(parts[2]) && named(parts[3], "work");
+    let task = parts.len() == 4 && named(parts[0], "apex-agent") && named(parts[1], "tasks") && plain(parts[2])
+        && ["worktree", "integration", "recovery"].iter().any(|name| named(parts[3], name));
+    (copy || task).then(|| path.to_path_buf())
+}
+
+/// The one folder inside a protected folder this launch may write, when `real`
+/// is that folder or inside it. `None` for the `copy.json` beside a copy, the
+/// folder above it, another bot's copy and for a folder with a mount inside it:
+/// a bind brings whatever it shows along, and the path's shape can't tell.
+fn own_folder_allowed(real: &Path, guard: &Guard, mounts: &Mounts) -> Option<PathBuf> {
+    let allowed = guard.own_folder.as_deref().map(resolved)?;
+    (contains(&allowed, real) && !mounts.nested_in(&allowed)).then_some(allowed)
+}
+
 /// True when a jailed bot must not write to the resolved folder `real`.
 fn unsafe_to_write(real: &Path, guard: &Guard, mounts: &Mounts) -> bool {
     // Home and PATH folders count only their own content: a project that is
     // its own mount under home isn't home.
     let holds = |item: &Path| contains(real, item) || !mounts.shows(real, &mounts.place(item)).is_empty();
-    real == Path::new("/") || holds(&resolved(&guard.home))
-        || guard.protected.iter().any(|item| touches(real, &resolved(item), mounts))
+    if real == Path::new("/") || holds(&resolved(&guard.home)) { return true; }
+    // This launch's own folder is excepted only from the protection it lives in:
+    // its data folder and the folders above that. The data folder's other
+    // folders — keys, sessions, other bots' copies — stay refused.
+    let own = own_folder_allowed(real, guard, mounts);
+    guard.protected.iter().any(|item| {
+        let item = resolved(item);
+        touches(real, &item, mounts) && !own.as_deref().is_some_and(|allowed| contains(&item, &allowed))
+    })
         || guard.path_dirs.iter().chain(&guard.executables).any(|item| holds(&resolved(item)))
 }
 
@@ -221,6 +273,7 @@ mod tests {
             protected: standard_protected(&home, &home.join("data")),
             path_dirs: vec![home.join("tools/bin")],
             executables: vec![root.join("srv/app/node/node")],
+            own_folder: None,
         };
         Fixture { root, guard }
     }
@@ -391,6 +444,101 @@ mod tests {
         guard.protected.push(f.root.join("srv/later/secrets"));
         std::fs::create_dir_all(f.root.join("srv/later")).unwrap();
         assert!(check_writable(&f.root.join("srv/later"), &guard, &none()).is_err());
+    }
+
+    /// A copy of thread `thread` for bot `bot`, at the path the host makes.
+    fn copy(f: &Fixture, thread: &str, bot: &str) -> PathBuf {
+        let dir = f.guard.home.join("data/bot-copies").join(thread).join(bot);
+        std::fs::create_dir_all(dir.join("work")).unwrap();
+        std::fs::write(dir.join("copy.json"), "{}").unwrap();
+        dir
+    }
+
+    fn copy_guard(f: &Fixture, thread: &str, bot: &str) -> Guard {
+        Guard { own_folder: copy_work(&f.guard.home.join("data"), thread, bot), ..f.guard.clone() }
+    }
+
+    /// A task checkout Deck creates for itself: `<data>/apex-agent/tasks/<id>/worktree`.
+    fn worktree_guard(f: &Fixture, task: &str) -> (Guard, PathBuf) {
+        let base = f.guard.home.join("data/apex-agent/tasks").join(task);
+        std::fs::create_dir_all(base.join("worktree")).unwrap();
+        std::fs::write(base.join("task.json"), "{}").unwrap();
+        (Guard { own_folder: Some(base.join("worktree")), ..f.guard.clone() }, base)
+    }
+
+    #[test]
+    fn deck_may_create_its_own_task_checkout_but_not_write_beside_it() {
+        let f = fixture();
+        let (guard, base) = worktree_guard(&f, "task1");
+        assert!(check_writable(&base.join("worktree"), &guard, &none()).is_ok());
+        std::fs::create_dir_all(base.join("worktree/src")).unwrap();
+        assert!(check_writable(&base.join("worktree/src"), &guard, &none()).is_ok());
+        // The task's own state file and the folder above its checkout stay shut.
+        for path in [base.clone(), base.join("task.json"), f.guard.home.join("data/apex-agent/tasks")] {
+            assert!(check_writable(&path, &guard, &none()).is_err(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn a_bot_copys_own_work_tree_is_writable() {
+        let f = fixture();
+        let dir = copy(&f, "t1", "bot1");
+        let guard = copy_guard(&f, "t1", "bot1");
+        // The copies live in the data folder, so a turn in one has to be let in.
+        assert_eq!(check_writable(&dir.join("work"), &guard, &none()).unwrap(), dir.join("work"));
+        std::fs::create_dir_all(dir.join("work/src")).unwrap();
+        assert!(check_writable(&dir.join("work/src"), &guard, &none()).is_ok());
+    }
+
+    #[test]
+    fn the_copy_file_the_folder_above_it_and_other_copies_are_refused() {
+        let f = fixture();
+        let mine = copy(&f, "t1", "bot1");
+        let other_bot = copy(&f, "t1", "bot2");
+        let other_thread = copy(&f, "t2", "bot1");
+        let guard = copy_guard(&f, "t1", "bot1");
+        for path in [mine.clone(), mine.join("copy.json"), mine.join("work/.."),
+                     other_bot.join("work"), other_thread.join("work"),
+                     f.guard.home.join("data/bot-copies"), f.guard.home.join("data/bot-copies/t1"),
+                     f.guard.home.join("data")] {
+            assert!(check_writable(&path, &guard, &none()).is_err(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn a_copy_work_tree_only_opens_its_own_copy() {
+        // The data folder and the folders above it are the only protections the
+        // work tree is excepted from: keys, login files and other folders in the
+        // data folder are refused as before.
+        let f = fixture();
+        let dir = copy(&f, "t1", "bot1");
+        std::fs::create_dir_all(f.guard.home.join("data/keys")).unwrap();
+        std::fs::create_dir_all(f.guard.home.join("data/jail-homes")).unwrap();
+        let guard = copy_guard(&f, "t1", "bot1");
+        assert!(check_writable(&dir.join("work"), &guard, &none()).is_ok());
+        for path in [f.guard.home.join("data/keys"), f.guard.home.join(".ssh"),
+                     f.guard.home.join(".local/bin"), f.guard.home.join("data/jail-homes")] {
+            assert!(check_writable(&path, &guard, &none()).is_err(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn a_mount_inside_the_work_tree_is_refused() {
+        // A bind inside the work folder brings whatever it shows along with it,
+        // and the shape of the path can't tell.
+        let f = fixture();
+        let work = copy(&f, "t1", "bot1").join("work");
+        let line = format!("30 22 0:60 / {}/keys rw - tmpfs t rw", work.display());
+        assert!(unsafe_to_write(&work, &copy_guard(&f, "t1", "bot1"), &table(&[&line])));
+    }
+
+    #[test]
+    fn a_name_that_is_not_one_folder_names_no_copy() {
+        let data = PathBuf::from("/fake/me/data");
+        assert_eq!(copy_work(&data, "t1", "bot1"), Some(data.join("bot-copies/t1/bot1/work")));
+        for (thread, bot) in [("", "bot1"), ("t1", ""), ("..", "bot1"), ("t1", "../keys"), ("t1/x", "bot1"), ("t1", "/abs")] {
+            assert_eq!(copy_work(&data, thread, bot), None, "{thread:?} {bot:?}");
+        }
     }
 
     #[cfg(target_os = "macos")]

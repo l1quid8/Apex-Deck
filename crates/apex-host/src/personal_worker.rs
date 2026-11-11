@@ -2412,7 +2412,8 @@ mod native_proposal_regression {
             let mut input=serde_json::json!({"goal":"Assign a worker","argv":["room.assign","thread","worker","Review this"]});
             if let Some(tool)=tool {input["tool"]=tool.into();}
             let proposed: ProposedTask=serde_json::from_value(input).unwrap();
-            propose_task(&mut assistant,&WorkerTools::real(std::path::Path::new("/nonexistent-apex-test-data")),"h","pe-1","Assign a worker",proposed,None,None,None,false,5);
+            let data=crate::project_process::TestDataDir::new();
+            propose_task(&mut assistant,&WorkerTools::real(data.path()),"h","pe-1","Assign a worker",proposed,None,None,None,false,5);
             assert!(assistant.tasks.is_empty(),"a native action must never become a command approval or executable task");
             let refusal=&assistant.messages.last().expect("visible refusal").text;
             assert!(refusal.contains("No task was made")&&refusal.contains("room.assign")&&refusal.contains("tool"),"refusal should explain the native tool form: {refusal}");

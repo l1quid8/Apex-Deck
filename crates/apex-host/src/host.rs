@@ -4710,12 +4710,15 @@ mod host_tests {
     }
 
     fn mount_repo(data: &Path) -> (PathBuf, PathBuf) {
-        let repo = data.join("repo");
+        // Beside the data folder, not in it: Linux never lets a project live in Deck's data.
+        let projects = data.with_extension("projects");
+        let _ = std::fs::remove_dir_all(&projects);
+        let repo = projects.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| { assert!(crate::project_process::fixture_git_command().arg("-C").arg(&repo).args(args).output().unwrap().status.success()); };
         git(&["init", "-b", "main"]);
         git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial"]);
-        let tree = data.join("tree");
+        let tree = projects.join("tree");
         git(&["worktree", "add", "-b", "feature", tree.to_str().unwrap()]);
         (repo.canonicalize().unwrap(), tree.canonicalize().unwrap())
     }

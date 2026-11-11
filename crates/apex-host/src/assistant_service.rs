@@ -2828,15 +2828,7 @@ fn applied_integration_matches(project_data: &std::path::Path, plan: &assistant_
 
 fn discard_integration_scratch(project_data: &std::path::Path, plan: &assistant_git::IntegrationPlan) {
     if plan.scratch_path.exists() {
-        let _ = assistant_git::git(project_data,
-            &plan.root,
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                &plan.scratch_path.to_string_lossy(),
-            ],
-        );
+        assistant_git::remove_worktree(project_data, &plan.root, &plan.scratch_path);
     }
 }
 
@@ -3346,7 +3338,7 @@ mod tests {
         std::fs::create_dir_all(&process_dir).unwrap();
         let result = f
             .runtime
-            .block_on(run_check(std::path::Path::new("/nonexistent-apex-test-data"),
+            .block_on(run_check(&f.data,
                 &f.root,
                 &[
                     "sh".into(),
@@ -3741,8 +3733,8 @@ mod tests {
         let data = task.result_data.as_ref().unwrap();
         let worktree = Path::new(data["executionPath"].as_str().unwrap());
         std::fs::write(worktree.join(path), contents).unwrap();
-        let snapshot = assistant_git::capture_result(std::path::Path::new("/nonexistent-apex-test-data"), worktree, &task.id).unwrap();
-        let diff = assistant_git::review_diff(std::path::Path::new("/nonexistent-apex-test-data"),
+        let snapshot = assistant_git::capture_result(&f.data, worktree, &task.id).unwrap();
+        let diff = assistant_git::review_diff(&f.data,
             worktree,
             data["baselineSnapshot"]["commit"].as_str().unwrap(),
             &snapshot.commit,

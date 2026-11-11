@@ -712,9 +712,15 @@ mod tests {
             Self(path.canonicalize().unwrap())
         }
     }
+    impl Temp {
+        fn data(&self) -> PathBuf {
+            self.0.with_extension("data")
+        }
+    }
     impl Drop for Temp {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+            let _ = fs::remove_dir_all(self.data());
         }
     }
 
@@ -924,9 +930,9 @@ mod tests {
         fs::write(temp.0.join("src/components/btn.tsx"), "").unwrap();
         fs::write(temp.0.join("else_b_t_n.txt"), "").unwrap();
         fs::write(temp.0.join("notes.txt"), "").unwrap();
-        let result = find(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "btn", 10).unwrap();
+        let result = find(&temp.data(), &temp.0, "btn", 10).unwrap();
         assert_eq!(result[0], "src/components/btn.tsx");
-        assert!(find(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "", 10).is_err());
+        assert!(find(&temp.data(), &temp.0, "", 10).is_err());
     }
 
     #[test]
@@ -942,7 +948,7 @@ mod tests {
         fs::write(temp.0.join("binary.txt"), [0, b'n', b'e', b'e']).unwrap();
         fs::create_dir_all(temp.0.join("target")).unwrap();
         fs::write(temp.0.join("target/ignored.txt"), "needle ignored").unwrap();
-        let result = search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "needle", false, Some(Path::new("docs"))).unwrap();
+        let result = search(&temp.data(), &temp.0, "needle", false, Some(Path::new("docs"))).unwrap();
         assert_eq!(
             result
                 .hits
@@ -952,13 +958,13 @@ mod tests {
             vec![("docs/readme.md", 1), ("docs/readme.md", 3)]
         );
         assert!(!result.truncated);
-        assert!(search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "  ", false, None).is_err());
+        assert!(search(&temp.data(), &temp.0, "  ", false, None).is_err());
         let lines = (0..=MAX_SEARCH_HITS)
             .map(|_| "needle")
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(temp.0.join("many.txt"), lines).unwrap();
-        let capped = search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "needle", true, None).unwrap();
+        let capped = search(&temp.data(), &temp.0, "needle", true, None).unwrap();
         assert_eq!(capped.hits.len(), MAX_SEARCH_HITS);
         assert!(capped.truncated);
     }
@@ -983,7 +989,7 @@ mod tests {
             .status()
             .unwrap();
         fs::write(temp.0.join("untracked.txt"), "Needle untracked\n").unwrap();
-        let result = search(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "needle", false, None).unwrap();
+        let result = search(&temp.data(), &temp.0, "needle", false, None).unwrap();
         assert_eq!(
             result
                 .hits
@@ -993,7 +999,7 @@ mod tests {
             vec!["tracked.txt", "untracked.txt"]
         );
         assert!(
-            find(std::path::Path::new("/nonexistent-apex-test-data"), &temp.0, "untracked", 10)
+            find(&temp.data(), &temp.0, "untracked", 10)
                 .unwrap()
                 .contains(&"untracked.txt".to_string())
         );
