@@ -100,6 +100,7 @@ app.whenReady().then(async () => {
     mouse('mouseMove', dividerX + 60, 400);
     await until(focusHasPicture, 'native divider drag snapshots p0', 180);
     mouse('mouseUp', dividerX + 60, 400);
+    await until('!document.querySelector("[data-pane-map-region]").classList.contains("adjusting")', 'native divider release commits before timing restoration');
     await restored('Divider drag');
 
     // A side zoom retargets an incoming Focus glide without changing its final
