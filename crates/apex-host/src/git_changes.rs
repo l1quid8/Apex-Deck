@@ -56,7 +56,13 @@ pub struct Outcome {
 }
 
 fn git(project_data: &Path, cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    git_writing(project_data, cwd, index, None, args)
+}
+/// Git that may also write `target`, a scratch checkout outside the project:
+/// the Linux jail shows a command only the folders it is handed.
+fn git_writing(project_data: &Path, cwd: &Path, index: Option<&Path>, target: Option<&Path>, args: &[&str]) -> Result<String, String> {
     let mut command = crate::project_process::git_command(project_data, cwd)?;
+    if let Some(target) = target { command.writable(target); }
     command
         .arg("-C")
         .arg(crate::assistant_git::external_path(cwd).as_os_str())
@@ -374,11 +380,17 @@ impl HeadCheckout {
                 .as_nanos()
         ));
         let path = dir.to_string_lossy().to_string();
-        git(project_data,
+        // Made empty first, so the jail can be handed it; Git fills an empty folder.
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create a scratch checkout: {e}"))?;
+        if let Err(error) = git_writing(project_data,
             root,
             None,
+            Some(&dir),
             &["worktree", "add", "--detach", "--force", &path, head],
-        )?;
+        ) {
+            let _ = std::fs::remove_dir(&dir);
+            return Err(error);
+        }
         let checkout = Self {
             data: project_data.to_path_buf(),
             root: root.to_path_buf(),
@@ -409,13 +421,14 @@ impl HeadCheckout {
 impl Drop for HeadCheckout {
     fn drop(&mut self) {
         let dir = self.dir.to_string_lossy().to_string();
-        let _ = git(&self.data,
+        let _ = git_writing(&self.data,
             &self.root,
             None,
+            Some(&self.dir),
             &["worktree", "remove", "--force", &dir],
         );
         let _ = std::fs::remove_dir_all(&self.dir);
-        let _ = git(&self.data, &self.root, None, &["worktree", "prune"]);
+        let _ = crate::project_process::prune_worktrees(&self.data, &self.root);
     }
 }
 struct PrivateIndex(PathBuf);
@@ -575,6 +588,11 @@ fn merge(project_data: &Path, cwd: &Path, expected: &State) -> Result<String, St
 }
 async fn run(project_data: &Path, cwd: &Path, program: &str, args: &[&str]) -> Result<String, String> {
     let mut command = crate::project_process::tokio_command_in(project_data, program, cwd)?;
+    // A scratch checkout links the project's installed packages; the jail has
+    // to show where that link leads.
+    if let Ok(modules) = std::fs::canonicalize(cwd.join("node_modules")) {
+        if modules.is_dir() && !modules.starts_with(cwd.canonicalize().unwrap_or_default()) { command.readable(modules); }
+    }
     command
         .args(args)
         .stdin(Stdio::null())
@@ -984,7 +1002,7 @@ mod tests {
         std::fs::create_dir_all(r.0.join("node_modules/typescript")).unwrap();
         r.write("node_modules/typescript/marker.txt", "installed\n");
         let head = status(r.1.path(), &r.0).unwrap().head;
-        let checkout = HeadCheckout::new(&r.0.join("data"), &r.0, &head).unwrap();
+        let checkout = HeadCheckout::new(r.1.path(), &r.0, &head).unwrap();
         assert_eq!(
             std::fs::read_to_string(checkout.dir.join("node_modules/typescript/marker.txt")).unwrap(),
             "installed\n"

@@ -260,11 +260,11 @@ fn cleanup_copy_artifacts(root: &Path, data: &Path, thread: &str, bot: &str, wor
     let work_path = crate::assistant_git::external_path(work);
     let work_str = work_path.to_str().unwrap_or_default();
     let _ = run_git(data, root, &[], &["worktree", "unlock", work_str]);
-    let _ = run_git(data, root, &[], &["worktree", "remove", "--force", "--force", work_str]);
-    let _ = run_git(data, root, &[], &["worktree", "prune"]);
+    let _ = run_git_writing(data, root, work, &["worktree", "remove", "--force", "--force", work_str]);
     if work.exists() {
         let _ = std::fs::remove_dir_all(work);
     }
+    let _ = crate::project_process::prune_worktrees(data, root);
 
     let ref_name = format!("refs/apex-copies/{thread}/{bot}/base");
     let _ = run_git(data, root, &[], &["update-ref", "-d", &ref_name]);
@@ -764,7 +764,10 @@ pub fn merge_main_into_copy(project_data: &Path, copy: &BotCopy) -> Result<FoldO
             std::fs::write(&m_file, &m_bytes)
                 .map_err(|e| format!("Could not write temp m: {e}"))?;
 
+            // The three sides sit in the host's temp folder, which the Linux
+            // jail replaces with its own unless it is handed this one.
             let res = crate::project_process::git_command(project_data, &root)?
+                .readable(&temp_dir)
                 .args(["merge-file", "-p", "-L", "copy", "-L", "base", "-L", "main"])
                 .arg(&c_file)
                 .arg(&base_file)

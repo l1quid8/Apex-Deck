@@ -45,7 +45,14 @@ pub struct AddRequest {
 }
 
 fn git(project_data: &Path, project: &Path, args: &[String]) -> Result<String, String> {
-    let output = crate::project_process::git_command(project_data, project)?
+    git_writing(project_data, project, None, args)
+}
+/// Git that may also write `target`, a worktree folder beside the project: the
+/// Linux jail shows a command only the folders it is handed.
+fn git_writing(project_data: &Path, project: &Path, target: Option<&Path>, args: &[String]) -> Result<String, String> {
+    let mut command = crate::project_process::git_command(project_data, project)?;
+    if let Some(target) = target { command.writable(target); }
+    let output = command
         .arg("-C")
         .arg(crate::assistant_git::external_path(project).as_os_str())
         .args(args)
@@ -97,6 +104,11 @@ fn parse_list(raw: &str, task_dir: &Path) -> Vec<Worktree> {
                 }
             }
             let path = path?;
+            // Git in the Linux jail sees no worktree but its own, so whether one
+            // is missing is the host's call there.
+            if cfg!(target_os = "linux") && index != 0 {
+                prunable = std::fs::symlink_metadata(Path::new(&path).join(".git")).is_err();
+            }
             let resolved = fs_canonical(Path::new(&path)).unwrap_or_else(|| PathBuf::from(&path));
             let task = crate::assistant_git::external_path(&resolved)
                 .starts_with(crate::assistant_git::external_path(task_dir).as_ref());
@@ -259,6 +271,10 @@ pub fn add(project_data: &Path, project: &Path, req: AddRequest) -> Result<Workt
     if std::fs::symlink_metadata(&folder).is_ok() {
         return Err("That folder already exists.".into());
     }
+    // Made empty first, so the jail can be handed it; Git fills an empty folder.
+    std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create the worktree folder: {e}"))?;
+    let made = folder.clone();
+    let undo = |error: String| { let _ = std::fs::remove_dir(&made); error };
     let folder_arg = arg(&folder);
     if req.new_branch {
         let mut args = vec![
@@ -278,10 +294,10 @@ pub fn add(project_data: &Path, project: &Path, req: AddRequest) -> Result<Workt
                     "--end-of-options".into(),
                     format!("{}^{{commit}}", base),
                 ],
-            )?;
+            ).map_err(undo)?;
             args.push(verified.trim().to_string());
         }
-        git(project_data, project, &args)?;
+        git_writing(project_data, project, Some(&folder), &args).map_err(undo)?;
     } else {
         git(project_data,
             project,
@@ -291,9 +307,10 @@ pub fn add(project_data: &Path, project: &Path, req: AddRequest) -> Result<Workt
                 "--end-of-options".into(),
                 format!("refs/heads/{branch}^{{commit}}"),
             ],
-        )?;
-        git(project_data,
+        ).map_err(undo)?;
+        git_writing(project_data,
             project,
+            Some(&folder),
             &[
                 "worktree".into(),
                 "add".into(),
@@ -301,7 +318,7 @@ pub fn add(project_data: &Path, project: &Path, req: AddRequest) -> Result<Workt
                 folder_arg,
                 branch.into(),
             ],
-        )?;
+        ).map_err(undo)?;
     }
     let raw = git(project_data,
         project,
@@ -361,8 +378,15 @@ pub fn remove(project_data: &Path, project: &Path, target: &Path, force: bool, t
         args.push("--force".into());
     }
     args.push("--".into());
-    args.push(arg(target));
-    git(project_data, project, &args).map(|_| ()).map_err(|error| {
+    args.push(arg(&target));
+    let removed = git_writing(project_data, project, Some(&target), &args);
+    // In the Linux jail the folder is a mount Git can empty but not delete, so
+    // Git reports the last step failed; an emptied folder is finished here.
+    let emptied = || std::fs::read_dir(&target).is_ok_and(|mut entries| entries.next().is_none());
+    if removed.is_err() && cfg!(target_os = "linux") && emptied() {
+        return std::fs::remove_dir(&target).map_err(|e| e.to_string());
+    }
+    removed.map(|_| ()).map_err(|error| {
         if !force && (error.contains("modified or untracked") || error.contains("local changes")) {
             format!("has-changes:{error}")
         } else {
@@ -414,14 +438,14 @@ pub fn forget(project_data: &Path, project: &Path, target: &Path, force: bool, t
 }
 pub fn prune(project_data: &Path, project: &Path) -> Result<(), String> {
     if git(project_data, project, &["rev-parse".into(), "--show-toplevel".into()]).is_ok() {
-        return git(project_data, project, &["worktree".into(), "prune".into()]).map(|_| ());
+        return crate::project_process::prune_worktrees(project_data, project);
     }
     let checkouts = child_repos(project_data, project);
     if checkouts.is_empty() {
         return Err("This folder isn't a Git repository.".into());
     }
     for checkout in checkouts {
-        git(project_data, &checkout, &["worktree".into(), "prune".into()])?;
+        crate::project_process::prune_worktrees(project_data, &checkout)?;
     }
     Ok(())
 }

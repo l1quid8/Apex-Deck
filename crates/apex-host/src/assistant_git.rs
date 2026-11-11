@@ -205,10 +205,16 @@ fn add_worktree(project_data: &Path, root: &Path, path: &Path, commit: &str) -> 
 /// `git worktree remove`, which also has to unlink the checkout's folder: the
 /// jail can only empty it. Whatever is left is removed below, and `prune` drops
 /// the registration, as the copy cleanup does.
-fn remove_worktree(project_data: &Path, root: &Path, path: &Path) {
-    let _ = git(project_data, root, &["worktree", "remove", "--force", &git_path(path).unwrap_or_default()]);
+pub(crate) fn remove_worktree(project_data: &Path, root: &Path, path: &Path) {
+    // The jail shows Git only the folders it is handed; without this one Git
+    // drops the registration and leaves the checkout's files behind.
+    if let (Ok(mut command), Ok(target)) = (crate::project_process::git_command(project_data, root), git_path(path)) {
+        command.writable(path).current_dir(root).args(["worktree", "remove", "--force", &target])
+            .stdout(Stdio::null()).stderr(Stdio::null());
+        let _ = command.output();
+    }
     let _ = std::fs::remove_dir_all(path);
-    let _ = git(project_data, root, &["worktree", "prune"]);
+    let _ = crate::project_process::prune_worktrees(project_data, root);
 }
 
 pub fn checkout_root(project_data: &Path, cwd: &Path) -> Result<PathBuf, String> {
@@ -1124,9 +1130,13 @@ mod tests {
         let error = within(GitLimit::new(std::time::Duration::from_millis(500), None), || capture(project_data.path(), &root, "hung-save", "result")).unwrap_err();
         assert_eq!(error, SAVE_TOO_LONG);
         assert!(started.elapsed() < std::time::Duration::from_secs(8), "took {:?}", started.elapsed());
-        let pid: i32 = std::fs::read_to_string(root.join(".git/hang-pid")).unwrap().trim().parse().unwrap();
-        if let Some(pid) = crate::project_process::fixture_host_pid(&root, pid) {
-            assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the filter Git started must die with it");
+        // A slow jail start can use up the limit before the filter runs at all;
+        // when it did run, it must not outlive the save.
+        if let Ok(pid) = std::fs::read_to_string(root.join(".git/hang-pid")) {
+            let pid: i32 = pid.trim().parse().unwrap();
+            if let Some(pid) = crate::project_process::fixture_host_pid(&root, pid) {
+                assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the filter Git started must die with it");
+            }
         }
         let left: Vec<_> = std::fs::read_dir(root.join(".git")).unwrap().filter_map(|entry| entry.ok()).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with("apex-index") || name.ends_with(".lock")).collect();
         assert!(left.is_empty(), "{left:?}");

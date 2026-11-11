@@ -2828,15 +2828,7 @@ fn applied_integration_matches(project_data: &std::path::Path, plan: &assistant_
 
 fn discard_integration_scratch(project_data: &std::path::Path, plan: &assistant_git::IntegrationPlan) {
     if plan.scratch_path.exists() {
-        let _ = assistant_git::git(project_data,
-            &plan.root,
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                &plan.scratch_path.to_string_lossy(),
-            ],
-        );
+        assistant_git::remove_worktree(project_data, &plan.root, &plan.scratch_path);
     }
 }
 

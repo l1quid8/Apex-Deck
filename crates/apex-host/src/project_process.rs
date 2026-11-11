@@ -2,7 +2,7 @@
 //! Tainted automatic operations are refused until an Edits jail can be established.
 //! Also provides a source-scanning guard: no raw `Command::new("git")` outside this module.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::folder_trust;
@@ -55,7 +55,58 @@ fn harden_git(cmd: &mut Command) {
         .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
         .env("GIT_ATTR_NOSYSTEM", "1")
         .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-               "-c", "core.attributesFile=", "-c", "diff.external="]);
+               "-c", "core.attributesFile=", "-c", "diff.external=",
+               // A jail sees only its own worktrees, so an automatic gc there
+               // would prune every other one; `prune_worktrees` does it instead.
+               "-c", "gc.worktreePruneExpire=never"]);
+}
+
+/// Drop the registrations of `root`'s repository whose worktree folder is gone.
+///
+/// On Linux every project Git runs in a jail that shows only its own folders,
+/// so `git worktree prune` there would see every other worktree — bot copies,
+/// task checkouts, the person's own — as missing and forget them all. The
+/// registry is read here instead, with the host's view of what exists. Locked
+/// entries and ones whose record can't be read are left alone.
+pub fn prune_worktrees(data: &Path, root: &Path) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        let out = git_command(data, root)?.args(["worktree", "prune"]).output().map_err(|e| e.to_string())?;
+        return if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) };
+    }
+    let Some(common) = git_common_dir(root) else { return Ok(()) };
+    let registry = common.join("worktrees");
+    if !std::fs::symlink_metadata(&registry).is_ok_and(|meta| meta.is_dir()) { return Ok(()); }
+    for entry in std::fs::read_dir(&registry).map_err(|e| e.to_string())?.flatten() {
+        // `file_type` doesn't follow links: a planted link is never entered.
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) { continue; }
+        let admin = entry.path();
+        if std::fs::symlink_metadata(admin.join("locked")).is_ok() { continue; }
+        let Ok(gitdir) = std::fs::read_to_string(admin.join("gitdir")) else { continue };
+        let gitdir = gitdir.trim();
+        if gitdir.is_empty() { continue; }
+        let pointer = Path::new(gitdir);
+        let pointer = if pointer.is_absolute() { pointer.to_path_buf() } else { admin.join(pointer) };
+        if std::fs::symlink_metadata(&pointer).is_err() {
+            std::fs::remove_dir_all(&admin).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// The shared `.git` of the repository holding `folder`, read from disk: the
+/// nearest `.git` folder above it, or the one a linked worktree's pointer names
+/// when that folder names the checkout back.
+fn git_common_dir(folder: &Path) -> Option<PathBuf> {
+    let folder = folder.canonicalize().ok()?;
+    for top in folder.ancestors() {
+        let dot = top.join(".git");
+        let Ok(meta) = std::fs::symlink_metadata(&dot) else { continue };
+        if meta.is_dir() { return dot.canonicalize().ok(); }
+        #[cfg(unix)]
+        if meta.is_file() { return apex_adapters::linux_jail::linked_git_common(top); }
+        return None;
+    }
+    None
 }
 
 /// Reserved for checkpoints, which independently isolate all Git inputs.
@@ -153,7 +204,6 @@ pub fn ensure_allowed_for_access(data: &Path, folder: &Path, access: apex_core::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Tmp(PathBuf);
