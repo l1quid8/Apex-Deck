@@ -4,6 +4,284 @@ fn tool() -> Value {
     json!({"type":"function","function":{"name":"add","description":"Add two numbers","parameters":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"],"additionalProperties":false}}})
 }
 
+// Exercise the production proxy against a local Responses provider; no API key.
+#[tokio::test]
+async fn openai_responses_tool_round_trip() {
+    for streaming in [false, true] {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let provider = tokio::spawn(async move {
+            for round in 0..2 {
+                let (mut socket, _) = upstream.accept().await.unwrap();
+                let request = read_http_request(&mut socket).await.unwrap().unwrap();
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                tx.send((request.path, body)).unwrap();
+                let reasoning = json!({"type":"reasoning","id":"rs_fixture","summary":[],"encrypted_content":"opaque-fixture"});
+                let item = if round == 0 {
+                    json!({"type":"function_call","id":"fc_fixture","call_id":"call_fixture","name":"add","arguments":"{\"a\":19,\"b\":23}"})
+                } else {
+                    json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"42","annotations":[]}]})
+                };
+                let response = json!({"id":"resp_fixture","created_at":123,"model":"gpt-6.1-sol","status":"completed","output":[reasoning,item.clone()],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":3},"output_tokens":5,"total_tokens":15},"cost":{"usd":0.001}});
+                if streaming {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
+                    let events = if round == 0 {
+                        vec![
+                            json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_fixture","call_id":"call_fixture","name":"add","arguments":""}}),
+                            json!({"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"a\":19,"}),
+                            json!({"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"b\":23}"}),
+                        ]
+                    } else {
+                        vec![
+                            json!({"type":"response.output_text.delta","output_index":1,"delta":"42"}),
+                        ]
+                    };
+                    for event in events
+                        .into_iter()
+                        .chain([json!({"type":"response.completed","response":response})])
+                    {
+                        // Split every event across writes, including within JSON.
+                        let wire = format!(
+                            "event: {}\r\ndata: {event}\r\n\r\n",
+                            event["type"].as_str().unwrap()
+                        );
+                        for part in wire.as_bytes().chunks(13) {
+                            socket.write_all(part).await.unwrap();
+                        }
+                    }
+                } else {
+                    write_json_response(&mut socket, 200, &response).await;
+                }
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("responses-{}", identity::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let keys = Arc::new(GatewayKeys::load(&dir).unwrap());
+        let issued = keys
+            .issue(crate::gateway_keys::IssueSpec {
+                label: "responses".into(),
+                scopes: vec![KeyScope::Api],
+                allow_mcp: false,
+                max_turns_per_day: None,
+                max_usd_micros_per_month: None,
+            })
+            .unwrap();
+        let state = GatewayHttpState::new(dir.clone(), keys.clone());
+        let mut target = resolve_model_target(&dir, "openai/gpt-6.1-sol", None).unwrap();
+        if let Backend::OpenAiCompatible {
+            base_url,
+            api_key_env,
+            ..
+        } = &mut target.config.backend
+        {
+            *base_url = format!("http://{upstream_addr}/v1");
+            *api_key_env = None;
+        }
+        let mut messages = json!([{"role":"system","content":"Use tools"},{"role":"user","content":"Add 19 and 23"}]);
+        for round in 0..2 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let state = state.clone();
+            let target = target.clone();
+            let key = keys.reserve_turn(&issued.key.id, KeyScope::Api).unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut socket).await.unwrap().unwrap();
+                tools::proxy(
+                    &mut socket,
+                    &state,
+                    &key,
+                    &target,
+                    serde_json::from_slice(&req.body).unwrap(),
+                )
+                .await;
+            });
+            let text = reqwest::Client::new().post(format!("http://{addr}/v1/chat/completions")).json(&json!({"messages":messages,"tools":[tool()],"reasoning_effort":"high","stream":streaming})).send().await.unwrap().text().await.unwrap();
+            let (path, request) = rx.recv().await.unwrap();
+            assert_eq!(
+                path, "/v1/responses",
+                "OpenAI must use Responses, not Chat Completions"
+            );
+            assert_eq!(request["reasoning"]["effort"], "high");
+            assert_eq!(request["store"], false);
+            assert_eq!(request["tools"][0]["name"], "add");
+            assert_eq!(request["tools"][0]["strict"], false);
+            assert!(request.get("messages").is_none());
+            let message = if streaming {
+                assert!(text.contains("data: [DONE]"), "{text}");
+                let frames: Vec<Value> = text
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("data: "))
+                    .filter_map(|s| serde_json::from_str(s).ok())
+                    .collect();
+                assert!(
+                    frames.iter().any(|f| f["choices"][0]["finish_reason"]
+                        == if round == 0 { "tool_calls" } else { "stop" }),
+                    "{text}"
+                );
+                assert!(frames.iter().any(|f| f["usage"]["prompt_tokens"] == 10));
+                let mut message = json!({"role":"assistant","content":"","tool_calls":[]});
+                for f in frames {
+                    let d = &f["choices"][0]["delta"];
+                    if let Some(s) = d["content"].as_str() {
+                        message["content"] =
+                            json!(format!("{}{s}", message["content"].as_str().unwrap()));
+                    }
+                    for call in d["tool_calls"].as_array().into_iter().flatten() {
+                        if message["tool_calls"].as_array().unwrap().is_empty() {
+                            message["tool_calls"] = json!([{"function":{"arguments":""}}]);
+                        }
+                        for name in ["id", "type", "extra_content"] {
+                            if let Some(v) = call.get(name) {
+                                message["tool_calls"][0][name] = v.clone();
+                            }
+                        }
+                        if let Some(n) = call["function"].get("name") {
+                            message["tool_calls"][0]["function"]["name"] = n.clone();
+                        }
+                        if let Some(a) = call["function"]["arguments"].as_str() {
+                            message["tool_calls"][0]["function"]["arguments"] = json!(format!(
+                                "{}{a}",
+                                message["tool_calls"][0]["function"]["arguments"]
+                                    .as_str()
+                                    .unwrap()
+                            ));
+                        }
+                    }
+                }
+                message
+            } else {
+                let v: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 3);
+                v["choices"][0]["message"].clone()
+            };
+            if round == 0 {
+                assert_eq!(message["tool_calls"][0]["id"], "call_fixture");
+                assert_eq!(
+                    message["tool_calls"][0]["function"]["arguments"],
+                    "{\"a\":19,\"b\":23}"
+                );
+                messages.as_array_mut().unwrap().push(message);
+                messages
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"role":"tool","tool_call_id":"call_fixture","content":"42"}));
+            } else {
+                assert_eq!(message["content"], "42");
+                let input = request["input"].as_array().unwrap();
+                assert!(input.iter().any(
+                    |i| i["type"] == "reasoning" && i["encrypted_content"] == "opaque-fixture"
+                ));
+                assert!(input
+                    .iter()
+                    .any(|i| i["type"] == "function_call" && i["call_id"] == "call_fixture"));
+                assert!(input.iter().any(|i| i["type"] == "function_call_output"
+                    && i["call_id"] == "call_fixture"
+                    && i["output"] == "42"));
+            }
+            server.await.unwrap();
+        }
+        assert_eq!(keys.list()[0].spend_micros_month, 2000);
+        provider.await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn openai_responses_bills_rejected_partial_calls_without_exposing_them() {
+    for failed in [false, true] {
+        for streaming in [false, true] {
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_addr = upstream.local_addr().unwrap();
+            let provider = tokio::spawn(async move {
+                let (mut socket, _) = upstream.accept().await.unwrap();
+                read_http_request(&mut socket).await.unwrap().unwrap();
+                let mut response = json!({"id":"resp_partial","model":"gpt-6.1-sol","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","call_id":"call_partial","name":"write_file","arguments":"{"}],"usage":{"input_tokens":10,"output_tokens":5},"cost":{"usd":0.001}});
+                if failed {
+                    response["status"] = json!("failed");
+                    response["error"] = json!({"type":"provider_error","code":"fixture_provider_failure","message":"Fixture provider failure"});
+                }
+                if streaming {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
+                    write_sse_data(&mut socket, &json!({"type":if failed {"response.failed"} else {"response.incomplete"},"response":response}).to_string()).await.unwrap();
+                } else {
+                    write_json_response(&mut socket, 200, &response).await;
+                }
+            });
+            let dir =
+                std::env::temp_dir().join(format!("responses-partial-{}", identity::random_hex(8)));
+            std::fs::create_dir_all(&dir).unwrap();
+            let keys = Arc::new(GatewayKeys::load(&dir).unwrap());
+            let issued = keys
+                .issue(crate::gateway_keys::IssueSpec {
+                    label: "partial".into(),
+                    scopes: vec![KeyScope::Api],
+                    allow_mcp: false,
+                    max_turns_per_day: Some(2),
+                    max_usd_micros_per_month: Some(2000),
+                })
+                .unwrap();
+            let state = GatewayHttpState::new(dir.clone(), keys.clone());
+            let mut target = resolve_model_target(&dir, "openai/gpt-6.1-sol", None).unwrap();
+            if let Backend::OpenAiCompatible {
+                base_url,
+                api_key_env,
+                ..
+            } = &mut target.config.backend
+            {
+                *base_url = format!("http://{upstream_addr}/v1");
+                *api_key_env = None;
+            }
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let key = keys.reserve_turn(&issued.key.id, KeyScope::Api).unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut socket).await.unwrap().unwrap();
+                tools::proxy(
+                    &mut socket,
+                    &state,
+                    &key,
+                    &target,
+                    serde_json::from_slice(&req.body).unwrap(),
+                )
+                .await;
+            });
+            let response = reqwest::Client::new().post(format!("http://{addr}/v1/chat/completions")).json(&json!({"messages":[{"role":"user","content":"write a file"}],"tools":[tool()],"stream":streaming})).send().await.unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                if streaming { 200 } else { 502 }
+            );
+            let text = response.text().await.unwrap();
+            assert!(text.contains("error"), "{text}");
+            if failed {
+                assert!(
+                    text.contains("fixture_provider_failure"),
+                    "provider diagnostics must survive: {text}"
+                );
+            }
+            assert!(
+                !text.contains("call_partial"),
+                "partial tool call must not reach the client"
+            );
+            server.await.unwrap();
+            provider.await.unwrap();
+            assert_eq!(
+                keys.list()[0].spend_micros_month,
+                1000,
+                "incomplete provider usage must still be billed"
+            );
+            assert_eq!(
+                keys.list()[0].turns_today,
+                1,
+                "a consumed provider turn must not be refunded"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
 #[tokio::test]
 async fn api_tool_loop_preserves_wire_messages_and_finish_reasons() {
     for streaming in [false, true] {

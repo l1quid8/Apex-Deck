@@ -29,6 +29,7 @@ use crate::identity;
 
 mod codex;
 mod tools;
+mod responses;
 mod emulation;
 #[cfg(test)]
 mod tool_tests;
