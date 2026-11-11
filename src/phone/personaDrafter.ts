@@ -19,7 +19,7 @@ import { TOOL_LABELS } from "../phoneRules.ts";
 
 export interface WriterOption {
   key: string; // "agent:claude_code" | "saved:<id>"
-  label: string; // "Claude Code", "Scout (saved)"
+  label: string; // "Claude Code", "Scout" (the picker groups saved agents under their own heading)
   own: boolean;
 }
 
@@ -105,11 +105,16 @@ export function createPersonaDrafter(opts: {
         const ownTool = own.backend.kind === "agent" ? own.backend.tool : "";
         const ownKey = ownTool ? `agent:${ownTool}` : "";
 
-        return writers.map((w) => ({
-          key: w.key,
-          label: w.label,
-          own: w.key === ownKey || (ownKey === "" && w.key === `saved:${own.id}`),
-        }));
+        const names = new Map(opts.profiles().map((p) => [`saved:${p.id}`, p.display_name]));
+        return writers
+          // A coding-AI agent's own saved row is the same writer as its tool's row; an API agent keeps
+          // its own row, since that row is the only way to write with its key.
+          .filter((w) => !(ownKey && w.key === `saved:${own.id}`))
+          .map((w) => ({
+            key: w.key,
+            label: names.get(w.key) || w.label,
+            own: w.key === ownKey || (ownKey === "" && w.key === `saved:${own.id}`),
+          }));
       } catch {
         return [];
       }

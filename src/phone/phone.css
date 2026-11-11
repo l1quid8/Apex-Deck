@@ -292,7 +292,7 @@
 /* iOS keeps :hover on the last button touched, and the Mac themes fill a hovered button, so a tapped tab, row or
    heading stayed grey. Touch has no hover, so these keep their own background (a press still shows). */
 @media (hover: none) {
-  .ph-app :is(.ph-tabs button, .ph-list > button, .ph-tl-thread, .ph-tl-p, .ph-tl-archived, .ph-back, .ph-head .ph-icon, .ph-nav .ph-icon, .ph-nav-title, .ph-section-action, .ph-list-add, .ph-term-resume):hover:not(:active) { background-color: transparent; }
+  .ph-app :is(.ph-tabs button, .ph-list > button, .ph-tl-thread, .ph-tl-p, .ph-tl-archived, .ph-back, .ph-head .ph-icon, .ph-nav .ph-icon, .ph-nav-title, .ph-section-action, .ph-list-add, .ph-term-resume, .ph-ai, .ph-ai-link):hover:not(:active) { background-color: transparent; }
 }
 
 .ph-empty { padding: 44px 10px; text-align: center; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 4px; }

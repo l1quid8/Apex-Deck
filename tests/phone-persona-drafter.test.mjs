@@ -45,7 +45,11 @@ test("writerOptions order: coding AIs turned on first, then saved agents, no pic
   assert.equal(list[0].key, "agent:claude_code");
   assert.ok(!list.some((w) => w.key === "saved:picture"), "media agents left out");
   const savedKeys = list.filter((w) => w.key.startsWith("saved:")).map((w) => w.key);
-  assert.deepEqual(savedKeys, ["saved:scout", "saved:api-one", "saved:reviewer"]);
+  assert.deepEqual(savedKeys, ["saved:scout", "saved:api-one"], "Reviewer's own saved row is the same writer as Claude Code");
+  assert.equal(list.find((w) => w.key === "saved:scout").label, "Scout", "the picker's group heading says saved; the row doesn't");
+  const api = makeProfiles()[1];
+  const apiList = await drafter.writerOptions(api);
+  assert.ok(apiList.find((w) => w.key === "saved:api-one")?.own, "an API agent starts on its own saved row");
 });
 
 test("writerOptions removes turned-off providers", async () => {
