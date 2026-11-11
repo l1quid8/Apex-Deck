@@ -129,6 +129,8 @@ import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
 import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText } from "../threadCopy";
+import { WorktreesPane, copyNeedsYou, useWorktrees } from "./WorktreesPane";
+import { canManageWorktrees, newBelow } from "./worktrees";
 import { copyText } from "../copyText";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
@@ -136,7 +138,7 @@ import { planKey, planOf } from "../plans";
 import type { Access, AgentTool, ApiModel, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, ResetCredits, RoomEvent, RoomOptions, RoomSnapshot, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
-  ArrowLeft, ArrowUp, Check, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, Globe, Laptop, Lock, MessageSquare,
+  ArrowDown, ArrowLeft, ArrowUp, Check, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, GitBranch, Globe, Laptop, Lock, MessageSquare,
   More, Paperclip, Plug, Plus, Settings, Terminal, X,
 } from "./icons";
 import { PhoneResets } from "./PhoneResets";
@@ -2420,6 +2422,14 @@ export function PhoneApp() {
   // still showing while another machine's thread loads can never be acted on as the new one — and a fast
   // swipe can never show one thread's messages under another thread's title.
   const openRoom = roomFits(room, openPane?.id ?? null, openHostId) ? room : null;
+  // The title bar's Worktrees pane: a project thread on a machine that gives this phone Full access to
+  // every thread (the Mac lists worktrees for nothing less). Read again whenever a reply finishes.
+  const [worktreesOpen, setWorktreesOpen] = useState(false);
+  useEffect(() => { setWorktreesOpen(false); }, [openId, openHostId]);
+  const worktreeHost = openPane && !openChat && !openWork && !viewingPending && !openPane.assistantTaskId && openWorkspace?.path ? phoneHost(openHostId) : null;
+  const worktreesShown = Boolean(worktreeHost && canManageWorktrees(worktreeHost.access()));
+  const worktreeState = useWorktrees(worktreeHost?.backend ?? null, openWorkspace?.path ?? "", openPane?.id ?? "", worktreesShown && openLink?.status === "online",
+    `${openRoom?.messages.length ?? 0}:${Object.keys(openRoom?.working ?? {}).length}`);
   const openQueue = openPane ? queued[queueKey(openHostId, openPane.id)] : undefined;
   const queuedRows = openQueue && openLink ? queuedViews(openQueue.items, Object.keys(openRoom?.working ?? {}), openQueue.paused, openQueue.lost,
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
@@ -2432,7 +2442,7 @@ export function PhoneApp() {
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null;
+  const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null || worktreesOpen;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const shownTab = tab === "machines" ? machinesReturn.current : tab;
   const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
@@ -2659,6 +2669,7 @@ export function PhoneApp() {
             onScrolled={(near) => stick(near)}
             onResized={(chat) => { if (stuckRef.current) chat.scrollTop = chat.scrollHeight; }}
             covered={covered}
+            worktrees={worktreesShown ? { needsYou: copyNeedsYou(worktreeState.listing), open: worktreesOpen, onOpen: () => setWorktreesOpen(true) } : undefined}
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => { if (openChat) setChatSheet({ kind: "menu" }); else if (openWork) setChatSheet({ kind: "work-menu", hostId: openWork.hostId, id: openWork.id }); else if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
             pins={openRoom ? openRoom.pins : []}
@@ -2926,6 +2937,11 @@ export function PhoneApp() {
             <button type="button" className="ph-wide" onClick={() => { void forkTo(openPane, askTarget); }}>Fork this thread<small>Copies the history. Nothing runs until you send.</small></button>
             <button type="button" className="ph-plain ph-wide" onClick={() => setAsk(null)}>Cancel</button>
           </Sheet>
+        )}
+        {worktreesOpen && worktreesShown && worktreeHost && openPane && openWorkspace && openLink && (
+          <WorktreesPane backend={worktreeHost.backend} root={openWorkspace.path} thread={openPane.id} threadTitle={openPane.title} project={openWorkspace.name} machine={openLink.name}
+            state={worktreeState} busyTurn={Object.keys(openRoom?.working ?? {}).length > 0} options={NEW_THREAD}
+            onClose={() => setWorktreesOpen(false)} onNotice={setNotice} />
         )}
         {agentSheet && (() => {
           // The agent this sheet changes. Gone from the list while the sheet was open means nothing to change.
@@ -3647,6 +3663,8 @@ function ThreadView(props: {
   goingBack: GoingBack | null; onGoingBack(next: GoingBack | null): void; onAnswerGoBack(always: boolean): void;
   /** Set for a talk-only chat: no folder, no files, and its own outbox that outlives the app. */
   chat?: ChatThreadExtras;
+  /** The branch icon left of ⋯ that opens the Worktrees pane; absent where the pane can't open. */
+  worktrees?: { needsYou: boolean; open: boolean; onOpen(): void };
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -3803,6 +3821,33 @@ function ThreadView(props: {
     box.scrollTop = at.offsetTop - kept.gap;
     restoredFor.current = placeKey;
   }, [placeKey, props.messages.length]);
+  // ---- Jump to the newest message ------------------------------------------------------------------
+  // More than a screen from the end, a round ↓ sits over the chat's bottom-right corner. Replies that land
+  // while you're up there widen it to say how many. It reads the same distance the thread uses to decide
+  // whether to follow new replies, and a tap hands following back to the thread.
+  const [far, setFar] = useState(false);
+  const [seenAt, setSeenAt] = useState<number | null>(null);
+  const lastSeq = props.messages.at(-1)?.seq ?? 0;
+  const lastSeqRef = useRef(lastSeq);
+  lastSeqRef.current = lastSeq;
+  const measure = (box: HTMLElement) => {
+    const gap = box.scrollHeight - box.scrollTop - box.clientHeight;
+    setFar(gap > box.clientHeight);
+    if (gap < 80) setSeenAt(null);
+    else setSeenAt((seen) => seen ?? lastSeqRef.current);
+  };
+  useEffect(() => { setFar(false); setSeenAt(null); }, [placeKey]);
+  // A thread that opens away from the end, or grows while you read, fires no scroll of its own.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => { if (chatRef.current) measure(chatRef.current); });
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placeKey, props.messages.length]);
+  const fresh = newBelow(props.messages, seenAt);
+  const jump = () => {
+    props.endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    props.onScrolled(true);
+  };
   // The title's second line: the project always shows in full, and the machine shortens into the room left.
   // When not even 5.5em is left, the machine drops out; tapping the title still names it in "Where this runs".
   const contextRef = useRef<HTMLParagraphElement>(null);
@@ -3943,6 +3988,11 @@ function ThreadView(props: {
             {props.participants.length > 3 && <b>+{props.participants.length - 3}</b>}
           </button>
         )}
+        {props.worktrees && !props.draftThread && (
+          <button type="button" className={`ph-icon ph-wt-btn${props.worktrees.open ? " on" : ""}`} aria-label={`Worktrees${props.worktrees.needsYou ? ". An agent copy needs you" : ""}`} onClick={() => { inputRef.current?.blur(); props.worktrees?.onOpen(); }}>
+            <GitBranch size={20} />{props.worktrees.needsYou && <i className="ph-wt-badge" />}
+          </button>
+        )}
         {props.draftThread
           ? <span className="ph-nav-spacer" />
           : <button type="button" className="ph-icon" aria-label="Thread actions" onClick={props.onMenu}><More size={20} /></button>}
@@ -4005,7 +4055,7 @@ function ThreadView(props: {
       )}
       <div className={`ph-swap${dragX !== 0 ? " dragging" : ""}`} style={dragX !== 0 ? { transform: `translateX(${dragX / 4}px)` } : undefined}
         onPointerDown={swipeDown} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeDrop} onLostPointerCapture={(event) => { if (swipeLostCapture(event)) swipeDrop(); }}>
-      <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; rememberPlace(box); props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
+      <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; rememberPlace(box); measure(box); props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {!paused && props.link.mismatch && (
           <div className="ph-banner warn" role="status">
@@ -4165,6 +4215,12 @@ function ThreadView(props: {
         ))}
         <div ref={props.endRef} />
       </main>
+        {far && dragX === 0 && (
+          <button type="button" className={`ph-jump${fresh > 0 ? " fresh" : ""}`} inert={props.covered} onClick={jump}
+            aria-label={fresh > 0 ? `Jump to the newest message. ${fresh} new ${fresh === 1 ? "reply" : "replies"}` : "Jump to the newest message"}>
+            <ArrowDown size={fresh > 0 ? 16 : 20} />{fresh > 0 && <span>{fresh} new</span>}
+          </button>
+        )}
         {/* The thread on that side, while the finger is down: its name, where it lives and what it is
             doing. Not read out — the title line says "3 of 9" and the thread speaks for itself once open. */}
         {dragX !== 0 && (

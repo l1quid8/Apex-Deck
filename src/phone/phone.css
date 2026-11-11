@@ -292,7 +292,7 @@
 /* iOS keeps :hover on the last button touched, and the Mac themes fill a hovered button, so a tapped tab, row or
    heading stayed grey. Touch has no hover, so these keep their own background (a press still shows). */
 @media (hover: none) {
-  .ph-app :is(.ph-tabs button, .ph-list > button, .ph-tl-thread, .ph-tl-p, .ph-tl-archived, .ph-back, .ph-head .ph-icon, .ph-nav .ph-icon, .ph-nav-title, .ph-section-action, .ph-list-add, .ph-term-resume):hover:not(:active) { background-color: transparent; }
+  .ph-app :is(.ph-tabs button, .ph-list > button, .ph-tl-thread, .ph-tl-p, .ph-tl-archived, .ph-back, .ph-head .ph-icon, .ph-nav .ph-icon, .ph-nav-title, .ph-section-action, .ph-list-add, .ph-term-resume, .ph-wt-sheet-list > .ph-srow, .ph-wt-head .ph-icon, .ph-jump):hover:not(:active) { background-color: transparent; }
 }
 
 .ph-empty { padding: 44px 10px; text-align: center; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 4px; }
@@ -1440,3 +1440,53 @@
 .ph-compacted summary { text-align: center; line-height: 1.35; }
 .ph-compacted summary::before,
 .ph-compacted summary::after { min-width: 16px; }
+
+/* ---- A thread: jump to the newest message ---- */
+/* Over the chat's bottom-right corner, never over the message box. Widens to "1 new" when replies came in below. */
+.ph-app .ph-jump { position: absolute; right: 14px; bottom: 14px; z-index: 3; display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 44px; height: 44px; padding: 0; border-radius: 22px; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel-2) 92%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: var(--text); box-shadow: 0 6px 18px rgba(0, 0, 0, .55); animation: ph-fade 160ms ease-out; }
+.ph-app .ph-jump.fresh { width: auto; padding: 0 16px 0 13px; color: var(--mint); font-size: 14px; font-weight: 600; }
+
+/* ---- A thread: the Worktrees pane, in from the right ---- */
+.ph-app .ph-wt-btn { position: relative; color: var(--text); }
+.ph-app .ph-wt-btn.on { color: var(--mint); }
+.ph-wt-badge { position: absolute; top: 9px; right: 9px; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px var(--bg); }
+.ph-wt-back { position: absolute; inset: 0; z-index: 15; background: #0009; animation: ph-fade 160ms ease-out; }
+.ph-wt-pane { position: absolute; top: 0; right: 0; bottom: 0; z-index: 16; width: 86%; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); background: var(--bg); border-left: 1px solid var(--line); box-shadow: -18px 0 40px rgba(0, 0, 0, .5); touch-action: pan-y; transition: transform 200ms ease-out; animation: ph-wt-in 220ms cubic-bezier(.2, .8, .2, 1); }
+.ph-wt-pane.dragging { transition: none; }
+@keyframes ph-wt-in { from { transform: translateX(100%); } }
+.ph-wt-head { flex: none; display: flex; align-items: center; min-height: 52px; padding: 4px 4px 4px 20px; border-bottom: 1px solid var(--line); }
+.ph-wt-title { flex: 1; min-width: 0; }
+.ph-wt-title h3 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.3px; line-height: 1.25; }
+.ph-wt-title .ph-context { justify-content: flex-start; }
+.ph-wt-head .ph-icon { color: var(--muted); }
+.ph-wt-body { flex: 1; overflow: auto; overscroll-behavior: contain; padding: 0 16px calc(24px + env(safe-area-inset-bottom)); }
+.ph-wt-body > .ph-section:first-child, .ph-wt-body > .ph-wt-first { margin-top: 14px; }
+.ph-app .ph-wt-row.ph-srow { align-items: flex-start; }
+.ph-wt-row > svg { margin-top: 6px; flex: none; }
+.ph-list .ph-wt-dot { position: absolute; left: 7px; top: 17px; width: 8px; height: 8px; }
+.ph-wt-row strong { gap: 8px; min-width: 0; }
+.ph-list .ph-wt-row strong { font-size: 16px; }
+.ph-list .ph-wt-row small { font-size: 13px; }
+.ph-wt-row .ph-grow { min-width: 0; }
+.ph-wt-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-wt-tag { flex: none; font-style: normal; font-size: 12px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
+.ph-wt-tag.here { color: var(--mint); }
+.ph-app .ph-wt-warn { color: var(--amber); }
+.ph-app .ph-wt-add { display: inline-flex; align-items: center; gap: 4px; }
+.ph-app .ph-wt-clean.ph-list-add { padding-left: 4px; font-size: 15px; }
+.ph-list > .ph-wt-row.pressed { background: var(--panel-2) !important; }
+.ph-wt-sheet-list > .ph-srow:not(:disabled):active { background: var(--panel-2); }
+/* "Pathname copied" and "Now working in …" show over the pane, not under it. */
+.phone-frame:has(.ph-wt-pane) .ph-toast { z-index: 17; }
+.ph-wt-error { margin: 12px 4px; color: var(--red); font-size: 14px; line-height: 1.45; }
+/* Sheets opened from the pane sit over it, like every other phone sheet. */
+.ph-sheet-back.ph-wt-over { z-index: 30; }
+.ph-wt-sheet-body { overflow: auto; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+.ph-wt-sheet-list { border-top: 1px solid var(--line); }
+.ph-app .ph-wt-danger strong { color: var(--red); }
+.ph-app .ph-wt-cancel.ph-wide { background: var(--panel-2); font-weight: 600; }
+.ph-wt-sheet-body .ph-wt-error { margin: 10px 0 0; }
+/* 16px, or iOS zooms the page when the field is tapped. */
+.ph-wt-form .ph-label input { font-size: 16px; }
+.ph-wt-form .ph-label input.ph-wt-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+@media (prefers-reduced-motion: reduce) { .ph-wt-pane, .ph-wt-back, .ph-jump { animation: none; transition: none; } }
