@@ -6,7 +6,6 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
     ffi::c_void,
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -17,14 +16,15 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
-    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
     Storage::FileSystem::*,
-    System::{Diagnostics::Debug::CheckRemoteDebuggerPresent, Pipes::*, ProcessStatus::*, Threading::*},
+    System::{
+        Diagnostics::Debug::CheckRemoteDebuggerPresent, Pipes::*, ProcessStatus::*, Threading::*,
+    },
 };
 pub const PIPE: &str = r"\\.\pipe\ApexDeckProvenance-v1";
 pub const SYSTEM: &str = "S-1-5-18";
@@ -203,6 +203,31 @@ pub fn private_handle(file: &File) -> Result<(), String> {
     check_handle(file, true, false)
 }
 fn check_handle(file: &File, private: bool, ancestor: bool) -> Result<(), String> {
+    inspect_handle(file, private, ancestor, false).map(|_| ())
+}
+/// A per-service SID has exactly five 32-bit hash components. In particular,
+/// neither ALL SERVICES (S-1-5-80-0) nor ordinary user SIDs qualify.
+fn service_sid(sid: &str) -> bool {
+    let Some(hash) = sid.strip_prefix("S-1-5-80-") else {
+        return false;
+    };
+    let parts: Vec<_> = hash.split('-').collect();
+    parts.len() == 5
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_digit())
+                && part.parse::<u32>().is_ok()
+        })
+}
+/// Returns whether module acceptance also needs Authenticode verification.
+/// Service ownership/ACEs are permitted only for loaded code, never for keys,
+/// receipts, host locks or any of the other authority files.
+fn inspect_handle(
+    file: &File,
+    private: bool,
+    ancestor: bool,
+    module: bool,
+) -> Result<bool, String> {
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err("Authority reparse points are forbidden".into());
@@ -223,10 +248,19 @@ fn check_handle(file: &File, private: bool, ancestor: bool) -> Result<(), String
         )
     };
     let _allocation = Allocation(raw);
-    if result != 0 || dacl.is_null() || !trusted_sid(&sid_string(owner)?) {
-        return Err(
-            "Authority must be owned by SYSTEM or Administrators with a non-null ACL".into(),
-        );
+    if result != 0 {
+        return Err(format!(
+            "Cannot read owner/ACL: {}",
+            std::io::Error::from_raw_os_error(result as i32)
+        ));
+    }
+    if dacl.is_null() {
+        return Err("A non-null ACL is required".into());
+    }
+    let owner = sid_string(owner)?;
+    let mut needs_signature = module && !trusted_sid(&owner) && service_sid(&owner);
+    if !trusted_sid(&owner) && !needs_signature {
+        return Err(format!("Untrusted file owner: {owner}"));
     }
     for i in 0..unsafe { (*dacl).AceCount } {
         let mut ace = ptr::null_mut();
@@ -238,11 +272,17 @@ fn check_handle(file: &File, private: bool, ancestor: bool) -> Result<(), String
             continue;
         }
         // Deny entries are conservative. Unknown allow/object ACEs fail closed.
-        if header.AceType == 1 {
+        // ACCESS_DENIED, ACCESS_DENIED_OBJECT, ACCESS_DENIED_CALLBACK and
+        // ACCESS_DENIED_CALLBACK_OBJECT cannot grant access. Do not interpret
+        // unknown granting/object/callback entries as ordinary allows.
+        if header.AceType == 1 || (module && matches!(header.AceType, 6 | 10 | 12)) {
             continue;
         }
         if header.AceType != 0 {
-            return Err("Unsupported authority ACL entry".into());
+            return Err(format!(
+                "Unsupported granting ACL entry type {}",
+                header.AceType
+            ));
         }
         let allow = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
         let sid = sid_string(ptr::addr_of!(allow.SidStart).cast_mut().cast())?;
@@ -261,10 +301,17 @@ fn check_handle(file: &File, private: bool, ancestor: bool) -> Result<(), String
                 | FILE_DELETE_CHILD
         };
         if !trusted_sid(&sid) && (private || allow.Mask & dangerous != 0) {
-            return Err("Authority is writable by an untrusted principal".into());
+            if module && service_sid(&sid) {
+                needs_signature = true;
+            } else {
+                return Err(format!(
+                    "Writable by untrusted principal: {sid} (mask {:#x})",
+                    allow.Mask
+                ));
+            }
         }
     }
-    Ok(())
+    Ok(needs_signature)
 }
 pub fn protected_ancestry(path: &Path) -> Result<(), String> {
     for ancestor in path.ancestors() {
@@ -501,7 +548,9 @@ pub fn protect_process(pid: u32) -> Result<(), String> {
     let process = unsafe { OwnedHandle::from_raw_handle(raw) };
     let descriptor = descriptor(&process_sddl(&process_sid(process.as_raw_handle())?))?;
     let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
-    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) } == 0 {
+    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) }
+        == 0
+    {
         return Err(std::io::Error::last_os_error().to_string());
     }
     let result = unsafe {
@@ -561,7 +610,16 @@ fn modules(process: RawHandle) -> Result<Vec<String>, String> {
     let mut handles = vec![ptr::null_mut(); 4096];
     let mut used = 0;
     let size = (handles.len() * std::mem::size_of::<HMODULE>()) as u32;
-    if unsafe { EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut used, LIST_MODULES_ALL) } == 0 {
+    if unsafe {
+        EnumProcessModulesEx(
+            process,
+            handles.as_mut_ptr(),
+            size,
+            &mut used,
+            LIST_MODULES_ALL,
+        )
+    } == 0
+    {
         return Err(std::io::Error::last_os_error().to_string());
     }
     if used > size {
@@ -571,7 +629,9 @@ fn modules(process: RawHandle) -> Result<Vec<String>, String> {
     let mut names = Vec::with_capacity(handles.len());
     for module in handles {
         let mut buffer = vec![0u16; 32768];
-        let len = unsafe { GetModuleFileNameExW(process, module, buffer.as_mut_ptr(), buffer.len() as u32) };
+        let len = unsafe {
+            GetModuleFileNameExW(process, module, buffer.as_mut_ptr(), buffer.len() as u32)
+        };
         if len != 0 {
             names.push(String::from_utf16_lossy(&buffer[..len as usize]));
         } else if unsafe { GetLastError() } != ERROR_INVALID_HANDLE {
@@ -581,28 +641,120 @@ fn modules(process: RawHandle) -> Result<Vec<String>, String> {
     }
     Ok(names)
 }
-/// Whether a user could have replaced this file. Results are kept because a
-/// loaded file can't be swapped, and a pinned client loads hundreds of them.
+fn module_signature(file: &File, path: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Security::WinTrust::*;
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut info = WINTRUST_FILE_INFO {
+        cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
+        pcwszFilePath: name.as_ptr(),
+        hFile: file.as_raw_handle(),
+        ..Default::default()
+    };
+    let mut data = WINTRUST_DATA {
+        cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+        dwUIChoice: WTD_UI_NONE,
+        dwUnionChoice: WTD_CHOICE_FILE,
+        Anonymous: WINTRUST_DATA_0 { pFile: &mut info },
+        dwStateAction: WTD_STATEACTION_VERIFY,
+        dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | WTD_DISABLE_MD2_MD4,
+        ..Default::default()
+    };
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    // Verify the same locked handle whose ACL was inspected, not a second
+    // path lookup. Only zero is success; an unavailable trust/revocation chain
+    // fails closed. Always close provider state, including on verification errors.
+    let result = unsafe {
+        WinVerifyTrust(
+            INVALID_HANDLE_VALUE,
+            &mut action,
+            (&mut data as *mut WINTRUST_DATA).cast(),
+        )
+    };
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    unsafe {
+        WinVerifyTrust(
+            INVALID_HANDLE_VALUE,
+            &mut action,
+            (&mut data as *mut WINTRUST_DATA).cast(),
+        );
+    }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid or unverifiable module signature (WinVerifyTrust {:#010x})",
+            result as u32
+        ))
+    }
+}
+/// No path cache: a loaded image can be renamed and another file can occupy
+/// its path. Recheck ACLs on every approval and hold each ancestor against
+/// rename while checking its child. This also refuses all reparse points.
+fn verify_module(module: &str) -> Result<(), String> {
+    use std::path::{Component, Prefix};
+    let path = Path::new(module);
+    if !path.is_absolute()
+        || path.components().any(|part| match part {
+            Component::ParentDir | Component::CurDir => true,
+            Component::Prefix(prefix) => {
+                !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+            }
+            _ => false,
+        })
+    {
+        return Err("Module needs an absolute local disk path".into());
+    }
+    let mut pinned = Vec::new();
+    let mut needs_signature = false;
+    let ancestors: Vec<_> = path.ancestors().collect();
+    for entry in ancestors.into_iter().rev() {
+        let directory = entry != path;
+        let handle = OpenOptions::new()
+            .read(true)
+            // Directories may be used concurrently; neither they nor the DLL
+            // may be renamed during verification. Deny writes to the DLL too.
+            .share_mode(if directory {
+                FILE_SHARE_READ | FILE_SHARE_WRITE
+            } else {
+                FILE_SHARE_READ
+            })
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(entry)
+            .map_err(|e| format!("Cannot pin {}: {e}", entry.display()))?;
+        needs_signature |= inspect_handle(&handle, false, directory, true).map_err(|e| {
+            format!(
+                "{} {}: {e}",
+                if directory {
+                    "Unsafe ancestor"
+                } else {
+                    "Unsafe module"
+                },
+                entry.display()
+            )
+        })?;
+        pinned.push(handle);
+    }
+    if needs_signature {
+        module_signature(pinned.last().ok_or("Missing module handle")?, path)?;
+    }
+    Ok(())
+}
+#[cfg(test)]
 fn module_protected(module: &str) -> bool {
-    static CHECKED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let checked = CHECKED.get_or_init(Default::default);
-    if checked.lock().is_ok_and(|known| known.contains(module)) {
-        return true;
-    }
-    let safe = File::open(module).is_ok_and(|file| protected_handle(&file).is_ok());
-    if safe {
-        if let Ok(mut known) = checked.lock() {
-            known.insert(module.to_owned());
-        }
-    }
-    safe
+    verify_module(module).is_ok()
 }
 /// Refuse a pinned client that shows signs of tampering: not closed to other
 /// programs, being debugged, or running code from a file a user could replace.
 /// Code injected without a file leaves none of these, so this narrows the attack
 /// rather than ending it; see docs/security/provenance-boundary.md.
 pub fn peer_intact(pid: u32) -> Result<(), String> {
-    let raw = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | READ_CONTROL, 0, pid) };
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | READ_CONTROL,
+            0,
+            pid,
+        )
+    };
     if raw.is_null() {
         return Err(std::io::Error::last_os_error().to_string());
     }
@@ -611,13 +763,13 @@ pub fn peer_intact(pid: u32) -> Result<(), String> {
         return Err("Apex Deck isn't protected from other programs. Restart it.".into());
     }
     let mut debugged = 0;
-    if unsafe { CheckRemoteDebuggerPresent(process.as_raw_handle(), &mut debugged) } == 0 || debugged != 0 {
+    if unsafe { CheckRemoteDebuggerPresent(process.as_raw_handle(), &mut debugged) } == 0
+        || debugged != 0
+    {
         return Err("Apex Deck is being debugged, so it can't approve commands.".into());
     }
     for module in modules(process.as_raw_handle())? {
-        if !module_protected(&module) {
-            return Err(format!("Apex Deck has outside code loaded, so it can't approve commands: {module}"));
-        }
+        verify_module(&module).map_err(|reason| format!("Apex Deck can't approve commands because a loaded module failed its safety check: {module}: {reason}"))?;
     }
     Ok(())
 }
@@ -707,7 +859,10 @@ mod tests {
     #[test]
     #[ignore = "requires an elevated Windows token; run by installer CI"]
     fn system_code_is_protected_and_a_users_file_is_not() {
-        assert!(module_protected(&format!("{}\\System32\\ntdll.dll", std::env::var("SystemRoot").unwrap())));
+        assert!(module_protected(&format!(
+            "{}\\System32\\ntdll.dll",
+            std::env::var("SystemRoot").unwrap()
+        )));
         let file = std::env::temp_dir().join(format!("apex-module-{}.dll", std::process::id()));
         std::fs::write(&file, b"not really code").unwrap();
         assert!(!module_protected(file.to_str().unwrap()));
