@@ -34,6 +34,7 @@ test("writerOptions order: coding AIs turned on first, then saved agents, no pic
     profiles: () => profiles,
     disabledProviders: () => [],
     editingId: null,
+    machine: "Test Mac",
   });
 
   const own = { id: "reviewer", display_name: "Reviewer", backend: { kind: "agent", tool: "claude_code", model: null }, persona: "", access: "read", effort: null };
@@ -55,6 +56,7 @@ test("writerOptions removes turned-off providers", async () => {
     profiles: () => profiles,
     disabledProviders: () => ["codex"],
     editingId: null,
+    machine: "Test Mac",
   });
   const own = { id: "x", display_name: "X", backend: { kind: "agent", tool: "claude_code", model: null }, persona: "", access: "read", effort: null };
   const list = await drafter.writerOptions(own);
@@ -70,6 +72,7 @@ test("draftPersona blank idea never reaches Mac", async () => {
     profiles: () => makeProfiles(),
     disabledProviders: () => [],
     editingId: null,
+    machine: "Test Mac",
   });
   const res = await drafter.draftPersona({ writer: "agent:claude_code", idea: "   ", name: undefined });
   assert.ok("error" in res);
@@ -84,6 +87,7 @@ test("draftPersona name dropped when request had one, and taken leaves out editi
     profiles: () => makeProfiles(),
     disabledProviders: () => [],
     editingId: "reviewer",
+    machine: "Test Mac",
   });
   await drafter.writerOptions({ id: "reviewer", display_name: "Reviewer", backend: { kind: "agent", tool: "claude_code", model: null }, persona: "", access: "read", effort: null });
 
@@ -101,6 +105,7 @@ test("draftPersona returns name when request had none", async () => {
     profiles: () => makeProfiles(),
     disabledProviders: () => [],
     editingId: null,
+    machine: "Test Mac",
   });
   await drafter.writerOptions({ id: "x", display_name: "X", backend: { kind: "agent", tool: "claude_code", model: null }, persona: "", access: "read", effort: null });
   const res = await drafter.draftPersona({ writer: "agent:claude_code", idea: "something" });
@@ -122,6 +127,7 @@ test("cancel and newer call make older resolve empty error (never rejects)", asy
     profiles: () => makeProfiles(),
     disabledProviders: () => [],
     editingId: null,
+    machine: "Test Mac",
   });
   await drafter.writerOptions({ id: "x", display_name: "X", backend: { kind: "agent", tool: "claude_code", model: null }, persona: "", access: "read", effort: null });
 
@@ -145,6 +151,7 @@ test("cancel and newer call make older resolve empty error (never rejects)", asy
     profiles: () => makeProfiles(),
     disabledProviders: () => [],
     editingId: null,
+    machine: "Test Mac",
   });
   await drafter2.writerOptions({ id: "x", display_name: "X", backend: { kind: "agent", tool: "claude_code", model: null }, persona: "", access: "read", effort: null });
   const p3 = drafter2.draftPersona({ writer: "agent:claude_code", idea: "third" });
@@ -159,6 +166,7 @@ test("cancel and newer call make older resolve empty error (never rejects)", asy
     profiles: () => [],
     disabledProviders: () => [],
     editingId: null,
+    machine: "Test Mac",
   });
   const off = await drafterOffline.draftPersona({ writer: "agent:claude_code", idea: "hi" });
   assert.ok("error" in off && off.error.length > 0);
@@ -171,6 +179,7 @@ test("writerOptions names each coding AI as the Mac reports it, and leaves out t
     profiles: () => [],
     disabledProviders: () => [],
     editingId: null,
+    machine: "Test Mac",
   });
   const own = { id: "x", display_name: "X", backend: { kind: "agent", tool: "muse", model: null }, persona: "", access: "read", effort: null };
   const list = await drafter.writerOptions(own);

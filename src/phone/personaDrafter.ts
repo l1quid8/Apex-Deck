@@ -26,6 +26,8 @@ export interface WriterOption {
 export type DraftReply = { name?: string; brief: string } | { error: string };
 
 export interface PersonaDrafter {
+  /** The Mac's name, for "Codex on <Mac> is writing." */
+  readonly machine: string;
   writerOptions(own: ParticipantConfig): Promise<WriterOption[]>;
   draftPersona(req: { writer: string; idea: string; name?: string }): Promise<DraftReply>;
   cancelDraft(): void;
@@ -58,6 +60,7 @@ export function createPersonaDrafter(opts: {
   profiles: () => ParticipantConfig[];
   disabledProviders: () => readonly string[];
   editingId: string | null;
+  machine: string;
 }): PersonaDrafter {
   let latest = 0;
   let lastBackends: BackendRow[] | null = null;
@@ -95,6 +98,7 @@ export function createPersonaDrafter(opts: {
   };
 
   return {
+    machine: opts.machine,
     async writerOptions(own: ParticipantConfig): Promise<WriterOption[]> {
       try {
         const writers = await ensureWriters();

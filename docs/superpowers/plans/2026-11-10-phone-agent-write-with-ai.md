@@ -20,6 +20,8 @@ export type DraftReply =
   | { error: string };                // "" = cancelled (show nothing); otherwise one plain sentence for the amber line
 
 export interface PersonaDrafter {
+  /** The Mac's name, for step 3's "Codex on <Mac> is writing." (added in step 3, 2026-11-10) */
+  readonly machine: string;
   /** Coding AIs turned on on that Mac first, then saved agents. Never rejects: [] when the Mac can't say. */
   writerOptions(own: ParticipantConfig): Promise<WriterOption[]>;
   /** One request at a time. Never rejects. A newer call or cancelDraft() makes an older one resolve { error: "" }. */

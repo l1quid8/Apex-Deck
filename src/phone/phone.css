@@ -1440,3 +1440,22 @@
 .ph-compacted summary { text-align: center; line-height: 1.35; }
 .ph-compacted summary::before,
 .ph-compacted summary::after { min-width: 16px; }
+
+/* Agent editor: ✨ Write with AI on the Brief box (mockups/phone-agent-write-with-ai-v2.html). */
+.ph-brief-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; }
+.ph-app .ph-ai { font-size: 14px; font-weight: 600; padding: 6px 2px 6px 10px; min-height: 36px; }
+.ph-app .ph-ai:disabled { color: var(--muted); opacity: .6; }
+.ph-ai-busy { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.ph-ai-busy .ph-dot { margin: 0; }
+.ph-app .ph-ai-link { font-size: 13px; font-weight: 600; padding: 4px 2px; min-height: 0; }
+.ph-app textarea.ph-ai-dim { opacity: .55; }
+.ph-app textarea.ph-ai-fresh { border-color: color-mix(in srgb, var(--mint) 45%, var(--line)); line-height: 1.45; }
+.ph-writer { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 13px; color: var(--muted); }
+/* The pill is drawn; a see-through native select on top opens iOS's own list. */
+.ph-pick { position: relative; display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); font-weight: 600; font-size: 13px; min-height: 30px; background: color-mix(in srgb, var(--panel) 70%, #000); }
+.ph-pick:focus-within { border-color: color-mix(in srgb, var(--mint) 55%, var(--line)); }
+.ph-pick .ph-chev { color: var(--muted); font-size: 13px; line-height: 1; transform: translateY(-2px); }
+.ph-pick.ph-off { opacity: .5; }
+.ph-app .ph-pick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; font-size: 16px; min-height: 0; margin: 0; padding: 0; border: 0; }
+.ph-label small.ph-ai-done { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 10px; }
+.ph-ai-acts { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }

@@ -67,6 +67,7 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
         profiles,
         disabledProviders: disabledProviders ?? (() => []),
         editingId,
+        machine: machine.name,
       }),
   };
 }
