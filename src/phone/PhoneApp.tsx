@@ -669,6 +669,14 @@ export function PhoneApp() {
   });
   const mac = links.find((link) => link.kind === "mac");
   const macHost = hosts.find((host) => host.machine.kind === "mac") ?? null;
+  /** One persona writer per open agent sheet, so Cancel and the writer list survive re-renders. */
+  const agentSheetOpen = agentSheet !== null;
+  const agentSheetId = agentSheet?.id ?? null;
+  const personaDrafter = useMemo(() => (macHost && agentSheetOpen ? macHost.personaDrafter(
+    () => sessionRef.current?.profiles ?? [],
+    agentSheetId,
+    () => sessionRef.current?.disabledProviders ?? [],
+  ) : undefined), [macHost, agentSheetOpen, agentSheetId]);
   /** A thread is saved on the Mac and runs on its machine; starting one needs Full on both. */
   const newAllowed = canSeeNewThread(macHost?.access());
   const canStartOn = (hostId: string) => newAllowed && canSeeNewThread(hosts.find((host) => host.machine.id === hostId)?.access());
@@ -3091,6 +3099,7 @@ export function PhoneApp() {
                 others={(session?.profiles ?? []).filter((profile) => profile.id !== agentSheet.id)}
                 templates={editing ? null : agentTemplates} templatesProblem={agentTemplatesProblem}
                 saveProblem={agentSaveProblem} saving={agentSaving}
+                drafter={personaDrafter}
                 onSave={(config) => { void saveAgent(config); }}
                 onDelete={() => { if (editing) void deleteAgent(editing.id); }} />
             </Sheet>

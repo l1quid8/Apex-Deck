@@ -386,7 +386,8 @@ export function tokenWords(use: { input: number; output: number; turns: number }
   return `${shortCount(use.input)} in · ${shortCount(use.output)} out · ${use.turns === 1 ? "1 turn" : `${use.turns} turns`} in this thread`;
 }
 
-const TOOL_LABELS: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Antigravity", grok: "Grok", muse: "Muse Code" };
+/** What the phone calls each coding AI. */
+export const TOOL_LABELS: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Antigravity", grok: "Grok", muse: "Muse Code" };
 
 /** The models a bot can pick on the phone, as on the desktop: Default and four first, the rest behind More models. */
 export function modelChoices(tool: AgentTool, reported: ModelChoice[]): { shown: ModelChoice[]; extra: ModelChoice[]; groups: ModelGroup[] } {

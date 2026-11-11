@@ -13,6 +13,9 @@ import { hostConnectionStore, type HostConnectionStore } from "./hostConnections
 import { guardPhoneCommands } from "./phone/commandGuard.ts";
 import { isPaired, type Machine, type RemoteAccess } from "./phoneRules.ts";
 
+import type { ParticipantConfig } from "./types.ts";
+import { createPersonaDrafter, type PersonaDrafter } from "./phone/personaDrafter.ts";
+
 export interface PhoneHost {
   machine: Machine;
   voice: ServerVoiceLink;
@@ -25,6 +28,11 @@ export interface PhoneHost {
   /** Ask the machine for any answer within `ms`; a quiet link is dropped and dialed again. */
   check(ms: number): Promise<"answered" | "replaced" | "offline">;
   close(): void;
+  personaDrafter(
+    profiles: () => ParticipantConfig[],
+    editingId: string | null,
+    disabledProviders?: () => readonly string[],
+  ): PersonaDrafter;
 }
 
 /** `onWelcome` hears each welcome, for the addresses a paired machine sends with it. */
@@ -55,5 +63,14 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
     start: () => client.start(),
     check: (ms) => client.check(ms),
     close: () => client.close(),
+    personaDrafter: (profiles, editingId, disabledProviders) =>
+      createPersonaDrafter({
+        call: (cmd, args) => backend.call(cmd, args),
+        personaDraft: (writer, idea, taken) => backend.personaDraft(writer, idea, taken),
+        profiles,
+        disabledProviders: disabledProviders ?? (() => []),
+        editingId,
+        machine: machine.name,
+      }),
   };
 }
