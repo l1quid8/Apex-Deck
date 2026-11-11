@@ -51,6 +51,11 @@ mac:
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  # scripts/package-mac.mjs signs the CLI with its own identifier before this
+  # runs. Re-signing it here drops that identifier back to "apex", which fails
+  # the installed bundle check and the provenance peer requirement.
+  signIgnore:
+    - "Contents/Resources/bin/apex$"
   extraResources:
     - from: target/release/apex-daemon
       to: bin/apex-daemon

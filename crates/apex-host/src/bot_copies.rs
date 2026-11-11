@@ -187,20 +187,17 @@ pub fn snapshot_tree_and_id(project_data: &Path, root: &Path) -> Result<(String,
         &["write-tree"],
     )?;
 
+    // Deck's git ignores the user's global config, so the snapshot carries a
+    // fixed identity instead of depending on one being set in the project.
+    let mut args = vec![
+        "-c", "user.name=Deck", "-c", "user.email=deck@localhost",
+        "commit-tree", &tree, "-m", "Deck bot copy snapshot",
+    ];
     let head_commit = run_git(project_data, &root, &[], &["rev-parse", "--verify", "HEAD"]).ok();
-    let commit = if let Some(head) = head_commit {
-        run_git(project_data,
-            &root,
-            &[],
-            &["commit-tree", &tree, "-p", &head, "-m", "Deck bot copy snapshot"],
-        )?
-    } else {
-        run_git(project_data,
-            &root,
-            &[],
-            &["commit-tree", &tree, "-m", "Deck bot copy snapshot"],
-        )?
-    };
+    if let Some(head) = &head_commit {
+        args.extend(["-p", head]);
+    }
+    let commit = run_git(project_data, &root, &[], &args)?;
 
     Ok((commit, tree))
 }
@@ -1409,6 +1406,29 @@ mod tests {
         let data = temp.path().join("deck-data");
         fs::create_dir_all(&data).unwrap();
         (temp, root, data)
+    }
+
+    #[test]
+    fn copy_snapshot_works_with_no_git_identity_anywhere() {
+        let (_tmp, root, data) = init_repo("no-identity");
+        let run = |args: &[&str]| {
+            let out = crate::project_process::fixture_git_command()
+                .arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        // Deck's git already ignores the global and system config. Drop the
+        // repo's own identity too, and forbid git from guessing one from the
+        // hostname, so no name or email exists anywhere.
+        run(&["config", "--unset", "user.name"]);
+        run(&["config", "--unset", "user.email"]);
+        run(&["config", "user.useConfigOnly", "true"]);
+        fs::write(root.join("seed.txt"), "changed").unwrap();
+
+        let copy = create_copy(&root, &data, "thread", "bot")
+            .expect("bot copy must not need a git name or email");
+        assert_eq!(fs::read_to_string(copy.work.join("seed.txt")).unwrap(), "changed");
+        let author = run_git(&data, &root, &[], &["log", "-1", "--format=%an <%ae>", &copy.base]).unwrap();
+        assert_eq!(author, "Deck <deck@localhost>");
     }
 
     #[test]
