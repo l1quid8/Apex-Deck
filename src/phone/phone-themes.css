@@ -88,6 +88,29 @@
 .ph-appearance .appearance-settings .appearance-preview { pointer-events: none; }
 .ph-appearance .appearance-settings input[type="checkbox"] { width: 24px; height: 24px; }
 
+/* Desktop's style geometry, retaining the phone's gestures and full touch targets. */
+.ph-crew:not(.shut) { max-height: 90px; }
+.ph-crew-row.composer-bots { flex-wrap: nowrap; align-items: center; margin: 0; padding: 4px 6px 6px 10px; }
+.ph-crew-row.composer-bots .ph-crew-pill { min-height: 44px; min-width: 44px; }
+.ph-crew-row.composer-bots .ph-crew-chip.chip { height: auto; min-height: 28px; overflow: visible; }
+.ph-crew-row.composer-bots .ph-crew-chip.chip-name { font-size: 13px; font-weight: 500; }
+.ph-crew-row.composer-bots .chip:not(.to) { color: var(--muted); }
+.ph-crew-row.composer-bots .chip.to { color: var(--text); }
+.ph-crew-row.composer-bots[data-chip-style="classic"] .ph-crew-chip.chip-name { padding: 0 10px 0 4px; }
+.ph-crew-row.composer-bots[data-chip-style="stack"] { gap: 2px; }
+.ph-crew-row.composer-bots[data-chip-style="stack"] .ph-crew-chip { justify-content: center; }
+.ph-crew-row.composer-bots[data-chip-style="stack"] .ph-crew-plan { z-index: 2; }
+.ph-crew-row.composer-bots[data-chip-style="tab"] .chip { border-top: 1px solid var(--line); }
+.ph-crew-row.composer-bots[data-chip-style="terminal"] .chip-name { font-family: var(--font-mono, monospace); }
+.ph-crew-row.composer-bots .ph-crew-pill.asking .chip { outline: 2px solid var(--amber); outline-offset: 1px; }
+.ph-crew-row.composer-bots .ph-crew-pill:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.ph-chip-preview { margin: 12px 0 24px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.ph-chip-preview h3 { margin: 0 0 8px; }
+.ph-chip-preview > p { color: var(--muted); font-size: 14px; }
+.ph-chip-preview .chip-style-name { min-height: 44px; font-size: 14px; }
+.ph-chip-preview .chip-style-preview { padding: 12px 8px; }
+.ph-chip-preview .chip-style-preview .composer-bots { flex-wrap: wrap; }
+
 /* Keep solid controls and readable text when the system requests it, or the
    web view cannot composite backdrop-filter. The selected skin is retained. */
 @media (prefers-reduced-transparency: reduce) {

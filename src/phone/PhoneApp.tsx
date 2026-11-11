@@ -23,7 +23,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { botChangeGate, botSendGate } from "../phoneBots";
 import { AppearanceSettings } from "../AppearanceSettings";
 import { defaultAppearanceSettings, type AppearanceSettings as AppearanceState } from "../themes";
-import { applyPhoneTheme, loadPhoneAppearance, savePhoneAppearance } from "./appearance";
+import { applyPhoneTheme, loadPhoneAppearance, savePhoneAppearance, loadPhoneChipStyle, savePhoneChipStyle } from "./appearance";
+import { ChipStylePicker } from "../ChipStylePicker";
+import type { ChipStyle } from "../botChip";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ApexAgentSources } from "../ApexAgentSources";
@@ -101,7 +103,7 @@ import { PhoneArtifacts } from "./ArtifactSheet";
 import { LockRow } from "./LockRow";
 import { deleteThreadGate, deleteThreadWords, removeThreadFrom } from "./threadDelete";
 import { AgentSheet } from "./AgentSheet";
-import { removeAgent, saveAgentDraft, type AgentSave } from "./agentEdit";
+import { draftAgents, removeAgent, saveAgentDraft, type AgentSave } from "./agentEdit";
 import { createPhoneChatDelivery } from "./phoneChatDelivery";
 import { carriedEntry } from "../threadState";
 import { leftBehindWords, type ChatDeliveryStatus } from "../chatDelivery";
@@ -164,7 +166,7 @@ type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "s
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
 type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
-type Pending = { id: string; workspaceId: string };
+type Pending = { id: string; workspaceId: string; agents?: string[] };
 type Ask = { paneId: string; workspaceId: string };
 type SheetKind = "project" | "where" | "tools";
 /** A bot in the open thread, with the pattern and colour it has on the desktop. */
@@ -205,7 +207,7 @@ type Room = {
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, renaming a thread, or checking it for updates. */
-type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
+type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "draft-bots" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
   | { kind: "artifacts"; id: string } | { kind: "delete"; id: string } | { kind: "archived" } | { kind: "remove"; id: string };
 /** What a chat adds to the thread view: its banner and the messages its outbox still holds. */
 interface ChatThreadExtras {
@@ -325,6 +327,15 @@ export function PhoneApp() {
     try { return loadPhoneAppearance(localStorage); } catch { return defaultAppearanceSettings(); }
   });
   const [appearanceSaveError, setAppearanceSaveError] = useState(false);
+  const [chipStyle, setChipStyle] = useState<ChipStyle>(() => {
+    try { return loadPhoneChipStyle(localStorage); } catch { return "classic"; }
+  });
+  const [chipSaveError, setChipSaveError] = useState(false);
+  const changeChipStyle = (next: ChipStyle) => {
+    setChipStyle(next);
+    try { setChipSaveError(!savePhoneChipStyle(localStorage, next)); }
+    catch { setChipSaveError(true); }
+  };
   // Chats: each machine lists its own, and this phone keeps the merged list so it shows with a machine off.
   const [catalog, setCatalog] = useState<ChatCatalog>(() => { try { return readCatalog(localStorage.getItem(CHAT_CATALOG_KEY)); } catch { return readCatalog(null); } });
   useEffect(() => { try { localStorage.setItem(CHAT_CATALOG_KEY, JSON.stringify(catalog)); } catch { /* the list still shows from memory */ } }, [catalog]);
@@ -848,6 +859,7 @@ export function PhoneApp() {
   const openPane = pickOpenPane(panes, chatPlaces.panes, openId, openHost, sessionHost);
   const pendingWorkspace = workspaces.find((workspace) => workspace.id === pending?.workspaceId) ?? null;
   const viewingPending = pending !== null && openId === pending.id;
+  const pendingAgents = draftAgents(session?.profiles ?? [], pending?.agents);
   const openWorkspace = viewingPending ? pendingWorkspace : workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? chatPlaces.workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? null;
   /** The open chat's row, when the open thread is a chat. Null for every Work thread. */
   const openChat = openPane && isChatSpace(openPane.workspaceId) && openPane.hostId ? findRoom(chatView, openPane.hostId, openPane.id) : null;
@@ -1449,7 +1461,7 @@ export function PhoneApp() {
     const action = pressNewThread(pending ? { workspaceId: pending.workspaceId, text: draftFor(pending.id).text, files: draftFor(pending.id).files.length } : null, workspace.id);
     if (action === "blocked" && pending) { setNotice("Send or clear the draft you already started."); openThread(pending.id); return; }
     const id = action === "move" && pending ? pending.id : (pending?.workspaceId === workspace.id ? pending.id : `draft-${Date.now().toString(36)}`);
-    setPending({ id, workspaceId: workspace.id });
+    setPending({ id, workspaceId: workspace.id, agents: pending?.id === id ? pending.agents : undefined });
     if (!drafts[id]) setDraft(id, emptyDraft());
     setOpenHost(null);
     setOpenId(id);
@@ -1734,17 +1746,16 @@ export function PhoneApp() {
     stick(true);
     setSending(true);
     try {
-      const starter = (session?.profiles ?? [])[0] ?? null;
       let pane = openPane;
       const loaded = room && pane && room.id === pane.id ? room : null;
       let participants = loaded ? loaded.participants : [];
       let transcriptLength = loaded ? loaded.messages.length : 0;
       if (viewingPending && pending) {
-        if (!starter) { setNotice("This phone has no saved agent to start a thread with. Add one on the Mac first."); return; }
+        if (!pendingAgents.length) { setNotice("Choose an agent before sending this thread's first message."); setMenu({ kind: "draft-bots" }); return; }
         const made = pendingRoomIds.current[pending.id] ?? { id: `pane-${Date.now().toString(36)}`, workspaceId: pending.workspaceId, kind: "chat" as const, title: "New thread" };
         pendingRoomIds.current[pending.id] = made;
-        // Open the room before saving or showing it, so a second open keeps this bot.
-        const state = await loadRoomState(host.backend, made.id, [starter], NEW_THREAD, openPath);
+        // Open the room before saving or showing it, so a second open keeps the chosen agents.
+        const state = await loadRoomState(host.backend, made.id, pendingAgents, NEW_THREAD, openPath);
         await setPlanBeforeContinuation(
           made.id,
           pendingDraftPlans[pending.id] ?? false,
@@ -2426,7 +2437,7 @@ export function PhoneApp() {
     if (!pending) return;
     const gate = newThreadGate(mac, hostOf(target) ?? undefined);
     if (!gate.ok) { setNotice(gate.reason); return; }
-    if (pending.workspaceId !== target.id) setPending({ id: pending.id, workspaceId: target.id });
+    if (pending.workspaceId !== target.id) setPending({ ...pending, workspaceId: target.id });
     setSheet(null);
     setNotice("");
   }
@@ -2579,7 +2590,7 @@ export function PhoneApp() {
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
   const nextTo = openRoom && answerers?.paneId === openRoom.id ? answerers.ids : [];
   const queueing = nextTo.length > 0 && nextTo.every((pid) => pid in (openRoom?.working ?? {}));
-  const sendGate = botSendGate(openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." }, viewingPending ? (session?.profiles.length ?? 0) : room?.participants.length ?? 0);
+  const sendGate = botSendGate(openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." }, viewingPending ? pendingAgents.length : room?.participants.length ?? 0);
   const tints = hostTints(machines.filter((machine) => machine.kind === "server").map((machine) => machine.id));
   const machineIcon = (hostId: string, size = 16) => hostId === "local"
     ? <span className="ph-host-icon" title={linkOf(hostId)?.name}><Laptop size={size} /></span>
@@ -2723,7 +2734,7 @@ export function PhoneApp() {
     delivery.send(chatId, messageId).catch((error) => setNotice(words(error)));
   }
   return (
-    <div className="ph-app" data-rev={tick}>
+    <div className="ph-app" data-rev={tick} data-chip-style={chipStyle}>
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
@@ -2764,14 +2775,15 @@ export function PhoneApp() {
             onRetryLoad={() => retryThreadLoad.current()}
             compaction={openRoom ? openRoom.compaction : null}
             approvals={openRoom ? openRoom.approvals : []}
-            participants={openRoom ? openRoom.participants : []}
+            participants={viewingPending ? pendingAgents.map(toPerson) : openRoom ? openRoom.participants : []}
             toIds={openRoom && answerers?.paneId === openRoom.id ? answerers.ids : null}
-            crewShut={crewShut}
+            crewShut={viewingPending ? false : crewShut}
+            chipStyle={chipStyle}
             onCrew={foldCrew}
-            onBots={() => { if (openPane && !viewingPending) { setBotChange(null); setMenu({ kind: "bots", id: openPane.id }); } }}
+            onBots={() => { if (viewingPending) setMenu({ kind: "draft-bots" }); else if (openPane) { setBotChange(null); setMenu({ kind: "bots", id: openPane.id }); } }}
             swipe={{ next: swipePeek("next"), previous: swipePeek("previous"), place: stripPlace(swipeKeys, openKey ?? null) }}
             onSwipe={swipeTo}
-            onBot={setBotSheet}
+            onBot={(id) => viewingPending ? setMenu({ kind: "draft-bots" }) : setBotSheet(id)}
             meters={openRoom ? Object.fromEntries(openRoom.configs.map((config) => {
               const provider = config.backend.kind === "agent" ? config.backend.tool : null;
               return [config.id, pillMeter(provider, openRoom.fill[config.id], planOf(openRoom.plans, provider, config.backend.kind === "agent" ? config.backend.model : null), new Date())];
@@ -2939,6 +2951,12 @@ export function PhoneApp() {
             <p className="ph-intro">Saved on this phone. Your Mac keeps its own appearance.</p>
             {appearanceSaveError && <p className="ph-banner" role="alert">This appearance is active, but couldn't be saved on this phone. Storage may be full or unavailable.</p>}
             <AppearanceSettings value={appearance} onChange={changeAppearance} textTransfer />
+            <section className="appearance-section ph-chip-preview" aria-labelledby="phone-chip-heading">
+              <h3 id="phone-chip-heading">Bot chip style</h3>
+              <p>Choose how agents look in the thread bar. Saved on this phone.</p>
+              {chipSaveError && <p className="ph-banner" role="alert">This chip style is active, but couldn't be saved on this phone. Storage may be full or unavailable.</p>}
+              <ChipStylePicker value={chipStyle} onChange={changeChipStyle} />
+            </section>
           </main>
         ) : tab === "machines" ? (
           <Machines
@@ -3221,6 +3239,22 @@ export function PhoneApp() {
             </Sheet>
           );
         })()}
+        {menu?.kind === "draft-bots" && viewingPending && pending && (
+          <Sheet title="Agents for this thread" onClose={() => setMenu(null)}>
+            <p className="ph-sheet-text">Choose who joins before the first message. These choices apply to this thread.</p>
+            <div className="ph-bot-list">{(session?.profiles ?? []).map(config => {
+              const who = toPerson(config);
+              const picked = pendingAgents.some(agent => agent.id === config.id);
+              return <div className="ph-bot-entry" key={config.id}><div className="ph-bot-row">
+                <span className="ph-bot-info"><Avatar seed={who.look.seed} color={who.look.color} size="sm" /><span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{mentionFor(config)}</small></span></span>
+                <button type="button" className="ph-bot-action" role="checkbox" aria-checked={picked} aria-label={`${picked ? "Remove" : "Add"} ${config.display_name}`} disabled={sending || !canStartOn(openHostId)} onClick={() => setPending(current => current?.id === pending.id ? { ...current, agents: picked ? pendingAgents.filter(agent => agent.id !== config.id).map(agent => agent.id) : [...pendingAgents.map(agent => agent.id), config.id] } : current)}>{picked ? <Check size={18} /> : <Plus size={18} />}</button>
+              </div></div>;
+            })}</div>
+            {!(session?.profiles.length) && <p className="ph-sheet-text">No saved agents yet. Add one in Agents first.</p>}
+            {!pendingAgents.length && <p className="ph-sheet-text ph-amber">Choose at least one agent to send a message.</p>}
+            <button type="button" className="primary ph-wide" onClick={() => setMenu(null)}>Done</button>
+          </Sheet>
+        )}
         {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
           const host = workspaces.find((item) => item.id === menuPane.workspaceId) ? phoneHost(workspaceHost(workspaces.find((item) => item.id === menuPane.workspaceId)!)) : null;
           const full = !!host && canStartOn(host.machine.id);
@@ -3772,7 +3806,7 @@ function ThreadView(props: {
   /** The same, as bot ids, for the bar to light up. */
   toIds: string[] | null;
   /** The bot bar is folded into the title bar; the phone remembers this for every thread. */
-  crewShut: boolean; onCrew(shut: boolean): void; onBot(id: string): void;
+  crewShut: boolean; chipStyle?: ChipStyle; onCrew(shut: boolean): void; onBot(id: string): void;
   /** Open the Bots sheet: add a bot to this thread, or take one out. */
   onBots(): void;
   /** Each bot's context hairline and plan dot, for its pill. */
@@ -4161,9 +4195,9 @@ function ThreadView(props: {
           : <button type="button" className="ph-icon" aria-label="Thread actions" onClick={props.onMenu}><More size={20} /></button>}
       </header>
       {/* The thread's bots, pinned under the title: tap to @tag, hold or pull down for details. Folds into the title bar, and while the keyboard is up. */}
-      {props.participants.length > 0 && (
-        <div className={`ph-crew${crew ? "" : " shut"}`} inert={props.covered || !crew} aria-hidden={!crew}>
-          <div className="ph-crew-row" role="group" aria-label="Agents in this thread">
+      {(props.participants.length > 0 || props.draftThread) && (
+        <div className={`ph-crew${crew ? "" : " shut"}`} data-chip-style={props.chipStyle ?? "classic"} inert={props.covered || !crew} aria-hidden={!crew}>
+          <div className="ph-crew-row composer-bots" data-chip-style={props.chipStyle ?? "classic"} role="group" aria-label="Agents in this thread">
             {props.participants.length > 1 && (
               <button type="button" className={`ph-crew-pill${everyone ? " to" : ""}`} aria-label={everyone ? "Everyone. Answers your next message" : "Tag everyone"} onClick={() => tag("all")}>
                 <span className="ph-crew-chip"><span className="ph-mention-all" aria-hidden="true">@</span>Everyone</span>
@@ -4178,14 +4212,17 @@ function ThreadView(props: {
                 <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}${pill.pull?.id === participant.id ? " pulling" : ""}`} style={{ "--who": participant.look.color, "--pull": `${pill.pull?.id === participant.id ? pill.pull.y : 0}px` } as CSSProperties}
                   aria-label={`${participant.display_name}${asking(participant.id) ? ", waiting on you" : live ? ", working" : next ? ", answers your next message" : ""}${left !== null ? `, ${percent(left)}% context left` : ""}${meter?.planLow ? ", plan nearly used up" : ""}. Tap to tag. Hold or pull down for details and settings`}
                   {...pill.bind(participant.id, () => props.onBot(participant.id), () => tag(participant.id))}>
-                  <span className="ph-crew-chip">
+                  <span className={`ph-crew-chip chip chip-name${next ? " to" : ""}`}>
                     <span className="ph-crew-face">
                       <Avatar seed={participant.look.seed} color={participant.look.color} size="sm" working={live && !asking(participant.id)} />
                       {meter?.planLow && <i className="ph-crew-plan" />}
                     </span>
-                    <span className="ph-crew-name">
-                      {participant.display_name}
-                      {left !== null && <i className={`ph-crew-meter${meter.low ? " low" : ""}`} style={{ "--left": `${percent(left)}%` } as CSSProperties} />}
+                    <span className="chip-copy">
+                      <span className="ph-crew-name chip-label">
+                        {participant.display_name}
+                        {left !== null && <i className={`ph-crew-meter${meter.low ? " low" : ""}`} style={{ "--left": `${percent(left)}%` } as CSSProperties} />}
+                      </span>
+                      {(props.chipStyle === "ledger" || props.chipStyle === "two-line") && <span className="chip-details"><span className="chip-phase">{asking(participant.id) ? "Waiting on you" : live ? "Working" : "Idle"}</span></span>}
                     </span>
                   </span>
                   <i className="ph-crew-grab" aria-hidden="true" />
@@ -4193,11 +4230,9 @@ function ThreadView(props: {
               );
             })}
             {/* Adding and removing bots used to be two levels into ⋯ → Bots, and only while this thread was open. Now it is where the bots are. */}
-            {!props.draftThread && (
-              <button type="button" className="ph-crew-pill ph-crew-add" aria-label="Add or remove agents in this thread" onClick={() => { inputRef.current?.blur(); props.onBots(); }}>
-                <span className="ph-crew-chip"><Plus size={15} /><span className="ph-crew-name">Agents</span></span>
-              </button>
-            )}
+            <button type="button" className="ph-crew-pill ph-crew-add" aria-label="Add or remove agents in this thread" onClick={() => { inputRef.current?.blur(); props.onBots(); }}>
+              <span className="ph-crew-chip"><Plus size={15} /><span className="ph-crew-name">Agents</span></span>
+            </button>
           </div>
           <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the agents into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
         </div>

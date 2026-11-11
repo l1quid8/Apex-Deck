@@ -1,7 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BUILTIN_SKINS, defaultAppearanceSettings } from '../src/themes.ts';
-import { PHONE_APPEARANCE_KEY, loadPhoneAppearance, savePhoneAppearance, applyPhoneTheme, watchPhoneTransparency } from '../src/phone/appearance.ts';
+import { PHONE_APPEARANCE_KEY, loadPhoneAppearance, savePhoneAppearance, applyPhoneTheme, watchPhoneTransparency, loadPhoneChipStyle, savePhoneChipStyle } from '../src/phone/appearance.ts';
+
+test('phone chip styles validate saved values and handle unavailable storage', () => {
+  const values = new Map([['apex-deck.settings', 'desktop']]);
+  const storage = {getItem:key=>values.get(key)??null, setItem:(key,value)=>values.set(key,value)};
+  assert.equal(loadPhoneChipStyle(storage), 'classic');
+  assert.equal(savePhoneChipStyle(storage, 'ticket'), true);
+  assert.equal(loadPhoneChipStyle(storage), 'ticket');
+  assert.equal(values.get('apex-deck.settings'), 'desktop');
+  assert.equal(loadPhoneChipStyle({getItem:()=> 'unknown-style'}), 'classic');
+  const blocked = {getItem(){throw Error('denied');},setItem(){throw Error('quota');}};
+  assert.equal(loadPhoneChipStyle(blocked), 'classic');
+  assert.equal(savePhoneChipStyle(blocked, 'tinted'), false);
+});
 
 test('phone appearance survives a restart without writing desktop settings', () => {
   const values = new Map([['apex-deck.settings', 'desktop stays here']]);

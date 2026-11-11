@@ -1,4 +1,19 @@
 import { applyAppearance, defaultAppearanceSettings, readAppearance, type AppearanceSettings, type AppearanceValues } from '../themes.ts';
+import { isChipStyle, type ChipStyle } from '../botChip.ts';
+
+export const PHONE_CHIP_STYLE_KEY = 'apex-deck.phone.chip-style.v1';
+
+export function loadPhoneChipStyle(storage: Pick<Storage, 'getItem'>): ChipStyle {
+  try {
+    const value = storage.getItem(PHONE_CHIP_STYLE_KEY);
+    return isChipStyle(value) ? value : 'classic';
+  } catch { return 'classic'; }
+}
+
+export function savePhoneChipStyle(storage: Pick<Storage, 'setItem'>, value: ChipStyle): boolean {
+  try { storage.setItem(PHONE_CHIP_STYLE_KEY, value); return true; }
+  catch { return false; }
+}
 
 export const PHONE_APPEARANCE_KEY = 'apex-deck.phone.appearance.v1';
 

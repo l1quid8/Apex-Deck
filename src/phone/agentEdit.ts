@@ -19,6 +19,14 @@ import { accessOptions } from "../accessChange.ts";
 /** What the sheet edits. The Mac's form has more; these are the ones that pay for themselves on a phone. */
 export type AgentDraft = { name: string; brief: string; access: Access; model: string; effort: string; speed: string };
 
+/** An untouched draft starts with the first saved agent. Explicit picks, including none, stay explicit. */
+export function draftAgents(profiles: readonly ParticipantConfig[], picked?: readonly string[]): ParticipantConfig[] {
+  if (picked === undefined) return profiles.slice(0, 1);
+  return [...new Set(picked)].flatMap(id => {
+    const profile = profiles.find(item => item.id === id);
+    return profile ? [profile] : [];
+  });
+}
 
 /** The CLI tool an agent runs, or "" for a scripted or API agent: the phone offers models only for tools. */
 export function agentTool(config: ParticipantConfig): string {

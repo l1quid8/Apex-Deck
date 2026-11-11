@@ -6,6 +6,7 @@ import "../styles.css";
 import "../glass-theme.css";
 import "../clay-theme.css";
 import "../appearance-settings.css";
+import "../bot-chip-styles.css";
 import { PhoneApp } from "./PhoneApp";
 import { watchPhoneTransparency, type PhoneTransparency } from "./appearance";
 // Phone overrides follow the shared components' styles in both dev and bundled builds.
