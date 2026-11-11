@@ -9,37 +9,52 @@ import type { RoomOptions, Worktree, WorktreeAdd, WorktreeList } from "../types"
 import { worktreeErrorMessage } from "../RightWorktrees";
 import { mountWorktree } from "../worktreeMount";
 import { copyText } from "../copyText";
-import { hasChanges, newWorktreeFolder, shortPath, startFrom, worktreeActions, worktreeRow } from "./worktrees";
+import { hasChanges, newWorktreeFolder, projectTop, shortPath, startFrom, worktreeActions, worktreeRow } from "./worktrees";
 
-export interface WorktreesState { listing: WorktreeList | null; mounted: string; error: string; load(): Promise<void> }
+export interface WorktreesState {
+  listing: WorktreeList | null; mounted: string; error: string; load(): Promise<void>;
+  /** The pane mounted a folder: show it as this thread's until the thread loads again. */
+  mountedTo(cwd: string): void;
+}
 
 /**
- * The project's worktrees and the folder this thread works in, read when the thread opens and again
- * whenever `refresh` changes (a reply finished: that is when an agent copy folds back or gets stuck).
+ * The project's worktrees and the folder this thread works in. The list is read when the thread opens and
+ * again when its agents finish a reply (that is when an agent copy folds back or gets stuck), plus whatever
+ * the open pane asks for; never while a reply streams in. The folder is `cwd` from the thread the phone
+ * already loaded: reading it from the machine would download the whole thread again.
  */
-export function useWorktrees(backend: Backend | null, root: string, thread: string, enabled: boolean, refresh: string): WorktreesState {
+export function useWorktrees(backend: Backend | null, root: string, thread: string, enabled: boolean, busy: boolean, cwd: string | null | undefined): WorktreesState {
   const [listing, setListing] = useState<WorktreeList | null>(null);
-  const [mounted, setMounted] = useState(root);
+  const [mountedHere, setMountedHere] = useState<string | null>(null);
   const [error, setError] = useState("");
   const loadId = useRef(0);
+  const wasBusy = useRef(busy);
   const load = async () => {
     if (!enabled || !backend || !root) return;
     const id = ++loadId.current;
     try {
-      const [list, state] = await Promise.all([backend.worktreeList(root), backend.roomState?.(thread).catch(() => null)]);
+      const list = await backend.worktreeList(root);
       if (id !== loadId.current) return;
-      setListing(list); setMounted(state?.cwd || root); setError("");
+      setListing(list); setError("");
     } catch (reason) {
       if (id === loadId.current) setError(worktreeErrorMessage(reason));
     }
   };
-  useEffect(() => { setListing(null); setMounted(root); setError(""); }, [backend, root, thread]);
+  // Another thread starts afresh; one that just finished elsewhere doesn't count as finishing here.
+  useEffect(() => { setListing(null); setMountedHere(null); setError(""); wasBusy.current = busy; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [backend, root, thread]);
+  useEffect(() => { setMountedHere(null); }, [cwd]);
   useEffect(() => {
     void load();
     return () => { loadId.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, backend, root, thread, refresh]);
-  return { listing, mounted, error, load };
+  }, [enabled, backend, root, thread]);
+  useEffect(() => {
+    const finished = wasBusy.current && !busy;
+    wasBusy.current = busy;
+    if (finished) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+  return { listing, mounted: mountedHere ?? (cwd || root), error, load, mountedTo: setMountedHere };
 }
 
 /** Some agent copy of this project is stuck and needs a person: the amber dot on the title bar's icon. */
@@ -62,7 +77,7 @@ export function WorktreesPane(props: {
   /** The phone's one-line notice at the bottom, for "Pathname copied" and the like. */
   onNotice(text: string): void;
 }) {
-  const { listing, mounted, error, load } = props.state;
+  const { listing, mounted, error, load, mountedTo } = props.state;
   const [ask, setAsk] = useState<Ask | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -89,7 +104,7 @@ export function WorktreesPane(props: {
     } finally { setBusy(false); }
   };
   const mount = (item: Worktree) => run(async () => {
-    await mountWorktree(props.backend, props.thread, item.path, props.options);
+    await mountWorktree(props.backend, props.thread, item.path, props.options, mountedTo);
     props.onNotice(`Now working in ${item.branch ?? item.path.split("/").pop()}.`);
   });
   const copyPath = async (path: string) => { setAsk(null); props.onNotice((await copyText(path)) ? "Pathname copied" : "The phone couldn't copy that path."); };
@@ -118,6 +133,8 @@ export function WorktreesPane(props: {
   const up = () => { const far = dragX > 80; drag.current = null; setDragX(0); if (far) props.onClose(); };
 
   const items = listing?.items ?? [];
+  // New worktrees go beside the whole project, also from a thread in one of its subfolders.
+  const top = projectTop(listing, props.root);
   // This thread's copies first, then any that need you, as the Mac lists the rest.
   const rank = (item: Worktree) => item.copy?.thread === props.thread ? 0 : item.copy?.state === "needs_you" ? 1 : 2;
   const copies = items.filter((item) => item.copy).sort((a, b) => rank(a) - rank(b));
@@ -193,7 +210,7 @@ export function WorktreesPane(props: {
           <p className="ph-sheet-text">{ask.item.copy?.bot}’s copy has changes that never folded back. Discarding deletes the copy and all its changes.</p>
           <div className="ph-wt-sheet-list"><SheetRow danger label="Discard copy" disabled={busy} onClick={() => void run(() => props.backend.worktreeRemove(props.root, ask.item.path, true))} /></div>
         </>}
-        {ask.kind === "add" && <form className="ph-wt-form" onSubmit={(event) => { event.preventDefault(); if (request.branch.trim()) void run(() => props.backend.worktreeAdd(props.root, { ...request, branch: request.branch.trim(), base: request.newBranch ? request.base || null : null, folder: request.folder || newWorktreeFolder(props.root, request.branch) })); }}>
+        {ask.kind === "add" && <form className="ph-wt-form" onSubmit={(event) => { event.preventDefault(); if (request.branch.trim()) void run(() => props.backend.worktreeAdd(props.root, { ...request, branch: request.branch.trim(), base: request.newBranch ? request.base || null : null, folder: request.folder || newWorktreeFolder(top, request.branch) })); }}>
           <label className="ph-label">Branch<input value={request.branch} autoCapitalize="off" autoCorrect="off" spellCheck={false} enterKeyHint="next"
             onChange={(event) => { const branch = event.target.value; setRequest((now) => ({ ...now, branch })); }} /></label>
           <div className="ph-segment" role="radiogroup" aria-label="Branch source">
@@ -201,7 +218,7 @@ export function WorktreesPane(props: {
             <button type="button" role="radio" aria-checked={!request.newBranch} onClick={() => setRequest((now) => ({ ...now, newBranch: false }))}>Existing branch</button>
           </div>
           {request.newBranch && <label className="ph-label">Start from<input value={request.base ?? ""} autoCapitalize="off" autoCorrect="off" spellCheck={false} onChange={(event) => { const base = event.target.value; setRequest((now) => ({ ...now, base })); }} /></label>}
-          <label className="ph-label">Folder<input className="ph-wt-mono" value={request.folder ?? (request.branch.trim() ? newWorktreeFolder(props.root, request.branch) : "")} placeholder={newWorktreeFolder(props.root, "branch-name")} autoCapitalize="off" autoCorrect="off" spellCheck={false}
+          <label className="ph-label">Folder<input className="ph-wt-mono" value={request.folder ?? (request.branch.trim() ? newWorktreeFolder(top, request.branch) : "")} placeholder={newWorktreeFolder(top, "branch-name")} autoCapitalize="off" autoCorrect="off" spellCheck={false}
             onChange={(event) => { const folder = event.target.value; setRequest((now) => ({ ...now, folder: folder || null })); }} /></label>
           <p className="ph-sheet-text">The folder fills in from the branch name. Change it if you like.</p>
           <button type="submit" className="primary ph-wide" disabled={busy || !request.branch.trim()}>{busy ? "Adding…" : "Add worktree"}</button>

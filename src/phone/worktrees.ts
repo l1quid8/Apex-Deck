@@ -1,7 +1,7 @@
 // The phone's Worktrees pane: what each row says, and who may open the pane. The Mac's Worktrees tab
 // (RightWorktrees.tsx) does the same jobs with the same commands; this file only words them for a phone.
 import type { RemoteAccess } from "../phoneRules";
-import type { Worktree } from "../types";
+import type { Worktree, WorktreeList } from "../types";
 
 /** The Mac lists worktrees only for Full access to every thread (authority.rs), so other phones get no pane. */
 export function canManageWorktrees(access: RemoteAccess | null | undefined): boolean {
@@ -81,6 +81,14 @@ export function newWorktreeFolder(root: string, branch: string): string {
   const clean = root.replace(/[\\/]+$/, "").replaceAll("\\", "/");
   const cut = clean.lastIndexOf("/");
   return `${clean.slice(0, cut)}/${clean.slice(cut + 1)}-worktrees/${branch.trim().replaceAll("/", "-")}`;
+}
+
+/**
+ * The project folder new worktrees go beside: its top folder as the Mac lists it, even for a thread in one
+ * of its subfolders, as the Mac's tab does. The thread's own folder only until the Mac has answered.
+ */
+export function projectTop(listing: Pick<WorktreeList, "root"> | null, threadFolder: string): string {
+  return listing?.root || threadFolder;
 }
 
 /** The project's checked-out branch, for New worktree's "Start from"; HEAD when it can't tell. */

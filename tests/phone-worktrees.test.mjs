@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 // The phone's Worktrees pane and its ↓ button. These run the rules that decide what each row says,
 // what its sheet offers, who sees the pane, and how many replies the ↓ counts.
-const { canManageWorktrees, newBelow, newWorktreeFolder, shortPath, startFrom, worktreeActions, worktreeRow } = await import(new URL('../src/phone/worktrees.ts', import.meta.url).href);
+const { canManageWorktrees, newBelow, newWorktreeFolder, projectTop, shortPath, startFrom, worktreeActions, worktreeRow } = await import(new URL('../src/phone/worktrees.ts', import.meta.url).href);
 
 const tree = (over = {}) => ({ path: '/Users/you/Downloads/apex-deck-worktrees/feat-x', head: 'abcdef1234', branch: 'feat/x', main: false, locked: false, prunable: false, changes: 0, task: false, copy: null, ...over });
 const copy = (over = {}) => tree({ branch: null, copy: { bot: 'Jigga', thread: 't1', threadTitle: 'Phone polish', state: 'working', reason: null, ...over }, changes: 3 });
@@ -60,6 +60,14 @@ test('New worktree fills the folder in beside the project, and starts from its b
   assert.equal(newWorktreeFolder('/Users/you/Downloads/apex-deck/', 'feat/jump-to-bottom'), '/Users/you/Downloads/apex-deck-worktrees/feat-jump-to-bottom');
   assert.equal(startFrom([tree(), tree({ main: true, branch: 'main' })]), 'main');
   assert.equal(startFrom([tree({ main: true, branch: null })]), 'HEAD');
+});
+
+test('a thread in a subfolder still puts a new worktree beside the whole project, as the Mac\'s tab does', () => {
+  // The Mac's list names the project's top folder; the thread here works in its crates folder.
+  const top = projectTop({ root: '/Users/you/Downloads/apex-deck', items: [] }, '/Users/you/Downloads/apex-deck/crates');
+  assert.equal(newWorktreeFolder(top, 'feat/x'), '/Users/you/Downloads/apex-deck-worktrees/feat-x');
+  // Before the Mac has answered, the thread's own folder is all the phone knows.
+  assert.equal(projectTop(null, '/Users/you/Downloads/apex-deck/crates'), '/Users/you/Downloads/apex-deck/crates');
 });
 
 test('paths shorten to ~ and cut from the left', () => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createThreadCopies, loadRetryDelay, withDeadline, LoadTimeout, copyAge } from '../src/phone/threadCopies.ts';
+import { createThreadCopies, loadRetryDelay, whenSlow, copyAge } from '../src/phone/threadCopies.ts';
 
 test('keeps the last copies, dropping the one opened longest ago', () => {
   const copies = createThreadCopies(3);
@@ -25,17 +25,24 @@ test('a failed load waits 2, 4, 8 and then 15 s before each new try', () => {
   assert.deepEqual([1, 2, 3, 4, 9].map(loadRetryDelay), [2000, 4000, 8000, 15000, 15000]);
 });
 
-test('a load with no answer by its deadline fails, and a late answer is ignored', async () => {
+test('a slow load says so once and still lands with its own answer', async () => {
   let answer;
   const slow = new Promise((resolve) => { answer = resolve; });
   const timers = { setTimeout: (fn) => { timers.fire = fn; return 1; }, clearTimeout: () => { timers.fire = null; } };
-  const late = withDeadline(slow, 10_000, timers);
+  let told = 0;
+  const load = whenSlow(slow, 10_000, () => { told += 1; }, timers);
   timers.fire();
-  await assert.rejects(late, (error) => error instanceof LoadTimeout && /No answer after 10 s/.test(error.message));
-  answer('too late');
+  assert.equal(told, 1);
+  answer('thread');
+  assert.equal(await load, 'thread');
 });
 
-test('a load that answers in time passes straight through', async () => {
-  assert.equal(await withDeadline(Promise.resolve('thread'), 10_000), 'thread');
-  await assert.rejects(withDeadline(Promise.reject(new Error('refused')), 10_000), /refused/);
+test('a quick load never says it is slow, and a refusal still comes through', async () => {
+  const timers = { setTimeout: (fn) => { timers.fire = fn; return 1; }, clearTimeout: () => { timers.fire = null; } };
+  let told = 0;
+  assert.equal(await whenSlow(Promise.resolve('thread'), 10_000, () => { told += 1; }, timers), 'thread');
+  assert.equal(timers.fire, null, 'the slow timer is cleared once the answer is in');
+  await assert.rejects(whenSlow(Promise.reject(new Error('refused')), 10_000, () => { told += 1; }, timers), /refused/);
+  assert.equal(timers.fire, null);
+  assert.equal(told, 0);
 });

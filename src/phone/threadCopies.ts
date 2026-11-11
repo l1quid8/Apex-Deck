@@ -1,12 +1,13 @@
 // Opening a thread asks its machine for the whole thread. Until the answer comes, the phone used to
 // show the empty new-thread screen, and an answer that never came left it there. Three small pieces
 // fix that: a copy of the last few threads opened, shown at once while the fresh one loads; a load
-// that gives up after a while instead of waiting forever; and the waits between tries after a failure.
+// that says when it is slow but keeps waiting for its answer, since a big thread on a slow link is
+// still on its way; and the waits between tries after a real failure.
 
 /** Threads whose last copy the phone keeps while the app is open. */
 export const KEPT_THREADS = 8;
-/** A thread load still waiting after this long is tried again. */
-export const LOAD_DEADLINE_MS = 10_000;
+/** A thread load still on its way after this long says "Still loading…". It is never given up on. */
+export const SLOW_LOAD_MS = 10_000;
 /** How long the phone waits for its machine to answer when the app comes back into sight. */
 export const RESUME_CHECK_MS = 3_000;
 
@@ -34,19 +35,15 @@ export function loadRetryDelay(attempt: number): number {
   return attempt <= 1 ? 2000 : attempt === 2 ? 4000 : attempt === 3 ? 8000 : 15_000;
 }
 
-export class LoadTimeout extends Error {
-  constructor(ms: number) { super(`No answer after ${Math.round(ms / 1000)} s`); }
-}
-
-/** `work`, or a LoadTimeout once `ms` pass without an answer. A late answer is ignored. */
-export function withDeadline<T>(work: Promise<T>, ms: number, timers: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = globalThis): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = timers.setTimeout(() => reject(new LoadTimeout(ms)), ms);
-    work.then(
-      (value) => { timers.clearTimeout(timer); resolve(value); },
-      (error) => { timers.clearTimeout(timer); reject(error); },
-    );
-  });
+/**
+ * `work` itself, untouched; `onSlow` runs once if it hasn't settled after `ms`. Nothing is given up
+ * or asked for again: asking again would only queue a second copy behind the one still arriving.
+ */
+export function whenSlow<T>(work: Promise<T>, ms: number, onSlow: () => void, timers: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = globalThis): Promise<T> {
+  const timer = timers.setTimeout(onSlow, ms);
+  const done = () => timers.clearTimeout(timer);
+  work.then(done, done);
+  return work;
 }
 
 /** "12 s ago", "3 min ago": how old a kept copy is, for the Connection log. */
