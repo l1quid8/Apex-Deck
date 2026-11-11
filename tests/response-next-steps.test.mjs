@@ -87,7 +87,7 @@ test('hovering or focusing a suggestion previews the prompt it sends', {timeout:
     assert.deepEqual(tip,{text:'Check edge cases.',role:'tooltip',above:true},'the preview names the prompt and sits above the suggestion');
     assert.equal(await run('(()=>{const id=document.querySelectorAll(".reply-next-step")[1].getAttribute("aria-describedby");return id&&document.getElementById(id).textContent})()'),'Check edge cases.','screen readers get the same description');
     win.webContents.sendInputEvent({type:'mouseMove',x:4,y:4});
-    await sleep(300);
+    await until('!document.querySelector(".reply-next-steps-tip")','leaving hides the preview');
     assert.equal(await run('!!document.querySelector(".reply-next-steps-tip")'),false,'leaving hides the preview');
     await run('document.querySelectorAll(".reply-next-step")[2].focus()');
     // A hidden test window never fires focus itself; send what Chromium would.

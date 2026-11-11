@@ -19,8 +19,6 @@ fn in_process_stdio_supports_data_paths_too_long_for_a_socket() {
 #[test]
 fn a_chat_a_terminal_an_approval_and_a_restart_over_stdio() {
     let data = temp_dir();
-    #[cfg(target_os = "linux")]
-    saved_chat_session(&data.0);
     let mut first = StdioClient::spawn(&["--stdio"], &data.0);
     let hello = first.hello(None);
     assert_eq!((hello["protocol"].clone(), hello["resumed"].clone()), (json!(1), json!(false)));

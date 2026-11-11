@@ -8,15 +8,14 @@ use serde_json::json;
 fn trust_reset_stops_only_its_daemon_and_waits_for_bot_and_terminal_cleanup() {
     let data = temp_dir();
     let other_data = temp_dir();
-    let bot_pid = data.0.join("bot.pid");
-    let slow = shell("slow", &format!("echo $$ > {}; exec sleep 60", bot_pid.display()));
-    saved_room(&data.0, "t1", vec![slow]);
     let mut served = Served::start(&data.0, &[]);
     let mut other = Served::start(&other_data.0, &[]);
     let token = std::fs::read_to_string(data.0.join("daemon-token")).unwrap().trim().to_string();
     let mut web = websocket(served.port());
     web.hello_frame(json!({"token":token}));
-    web.call("room_state", json!({"id":"t1"})).1.unwrap();
+    let bot_pid = data.0.join("bot.pid");
+    let slow = shell("slow", &format!("echo $$ > {}; exec sleep 60", bot_pid.display()));
+    web.call("room_create", json!({"id":"t1","participants":[slow],"options":options(),"cwd":null})).1.unwrap();
     web.send(json!({"id":99,"cmd":"room_post","args":{"id":"t1","text":"@slow go"}}));
     let bot = read_pid(&bot_pid);
     let pty_pid = data.0.join("terminal.pid");

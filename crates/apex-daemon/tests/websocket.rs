@@ -42,31 +42,20 @@ fn a_websocket_client_needs_the_token() {
 #[test]
 fn a_chat_a_terminal_and_an_approval_over_the_websocket_then_a_reconnect() {
     let data = temp_dir();
-    #[cfg(target_os = "linux")]
-    saved_chat_session(&data.0);
     let served = Served::start(&data.0, &[]);
     let token = std::fs::read_to_string(data.0.join("daemon-token")).unwrap().trim().to_string();
     let mut first = websocket(served.port());
     let hello = first.hello_frame(json!({ "token": token }))["ok"].clone();
-    #[cfg(not(target_os = "linux"))]
     first.call("session_save", json!({ "session": { "version": 0 } })).1.unwrap();
     chat_terminal_and_approval(&mut first);
 
-    // A second client catches up from the buffer. Linux has no initial session
-    // write event: local tokens cannot replace even the pre-authorized session.
-    let seq = if cfg!(target_os = "linux") { 0 } else { 1 };
+    // A second client that left after event 1 catches up from the buffer.
     let mut back = websocket(served.port());
-    let again = back.hello_frame(json!({ "token": token, "since": { "boot_id": hello["boot_id"], "seq": seq } }))["ok"].clone();
+    let again = back.hello_frame(json!({ "token": token, "since": { "boot_id": hello["boot_id"], "seq": 1 } }))["ok"].clone();
     assert_eq!(again["resumed"], true);
-    let missed: Vec<serde_json::Value> = (seq + 1..=again["last_seq"].as_u64().unwrap()).map(|_| back.frames.next().unwrap()).collect();
-    assert_eq!(missed.first().unwrap()["seq"], seq + 1);
+    let missed: Vec<serde_json::Value> = (2..=again["last_seq"].as_u64().unwrap()).map(|_| back.frames.next().unwrap()).collect();
+    assert_eq!(missed.first().unwrap()["seq"], 2);
     assert_eq!(added_texts(&missed, "t1"), vec!["@null hi", "hello human"]);
-    #[cfg(target_os = "linux")]
-    {
-        assert!(missed.iter().all(|frame| frame["event"] != "session-changed"));
-        chat_restored(&mut back);
-    }
-    #[cfg(not(target_os = "linux"))]
     assert_eq!(missed.last().unwrap()["event"], "session-changed");
 }
 
