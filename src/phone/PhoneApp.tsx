@@ -113,6 +113,7 @@ import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
+import { stepDraft } from "./stepDraft";
 import { edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeIntent, swipeLostCapture, swipeRelease } from "./threadSwipe";
 import { afterClose, openKeyParts, openStrip, pruneOpenThreads, readOpenThreads, withOpenThread, withoutOpenThread, writeOpenThreads, type OpenKey } from "./openThreads";
 import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
@@ -3729,6 +3730,12 @@ function ThreadView(props: {
     composerHistory.setText(text);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
   };
+  // A suggestion goes into the box to be changed before sending, never straight out.
+  const fillStep = (step: NextStep, by: string) => {
+    const text = stepDraft(props.draft.text, step.prompt, props.participants.length > 1 ? props.participants.find((p) => p.id === by) : undefined);
+    composerHistory.setText(text);
+    requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
+  };
   const everyone = props.participants.length > 1 && props.toIds !== null && props.participants.every((p) => props.toIds!.includes(p.id));
   // Typing @ offers the thread's bots above the box; only while the box has the keyboard.
   const [caret, setCaret] = useState<number | null>(null);
@@ -4031,7 +4038,7 @@ function ThreadView(props: {
                 return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
               })()}
               {props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
-                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} onStep={props.steps.onStep} />}
+                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} startCollapsed onStep={fillStep} />}
             </div>
             {actionsFor(message, message.text)}
           </section>

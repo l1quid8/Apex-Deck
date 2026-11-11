@@ -12,8 +12,8 @@ const HOLD_MS = 450;
 interface Preview { text: string; left: number; top: number; bottom: number }
 
 /** Follow-ups belong to the offering agent's latest finished response. */
-export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: NextStep, by: string): void }) {
-  const [expanded, setExpanded] = useState(true);
+export function ReplyNextSteps({ offer, onStep, startCollapsed = false }: { offer: Offer; onStep(step: NextStep, by: string): void; startCollapsed?: boolean }) {
+  const [expanded, setExpanded] = useState(!startCollapsed);
   const [preview, setPreview] = useState<Preview | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A touch screen has no hover: a hold shows the prompt, and the tap that
@@ -84,7 +84,8 @@ export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: N
           <span id={`${id}-${i}`} className="reply-next-steps-sr">{step.prompt}</span>
         </Fragment>)}
       </span>
-      {!expanded && <span className="reply-next-steps-label">Next steps</span>}
+      {/* Folded, the words open it too: a lone chevron is a small target for a finger. */}
+      {!expanded && <span className="reply-next-steps-label" onClick={() => setExpanded(true)}>Next steps</span>}
       <button type="button" className="reply-next-steps-toggle" aria-controls={`${id}-steps`} aria-expanded={expanded}
         aria-label={`${expanded ? 'Collapse' : 'Expand'} next steps`} onClick={() => setExpanded(!expanded)}>{expanded ? '‹' : '›'}</button>
     </div>
