@@ -22,6 +22,8 @@ export interface PhoneHost {
   /** What the machine lets this phone do, from its latest welcome; null over WebSocket or before one. */
   access(): RemoteAccess | null;
   start(): Promise<Welcome>;
+  /** Ask the machine for any answer within `ms`; a quiet link is dropped and dialed again. */
+  check(ms: number): Promise<"answered" | "replaced" | "offline">;
   close(): void;
 }
 
@@ -51,6 +53,7 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
     connection,
     access: () => client.welcome?.access ?? null,
     start: () => client.start(),
+    check: (ms) => client.check(ms),
     close: () => client.close(),
   };
 }

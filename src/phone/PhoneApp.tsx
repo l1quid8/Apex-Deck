@@ -80,7 +80,7 @@ import { recipientName } from "../recipients";
 import { mentionFor } from "../slug";
 import { ageWords, homeShort, hostTints, noteActive, sidebarSections, unarchiveThreads } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
-import { FinalError, type Connect } from "../daemon/client";
+import { FinalError, LOST, type Connect } from "../daemon/client";
 import { irohConnect } from "../daemon/irohLink";
 import { remotePlugin, type Route } from "./remotePlugin";
 import { clearRemoteMode, defaultAddHow, PAIR_MACHINE_HINT, startAutomatic, whenAutomatic } from "./automatic";
@@ -125,6 +125,9 @@ import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, s
 import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
 import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
+import { phoneTrace, roughKb } from "./phoneTrace";
+import { copyAge, createThreadCopies, LOAD_DEADLINE_MS, LoadTimeout, loadRetryDelay, RESUME_CHECK_MS, withDeadline } from "./threadCopies";
+import { ConnectionLog } from "./ConnectionLog";
 import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
 import type { ProjectMonitor } from "../apexAgentModel";
@@ -157,7 +160,7 @@ const CREW_KEY = "apex-deck.phone.crew.v1";
 const OPEN_KEY = "apex-deck.phone.openThreads.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
-type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
+type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance" | "log";
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
 type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
@@ -193,6 +196,9 @@ type Room = {
   pins: string[];
   /** Where /compact cut in: the models see `summary` instead of the messages before `upto`. A saved one does not say who wrote it. */
   compaction: { by: string | null; summary: string; upto: number } | null;
+  /** The copy kept from the last visit, shown while the fresh one loads. It has no approvals, questions or
+   *  working bots, so nothing on it can be acted on until the machine's answer replaces it. */
+  stale?: boolean;
 };
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
@@ -565,6 +571,12 @@ export function PhoneApp() {
   /** The open thread as last drawn, for names inside event handlers. */
   const roomRef = useRef<Room | null>(null);
   roomRef.current = room;
+  /** The last copy of each recently opened thread, by machine and thread, shown at once when it opens again. */
+  const threadCopies = useRef(createThreadCopies<Room>());
+  useEffect(() => { if (room && !room.stale) threadCopies.current.put(machineThreadKey(room.hostId, room.id), room); }, [room]);
+  /** The open thread's load, while it hasn't arrived: still on its way, or failed and being tried again. */
+  const [threadLoad, setThreadLoad] = useState<{ key: string; failed: string | null } | null>(null);
+  const retryThreadLoad = useRef<() => void>(() => {});
   const machineKey = connectionKey(machines);
 
   useEffect(() => {
@@ -584,7 +596,13 @@ export function PhoneApp() {
         const saved = machinesRef.current.find((item) => item.id === machine.id);
         return saved && isPaired(saved) ? saved : machine;
       };
-      const dial = irohConnect(target, plugin, (route) => setRoutes((all) => all[machine.id] === route ? all : { ...all, [machine.id]: route }));
+      // Connection log: each switch between the direct link and the relay server.
+      let lastRoute: string | null = null;
+      const dial = irohConnect(target, plugin, (route) => {
+        if (route && route !== lastRoute) phoneTrace().add(`${machine.name}: ${route === "direct" ? "direct link" : route === "relayed" ? "through the relay server" : "no route"}`);
+        if (route) lastRoute = route;
+        setRoutes((all) => all[machine.id] === route ? all : { ...all, [machine.id]: route });
+      });
       return () => whenAutomatic(ready, dial);
     };
     const opened = machines.map((machine) => openPhoneHost(
@@ -598,6 +616,19 @@ export function PhoneApp() {
     ));
     setHosts(opened);
     const offs = opened.map((host) => host.connection.subscribe(() => setTick((value) => value + 1)));
+    // Connection log: each change of a machine's connection, with why it dropped.
+    opened.forEach((host) => {
+      let was = "";
+      const note = () => {
+        const status = host.connection.get().status;
+        if (status.kind === was) return;
+        was = status.kind;
+        const why = "reason" in status && status.reason ? ` (${status.reason})` : "";
+        phoneTrace().add(`${host.machine.name}: ${status.kind}${why}`);
+      };
+      note();
+      offs.push(host.connection.subscribe(note));
+    });
     opened.forEach((host) => { host.start().catch(() => {}); });
     return () => { offs.forEach((off) => off()); opened.forEach((host) => host.close()); };
     // machineKey already covers every field that should reconnect.
@@ -1208,6 +1239,34 @@ export function PhoneApp() {
   const phoneVoice=phoneVoiceRef.current;
   useEffect(()=>{const left=()=>{if(document.hidden)phoneVoice.leftScreen();};document.addEventListener('visibilitychange',left);return()=>{document.removeEventListener('visibilitychange',left);phoneVoice.leftScreen();};},[phoneVoice]);
   useEffect(()=>{if(openPane&&openHostId)phoneVoice.threadOpened(openHostId,openPane.id);},[openPane?.id,openHostId]);
+  // Connection log: when the app leaves sight and comes back.
+  useEffect(() => {
+    const trace = phoneTrace();
+    trace.add("app opened");
+    const seen = () => { trace.add(document.hidden ? "app out of sight" : "app back in sight"); if (document.hidden) trace.flush(); };
+    document.addEventListener("visibilitychange", seen);
+    return () => document.removeEventListener("visibilitychange", seen);
+  }, []);
+  // Back in sight, each machine that still looks connected is asked for an answer at once. iOS pauses
+  // the app in the background, and the link it comes back to can be dead while still looking open;
+  // one that stays quiet is dropped and dialed again instead of holding every request.
+  useEffect(() => {
+    const back = () => {
+      if (document.hidden) return;
+      for (const host of hosts) {
+        if (host.connection.get().status.kind !== "connected") continue;
+        const began = Date.now();
+        void host.check(RESUME_CHECK_MS).then((how) => {
+          const name = host.machine.name;
+          phoneTrace().add(how === "answered" ? `${name}: answered in ${Date.now() - began} ms`
+            : how === "replaced" ? `${name}: no answer in ${RESUME_CHECK_MS / 1000} s; connecting again`
+            : `${name}: not connected when checked`);
+        });
+      }
+    };
+    document.addEventListener("visibilitychange", back);
+    return () => document.removeEventListener("visibilitychange", back);
+  }, [hosts]);
   const busyRef = useRef(busy);
   busyRef.current = busy;
   /** Put a queued message back in its thread's box, with the files and quotes it was sent with. */
@@ -1402,14 +1461,24 @@ export function PhoneApp() {
     const host = phoneHost(openHostId);
     // The room on screen is this one only if it came from this machine too.
     const sameShown = roomRef.current?.id === openPane.id && roomRef.current.hostId === openHostId;
+    const traceName = `"${openPane.title || "Untitled"}"`;
     // Anything else on screen goes at once, so its form and buttons can't act while this one loads.
-    if (roomRef.current && !sameShown) setRoom(null);
+    // In its place goes this thread's copy from the last visit, if the phone kept one: it shows at once,
+    // without approvals, questions or working bots, and the machine's answer replaces it.
+    const copyKey = queueKey(openHostId, openPane.id);
+    const copy = sameShown ? undefined : threadCopies.current.get(copyKey);
+    if (copy) {
+      setRoom({ ...copy.value, approvals: [], asks: NO_ASKS, working: {}, stale: true });
+      phoneTrace().add(`${traceName}: showing the copy from ${copyAge(Date.now() - copy.at)}`);
+    } else if (roomRef.current && !sameShown) setRoom(null);
     const key = threadKey(openPane, openHostId);
     // Offline keeps what is already on screen under the banner; it reloads when the machine is back.
     // Bots that were mid-reply are cut off: their turn shows as interrupted, not still going.
     if (!host || toLink(host.connection.get().status) !== "online") {
+      setThreadLoad(null);
+      phoneTrace().add(`${traceName}: not loaded, machine ${host ? host.connection.get().status.kind : "missing"}; ${sameShown || copy ? "keeping what is on screen" : "showing nothing yet"}`);
       // A chat opened while its machine is off shows the copy this phone keeps, bots and all.
-      const kept = isChatSpace(openPane.workspaceId) && !sameShown ? delivery.snapshot().chats[chatIdFor(openHostId, openPane.id)] : undefined;
+      const kept = isChatSpace(openPane.workspaceId) && !sameShown && !copy ? delivery.snapshot().chats[chatIdFor(openHostId, openPane.id)] : undefined;
       if (kept && kept.machine.id === openHostId && kept.room === openPane.id) {
         const snap = kept.snapshot;
         setRoom({ id: openPane.id, hostId: openHostId, messages: snap.transcript, approvals: [], participants: snap.participants.map(toPerson), asks: NO_ASKS, plan: false, policy: snap.options.policy,
@@ -1426,6 +1495,10 @@ export function PhoneApp() {
     }
     let live = true;
     let stop = () => {};
+    // A load that fails or hangs is tried again after a wait, until it arrives or the thread closes.
+    let tries = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    setThreadLoad({ key: copyKey, failed: null });
     const paneId = openPane.id;
     // A chat lives on its machine: it is read, never created here, and the phone keeps a copy for its outbox.
     const chatHost = isChatSpace(openPane.workspaceId) ? openHostId : null;
@@ -1434,7 +1507,13 @@ export function PhoneApp() {
     loadedSteps.current = stepsCache;
     const stepsHost = openHostId;
     const stepsLoader = createStepsIndexLoader(
-      () => host.backend.roomSteps(paneId, null),
+      () => {
+        const began = Date.now();
+        return host.backend.roomSteps(paneId, null).then(
+          (index) => { phoneTrace().add(`${traceName}: step list in ${Date.now() - began} ms`); return index; },
+          (error) => { phoneTrace().add(`${traceName}: step list failed after ${Date.now() - began} ms: ${words(error)}`); throw error; },
+        );
+      },
       (index) => {
         if (!live) return;
         for (const seq of [...stepsCache.keys()]) if (!index?.replies[String(seq)]) stepsCache.delete(seq);
@@ -1446,6 +1525,8 @@ export function PhoneApp() {
     let rosterHeard: ParticipantConfig[] | null = null;
     const applyState = (state: RoomState) => {
       if (!live) return;
+      tries = 0;
+      setThreadLoad(null);
       if (chatHost) {
         const row = findRoom(catalogRef.current, chatHost, paneId);
         try {
@@ -1478,6 +1559,9 @@ export function PhoneApp() {
         pins: state.snapshot.pins ?? [],
         compaction: state.snapshot.compaction ? { by: null, ...state.snapshot.compaction } : null,
       });
+      // Connection log: how long the phone takes to draw the thread once it has it.
+      const handed = Date.now();
+      requestAnimationFrame(() => requestAnimationFrame(() => phoneTrace().add(`${traceName}: drawn ${Date.now() - handed} ms after loading`)));
     };
     const applyEvent = (event: RoomEvent) => {
       if (!live) return;
@@ -1515,14 +1599,50 @@ export function PhoneApp() {
       });
     };
     const recovery = createRoomRecovery<RoomState, RoomEvent>({
-      load: async () => chatHost
-        ? { ...await (host.backend.roomState ? host.backend.roomState(paneId) : host.backend.call<RoomState>("room_state", { id: paneId })), live: true }
-        : loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openPath),
+      load: async () => {
+        // Connection log: how long the thread took and how big it was. One with no answer in 10 s gives up and is
+        // tried again, allowing twice as long each time (up to 80 s) so a big thread on a slow link still arrives.
+        const trace = phoneTrace();
+        const began = Date.now();
+        trace.add(`${traceName}: loading`);
+        try {
+          const state = await withDeadline(chatHost
+            ? (async () => ({ ...await (host.backend.roomState ? host.backend.roomState(paneId) : host.backend.call<RoomState>("room_state", { id: paneId })), live: true }))()
+            : loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openPath), LOAD_DEADLINE_MS * 2 ** Math.min(tries, 3));
+          trace.add(`${traceName}: loaded ${state.snapshot.transcript.length} messages (~${roughKb(state.snapshot.transcript)} KB of text) in ${Date.now() - began} ms${live ? "" : ", but this thread was already closed"}`);
+          return state;
+        } catch (error) {
+          trace.add(`${traceName}: load failed after ${Date.now() - began} ms: ${words(error)}${live ? "" : ", but this thread was already closed"}`);
+          // A machine that hasn't answered in this long may be on a dead link: ask it, and dial again if it stays quiet.
+          if (error instanceof LoadTimeout && live) {
+            void host.check(RESUME_CHECK_MS).then((how) => { if (how === "replaced") trace.add(`${host.machine.name}: no answer in ${RESUME_CHECK_MS / 1000} s; connecting again`); });
+          }
+          throw error;
+        }
+      },
       apply: applyState,
       event: applyEvent,
       represented: representedRoomEvent,
-      fail: (error) => { if (live) setNotice(words(error)); },
+      fail: (error) => {
+        if (!live) return;
+        // A lost connection is put right by reconnecting, which loads the thread again: keep saying Loading.
+        const lost = error instanceof Error && error.message === LOST;
+        setThreadLoad({ key: copyKey, failed: lost ? null : words(error) });
+        tries += 1;
+        if (tries > 6) { phoneTrace().add(`${traceName}: stopped trying; Try again loads it`); return; }
+        const wait = loadRetryDelay(tries);
+        phoneTrace().add(`${traceName}: trying again in ${wait / 1000} s`);
+        retryTimer = setTimeout(() => { retryTimer = null; if (live) void recovery.refresh(); }, wait);
+      },
     });
+    retryThreadLoad.current = () => {
+      if (!live) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      tries = 0;
+      setThreadLoad({ key: copyKey, failed: null });
+      void recovery.refresh();
+    };
     // Install the listener first. Events received before or during the snapshot are
     // buffered and replayed only when the snapshot does not already represent them.
     host.backend.onRoomEvent((id, event) => {
@@ -1533,7 +1653,7 @@ export function PhoneApp() {
       stop = unlisten;
       void recovery.refresh();
     }).catch((error) => { if (live) setNotice(words(error)); });
-    return () => { live = false; recovery.dispose(); stop(); refreshSteps.current = () => {}; };
+    return () => { live = false; if (retryTimer) clearTimeout(retryTimer); recovery.dispose(); stop(); refreshSteps.current = () => {}; retryThreadLoad.current = () => {}; };
     // Reloading follows the open thread and that machine's connection, not every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath]);
@@ -2426,6 +2546,12 @@ export function PhoneApp() {
   // still showing while another machine's thread loads can never be acted on as the new one — and a fast
   // swipe can never show one thread's messages under another thread's title.
   const openRoom = roomFits(room, openPane?.id ?? null, openHostId) ? room : null;
+  /** Pin, Retry, Revert and Fork wait for the fresh thread: the copy on screen may be behind the machine. */
+  const stillUpdating = () => {
+    if (!roomRef.current?.stale) return false;
+    setNotice("This thread is still updating. Try again in a moment.");
+    return true;
+  };
   // The title bar's Worktrees pane: a project thread on a machine that gives this phone Full access to
   // every thread (the Mac lists worktrees for nothing less). Read again whenever a reply finishes.
   const [worktreesOpen, setWorktreesOpen] = useState(false);
@@ -2449,7 +2575,7 @@ export function PhoneApp() {
   const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null || worktreesOpen;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const shownTab = tab === "machines" ? machinesReturn.current : tab;
-  const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
+  const litTab = shownTab === "settings" || shownTab === "appearance" || shownTab === "log" ? settingsReturn.current : shownTab;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots" || menu.kind === "artifacts" || menu.kind === "delete") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -2587,7 +2713,7 @@ export function PhoneApp() {
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
-            {tab === "appearance"
+            {tab === "appearance" || tab === "log"
               ? <BackButton label="Settings" onClick={() => setTab("settings")} />
               : tab === "settings"
               ? <BackButton label={tabName(settingsReturn.current)} onClick={() => setTab(settingsReturn.current)} />
@@ -2599,7 +2725,7 @@ export function PhoneApp() {
             <span className="ph-head-actions">
               {tab === "threads" && (newAllowed || chatMachines.some((item) => item.chats)) && <button type="button" className="ph-icon" aria-label="New chat or thread" onClick={() => { setQuery(""); setChatSheet({ kind: "new" }); }}><Plus size={22} /></button>}
               {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
-              {tab !== "settings" && tab !== "appearance" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
+              {tab !== "settings" && tab !== "appearance" && tab !== "log" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
@@ -2619,6 +2745,9 @@ export function PhoneApp() {
             hostIcon={machineIcon(openLink.id, 15)}
             started={started}
             messages={openRoom ? openRoom.messages : []}
+            load={!viewingPending && openPane && threadLoad?.key === queueKey(openHostId, openPane.id) ? threadLoad : null}
+            stale={openRoom?.stale === true}
+            onRetryLoad={() => retryThreadLoad.current()}
             compaction={openRoom ? openRoom.compaction : null}
             approvals={openRoom ? openRoom.approvals : []}
             participants={openRoom ? openRoom.participants : []}
@@ -2686,12 +2815,13 @@ export function PhoneApp() {
               onQuote: (message, part) => { if (openKey) quoteMessage(openKey, message, part); },
               onExplain: (message, part) => explainPart(openPane.id, message, part),
               onCopy: copyMessage,
-              onPin: (message) => togglePin(openPane.id, message),
-              onGoBack: (message) => { if (openChat) setNotice("Retry and Revert aren't in chats yet."); else void goBack(openPane.id, message); },
+              onPin: (message) => { if (!stillUpdating()) togglePin(openPane.id, message); },
+              onGoBack: (message) => { if (stillUpdating()) return; if (openChat) setNotice("Retry and Revert aren't in chats yet."); else void goBack(openPane.id, message); },
               // A task's thread belongs to its assistant, so it has no Fork; a chat has no folder to fork into.
               onFork: openPane.assistantTaskId || openChat ? undefined : (seq) => {
                 const hostId = workspaceHost(openWorkspace);
                 if (!canStartOn(hostId)) { setNotice(needsFull("Forking", linkOf(hostId)?.name ?? "this machine")); return; }
+                if (stillUpdating()) return;
                 void forkFrom(openPane, seq);
               },
             }}
@@ -2784,8 +2914,11 @@ export function PhoneApp() {
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
               <LockRow />
+              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("log")}><span className="ph-grow"><strong>Connection log</strong><small>Leaving and coming back, and thread load times</small></span><ChevronRight size={15} /></button>
             </div>
           </main>
+        ) : tab === "log" ? (
+          <ConnectionLog covered={covered} />
         ) : tab === "appearance" ? (
           <main className="ph-content ph-appearance" inert={covered}>
             <h2>Appearance</h2>
@@ -3610,6 +3743,11 @@ function ThreadView(props: {
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
+  /** The thread hasn't arrived yet: on its way, or failed with why and being tried again. Null once it is here. */
+  load?: { failed: string | null } | null;
+  /** The messages shown are the copy from the last visit, until the fresh thread replaces them. */
+  stale?: boolean;
+  onRetryLoad?(): void;
   /** Where /compact cut in, drawn as a line the person can open to read the summary. */
   compaction: Room["compaction"];
   participants: Person[]; working: PhoneWorking; cut: PhoneCuts;
@@ -4084,7 +4222,20 @@ function ThreadView(props: {
             </div>
           </div>
         )}
-        {props.messages.length === 0 && working.length === 0 && (!paused || props.chat) && (props.chat?.outbox.length ?? 0) === 0 && (
+        {/* An old copy on screen says so only if the fresh one is slow, so a quick open doesn't flicker. */}
+        {props.stale && !paused && props.messages.length > 0 && (props.load?.failed
+          ? <p className="ph-stale failed" role="status">Showing an earlier copy · {props.load.failed.replace(/\.$/, "")} · <button type="button" onClick={props.onRetryLoad}>Try again</button></p>
+          : <p className="ph-stale" role="status">Updating…</p>)}
+        {props.load && !props.stale && props.messages.length === 0 && working.length === 0 && !paused && (props.chat?.outbox.length ?? 0) === 0 && (
+          props.load.failed
+            ? <div className="ph-empty ph-loading failed" role="status">
+              <h3>Couldn’t load this thread</h3>
+              <p>{props.load.failed}</p>
+              <button type="button" onClick={props.onRetryLoad}>Try again</button>
+            </div>
+            : <div className="ph-empty ph-loading" role="status"><p>Loading…</p></div>
+        )}
+        {!props.load && props.messages.length === 0 && working.length === 0 && (!paused || props.chat) && (props.chat?.outbox.length ?? 0) === 0 && (
           <div className="ph-empty">
             <MessageSquare size={30} />
             <h3>{props.chat ? "Start the group chat" : "What are we working on?"}</h3>

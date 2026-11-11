@@ -41,6 +41,11 @@ test('a Next button drawn for one machine\'s chat sends nothing once another mac
   chatOnline:true,openRights:{post:true},linkOf:()=>({id:'B',status:'online'}),roomFor:row=>env.room&&env.room.id===row.id&&env.room.hostId===row.hostId?env.room:null,draft:{text:'',files:[]},mayPostIn,
   chatRoute,chatMachine:id=>({name:'Machine '+id}),queueFor:()=>{throw Error('Work queue must not run')},findRoom:()=>null,
   promoteHolds,readPromoteTickets,localStorage:{getItem:()=>null},
+  // The connection log is not under test here; its slow-load timers must not hold the test open.
+  phoneTrace:()=>({add(){},flush(){}}),roughKb:()=>0,setTimeout:(fn,ms)=>{const t=setTimeout(fn,ms);t.unref?.();return t},
+  // Kept copies and load retries: this phone has opened nothing before, so there is no copy to show.
+  queueKey:(hostId,id)=>JSON.stringify([hostId,id]),threadCopies:{current:{get:()=>undefined}},setThreadLoad:()=>{},retryThreadLoad:{current:()=>{}},
+  copyAge:()=>'',withDeadline:work=>work,LOAD_DEADLINE_MS:10000,LoadTimeout:class extends Error{},loadRetryDelay:()=>2000,RESUME_CHECK_MS:3000,LOST:'lost',
   };
   const h=new Function('env',`with(env){${compiled};return {sendStep}}`)(env);
   await new Promise(r=>setTimeout(r,0));
