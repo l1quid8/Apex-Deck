@@ -55,6 +55,8 @@ test("a swipe that starts on something that scrolls sideways is theirs", () => {
   const plain = { closest: () => null };
   assert.equal(swipeBlocked(insideCode), true);
   assert.equal(swipeBlocked(insideBotRow), true);
+  const onNextSteps = { closest: (selectors) => selectors.includes(".reply-next-steps-links") ? {} : null };
+  assert.equal(swipeBlocked(onNextSteps), true);
   assert.equal(swipeBlocked(plain), false);
   assert.equal(swipeBlocked(null), false);
   assert.equal(swipeBlocked(undefined), false);

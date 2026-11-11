@@ -46,10 +46,10 @@ export function neighbour(strip: readonly string[], key: string | null, to: "nex
 
 /**
  * Things that scroll sideways, and the box you type in. A swipe that starts on one of these is
- * theirs: the bot row, a wide code block, a table, the next-step chips. `data-no-swipe` marks
+ * theirs: the bot row, a wide code block, a table, the next-step line under a reply. `data-no-swipe` marks
  * anything else that wants the gesture.
  */
-export const SWIPE_BLOCKERS = "input, textarea, select, pre, table, .ph-crew-row, .ph-next-steps, [data-no-swipe]";
+export const SWIPE_BLOCKERS = "input, textarea, select, pre, table, .ph-crew-row, .ph-next-steps, .reply-next-steps-links, [data-no-swipe]";
 
 /** True when the swipe started on something that keeps its own sideways gesture. */
 export function swipeBlocked(target: { closest?(selectors: string): unknown } | null | undefined): boolean {

@@ -627,9 +627,12 @@
 .qform-steps.phone .qform-chips button { min-height: 36px; font-size: 14px; flex: none; color: var(--muted); }
 .qform-steps.phone .qform-x { min-width: 36px; min-height: 36px; padding: 0; color: var(--muted); }
 .qform.phone .qform-x { min-width: 44px; min-height: 44px; }
-/* Next steps under a reply: on a phone each suggestion stays whole on its own line rather than breaking
-   halfway through. One wider than the screen ends in "…"; holding it shows the full prompt. */
-.ph-chat .reply-next-steps .reply-next-step { display: inline-block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; vertical-align: top; }
+/* Next steps under a reply: on a phone they sit on one line, joined by "·", and the line scrolls
+   sideways when they don't all fit. No suggestion breaks across lines or is cut short; holding one
+   still shows its full prompt. A swipe that starts here scrolls the line, not the thread. */
+.ph-chat .reply-next-steps-links { white-space: nowrap; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding-right: 24px; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.ph-chat .reply-next-steps-links::-webkit-scrollbar { display: none; }
+.ph-chat .reply-next-steps .reply-next-step { display: inline; white-space: nowrap; overflow-wrap: normal; }
 .ph-composer .plan-chip { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; }
 .ph-composer .plan-chip .plan-chip-x { width: auto; opacity: .8; font-size: 11px; }
 
