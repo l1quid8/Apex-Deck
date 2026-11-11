@@ -37,6 +37,10 @@ final class AppLock {
     private var leftAt: Date?
     private var unlockedAt: Date?
     private var asking = false
+    /// The next activation should ask on its own. Set when the app locks or comes back from the
+    /// background; cleared when a prompt starts, so a cancelled or failed prompt isn't reopened by the
+    /// system sheet's own resign/become cycle — the cover's Unlock button is the way back in.
+    private var promptDue = false
     /// Set by the plugin, so a change in Settings reaches the screen without polling.
     var changed: (() -> Void)?
 
@@ -82,6 +86,7 @@ final class AppLock {
     }
 
     func willEnterForeground() {
+        if locked { promptDue = true }
         guard enabled, available, let leftAt else { return }
         guard Date().timeIntervalSince(leftAt) >= AppLock.grace else { return }
         lock()
@@ -95,7 +100,7 @@ final class AppLock {
                 return
             }
             showCover()
-            ask()
+            if promptDue { ask() }
             return
         }
         hideCover()
@@ -105,6 +110,7 @@ final class AppLock {
 
     func lock() {
         locked = true
+        promptDue = true
         showCover()
         changed?()
         if window != nil, window?.windowScene?.activationState == .foregroundActive { ask() }
@@ -121,6 +127,8 @@ final class AppLock {
     func ask(_ done: ((Bool) -> Void)? = nil) {
         guard locked, available, !asking else { done?(false); return }
         asking = true
+        promptDue = false
+        setRetryVisible()
         let context = LAContext()
         context.localizedCancelTitle = "Cancel"
         context.localizedFallbackTitle = "Use Passcode"
