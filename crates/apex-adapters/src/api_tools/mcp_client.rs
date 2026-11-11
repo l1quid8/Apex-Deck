@@ -916,6 +916,9 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn cached_link_not_reused_across_levels_or_after_drop() {
+        // This test launches a Read connection; do not observe another test's
+        // process-wide forced jail failure while exercising the cache key.
+        let _lock = crate::linux_jail::TEST_LOCK.lock().unwrap();
         let script = r#"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
