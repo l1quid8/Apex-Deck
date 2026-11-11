@@ -693,20 +693,33 @@ fn module_signature(file: &File, path: &Path) -> Result<(), String> {
     ))
 }
 fn verify_trust(mut data: windows_sys::Win32::Security::WinTrust::WINTRUST_DATA) -> i32 {
+    crate::trust_policy::verify_with_offline_fallback(|revocation| {
+        verify_trust_once(&mut data, revocation)
+    })
+}
+fn verify_trust_once(
+    data: &mut windows_sys::Win32::Security::WinTrust::WINTRUST_DATA,
+    revocation: bool,
+) -> i32 {
     use windows_sys::Win32::Security::WinTrust::*;
     data.dwStateAction = WTD_STATEACTION_VERIFY;
-    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT
-        | WTD_CACHE_ONLY_URL_RETRIEVAL
-        | WTD_DISABLE_MD2_MD4;
+    data.fdwRevocationChecks = WTD_REVOKE_NONE;
+    data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_DISABLE_MD2_MD4
+        | if revocation {
+            WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT
+        } else {
+            WTD_REVOCATION_CHECK_NONE
+        };
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     // Verify the same locked handle whose ACL was inspected, not a second
     // path lookup. Revocation uses Windows' local cache and never the network;
-    // unavailable trust/revocation data still fails closed. Always close state.
+    // only missing revocation data permits a full-policy retry. Always close
+    // and reset provider state, including before that retry.
     let result = unsafe {
         WinVerifyTrust(
             INVALID_HANDLE_VALUE,
             &mut action,
-            (&mut data as *mut WINTRUST_DATA).cast(),
+            (data as *mut WINTRUST_DATA).cast(),
         )
     };
     data.dwStateAction = WTD_STATEACTION_CLOSE;
@@ -714,9 +727,10 @@ fn verify_trust(mut data: windows_sys::Win32::Security::WinTrust::WINTRUST_DATA)
         WinVerifyTrust(
             INVALID_HANDLE_VALUE,
             &mut action,
-            (&mut data as *mut WINTRUST_DATA).cast(),
+            (data as *mut WINTRUST_DATA).cast(),
         );
     }
+    data.hWVTStateData = ptr::null_mut();
     result
 }
 fn module_catalog_signature(file: &File, path: &Path) -> Result<(), String> {

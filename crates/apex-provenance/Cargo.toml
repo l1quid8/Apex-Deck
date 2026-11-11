@@ -15,6 +15,9 @@ libc = "0.2"
 [build-dependencies]
 cc = "1"
 
+[dev-dependencies]
+tokio.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 tokio = { workspace = true, features = ["net", "io-util", "rt", "time", "sync"] }
 windows-service = "0.8"

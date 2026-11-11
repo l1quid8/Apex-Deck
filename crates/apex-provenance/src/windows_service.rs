@@ -279,18 +279,13 @@ async fn answer(stream: &mut NamedPipeServer, config: &Config) -> Result<Value, 
     if ui || daemon {
         // PSAPI, ACL and Authenticode checks must not block the async pipe
         // runtime. Bound outstanding checks even if a trust provider stalls.
-        static CHECKS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-        let permit = CHECKS.try_acquire().map_err(|_| "Peer verification busy")?;
-        tokio::time::timeout(
+        static CHECKS: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
+        crate::blocking_verification::verify(
+            CHECKS.get_or_init(|| Arc::new(Semaphore::new(4))).clone(),
             Duration::from_secs(5),
-            tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                win::peer_intact(pid)
-            }),
+            move || win::peer_intact(pid),
         )
-        .await
-        .map_err(|_| "Peer verification timed out")?
-        .map_err(|e| format!("Peer verification worker failed: {e}"))??;
+        .await?;
     }
     let mut bytes = Vec::new();
     BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))

@@ -3,6 +3,8 @@
 #[cfg(any(windows, test))]
 mod signature_cache;
 #[cfg(any(windows, test))]
+mod trust_policy;
+#[cfg(any(windows, test))]
 pub mod broker;
 #[cfg(unix)]
 pub mod io;
