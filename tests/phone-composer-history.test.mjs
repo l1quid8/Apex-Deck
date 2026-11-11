@@ -32,7 +32,7 @@ test('phone composer hardware arrows recall local history and preserve native ed
         gate:{enabled:true,reason:''}, endRef:{current:null}, runner:null,
         swipe:{next:null,previous:null,position:''}, onSwipe(){},
         steps:null, pictures:{read:async()=>new ArrayBuffer(0),blocked:null},
-        onDraft:window.replaceDraft, onResized() {}, onScrolled() {},
+        onDraft:window.replaceDraft, onResized() {}, onScrolled() {}, places:new Map(),
         onSend(){window.sends++; window.replaceDraft('');}
       });
     }
