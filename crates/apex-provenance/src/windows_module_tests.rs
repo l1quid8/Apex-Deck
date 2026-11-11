@@ -215,6 +215,38 @@ fn checked_module_replaced_at_same_path_is_rechecked() {
 
 #[test]
 #[ignore = "requires elevated Windows; windows-dll-safety CI"]
+fn protected_hard_link_in_addable_folder_is_refused() {
+    let fixture = Fixture::new("hard-link");
+    let original = fixture.base.join("original.dll");
+    std::fs::rename(&fixture.file, &original).unwrap();
+    std::fs::hard_link(&original, &fixture.file).unwrap();
+    assert!(fixture.accepted(), "protected trees permit Windows hard links");
+    // FILE_ADD_FILE alone does not let a user change existing protected
+    // files, but does let them plant a hard link to one at a vacated path.
+    acl(&fixture.base, ADMIN, "(A;;0x2;;;BU)");
+    let error = verify_module(fixture.file.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("link"), "{error}");
+    std::fs::remove_file(original).unwrap();
+    assert!(fixture.accepted(), "one link under an add-only ancestor is safe");
+}
+
+#[test]
+#[ignore = "requires elevated Windows; windows-dll-safety CI"]
+fn checked_module_replaced_with_protected_hard_link_is_refused() {
+    let fixture = Fixture::new("hard-link-replacement");
+    acl(&fixture.base, ADMIN, "(A;;0x2;;;BU)");
+    assert!(fixture.accepted());
+    let genuine = fixture.base.join("genuine.dll");
+    std::fs::copy(&fixture.file, &genuine).unwrap();
+    acl(&genuine, ADMIN, "");
+    std::fs::rename(&fixture.file, fixture.base.join("loaded.dll")).unwrap();
+    std::fs::hard_link(&genuine, &fixture.file).unwrap();
+    let error = verify_module(fixture.file.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("link"), "{error}");
+}
+
+#[test]
+#[ignore = "requires elevated Windows; windows-dll-safety CI"]
 fn previously_safe_ancestor_becoming_writable_is_refused() {
     let fixture = Fixture::new("ancestor-changed");
     assert!(fixture.accepted());
