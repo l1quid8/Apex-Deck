@@ -375,6 +375,13 @@ fn provider_error_falls_back_to_read_only_with_reason() {
             "disk full".to_string(),
             expected_line,
         )]);
+
+        // A fell back to the shared folder; the thread is told, not left guessing.
+        let notes: Vec<String> = events.lock().unwrap().iter().filter_map(|e| match e {
+            RoomEvent::MessageAdded { message } => Some(message.text.clone()),
+            _ => None,
+        }).collect();
+        assert!(notes.contains(&apex_core::shared_folder_line("A", "disk full")), "{notes:?}");
     });
 }
 

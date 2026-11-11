@@ -728,6 +728,20 @@ impl ConcurrentRoom {
             };
             (editor, held_by, false)
         };
+        if editor.is_some() {
+            if let Some(reason) = copy_refused.take() {
+                // Working in the shared folder without saying so hides why an
+                // agent's turn could clash with the others'.
+                let name = self.room.lock().await.configs().iter().find(|c| c.id == ticket.id).map(|c| c.display_name.clone()).unwrap_or_else(|| ticket.id.to_string());
+                sink(RoomEvent::MessageAdded { message: crate::Message {
+                    late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+                    servers: Vec::new(), seq: 0,
+                    speaker: Speaker::Bot(ParticipantId::new("deck")),
+                    text: shared_folder_line(&name, &reason),
+                    at: None,
+                } });
+            }
+        }
         if let Some(held_by) = held_by {
             let mut copy_granted = false;
             let mut read_only_reason = copy_refused.take();
@@ -865,6 +879,11 @@ impl ConcurrentRoom {
 pub fn read_only_line(bot: &str, editor: &str, reason: &str) -> String {
     let reason = reason.trim_end().trim_end_matches('.');
     format!("{bot} is read-only this turn: {editor} is editing and Deck couldn't make a separate copy ({reason}).")
+}
+
+pub fn shared_folder_line(bot: &str, reason: &str) -> String {
+    let reason = reason.trim_end().trim_end_matches('.');
+    format!("{bot} is working in the thread's folder this turn, not its own copy: Deck couldn't make one ({reason}).")
 }
 
 pub fn copy_turn_line(path: &Path) -> String {

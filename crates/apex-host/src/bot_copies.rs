@@ -997,6 +997,15 @@ pub type ReconcileStarter = Arc<
     dyn Fn(String, ParticipantId, String) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
 >;
 
+/// How long a new turn waits for the agent's previous copy to fold back.
+const FOLD_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A copy a turn may run in. A folding copy belongs to the fold queue, which
+/// deletes it when done, so a turn must never start inside one.
+fn adoptable(state: &CopyState) -> bool {
+    matches!(state, CopyState::Working | CopyState::Reconciling { .. })
+}
+
 pub fn recover_unfolded_copies(data: &Path) -> Vec<BotCopy> {
     load_copies(data)
         .into_iter()
@@ -1206,6 +1215,12 @@ impl FoldQueue {
         let _guard = ReleaseGuard(Arc::clone(&task.editor_handle));
 
         let copy = task.copy.clone();
+        if std::fs::symlink_metadata(&copy.work).is_err() {
+            eprintln!("bot copy {}/{}: its folder is gone, nothing to fold", copy.thread, copy.bot);
+            let data = self.data.clone();
+            let _ = tokio::task::spawn_blocking(move || remove_copy(&data, &copy)).await;
+            return;
+        }
         let mut retries = 0;
         loop {
             let copy_clone = copy.clone();
@@ -1395,10 +1410,7 @@ impl CopyProvider for BotCopies {
                     .find(|c| c.thread == self.thread && c.bot == id.as_str())
             };
             if let Some(copy) = existing {
-                if matches!(
-                    copy.state,
-                    CopyState::Working | CopyState::Folding | CopyState::Reconciling { .. }
-                ) {
+                if adoptable(&copy.state) {
                     let dir = self.agent_dir(&copy).ok();
                     self.active.lock().unwrap().insert(id.clone(), copy);
                     return dir;
@@ -1416,20 +1428,39 @@ impl CopyProvider for BotCopies {
                     return self.agent_dir(c);
                 }
             }
-            let existing = {
-                let copies = load_copies(&self.data);
-                copies
+            // The agent's last copy may still be folding back: wait for that to
+            // finish rather than work in a copy that is about to be deleted.
+            let started = std::time::Instant::now();
+            let existing = loop {
+                let existing = load_copies(&self.data)
                     .into_iter()
-                    .find(|c| c.thread == self.thread && c.bot == id.as_str())
+                    .find(|c| c.thread == self.thread && c.bot == id.as_str());
+                match existing {
+                    Some(copy) if copy.state == CopyState::Folding => {
+                        if started.elapsed() > FOLD_WAIT {
+                            return Err("its last copy is still being copied back".into());
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    other => break other,
+                }
             };
             if let Some(copy) = existing {
-                if matches!(
-                    copy.state,
-                    CopyState::Working | CopyState::Folding | CopyState::Reconciling { .. }
-                ) {
+                if adoptable(&copy.state) {
                     let dir = self.agent_dir(&copy);
                     self.active.lock().unwrap().insert(id.clone(), copy);
                     return dir;
+                }
+                if std::fs::symlink_metadata(&copy.work).is_err() {
+                    // A record whose folder is gone holds nothing to keep; left
+                    // alone it would block every later copy for this agent.
+                    let data = self.data.clone();
+                    let _ = tokio::task::spawn_blocking(move || remove_copy(&data, &copy)).await;
+                } else if let CopyState::NeedsYou { reason } = &copy.state {
+                    return Err(format!(
+                        "its last copy needs you in the Worktrees tab: {}",
+                        reason.trim_end().trim_end_matches('.')
+                    ));
                 }
             }
             let root = self.root.clone();
@@ -2483,6 +2514,85 @@ mod tests {
         assert!(load_copies(&data).is_empty(), "the folded copy is removed");
     }
 
+    fn plain_copies(data: &Path, thread: &str, root: &Path) -> BotCopies {
+        BotCopies::new(
+            data.to_path_buf(),
+            thread.into(),
+            root.to_path_buf(),
+            Arc::new(Mutex::new(None)),
+            Arc::new(|_| {}),
+            Arc::new(FoldQueue::new(data.to_path_buf())),
+        )
+    }
+
+    #[tokio::test]
+    async fn next_turn_waits_for_the_last_copy_to_fold_instead_of_reusing_it() {
+        let (_tmp, root, data) = init_repo("folding-not-adopted");
+        let mut old = create_copy(&root, &data, "t-fold", "bot1").unwrap();
+        old.state = CopyState::Folding;
+        save_state(&data, &old).unwrap();
+        let copies = plain_copies(&data, "t-fold", &root);
+        let id = ParticipantId::new("bot1");
+        assert_eq!(copies.active_copy(&id).await, None, "a folding copy is not this turn's");
+        let (fold_data, fold_copy) = (data.clone(), old.clone());
+        let fold = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::task::spawn_blocking(move || remove_copy(&fold_data, &fold_copy)).await.unwrap().unwrap();
+        });
+        let dir = copies.copy_for(&id).await.unwrap();
+        fold.await.unwrap();
+        assert_eq!(dir, old.work, "a fresh copy is made in the same place once the fold is done");
+        assert!(dir.is_dir(), "the new copy survives the old copy's cleanup");
+        let copy = load_copies(&data).into_iter().find(|c| c.bot == "bot1").unwrap();
+        assert_eq!(copy.state, CopyState::Working);
+    }
+
+    #[tokio::test]
+    async fn a_dead_copy_record_does_not_block_new_copies() {
+        let (_tmp, root, data) = init_repo("dead-record");
+        let mut old = create_copy(&root, &data, "t-dead", "bot1").unwrap();
+        fs::remove_dir_all(&old.work).unwrap();
+        old.state = CopyState::NeedsYou { reason: "Cannot resolve path: No such file or directory (os error 2)".into() };
+        save_state(&data, &old).unwrap();
+        let copies = plain_copies(&data, "t-dead", &root);
+        let dir = copies.copy_for(&ParticipantId::new("bot1")).await.unwrap();
+        assert!(dir.is_dir());
+        let copy = load_copies(&data).into_iter().find(|c| c.bot == "bot1").unwrap();
+        assert_eq!(copy.state, CopyState::Working);
+    }
+
+    #[tokio::test]
+    async fn a_kept_copy_that_needs_you_says_so() {
+        let (_tmp, root, data) = init_repo("kept-needs-you");
+        let mut old = create_copy(&root, &data, "t-kept", "bot1").unwrap();
+        old.state = CopyState::NeedsYou { reason: "merge conflicts".into() };
+        save_state(&data, &old).unwrap();
+        let copies = plain_copies(&data, "t-kept", &root);
+        let err = copies.copy_for(&ParticipantId::new("bot1")).await.unwrap_err();
+        assert!(err.contains("needs you in the Worktrees tab: merge conflicts"), "{err}");
+        assert!(old.work.is_dir(), "the kept copy is left for the user");
+    }
+
+    #[tokio::test]
+    async fn folding_a_copy_whose_folder_is_gone_just_forgets_it() {
+        let (_tmp, root, data) = init_repo("fold-gone");
+        let copy = create_copy(&root, &data, "t-gone", "bot1").unwrap();
+        fs::remove_dir_all(&copy.work).unwrap();
+        let notes = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = Arc::clone(&notes);
+        let queue = Arc::new(FoldQueue::new(data.clone()));
+        queue.enqueue(FoldTask {
+            thread: "t-gone".into(),
+            copy,
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new(move |e| if let RoomEvent::MessageAdded { message } = e { seen.lock().unwrap().push(message.text); }),
+            reconcile: None,
+        });
+        queue.wait_idle().await;
+        assert!(load_copies(&data).is_empty(), "no record is left to block the next copy");
+        assert!(notes.lock().unwrap().is_empty(), "no misleading 'kept in the Worktrees tab' note");
+    }
+
     #[test]
     fn untracked_thread_folder_gets_no_copy() {
         let (_tmp, root, data) = init_repo("subfolder-untracked");
@@ -2758,8 +2868,8 @@ mod tests {
     async fn fold_error_marks_needs_you_and_tells_the_chat() {
         let (_tmp, root, data) = init_repo("fold-err");
         let copy = create_copy(&root, &data, "t1", "bot1").unwrap();
-        // Make merge fail by deleting the worktree directory
-        fs::remove_dir_all(&copy.work).unwrap();
+        // Make the merge fail: the copy's folder is still there but no longer a checkout.
+        fs::remove_file(copy.work.join(".git")).unwrap();
 
         let fold_queue = Arc::new(FoldQueue::new(data.clone()));
         let events = Arc::new(Mutex::new(Vec::new()));
