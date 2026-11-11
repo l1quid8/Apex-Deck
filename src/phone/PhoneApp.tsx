@@ -188,6 +188,8 @@ type Room = {
   used: Record<string, TokenTotals>;
   /** Pinned for every model in the thread; a pinned message keeps its seq. */
   pins: string[];
+  /** Where /compact cut in: the models see `summary` instead of the messages before `upto`. A saved one does not say who wrote it. */
+  compaction: { by: string | null; summary: string; upto: number } | null;
 };
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
@@ -1408,7 +1410,7 @@ export function PhoneApp() {
       if (kept && kept.machine.id === openHostId && kept.room === openPane.id) {
         const snap = kept.snapshot;
         setRoom({ id: openPane.id, hostId: openHostId, messages: snap.transcript, approvals: [], participants: snap.participants.map(toPerson), asks: NO_ASKS, plan: false, policy: snap.options.policy,
-          working: {}, configs: snap.participants, fill: {}, plans: {}, credits: {}, used: snap.usage ?? {}, pins: snap.pins ?? [] });
+          working: {}, configs: snap.participants, fill: {}, plans: {}, credits: {}, used: snap.usage ?? {}, pins: snap.pins ?? [], compaction: snap.compaction ? { by: null, ...snap.compaction } : null });
         return;
       }
       const shown = roomRef.current;
@@ -1471,6 +1473,7 @@ export function PhoneApp() {
         credits: {},
         used: state.snapshot.usage ?? {},
         pins: state.snapshot.pins ?? [],
+        compaction: state.snapshot.compaction ? { by: null, ...state.snapshot.compaction } : null,
       });
     };
     const applyEvent = (event: RoomEvent) => {
@@ -1485,6 +1488,7 @@ export function PhoneApp() {
       if (event.type === "message_added") setRoom((current) => current && current.id === id && !current.messages.some((message) => message.seq === event.message.seq) ? { ...current, messages: [...current.messages, event.message] } : current);
       if (event.type === "approval_requested") setRoom((current) => current && current.id === id ? { ...current, approvals: [...current.approvals.filter((card) => card.request !== event.request), { id: event.id, request: event.request, action: event.action }] } : current);
       if (event.type === "approval_resolved") setRoom((current) => current && current.id === id ? { ...current, approvals: current.approvals.filter((card) => card.request !== event.request) } : current);
+      if (event.type === "compacted") setRoom((current) => current && current.id === id ? { ...current, compaction: { by: event.id, summary: event.summary, upto: event.upto } } : current);
       if (event.type === "plan_changed") setRoom((current) => current && current.id === id ? { ...current, plan: event.on } : current);
       if (event.type === "context_usage") setRoom((current) => current && current.id === id ? { ...current, fill: { ...current.fill, [event.id]: { used: event.used_tokens, window: event.window_tokens } } } : current);
       if (event.type === "usage") setRoom((current) => {
@@ -1846,7 +1850,7 @@ export function PhoneApp() {
         if (busy) { setNotice(CLEAR_BUSY); return; }
         await host.backend.roomClear(pane.id);
         clearBox();
-        setRoom((current) => current && current.id === pane.id && current.hostId === host.machine.id ? { ...current, messages: [], pins: [], asks: NO_ASKS } : current);
+        setRoom((current) => current && current.id === pane.id && current.hostId === host.machine.id ? { ...current, messages: [], pins: [], asks: NO_ASKS, compaction: null } : current);
         setNotice(CLEARED);
         return;
       case "compact": case "curate": case "curate_undo": {
@@ -1873,7 +1877,7 @@ export function PhoneApp() {
       }
       case "export": {
         const at = new Date();
-        const thread: ThreadExport = { title: pane.title, participants: shown?.configs ?? [], transcript: shown?.messages ?? [], pins: shown?.pins ?? [], compaction: null };
+        const thread: ThreadExport = { title: pane.title, participants: shown?.configs ?? [], transcript: shown?.messages ?? [], pins: shown?.pins ?? [], compaction: shown?.compaction ? { summary: shown.compaction.summary, upto: shown.compaction.upto } : null };
         const json = command.format === "json";
         const shared = await shareThreadFile({ name: exportFileName(pane.title, command.format, at), text: json ? exportJson(thread, at) : exportMarkdown(thread, at), type: json ? "application/json" : "text/markdown" }, pane.title);
         if (shared) clearBox();
@@ -2601,6 +2605,7 @@ export function PhoneApp() {
             hostIcon={machineIcon(openLink.id, 15)}
             started={started}
             messages={openRoom ? openRoom.messages : []}
+            compaction={openRoom ? openRoom.compaction : null}
             approvals={openRoom ? openRoom.approvals : []}
             participants={openRoom ? openRoom.participants : []}
             toIds={openRoom && answerers?.paneId === openRoom.id ? answerers.ids : null}
@@ -3584,6 +3589,8 @@ function ThreadView(props: {
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
+  /** Where /compact cut in, drawn as a line the person can open to read the summary. */
+  compaction: Room["compaction"];
   participants: Person[]; working: PhoneWorking; cut: PhoneCuts;
   paneId: string; stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; gate: { enabled: boolean; reason: string };
   /** Who a message without an @name goes to: "Null", "everyone"; null while unknown. */
@@ -3897,6 +3904,13 @@ function ThreadView(props: {
     const who = person(id);
     return <div className="ph-by" style={{ "--agent-color": who.look.color } as CSSProperties}><Avatar seed={who.look.seed} color={who.look.color} size="sm" working={live && !asking(id)} /><span>{who.display_name}</span></div>;
   };
+  // The line /compact leaves, as on the desktop: tap it to read what the models now see instead.
+  const compactedLine = (cut: NonNullable<Room["compaction"]>) => (
+    <details key={`s${cut.upto}`} className="compacted ph-compacted">
+      <summary>{cut.by ? `Summarized by ${person(cut.by).display_name}` : "Summarized"} · the models see this instead of the messages above</summary>
+      <div className="ph-md"><Markdown text={cut.summary} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>
+    </details>
+  );
   return (
     <>
       <header className="ph-nav" inert={props.covered}>
@@ -4043,14 +4057,16 @@ function ThreadView(props: {
             {actionsFor(message, message.text)}
           </section>
         );
+          const cutIn=props.compaction&&index===props.compaction.upto?[compactedLine(props.compaction)]:[];
           if(props.runner?.replySeqs?.includes(message.seq)){
             const previous=props.messages[index-1];
-            if(previous&&props.runner.replySeqs.includes(previous.seq))return [];
+            if(previous&&props.runner.replySeqs.includes(previous.seq))return cutIn;
             const group=[];for(let n=index;n<props.messages.length;n++){const row=props.messages[n];if(!props.runner.replySeqs.includes(row.seq))break;group.push(row);}
-            return [<RunnerWork key={`runner-${message.seq}`} snapshot={props.runner} count={group.length}>{group.map(renderMessage)}</RunnerWork>];
+            return [...cutIn,<RunnerWork key={`runner-${message.seq}`} snapshot={props.runner} count={group.length}>{group.map(renderMessage)}</RunnerWork>];
           }
-          return [renderMessage(message)];
+          return [...cutIn,renderMessage(message)];
         })}
+        {props.compaction && props.compaction.upto >= props.messages.length && compactedLine(props.compaction)}
         {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}
         {cut.map(([id, part]) => (
           <section key={`c-${id}`} className="ph-msg ph-was">

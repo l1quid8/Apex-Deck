@@ -493,6 +493,26 @@ fn compacting_shows_the_models_a_summary_instead_of_the_older_messages() {
 }
 
 #[test]
+fn compacting_always_says_the_summarizer_is_done() {
+    // TurnStarted marks the summarizer busy; without a matching end, every
+    // client shows it working forever and Stop has nothing to stop.
+    let opus = bot("opus", &["sqlite it is"]);
+    let mut room = room(&[&opus], TurnPolicy::Mention, 3);
+    say(&mut room, "which database?");
+    let idle = RoomEvent::ParticipantIdle { id: ParticipantId::new("opus") };
+
+    let (result, events) = compact(&mut room, &ScriptedParticipant::new("opus", &["Chose sqlite."]));
+    assert_eq!(result, Ok(()));
+    assert_eq!(events.first(), Some(&RoomEvent::TurnStarted { id: ParticipantId::new("opus") }));
+    assert_eq!(events.last(), Some(&idle));
+
+    say(&mut room, "and the cache?");
+    let (result, events) = compact(&mut room, &ScriptedParticipant::new("opus", &["   "]));
+    assert!(result.is_err());
+    assert_eq!(events.last(), Some(&idle));
+}
+
+#[test]
 fn compacting_again_folds_the_last_summary_into_the_new_one() {
     let opus = bot("opus", &["a", "b"]);
     let mut room = room(&[&opus], TurnPolicy::Mention, 3);

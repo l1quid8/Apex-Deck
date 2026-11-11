@@ -1434,3 +1434,9 @@
 .ph-viewer-body img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .ph-viewer-body.actual { place-items: start; overflow: auto; -webkit-overflow-scrolling: touch; }
 .ph-viewer-body.actual img { max-width: none; max-height: none; }
+
+/* The /compact line: on a phone the words can wrap, so they stay centred between the rules. */
+.ph-compacted { margin: 6px 0 14px; }
+.ph-compacted summary { text-align: center; line-height: 1.35; }
+.ph-compacted summary::before,
+.ph-compacted summary::after { min-width: 16px; }

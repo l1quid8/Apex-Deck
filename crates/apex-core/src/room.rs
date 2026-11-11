@@ -942,18 +942,24 @@ impl Room {
             on_event(RoomEvent::Stopped);
             return Ok(());
         }
-        let reply = outcome.map_err(|error| error.to_string())?;
-        if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
-            self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
-            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros, cost_estimated: reply.cost_estimated });
-        }
-        let summary = reply.text.trim();
-        if summary.is_empty() || summary.eq_ignore_ascii_case(PASS_TOKEN) {
-            return Err(format!("{} did not write a summary", summarizer.config().display_name));
-        }
-        self.compaction = Some(Compaction { summary: summary.to_string(), upto });
-        on_event(RoomEvent::Compacted { id, summary: summary.to_string(), upto });
-        Ok(())
+        // TurnStarted marked the summarizer busy everywhere; like curate, always say it is done,
+        // or clients and the host's live state keep showing it working with nothing to stop.
+        let result = (|| {
+            let reply = outcome.map_err(|error| error.to_string())?;
+            if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
+                self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
+                on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros, cost_estimated: reply.cost_estimated });
+            }
+            let summary = reply.text.trim();
+            if summary.is_empty() || summary.eq_ignore_ascii_case(PASS_TOKEN) {
+                return Err(format!("{} did not write a summary", summarizer.config().display_name));
+            }
+            self.compaction = Some(Compaction { summary: summary.to_string(), upto });
+            on_event(RoomEvent::Compacted { id: id.clone(), summary: summary.to_string(), upto });
+            Ok(())
+        })();
+        on_event(RoomEvent::ParticipantIdle { id });
+        result
     }
 
     /// A between-turn visibility operation. Replies are control data, never chat text.
