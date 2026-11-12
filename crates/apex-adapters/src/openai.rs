@@ -25,7 +25,7 @@ const TOOL_CALLS_MAX: usize = 64;
 const TOOLS_RETRY_AFTER: Duration = Duration::from_secs(600);
 
 /// A participant backed by an HTTP API that speaks the OpenAI-style chat
-/// completions format with server-sent event streaming.
+/// completions format with server-sent event streaming. Direct OpenAI uses Responses.
 ///
 /// In a chat it is given tools (`api_tools`): files, a shell, web pages and
 /// the person's MCP servers, gated by its access level. Built with `new`
@@ -102,13 +102,25 @@ impl OpenAiCompatParticipant {
 // Never send OpenAI's paid processing override to an arbitrary compatible server.
 fn apply_speed(body: &mut Value, base_url: &str, speed: Option<apex_core::Speed>) {
     let Some(speed) = speed else { return };
-    let Ok(url) = reqwest::Url::parse(base_url.trim()) else { return };
-    if url.scheme() == "https" && url.host_str() == Some("api.openai.com")
+    if is_direct_openai(base_url) {
+        body["service_tier"] = json!(crate::presets::codex_service_tier(speed));
+    }
+}
+
+fn is_direct_openai(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else { return false };
+    url.scheme() == "https" && url.host_str() == Some("api.openai.com")
         && url.port_or_known_default() == Some(443) && url.path().trim_end_matches('/') == "/v1"
         && url.query().is_none() && url.fragment().is_none()
         && url.username().is_empty() && url.password().is_none()
-    {
-        body["service_tier"] = json!(crate::presets::codex_service_tier(speed));
+}
+
+/// Translate only the official OpenAI endpoint; compatible providers keep Chat Completions.
+fn wire_body(base_url: &str, body: Value) -> Result<Value, ParticipantError> {
+    if is_direct_openai(base_url) {
+        crate::responses::request(&body).map_err(|e| ParticipantError::Failed(e.into()))
+    } else {
+        Ok(body)
     }
 }
 
@@ -150,6 +162,7 @@ pub(crate) enum SseLine {
     Text(String),
     /// A piece of the model's thinking, which isn't part of the reply.
     Reasoning(String),
+    Refusal(String),
     /// A piece of a tool call. The first piece of each call has its id and
     /// name; the arguments arrive in pieces after it.
     Tool { index: Option<usize>, id: Option<String>, name: Option<String>, arguments: String, extra: Option<String> },
@@ -189,6 +202,9 @@ pub(crate) fn parse_sse_line(line: &str) -> Vec<SseLine> {
         if !text.is_empty() {
             out.push(SseLine::Text(text.to_string()));
         }
+    }
+    if let Some(text) = delta["refusal"].as_str().filter(|t| !t.is_empty()) {
+        out.push(SseLine::Refusal(text.to_string()));
     }
     for call in delta["tool_calls"].as_array().into_iter().flatten() {
         out.push(SseLine::Tool {
@@ -320,7 +336,7 @@ impl Participant for OpenAiCompatParticipant {
             Some(name) => Some(crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?),
             None => None,
         };
-        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        let url = format!("{}/{}", base_url.trim().trim_end_matches('/'), if is_direct_openai(base_url) { "responses" } else { "chat/completions" });
         let effort = request.effort_override.as_deref().or(self.config.effort.as_deref());
         let mut base = request_body(model, effort, &request, &self.attachment_roots)?;
         apply_speed(&mut base, base_url, self.config.speed);
@@ -393,6 +409,10 @@ impl Participant for OpenAiCompatParticipant {
                 if thinking_off {
                     body["thinking"] = json!({"type": "disabled"});
                 }
+                let body = match wire_body(base_url, body) {
+                    Ok(body) => body,
+                    Err(error) => fail!(error),
+                };
                 let mut call = self.client.post(&url).json(&body);
                 if let Some(key) = &key {
                     call = call.bearer_auth(key);
@@ -490,6 +510,9 @@ impl Participant for OpenAiCompatParticipant {
                     call
                 }).collect::<Vec<_>>()
             });
+            if !streamed.refusal.is_empty() {
+                said["refusal"] = json!(streamed.refusal);
+            }
             if !streamed.reasoning.is_empty() && !thinking_off && echo_thinking {
                 said["reasoning_content"] = json!(streamed.reasoning);
             }
@@ -611,6 +634,7 @@ struct Usage {
 #[derive(Debug, Default)]
 struct Streamed {
     text: String,
+    refusal: String,
     reasoning: String,
     calls: Vec<ToolCall>,
     context: Option<ContextUse>,
@@ -623,8 +647,10 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
     let mut decoder = Utf8Chunks::default();
     let mut line = String::new();
     let mut stream = response.bytes_stream();
+    let mut responses = (url.trim_end_matches('/').ends_with("/responses"))
+        .then(crate::responses::Stream::default);
     let mut done = false;
-    let mut handle = |line: &str, out: &mut Streamed, done: &mut bool| -> Result<(), ParticipantError> {
+    let mut handle = |line: &str, out: &mut Streamed, done: &mut bool, computer_content: &mut bool| -> Result<(), ParticipantError> {
         for item in parse_sse_line(line) {
             match item {
                 SseLine::Text(text) => {
@@ -632,6 +658,10 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
                     out.text.push_str(&text);
                 }
                 SseLine::Reasoning(text) => out.reasoning.push_str(&text),
+                SseLine::Refusal(text) => {
+                    on_text(&text);
+                    out.refusal.push_str(&text);
+                }
                 SseLine::Tool { index, id, name, arguments, extra } => {
                     // Without an index, a new id starts a new call; anything
                     // else continues the last one.
@@ -682,19 +712,35 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
     };
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| ParticipantError::Failed(format!("stream from {url} broke: {e}")))?;
+        if let Some(translator) = responses.as_mut() {
+            let frames = translator.push(&chunk);
+            // Calls stay buffered until success, but provider failures may echo
+            // their private arguments before any executable call is emitted.
+            *computer_content |= translator.may_have_computer_content();
+            let frames = frames.map_err(|e| ParticipantError::Failed(format!("stream from {url} failed: {e}")))?;
+            for frame in frames {
+                handle(&format!("data: {frame}"), &mut out, &mut done, computer_content)?;
+            }
+            if translator.done { break; }
+            continue;
+        }
         line.push_str(&decoder.push(&chunk));
         while let Some(end) = line.find('\n') {
             let complete: String = line.drain(..=end).collect();
-            handle(complete.trim_end_matches('\n'), &mut out, &mut done)?;
+            handle(complete.trim_end_matches('\n'), &mut out, &mut done, computer_content)?;
         }
         if done {
             break;
         }
     }
+    if let Some(translator) = responses {
+        translator.end().map_err(|e| ParticipantError::Failed(format!("stream from {url} failed: {e}")))?;
+        done = true;
+    }
     if !done {
         line.push_str(&decoder.finish());
         if !line.is_empty() {
-            handle(&line, &mut out, &mut done)?;
+            handle(&line, &mut out, &mut done, computer_content)?;
         }
     }
     *computer_content |= out.calls.iter().any(ToolCall::has_computer_content);
@@ -970,6 +1016,118 @@ done
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });
         reqwest::get(format!("http://{address}")).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn direct_responses_stream_preserves_tools_and_reasoning_replay() {
+        let output = json!([
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Checking"},{"type":"refusal","refusal":"Cannot do another part"}]},
+            {"type":"reasoning","id":"rs_test","summary":[],"encrypted_content":"opaque"},
+            {"type":"function_call","id":"fc_test","call_id":"call_test","name":"read_file","arguments":"{\"path\":\"proof.txt\"}"}
+        ]);
+        let event = json!({"type":"response.completed","response":{"id":"resp_test","model":"gpt-6.1-sol","status":"completed","output":output,"usage":{"input_tokens":13,"output_tokens":7,"input_tokens_details":{"cached_tokens":4}}}});
+        let response = fixture_stream(format!("data: {event}\n\n")).await;
+        let streamed = read_stream(response, "https://api.openai.com/v1/responses", &mut |_| {}, &mut false).await.unwrap();
+        assert_eq!(streamed.calls.len(), 1);
+        assert_eq!(streamed.calls[0].name, "read_file");
+        assert_eq!(streamed.calls[0].id, "call_test");
+        assert_eq!(streamed.usage.input, Some(13));
+        assert_eq!(streamed.usage.cached, Some(4));
+        let extra: Value = serde_json::from_str(streamed.calls[0].extra.as_ref().unwrap()).unwrap();
+        assert_eq!(extra["apex_responses"]["output"], output);
+        let said = json!({"role":"assistant","content":streamed.text,"refusal":streamed.refusal,
+            "tool_calls":[{"id":streamed.calls[0].id,"type":"function","function":{"name":streamed.calls[0].name,"arguments":streamed.calls[0].arguments},"extra_content":extra}]});
+        let dir = std::env::temp_dir().join(format!("apex-direct-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proof = format!("proof-{:?}", std::time::SystemTime::now());
+        std::fs::write(dir.join("proof.txt"), &proof).unwrap();
+        let tools = ToolBox::new(&crate::BuildContext { cwd: Some(dir.clone()), ..Default::default() });
+        let progress = |_: Progress<'_>| {};
+        let approver = NoApprover;
+        let mut turn = api_tools::Turn::new(&tools, apex_core::Access::Read, false, apex_core::Access::Read, &approver, &progress);
+        let result = turn.run(&streamed.calls[0]).await;
+        turn.finish().await;
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result.text.contains(&proof), "{}", result.text);
+        let body = wire_body("https://api.openai.com/v1", json!({"model":"gpt-6.1-sol","reasoning_effort":"high","messages":[said,{"role":"tool","tool_call_id":"call_test","content":result.text}]})).unwrap();
+        assert_eq!(body["input"][0], output[0]);
+        assert_eq!(body["input"][1], output[1]);
+        assert_eq!(body["input"][2], output[2]);
+        assert!(body["input"][3]["output"].as_str().unwrap().contains(&proof));
+    }
+
+    #[tokio::test]
+    async fn direct_responses_refusals_are_visible() {
+        let event = json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I cannot do that."}]}]}});
+        let response = fixture_stream(format!("data: {event}\n\n")).await;
+        let mut visible = String::new();
+        let streamed = read_stream(response, "https://api.openai.com/v1/responses", &mut |text| visible.push_str(text), &mut false).await.unwrap();
+        assert_eq!(streamed.refusal, "I cannot do that.");
+        assert!(streamed.text.is_empty());
+        assert_eq!(visible, streamed.refusal);
+    }
+
+    #[tokio::test]
+    async fn direct_responses_pending_calls_hide_provider_error_echoes() {
+        for name in ["mcp_call", "mcp_list_tools", ""] {
+            let events = [
+                json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_private","name":name,"arguments":""}}),
+                json!({"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"server\":\"apex-computer\",\"arguments\":{\"text\":\"TYPED_SECRET\"}}"}),
+                json!({"type":"response.failed","response":{"error":{"message":"Echoed TYPED_SECRET SCREEN_SECRET"}}})
+            ];
+            let body = events.iter().map(|event| format!("data: {event}\n\n")).collect::<String>();
+            let response = fixture_stream(body).await;
+            let error = read_stream(response, "https://api.openai.com/v1/responses", &mut |_| {}, &mut false).await.unwrap_err();
+            assert!(!error.to_string().contains("SECRET"), "provider text reached the error: {error}");
+            assert!(error.to_string().contains("computer content hidden"));
+        }
+    }
+
+    #[test]
+    fn direct_responses_wire_preserves_high_history_and_tool_results() {
+        let mut body = json!({"model":"gpt-6.1-sol","reasoning_effort":"high","stream":true,
+            "messages":[{"role":"system","content":"Work here"},{"role":"user","content":"Read proof"},{"role":"assistant","content":"Earlier answer"}],
+            "tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}],"tool_choice":"auto"});
+        let direct = wire_body("https://api.openai.com/v1/", body.clone()).unwrap();
+        assert_eq!(direct["reasoning"]["effort"], "high");
+        assert_eq!(direct["input"][2]["content"][0]["type"], "output_text");
+        assert_eq!(direct["tools"][0]["name"], "read_file");
+        assert_eq!(direct["tools"][0]["strict"], false);
+        assert_eq!(direct["store"], false);
+        assert_eq!(direct["include"][0], "reasoning.encrypted_content");
+        assert!(direct.get("reasoning_effort").is_none());
+        assert!(direct.get("stream_options").is_none());
+        let output = json!([
+            {"type":"reasoning","id":"rs_test","summary":[],"encrypted_content":"opaque"},
+            {"type":"function_call","call_id":"call_test","name":"read_file","arguments":"{\"path\":\"proof.txt\"}"}
+        ]);
+        let completion = crate::responses::completion(&json!({"status":"completed","output":output})).unwrap();
+        let messages = body["messages"].as_array_mut().unwrap();
+        messages.push(completion["choices"][0]["message"].clone());
+        messages.push(json!({"role":"tool","tool_call_id":"call_test","content":"random proof contents"}));
+        let next = wire_body("https://api.openai.com/v1", body).unwrap();
+        assert_eq!(next["reasoning"]["effort"], "high");
+        assert_eq!(next["input"][3], output[0]);
+        assert_eq!(next["input"][4], output[1]);
+        assert_eq!(next["input"][5], json!({"type":"function_call_output","call_id":"call_test","output":"random proof contents"}));
+    }
+
+    #[test]
+    fn direct_responses_routing_does_not_change_compatible_providers() {
+        let body = json!({"model":"openai/gpt-6.1-sol","messages":[],"reasoning_effort":"high"});
+        for base in ["https://openrouter.ai/api/v1", "https://apex-terminal.xyz/model-gateway/v1", "http://localhost:1234/v1", "https://api.openai.com.evil/v1", "https://api.openai.com/v1?query=x", "https://api.openai.com/v1#fragment", "https://user@api.openai.com/v1", "https://api.openai.com:444/v1", "http://api.openai.com/v1"] {
+            assert!(!is_direct_openai(base), "{base}");
+            assert_eq!(wire_body(base, body.clone()).unwrap(), body, "{base}");
+        }
+        assert!(is_direct_openai(" https://api.openai.com:443/v1/ "));
+    }
+
+    #[tokio::test]
+    async fn direct_responses_stream_rejects_truncated_calls() {
+        let body = format!("data: {}\n\n", json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_test","name":"read_file","arguments":""}}));
+        let response = fixture_stream(body).await;
+        let error = read_stream(response, "https://api.openai.com/v1/responses", &mut |_| {}, &mut false).await.unwrap_err();
+        assert!(error.to_string().contains("before completion"));
     }
 
     fn computer_frame(arguments: &str) -> String {
