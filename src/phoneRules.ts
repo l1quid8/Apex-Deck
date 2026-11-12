@@ -145,6 +145,35 @@ export function editMachine(list: Machine[], id: string, next: Machine): Machine
   return list.map((machine, at) => at === index ? changed : machine);
 }
 
+/** The Mac's server-id-to-daemon table from its saved session, or nothing. */
+export function readHostIds(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const ids: Record<string, string> = {};
+  for (const [id, daemon] of Object.entries(value)) if (id && id !== "local" && typeof daemon === "string" && daemon) ids[id] = daemon;
+  return ids;
+}
+
+/**
+ * Give each server the Mac's id for it. `macIds` is the Mac's table (its id ->
+ * daemon id); `reached` is the daemon id each connected machine answered with,
+ * by the phone's id. Only a daemon the phone actually reached and the Mac
+ * names the same is renamed, and only when the Mac's id is free here. This
+ * is the same change as editing the id by hand. Returns `list` itself when
+ * nothing changes.
+ */
+export function withMacHostIds(list: Machine[], macIds: Record<string, string>, reached: Record<string, string>): Machine[] {
+  let next = list;
+  for (const machine of list) {
+    if (machine.kind !== "server") continue;
+    const daemon = reached[machine.id];
+    if (!daemon) continue;
+    const macId = Object.keys(macIds).find((id) => macIds[id] === daemon);
+    if (!macId || macId === machine.id || next.some((other) => other.id === macId)) continue;
+    try { next = editMachine(next, machine.id, { ...machine, id: macId }); } catch { /* left as it is */ }
+  }
+  return next;
+}
+
 export function removeMachine(list: Machine[], id: string): Machine[] {
   return list.filter((machine) => machine.id !== id);
 }

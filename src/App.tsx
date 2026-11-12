@@ -16,7 +16,7 @@ import { AssistantBrowser, type AssistantBrowserPresentation } from './Assistant
 import { chatFolder } from "./worktreeMount";
 import { useWorktreeMount } from "./useWorktreeMount";
 import { canvasPanes } from "./canvasPanes.ts";
-import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost } from "./hostSession.ts";
+import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost, macHostIds } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
 import { HostPane, HostAgents, HostMonitors } from "./HostPane";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -776,7 +776,10 @@ export function App() {
     };
   }, []);
 
-  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements: savedArrangements(withPoppedOut(arrangements, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
+  // For the phone: which daemon each saved server is, so a server it paired by
+  // QR code lines up with the projects filed under this Mac's id for it.
+  const hostIds = useMemo(() => macHostIds(hostList), [hostList]);
+  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements: savedArrangements(withPoppedOut(arrangements, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1, hostIds };
   sessionRef.current = currentSession;
   useEffect(() => {
     if (!backend?.machines || !backend.hosts) return;
@@ -805,7 +808,7 @@ export function App() {
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions]);
+  }, [backend, workspaces, panes, profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions, hostIds]);
 
   // The phone saves threads straight to the Mac's session. Take its edits in
   // before the next save here writes over them.

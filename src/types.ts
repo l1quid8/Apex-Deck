@@ -330,6 +330,9 @@ export interface AppSession {
   threadDetailsCollapsed?: Partial<Record<import("./detailsLayout").DetailsSection, boolean>>;
   /** Which client saved this copy: the Mac app's "<tag>:<count>", or "phone". */
   savedBy?: string;
+  /** Saved server id -> the daemon id that answers there. Written by the Mac
+   *  for the phone (hostSession.ts macHostIds). */
+  hostIds?: Record<string, string>;
 }
 
 export type Speaker = { kind: "human" } | { kind: "bot"; id: string };

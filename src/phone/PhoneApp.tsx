@@ -77,7 +77,7 @@ import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   apiModelChoices, apiProviderName, modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
-  canSeeNewThread, connectionKey, isPaired, withHints,
+  canSeeNewThread, connectionKey, isPaired, withHints, readHostIds, withMacHostIds,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
@@ -852,6 +852,26 @@ export function PhoneApp() {
     canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && mayPostIn(host.access(), message.room) && !promoteHolds(readPromoteTickets(localStorage), message.machine.id, message.room, findRoom(catalogRef.current, message.machine.id, message.room)?.promotedTo); },
   });
   const delivery = deliveryRef.current.controller;
+
+  // A server paired here by QR code has an id of the phone's own; the Mac may
+  // file its projects under a different id. Once the server answers, take the
+  // Mac's id for the same daemon, so its projects show under it and no
+  // leftover "Not paired" heading stays. The same change as editing the id.
+  const macHostIdsKey = JSON.stringify(readHostIds(session?.hostIds));
+  useEffect(() => {
+    const macIds = JSON.parse(macHostIdsKey) as Record<string, string>;
+    if (!Object.keys(macIds).length) return;
+    const reached: Record<string, string> = {};
+    for (const host of hosts) {
+      const status = host.connection.get().status;
+      if (status.kind === "connected" && status.hostId) reached[host.machine.id] = status.hostId;
+    }
+    const next = withMacHostIds(machines, macIds, reached);
+    if (next === machines) return;
+    const renamed = next.filter((machine, at) => machine.id !== machines[at].id).map((machine) => machine.name);
+    setMachines(next);
+    phoneTrace().add(`Matched ${renamed.join(", ")} to the Mac's saved server`);
+  }, [macHostIdsKey, hosts, machines, tick]);
   /** The saved list with the delivery record laid over it, so a moved chat shows only where it lives now. */
   const pairedKey = machines.map((machine) => machine.id).join("\n");
   const chatView = useMemo(() => projectChats(catalog, delivery.snapshot(), new Set(pairedKey ? pairedKey.split("\n") : [])),

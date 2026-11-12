@@ -1,9 +1,21 @@
 import type { AppSession, Pane, Workspace } from "./types";
+import type { HostEntry } from "./backend";
 import { loadedPanes, paneSection, restoredLayouts, restoredArrangements } from "./closing.ts";
 import { arrangementFromSaved, type Arrangement } from "./paneArrangement.ts";
 import { pathBase, trimTrailingSlash } from "./paths.ts";
 
 export function workspaceHost(workspace: Workspace): string { return workspace.hostId ?? "local"; }
+
+/**
+ * Which daemon answers at each saved server id, for the phone. A server paired
+ * on the phone by QR code gets an id of the phone's own; with this the phone
+ * finds the Mac's id for the same daemon and files its projects together.
+ */
+export function macHostIds(hosts: readonly HostEntry[]): Record<string, string> {
+  const ids: Record<string, string> = {};
+  for (const host of hosts) if (host.remote && host.id !== "local" && host.daemonHostId) ids[host.id] = host.daemonHostId;
+  return ids;
+}
 export function workspaceFamily(workspace: Workspace): string {
   return workspace.family ?? ((trimTrailingSlash(workspace.path) && pathBase(workspace.path)) || workspace.name);
 }
