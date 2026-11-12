@@ -1,0 +1,98 @@
+name: linux-appimage
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/linux-appimage]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: npm ci
+      - run: node --test tests/package-linux.test.mjs
+      - name: Test signed Linux payload validation (no privileged installation)
+        run: |
+          node --test tests/linux-protected-package.test.mjs
+          cargo test --locked -p apex-provenance
+          node scripts/test-linux-activation.mjs
+          node scripts/test-linux-protected-package.mjs
+      - name: Install Linux desktop libraries and virtual display
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2 libgbm1 xvfb xdotool
+      - name: Build the AppImage with the production Linux daemon
+        run: npm run desktop:linux
+      - name: Inspect the portable payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum --check *.AppImage.sha256
+          chmod +x *.AppImage
+          ./*.AppImage --appimage-extract >/dev/null
+          test -s squashfs-root/resources/app.asar
+          test -x squashfs-root/resources/bin/apex-daemon
+          file squashfs-root/apex-deck squashfs-root/resources/bin/apex-daemon
+          squashfs-root/resources/bin/apex-daemon --version
+          test ! -e 'squashfs-root/resources/Unified Computer Use.app'
+      - name: Open the packaged window on a virtual Linux display
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          export APEX_DECK_DATA_DIR="$(mktemp -d /tmp/apex-image.XXXXXX)"
+          timeout 60s xvfb-run -a bash -euo pipefail -c '
+            release/squashfs-root/AppRun >release/linux-startup.log 2>&1 &
+            pid=$!
+            trap "kill $pid 2>/dev/null || true" EXIT
+            for attempt in {1..30}; do
+              kill -0 "$pid"
+              if xdotool search --onlyvisible --name "Apex Deck" >release/linux-window.txt; then
+                sleep 5
+                kill -0 "$pid"
+                exit 0
+              fi
+              sleep 1
+            done
+            cat release/linux-startup.log
+            exit 1
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Apex-Deck-AppImage-linux-${{ matrix.arch }}
+          path: |
+            release/*.AppImage
+            release/*.AppImage.sha256
+            release/*.AppImage.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-startup-evidence-${{ matrix.arch }}
+          path: |
+            release/linux-startup.log
+            release/linux-window.txt
