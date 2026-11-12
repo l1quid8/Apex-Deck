@@ -426,12 +426,12 @@ export function PhoneApp() {
   const [tab, setTab] = useState<Tab>(() => (scanAtLaunch ? "machines" : "threads"));
   const linkResolve = useRef<((outcome: LinkOutcome) => void) | null>(null);
   const linkSeq = useRef(0);
-  const [incomingLink, setIncomingLink] = useState<{ id: number; url: string; kind: "mac"; adding: true } | null>(null);
+  const [incomingLink, setIncomingLink] = useState<{ id: number; url: string; adding: true } | null>(null);
   const pairFromLinkRef = useRef<(url: string) => Promise<LinkOutcome>>(async () => "failed");
   pairFromLinkRef.current = (url) => new Promise((resolve) => {
     linkResolve.current = resolve;
     const route = routePairingLink();
-    setIncomingLink({ id: ++linkSeq.current, url, kind: route.kind, adding: route.adding });
+    setIncomingLink({ id: ++linkSeq.current, url, adding: route.adding });
     setTab(route.tab);
   });
   const [terminalSwitcherOpen, setTerminalSwitcherOpen] = useState(false);
@@ -4661,8 +4661,8 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   /** Open the camera now, as the first thing: no machine is saved yet. */
   autoScan: boolean;
   onAutoScan(): void;
-  /** A pairing link opened from outside this screen. Handed to pairWith as a Mac. */
-  incoming: { id: number; url: string; kind: "mac"; adding: true } | null;
+  /** A pairing link opened from outside this screen. Uses the same identity rules as a scan. */
+  incoming: { id: number; url: string; adding: true } | null;
   /** The link has been handed to pairWith, so a later visit must not pair it again. */
   onIncomingHandled(): void;
   onIncomingFailed(): void;
@@ -4684,14 +4684,13 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   /** The machine being edited. Its form takes the place of its card. */
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState(() => blank("mac"));
-  const pairWith = (link: string, over?: { kind: MachineKind }, held = false): boolean => {
+  const pairWith = (link: string, held = false): boolean => {
     const trimmed = link.trim();
     // A link already holds the slot. Camera and paste take it here, or leave the open sheet alone.
     if (!held && !reserve(trimmed)) return false;
     try {
       const preview = parsePairingLink(trimmed);
-      const kind = over?.kind ?? identityFor(machines, preview).kind;
-      const { name, id } = over ? { name: preview.name, id: kind === "mac" ? "local" : form.id.trim() } : identityFor(machines, preview);
+      const { kind, name, id } = identityFor(machines, preview);
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
       withPairedMachine(machines, { id, name, kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
       onPair({ link: trimmed, kind, id, name });
@@ -4711,9 +4710,8 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
     onIncomingHandled();
     setEditing(null);
     setHow("qr");
-    setForm(blank(link.kind));
     if (link.adding) setAdding(true);
-    if (!pairWith(link.url, { kind: link.kind }, true)) onIncomingFailed();
+    if (!pairWith(link.url, true)) onIncomingFailed();
   }, [incoming]);
   return (
     <main className="ph-content" inert={covered}>
@@ -4790,7 +4788,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           <AddHowPicker pairing={pairing} how={how} onHow={setHow} />
           {how === "qr" ? <>
             <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>. The name comes from the code.</p>
-            {scan && <ScanCodeButton scan={scan} reserve={reserve} adopt={adopt} giveBack={giveBack} onCode={(text) => pairWith(text, undefined, true)} onError={onError} auto={autoScan && !incoming} onAuto={onAutoScan} />}
+            {scan && <ScanCodeButton scan={scan} reserve={reserve} adopt={adopt} giveBack={giveBack} onCode={(text) => pairWith(text, true)} onError={onError} auto={autoScan && !incoming} onAuto={onAutoScan} />}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
           </> : <>

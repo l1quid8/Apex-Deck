@@ -220,7 +220,7 @@ test("camera, paste and links share one sheet, and a failure can be retried whil
   assert.match(phone, /onFailed=\{\(\) => settle\("failed", false\)\}/);
   assert.match(phone, /reserve=\{\(link\) => reserveLocal/);
   assert.match(phone, /giveBack=\{\(link\) => gateRef\.current!\.release\(link, "failed"\)\}/);
-  assert.match(phone, /pairWith\(link\.url, \{ kind: link\.kind \}, true\)/);
+  assert.match(phone, /pairWith\(link\.url, true\)/);
 
   const mode = { value: "hang" };
   const plugin = fakePlugin(() => mode.value);

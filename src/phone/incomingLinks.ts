@@ -113,9 +113,9 @@ export interface IncomingApp {
   getLaunchUrl(): Promise<{ url?: string } | null | undefined>;
 }
 
-/** A pairing link always opens Add a machine as a Mac, whichever screen it arrived on. */
-export function routePairingLink(): { tab: "machines"; kind: "mac"; adding: true } {
-  return { tab: "machines", kind: "mac", adding: true };
+/** Open Add a machine; the link and saved endpoints determine its identity. */
+export function routePairingLink(): { tab: "machines"; adding: true } {
+  return { tab: "machines", adding: true };
 }
 
 /**

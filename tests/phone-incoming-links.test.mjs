@@ -83,7 +83,7 @@ test("with no launch link the camera still opens when nothing is paired", async 
   assert.equal(shouldAutoScan(null, 0, false), false);
 });
 
-test("a warm link from Threads or Settings opens Add a machine as a Mac", async () => {
+test("a warm link from Threads or Settings opens Add a machine without overriding identity", async () => {
   for (const from of ["threads", "settings"]) {
     const app = fakeApp();
     let screen = { tab: from, kind: "server", adding: false };
@@ -94,7 +94,7 @@ test("a warm link from Threads or Settings opens Add a machine as a Mac", async 
     }, { refuse() {}, invalid() {} });
     app.emit(link());
     await flush();
-    assert.deepEqual(screen, { tab: "machines", kind: "mac", adding: true });
+    assert.deepEqual(screen, { tab: "machines", kind: "server", adding: true });
   }
 });
 
