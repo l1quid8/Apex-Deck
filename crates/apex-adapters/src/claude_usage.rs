@@ -204,7 +204,7 @@ pub(crate) fn retry_after(header: Option<&reqwest::header::HeaderValue>) -> Opti
 /// `~/.claude/.credentials.json` elsewhere.
 async fn access_token() -> Option<String> {
     let mut saved = None;
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") && std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
         let out = tokio::process::Command::new("security")
             .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
             .output()
@@ -215,8 +215,9 @@ async fn access_token() -> Option<String> {
         }
     }
     if saved.is_none() {
-        let home = std::env::var_os("HOME")?;
-        let path = std::path::Path::new(&home).join(".claude/.credentials.json");
+        let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from)
+            .or_else(||std::env::var_os("HOME").map(|h|std::path::PathBuf::from(h).join(".claude")))?;
+        let path = dir.join(".credentials.json");
         saved = tokio::fs::read_to_string(path).await.ok();
     }
     let json: Value = serde_json::from_str(saved?.trim()).ok()?;

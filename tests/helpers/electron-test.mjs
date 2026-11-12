@@ -25,7 +25,10 @@ export async function runElectronScenario(electron, main, temp, { timeoutMs = 60
   let last = { code: null, output: '' };
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 250 * attempt));
-    const child = spawn(electron, [main, '--user-data-dir=' + path.join(temp, 'profile-' + attempt)], {
+    // Animation tests exercise a normal-motion app.
+    // Hosted Windows runners otherwise inherit disabled desktop animations;
+    // individual accessibility scenarios still override motion through CDP.
+    const child = spawn(electron, [main, '--force-prefers-no-reduced-motion', '--user-data-dir=' + path.join(temp, 'profile-' + attempt)], {
       env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';

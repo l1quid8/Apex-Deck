@@ -12,7 +12,7 @@ const electronBinary = createRequire(import.meta.url)('electron');
  *  real App in Electron. With no preload, App uses its browser demo backend,
  *  whose settings file is localStorage. Inside the scenario: win, run(code),
  *  frame(), size(w, h), seed(settings), stored(), openAppearance(), assert, sleep(ms). */
-export async function withAppearanceApp(name, scenario, { width = 1164, height = 655, timeoutMs = 150000, plugins = [] } = {}) {
+export async function withAppearanceApp(name, scenario, { width = 1164, height = 655, timeoutMs = 150000, plugins = [], offscreen = false } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
   const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error', plugins });
   await server.listen();
@@ -24,7 +24,9 @@ export async function withAppearanceApp(name, scenario, { width = 1164, height =
     const fs=require('node:fs');
     const SHOTS=${JSON.stringify(process.env.APPEARANCE_SHOTS ?? '')};
     app.whenReady().then(async()=>{
-      const win=new BrowserWindow({show:false,width:${width},height:${height},useContentSize:true,webPreferences:{contextIsolation:true,sandbox:true,backgroundThrottling:false}});
+      const win=new BrowserWindow({show:false,width:${width},height:${height},useContentSize:true,enableLargerThanScreen:true,webPreferences:{contextIsolation:true,sandbox:true,backgroundThrottling:false,offscreen:${offscreen}}});
+      // Windows centers a new window inside the work area even with enableLargerThanScreen.
+      win.setContentSize(${width},${height});
       win.webContents.on('console-message',(e)=>{ if(e.level==='error'||e.level===3) console.log('[page]',e.message); });
       const run=async code=>{ try { return await win.webContents.executeJavaScript(code); } catch(error) { throw new Error(String(error)+" in renderer script: "+code); } };
       const sleep=ms=>new Promise(r=>setTimeout(r,ms));

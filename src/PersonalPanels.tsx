@@ -4,6 +4,7 @@ import type { ProjectRef } from './assistantIdentity.ts';
 import { AssistantPermissions } from './AssistantPermissions.tsx';
 import { PersonalBrowser } from './PersonalBrowser.tsx';
 import { pathBase } from './paths.ts';
+import { LOCAL_HOST_NAME, LOCAL_HOST_REFERENCE } from './hostFacts.ts';
 import { ProjectMemoryPanel } from './ProjectMemoryPanel.tsx';
 import { CLASS_LABEL, MODE_LABEL, TASK_STATUS, type ActionMode, type ConnectorState, type CostEntry, type PersonalAssistantRecord, type PersonalLane, type PersonalSettings, type PersonalTask, type ToolClass } from './personalAssistant.ts';
 
@@ -490,7 +491,7 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
     const GOOGLE_KEYS = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN'];
     return (
       <>
-        <h4>This Mac</h4>
+        <h4>{LOCAL_HOST_NAME}</h4>
         <p className="personal-panels-muted">{mine ? `Linked. Folder: ${mine.folder}` : 'Not linked.'}</p>
         {!mine && lane.linkThisMac && (
           <form className="personal-panels-inline" onSubmit={(event) => {
@@ -498,12 +499,12 @@ export function PersonalPanels({ lane, initial = 'activity', initialProject, del
             const value = folder.trim();
             if (value) void run(() => lane.linkThisMac!(value));
           }}>
-            <input aria-label="Folder on this Mac" value={folder} onChange={(event) => setFolder(event.target.value)} />
-            <button type="submit" disabled={locked || !folder.trim()}>Let assistant use this Mac</button>
+            <input aria-label={`Folder on ${LOCAL_HOST_REFERENCE}`} value={folder} onChange={(event) => setFolder(event.target.value)} />
+            <button type="submit" disabled={locked || !folder.trim()}>Let assistant use {LOCAL_HOST_REFERENCE}</button>
           </form>
         )}
-        {mine && lane.unlinkMachine && lane.localHostId && <div className="personal-panels-actions"><button type="button" disabled={locked} onClick={() => void run(() => lane.unlinkMachine!(lane.localHostId!))}>Stop using this Mac</button></div>}
-        <p className="personal-panels-muted">Commands for this Mac run only while Deck is open here. Nothing moves to another machine.</p>
+        {mine && lane.unlinkMachine && lane.localHostId && <div className="personal-panels-actions"><button type="button" disabled={locked} onClick={() => void run(() => lane.unlinkMachine!(lane.localHostId!))}>Stop using {LOCAL_HOST_REFERENCE}</button></div>}
+        <p className="personal-panels-muted">Commands for {LOCAL_HOST_REFERENCE} run here. Nothing moves to another machine.</p>
         {others.map((machine) => (
           <div className="personal-panels-row" key={machine.hostId}>
             <div className="personal-panels-rowmain"><span className="personal-panels-goal">{machine.name}</span></div>

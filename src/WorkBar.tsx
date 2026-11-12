@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { pickerMatches, type PickerRow, type WorkRow } from "./destinations.ts";
 import { fileKind, findFiles, type RecentFile } from "./recentFiles.ts";
 import { Glyph, ProjectFolder } from "./SidebarIcons";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 
 // Codex's Work bar, on top of the message box: the project, Files, Tools,
 // and at the far right where the thread runs. A thread that hasn't started
@@ -226,7 +227,7 @@ export function WorkBar({ work, attachedCount, files, tools, toolsWhere, canCopy
       <button type="button" className={`tray-chip work ${pop === "work" ? "on" : ""}`} aria-haspopup="menu" aria-expanded={pop === "work"}
         aria-label={`Work in ${project.hostName}`} title={work.started ? `This thread stays on ${project.hostName}` : `Work in ${project.hostName}${project.path ? ` · ${project.path}` : ""}`}
         onClick={() => toggle("work")}>
-        {remote ? <>{globe(project.tint)}<span className="lbl">{project.hostName}</span></> : <>{LAPTOP}<span className="lbl">This Mac</span></>}
+        {remote ? <>{globe(project.tint)}<span className="lbl">{project.hostName}</span></> : <>{LAPTOP}<span className="lbl">{LOCAL_HOST_NAME}</span></>}
         {work.started && <span className="lock"><Glyph name="lock" size={12} /></span>}
       </button>
       {pop && createPortal(<div ref={popRef} className={`tray-pop ${pop}`} style={place}>{pop === "picker" ? picker() : pop === "work" ? workIn() : pop === "files" ? filesPop() : toolsPop()}</div>, document.body)}

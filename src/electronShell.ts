@@ -7,6 +7,7 @@ import type { Backend, BrowserApi, DropSnapshot, HostEntry, HostUpdateResult, Re
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
 import { createHostBackends, guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore } from "./hostConnections.ts";
+import { LOCAL_HOST_NAME, LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import { connection } from "./connection.ts";
 import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
 import { daemonTransport, fromBase64, toBase64 } from "./daemon/transport.ts";
@@ -189,7 +190,7 @@ export function electronShell(
       pickPath: (kind, title) => ask({ hostId: host.id ?? "local", kind, title }),
       openTarget: async (target) => {
         if (/^https?:\/\//i.test(target)) return shell.openExternal(target);
-        throw new Error(`That file is on ${host.name}; Deck can't open it on this Mac.`);
+        throw new Error(`That file is on ${host.name}; Deck can't open it on ${LOCAL_HOST_REFERENCE}.`);
       },
       copyAttachment: async (room, path) => {
         const bytes = await shell.readLocalFile(host.id ?? "local", path);
@@ -254,7 +255,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   // A deck shortcut pressed in a docked page reaches the deck as if pressed here.
   bridge.browser.onShortcut((press) => window.dispatchEvent(new KeyboardEvent("keydown", { ...press, bubbles: true, cancelable: true })));
   const { onShortcut: _keys, ...browser } = bridge.browser;
-  const localConnection = hostConnectionStore("local", "This Mac");
+  const localConnection = hostConnectionStore("local", LOCAL_HOST_NAME);
   localConnection.setRetry(() => client.retryNow());
   client.onStatus(status => {
     if (status.kind === "connected") localConnection.setHelper(client.helperVersion, client.helperBuild);
@@ -263,7 +264,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   localConnection.setFinishResync(() => client.finishResync());
   const remoteAccess = plainErrors({ get: () => bridge.remote.get(), set: (on: boolean) => bridge.remote.set(on) });
   const backend: Backend = guardHostWrites({ ...commandBackend(transport, shell), gatewayAdmin: true, onMenu, hosts, browser, remoteAccess,
-    host: { id: "local", name: "This Mac", connection: localConnection } }, localConnection);
+    host: { id: "local", name: LOCAL_HOST_NAME, connection: localConnection } }, localConnection);
   const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: (host, state) => {
     const connect = bridgeConnect(bridge, host.id);
     const remoteClient = new DaemonClient(connect, { clientCapabilities });

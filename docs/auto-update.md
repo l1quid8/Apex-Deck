@@ -108,9 +108,32 @@ later version can then arrive through **Restart to update**.
    files, download them back and compare the checksums, then publish. Installed
    copies only see the feed once the release is published as latest.
 
+## Windows
+
+Windows reads its own feed, `apex-deck-update-windows.json`, because a shipped
+Mac copy rejects its whole feed at the first entry that isn't a `.pkg`. Run
+`node scripts/windows-update-manifest.mjs` after the signed build, then add the
+versioned installer and the feed to the same draft release as the Mac files.
+
+Deck downloads the installer, checks its size and checksum, then asks Windows
+for its signature. It must be valid, come from the same publisher as the running
+app, and carry the promised version. **Restart to update** checks that again and
+starts the installer silently through a small script that outlives Deck. Windows
+shows its usual permission prompt once; declining leaves everything as it was.
+Accepting quits Deck, replaces it, and opens the new version. The script records
+how the installer ended for the next launch, and reopens Deck if it failed.
+
+A program running under the same account can swap the verified installer in the
+moment before it starts, for example for an older signed one. Closing that gap
+needs an update job with system rights, as on the Mac.
+
+There is no privileged update job on Windows, so no new code runs with system
+rights, and an update needs someone there to answer the prompt. The first version
+with this updater is installed by hand.
+
 ## Not covered yet
 
-- Windows. Linux VPS updates use the separate
+- Silent updates on Windows. Linux VPS updates use the separate
   [systemd source-release updater](daemon-ubuntu.md#automatic-published-release-updates).
 - Automatic resume after a power cut mid-install (it stops and asks for a
   look instead).

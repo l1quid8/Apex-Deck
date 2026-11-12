@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { isWindows, showInFileManagerLabel } from "./paths";
+import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import { providerEnabled } from "./providers";
 import { CALL_VOICES, DEFAULT_META_MODEL, DEFAULT_REALTIME_MODEL, DEFAULT_REALTIME_VOICE, META_MODELS, REALTIME_MODELS, REALTIME_VOICES, defaultVoiceOf, readVoiceSettings, realtimeVoiceLabel } from "./voice/settings";
 import { VoiceSampleButton } from "./voice/VoiceSampleButton";
@@ -55,7 +56,7 @@ const LEADS: Partial<Record<SettingsSectionId, string>> = {
   models: "Your models, connected and ready when you need them. Choose what appears when adding agents.",
   computers: "The machines where your work happens. Friendly name, connection status, and actionable recovery.",
   phones: "Your paired devices and what each can access. Stable device identity underneath friendly names.",
-  computer: "Let your agents work with the apps on this Mac, with your permission. Thread grants and cursor preferences first.",
+  computer: `Let your agents work with the apps on ${LOCAL_HOST_REFERENCE}, with your permission. Thread grants and cursor preferences first.`,
   extensions: "Add capabilities to the way you work. Status, purpose, commands, and declared capabilities.",
   gateway: "Share your model stack through an endpoint you control. Client access keys are different from provider API keys.",
   data: "Your work stays in a place you control. Location, legacy import, and remembered suggestions.",
@@ -114,6 +115,8 @@ function ScopeBadge({ label }: { label: string }) {
 }
 
 export function SettingsPage({ section, onSection, settings, onChange, appearanceStudio, agents, profiles, backend, updates = null, onRestartToUpdate, onClose }: Props) {
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const settingsShortcut = shortcutList(mac).find(binding => binding.label === 'Settings')!.keys;
   const systemDark = useSystemDark();
   const navFocusRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -334,7 +337,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
       <div className="settings-search-wrap">
         <span aria-hidden="true" className="search-icon">⌕</span>
         <input ref={searchRef} type="search" aria-label="Search settings" placeholder="Search settings" value={searchQuery} onChange={e=>handleSearch(e.target.value)} />
-        <kbd>⌘ F</kbd>
+        <kbd>{mac ? '⌘ F' : 'Ctrl+F'}</kbd>
         {searchQuery && <button className="icon search-clear" aria-label="Clear search" onClick={()=>handleSearch('')}>×</button>}
       </div>
       <nav ref={navFocusRef} aria-label="Settings sections">
@@ -356,7 +359,7 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
         <span className="save-state-inline" role="status" aria-live="polite">
           {saveState==='saving' ? 'Saving…' : saveState==='saved' ? '✓ Saved' : saveState==='error' ? 'Could not save' : ''}
         </span>
-        <span><kbd>⌘,</kbd> opens · <kbd>Esc</kbd> closes</span>
+        <span><kbd>{settingsShortcut}</kbd> opens · <kbd>Esc</kbd> closes</span>
         <span>{resolvedSection==='appearance' ? 'Appearance changes wait for Apply.' : 'Changes save as you make them.'}</span>
       </div>
     </aside>
@@ -477,7 +480,7 @@ function PhonesSection({ backend: _backend }: { backend: Backend }) {
   return <>
     <div className="settings-card" id="paired"><PhonesSettings backend={backend} /></div>
     <Advanced title="Connectivity & device details" id="phone-remote">
-      <Row label="Remote connections" note="Paired phones can reach this Mac while it is online." id="phone-remote">
+      <Row label="Remote connections" note={`Paired phones can reach ${LOCAL_HOST_REFERENCE} while it is online.`} id="phone-remote">
         <span className="pill">Managed in Phones settings above</span>
       </Row>
     </Advanced>

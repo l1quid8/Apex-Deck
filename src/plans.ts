@@ -26,7 +26,8 @@ export type PlanKey = string;
 
 /** "gemini", or "gemini:gemini-4-argon" for a model the provider reads apart. */
 export function planKey(provider: AgentTool, model?: string | null): PlanKey {
-  const named = (model ?? "").trim().toLowerCase();
+  const value = (model ?? "").trim();
+  const named = value.startsWith("gateway:") ? value : value.toLowerCase();
   return named ? `${provider}:${named}` : provider;
 }
 
@@ -38,7 +39,8 @@ export function planOf<T>(
   model?: string | null,
 ): T | undefined {
   if (!provider) return undefined;
-  return plans?.[planKey(provider, model)] ?? plans?.[planKey(provider)];
+  const own = plans?.[planKey(provider, model)];
+  return model?.startsWith("gateway:") ? own : own ?? plans?.[planKey(provider)];
 }
 
 let plans: Record<string, Record<PlanKey, PlanState>> = {};

@@ -155,6 +155,7 @@ pub(crate) enum SseLine {
     Tool { index: Option<usize>, id: Option<String>, name: Option<String>, arguments: String, extra: Option<String> },
     Error(String),
     Usage { input: Option<u64>, output: Option<u64>, cached: Option<u64>, cost_usd: Option<f64> },
+    Context(ContextUse),
     Done,
     Ignored,
 }
@@ -202,6 +203,9 @@ pub(crate) fn parse_sse_line(line: &str) -> Vec<SseLine> {
                 other => other.to_string(),
             },
         });
+    }
+    if let Ok(context) = serde_json::from_value::<ContextUse>(value["usage"]["context"].clone()) {
+        if context.window_tokens > 0 { out.push(SseLine::Context(context)); }
     }
     if value["usage"].is_object() {
         let usage = &value["usage"];
@@ -353,6 +357,7 @@ impl Participant for OpenAiCompatParticipant {
         // server turns that down.
         let mut echo_thinking = true;
         let mut rounds: Vec<Usage> = Vec::new();
+        let mut last_context_reported = false;
         let mut stopped_early = false;
         let mut failure: Option<ParticipantError> = None;
         // Sticky for this request's entire history, including failed calls and
@@ -464,6 +469,8 @@ impl Participant for OpenAiCompatParticipant {
                 Ok(streamed) => streamed,
                 Err(error) => fail!(error),
             };
+            last_context_reported = streamed.context.is_some();
+            if let Some(context) = streamed.context { on_progress(Progress::Context(context)); }
             rounds.push(streamed.usage);
             thinking.push_str(&streamed.reasoning);
             let Some(turn) = turn.as_mut().filter(|_| !streamed.calls.is_empty()) else { break };
@@ -537,18 +544,45 @@ impl Participant for OpenAiCompatParticipant {
         };
         reply.input_tokens = sum(|u| u.input);
         reply.output_tokens = sum(|u| u.output);
+        reply.cached_input_tokens = sum(|u| u.cached);
         reply.cost_micros = rounds
             .iter()
             .filter_map(|u| cost_micros(u.cost_usd, info.as_ref(), u.input, u.cached, u.output))
             .reduce(|a, b| a.saturating_add(b));
-        // The next request carries this whole exchange, so the context in
-        // use is what the last request sent plus what came back.
-        if let (Some(window), Some(last)) = (info.as_ref().and_then(|m| m.context_tokens), rounds.last()) {
-            if let Some(input) = last.input {
-                let used = input.saturating_add(last.output.unwrap_or(0));
-                on_progress(Progress::Context(ContextUse { used_tokens: used.min(window), window_tokens: window }));
+        // Estimate only when the latest request did not report its own context.
+        // The next request carries its input plus what came back.
+        if !last_context_reported {
+            if let (Some(window), Some(last)) = (info.as_ref().and_then(|m| m.context_tokens), rounds.last()) {
+                if let Some(input) = last.input {
+                    let used = input.saturating_add(last.output.unwrap_or(0));
+                    on_progress(Progress::Context(ContextUse { estimated: true, used_tokens: used.min(window), window_tokens: window }));
+                }
             }
         }
+        // Gateway telemetry is an optional capability. Older/other APIs may not
+        // implement it; never fail a completed reply because usage is unavailable.
+        if let Some(provider) = gateway_provider(model) {
+            let bucket = gateway_plan_model(base_url, api_key_env.as_deref(), model);
+            let unknown = apex_core::PlanUsage { provider, windows:Vec::new(), partial:false, reset_credits:None };
+            on_progress(Progress::RemotePlan { plan:&unknown, model:&bucket });
+            let mut request = self.client.post(format!("{}/usage", base_url.trim_end_matches('/')))
+                .timeout(Duration::from_secs(10)).json(&json!({"model":model}));
+            if let Some(secret) = api_key_env.as_deref().and_then(crate::keys::lookup) { request = request.bearer_auth(secret); }
+            if let Ok(response) = request.send().await {
+                if response.status().is_success() {
+                    if let Ok(value) = response.json::<Value>().await {
+                        if value["object"] == "apex.gateway.usage" && value["model"] == *model {
+                            let mut plan = serde_json::from_value::<apex_core::PlanUsage>(value["subscription"].clone()).ok()
+                                .filter(|p|p.provider == provider && p.windows.iter().all(|w|w.used_percent<=100))
+                                .unwrap_or(apex_core::PlanUsage { provider, windows:Vec::new(), partial:false, reset_credits:None });
+                            plan.reset_credits = None;
+                            on_progress(Progress::RemotePlan { plan:&plan, model:&bucket });
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(reply)
     }
 
@@ -579,6 +613,7 @@ struct Streamed {
     text: String,
     reasoning: String,
     calls: Vec<ToolCall>,
+    context: Option<ContextUse>,
     usage: Usage,
 }
 
@@ -632,6 +667,7 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
                         *computer_content |= call.has_computer_content();
                     }
                 }
+                SseLine::Context(context) => out.context = Some(context),
                 SseLine::Usage { input, output, cached, cost_usd } => out.usage = Usage { input, output, cached, cost_usd },
                 SseLine::Error(message) => {
                     *computer_content |= out.calls.iter().any(ToolCall::has_computer_content);
@@ -1043,6 +1079,13 @@ done
     }
 
     #[test]
+    fn parses_gateway_reported_context_without_inventing_limits() {
+        let lines = parse_sse_line(r#"data: {"usage":{"prompt_tokens":null,"completion_tokens":null,"context":{"used_tokens":42,"window_tokens":200000}}}"#);
+        assert!(lines.contains(&SseLine::Context(ContextUse { estimated: false,used_tokens:42,window_tokens:200000})));
+        assert!(!parse_sse_line(r#"data: {"usage":{"context":{"used_tokens":42,"window_tokens":0}}}"#).iter().any(|l|matches!(l,SseLine::Context(_))));
+    }
+
+    #[test]
     fn only_a_real_refusal_turns_tools_off() {
         assert!(refuses_tools("this model does not support tools"));
         assert!(refuses_tools("registry.ollama.ai/library/x does not support tools"));
@@ -1188,4 +1231,16 @@ done
         assert!(note.contains("left out") && note.contains("Pasted-Graphic.png"), "{note}");
     }
 
+}
+
+/// Keep this namespace in sync with src/gatewayTelemetry.ts; never contains secrets.
+fn gateway_plan_model(base: &str, key: Option<&str>, model: &str) -> String {
+    format!("gateway:{}", json!([base.trim().trim_end_matches('/'), key.unwrap_or(""), model]))
+}
+fn gateway_provider(model: &str) -> Option<apex_core::AgentTool> {
+    use apex_core::AgentTool;
+    match model.split('/').next()? {
+        "claude" => Some(AgentTool::ClaudeCode), "codex" => Some(AgentTool::Codex),
+        "muse" => Some(AgentTool::Muse), "grok" => Some(AgentTool::Grok), "gemini" => Some(AgentTool::Gemini), _ => None,
+    }
 }

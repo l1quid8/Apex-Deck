@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { Backend } from "./backend";
 import type { ModelMetrics as Metrics } from "./types";
 import { WHAT, ageText, borrowedNote, columns, credits, money, pillParts, refreshNote, rowText, tier, type MetricKey } from "./modelMetrics.ts";
+import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 
 const EPOCH = "https://epoch.ai/benchmarks";
 const OPENROUTER = "https://openrouter.ai/models";
@@ -108,7 +109,7 @@ export function ModelMetricPills({ backend, model, efforts, current, local, open
           </table>}
           <div className="mm-model">
             {metrics.eci != null && <span className={hot("eci")}>Overall <b>{metrics.eci.toFixed(1)}</b>{metrics.top.eci && ` · top today ${metrics.top.eci.value.toFixed(1)}`}</span>}
-            <span className={hot("price")}>{metrics.price ? <>Price <b>{money(metrics.price)}</b> per 1M in / out</> : metrics.local_note ? <>Price <b>free</b> · runs on this Mac</> : <>Price <b>—</b> not listed on OpenRouter</>}</span>
+            <span className={hot("price")}>{metrics.price ? <>Price <b>{money(metrics.price)}</b> per 1M in / out</> : metrics.local_note ? <>Price <b>free</b> · runs on {LOCAL_HOST_REFERENCE}</> : <>Price <b>—</b> not listed on OpenRouter</>}</span>
           </div>
           {metrics.local_note && <p className="mm-caveat">The Overall score is for the full public model. Your local copy is likely shrunk to fit the Mac and may score lower.{arc ? "" : " No puzzle score was published for it."}</p>}
           {notes.map(note => <p className="mm-caveat" key={note}>{note}</p>)}

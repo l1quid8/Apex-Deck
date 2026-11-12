@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { HostConnectionStore } from "./hostConnections";
-import { buildNotice, helperNotice, reachNotice } from "./hostFacts.ts";
+import { buildNotice, helperNotice, reachNotice, LOCAL_HOST_NAME } from "./hostFacts.ts";
 import { Glyph } from "./SidebarIcons";
 
 // The cards that open beside the sidebar when the pointer rests on a
@@ -56,13 +56,13 @@ export function ProjectCard({ name, path, remote, hostName, tint, threads, pinne
   const state = useSyncExternalStore(source.subscribe, source.get);
   const count = `${threads} thread${threads === 1 ? "" : "s"}`;
   const reach = remote && state ? reachNotice(hostName, state.status, state.seenAt, time) : null;
-  const helper = remote && state?.status.kind === "connected" ? buildNotice(hostName, __APP_BUILD__, state.build) ?? helperNotice(hostName, __APP_VERSION__, state.helper) : null;
+  const helper = remote && state?.status.kind === "connected" ? buildNotice(hostName, __APP_BUILD__, state.build) ?? helperNotice(hostName, __APP_VERSION__, state.helper, false) : null;
   return <>
     <div className="card-row title">{folder}<span className="grow">{name}</span>
       <span className="side"><button className="act" onClick={onPin} aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`} title={pinned ? "Unpin project" : "Pin project"}><Glyph name="pin" size={13} /></button></span>
     </div>
     <div className="card-row">{remote ? <span style={{ color: tint }}><Glyph name="globe" size={14} /></span> : <Glyph name="laptop" size={14} />}
-      <span className="grow">{remote ? hostName : "This Mac"} · {count}</span></div>
+      <span className="grow">{remote ? hostName : LOCAL_HOST_NAME} · {count}</span></div>
     <hr />
     {reach && <div className={`card-row ${reach.tone}`}><Glyph name="info" size={14} /><span className="grow">{reach.text}</span>
       {reach.action && <span className="side"><button className="act" onClick={reach.action === "retry" ? onRetry : onConnect} title={reach.action === "retry" ? "Try again now" : "Connect now"} aria-label={reach.action === "retry" ? `Retry ${hostName}` : `Connect to ${hostName}`}><Glyph name="refresh" size={14} /></button></span>}
@@ -78,7 +78,7 @@ export function ThreadCard({ title, project, hostName, remote, tint, twin, age, 
   return <>
     <div className="card-row title"><span className="grow">{title}</span>
       <span className="side">{remote && <span style={{ color: tint }} title={hostName}><Glyph name="globe" size={14} /></span>}{age}</span></div>
-    <div className="card-row">{folder}<span className="grow">{project} · {remote ? hostName : "This Mac"}{twin && <> · <span className="mono">{twin}</span></>}</span></div>
+    <div className="card-row">{folder}<span className="grow">{project} · {remote ? hostName : LOCAL_HOST_NAME}{twin && <> · <span className="mono">{twin}</span></>}</span></div>
     <div className="card-row"><Glyph name="chat" size={14} /><span className="grow">Threads · {who.length ? who.join(", ") : "No agents yet"}</span></div>
   </>;
 }

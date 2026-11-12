@@ -1,0 +1,87 @@
+name: windows-desktop-ui
+
+on:
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: Run only the pane and rich-editor native interaction regressions
+        type: boolean
+        default: false
+      concurrency:
+        description: Concurrent test files for the focused diagnostic
+        type: choice
+        options: ['2', '1']
+        default: '2'
+  push:
+    branches: [feat/windows-desktop-parity]
+    paths:
+      - '.github/workflows/windows-desktop-ui.yml'
+      - 'desktop/**'
+      - 'src/**'
+      - 'shared/**'
+      - 'tests/**'
+      - 'package*.json'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-desktop-ui.yml'
+      - 'desktop/**'
+      - 'src/**'
+      - 'shared/**'
+      - 'tests/**'
+      - 'package*.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-ui-${{ github.head_ref || github.ref_name }}-${{ inputs.focus && format('focused-{0}', inputs.concurrency) || 'full' }}
+  cancel-in-progress: true
+
+jobs:
+  ui:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Fetch Electron before parallel tests can race its download
+        run: node -e "import('electron').then(m => console.log(m.default))"
+      - run: npx tsc --noEmit
+      # Check the native viewport and motion contract first. A broken fixture
+      # must fail here rather than produce dozens of misleading layout failures.
+      - name: Verify the native fixture environment
+        run: node --experimental-strip-types --test tests/electron-fixture-environment.test.mjs
+      - name: Test desktop interactions and Windows integrations
+        if: ${{ !inputs.focus }}
+        run: >-
+          node --experimental-strip-types --test --test-concurrency=2
+          tests/browser-view-map.test.mjs
+          tests/browser-view-focus-map.test.mjs
+          tests/pane-map-browser.test.mjs
+          tests/composer-dock-app.test.mjs
+          tests/composer-dock-refit.test.mjs
+          tests/composer-dock-rest.test.mjs
+          tests/multi-composer-browser.test.mjs
+          tests/multi-composer-frame.test.mjs
+          tests/layout-picker.test.mjs
+          tests/pane-head-browser.test.mjs
+          tests/rich-draft-editor-browser.test.mjs
+          tests/desktop-menu.test.mjs
+          tests/local-computer-labels.test.mjs
+          tests/settings-shortcut-labels.test.mjs
+          tests/desktop-provenance.test.mjs
+          tests/desktop-updater.test.mjs
+      - name: Diagnose pane and rich-editor native interactions
+        if: ${{ inputs.focus }}
+        env:
+          NATIVE_TEST_CONCURRENCY: ${{ inputs.concurrency }}
+        run: >-
+          node --experimental-strip-types --test --test-concurrency=$env:NATIVE_TEST_CONCURRENCY
+          tests/pane-head-browser.test.mjs
+          tests/rich-draft-editor-browser.test.mjs
+          tests/settings-shortcut-labels.test.mjs

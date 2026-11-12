@@ -9,7 +9,7 @@ import { VoiceRuntimeManager } from './voiceRuntime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
@@ -23,12 +23,12 @@ import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verified
 import { QuitGate, editsElsewhere, unsavedFile } from './quit.mjs';
 import { answers, daemonBinary, daemonEndpoint, dataFolder, localDaemon } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
-import { installLogonTask, removeLogonTask, startLogonTaskDaemon, usesLogonTask } from './winLogonTask.mjs';
+import { installLogonTask, startLogonTaskDaemon, usesLogonTask } from './winLogonTask.mjs';
 import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, needsAttestation, protectWindowsProcess, requestUpdate } from './provenance.mjs';
-import { Updater, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom } from './updater.mjs';
+import { Updater, WINDOWS_FEED_URL, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom, windowsInstaller, windowsLauncher, windowsSigner, windowsVerifier } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { assistantFloatBounds, movedAssistantFloatBounds } from './assistantFloatLayout.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
@@ -108,25 +108,30 @@ async function startAgent() {
   const socket = await socketFile();
   const folder = await dataFolder(bin, dataDir);
   const infoFile = path.join(folder, 'daemon.json');
+  const logFile = agentLogFile();
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
   if (process.platform === 'win32') {
     const stampFile = path.join(app.getPath('userData'), 'logon-task.stamp');
     try {
+      // The task stays registered even when this start fails, so the next
+      // sign-in still starts the daemon; its output goes to logFile.
       const got = await startLogonTaskDaemon({
         socket,
         infoFile,
+        bin: agentBin,
+        fallbackBin: bin,
         answers,
-        install: () => installLogonTask({ bin: agentBin, dataDir, build: daemonBuild(agentBin), stampFile }),
-        remove: () => removeLogonTask({ stampFile }),
+        install: () => installLogonTask({ bin: agentBin, dataDir, logFile, build: daemonBuild(agentBin), stampFile }),
       });
       if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
       return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
     } catch (error) {
+      // The task's daemon may still be running: a second one would share its data folder.
+      if (error?.fallback === false) throw error;
       console.warn(`apex-daemon: Windows logon task unavailable (${error instanceof Error ? error.message : error}); running daemon as child process.`);
       return localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) });
     }
   }
-  const logFile = agentLogFile();
-  fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const plistPath = agentPlistPath();
   const uid = process.getuid();
   const got = await startAgentDaemon({
@@ -331,7 +336,7 @@ ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
   if (!fromUi(event) || typeof line !== 'string') return;
   let frame; try { frame = JSON.parse(line); } catch { return; }
   if (hostId !== LOCAL && ['session_save', 'settings_save'].includes(frame.cmd)) {
-    event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
+    event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: `App preferences are owned by ${LOCAL_NAME}.` }));
     return;
   }
   // Remote coding rooms and phone-grant management use authenticated SSH;
@@ -543,7 +548,7 @@ handle('shell:snapshotDrop', async (_entry, file) => snapshotFile(String(file), 
 handle('shell:readLocalFile', async (_entry, host, file) => {
   // Only for sending a dropped file to another machine.
   const remote = remoteHost(host);
-  if (!remote) throw new Error('This Mac reads its own files.');
+  if (!remote) throw new Error(`${LOCAL_NAME} reads its own files.`);
   const info = await fs.promises.stat(String(file));
   if (info.isDirectory()) throw new Error(`Folders can't be sent to ${remote.name}; drop the files in it instead.`);
   if (info.size > SEND_LIMIT) throw new Error(`${path.basename(String(file))} is over 20 MB, too large to send to ${remote.name}.`);
@@ -710,20 +715,41 @@ handle('shell:quitApp', async ({ win }) => {
 // before "Restart to update", which quits only once the broker has queued it.
 
 /** A command's output, or a rejection with what it printed. */
-const runCommand = (command, args) => new Promise((resolve, reject) => {
-  execFile(command, args, { encoding: 'utf8', maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+const runCommand = (command, args, { stdoutOnly = false, ...options } = {}) => new Promise((resolve, reject) => {
+  execFile(command, args, { encoding: 'utf8', maxBuffer: 4 << 20, ...options }, (error, stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message).trim()));
-    else resolve(`${stdout}${stderr}`);
+    else resolve(stdoutOnly ? stdout : `${stdout}${stderr}`);
   });
 });
 
 /** Null until the app is ready; the window asks again when it hears `updates:changed`. */
 let updater = null;
 
+/** The options that differ on Windows: its feed, its signature check and its installer. */
+async function windowsUpdates() {
+  const signer = app.isPackaged ? await windowsSigner(runCommand, process.execPath) : null;
+  const installed = path.join(process.env.ProgramW6432 ?? process.env.ProgramFiles ?? '', 'Apex Deck', 'Apex Deck.exe');
+  const verify = windowsVerifier({ run: runCommand, signer });
+  const resultFile = path.join(app.getPath('userData'), 'windows-update-result.json');
+  return {
+    protectedCopy: process.execPath.toLowerCase() === installed.toLowerCase(),
+    team: signer?.subject ?? null,
+    options: {
+      feedUrl: WINDOWS_FEED_URL,
+      extension: '.exe',
+      resultFile,
+      verify,
+      requestInstall: windowsInstaller({ launch: windowsLauncher(spawn), verify, resultFile, app: process.execPath }),
+    },
+  };
+}
+
 async function startUpdates() {
+  const onWindows = process.platform === 'win32';
   const running = bundlePath(app.getAppPath());
   const signed = app.isPackaged && process.platform === 'darwin';
-  const team = signed ? teamFrom(await runCommand('/usr/bin/codesign', ['-d', '--verbose=2', running]).catch(() => '')) : null;
+  const win32 = onWindows ? await windowsUpdates() : null;
+  const team = win32 ? win32.team : signed ? teamFrom(await runCommand('/usr/bin/codesign', ['-d', '--verbose=2', running]).catch(() => '')) : null;
   const folder = path.join(app.getPath('cache'), 'dev.apexdeck.desktop', 'updates');
   const fetchWithNet = (url, init) => net.fetch(url, init);
   updater = new Updater({
@@ -732,11 +758,12 @@ async function startUpdates() {
     osVersion: process.getSystemVersion(),
     cacheDir: path.join(folder, 'downloads'),
     stateFile: path.join(app.getPath('userData'), 'updates.json'),
-    disabled: disabledReason({ packaged: app.isPackaged, platform: process.platform, dataDir, smoke, protectedCopy: signed && isProtectedCopy(running), team }),
+    disabled: disabledReason({ packaged: app.isPackaged, platform: process.platform, dataDir, smoke, protectedCopy: win32 ? win32.protectedCopy : signed && isProtectedCopy(running), team }),
     fetchJson: fetchManifest(fetchWithNet),
     download: fetchDownload(fetchWithNet),
     verify: packageVerifier({ run: runCommand, team, scratch: path.join(folder, 'checks') }),
     requestInstall: (ready) => requestUpdate(ready),
+    ...win32?.options,
     onChange: (status) => {
       for (const { win } of windows.values()) if (!win.isDestroyed()) win.webContents.send('updates:changed', status);
     },
@@ -782,6 +809,10 @@ const frontWindow = () => windows.get(BrowserWindow.getFocusedWindow()?.id) ?? [
 
 function menu() {
   const toWindow = (action) => () => frontWindow()?.win.webContents.send('menu', action);
+  const checkForUpdates = () => {
+    void updater?.check({ manual: true });
+    toWindow('updates')();
+  };
   const mac = process.platform === 'darwin';
   return Menu.buildFromTemplate([
     ...(mac ? [{
@@ -790,10 +821,7 @@ function menu() {
         { role: 'about' },
         {
           label: 'Check for Updates…',
-          click: () => {
-            void updater?.check({ manual: true });
-            toWindow('updates')();
-          },
+          click: checkForUpdates,
         },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: toWindow('settings') },
@@ -803,6 +831,14 @@ function menu() {
         { role: 'hide' },
         { role: 'hideOthers' },
         { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    }] : process.platform === 'win32' ? [{
+      label: 'File',
+      role: 'fileMenu',
+      submenu: [
+        { label: 'Settings…', accelerator: 'Ctrl+Shift+,', click: toWindow('settings') },
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -823,6 +859,17 @@ function menu() {
     },
     { label: 'Servers', submenu: [{ label: 'Manage Servers…', click: toWindow('hosts') }] },
     { role: 'windowMenu' },
+    ...(process.platform === 'win32' ? [{
+      label: 'Help',
+      role: 'help',
+      submenu: [
+        { role: 'about' },
+        {
+          label: 'Check for Updates…',
+          click: checkForUpdates,
+        },
+      ],
+    }] : []),
   ]);
 }
 

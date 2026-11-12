@@ -1,5 +1,7 @@
 import { useComposerHistory } from "./useComposerHistory";
 import { threadHistoryTexts } from "./composerHistory";
+import { addTokenUsage } from "./tokenUsage";
+import { gatewayPlan, planProvider, planModel } from "./gatewayTelemetry";
 import { RunnerWork } from "./runner/RunnerWork.tsx";
 import { useRunner } from './runner/useRunner.ts';
 import { runnerCommand, runnerAction } from './runner/client.ts';
@@ -7,6 +9,7 @@ import { defaultLimits, type RunnerKind, type RunnerConfig } from './runner/type
 import { RunnerSetup } from './runner/RunnerSetup.tsx';
 import { ThreadComposerBox, ComposerModeControls } from './ThreadComposer';
 import { isWindows, pathBase } from "./paths";
+import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 import { RunnerDrawer } from './runner/RunnerDrawer.tsx';
 import './runner/runner.css';
 import { changeFolder, type MountBoundary } from "./worktreeMount";
@@ -517,22 +520,10 @@ function saveContext(pane: string, fill: Record<string, ContextFill>) {
   else localStorage.removeItem(contextKey(pane));
 }
 
-/** The provider whose plan an agent draws on. Each coding agent reports one. */
-function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
-  const b = config?.backend;
-  return b?.kind === "agent" ? b.tool : null;
-}
-
-/** The model an agent runs on, for a provider that reads a model's own quota group. */
-function planModel(config: ParticipantConfig | undefined): string | null {
-  const b = config?.backend;
-  return b?.kind === "agent" ? b.model : null;
-}
-
 /** One custom provider account: its address and the name its key is saved under. */
 function accountOf(config: ParticipantConfig | undefined): { key: string; baseUrl: string; keyEnv: string | null } | null {
   const b = config?.backend;
-  if (b?.kind !== "open_ai_compatible") return null;
+  if (b?.kind !== "open_ai_compatible" || gatewayPlan(config)) return null;
   const baseUrl = b.base_url.trim().replace(/\/$/, "");
   return { key: `${baseUrl} ${b.api_key_env ?? ""}`, baseUrl, keyEnv: b.api_key_env };
 }
@@ -543,6 +534,7 @@ function dollars(usd: number): string {
 
 /** Tokens the latest request filled, against the window. */
 interface ContextFill {
+  estimated?: boolean;
   used: number;
   window: number;
 }
@@ -1263,23 +1255,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           break;
         case "usage":
           if (recoveredState?.recovery_seq == null) { void durableRecovery.refresh(); break; }
-          setUsed((u) => {
-            const before = u[event.id] ?? { input: 0, output: 0, turns: 0 };
-            // A missing cost is counted as unknown, never as $0. An estimate is kept apart from reported spend.
-            const cost = event.cost_micros;
-            const estimate = cost != null && event.cost_estimated === true;
-            return { ...u, [event.id]: {
-              input: before.input + (event.input_tokens ?? 0),
-              output: before.output + (event.output_tokens ?? 0),
-              turns: before.turns + 1,
-              cost_micros: (before.cost_micros ?? 0) + (cost != null && !estimate ? cost : 0),
-              unknown_cost_turns: (before.unknown_cost_turns ?? 0) + (cost == null ? 1 : 0),
-              estimated_cost_micros: (before.estimated_cost_micros ?? 0) + (cost != null && estimate ? cost : 0),
-            } };
-          });
+          setUsed((u) => ({ ...u, [event.id]: addTokenUsage(u[event.id], event) }));
           break;
         case "context_usage": {
-          const fill = { used: event.used_tokens, window: event.window_tokens };
+          const fill = { used: event.used_tokens, window: event.window_tokens, estimated: event.estimated };
           const level = contextLevel(fill);
           const low = isLow(level);
           // The notice goes under the reply this figure belongs to, which
@@ -2487,7 +2466,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const run = codeRuns.runs[key];
     if (!run) return null;
     return (
-      <CodeRunBox run={run} host={backend.host?.name ?? "This Mac"}
+      <CodeRunBox run={run} host={backend.host?.name ?? LOCAL_HOST_NAME}
         onStop={() => codeRuns.stop(key)} onDismiss={() => codeRuns.dismiss(key)}
         onOpenTerminal={onOpenTerminal && (() => onOpenTerminal(run.command))}
         onAddToMessage={() => {
@@ -3108,7 +3087,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const resetsFor = (p: ParticipantConfig | undefined) => {
     const provider = planProvider(p);
     const state = planStateOf(p);
-    if (!provider || !state?.credits || !backend.roomPlanReset || accountOf(p)) return null;
+    if (!provider || !state?.credits || !backend.roomPlanReset || accountOf(p) || gatewayPlan(p)) return null;
     const spend = backend.roomPlanReset;
     return <QuickResets credits={state.credits} windows={state.windows} provider={AGENT_LABEL[provider]} use={(credit) => {
       const which = credit?.id ?? "";
@@ -3125,7 +3104,6 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const state = planStateOf(p);
     const windows = state?.windows;
     const plan = windows ? planLine(windows, new Date()) : null;
-    const reports = (p.backend.kind === "agent" && p.backend.tool !== "grok") || p.backend.kind === "open_ai_compatible";
     const account = accountOf(p);
     const left = account ? balances[account.key] : undefined;
     const spent = spendLine(used[p.id], dollars);
@@ -3135,21 +3113,22 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       <div ref={at ? cardBox : undefined} className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
         {!makesMedia(p) && <div className="usage-row">
           <span className="usage-label">Context</span>
-          <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : reports ? "Not reported yet. The next reply says." : "Not reported by this provider"}</span>
+          <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : "Not reported"}</span>
         </div>}
         {account ? <>
+          <div className="usage-row"><span className="usage-label">Subscription</span><span>Not reported</span></div>
           <div className="usage-row">
             <span className="usage-label">Balance</span>
-            <span>{left != null ? `${dollars(left)} left on this account` : "Not offered by this provider"}</span>
+            <span>{left != null ? `${dollars(left)} left on this account` : "Not reported"}</span>
           </div>
           {!!spent && <div className="usage-row">
             <span className="usage-label">Cost</span>
             <span>{spent} in this chat</span>
           </div>}
         </> : <div className="usage-row">
-          <span className="usage-label">Plan</span>
+          <span className="usage-label">{gatewayPlan(p) ? "Subscription" : "Plan"}</span>
           <span className={isLow(provider ? planLevel(windows, Date.now() / 1000) : null) ? "usage-low" : undefined}>
-            {plan ?? (!provider ? "Not reported by this provider" : provider === "claude_code" ? "Known after a Claude Code reply" : "Not reported yet")}
+            {plan ?? "Not reported"}
           </span>
         </div>}
         {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
@@ -3877,7 +3856,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         setAccessFrom(({ [id]: _applied, ...rest }) => rest);
         setPendingSettings(({ [id]: _applied, ...rest }) => rest);
         void backend.roomApplyAccess(pane.id, id).catch((error) => notify(`Could not apply access now: ${String(error)}`, "error"));
-      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "Not reported" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const before = participants.find(p => p.id === config.id)?.access;
         const saved = await backend.roomUpdateParticipant(pane.id, config, base, cwd);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
@@ -3928,7 +3907,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 {/* Codex's opening question: the project's name opens the picker. */}
                 <h3 className="ask">What should we work on in <button type="button" className="pick-name" onClick={() => setAskPicker((n) => n + 1)}>{work.project.name}</button>?</h3>
                 <p className="where">{!work.project.path ? "No project: the agents work without a project folder."
-                  : work.project.hostId === "local" ? `On This Mac · ${work.project.path}`
+                  : work.project.hostId === "local" ? `On ${LOCAL_HOST_NAME} · ${work.project.path}`
                   : `On ${work.project.hostName} · ${work.project.path}${work.workRows.some((r) => r.hostId === "local" && r.workspaceId) ? " · a separate copy from your Mac's" : ""}`}</p>
               </> : <h3>{participants.length === 0 ? "Build your thinking team." : "The room is yours."}</h3>}
               <p>
@@ -4073,7 +4052,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 )}
                 {(asks[id] ?? []).filter((ask) => !planShowsChip(ask.action, ask.request, planRuns, planTab)).map((ask) => (
                   <ApprovalCard
-                    hostName={backend.host?.name ?? "This Mac"} disabled={!ready}
+                    hostName={backend.host?.name ?? LOCAL_HOST_NAME} disabled={!ready}
                     key={ask.request}
                     request={ask.request}
                     by={id}
@@ -4308,7 +4287,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
           {roundButton.send && <button type="button" className="round-send" aria-label="Send" title={ownSending ? "Sending…" : "Send (↵)"} onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={ownSending || chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
-            toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
+            toolsWhere={`on ${backend.host?.name ?? LOCAL_HOST_NAME}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}
             onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${pathBase(path)}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         </ThreadComposerBox>
