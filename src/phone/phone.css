@@ -652,11 +652,23 @@
 
 /* @ picker: the thread's bots above the message box while an @name is typed. */
 .ph-mentions { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 6px; }
+.ph-mentions.composer-bots { padding: 2px 0 8px; }
 .ph-mentions::-webkit-scrollbar { display: none; }
-.ph-mention.ph-mention { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px 0 6px; border: 1px solid var(--line); border-radius: 22px; background: var(--panel-2); color: var(--text); font-size: 15px; }
+/* Mention picker uses same chip system as the agent bar so Everyone and agents match theme */
+.ph-mention.ph-mention { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px 0 6px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel-2); color: var(--text); font-size: 14px; }
+.ph-mention.chip { min-height: 32px; }
 .ph-mention small { color: var(--muted); font-size: 12px; }
 .ph-mention:active { background: var(--panel-3, var(--panel-2)); border-color: var(--mint); }
 .ph-mention-all { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--mint); color: var(--accent-ink); font-weight: 700; }
+/* Themed mention chips: inherit shape/border from bot-chip-styles.css */
+.ph-mentions.composer-bots[data-chip-style] .ph-mention.chip { background: var(--panel); color: var(--muted); }
+.ph-mentions.composer-bots[data-chip-style="classic"] .ph-mention.chip { border-radius: 18px; }
+.ph-mentions .ph-crew-control.chip { color: var(--text); border-style: solid; }
+/* Ensure plain @everyone text has no icon */
+.ph-mention .chip-label { font-weight: 500; }
+/* Terminal style adds @ via ::before — don't double it for already-@ labels */
+.composer-bots[data-chip-style="terminal"] .ph-crew-control .chip-label::before,
+.composer-bots[data-chip-style="terminal"] .ph-mention .chip-label::before { content: none; }
 
 /* The bot bar: one slim row under a thread's title, like the desktop's bot chips shrunk to avatar and name.
    The bots the next message goes to are outlined in their colour. It folds into the title bar, and while the keyboard is up. */
@@ -676,6 +688,9 @@
 /* The tap target is the full bar height; the pill drawn inside it stays thin. */
 .ph-crew-pill.ph-crew-pill { flex: none; min-height: 40px; padding: 0 2px; border: 0; background: transparent; display: inline-flex; align-items: center; }
 .ph-crew-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 4px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--muted); font-size: 13px; font-weight: 500; white-space: nowrap; }
+/* Controls (@everyone, Agents) match selected chip theme shape but stay neutral */
+.ph-crew-control .ph-crew-chip { --who: var(--line); border-color: var(--line); background: var(--panel); color: var(--text); }
+.ph-crew-control.to .ph-crew-chip { border-color: var(--text); color: var(--text); }
 .ph-crew-chip .identicon-sm { width: 20px; height: 20px; }
 .ph-crew-chip .ph-mention-all { width: 20px; height: 20px; font-size: 12px; }
 .ph-crew-pill.to .ph-crew-chip { color: var(--text); border-color: color-mix(in srgb, var(--who, var(--mint)) 75%, transparent); background: color-mix(in srgb, var(--who, var(--mint)) 12%, var(--panel)); }

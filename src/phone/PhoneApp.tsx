@@ -2952,7 +2952,7 @@ export function PhoneApp() {
             {appearanceSaveError && <p className="ph-banner" role="alert">This appearance is active, but couldn't be saved on this phone. Storage may be full or unavailable.</p>}
             <AppearanceSettings value={appearance} onChange={changeAppearance} textTransfer />
             <section className="appearance-section ph-chip-preview" aria-labelledby="phone-chip-heading">
-              <h3 id="phone-chip-heading">Bot chip style</h3>
+              <h3 id="phone-chip-heading">Agent chip style</h3>
               <p>Choose how agents look in the thread bar. Saved on this phone.</p>
               {chipSaveError && <p className="ph-banner" role="alert">This chip style is active, but couldn't be saved on this phone. Storage may be full or unavailable.</p>}
               <ChipStylePicker value={chipStyle} onChange={changeChipStyle} />
@@ -4199,8 +4199,8 @@ function ThreadView(props: {
         <div className={`ph-crew${crew ? "" : " shut"}`} data-chip-style={props.chipStyle ?? "classic"} inert={props.covered || !crew} aria-hidden={!crew}>
           <div className="ph-crew-row composer-bots" data-chip-style={props.chipStyle ?? "classic"} role="group" aria-label="Agents in this thread">
             {props.participants.length > 1 && (
-              <button type="button" className={`ph-crew-pill${everyone ? " to" : ""}`} aria-label={everyone ? "Everyone. Answers your next message" : "Tag everyone"} onClick={() => tag("all")}>
-                <span className="ph-crew-chip"><span className="ph-mention-all" aria-hidden="true">@</span>Everyone</span>
+              <button type="button" className={`ph-crew-pill ph-crew-control${everyone ? " to" : ""}`} aria-label={everyone ? "Everyone. Answers your next message" : "Tag everyone"} onClick={() => tag("all")}>
+                <span className={`ph-crew-chip chip chip-name${everyone ? " to" : ""}`}><span className="ph-crew-name chip-label">@everyone</span></span>
               </button>
             )}
             {props.participants.map((participant) => {
@@ -4230,8 +4230,8 @@ function ThreadView(props: {
               );
             })}
             {/* Adding and removing bots used to be two levels into ⋯ → Bots, and only while this thread was open. Now it is where the bots are. */}
-            <button type="button" className="ph-crew-pill ph-crew-add" aria-label="Add or remove agents in this thread" onClick={() => { inputRef.current?.blur(); props.onBots(); }}>
-              <span className="ph-crew-chip"><Plus size={15} /><span className="ph-crew-name">Agents</span></span>
+            <button type="button" className="ph-crew-pill ph-crew-add ph-crew-control" aria-label="Add or remove agents in this thread" onClick={() => { inputRef.current?.blur(); props.onBots(); }}>
+              <span className="ph-crew-chip chip chip-name"><span className="ph-crew-control-icon" aria-hidden="true"><Plus size={15} /></span><span className="ph-crew-name chip-label">Agents</span></span>
             </button>
           </div>
           <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the agents into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
@@ -4499,15 +4499,16 @@ function ThreadView(props: {
         {props.runnerSetup}
         {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {picking && picking.picks.length > 0 && (
-          <div className="ph-mentions" role="listbox" aria-label="Mention an agent">
+          <div className="ph-mentions composer-bots" data-chip-style={props.chipStyle ?? "classic"} role="listbox" aria-label="Mention an agent">
             {picking.picks.map((pick) => {
               const who = pick.id === "all" ? null : person(pick.id);
+              const isEveryone = pick.id === "all";
               return (
                 // Keep the keyboard up: the box keeps focus while you pick.
-                <button key={pick.id} type="button" role="option" aria-selected="false" className="ph-mention" onMouseDown={(event) => event.preventDefault()} onClick={() => choose(pick.handle)}>
-                  {who ? <Avatar seed={who.look.seed} color={who.look.color} size="sm" /> : <span className="ph-mention-all" aria-hidden="true">@</span>}
-                  <span>{who ? who.display_name : "Everyone"}</span>
-                  <small>{pick.label}</small>
+                <button key={pick.id} type="button" role="option" aria-selected="false" className={`ph-mention chip chip-name${isEveryone ? " ph-crew-control" : ""}`} style={who ? { "--who": who.look.color } as CSSProperties : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(pick.handle)}>
+                  {who ? <Avatar seed={who.look.seed} color={who.look.color} size="sm" /> : null}
+                  <span className="chip-label">{isEveryone ? "@everyone" : who ? who.display_name : "Everyone"}</span>
+                  <small className="chip-meta">{pick.label}</small>
                 </button>
               );
             })}

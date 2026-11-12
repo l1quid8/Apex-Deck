@@ -104,6 +104,13 @@
 .ph-crew-row.composer-bots[data-chip-style="terminal"] .chip-name { font-family: var(--font-mono, monospace); }
 .ph-crew-row.composer-bots .ph-crew-pill.asking .chip { outline: 2px solid var(--amber); outline-offset: 1px; }
 .ph-crew-row.composer-bots .ph-crew-pill:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.ph-crew-row.composer-bots .ph-crew-control { --who: var(--muted); }
+.ph-crew-control-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 20px; height: 20px; }
+.ph-crew-row.composer-bots[data-chip-style="ticket"] .ph-crew-control-icon { width: 32px; height: 32px; border-radius: 0; background: color-mix(in srgb, var(--who) 18%, var(--panel)); border-right: 1px dashed var(--line); }
+.ph-crew-row.composer-bots[data-chip-style="terminal"] .ph-crew-control-icon { display: none; }
+.ph-crew-row.composer-bots[data-chip-style="stack"] .ph-crew-control-icon { border-radius: 50%; }
+.ph-crew-row.composer-bots[data-chip-style="tiles"] .ph-crew-control-icon { width: 32px; height: 32px; border-radius: 8px; }
+.ph-crew-row.composer-bots:is([data-chip-style="ledger"],[data-chip-style="two-line"]) .ph-crew-control .chip { min-height: 42px; }
 .ph-chip-preview { margin: 12px 0 24px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 .ph-chip-preview h3 { margin: 0 0 8px; }
 .ph-chip-preview > p { color: var(--muted); font-size: 14px; }
