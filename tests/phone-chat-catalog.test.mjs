@@ -52,6 +52,22 @@ test('the merged list survives a restart, so chats show with the machine off', (
   assert.deepEqual(readCatalog(null), emptyCatalog());
 });
 
+test('promoted Work excludes ordinary thread files from both live and cached host lists', () => {
+  const rooms = [
+    room('promoted', { kind: 'work', promotedFrom: 'source', updatedAt: 20 }),
+    room('ordinary', { kind: 'work', cwd: '/repo', updatedAt: 30 }),
+    room('empty-origin', { kind: 'work', promotedFrom: '' }),
+    room('archived', { kind: 'work', promotedFrom: 'source', archived: true }),
+    room('trashed', { kind: 'work', promotedFrom: 'source', trashedAt: 10 }),
+    room('chat'),
+  ];
+  const catalog = withHostRooms(emptyCatalog(), 'mac', 'Mac', parseChatList('mac', { rooms }));
+  for (const listed of [catalog, readCatalog(JSON.stringify(catalog))]) {
+    assert.deepEqual(promotedWork(listed, 'mac').map((row) => row.id), ['promoted']);
+    assert.equal(findRoom(listed, 'mac', 'ordinary')?.cwd, '/repo');
+  }
+});
+
 test('rows the phone cannot read are left out and a broken list is refused', () => {
   assert.deepEqual(parseChatList('mac', { rooms: [{ id: 'x' }, room('a'), null] }).map((row) => row.id), ['a']);
   assert.throws(() => parseChatList('mac', { nope: true }), /can't read/);

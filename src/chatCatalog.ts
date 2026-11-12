@@ -150,7 +150,7 @@ export function chatRows(catalog: ChatCatalog, archived: boolean): { rows: ChatE
 
 /** The Work threads made from chats on one machine, for its section under Projects. */
 export function promotedWork(catalog: ChatCatalog, hostId: string): ChatEntry[] {
-  return (catalog.hosts[hostId]?.rooms ?? []).filter((row) => row.kind === "work" && !row.archived && !row.trashedAt).sort((a, b) => b.updatedAt - a.updatedAt);
+  return (catalog.hosts[hostId]?.rooms ?? []).filter((row) => row.kind === "work" && row.promotedFrom && !row.archived && !row.trashedAt).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function findRoom(catalog: ChatCatalog, hostId: string, id: string): ChatEntry | null {

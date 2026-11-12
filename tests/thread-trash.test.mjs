@@ -5,8 +5,8 @@ import {restoredChat,workThreadPlace,sendBlock} from '../src/desktopChats.ts';
 import {trashRows,withoutTrashedPanes,closeTrashedPanes,setThreadTrashed} from '../src/threadTrash.ts';
 const listed=(catalog,host,rooms)=>withListedRooms(catalog,host,host,parseChatList(host,{rooms}),1);
 const fixture=()=>listed(listed(emptyCatalog(),'local',[
- {id:'same',kind:'work',cwd:'/repo',trashedAt:10}, {id:'talk',kind:'chat',trashedAt:20}, {id:'live',kind:'chat'}, {id:'bad',kind:'chat',trashedAt:-1},
-]),'remote',[{id:'same',kind:'work',cwd:'/repo'},{id:'talk',kind:'chat'}]);
+ {id:'same',kind:'work',cwd:'/repo',promotedFrom:'source',trashedAt:10}, {id:'talk',kind:'chat',trashedAt:20}, {id:'live',kind:'chat'}, {id:'bad',kind:'chat',trashedAt:-1},
+]),'remote',[{id:'same',kind:'work',cwd:'/repo',promotedFrom:'source'},{id:'talk',kind:'chat'}]);
 
 test('Trash persists separately while normal chat and promoted Work lists exclude it',()=>{
  const catalog=readCatalog(JSON.stringify(fixture()));
