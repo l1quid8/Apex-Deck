@@ -751,6 +751,7 @@ where
                         }
                     },
                     Ok((id, Request::Host(command))) => {
+                        let local_linux_cli = trust == Trust::Local && guard.is_none() && daemon.uses_linux_device_policy();
                         let confinement = if guard.is_some() && daemon.uses_linux_device_policy() {
                             daemon.require_confinement().await
                         } else { Ok(()) };
@@ -758,6 +759,11 @@ where
                             // The downgrade classification relies on the device
                             // route checking old_level under the room lock. A
                             // local/token request cannot claim that exemption.
+                            // A same-user local peer on Linux with a proven jail
+                            // takes the terminal surface; the host re-checks it.
+                            None if local_linux_cli && apex_host::local_linux_cli_surface(&command) => {
+                                apex_host::local_linux_cli_admitted().map(|_| None)
+                            }
                             None if daemon.uses_linux_device_policy() && (authority::access_effect(&command) == authority::AccessEffect::Raises
                                 || matches!(&*command, Command::RoomUpdateParticipant { .. })) => {
                                 Err("Raising access is only allowed from a paired device on this Linux host; local socket, CLI and SSH calls cannot authorize it.".into())
@@ -784,7 +790,7 @@ where
                                     let frame: Value = serde_json::from_str(&text).expect("request already parsed");
                                     (g.id.clone(), phone_session.clone(), json!({"cmd":frame["cmd"],"args":frame.get("args").cloned().unwrap_or(json!({}))}))
                                 });
-                                run(Arc::clone(&daemon), id, *command, need, replies_tx.clone(), hello.client_capability, device_intent);
+                                run(Arc::clone(&daemon), id, *command, need, replies_tx.clone(), hello.client_capability, device_intent, local_linux_cli);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -916,7 +922,8 @@ where
 
 /// Run `command` on its own task and send its result to `replies`, with
 /// what a device needed to run it (`need`), to be checked again on delivery.
-fn run(daemon: Arc<Daemon>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>) {
+#[allow(clippy::too_many_arguments)]
+fn run(daemon: Arc<Daemon>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>, local_linux_cli: bool) {
     let host = Arc::clone(&daemon.host);
     let session = matches!(command, Command::SessionLoad {});
     let chat_list = matches!(command, Command::ChatList {});
@@ -929,6 +936,7 @@ fn run(daemon: Arc<Daemon>, id: u64, command: Command, need: Option<authority::N
                     host.call_from_confined_device(intent, client_capability, check).await
                 }
                 Some((endpoint, session, intent)) => host.call_from_device(intent, endpoint, session, id, client_capability).await,
+                None if local_linux_cli => host.call_from_local_linux_cli(command, client_capability).await,
                 None => host.call_with_client_capability(command, client_capability).await,
             }
         })
@@ -1342,6 +1350,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Linux: a same-user local peer reaches the terminal surface only after the
+    /// recorded jail probe passed; a token connection never does.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn linux_local_cli_surface_follows_the_recorded_jail_probe() {
+        use apex_adapters::linux_jail::{self, JailState};
+        let _lock = linux_jail::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, _data) = daemon();
+        let mut daemon = Arc::try_unwrap(daemon).ok().unwrap();
+        daemon.linux_device_policy = Some(true);
+        let daemon = Arc::new(daemon);
+        let ask = |trust: Trust, cmd: Value| { let daemon = Arc::clone(&daemon); async move {
+            let mut client = connect_to(&daemon, trust);
+            client.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret"}})).await;
+            assert!(client.next().await.unwrap().get("ok").is_some());
+            client.send(cmd).await;
+            client.next().await.unwrap()
+        }};
+        let plan = json!({"id":1,"cmd":"room_set_plan","args":{"id":"missing","on":true}});
+        let raise = json!({"id":1,"cmd":"room_update_participant","args":{"id":"missing","participant":{"id":"a","display_name":"A","backend":{"kind":"agent","tool":"codex"},"access":"full"}}});
+        linux_jail::set_state_for_test(None);
+        assert!(ask(Trust::Local, plan.clone()).await["err"].as_str().unwrap().contains("hasn't finished its startup check"));
+        linux_jail::record_probe_state(JailState::Fails("no bubblewrap".into()));
+        for cmd in [plan.clone(), raise.clone()] {
+            assert!(ask(Trust::Local, cmd).await["err"].as_str().unwrap().contains("failed its startup check: no bubblewrap"));
+        }
+        linux_jail::record_probe_state(JailState::Works);
+        // Admitted: the host itself answers (no such room), not the gate.
+        for cmd in [plan.clone(), raise.clone()] {
+            let err = ask(Trust::Local, cmd).await["err"].as_str().unwrap_or_default().to_string();
+            assert!(!err.contains("startup check") && !err.contains("paired device") && !err.contains("receipt"), "{err}");
+        }
+        // Device grants stay outside the surface, and token peers can't raise.
+        assert!(ask(Trust::Token, raise).await["err"].as_str().unwrap().contains("paired device"));
+        linux_jail::set_state_for_test(None);
     }
 
     /// What a welcome lists; phone voice calls only where this daemon can run the helper.

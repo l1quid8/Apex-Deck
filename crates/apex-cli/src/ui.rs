@@ -720,7 +720,7 @@ pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
         vec![Span::styled(safe(error).replace('\n', " "), Style::default().fg(RED))]
     } else if panel.confirm_full {
         vec![
-            Span::styled(format!("{name} can run commands without asking. "), white),
+            Span::styled(format!("{name} {} ", settings::full_access_warning()), white),
             Span::styled("Enter", white),
             Span::styled(" yes · ", gray),
             Span::styled("Esc", white),

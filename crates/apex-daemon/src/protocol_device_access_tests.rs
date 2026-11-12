@@ -88,8 +88,10 @@ mod device_access_updates {
     }
 
     #[tokio::test]
-    async fn linux_local_socket_and_token_cannot_authorize_access_changes() {
-        for trust in [Trust::Local, Trust::Token] {
+    async fn linux_token_cannot_authorize_access_changes() {
+        // A same-user local peer is governed by the recorded jail probe; see
+        // linux_local_update_cannot_bypass_raise_gate_with_a_forged_old_level.
+        for trust in [Trust::Token] {
             let (daemon, _data, bot, folder) = fixture(true, Ok(()));
             let mut client = connect_to(&daemon, trust);
             client.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret"}})).await;
@@ -102,18 +104,27 @@ mod device_access_updates {
 
     #[tokio::test]
     async fn linux_local_update_cannot_bypass_raise_gate_with_a_forged_old_level() {
-        for trust in [Trust::Local, Trust::Token] {
+        use apex_adapters::linux_jail::{self, JailState};
+        let _lock = linux_jail::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A token peer never raises. A same-user local peer (the terminal app)
+        // is refused whenever the recorded jail probe isn't Works.
+        for (trust, probe, expected) in [
+            (Trust::Token, Some(JailState::Works), "only allowed from a paired device"),
+            (Trust::Local, Some(JailState::Fails("probe failed".into())), "failed its startup check"),
+            (Trust::Local, None, "hasn't finished its startup check"),
+        ] {
             let (daemon, _data, bot, folder) = fixture(true, Ok(()));
+            linux_jail::set_state_for_test(probe);
             let mut client = connect_to(&daemon, trust);
             client.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret"}})).await;
             assert!(client.next().await.unwrap().get("ok").is_some());
             // This claims Full -> Full, but the saved participant is Read.
-            // Only the device path checks that binding under the room lock.
             client.send(update(&bot, Some("full"), Some(&folder))).await;
             let reply = client.until_reply(1).await.pop().unwrap();
-            assert!(reply["err"].as_str().is_some_and(|why| why.contains("only allowed from a paired device")), "local raise must fail at the Linux gate, independently of desktop provenance: {reply}");
+            assert!(reply["err"].as_str().is_some_and(|why| why.contains(expected)), "raise must fail at the Linux gate: {reply}");
             assert_eq!(saved_access(&daemon), json!("read"));
         }
+        linux_jail::set_state_for_test(None);
     }
 
     #[tokio::test]
