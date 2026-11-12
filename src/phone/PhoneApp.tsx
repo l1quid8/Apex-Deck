@@ -117,6 +117,8 @@ import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
+import { reconcileWorkPanes } from "../workThreadMetadata.ts";
+import { closeTrashedPanes, withoutTrashedPanes } from "../threadTrash.ts";
 import { stepDraft } from "./stepDraft";
 import { edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeIntent, swipeLostCapture, swipeRelease } from "./threadSwipe";
 import { afterClose, openKeyParts, openStrip, pruneOpenThreads, readOpenThreads, withOpenThread, withoutOpenThread, writeOpenThreads, type OpenKey } from "./openThreads";
@@ -808,8 +810,23 @@ export function PhoneApp() {
     })),
   ), [assistantRegistry, assistantOwners, assistantProjects]);
   const savedPanes = session?.panes;
+  const priorWorkCatalog = useRef(catalog);
+  useEffect(() => {
+    const previous = priorWorkCatalog.current;
+    priorWorkCatalog.current = catalog;
+    if (!session) return;
+    const reconciled = reconcileWorkPanes(session.panes, workspaces, catalog, previous, (hostId) => linkOf(hostId)?.status === "online");
+    const nextPanes = closeTrashedPanes(reconciled, workspaces, catalog);
+    if (nextPanes === session.panes) return;
+    // Host metadata updates the phone's cache, never writes a stale layout back to the Mac.
+    const next = { ...session, panes: nextPanes };
+    sessionRef.current = next;
+    setSession(next);
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* memory still updates */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog, savedPanes, workspaces, onlineKey]);
   const humanPanes = useMemo(() => (savedPanes ?? []).map((pane) => (seen[pane.id] ?? 0) > (pane.activeAt ?? 0) ? { ...pane, activeAt: seen[pane.id] } : pane), [savedPanes, seen]);
-  const panes = useMemo(() => mergeAssistantPanes(humanPanes, visibleAssistantRegistry), [humanPanes, visibleAssistantRegistry]);
+  const panes = useMemo(() => withoutTrashedPanes(mergeAssistantPanes(humanPanes, visibleAssistantRegistry), workspaces, catalog), [humanPanes, visibleAssistantRegistry, workspaces, catalog]);
   const sections = useMemo(() => sidebarSections(panes, workspaces, "threads", new Set()), [panes, workspaces]);
   // The queue outlives renders, so it reads the machines and who is working as they are now.
   const hostsRef = useRef(hosts);
@@ -848,6 +865,7 @@ export function PhoneApp() {
     for (const [hostId, host] of Object.entries(chatView.hosts)) {
       places.workspaces.push({ id: chatSpace(hostId), name: "Chat", path: "", hostId });
       for (const row of host.rooms) {
+        if (row.trashedAt || row.archived || row.movedTo) continue;
         if (row.kind === "chat") { places.panes.push({ id: row.id, workspaceId: chatSpace(hostId), kind: "chat", title: row.title, hostId, executionPath: "" }); continue; }
         if (!row.cwd) continue;
         const space = workSpace(hostId, row.cwd);
@@ -2551,7 +2569,7 @@ export function PhoneApp() {
       if (session === null) return null;
       if (!chatView.hosts[parts.hostId]) return null;
       const row = findRoom(chatView, parts.hostId, parts.id);
-      return row ? !row.archived : false;
+      return row ? !row.archived && !row.trashedAt && !row.movedTo : false;
     };
     setOpenThreads((list) => { const next = pruneOpenThreads(list, alive); return next.length === list.length ? list : next; });
     // eslint-disable-next-line react-hooks/exhaustive-deps

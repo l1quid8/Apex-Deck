@@ -13,7 +13,7 @@ const paneTrashed = (pane: Pane, workspaces: readonly Workspace[], catalog: Chat
   const route = (pane as Pane & {hostId?:string}).hostId ?? workspaceHost(workspaces.find(workspace => workspace.id === pane.workspaceId) ?? {id:'',name:'',path:''});
   return !!catalog.hosts[route]?.rooms.find(row => row.id === pane.id)?.trashedAt;
 };
-export function withoutTrashedPanes(panes: Pane[], workspaces: readonly Workspace[], catalog: ChatCatalog): Pane[] {
+export function withoutTrashedPanes<T extends Pane>(panes: T[], workspaces: readonly Workspace[], catalog: ChatCatalog): T[] {
   return panes.filter(pane => !paneTrashed(pane, workspaces, catalog));
 }
 /** Preserve the saved thread, closing it so Restore never opens or resumes it. */
