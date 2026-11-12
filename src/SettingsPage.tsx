@@ -480,7 +480,7 @@ function PhonesSection({ backend: _backend }: { backend: Backend }) {
   return <>
     <div className="settings-card" id="paired"><PhonesSettings backend={backend} /></div>
     <Advanced title="Connectivity & device details" id="phone-remote">
-      <Row label="Remote connections" note={`Paired phones can reach ${LOCAL_HOST_REFERENCE} while it is online.`} id="phone-remote">
+      <Row label="Remote connections" note="Connection status is shown beside Pair phone above." id="phone-remote">
         <span className="pill">Managed in Phones settings above</span>
       </Row>
     </Advanced>

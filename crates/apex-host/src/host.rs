@@ -2926,6 +2926,7 @@ impl Host {
         if let Some(text) = content {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                 return Ok(serde_json::json!({
+                    "platform": std::env::consts::OS,
                     "exists": true,
                     "trusted": v.get("trusted").and_then(|x| x.as_bool()).unwrap_or(false),
                     "epoch": v.get("epoch").and_then(|x| x.as_str()).unwrap_or(""),
@@ -2938,6 +2939,7 @@ impl Host {
         // Also include folder trust list
         let accepted = crate::folder_trust::list_accepted(&self.paths.data);
         Ok(serde_json::json!({
+            "platform": std::env::consts::OS,
             "exists": false,
             "trusted": false,
             "epoch": "",
@@ -4603,6 +4605,21 @@ mod tests {
 mod host_tests {
     use super::*;
     use apex_core::Participant;
+
+    #[test]
+    fn trust_status_reports_backend_platform_with_and_without_a_record() {
+        let (host, runtime, data) = host("trust-status-platform");
+        let missing = host.trust_status().unwrap();
+        assert_eq!(missing["platform"], std::env::consts::OS);
+        assert_eq!(missing["exists"], false);
+        std::fs::write(data.join("host-trust.json"), r#"{"trusted":true,"epoch":"test-epoch","trusted_at_ms":1,"boot_id":"test-boot"}"#).unwrap();
+        let present = host.trust_status().unwrap();
+        assert_eq!(present["platform"], std::env::consts::OS);
+        assert_eq!(present["trusted"], true);
+        assert_eq!(present["epoch"], "test-epoch");
+        host.shutdown(); drop(host); drop(runtime);
+        std::fs::remove_dir_all(data).unwrap();
+    }
 
     #[test]
     fn untagged_responders_follow_membership_options_and_clear_before_replies() {

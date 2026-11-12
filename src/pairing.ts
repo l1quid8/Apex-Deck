@@ -8,7 +8,6 @@
 
 import qrcode from "qrcode-generator";
 import type { RemoteAccessApi } from "./backend";
-import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import type { PairedDevice, Tier } from "./pairedDevices";
 
 /** What a new phone may do unless the person picks otherwise. */
@@ -30,11 +29,18 @@ export interface PairClaim {
   previously_revoked_at: number | null;
 }
 
+export interface RemoteRelayStatus {
+  state: "connecting" | "connected" | "unavailable" | "denied" | "disabled";
+  error: string | null;
+}
+
 export interface RemoteInfo {
   enabled: boolean;
   endpoint_id: string | null;
   port: number | null;
   advertise: string[];
+  /** Older hosts report the switch without relay reachability. */
+  relay_status?: RemoteRelayStatus | null;
 }
 
 type Caller = { call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -99,8 +105,18 @@ export async function ensureRemoteAccess(remote: RemoteAccessApi | undefined, tu
 export interface PhonesStatus { line: string; action: "Turn off" | "Turn on" | null; note: string | null }
 
 /** What Settings → Phones says about phone connections. `phones`: how many are paired. */
-export function phonesStatus(on: boolean, phones: number): PhonesStatus {
-  if (on) return { line: `Phones can reach ${LOCAL_HOST_REFERENCE} from anywhere.`, action: "Turn off", note: null };
+export function phonesStatus(on: boolean, phones: number, relayStatus?: RemoteRelayStatus | null): PhonesStatus {
+  if (on) {
+    const direct = "Pairing on the same network or through a direct address can still work.";
+    switch (relayStatus?.state) {
+      case "connected": return { line: "Phone connections are on. The relay is connected.", action: "Turn off", note: null };
+      case "connecting": return { line: "Phone connections are on. The relay is connecting.", action: "Turn off", note: direct };
+      case "unavailable": return { line: "Phone connections are on. The relay is unavailable.", action: "Turn off", note: relayStatus.error ? `${relayStatus.error} ${direct}` : direct };
+      case "denied": return { line: "Phone connections are on. The relay refused this machine.", action: "Turn off", note: relayStatus.error ? `${relayStatus.error} ${direct}` : direct };
+      case "disabled": return { line: "Phone connections are on. The relay is disabled.", action: "Turn off", note: direct };
+      default: return { line: "Phone connections are on.", action: "Turn off", note: null };
+    }
+  }
   if (phones > 0) return { line: "Phone connections are off.", action: "Turn on", note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi." };
   return { line: "Phone connections are off. Pairing turns them on.", action: null, note: null };
 }

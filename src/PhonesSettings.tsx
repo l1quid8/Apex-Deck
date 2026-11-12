@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Backend, RemoteAccessApi } from "./backend";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
@@ -24,10 +24,12 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
   const [info, setInfo] = useState<RemoteInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
+  const [pollProblem, setPollProblem] = useState("");
   const [asking, setAsking] = useState<Question | null>(null);
   const [pairing, setPairing] = useState(false);
   const [addresses, setAddresses] = useState("");
   const [savedNote, setSavedNote] = useState("");
+  const accessGeneration = useRef(0);
   const fail = (e: unknown) => setProblem(wordsOf(e));
   const showInfo = (next: RemoteInfo) => { setInfo(next); setAddresses(next.advertise.join(", ")); };
 
@@ -38,10 +40,34 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
   ]);
   useEffect(() => { void loadDevices(); }, [devicesCall]);
   useEffect(() => { if (remote) void loadAccess(remote); }, [remote, pairCall]);
+  useEffect(() => {
+    if (!on || busy) return;
+    let cancelled = false;
+    const generation = accessGeneration.current;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const next = await pairCall.info();
+        // A reachability refresh must not replace an advertised-address draft.
+        if (!cancelled && generation === accessGeneration.current) {
+          setInfo(next);
+          setOn(next.enabled);
+          setPollProblem("");
+        }
+      } catch (error) {
+        if (!cancelled && generation === accessGeneration.current) setPollProblem(wordsOf(error));
+      }
+      if (!cancelled) timer = setTimeout(poll, 3000);
+    };
+    timer = setTimeout(poll, 3000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [on, pairCall, busy]);
 
   const turn = async (next: boolean) => {
     if (!remote) return;
+    accessGeneration.current += 1;
     setProblem("");
+    setPollProblem("");
     setSavedNote("");
     setBusy(true);
     try {
@@ -93,7 +119,7 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
     );
   };
 
-  const status = on === null || devices === null ? null : phonesStatus(on, devices.length);
+  const status = on === null || devices === null ? null : phonesStatus(on, devices.length, pollProblem ? undefined : info?.relay_status);
   const changed = info ? addresses.trim() !== info.advertise.join(", ") : addresses.trim() !== "";
   return (<>
     <TrustHostSettings backend={backend} />
@@ -123,7 +149,7 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
           </span>
         </div>
       ))}
-      {problem && <div className="settings-row"><span className="error" role="alert">{problem}</span></div>}
+      {(problem || pollProblem) && <div className="settings-row"><span className="error" role="alert">{problem || pollProblem}</span></div>}
     </div>
     {remote && on && info && <details className="settings-card phones-advanced">
       <summary>Advanced</summary>
