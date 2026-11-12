@@ -14,7 +14,7 @@ use std::time::Duration;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use futures::{SinkExt, StreamExt};
 use iroh::endpoint::{presets, Connection, PortmapperConfig, RecvStream, SendStream};
-use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh::{Endpoint, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey};
 use serde_json::{json, Value};
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
@@ -33,8 +33,19 @@ pub const PAIR_ALPN: &[u8] = b"apex-deck/pair/1";
 /// context, 32 bytes).
 pub const PAIR_EKM_LABEL: &[u8] = b"EXPORTER-apex-deck-pair-v1";
 
-/// The only relay remote access uses.
+/// The relay remote access uses.
 pub const RELAY: &str = "https://relay.apex-terminal.xyz/";
+
+/// The same relay server under the main site's name, for networks that block
+/// `relay.` by name (seen on a Windows PC's ISP, 2026-11-11). iroh dials
+/// `<url>/relay` and probes `<url>/ping`; Caddy forwards both to the relay.
+/// Phones keep dialing `RELAY`: the server forwards by endpoint ID, so
+/// either name reaches a machine connected under the other.
+pub const RELAY_FALLBACK: &str = "https://apex-terminal.xyz/";
+
+/// How long `RELAY` gets to connect before the endpoint switches to
+/// `RELAY_FALLBACK`. Below the 20 s "unavailable" grace in remote_control.
+const RELAY_FALLBACK_AFTER: Duration = Duration::from_secs(15);
 
 /// The endpoint's secret key, owner-only. On a Mac this moves to the
 /// Keychain before release.
@@ -100,7 +111,51 @@ pub async fn bind(key: SecretKey, relay: Option<&str>, port: u16) -> Result<Endp
         .map_err(|e| e.to_string())?
         .bind_addr(format!("[::]:{port}").as_str())
         .map_err(|e| e.to_string())?;
-    builder.bind().await.map_err(|e| format!("could not start remote access on UDP port {port}: {e}"))
+    let endpoint = builder.bind().await.map_err(|e| format!("could not start remote access on UDP port {port}: {e}"))?;
+    if relay == Some(RELAY) {
+        fall_back_if_unreachable(&endpoint, RELAY, RELAY_FALLBACK, RELAY_FALLBACK_AFTER);
+    }
+    Ok(endpoint)
+}
+
+/// Keep the endpoint on one of two names for the same relay server. Whenever
+/// it has been offline for `after` (at start, or after a later drop such as
+/// moving to a network that blocks this name), swap to the other name. Runs
+/// for the endpoint's whole life; a short blip that reconnects within `after`
+/// changes nothing.
+fn fall_back_if_unreachable(endpoint: &Endpoint, primary: &str, fallback: &str, after: Duration) {
+    use iroh::Watcher;
+    let (Ok(mut current), Ok(mut other)) = (primary.parse::<RelayUrl>(), fallback.parse::<RelayUrl>()) else {
+        return;
+    };
+    // `closed()` holds no clone, so Turn off drops this task's clone and the
+    // UDP socket is released even while the loop is waiting on status.
+    let closed = endpoint.closed();
+    let endpoint = endpoint.clone();
+    tokio::spawn(closed.run_until(async move {
+        let mut status = endpoint.home_relay_status();
+        loop {
+            if tokio::time::timeout(after, endpoint.online()).await.is_ok() {
+                // Online: wait for the connection to drop, then give the
+                // current name `after` to come back before swapping.
+                while status.get().iter().any(|s| s.is_connected()) {
+                    if status.updated().await.is_err() {
+                        return;
+                    }
+                }
+                continue;
+            }
+            if endpoint.is_closed() {
+                return;
+            }
+            eprintln!("apex-daemon: relay {current} not connected for {after:?}; switching to {other}");
+            // No QUIC address discovery: the relay's QUIC certificate names
+            // only the primary host, so that probe would always fail here.
+            endpoint.insert_relay(other.clone(), Arc::new(RelayConfig::new(other.clone(), None))).await;
+            endpoint.remove_relay(&current).await;
+            std::mem::swap(&mut current, &mut other);
+        }
+    }));
 }
 
 /// Accept connections until the endpoint closes.
@@ -855,5 +910,101 @@ mod tests {
         let mut cur_phone = Phone::dial(cur_key, &server).await;
         let hello = cur_phone.call(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1 } })).await.unwrap();
         assert_eq!(hello["ok"]["host_id"], "host-1");
+    }
+
+    /// A network that blocks the primary relay's name: its TLS never completes
+    /// (a silent TCP listener stands in). The endpoint must move to the
+    /// fallback name and come online there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blocked_primary_relay_falls_back_to_the_other_name() {
+        let blocked = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let primary = format!("https://{}/", blocked.local_addr().unwrap());
+        let (_map, fallback, _server) = iroh::test_utils::run_relay_server_with(false).await.unwrap();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(RelayMap::from(primary.parse::<RelayUrl>().unwrap())))
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+            .portmapper_config(PortmapperConfig::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(500), endpoint.online()).await.is_err(), "the blocked relay must not connect");
+        fall_back_if_unreachable(&endpoint, &primary, fallback.as_str(), Duration::from_secs(3));
+        tokio::time::timeout(Duration::from_secs(20), endpoint.online()).await.expect("the fallback relay must connect");
+        use iroh::Watcher;
+        let homes: Vec<RelayUrl> = endpoint.home_relay_status().get().iter().filter(|s| s.is_connected()).map(|s| s.url().clone()).collect();
+        assert_eq!(homes, vec![fallback]);
+        drop(blocked);
+        endpoint.close().await;
+    }
+
+    /// Connected on the primary name first, then that name stops working
+    /// (e.g. the PC moves to a network that blocks it). The endpoint must
+    /// still move to the fallback name instead of staying offline.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn primary_relay_lost_after_connecting_falls_back() {
+        use iroh::Watcher;
+        let (_pmap, primary, primary_server) = iroh::test_utils::run_relay_server_with(false).await.unwrap();
+        let (_fmap, fallback, _fallback_server) = iroh::test_utils::run_relay_server_with(false).await.unwrap();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(RelayMap::from(primary.clone())))
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+            .portmapper_config(PortmapperConfig::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(20), endpoint.online()).await.expect("the primary relay must connect");
+        let mut status = endpoint.home_relay_status();
+        let homes: Vec<RelayUrl> = status.get().iter().filter(|s| s.is_connected()).map(|s| s.url().clone()).collect();
+        assert_eq!(homes, vec![primary.clone()]);
+        // Watch from an already-online start, so only the later drop can move it.
+        fall_back_if_unreachable(&endpoint, primary.as_str(), fallback.as_str(), Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        primary_server.shutdown().await.unwrap();
+        let moved = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let homes: Vec<RelayUrl> = status.get().iter().filter(|s| s.is_connected()).map(|s| s.url().clone()).collect();
+                if homes == vec![fallback.clone()] {
+                    return;
+                }
+                status.updated().await.unwrap();
+            }
+        })
+        .await;
+        assert!(moved.is_ok(), "the endpoint must reconnect on the fallback name after losing the primary");
+        endpoint.close().await;
+    }
+
+    /// Online, then Turn off: the watcher must not keep the endpoint (and its
+    /// UDP socket) alive, or turning back on hits "UDP port is in use".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn turning_off_while_online_releases_the_udp_port() {
+        let (_map, relay, _server) = iroh::test_utils::run_relay_server_with(false).await.unwrap();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(RelayMap::from(relay.clone())))
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+            .portmapper_config(PortmapperConfig::Disabled)
+            .clear_ip_transports()
+            .bind_addr("127.0.0.1:0")
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let port = endpoint.bound_sockets().iter().find(|a| a.is_ipv4()).expect("an IPv4 socket").port();
+        tokio::time::timeout(Duration::from_secs(20), endpoint.online()).await.expect("the relay must connect");
+        // Long `after`, so the watcher is parked waiting on status when we close.
+        fall_back_if_unreachable(&endpoint, relay.as_str(), "https://127.0.0.1:1/", Duration::from_secs(60));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        endpoint.close().await;
+        drop(endpoint);
+        let freed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(freed.is_ok(), "UDP port {port} must be free after Turn off");
     }
 }

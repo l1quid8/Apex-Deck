@@ -6,9 +6,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iroh::Endpoint;
+use iroh::{Endpoint, Watcher};
 use serde_json::{json, Value};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::remote_config;
 use crate::remote_settings;
@@ -18,7 +19,10 @@ struct Running {
     endpoint: Endpoint,
     accept: JoinHandle<()>,
     port: u16,
+    started_at: Instant,
 }
+
+const RELAY_CONNECT_GRACE_PERIOD: Duration = Duration::from_secs(20);
 
 /// The phone endpoint. `relay` is `None` in tests, so they never use the public relay.
 pub struct RemoteController {
@@ -47,7 +51,7 @@ impl RemoteController {
     pub async fn set(&self, daemon: &Arc<Daemon>, enabled: bool, import: bool) -> Result<Value, String> {
         let mut guard = self.inner.lock().await;
         if import && remote_settings::present(&daemon.data) {
-            return Ok(state_value(guard.as_ref(), &daemon.data));
+            return Ok(state_value(guard.as_ref(), &daemon.data, self.relay));
         }
         // An explicit choice is always saved, even when the endpoint already
         // matches: a saved "on" that failed to bind at boot, or `--remote`
@@ -70,7 +74,7 @@ impl RemoteController {
     pub async fn attach(&self, daemon: Arc<Daemon>, endpoint: Endpoint) {
         let port = bound_port(&endpoint);
         let accept = spawn_accept(Arc::clone(&daemon), endpoint.clone());
-        *self.inner.lock().await = Some(Running { endpoint, accept, port });
+        *self.inner.lock().await = Some(Running { endpoint, accept, port, started_at: Instant::now() });
     }
 
     /// Run `body` while the endpoint is on, under the controller lock.
@@ -83,7 +87,7 @@ impl RemoteController {
     /// `remote_info`: the controller's state now, never a cached value.
     pub async fn snapshot(&self, data: &Path) -> Value {
         let guard = self.inner.lock().await;
-        state_value(guard.as_ref(), data)
+        state_value(guard.as_ref(), data, self.relay)
     }
 
     async fn enable(&self, guard: &mut Option<Running>, daemon: &Arc<Daemon>, save: bool, port_flag: Option<u16>) -> Result<Value, String> {
@@ -91,7 +95,7 @@ impl RemoteController {
             if save {
                 remote_settings::save(&daemon.data, true)?;
             }
-            return Ok(state_value(Some(running), &daemon.data));
+            return Ok(state_value(Some(running), &daemon.data, self.relay));
         }
         let endpoint = self.bind(&daemon.data, port_flag).await?;
         let port = bound_port(&endpoint);
@@ -107,8 +111,8 @@ impl RemoteController {
             eprintln!("apex-daemon: could not remember UDP port {port}: {error}");
         }
         let accept = spawn_accept(Arc::clone(daemon), endpoint.clone());
-        let running = Running { endpoint, accept, port };
-        let value = state_value(Some(&running), &daemon.data);
+        let running = Running { endpoint, accept, port, started_at: Instant::now() };
+        let value = state_value(Some(&running), &daemon.data, self.relay);
         *guard = Some(running);
         Ok(value)
     }
@@ -134,7 +138,7 @@ impl RemoteController {
 async fn disable(guard: &mut Option<Running>, daemon: &Arc<Daemon>) -> Result<Value, String> {
     remote_settings::save(&daemon.data, false)?;
     if guard.is_none() {
-        return Ok(state_value(None, &daemon.data));
+        return Ok(state_value(None, &daemon.data, None));
     }
     let Some(Running { endpoint, accept, .. }) = guard.take() else { unreachable!() };
     daemon.invites.cancel_open();
@@ -142,10 +146,38 @@ async fn disable(guard: &mut Option<Running>, daemon: &Arc<Daemon>) -> Result<Va
     let _ = accept.await;
     endpoint.close().await;
     drop(endpoint);
-    Ok(state_value(None, &daemon.data))
+    Ok(state_value(None, &daemon.data, None))
 }
 
-fn state_value(running: Option<&Running>, data: &Path) -> Value {
+/// Binding a UDP socket does not prove the relay is reachable. Read iroh's
+/// current status without waiting for WAN access: LAN pairing must keep working
+/// while the relay is offline. Errors describe this machine's relay connection,
+/// not whether a particular phone is online or authorized.
+fn relay_status(running: &Running, relay: Option<&str>) -> Value {
+    if relay.is_none() {
+        return json!({ "state": "disabled", "error": null });
+    }
+    let statuses = running.endpoint.home_relay_status().get();
+    if statuses.iter().any(|status| status.is_connected()) {
+        return json!({ "state": "connected", "error": null });
+    }
+    if let Some(reason) = statuses.iter().find_map(|status| status.auth_denied_reason()) {
+        return json!({ "state": "denied", "error": reason });
+    }
+    if let Some(error) = statuses.iter().find_map(|status| status.last_error()) {
+        return json!({ "state": "unavailable", "error": format!("{error:#}") });
+    }
+    // A failed /ping or DNS lookup can prevent home relay selection entirely.
+    // In that case iroh exposes neither a status entry nor a connection error.
+    // Bound the startup grace period without guessing the network failure or
+    // stopping retries; a later connected status above always takes priority.
+    if running.started_at.elapsed() >= RELAY_CONNECT_GRACE_PERIOD {
+        return json!({ "state": "unavailable", "error": "No relay connection is available yet. Retrying in the background." });
+    }
+    json!({ "state": "connecting", "error": null })
+}
+
+fn state_value(running: Option<&Running>, data: &Path, relay: Option<&str>) -> Value {
     let advertise = remote_config::advertised(data);
     match running {
         Some(running) => json!({
@@ -153,6 +185,7 @@ fn state_value(running: Option<&Running>, data: &Path) -> Value {
             "endpoint_id": running.endpoint.id().to_string(),
             "port": running.port,
             "relay": crate::remote::RELAY,
+            "relay_status": relay_status(running, relay),
             "advertise": advertise,
         }),
         None => json!({
@@ -210,6 +243,94 @@ mod tests {
 
     async fn switched(daemon: &Arc<Daemon>, enabled: bool, import: bool) -> Result<Value, String> {
         daemon.remote.set(daemon, enabled, import).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bound_endpoint_reports_relay_failure_separately_from_enabled() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Allow relay selection (/ping), but refuse the actual WebSocket
+        // upgrade. A completely unreachable URL may never be selected as a
+        // home relay, so iroh has no relay connection error to publish for it.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay = Box::leak(format!("http://{}/", listener.local_addr().unwrap()).into_boxed_str());
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while request.len() < 4096 && !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(len) => request.extend_from_slice(&chunk[..len]),
+                        }
+                    }
+                    let status = if request.starts_with(b"GET /ping ") { "200 OK" } else { "503 Service Unavailable" };
+                    let _ = socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await;
+                });
+            }
+        });
+        let data = crate::devices::tests::folder();
+        let mut daemon = daemon(&data.0);
+        // A locally bound endpoint remains useful for LAN pairing when its
+        // relay cannot be reached. It must not claim relay connectivity.
+        Arc::get_mut(&mut daemon).unwrap().remote = RemoteController::new(Some(relay));
+        let initial = switched(&daemon, true, false).await.unwrap();
+        assert_eq!(initial["enabled"], true);
+        assert!(matches!(initial["relay_status"]["state"].as_str(), Some("connecting" | "unavailable")));
+        let failed = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let state = daemon.remote.snapshot(&data.0).await;
+                if state["relay_status"]["state"] == "unavailable" {
+                    break state;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.expect("the failed local relay dial must become visible");
+        assert_eq!(failed["enabled"], true, "direct pairing remains enabled");
+        assert!(!failed["relay_status"]["error"].as_str().unwrap().is_empty());
+        let off = switched(&daemon, false, false).await.unwrap();
+        assert!(off["relay_status"].is_null());
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn relay_disabled_endpoint_does_not_claim_remote_reachability() {
+        let data = crate::devices::tests::folder();
+        let daemon = daemon(&data.0);
+        let on = switched(&daemon, true, false).await.unwrap();
+        assert_eq!(on["relay_status"], json!({ "state": "disabled", "error": null }));
+        switched(&daemon, false, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn relay_selection_timeout_is_visible_and_turning_on_resets_the_grace_period() {
+        // The TCP listener deliberately never responds to /ping. No home
+        // relay is selected, so iroh cannot publish a connection error.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay = Box::leak(format!("http://{}/", listener.local_addr().unwrap()).into_boxed_str());
+        let data = crate::devices::tests::folder();
+        let mut daemon = daemon(&data.0);
+        Arc::get_mut(&mut daemon).unwrap().remote = RemoteController::new(Some(relay));
+        let initial = switched(&daemon, true, false).await.unwrap();
+        assert_eq!(initial["relay_status"]["state"], "connecting");
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(19)).await;
+        assert_eq!(daemon.remote.snapshot(&data.0).await["relay_status"]["state"], "connecting");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let failed = daemon.remote.snapshot(&data.0).await;
+        assert_eq!(failed["enabled"], true, "LAN pairing remains available");
+        assert_eq!(failed["relay_status"]["state"], "unavailable", "relay selection cannot stay connecting forever");
+        assert!(!failed["relay_status"]["error"].as_str().unwrap().is_empty());
+        assert_eq!(switched(&daemon, true, false).await.unwrap()["relay_status"]["state"], "unavailable", "enabling an already-running endpoint cannot restart the grace period");
+        tokio::time::resume();
+
+        switched(&daemon, false, false).await.unwrap();
+        let restarted = switched(&daemon, true, false).await.unwrap();
+        assert_eq!(restarted["relay_status"]["state"], "connecting", "a new endpoint gets a new grace period");
+        switched(&daemon, false, false).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

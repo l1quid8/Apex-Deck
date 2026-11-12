@@ -300,13 +300,38 @@ test("Pair phone turns phone connections on when they're off, and says why when 
 });
 
 test("Settings → Phones says whether phones can connect, with the button that changes it", () => {
-  assert.deepEqual(phonesStatus(true, 1), { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null });
-  assert.deepEqual(phonesStatus(true, 0), { line: "Phones can reach this Mac from anywhere.", action: "Turn off", note: null });
+  assert.deepEqual(phonesStatus(true, 1), { line: "Phone connections are on.", action: "Turn off", note: null });
+  assert.deepEqual(phonesStatus(true, 0), { line: "Phone connections are on.", action: "Turn off", note: null });
   assert.deepEqual(phonesStatus(false, 2), {
     line: "Phone connections are off.", action: "Turn on",
     note: "Paired phones stay saved but can't connect, even on the same Wi‑Fi.",
   }, "off with saved phones: they can't connect even on Wi-Fi, and Turn on is offered");
   assert.deepEqual(phonesStatus(false, 0), { line: "Phone connections are off. Pairing turns them on.", action: null, note: null }, "off with none: no button, Pair phone does it");
+});
+
+test("phone status reports the relay connection without guaranteeing phone reachability", () => {
+  const connected = phonesStatus(true, 1, { state: "connected", error: null });
+  assert.equal(connected.line, "Phone connections are on. The relay is connected.");
+  assert.doesNotMatch(connected.line, /from anywhere/);
+  assert.equal(connected.action, "Turn off");
+
+  const connecting = phonesStatus(true, 1, { state: "connecting", error: null });
+  assert.doesNotMatch(connecting.line, /from anywhere/);
+  assert.match(`${connecting.line} ${connecting.note}`, /relay.*connecting/i);
+
+  for (const state of ["unavailable", "denied"]) {
+    const error = state === "denied" ? "Relay denied authentication: this endpoint is not allowed" : "TLS handshake failed: certificate issuer is unknown";
+    const status = phonesStatus(true, 1, { state, error });
+    assert.doesNotMatch(status.line, /from anywhere/);
+    assert.ok(status.note.includes(error), "the full relay error is visible");
+    assert.match(status.note, /same network.*direct.*still work/i);
+    assert.equal(status.action, "Turn off");
+  }
+
+  for (const relay of [undefined, null, { state: "disabled", error: null }]) {
+    assert.doesNotMatch(phonesStatus(true, 1, relay).line, /from anywhere/);
+  }
+  assert.equal(phonesStatus(false, 1, { state: "connected", error: null }).line, "Phone connections are off.");
 });
 
 // Auto-renew. The daemon's pair_wait answers "expired" only for a code no

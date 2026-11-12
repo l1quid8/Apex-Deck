@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { Backend } from "./backend";
 
 interface TrustInfo {
+  /** The backend host's OS, which can differ from the renderer's. Older hosts omit it. */
+  platform?: string;
   exists: boolean;
   trusted: boolean;
   epoch: string;
@@ -12,20 +14,24 @@ interface TrustInfo {
 }
 
 export function TrustHostSettings({ backend }: { backend: Backend }) {
-  const [info, setInfo] = useState<TrustInfo | null>(null);
+  const [loaded, setLoaded] = useState<{ backend: Backend; info: TrustInfo } | null>(null);
 
-  const load = async () => {
-    try {
-      const result = await (backend as any).call?.("trust_status", {});
-      if (result) setInfo(result as TrustInfo);
-    } catch {
-      setInfo({ exists: false, trusted: false, epoch: "", trusted_at_ms: 0, boot_id: "" });
-    }
-  };
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(null);
+    void (async () => {
+      try {
+        const result = await (backend as any).call?.("trust_status", {});
+        if (!cancelled && result) setLoaded({ backend, info: result as TrustInfo });
+      } catch {
+        // An unavailable host supplies no trust policy or record state.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [backend]);
 
-  useEffect(() => { void load(); }, [backend]);
-
-  if (!info) return <div className="settings-row"><span className="muted">Loading trust status…</span></div>;
+  const info = loaded?.backend === backend ? loaded.info : null;
+  if (info?.platform !== "linux") return null;
 
   return (
     <div className="settings-card trust-host">

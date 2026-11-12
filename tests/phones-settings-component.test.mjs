@@ -18,15 +18,20 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
     import {PhonesSettings} from '/src/PhonesSettings.tsx'; import '/src/styles.css';
     const root=createRoot(document.getElementById('test-root'));
     const phone={endpointId:'ab'.repeat(32),label:'iPhone 16 Pro',tier:'chat',threads:'all',addedAt:Date.UTC(2026,9,21),lastSeen:Date.now()};
-    const f=window.fixture={on:true,devices:[phone],calls:[],
+    const f=window.fixture={on:true,devices:[phone],calls:[],relay:{state:'unavailable',error:'DNS lookup failed: no DNS records found for relay.apex-terminal.xyz'},
       mount(){root.render(React.createElement(PhonesSettings,{key:Math.random(),backend}));},
       count(name){return this.calls.filter(c=>c[0]===name).length;}};
-    const info=()=>({enabled:f.on,endpoint_id:f.on?'cb414f8b'.repeat(8):null,port:41641,advertise:[]});
+    const info=()=>({enabled:f.on,endpoint_id:f.on?'cb414f8b'.repeat(8):null,port:41641,advertise:[],relay_status:f.on?f.relay:null});
     const backend={
       async call(cmd,args){f.calls.push([cmd,args]);
         if(cmd==='devices_list')return {version:1,devices:f.devices,revoked:[]};
         if(cmd==='devices_revoke'){f.devices=f.devices.filter(d=>d.endpointId!==args.id);return null;}
-        if(cmd==='remote_info')return info();
+        if(cmd==='remote_info'){
+          if(f.infoFails)throw Error(f.infoFails);
+          if(f.holdInfo){f.holdInfo=false;const snapshot=info();return new Promise(resolve=>{f.releaseInfo=()=>{f.releaseInfo=null;resolve(snapshot);};});}
+          return info();
+        }
+        if(cmd==='remote_advertise')throw Error('That advertised address was refused');
         if(cmd==='pair_start'){if(!f.on)throw Object.assign(Error('off'),{reason:'not_remote'});return {invitation:'inv'+f.count('pair_start'),link:'apexdeck://pair?p=sample',expires_at:Date.now()+300000};}
         if(cmd==='pair_wait')return new Promise(()=>{});
         if(cmd==='pair_cancel')return null;
@@ -34,7 +39,7 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
       sessionLoad:async()=>({workspaces:[],panes:[]}),
       remoteAccess:{
         get:async()=>{f.calls.push(['get']);return {on:f.on,owned:true};},
-        set:async on=>{f.calls.push(['set',on]);if(f.setFails)throw Error(f.setFails);f.on=on;return {on,owned:true};}},
+        set:async on=>{f.calls.push(['set',on]);if(f.setFails)throw Error(f.setFails);if(f.holdSet){f.holdSet=false;await new Promise(resolve=>{f.releaseSet=()=>{f.releaseSet=null;resolve();};});}f.on=on;return {on,owned:true};}},
       hosts:{},
     };
     window.ready=true;
@@ -60,17 +65,64 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         await wait(()=>window.ready,'page');
         await run(()=>window.fixture.mount());
 
-        // On, one phone: the anywhere line, Turn off, and a closed Advanced with the endpoint.
+        // A bound endpoint with no relay must show the full failure outside Advanced.
         await wait(()=>document.querySelector('.phones-advanced'),'Advanced while on');
-        assert.equal(await status(),'Phones can reach this Mac from anywhere.');
+        assert.doesNotMatch(await status(),/from anywhere/);
+        assert.match(await status(),/DNS lookup failed: no DNS records found for relay.apex-terminal.xyz/);
+        assert.match(await status(),/same network.*direct.*still work/is);
+        assert.equal(await run(()=>document.querySelector('.phones-advanced').open),false,'diagnostics are visible with Advanced closed');
+
+        // A later relay connection updates the same mounted screen without replacing an address draft.
+        await run(()=>{
+          document.querySelector('.phones-advanced').open=true;
+          const input=document.querySelector('[aria-label="Advertised addresses"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'unsaved.example:41641');
+          input.dispatchEvent(new Event('input',{bubbles:true}));
+          window.fixture.relay={state:'connected',error:null};
+        });
+        await wait(()=>document.querySelector('.phones-status-text')?.innerText.includes('The relay is connected.'),'relay status refreshed without remount');
+        assert.equal(await run(()=>document.querySelector('[aria-label="Advertised addresses"]').value),'unsaved.example:41641','polling preserves the unsaved advertised address');
+        assert.equal(await run(()=>[...document.querySelectorAll('.remote-addresses button')].find(b=>b.textContent==='Save').disabled),false,'the draft can still be saved');
+        await run(()=>{document.querySelector('.phones-advanced').open=false;});
+
+        // On, one phone: the confirmed relay state, Turn off, and a closed Advanced with the endpoint.
+        assert.equal(await status(),'Phone connections are on. The relay is connected.');
         assert.deepEqual(await buttons(),['Pair phone','Turn off']);
         assert.equal(await run(()=>document.querySelector('.phones-advanced').open),false,'Advanced starts closed');
         assert.match(await run(()=>document.querySelector('.phones-advanced').textContent),/Endpoint ID.*UDP port.*41641.*Advertised addresses/s);
         assert.doesNotMatch(await run(()=>document.body.innerText),/Remote access|Paired devices/);
         await snap('on');
 
-        // Turn off: live in the daemon, the off-with-phones lines, Turn on, no Advanced.
+        // A failed status refresh clears once reading the daemon succeeds again.
+        await run(()=>{window.fixture.infoFails='Temporary remote status lookup failure';});
+        await wait(()=>document.querySelector('.paired-devices [role=alert]')?.textContent==='Temporary remote status lookup failure','poll failure shown');
+        assert.doesNotMatch(await status(),/The relay is connected/,'a failed refresh cannot keep reporting a relay connection');
+        await run(()=>{window.fixture.infoFails='';});
+        await wait(()=>!document.querySelector('.paired-devices [role=alert]'),'poll failure clears after recovery');
+
+        // Successful polling must not erase a separate advertised-address save failure.
+        await run(()=>{document.querySelector('.phones-advanced').open=true;});
+        await click('Save');
+        await wait(()=>document.querySelector('.paired-devices [role=alert]')?.textContent==='That advertised address was refused','address save failure');
+        await run(()=>{window.fixture.relay={state:'connecting',error:null};});
+        await wait(()=>document.querySelector('.phones-status-text')?.innerText.includes('relay is connecting'),'poll after save failure');
+        assert.equal(await run(()=>document.querySelector('.paired-devices [role=alert]')?.textContent),'That advertised address was refused','status refresh preserves the save failure');
+        await run(()=>{window.fixture.relay={state:'connected',error:null};document.querySelector('.phones-advanced').open=false;});
+        await wait(()=>document.querySelector('.phones-status-text')?.innerText.includes('The relay is connected.'),'relay connected again');
+
+        // An older poll must not change status once a newer turn action has begun.
+        await run(()=>{window.fixture.relay={state:'denied',error:'stale relay denial'};window.fixture.holdInfo=true;});
+        await wait(()=>typeof window.fixture.releaseInfo==='function','poll request held');
+        await run(()=>{window.fixture.relay={state:'connected',error:null};window.fixture.holdSet=true;});
         await click('Turn off');
+        await wait(()=>[...document.querySelectorAll('.phones-status button')].some(b=>b.textContent==='Turning off…'),'turn request pending');
+        await run(()=>window.fixture.releaseInfo());
+        await new Promise(r=>setTimeout(r,60));
+        assert.match(await status(),/The relay is connected/,'a stale poll cannot replace status during the newer turn action');
+        assert.doesNotMatch(await status(),/stale relay denial/);
+        await run(()=>window.fixture.releaseSet());
+
+        // Turn off: live in the daemon, the off-with-phones lines, Turn on, no Advanced.
         await wait(()=>document.querySelector('.phones-status-text')?.innerText.startsWith('Phone connections are off.'),'off line');
         assert.equal(await status(),"Phone connections are off.\\nPaired phones stay saved but can't connect, even on the same Wi‑Fi.");
         assert.deepEqual(await buttons(),['Pair phone','Turn on']);
@@ -147,6 +199,15 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         assert.match(await run(()=>document.querySelector('.pair-sheet').innerText),/Turned on phone connections/);
         assert.equal(await run(()=>window.fixture.count('pair_start')),2);
         await click('Cancel');
+
+        // Another local client can turn the daemon off; polling updates the switch without remounting.
+        await wait(()=>!document.querySelector('.pair-sheet'),'final sheet closed');
+        await run(()=>{window.fixture.on=false;});
+        await wait(()=>document.querySelector('.phones-status-text')?.innerText==='Phone connections are off. Pairing turns them on.','external daemon off reflected');
+        assert.equal(await run(()=>document.querySelector('.phones-advanced')),null,'Advanced hides after the daemon is turned off elsewhere');
+        const infoCallsWhileOff=await run(()=>window.fixture.count('remote_info'));
+        await new Promise(r=>setTimeout(r,3200));
+        assert.equal(await run(()=>window.fixture.count('remote_info')),infoCallsWhileOff,'polling stops while connections are off');
 
         console.log('Phones settings Chromium checks passed'); app.exit(0);
       }catch(error){console.error(error.stack);app.exit(1);}
