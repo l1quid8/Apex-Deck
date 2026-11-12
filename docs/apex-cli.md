@@ -55,8 +55,10 @@ authority already exists, the installer preserves its keys, journal and existing
 pins, adding separate standalone pins. It restarts that service. It supports
 upgrades (same version identical = no-op, rebuilt same version = replaces when
 fingerprints differ, older = refused), refuses while `apex` or its backend is
-running, and rolls back on failure. The archive is signed, **not notarized**;
-installed acceptance is recorded separately in `docs/apex-cli-standalone-results.md`.
+running, and rolls back on failure. The archive is signed, and its binaries are
+notarized when Apple credentials are set at build time
+([notarization.md](notarization.md)); `INSTALL.txt` in the archive says which.
+Installed acceptance is recorded separately in `docs/apex-cli-standalone-results.md`.
 
 From the repository root, the development binary is:
 

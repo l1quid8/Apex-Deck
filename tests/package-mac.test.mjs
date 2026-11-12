@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pickIdentity, signingMessage, releaseBuildCommands, cliSigningArgs } from '../scripts/package-mac.mjs';
+import { pickIdentity, signingMessage, releaseBuildCommands, cliSigningArgs, builderArgs, builtDmgs } from '../scripts/package-mac.mjs';
 const a = 'A'.repeat(40), b = 'B'.repeat(40);
 const line = (hash, type = 'Developer ID Application') => `  1) ${hash} "${type}: Made Up Person (FAKETEAM)"`;
 test('one Developer ID selects its hash without exposing the name', () => {
@@ -38,4 +38,15 @@ test('CLI signing uses its separate hardened identity', () => {
   assert.equal(args[args.indexOf('--options') + 1], 'runtime');
   assert.ok(args.includes('--timestamp'));
   assert.ok(!cliSigningArgs('-').includes('--timestamp'));
+});
+
+test('electron-builder notarizes only when the plan says so', () => {
+  assert.deepEqual(builderArgs('-', { notarize: false }, ['--dir']), ['--mac', '--dir']);
+  assert.deepEqual(builderArgs(a, { notarize: false }), ['--mac', `-c.mac.identity=${a}`]);
+  assert.deepEqual(builderArgs(a, { notarize: true }), ['--mac', `-c.mac.identity=${a}`, '-c.mac.notarize=true']);
+});
+
+test('only this build\'s disk images are notarized', () => {
+  assert.deepEqual(builtDmgs(['Apex-Deck_0.9.9_arm64.dmg', 'Apex-Deck-upgrade.pkg', 'mac-arm64', 'Apex-Deck_0.9.9_arm64.dmg.blockmap', 'Other.dmg']),
+    ['Apex-Deck_0.9.9_arm64.dmg']);
 });

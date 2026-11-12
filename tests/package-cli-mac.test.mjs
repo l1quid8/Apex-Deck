@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectIdentity, releaseCommands, validateVersion, manifestFor } from '../scripts/package-cli-mac.mjs';
+import { selectIdentity, releaseCommands, validateVersion, manifestFor, installNote } from '../scripts/package-cli-mac.mjs';
 
 test('CLI release requires a Developer ID and refuses ad hoc or ambiguous signing', () => {
   assert.throws(() => selectIdentity('', {}), /Developer ID/);
@@ -25,4 +25,9 @@ test('release version and manifest exclude unsafe filenames and missing hashes',
   assert.throws(()=>manifestFor('0.9.8',files),/source commit/);
   assert.throws(()=>manifestFor('0.9.8',[{name:'../x',sha256:'a'.repeat(64)}],commit),/file/);
   assert.throws(()=>manifestFor('0.9.8',[{name:'apex',sha256:'bad'}],commit),/hash/);
+});
+
+test('install note says notarized only when Apple accepted the binaries', () => {
+  assert.match(installNote(true), /notarized by Apple/);
+  assert.match(installNote(false), /not a notarized installer/);
 });
