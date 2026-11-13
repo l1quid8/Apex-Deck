@@ -587,6 +587,7 @@
 
 .ph-search { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: 8px 12px; margin-bottom: 6px; }
 .ph-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+.ph-label.ph-new-project-label { margin: 18px 0 4px; }
 .ph-label input {
   display: block;
   width: 100%;

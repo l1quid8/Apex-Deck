@@ -233,6 +233,8 @@ type Browse = {
   macCopy: boolean;
   /** After the folder is saved, point this thread at it. */
   paneId: string | null;
+  /** Opened from New thread in…: after the folder is saved, start a new thread there. */
+  start?: boolean;
 };
 
 const emptyDraft = (): Draft => ({ text: "", files: [] });
@@ -2468,6 +2470,7 @@ export function PhoneApp() {
     const workspace = next.workspaces.find((item) => item.path === path && workspaceHost(item) === browsing.hostId);
     const pane = browsing.paneId ? next.panes.find((item) => item.id === browsing.paneId) ?? null : null;
     if (pane && workspace) choose(pane, workspace);
+    else if (workspace && browsing.start) startIn(workspace);
     else if (workspace) pointDraft(workspace);
   }
 
@@ -2486,12 +2489,12 @@ export function PhoneApp() {
     else pointDraft(target);
   }
 
-  async function openBrowse(hostId: string, project: Workspace | null, paneId: string | null) {
+  async function openBrowse(hostId: string, project: Workspace | null, paneId: string | null, start = false) {
     const host = phoneHost(hostId);
     if (!host) { setNotice("That machine isn't paired with this phone."); return; }
     if (toLink(host.connection.get().status) !== "online") { setNotice(downWords(hostId, host.machine.name)); return; }
     const macHasCopy = project ? workspaces.some((workspace) => !workspace.hidden && workspace.path && workspaceHost(workspace) === "local" && workspaceFamily(workspace) === workspaceFamily(project)) : false;
-    setBrowse({ hostId, path: null, listing: null, error: "", projectName: project?.name ?? null, family: project ? workspaceFamily(project) : undefined, macCopy: macHasCopy && hostId !== "local", paneId });
+    setBrowse({ hostId, path: null, listing: null, error: "", projectName: project?.name ?? null, family: project ? workspaceFamily(project) : undefined, macCopy: macHasCopy && hostId !== "local", paneId, start });
     try {
       const listing = await host.backend.listFolder(null);
       setBrowse((current) => current && current.hostId === hostId ? { ...current, listing, path: listing.path } : current);
@@ -3246,6 +3249,18 @@ export function PhoneApp() {
         {menu?.kind === "new" && (
           <Sheet title="New thread in…" onClose={() => setMenu(null)}>
             <ProjectSheet rows={pickerRows(workspaces, panes, "", (id) => linkOf(id)?.status !== "online")} links={links} query={query} machineIcon={machineIcon} onQuery={setQuery} onPick={startIn} />
+            {/* A project that isn't saved yet: pick its folder on a machine, then the thread starts there. */}
+            <p className="ph-label ph-new-project-label">New project</p>
+            {links.filter((link) => canStartOn(link.id)).map((link) => (
+              <button key={link.id} type="button" className="ph-srow" disabled={link.status !== "online"} onClick={() => { setMenu(null); void openBrowse(link.id, null, null, true); }}>
+                <span className="ph-srow-icon"><Plus size={18} /></span>
+                <span className="ph-grow">
+                  <strong>Choose a folder on {link.name}</strong>
+                  <small>{link.status === "online" ? "Starts a new thread there" : downLine(link)}</small>
+                </span>
+                {machineIcon(link.id)}
+              </button>
+            ))}
           </Sheet>
         )}
         {menu?.kind === "thread" && menuPane && (() => {
