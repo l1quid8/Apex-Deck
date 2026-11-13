@@ -84,14 +84,14 @@ export async function probeWelcome(open, { timeoutMs = 20000 } = {}) {
  */
 export function applyHostUpdate(state, hostId, fields, { before, probed }) {
   const host = state.hosts.find((h) => h.id === hostId);
-  if (!host || host.name !== before.name || host.ssh !== before.ssh || host.command !== before.command) {
+  if (!host || host.name !== before.name || host.ssh !== before.ssh || host.command !== before.command || host.port !== before.port) {
     throw failure('changed', 'This server changed or was removed while Deck was checking it. Try again.');
   }
   let valid;
   try { valid = validHost(fields ?? {}, state.hosts.filter((h) => h.id !== hostId).map((h) => h.name)); }
   catch (e) { throw failure('invalid', e.message); }
   let daemonHostId = host.daemonHostId;
-  if (valid.ssh !== host.ssh || valid.command !== host.command) {
+  if (valid.ssh !== host.ssh || valid.command !== host.command || valid.port !== host.port) {
     if (!probed) throw failure('unreachable', 'Nothing is saved until Deck can check that it is the same machine.');
     const probedId = checkWelcome(undefined, { protocol: 1, ...probed });
     const other = state.hosts.find((h) => h.id !== hostId && h.daemonHostId === probedId);
@@ -102,6 +102,7 @@ export function applyHostUpdate(state, hostId, fields, { before, probed }) {
     daemonHostId = probedId;
   }
   const next = { ...host, ...valid };
+  if (valid.port === undefined) delete next.port;
   if (daemonHostId) next.daemonHostId = daemonHostId;
   return { ...state, hosts: state.hosts.map((h) => (h.id === hostId ? next : h)) };
 }

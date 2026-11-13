@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AddHostSheet } from "./AddHostSheet";
 import type { HostEntry, HostsApi } from "./backend";
 import { classifyIdentity, LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import { ipcWords as words } from "./electronShell";
@@ -37,6 +38,9 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
   const [name, setName] = useState(editing?.name ?? fill.name ?? "");
   const [ssh, setSsh] = useState(editing?.ssh ?? fill.ssh ?? "");
   const [command, setCommand] = useState(editing?.command ?? fill.command ?? DEFAULT_COMMAND);
+  const [port, setPort] = useState(editing?.port?.toString() ?? "");
+  const portNumber = port === "" ? undefined : Number(port);
+  const invalidPort = portNumber !== undefined && (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535);
   const [test, setTest] = useState<Test | null>(null);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState("");
@@ -44,20 +48,22 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
   const first = useRef<HTMLInputElement>(null);
   const closing = useRef(onClose);
   closing.current = onClose;
+  const guided = mode.kind === "add" && !!api.setup;
 
   // Check names against the hosts saved now, not when the list was last read.
   useEffect(() => { api.list().then(setHosts, () => {}); }, [api]);
   useEffect(() => {
+    if (guided) return;
     first.current?.focus();
     const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closing.current(); } };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, []);
+  }, [guided]);
 
   const add = mode.kind === "add";
   const label = editing?.name ?? name;
   const cmd = command.trim() || DEFAULT_COMMAND;
-  const moved = !!editing && (ssh.trim() !== editing.ssh || cmd !== editing.command);
+  const moved = !!editing && (ssh.trim() !== editing.ssh || cmd !== editing.command || portNumber !== editing.port);
   const lower = name.trim().toLowerCase();
   const taken = lower === "this mac" || (!!lower && hosts.some((h) => h.id !== "local" && h.id !== editing?.id && h.name.toLowerCase() === lower));
   const edit = (set: (value: string) => void) => (value: string) => { set(value); setTest(null); setProblem(""); asked.current++; };
@@ -68,7 +74,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
     const ticket = ++asked.current;
     setTest({ state: "testing" });
     try {
-      const probe = await api.check!({ ssh: ssh.trim(), command: cmd });
+      const probe = await api.check!({ ssh: ssh.trim(), command: cmd, port: portNumber });
       if (ticket !== asked.current) return;
       const found = classifyIdentity(hosts, editing?.id ?? null, probe.daemonHostId);
       const version = probe.version ? `apex-daemon ${probe.version}` : "an apex-daemon older than 0.5.1";
@@ -88,12 +94,12 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
     setProblem("");
     try {
       if (add) {
-        const list = await api.add({ name: name.trim(), ssh: ssh.trim(), command: cmd });
+        const list = await api.add({ name: name.trim(), ssh: ssh.trim(), command: cmd, port: portNumber });
         onSaved(list, `Added ${name.trim()}. Pick a folder on it from Projects › +.`);
         return;
       }
       if (moved) setTest({ state: "testing" });
-      const result = await api.update!(editing!.id, { name: name.trim(), ssh: ssh.trim(), command: cmd });
+      const result = await api.update!(editing!.id, { name: name.trim(), ssh: ssh.trim(), command: cmd, port: portNumber });
       if (result.ok) {
         onSaved(result.hosts, moved ? `Saved. It's still the same machine${uses ? `, so ${name.trim()}'s ${uses} stay where they are` : ""}.` : `Saved ${name.trim()}'s connection.`);
         return;
@@ -118,6 +124,17 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
 
   const title = add ? "Add a server" : `Edit connection · ${label}`;
   const testing = test?.state === "testing";
+  if (add && api.setup) return <AddHostSheet api={api.setup} hosts={hosts} fill={{ name, ssh, command: cmd, port: portNumber }} onClose={onClose} onSaved={onSaved} />;
+  if (editing?.transport === "paired") return createPortal(
+    <div className="confirm-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="confirm connection-dialog" role="dialog" aria-modal="true" aria-labelledby="paired-connection-title">
+        <strong id="paired-connection-title">Paired connection · {editing.name}</strong>
+        <p className="muted">Deck reaches this host over an encrypted paired link. Access and visible threads are managed on the host.</p>
+        <p className="muted">If this desktop’s access was removed, request a new invitation from the host. Remove this saved connection in Settings › Hosts before pairing again.</p>
+        <div className="confirm-actions"><button autoFocus className="primary" onClick={onClose}>Done</button></div>
+      </div>
+    </div>, document.body,
+  );
   return createPortal(
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <form className="confirm connection-dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title" onSubmit={(event) => { event.preventDefault(); void save(); }}>
@@ -128,6 +145,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
         <label>Name<input ref={first} data-field="name" readOnly={saving} value={name} onChange={(event) => edit(setName)(event.target.value)} placeholder="vps" maxLength={40} autoComplete="off" /></label>
         {taken && <small className="conn-taken" role="alert">Another server is already called {name.trim()}.</small>}
         <label>SSH destination<input className="mono" data-field="ssh" readOnly={saving} value={ssh} onChange={(event) => edit(setSsh)(event.target.value)} placeholder="me@vps.example.com or a ~/.ssh/config Host" spellCheck={false} autoCapitalize="off" autoComplete="off" /></label>
+        <label>Port (optional)<input type="number" min="1" max="65535" readOnly={saving} value={port} onChange={(event) => edit(setPort)(event.target.value)} placeholder="SSH configuration or 22" /></label>
         <label>Daemon command<input className="mono" data-field="command" readOnly={saving} value={command} onChange={(event) => edit(setCommand)(event.target.value)} spellCheck={false} autoCapitalize="off" autoComplete="off" /></label>
         <small className="conn-cmd mono">ssh {ssh.trim() || "…"} {cmd} --stdio --attach</small>
         {moved && !test && <p className="conn-retarget"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
@@ -135,11 +153,11 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
         {test && <div className={`conn-test ${test.state}`} role="status">{testing ? <><span className="conn-spin" aria-hidden="true" />{saving ? `Checking that ${ssh.trim()} is still ${label}…` : `Connecting to ${ssh.trim()}…`}</> : test.text}</div>}
         {problem && <div className="conn-test bad" role="alert">{problem}</div>}
         <div className="confirm-actions">
-          {api.check && <button type="button" className="conn-left" data-act="test" disabled={testing || !ssh.trim()} onClick={() => void runTest()}>Test connection</button>}
+          {api.check && <button type="button" className="conn-left" data-act="test" disabled={testing || saving || invalidPort || !ssh.trim()} onClick={() => void runTest()}>Test connection</button>}
           <button type="button" data-act="cancel" onClick={onClose}>Cancel</button>
           {test?.state === "bad" && test.different
             ? <button type="button" className="primary" data-act="instead" onClick={insteadAdd}>Add as a new server</button>
-            : <button type="submit" className="primary" data-act="save" disabled={saving || testing || taken || (add && !!test?.known) || !name.trim() || !ssh.trim() || (!add && !api.update)}>{add ? "Add server" : "Save"}</button>}
+            : <button type="submit" className="primary" data-act="save" disabled={saving || testing || invalidPort || taken || (add && !!test?.known) || !name.trim() || !ssh.trim() || (!add && !api.update)}>{add ? "Add server" : "Save"}</button>}
         </div>
       </form>
     </div>,

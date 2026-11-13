@@ -8,8 +8,7 @@ import { DOT_WORDS, hostLine } from "./hostFacts.ts";
 
 // Settings → Hosts: this Mac, and other machines running apex-daemon that
 // Deck reaches with ssh. Each server's threads stay on it; Edit… changes how
-// Deck reaches a server, never which machine it is. Add host opens the same
-// window Edit… does.
+// Deck reaches a server, never which machine it is. Add host guides setup.
 
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
@@ -45,14 +44,14 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
     <div className="settings-card hosts">
       {list.map((host) => (
         <HostItem key={host.id} backend={backend} host={host} problem={problem?.hostId === host.id ? problem.words : ""} clearProblem={() => setProblem(null)}
-          edit={hosts.update ? () => open({ kind: "edit", hostId: host.id }) : undefined} remove={() => remove(host)} />
+          edit={hosts.update && host.transport !== "paired" ? () => open({ kind: "edit", hostId: host.id }) : undefined} remove={() => remove(host)} />
       ))}
       {!hasRemote && (
         <div className="hosts-empty">
           <span className="hdot blank" />
           <div className="hosts-text">
             <strong>No other machines yet</strong>
-            <small>Add a Linux server or another Mac that runs apex-daemon.</small>
+            <small>Add a Linux server with guided setup, or connect another Mac running Deck.</small>
           </div>
           <button className="sm" disabled={backend.demo} onClick={() => open({ kind: "add" })}>+ Add host</button>
         </div>
@@ -75,7 +74,7 @@ function HostItem({ backend, host, problem, clearProblem, edit, remove }: { back
       <span className={`hdot ${line.dot}`} role="img" aria-label={DOT_WORDS[line.dot]} title={`${host.name}: ${DOT_WORDS[line.dot]}`} />
       <div className="hosts-text">
         <span className="hosts-name">{host.name}</span>
-        {host.remote && <span className="hosts-addr" title={`ssh ${host.ssh} ${host.command} --stdio --attach`}>{host.ssh}</span>}
+        {host.remote && <span className="hosts-addr" title={host.transport === "paired" ? "Encrypted paired connection; access is managed on the host." : `ssh ${host.port ? `-p ${host.port} ` : ""}${host.ssh} ${host.command} --stdio --attach`}>{host.transport === "paired" ? `Paired link · ${host.tier === "full" ? "Control" : host.tier === "chat" ? "Chat" : "Read only"}` : <>{host.ssh}{host.port ? ` · port ${host.port}` : ""}</>}</span>}
         <span className={`hosts-state${tone}`}>{line.text}</span>
         {line.why && <span className="hosts-why">{line.why}</span>}
         {line.notice && <span className="hosts-state warn">{line.notice}</span>}

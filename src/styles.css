@@ -3952,6 +3952,14 @@ button.mod-status:hover { color: var(--text); }
 .conn-spin { display: inline-block; width: 12px; height: 12px; margin-top: 2px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: conn-spin .8s linear infinite; flex: none; }
 @keyframes conn-spin { to { transform: rotate(360deg); } }
 .connection-dialog .confirm-actions .conn-left { margin-right: auto; }
+.add-host-sheet { max-height: calc(100vh - 48px); overflow-y: auto; }
+.conn-route { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 14px; text-align: left; white-space: normal; width: 100%; }
+.conn-route small { color: var(--muted); }
+.conn-review { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.conn-review p { margin-bottom: 0; }
+.conn-steps { padding-left: 24px; line-height: 1.9; }
+.add-host-sheet details label { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.add-host-sheet :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 /* Pick the machine, stage 3: where a thread runs. */
 .fork-line { display: flex; align-items: center; gap: 10px; margin: 16px 6px; color: var(--muted); font-size: 12px; }
 .fork-line::before, .fork-line::after { content: ""; flex: 1; height: 1px; background: var(--line); }

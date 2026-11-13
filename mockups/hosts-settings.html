@@ -1,9 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Settings › Hosts — redesign mockup</title>
-<style>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connections — clickable design preview</title><style>
   :root {
     --bg: #090d12; --panel: #0e141b; --panel-2: #151e28; --line: #24303d;
     --text: #e4eaf0; --muted: #91a0af; --accent: #71e6b5; --accent-ink: #04211d;
@@ -100,14 +95,14 @@
   .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
   .confirm-actions .left { margin-right: auto; }
   .new { outline: 1px dashed var(--brand-cyan); outline-offset: 3px; border-radius: 6px; }
-</style>
-</head>
-<body>
-  <h1 class="sheet">Settings › Hosts — redesign</h1>
-  <p class="sheet">Hosts becomes a plain list of machines with the sidebar's connection dot, and the add form moves into the existing "Add a server" window. Dashed cyan outlines mark what's new. Plan: <code>docs/plans/hosts-settings-redesign.md</code>.</p>
 
-  <div class="label">1 · The page, everything connected</div>
-  <div class="win">
+.win {width:min(1180px,100%);height:760px} .sheet{max-width:900px} .settings-column{max-width:720px}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--brand-cyan);outline-offset:3px} button:hover{filter:brightness(1.15)}
+.preview{color:var(--brand-cyan);font:11px var(--mono)} .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap} .route{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:5px;width:100%;padding:18px} .route small{color:var(--muted)}
+dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px;width:500px;max-width:calc(100% - 24px);max-height:90vh;overflow:auto;box-shadow:0 25px 100px #0008}dialog::backdrop{background:#0009}dialog h2{margin:10px 0;font-size:22px;letter-spacing:-.03em}dialog p{color:var(--muted)} .close{float:right} .flow{display:grid;gap:14px}label{display:grid;gap:6px;color:var(--muted)}input,select{width:100%;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:10px} .panel{border:1px solid var(--line);border-radius:9px;padding:16px;background:var(--panel-2)} .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px} .actions .back{margin-right:auto}.error{color:var(--danger)} .ok{color:var(--accent)} .qr{width:170px;height:170px;margin:12px auto;display:grid;place-content:center;text-align:center;border:10px solid white;background:repeating-conic-gradient(#121820 0 25%,#fff 0 50%) 0/24px 24px;color:#121820}.qr span{background:#fff;padding:10px;font-weight:700} .steps{display:grid;gap:12px;padding-left:20px} .steps li::marker{color:var(--accent)}summary{cursor:pointer}details{color:var(--muted)} .split{display:grid;grid-template-columns:1fr 110px;gap:12px} #notice{min-height:24px;color:var(--accent)}
+@media(max-width:720px){body{padding:12px}.settings-nav{display:none}.settings-main{padding:24px 16px}.tabs{display:none}.tb-right{margin-left:auto}.hosts-item{flex-wrap:wrap}.settings-actions span{margin-left:0}.win{height:780px}}
+</style></head><body>
+<h1 class="sheet">Connections · clickable mockup</h1><p class="sheet">Design only. Every connection, fingerprint and result is simulated; no SSH, install, QR invitation or pairing runs.</p>  <div class="win">
     <div class="titlebar">
       <div class="lights"><i></i><i></i><i></i></div>
       <span class="brand">Apex Deck</span>
@@ -117,146 +112,32 @@
     <div class="body">
       <aside class="settings-nav">
         <div class="settings-nav-head"><h2>Settings</h2><span style="color:var(--muted)">×</span></div>
-        <nav><span>General</span><span>Appearance</span><span class="active">Hosts</span><span>Remote access</span><span>Paired devices</span><span>Providers</span><span>New threads</span><span>Terminal</span><span>Mods</span><span>Shortcuts</span></nav>
+        <nav><span>General</span><span>Appearance</span><span class="active">Connections</span><span>Remote access</span><span>Paired devices</span><span>Providers</span><span>New threads</span><span>Terminal</span><span>Mods</span><span>Shortcuts</span></nav>
         <div class="settings-nav-foot"><span><kbd>⌘,</kbd> opens · <kbd>Esc</kbd> closes</span><span>Changes save as you make them.</span></div>
       </aside>
-      <main class="settings-main">
-        <div class="settings-column">
-          <header class="settings-head">
-            <span class="mono">03 / Hosts</span>
-            <h3>Hosts</h3>
-            <p>The machine this window runs its threads and terminals on: this Mac, or another one over SSH.</p>
-          </header>
 
-          <div class="settings-actions new">
-            <button><span class="plus">+</span> Add host</button>
-            <span>Deck reaches other machines over SSH. It never asks for a password.</span>
-          </div>
-
-          <div class="settings-card">
-            <div class="hosts-item">
-              <span class="hdot on"></span>
-              <div class="hosts-text">
-                <span class="hosts-name">This Mac</span>
-                <span class="hosts-state">Connected · apex-daemon 0.7.0</span>
-              </div>
-            </div>
-            <div class="hosts-item">
-              <span class="hdot on"></span>
-              <div class="hosts-text">
-                <span class="hosts-name">Apex-Terminal</span>
-                <span class="hosts-addr new" title="ssh me@apex-terminal.xyz /usr/local/bin/apex-daemon --stdio --attach">me@apex-terminal.xyz</span>
-                <span class="hosts-state">Connected · apex-daemon 0.7.0</span>
-              </div>
-              <div class="hosts-buttons"><button class="sm">Edit…</button><button class="sm ghost">Remove</button></div>
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
-  </div>
-
-  <div class="label">2 · Every state a host line can be in</div>
-  <div class="gallery">
-    <div class="settings-card">
-      <div class="hosts-item">
-        <span class="hdot idle"></span>
-        <div class="hosts-text">
-          <span class="hosts-name">Build box</span>
-          <span class="hosts-addr">me@build.example.com</span>
-          <span class="hosts-state warn">Not connected yet. Deck connects when one of its threads opens.</span>
-        </div>
-        <div class="hosts-buttons"><button class="sm">Connect</button><button class="sm">Edit…</button><button class="sm ghost">Remove</button></div>
-      </div>
-      <div class="hosts-item">
-        <span class="hdot wait"></span>
-        <div class="hosts-text">
-          <span class="hosts-name">Apex-Terminal</span>
-          <span class="hosts-addr">me@apex-terminal.xyz</span>
-          <span class="hosts-state warn">Connecting to Apex-Terminal…</span>
-        </div>
-        <div class="hosts-buttons"><button class="sm">Edit…</button><button class="sm ghost">Remove</button></div>
-      </div>
-      <div class="hosts-item">
-        <span class="hdot off"></span>
-        <div class="hosts-text">
-          <span class="hosts-name">Old laptop</span>
-          <span class="hosts-addr">me@192.168.1.40</span>
-          <span class="hosts-state bad">Can't reach Old laptop. Last reached at 9:41 PM.</span>
-          <span class="hosts-why">ssh: connect to host 192.168.1.40 port 22: Operation timed out</span>
-        </div>
-        <div class="hosts-buttons"><button class="sm">Retry</button><button class="sm">Edit…</button><button class="sm ghost">Remove</button></div>
-      </div>
-      <div class="hosts-item">
-        <span class="hdot on"></span>
-        <div class="hosts-text">
-          <span class="hosts-name">Apex-Terminal</span>
-          <span class="hosts-addr">me@apex-terminal.xyz</span>
-          <span class="hosts-state">Connected · apex-daemon 0.6.2</span>
-          <span class="hosts-state warn">Apex-Terminal runs apex-daemon 0.6.2; this app is 0.7.0. Update it there (docs/daemon-ubuntu.md).</span>
-        </div>
-        <div class="hosts-buttons"><button class="sm">Edit…</button><button class="sm ghost">Remove</button></div>
-      </div>
-      <div class="hosts-item">
-        <span class="hdot on"></span>
-        <div class="hosts-text">
-          <span class="hosts-name">Apex-Terminal</span>
-          <span class="hosts-addr">me@apex-terminal.xyz</span>
-          <span class="hosts-state">Connected · apex-daemon 0.7.0</span>
-          <div class="hosts-problem" role="alert">This server has saved workspaces or threads. Remove those references before removing it.</div>
-        </div>
-        <div class="hosts-buttons"><button class="sm">Edit…</button><button class="sm ghost">Remove</button></div>
-      </div>
-      <div class="hosts-item">
-        <span class="hdot on"></span>
-        <div class="hosts-text">
-          <span class="hosts-name">This Mac</span>
-          <span class="hosts-state">Connected · apex-daemon 0.7.0</span>
-        </div>
-      </div>
-      <div class="hosts-empty">
-        <span class="hdot blank"></span>
-        <div class="hosts-text">
-          <strong>No other machines yet</strong>
-          <small>Add a Linux server or another Mac that runs apex-daemon.</small>
-        </div>
-        <button class="sm"><span class="plus">+</span> Add host</button>
-      </div>
-    </div>
-    <div class="callouts">
-      <ol>
-        <li><b>Not connected yet</b> — hollow dot, the sidebar's words. "Connect" starts it now.</li>
-        <li><b>Connecting / catching up</b> — amber dot. No button; it's already trying.</li>
-        <li><b>Can't reach</b> — grey dot, red words (same as the project hover card), then the raw reason in small mono so you can fix it. Retry, Edit…, Remove.</li>
-        <li><b>Old helper</b> — connected, but the version or build doesn't match this app. Same words as the banner.</li>
-        <li><b>Remove refused</b> — the error sits on that host's own line, not at the bottom of the page.</li>
-        <li><b>This Mac</b> — no buttons while connected (it can't be edited or removed). Retry appears only if it isn't connected.</li>
-        <li><b>Empty</b> — when This Mac is the only host, this quiet line sits under it.</li>
-      </ol>
-    </div>
-  </div>
-
-  <div class="label">3 · The windows that open from the page</div>
-  <div class="dialogs">
-    <div class="stage">
-      <div class="confirm wide">
-        <strong>Add a server</strong>
-        <p>The machine needs apex-daemon running (see docs/daemon-ubuntu.md) and an SSH key this Mac already uses for it. Run <code>ssh vps</code> once in Terminal first so its host key is known; Deck never asks for a password.</p>
-        <label>Name<input value="Build box"></label>
-        <label>SSH destination<input class="mono" value="me@build.example.com"></label>
-        <label>Daemon command<input class="mono" value="apex-daemon"></label>
-        <span class="conn-cmd">ssh me@build.example.com apex-daemon --stdio --attach</span>
-        <div class="conn-test ok">Connected. apex-daemon 0.7.0 is running there.</div>
-        <div class="confirm-actions"><button class="left new">Test connection</button><button>Cancel</button><button class="primary">Add server</button></div>
-      </div>
-    </div>
-    <div class="stage">
-      <div class="confirm">
-        <strong>Remove Apex-Terminal?</strong>
-        <p>Deck stops connecting to it. Nothing on that machine is deleted, and you can add it again later.</p>
-        <div class="confirm-actions"><button>Cancel</button><button class="danger">Remove</button></div>
-      </div>
-    </div>
-  </div>
-</body>
-</html>
+<main class="settings-main"><div class="settings-column"><header class="settings-head"><span class="mono">03 / Connections</span><h3>Connections</h3><p>Work on another machine, or reach this Mac from your phone.</p></header>
+<div class="settings-actions"><button class="primary" data-open="host">+ Add host</button><button data-open="phone">Pair a phone</button></div>
+<div><h4>Hosts</h4><div class="settings-card" id="hosts"><div class="hosts-item"><span class="hdot on"></span><div class="hosts-text"><strong>This Mac</strong><span class="hosts-state">Connected · local</span></div></div><div class="hosts-item"><span class="hdot on"></span><div class="hosts-text"><strong>Apex-Terminal</strong><span class="hosts-addr">me@apex-terminal.xyz</span><span class="hosts-state">Connected · SSH</span></div></div></div></div>
+<div><h4>Phones</h4><div class="settings-card" id="phones"><div class="hosts-item" id="no-phone"><span class="hdot idle"></span><div class="hosts-text"><strong>No phones paired</strong><span class="hosts-state">Pair a phone to access this Mac. You choose its access.</span></div></div></div></div>
+<p id="notice" role="status"></p><div class="panel"><strong>One place, two directions</strong><p class="note">Add host brings another machine into this desktop. Pair a phone lets your phone reach this Mac. QR/link and guided SSH are proposed host setup options.</p></div>
+<button class="ghost sm" id="reset">Reset preview</button></div></main></div></div>
+<dialog aria-labelledby="flow-title" id="connection"><button class="close ghost" id="close" aria-label="Close connection flow">×</button><span class="preview">DESIGN PREVIEW · SIMULATED</span><div id="flow"></div></dialog>
+<script>
+const dialog=document.querySelector('dialog'),flow=document.querySelector('#flow');let opener=null,method='ssh',target='me@build.example.com',port='22',label='Build box',scenario='new',tier='Chat',scope='All threads';
+const btn=(id,text,primary=false)=>`<button type="button" id="${id}" class="${primary?'primary':''}">${text}</button>`;
+function show(title,body,actions=''){flow.innerHTML=`<h2 id="flow-title">${title}</h2><div class="flow">${body}</div><div class="actions">${actions}</div>`;flow.querySelector('input,select,button')?.focus();}
+function on(id,fn){document.getElementById(id)?.addEventListener('click',fn)}
+function close(){dialog.close();opener?.focus({preventScroll:true})}
+on('close',close);dialog.addEventListener('close',()=>opener?.focus({preventScroll:true}));
+document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>{opener=b;dialog.showModal();b.dataset.open==='phone'?phone():host()});
+function host(){show('Add host',`<p>Connect this desktop to another Mac or Linux server.</p><button class="route" id="ssh"><strong>Remote SSH →</strong><small>Sign in once. Deck checks the machine and guides setup.</small></button><button class="route" id="qr"><strong>QR code / pairing link →</strong><small>Deck already running there? Pair from its invitation.</small></button>`,btn('cancel','Cancel'));on('ssh',ssh);on('qr',qr);on('cancel',close)}
+function ssh(){method='ssh';show('Connect over SSH',`<p>No Terminal visit or manual daemon command. Use an SSH destination or a saved SSH alias.</p><label>SSH destination<input id="target" placeholder="me@server.example.com or build-box" autocomplete="off" spellcheck="false"></label><div class="split"><label>Name (optional)<input id="label" maxlength="40"></label><label>Port<input id="port" type="number" min="1" max="65535"></label></div><details><summary>Advanced</summary><label>Daemon command<input value="apex-daemon" aria-label="Daemon command"></label><p>Use an existing SSH key and configuration from this Mac.</p></details><label>Preview scenario<select id="scenario"><option value="new">First connection · Deck missing</option><option value="ready">Deck already installed</option><option value="auth">SSH authentication fails</option><option value="changed">Host key has changed</option></select></label><p id="error" role="alert" class="error"></p>`,btn('back','Back')+btn('check','Check connection',true));document.querySelector('#target').value=target;document.querySelector('#label').value=label;document.querySelector('#port').value=port;document.querySelector('#scenario').value=scenario;on('back',host);on('check',()=>{target=document.querySelector('#target').value.trim();label=document.querySelector('#label').value.trim();port=document.querySelector('#port').value;scenario=document.querySelector('#scenario').value;const n=document.querySelector('#port').valueAsNumber;if(!/^(?:[a-zA-Z0-9_.-]+@)?[a-zA-Z0-9_.-]+$/.test(target)||!Number.isInteger(n)||n<1||n>65535){document.querySelector('#error').textContent='Enter an SSH alias or user@host and a port from 1 to 65535.';return}if(scenario==='auth'||scenario==='changed'){failure();return}trust()})}
+function failure(){show(scenario==='auth'?'SSH sign-in failed':'Host identity changed',`<p class="error">${scenario==='auth'?'The existing SSH key was refused. Check the username and the key authorized on the server.':'The saved fingerprint does not match. Check with the server owner before updating its trusted identity.'}</p><p>No host was added. Nothing was installed.</p>`,btn('edit','Edit connection')+btn('cancel','Cancel'));on('edit',ssh);on('cancel',close)}
+function trust(){show('Trust this machine?',`<p>First connection to <strong id="trust-target"></strong>.</p><div class="panel"><strong>SSH host key · sample</strong><p class="conn-cmd">ED25519 · SHA256:PREVIEW-NOT-A-REAL-FINGERPRINT</p></div><p>Compare this fingerprint with the machine’s trusted record before continuing. Changed keys stop setup.</p>`,btn('back','Back')+btn('trust','Trust and continue',true));document.querySelector('#trust-target').textContent=target+':'+port;on('back',ssh);on('trust',review)}
+function review(){show(scenario==='ready'?'Deck is ready':'Set up Deck on this host',`<ol class="steps"><li>SSH sign-in checked</li><li>Machine identity checked</li><li>${scenario==='ready'?'Existing Deck installation found':'Deck installation needed'}</li></ol><div class="panel"><strong>${scenario==='ready'?'Use the existing installation':'Install Deck for this account'}</strong><p>${scenario==='ready'?'Connect this desktop to the existing host.':'Deck will install its host service on the remote account, then verify the connection. Nothing is installed until you continue.'}</p></div><p>Proposed desktop setup. The phone already uses guided SSH; desktop paired transport still needs implementation.</p>`,btn('back','Back')+btn('setup',scenario==='ready'?'Connect host':'Install and connect',true));on('back',ssh);on('setup',()=>success('host'))}
+function qr(){method='pair';show('Pair an existing host',`<p>On the other machine, open Deck’s pairing invitation. Use its pairing link here.</p><div class="panel"><strong>Pairing link</strong><p>In the proposed desktop flow, paste the invitation from the host here. Use the sample below to preview approval.</p></div><p class="note">Desktop link/QR consumption is proposed. This preview uses a sample invitation and does not access the camera.</p>`,btn('back','Back')+btn('sample','Use sample invitation',true));on('back',host);on('sample',()=>{label='Studio Mac';show('Confirm host pairing',`<div class="panel"><strong>Studio Mac · sample invitation</strong><p>Compare code <b>482 916</b> on the other machine and approve this desktop there.</p><p>Requested access: Chat · all threads</p></div><p>A real flow waits for the host’s approval. This button simulates it.</p>`,btn('back','Back')+btn('approved','Simulate host approval',true));on('back',qr);on('approved',()=>success('host'))})}
+function phone(){show('Pair a phone',`<p>Scan with the iPhone camera or the Apex Deck app.</p><div class="qr" role="img" aria-label="Non-scannable QR placeholder"><span>PREVIEW<br>Not scannable</span></div><label>Phone access<select id="tier"><option>Chat</option><option>Read only</option><option>Control</option></select></label><label>Threads<select id="scope"><option>All threads</option><option>Only selected threads</option></select></label><div id="thread-choice" hidden><label><input type="checkbox" id="thread" checked> Connection design · sample thread</label></div><p id="phone-error" class="error" role="alert"></p>`,btn('copy','Copy link preview')+btn('claim','Simulate phone scan',true));document.querySelector('#tier').value=tier;document.querySelector('#scope').value=scope;const update=()=>document.querySelector('#thread-choice').hidden=document.querySelector('#scope').value==='All threads';update();document.querySelector('#scope').onchange=update;on('copy',()=>{document.querySelector('#phone-error').textContent='Preview only: no invitation link was created or copied.'});on('claim',()=>{tier=document.querySelector('#tier').value;scope=document.querySelector('#scope').value;if(scope!=='All threads'&&!document.querySelector('#thread').checked){document.querySelector('#phone-error').textContent='Select at least one thread.';return}show('Approve this phone?',`<div class="panel"><strong>Sample iPhone wants to pair</strong><p>Code <b>731 204</b></p><p id="access"></p></div><p>Approve only if your phone shows the same code.</p>`,btn('deny','Deny')+btn('approve','Approve',true));document.querySelector('#access').textContent=tier+' · '+(scope==='All threads'?scope:'Connection design');on('deny',phone);on('approve',()=>success('phone'))})}
+function success(kind){const name=kind==='phone'?'Sample iPhone':(label||target);show(kind==='phone'?'Phone paired · preview':'Host connected · preview',`<p class="ok" id="done-name"></p><p>${kind==='phone'?'Manage its access in the Phones list.':method==='ssh'?'SSH checked → Deck ready → host connection verified.':'Invitation approved → paired connection verified.'}</p><p>Simulated result only. No device or host was actually connected.</p>`,btn('done','Done',true));document.querySelector('#done-name').textContent=name;on('done',()=>{const list=document.querySelector(kind==='phone'?'#phones':'#hosts');if(kind==='phone')document.querySelector('#no-phone')?.remove();const row=document.createElement('div');row.className='hosts-item';const dot=document.createElement('span');dot.className='hdot on';const text=document.createElement('div');text.className='hosts-text';const strong=document.createElement('strong');strong.textContent=name;const detail=document.createElement('span');detail.className='hosts-state';detail.textContent=kind==='phone'?tier+' · '+scope+' · simulated':(method==='ssh'?'SSH':'Paired link')+' · simulated';text.append(strong,detail);row.append(dot,text);row.dataset.sample='true';list.append(row);document.querySelector('#notice').textContent='Preview updated. No external connection was made.';close()})}
+on('reset',()=>{document.querySelectorAll('[data-sample]').forEach(x=>x.remove());document.querySelector('#phones').innerHTML='<div class="hosts-item" id="no-phone"><span class="hdot idle"></span><div class="hosts-text"><strong>No phones paired</strong><span class="hosts-state">Pair a phone to access this Mac. You choose its access.</span></div></div>';target='me@build.example.com';port='22';label='Build box';scenario='new';tier='Chat';scope='All threads';document.querySelector('#notice').textContent='Preview reset.';document.querySelector('.settings-main').scrollTop=0});
+</script></body></html>

@@ -139,6 +139,7 @@ import { TalkOnlyChat } from "./TalkOnlyChat.tsx";
 import { ThreadTrash } from "./ThreadTrashPanel";
 import { closeTrashedPanes, withoutTrashedPanes } from "./threadTrash.ts";
 import { findRoom, type ChatEntry } from "./chatCatalog.ts";
+import { discoverWorkspaces } from "./workThreadMetadata.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A terminal counts as working if it produced output this recently. */
@@ -943,7 +944,11 @@ export function App() {
   const priorWorkCatalog=useRef(chats.catalog);
   useEffect(()=>{
     const previous=priorWorkCatalog.current;priorWorkCatalog.current=chats.catalog;
-    setPanes(before=>reconcileWorkPanes(before,workspaces,chats.catalog,previous,chats.online));
+    setRecords(before => {
+      const projects = discoverWorkspaces(before.workspaces, chats.catalog, chats.online, () => newId("ws"), folderName);
+      const panes = reconcileWorkPanes(before.panes, projects, chats.catalog, previous, chats.online);
+      return projects === before.workspaces && panes === before.panes ? before : { ...before, workspaces: projects, panes };
+    });
   },[chats.catalog,workspaces,chats.online,setPanes]);
   const viewPanes = useMemo(() => withoutTrashedPanes(allViewPanes, workspaces, chats.catalog), [allViewPanes, workspaces, chats.catalog]);
   // Keep the saved layout, but Restore never reopens a thread that was put away.

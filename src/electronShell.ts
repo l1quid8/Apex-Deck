@@ -3,7 +3,7 @@
 // Electron's main process. Commands go over that link with DaemonClient; the
 // shell's own jobs go to main through the bridge.
 
-import type { Backend, BrowserApi, DropSnapshot, HostEntry, HostUpdateResult, RemoteAccessState } from "./backend";
+import type { Backend, BrowserApi, DropSnapshot, HostEntry, HostUpdateResult, HostConnectionFields, ConnectionSetupApi, RemoteAccessState } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
 import { createHostBackends, guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore } from "./hostConnections.ts";
@@ -41,13 +41,14 @@ export interface DeckBridge {
     onClose(cb: (hostId: string, gen: number, reason: string) => void): () => void;
   };
   connection: {
+    setup?: ConnectionSetupApi;
     current(): Promise<HostEntry & { owned: boolean }>;
     list(): Promise<HostEntry[]>;
-    add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
+    add(host: HostConnectionFields): Promise<HostEntry[]>;
     remove(id: string): Promise<HostEntry[]>;
     references(hostIds: string[]): Promise<void>;
-    check(fields: { ssh: string; command?: string }): Promise<{ daemonHostId: string; version: string | null }>;
-    update(id: string, fields: { name: string; ssh: string; command?: string }): Promise<HostUpdateResult>;
+    check(fields: { ssh: string; command?: string; port?: number }): Promise<{ daemonHostId: string; version: string | null }>;
+    update(id: string, fields: HostConnectionFields): Promise<HostUpdateResult>;
   };
   remote: {
     get(): Promise<RemoteAccessState>;
@@ -244,13 +245,14 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   const transport = daemonTransport(client);
   const { onMenu, ...shell } = electronShell(bridge, transport, current, (request) => pathPrompt.ask(request));
   const hosts = {
+    setup: bridge.connection.setup,
     current: () => bridge.connection.current(),
     list: () => bridge.connection.list(),
-    add: (host: { name: string; ssh: string; command?: string }) => bridge.connection.add(host),
+    add: (host: HostConnectionFields) => bridge.connection.add(host),
     remove: (id: string) => bridge.connection.remove(id),
     references: (hostIds: string[]) => bridge.connection.references(hostIds),
-    check: (fields: { ssh: string; command?: string }) => bridge.connection.check(fields),
-    update: (id: string, fields: { name: string; ssh: string; command?: string }) => bridge.connection.update(id, fields),
+    check: (fields: { ssh: string; command?: string; port?: number }) => bridge.connection.check(fields),
+    update: (id: string, fields: HostConnectionFields) => bridge.connection.update(id, fields),
   };
   // A deck shortcut pressed in a docked page reaches the deck as if pressed here.
   bridge.browser.onShortcut((press) => window.dispatchEvent(new KeyboardEvent("keydown", { ...press, bubbles: true, cancelable: true })));

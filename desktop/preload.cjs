@@ -97,6 +97,15 @@ contextBridge.exposeInMainWorld('apexDeck', {
     references: (ids) => ipcRenderer.invoke('connection:references', ids),
     check: (fields) => ipcRenderer.invoke('connection:check', fields),
     update: (id, fields) => ipcRenderer.invoke('connection:update', id, fields),
+    setup: {
+      check: (fields) => ipcRenderer.invoke('connection:setupCheck', fields),
+      trust: (ticket) => ipcRenderer.invoke('connection:setupTrust', ticket),
+      finish: (ticket) => ipcRenderer.invoke('connection:setupFinish', ticket),
+      cancel: () => ipcRenderer.invoke('connection:setupCancel'),
+      pairStart: (link) => ipcRenderer.invoke('connection:pairStart', link),
+      pairStatus: () => ipcRenderer.invoke('connection:pairStatus'),
+      pairCancel: () => ipcRenderer.invoke('connection:pairCancel'),
+    },
   },
   remote: {
     get: () => ipcRenderer.invoke('remote:get'),

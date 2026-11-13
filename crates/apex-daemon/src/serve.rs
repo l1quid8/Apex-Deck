@@ -126,10 +126,17 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
                         let data=paths.data.clone();let boot=daemon.boot_id.clone();
                         let verified=tokio::task::spawn_blocking(move || -> Result<(),String>{
                             if value["op"]!="stop" {return Err("Unknown backend control operation".into());}
-                            let signed:apex_provenance::Signed=serde_json::from_value(value["receipt"].clone()).map_err(|_|"Stopping requires an installed CLI provenance receipt")?;
-                            let receipt=apex_provenance::io::consume(&signed,&data)?;
-                            if receipt.command["cmd"]!="backend_stop" || receipt.command["args"]["bootId"]!=boot {return Err("Stop receipt does not match this backend boot".into());}
-                            Ok(())
+                            // Linux: no broker. The control socket is owner-only and
+                            // uid-checked, and jailed agents cannot create sockets.
+                            #[cfg(target_os = "linux")]
+                            { let _=&data; if value["bootId"]==boot {Ok(())} else {Err("Stop request does not match this backend boot".into())} }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                let signed:apex_provenance::Signed=serde_json::from_value(value["receipt"].clone()).map_err(|_|"Stopping requires an installed CLI provenance receipt")?;
+                                let receipt=apex_provenance::io::consume(&signed,&data)?;
+                                if receipt.command["cmd"]!="backend_stop" || receipt.command["args"]["bootId"]!=boot {return Err("Stop receipt does not match this backend boot".into());}
+                                Ok(())
+                            }
                         }).await.map_err(|e|e.to_string()).and_then(|v|v);
                         match verified {Ok(())=>{let _=output.send(json!({"ok":true}).to_string()).await;break;},Err(error)=>{let _=output.send(json!({"err":error}).to_string()).await;}}
                     }

@@ -255,9 +255,14 @@ export interface HostEntry {
   remote: boolean;
   /** The SSH destination, for a saved host. */
   ssh?: string;
+  port?: number;
   /** The daemon's command there. */
   command?: string;
   daemonHostId?: string;
+  transport?: "paired";
+  hostEndpointId?: string;
+  addrs?: string[];
+  tier?: "read_only" | "chat" | "full";
   /** A window is open on it. */
   open?: boolean;
 }
@@ -316,17 +321,36 @@ export interface RemoteAccessApi {
   set(on: boolean): Promise<RemoteAccessState>;
 }
 
+export interface HostConnectionFields { name: string; ssh: string; command?: string; port?: number }
+export type ConnectionSetupReview =
+  | { kind: "trust"; ticket: string; fingerprint: string; algorithm: string }
+  | { kind: "ready" | "install"; ticket: string; name: string; os: string };
+export interface ConnectionSetupApi {
+  check(fields: HostConnectionFields): Promise<ConnectionSetupReview>;
+  trust(ticket: string): Promise<ConnectionSetupReview>;
+  finish(ticket: string): Promise<HostEntry[]>;
+  cancel(): Promise<void>;
+  pairStart(link: string): Promise<void>;
+  pairStatus(): Promise<HostPairingState>;
+  pairCancel(): Promise<void>;
+}
+export type HostPairingState =
+  | { kind: "idle" | "dialing" | "verifying" }
+  | { kind: "code"; code: string; hostName: string }
+  | { kind: "failed"; message: string }
+  | { kind: "done"; hosts: HostEntry[] };
 export interface HostsApi {
   current(): Promise<HostEntry & { owned: boolean }>;
   list(): Promise<HostEntry[]>;
   /** Save a host; rejects with words when it can't be used. */
-  add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
+  add(host: HostConnectionFields): Promise<HostEntry[]>;
+  setup?: ConnectionSetupApi;
   remove(id: string): Promise<HostEntry[]>;
   references?(hostIds: string[]): Promise<void>;
   /** Which daemon answers at these SSH settings. Only says hello; saves nothing. */
-  check?(fields: { ssh: string; command?: string }): Promise<{ daemonHostId: string; version: string | null }>;
+  check?(fields: { ssh: string; command?: string; port?: number }): Promise<{ daemonHostId: string; version: string | null }>;
   /** Save a server's name, address or command. A new address must reach the same machine. */
-  update?(id: string, fields: { name: string; ssh: string; command?: string }): Promise<HostUpdateResult>;
+  update?(id: string, fields: HostConnectionFields): Promise<HostUpdateResult>;
 }
 
 /** What Edit connection's Save did. `different` offers Add as a new server. */

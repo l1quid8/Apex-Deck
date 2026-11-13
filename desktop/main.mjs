@@ -32,6 +32,9 @@ import { Updater, WINDOWS_FEED_URL, disabledReason, fetchDownload, fetchManifest
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { assistantFloatBounds, movedAssistantFloatBounds } from './assistantFloatLayout.mjs';
 import { PopoutLayoutStore, fitPopoutBounds, trackPopoutWindow } from './popoutLayout.mjs';
+import { createConnectionSetup } from './connectionSetup.mjs';
+import { createHostPairing, pairedHost } from './hostPairing.mjs';
+import { desktopKey, remotePipe, pairedLink } from './pairedLink.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
@@ -234,7 +237,7 @@ const links = createHostLinks({
     knownHost(hostId);
     const remote = remoteHost(hostId);
     return verifiedLink({
-      open: callbacks => remote ? sshLink(remote, callbacks) : ensureLocal().then(d => socketLink(d.socket, callbacks)),
+      open: callbacks => remote ? openRemoteHost(remote, callbacks) : ensureLocal().then(d => socketLink(d.socket, callbacks)),
       handlers,
       accept: welcome => {
         if (!remote) { checkWelcome(undefined, welcome); return; }
@@ -563,7 +566,71 @@ handle('connection:add', async (_entry, host) => {
   return hostList();
 });
 /** Say hello at candidate SSH settings; nothing else runs there. */
-const probeHost = ({ ssh, command }) => probeWelcome((handlers) => sshLink({ ssh, command }, handlers));
+const connectionKnownHosts = () => path.join(app.getPath('userData'), 'ssh_known_hosts');
+const remoteKey = () => desktopKey(app.getPath('userData'));
+const openRemoteHost = (host, handlers) => host.transport === 'paired'
+  ? pairedLink(bin, remoteKey(), host, handlers)
+  : sshLink({ ...host, knownHostsFile: connectionKnownHosts() }, handlers);
+const probeHost = (host) => probeWelcome((handlers) => sshLink({ ...host, knownHostsFile: connectionKnownHosts() }, handlers));
+const hostPairings = new Map();
+function hostPairing(entry) {
+  let pairing = hostPairings.get(entry);
+  if (pairing) return pairing;
+  pairing = createHostPairing({
+    open: (link, onEvent) => {
+      if (typeof link !== 'string' || link.length > 16384 || !link.trim().startsWith('apexdeck://pair?p=')) throw new Error('Paste an Apex Deck pairing invitation.');
+      return remotePipe(bin, remoteKey(), { op: 'pair', link: link.trim(), label: `${LOCAL_NAME} · Apex Deck desktop` }, onEvent);
+    },
+    verify: async (made, signal) => checkWelcome(made.hostId, await probeWelcome(handlers => pairedLink(bin, remoteKey(), made, handlers, signal))),
+    save: (made, id) => {
+      const host = pairedHost(made, hosts.hosts, id);
+      const next = { ...hosts, hosts: [...hosts.hosts, host] };
+      saveHosts(hostsFile(), next); hosts = next;
+      Menu.setApplicationMenu(menu());
+      return hostList();
+    },
+  });
+  hostPairings.set(entry, pairing);
+  entry.win.once('closed', () => { pairing.cancel(); hostPairings.delete(entry); });
+  entry.win.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) pairing.cancel(); });
+  return pairing;
+}
+handle('connection:pairStart', async (entry, link) => { hostPairing(entry).start(link); });
+handle('connection:pairStatus', async entry => hostPairing(entry).status());
+handle('connection:pairCancel', async entry => hostPairing(entry).cancel());
+const connectionSetups = new Map();
+function connectionSetup(entry) {
+  let setup = connectionSetups.get(entry);
+  if (setup) return setup;
+  setup = createConnectionSetup({
+    sshOptions: ['-o', `GlobalKnownHostsFile="${connectionKnownHosts().replace(/\\/g, '/').replace(/"/g, '\\"')}" /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2`],
+    async remember(line) { await fs.promises.appendFile(connectionKnownHosts(), line, { mode: 0o600 }); },
+    async verify(host) {
+      const welcome = await probeHost(host);
+      return { daemonHostId: checkWelcome(undefined, welcome) };
+    },
+    async save(host) {
+      const valid = validHost(host, hosts.hosts.map(h => h.name));
+      if (hosts.hosts.some(h => h.daemonHostId === host.daemonHostId)) throw new Error('This machine is already saved under another host.');
+      const next = { ...hosts, hosts: [...hosts.hosts, { ...valid, daemonHostId: host.daemonHostId, id: `h-${crypto.randomUUID()}` }] };
+      saveHosts(hostsFile(), next);
+      hosts = next;
+      Menu.setApplicationMenu(menu());
+      return hostList();
+    },
+  });
+  connectionSetups.set(entry, setup);
+  entry.win.once('closed', () => { setup.dispose(); connectionSetups.delete(entry); });
+  return setup;
+}
+handle('connection:setupCheck', async (entry, fields) => {
+  const setup = connectionSetup(entry);
+  setup.dispose();
+  return setup.check(fields);
+});
+handle('connection:setupTrust', async (entry, ticket) => connectionSetup(entry).trust(ticket));
+handle('connection:setupFinish', async (entry, ticket) => connectionSetup(entry).finish(ticket));
+handle('connection:setupCancel', async (entry) => connectionSetup(entry).dispose());
 /** Edit connection's Test: which daemon answers at these settings. Saves nothing. */
 handle('connection:check', async (_entry, fields) => {
   const valid = validHost({ name: 'check', ...(fields ?? {}) }, []);
@@ -578,12 +645,13 @@ handle('connection:check', async (_entry, fields) => {
 handle('connection:update', async (_entry, id, fields) => {
   const host = remoteHost(id);
   if (!host) return { ok: false, reason: 'changed', words: 'There is no such server.' };
-  const before = { name: host.name, ssh: host.ssh, command: host.command };
+  if (host.transport === 'paired') return { ok: false, reason: 'invalid', words: 'This host uses a paired connection. Remove it and pair again to change its connection.' };
+  const before = { name: host.name, ssh: host.ssh, command: host.command, port: host.port };
   let valid;
   try { valid = validHost(fields ?? {}, hosts.hosts.filter((h) => h.id !== id).map((h) => h.name)); }
   catch (e) { return { ok: false, reason: 'invalid', words: e.message }; }
   let probed = null;
-  if (valid.ssh !== host.ssh || valid.command !== host.command) {
+  if (valid.ssh !== host.ssh || valid.command !== host.command || valid.port !== host.port) {
     try { probed = await probeHost(valid); }
     catch (e) { return { ok: false, reason: 'unreachable', words: `Couldn't reach ${valid.ssh}: ${e.message} Nothing is saved until Deck can check that it is the same machine.` }; }
   }

@@ -336,6 +336,40 @@ impl Command {
     }
 }
 
+/// The terminal app's typed protected actions, the same list the Mac broker
+/// issues CLI receipts for, minus `backend_stop` (the control socket owns it).
+/// Never broker admin, device grants, pairing, personal assistant or updates.
+pub fn local_linux_cli_surface(command: &Command) -> bool {
+    matches!(command, Command::RoomPost { .. } | Command::RoomDecide { .. } | Command::RoomAnswer { .. }
+        | Command::RoomSetPlan { .. } | Command::RoomRunnerStart { .. } | Command::RoomRunnerAction { .. }
+        | Command::RoomAddParticipant { .. } | Command::RoomUpdateParticipant { .. } | Command::RoomRemoveParticipant { .. }
+        | Command::RoomSetOptions { .. } | Command::RoomCreate { .. } | Command::AgentProfileSave { .. } | Command::ProviderSetupBegin { .. })
+}
+
+/// The room a terminal-surface command targets. Keep in step with
+/// `local_linux_cli_surface`; the test below checks every room command.
+fn local_linux_cli_room(command: &Command) -> Option<&str> {
+    match command {
+        Command::RoomPost { id, .. } | Command::RoomDecide { id, .. } | Command::RoomAnswer { id, .. }
+        | Command::RoomSetPlan { id, .. } | Command::RoomAddParticipant { id, .. } | Command::RoomUpdateParticipant { id, .. }
+        | Command::RoomRemoveParticipant { id, .. } | Command::RoomSetOptions { id, .. } | Command::RoomCreate { id, .. } => Some(id),
+        Command::RoomRunnerStart { input } => Some(&input.id),
+        Command::RoomRunnerAction { input } => Some(&input.id),
+        _ => None,
+    }
+}
+
+/// Only the recorded boot verdict counts. `linux_jail::state()` can say Works
+/// just because bubblewrap is installed; that is not proof the jail holds.
+pub fn local_linux_cli_admitted() -> Result<(), String> {
+    use apex_adapters::linux_jail::{recorded_probe_state, JailState};
+    match recorded_probe_state() {
+        Some(JailState::Works) => Ok(()),
+        Some(JailState::Fails(why)) => Err(format!("The terminal app can't act on this Linux machine because the agent jail failed its startup check: {why}")),
+        None => Err("The terminal app can't act on this Linux machine yet: the agent jail hasn't finished its startup check.".into()),
+    }
+}
+
 fn reply<T: serde::Serialize>(value: T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|e| e.to_string())
 }
@@ -453,6 +487,29 @@ impl Host {
                 self.dispatch_command(command, capability).await
             }
         }
+    }
+
+    /// Linux only, called by the daemon for a same-user local socket peer.
+    /// Linux keeps its ledgers as plain files owned by this user, so no socket
+    /// check can prove a human typed the command. The boundary is the agent
+    /// jail: every launch below Full is refused unless the boot probe passed,
+    /// and a jailed process cannot create a Unix socket at all. So once that
+    /// probe has really run and passed, the terminal app's typed surface is
+    /// admitted here. Anything else keeps the ordinary receipt gate.
+    pub async fn call_from_local_linux_cli(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+        if !cfg!(target_os = "linux") || !local_linux_cli_surface(&command) {
+            return self.call_with_client_capability(command, capability).await;
+        }
+        local_linux_cli_admitted()?;
+        // Personal-assistant execution rooms keep their own protected route for
+        // every command, not just posts: approvals, answers, participants,
+        // settings and runners there still need the assistant's receipt.
+        if let Some(id) = local_linux_cli_room(&command) {
+            if self.assistant_tasks.execution(id).map_err(|e| e.to_string())?.is_some() {
+                return self.call_with_client_capability(command, capability).await;
+            }
+        }
+        self.dispatch_command(command, capability).await
     }
 
     // Tests of downstream behavior explicitly assume a previously verified UI
@@ -831,6 +888,75 @@ mod tests {
         assert!(matches!(curate, Command::RoomCurate { id } if id == "r"));
         let undo = Command::from_json(json!({"cmd":"room_curate_undo","args":{"id":"r"}})).unwrap();
         assert!(matches!(undo, Command::RoomCurateUndo { id } if id == "r"));
+    }
+
+    /// Linux terminal admission on the production host (no isolated fixture):
+    /// a real Work room is created and its Plan saved only after the recorded
+    /// jail probe passed; a missing or failed probe refuses without changing
+    /// anything; assistant execution rooms keep the receipt gate for every
+    /// room command the terminal can send.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_local_cli_admission_saves_real_changes_only_after_the_probe() {
+        use apex_adapters::linux_jail::{self, JailState};
+        use crate::assistant_tasks::{HumanRequest, TaskMode, TaskOwner};
+        let _lock = linux_jail::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-linux-cli-admission-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let cwd = data.join("workspace");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let options = serde_json::to_value(apex_core::RoomOptions::default()).unwrap();
+        let cli = |value: Value| runtime.block_on(host.call_from_local_linux_cli(Command::from_json(value).unwrap(), apex_core::GeneratedUiCapability::Unsupported));
+        let create = |id: &str| json!({"cmd":"room_create","args":{"id":id,"participants":[],"options":options,"cwd":cwd.to_string_lossy()}});
+        let plan = |on: bool| json!({"cmd":"room_set_plan","args":{"id":"cli","on":on}});
+        let saved_plan = || host.store().room("cli").unwrap().map(|room| room.snapshot.plan);
+
+        linux_jail::set_state_for_test(None);
+        assert!(cli(create("cli")).unwrap_err().contains("hasn't finished its startup check"));
+        linux_jail::record_probe_state(JailState::Fails("no bubblewrap".into()));
+        assert!(cli(create("cli")).unwrap_err().contains("failed its startup check: no bubblewrap"));
+        assert_eq!(saved_plan(), None, "a refused create must not save a room");
+
+        linux_jail::record_probe_state(JailState::Works);
+        cli(create("cli")).unwrap();
+        cli(plan(true)).unwrap();
+        assert_eq!(saved_plan(), Some(true));
+
+        for state in [None, Some(JailState::Fails("probe failed".into()))] {
+            linux_jail::set_state_for_test(state);
+            assert!(cli(plan(false)).unwrap_err().contains("startup check"));
+            assert_eq!(saved_plan(), Some(true), "a refused change must leave the saved Plan alone");
+        }
+
+        // An assistant execution room: every room command still needs the receipt.
+        linux_jail::record_probe_state(JailState::Works);
+        let owner = TaskOwner { workspace_id: "workspace".into(), cwd: cwd.to_string_lossy().into_owned(), host_id: "host".into(), conversation_id: "parent".into() };
+        let task = host.assistant_tasks.submit_human_request(HumanRequest { request_id: "linux-cli".into(), owner: owner.clone(), text: "work".into(), destination: None }, "work".into(), None).unwrap();
+        host.assistant_tasks.bind_execution(&task.id, task.revision, &owner, "cli".into(), TaskMode::ReadOnly, None).unwrap();
+        let participant = json!({"id":"a","display_name":"A","backend":{"kind":"agent","tool":"codex"},"access":"read"});
+        for value in [
+            json!({"cmd":"room_post","args":{"id":"cli","text":"hi"}}),
+            json!({"cmd":"room_decide","args":{"id":"cli","request":"q","approve":true}}),
+            json!({"cmd":"room_answer","args":{"id":"cli","request":"q","answers":[["yes"]]}}),
+            plan(false),
+            json!({"cmd":"room_set_options","args":{"id":"cli","options":options}}),
+            json!({"cmd":"room_add_participant","args":{"id":"cli","participant":participant}}),
+            json!({"cmd":"room_update_participant","args":{"id":"cli","participant":participant}}),
+            json!({"cmd":"room_remove_participant","args":{"id":"cli","participant":"a"}}),
+            create("cli"),
+            json!({"cmd":"room_runner_start","args":{"id":"cli","requestId":"r","runner":{"schemaVersion":1,"kind":"goal","objective":"x","workers":["a"],"limits":{"schemaVersion":1,"maxTurns":1,"maxInvocations":1,"lifetimeMs":60000}}}}),
+            json!({"cmd":"room_runner_action","args":{"id":"cli","runnerId":"r","expectedRevision":1,"requestId":"a","action":{"action":"resume"}}}),
+        ] {
+            let error = cli(value.clone()).unwrap_err();
+            assert!(error.contains("protected provenance receipt"), "{value}: {error}");
+        }
+        assert_eq!(saved_plan(), Some(true));
+        assert!(!data.join("room-runners-v1.json").exists());
+        linux_jail::set_state_for_test(None);
+        drop(host);
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]

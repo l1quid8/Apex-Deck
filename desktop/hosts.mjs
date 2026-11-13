@@ -3,6 +3,7 @@
 // never asks for or keeps a password.
 
 import fs from 'node:fs';
+import { validPairedHost } from './hostPairing.mjs';
 
 /** This computer's id; it's always there and never saved. */
 export const LOCAL = 'local';
@@ -14,7 +15,7 @@ const COMMAND = /^[\w@%+=:,./~-]+$/;
  * The host as it will be saved, or an Error with words to show. `taken`
  * holds the names of the other hosts.
  */
-export function validHost({ name, ssh, command }, taken) {
+export function validHost({ name, ssh, command, port }, taken) {
   const destination = String(ssh ?? '').trim();
   // ssh would read a leading "-" as an option, and anything with spaces or
   // control characters is not one destination.
@@ -30,13 +31,16 @@ export function validHost({ name, ssh, command }, taken) {
   // Keep the saved-name rule stable across platforms. A saved server named
   // This PC must retain its name and identity when opened on Windows.
   if (lower === 'this mac' || taken.some((other) => other.toLowerCase() === lower)) throw new Error(`There's already a host called ${label}.`);
-  return { name: label, ssh: destination, command: daemon };
+  if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error('Use an SSH port from 1 to 65535.');
+  return { name: label, ssh: destination, command: daemon, ...(port === undefined ? {} : { port }) };
 }
 
 /** `ssh` arguments that run the daemon on `host` and attach to it. */
 export function sshArgs(host) {
   return [
     '-T', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-o', 'ConnectTimeout=15',
+    ...(host.port === undefined ? [] : ['-p', String(host.port)]),
+    ...(host.knownHostsFile ? ['-o', 'StrictHostKeyChecking=yes', '-o', `GlobalKnownHostsFile="${host.knownHostsFile.replace(/\\/g, '/').replace(/"/g, '\\"')}" /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2`] : []),
     '--', host.ssh, `${host.command} --stdio --attach`,
   ];
 }
@@ -78,7 +82,7 @@ export function loadHosts(file) {
   for (const host of Array.isArray(saved.hosts) ? saved.hosts : []) {
     try {
       if (typeof host?.id !== 'string' || !host.id || host.id === LOCAL || hosts.some(h => h.id === host.id)) throw new Error('it has no unique id');
-      hosts.push({ ...host, ...validHost(host, hosts.map((h) => h.name)) });
+      hosts.push({ ...host, ...(host.transport === 'paired' ? validPairedHost(host, hosts.map(h => h.name)) : validHost(host, hosts.map((h) => h.name))) });
     } catch (e) {
       warnings.push(`Left out the saved host ${JSON.stringify(host?.name ?? host?.id ?? '')}: ${e.message}`);
     }
