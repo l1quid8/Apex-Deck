@@ -515,6 +515,7 @@ fn random_token() -> String {
             model: clean_model(model),
             effort: effort.as_deref(),
             service_tier: self.config.speed.map(codex_service_tier),
+            external_sandbox: cfg!(target_os = "linux") && crate::linux_jail::should_jail(self.config.access),
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
             plan: self.plan.is_some(),

@@ -62,6 +62,8 @@ pub(crate) struct Turn<'a> {
     /// keeps the person's config.toml choice.
     pub service_tier: Option<&'static str>,
     pub access: Access,
+    /// True only for a child launched inside Deck's Linux jail.
+    pub external_sandbox: bool,
     pub cwd: Option<String>,
     /// Start Codex in its planning mode, where it asks the person questions
     /// and changes nothing.
@@ -468,6 +470,20 @@ pub(crate) fn turn_start_with(
     json!({ "method": "turn/start", "id": 2, "params": params })
 }
 
+fn execution_start(turn: &Turn<'_>, thread: &str, prompt: &str, plan_model: Option<&str>) -> Value {
+    let mut message = turn_start_with(thread, prompt, turn.effort, plan_model);
+    if turn.external_sandbox && matches!(turn.access, Access::Ask | Access::Edits) {
+        // Deck already confines this child with namespaces, mounts, seccomp
+        // and its network proxy. Codex's nested bwrap cannot create another
+        // namespace there; it fails and asks to retry the same command.
+        // ExternalSandbox skips only that nested sandbox, not Ask approvals.
+        message["params"]["sandboxPolicy"] = json!({
+            "type": "externalSandbox", "networkAccess": "enabled"
+        });
+    }
+    message
+}
+
 /// Request ids for follow-up turns start here, clear of the setup ones.
 const FOLLOW_UP: u64 = 200;
 
@@ -706,7 +722,7 @@ pub(crate) async fn run_with_images(
     } else {
         None
     };
-    let mut message = turn_start_with(thread, prompt, turn.effort, plan_model);
+    let mut message = execution_start(&turn, thread, prompt, plan_model);
     message["params"]["input"] = crate::attachments::codex_input(prompt, images);
     send(&mut stdin, &message)
     .await
@@ -745,7 +761,7 @@ pub(crate) async fn run_with_images(
                     waiting_since = None;
                     follow_ups += 1;
                     let mut nudge =
-                        turn_start_with(thread, follow_up_prompt(gave_up), turn.effort, plan_model);
+                        execution_start(&turn, thread, follow_up_prompt(gave_up), plan_model);
                     nudge["id"] = json!(FOLLOW_UP + follow_ups);
                     if send(&mut stdin, &nudge).await.is_err() {
                         break;
@@ -1229,7 +1245,7 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: false };
+        let turn = Turn { model: None, effort: None, service_tier: None, external_sandbox: false, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: false };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         match result {
             Ok(reply) => assert_eq!(reply.text, "Private MCP denied."),
@@ -1258,7 +1274,7 @@ cat > /dev/null"#;
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
         let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: true };
+        let turn = Turn { model: None, effort: None, service_tier: None, external_sandbox: false, access: Access::Read, cwd: None, plan: false, mcp_disabled: true, trusted_computer: false, tools_disabled: true };
         let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
         assert!(matches!(result,Err(TurnError::Failed(ref why)) if why.contains("tool was requested")),"assistant mode must stop unexpected tools before accepting any reply");
     }
@@ -1484,6 +1500,7 @@ cat > /dev/null"#;
             model: None,
             effort: None,
             service_tier: None,
+            external_sandbox: false,
             access: Access::Full,
             cwd: None,
             mcp_disabled: false, trusted_computer: false, tools_disabled: false,
@@ -1500,7 +1517,7 @@ cat > /dev/null"#;
 
     #[test]
     fn thread_start_sends_the_service_tier_only_when_chosen() {
-        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, trusted_computer: false, tools_disabled: false, plan: false };
+        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), external_sandbox: false, access: Access::Read, cwd: None, mcp_disabled: false, trusted_computer: false, tools_disabled: false, plan: false };
         assert_eq!(thread_start(&turn)["params"]["serviceTier"], "priority");
         turn.service_tier = None;
         assert!(thread_start(&turn)["params"].get("serviceTier").is_none());
@@ -1512,6 +1529,7 @@ cat > /dev/null"#;
             model: Some("m"),
             effort: None,
             service_tier: None,
+            external_sandbox: false,
             access: Access::Edits,
             cwd: Some("/work".into()),
             mcp_disabled: false, trusted_computer: false, tools_disabled: false,
@@ -1527,6 +1545,7 @@ cat > /dev/null"#;
             model: None,
             effort: None,
             service_tier: None,
+            external_sandbox: false,
             access: Access::Ask,
             cwd: None,
             mcp_disabled: false, trusted_computer: false, tools_disabled: false,
@@ -1540,6 +1559,7 @@ cat > /dev/null"#;
             model: None,
             effort: None,
             service_tier: None,
+            external_sandbox: false,
             access: Access::Read,
             cwd: None,
             mcp_disabled: false, trusted_computer: false, tools_disabled: false,
@@ -1553,6 +1573,7 @@ cat > /dev/null"#;
             model: None,
             effort: None,
             service_tier: None,
+            external_sandbox: false,
             access: Access::Full,
             cwd: None,
             mcp_disabled: false, trusted_computer: false, tools_disabled: false,
@@ -1562,6 +1583,28 @@ cat > /dev/null"#;
             thread_start(&full)["params"]["sandbox"],
             "danger-full-access"
         );
+    }
+
+    #[test]
+    fn jailed_ask_turn_uses_external_sandbox_without_disabling_approval() {
+        let mut turn = Turn {
+            model: None, effort: None, service_tier: None, access: Access::Ask,
+            cwd: None, plan: false, mcp_disabled: false, tools_disabled: false,
+            trusted_computer: false, external_sandbox: true,
+        };
+        assert_eq!(thread_start(&turn)["params"]["approvalPolicy"], "untrusted");
+        assert_eq!(execution_start(&turn, "t", "go", None)["params"]["sandboxPolicy"],
+            json!({"type":"externalSandbox", "networkAccess":"enabled"}));
+        // Host execution and read-only turns retain Codex's own restrictions.
+        turn.external_sandbox = false;
+        assert!(execution_start(&turn, "t", "go", None)["params"].get("sandboxPolicy").is_none());
+        turn.external_sandbox = true;
+        for access in [Access::Read, Access::Full] {
+            turn.access = access;
+            assert!(execution_start(&turn, "t", "go", None)["params"].get("sandboxPolicy").is_none());
+        }
+        turn.access = Access::Edits;
+        assert_eq!(execution_start(&turn, "t", "go", None)["params"]["sandboxPolicy"]["type"], "externalSandbox");
     }
 
     #[test]
@@ -1632,13 +1675,21 @@ cat > /dev/null"#;
     #[cfg(unix)]
     #[tokio::test]
     async fn a_reply_waits_for_codex_helpers_and_adds_what_they_found() {
-        let script = r#"say() { echo "$1"; }
+        for (access, external_sandbox) in [(Access::Full, false), (Access::Ask, true)] {
+            let script = r#"say() { echo "$1"; }
 read -r l; say '{"id":0,"result":{}}'
 read -r l; read -r l; read -r l
 say '{"id":110,"result":{"marketplaces":[]}}'
 say '{"id":10,"result":{"data":[],"nextCursor":null}}'
-read -r l; say '{"id":1,"result":{"thread":{"id":"T"}}}'
 read -r l
+if [ "$EXPECT_EXTERNAL" = 1 ]; then
+  case "$l" in *'"approvalPolicy":"untrusted"'*) ;; *) exit 4 ;; esac
+fi
+say '{"id":1,"result":{"thread":{"id":"T"}}}'
+read -r l
+if [ "$EXPECT_EXTERNAL" = 1 ]; then
+  case "$l" in *'"type":"externalSandbox"'*) ;; *) exit 5 ;; esac
+fi
 say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"subAgentActivity","id":"c1","kind":"started","agentThreadId":"H","agentPath":"/root/a"}}}'
 say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMessage","id":"m1","text":"Helpers launched."}}}'
 say '{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}'
@@ -1648,49 +1699,55 @@ say '{"method":"turn/completed","params":{"threadId":"H","turn":{"status":"compl
 say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"subAgentActivity","id":"c2","kind":"completed","agentThreadId":"H","agentPath":"/root/a"}}}'
 read -r l
 case "$l" in *"have finished"*) ;; *) exit 3 ;; esac
+if [ "$EXPECT_EXTERNAL" = 1 ]; then
+  case "$l" in *'"type":"externalSandbox"'*) ;; *) exit 6 ;; esac
+fi
 say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMessage","id":"m2","text":"The helper found PINEAPPLE."}}}'
 say '{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}'
 read -r l; say '{"id":3,"result":{"rateLimits":{}}}'
 cat > /dev/null"#;
-        let mut command = tokio::process::Command::new("sh");
-        command.args(["-c", script])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let child = Registry::default().spawn(&mut command).unwrap();
-        let activity = std::sync::Mutex::new(Vec::<String>::new());
-        let sink = |p: Progress<'_>| {
-            if let Progress::Activity(a) = p {
-                activity.lock().unwrap().push(a.to_string())
-            }
-        };
-        let turn = Turn {
-            model: None,
-            effort: None,
-            service_tier: None,
-            access: Access::Full,
-            cwd: None,
-            mcp_disabled: false, trusted_computer: false, tools_disabled: false,
-            plan: false,
-        };
-        let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {
-            Ok(reply) => reply,
-            Err(TurnError::Unavailable(e) | TurnError::Failed(e) | TurnError::CleanupIncomplete(e)) => panic!("turn failed: {e}"),
-        };
-        assert_eq!(
-            reply.text,
-            "Helpers launched.\n\nThe helper found PINEAPPLE."
-        );
-        assert!(
-            activity
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|a| a == "1 helper still working"),
-            "{:?}",
-            activity.lock().unwrap()
-        );
+            let mut command = tokio::process::Command::new("sh");
+            command.env("EXPECT_EXTERNAL", if external_sandbox { "1" } else { "0" });
+            command.args(["-c", script])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            let child = Registry::default().spawn(&mut command).unwrap();
+            let activity = std::sync::Mutex::new(Vec::<String>::new());
+            let sink = |p: Progress<'_>| {
+                if let Progress::Activity(a) = p {
+                    activity.lock().unwrap().push(a.to_string())
+                }
+            };
+            let turn = Turn {
+                model: None,
+                effort: None,
+                service_tier: None,
+                external_sandbox,
+                access,
+                cwd: None,
+                mcp_disabled: false, trusted_computer: false, tools_disabled: false,
+                plan: false,
+            };
+            let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {
+                Ok(reply) => reply,
+                Err(TurnError::Unavailable(e) | TurnError::Failed(e) | TurnError::CleanupIncomplete(e)) => panic!("turn failed: {e}"),
+            };
+            assert_eq!(
+                reply.text,
+                "Helpers launched.\n\nThe helper found PINEAPPLE."
+            );
+            assert!(
+                activity
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a == "1 helper still working"),
+                "{:?}",
+                activity.lock().unwrap()
+            );
+        }
     }
 
     #[test]
