@@ -2,13 +2,11 @@
 //! Mac production reads/writes only the root broker. Existing user JSON is
 //! retained untouched and is NEVER auto-certified as a trusted migration.
 //!
-//! Linux has no root broker, so it keeps each ledger as a plain owner-only file
-//! at its own path, the same way it keeps `devices.json`. That file is only as
-//! trusted as the Linux account, which is how Linux worked before the broker.
-//! The platform is fixed when the code is built: nothing at runtime can move a
-//! Mac onto plain files. Protected commands still need a UI receipt, which
-//! Linux can never produce, so they stay refused there.
-#[cfg(all(not(test), not(target_os = "linux")))]
+//! Unenrolled Linux scopes retain their existing owner-only plain files. A
+//! root-owned availability marker closes enrolled scopes to plain-file fallback;
+//! signed broker responses and lifetime host ownership govern protected IO.
+//! The marker grants no command authority and never imports legacy JSON.
+#[cfg(not(test))]
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -18,10 +16,8 @@ use std::{io, path::Path};
 #[cfg(all(not(test), target_os = "linux"))]
 use std::{
     collections::HashSet,
-    path::PathBuf,
-    sync::{Mutex, OnceLock},
 };
-#[cfg(all(not(test), not(target_os = "linux")))]
+#[cfg(not(test))]
 static REVISIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
 
 /// Where the local fixture keeps a protected document. Production keeps it in
@@ -81,11 +77,11 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     tests::record_write(path);
     local_write(path, bytes)
 }
-#[cfg(all(not(test), not(target_os = "linux")))]
+#[cfg(not(test))]
 fn error(e: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, e)
 }
-#[cfg(all(not(test), not(target_os = "linux")))]
+#[cfg(not(test))]
 fn scope(path: &Path) -> io::Result<(PathBuf, String)> {
     let parent = path
         .parent()
@@ -99,12 +95,14 @@ fn scope(path: &Path) -> io::Result<(PathBuf, String)> {
             .into(),
     ))
 }
-#[cfg(all(not(test), not(target_os = "linux")))]
+#[cfg(not(test))]
 pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(feature = "test-support")]
     if crate::test_support::isolated(path) {
         return local_read(path);
     }
+    #[cfg(target_os = "linux")]
+    if plain(path) { return plain_read(path); }
     let (folder, name) = scope(path)?;
     let doc = apex_provenance::io::document(&folder, &name, None).map_err(error)?;
     REVISIONS
@@ -120,12 +118,14 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     }
     serde_json::to_vec(&doc.value).map_err(|e| error(e.to_string()))
 }
-#[cfg(all(not(test), not(target_os = "linux")))]
+#[cfg(not(test))]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(feature = "test-support")]
     if crate::test_support::isolated(path) {
         return local_write(path, bytes);
     }
+    #[cfg(target_os = "linux")]
+    if plain(path) { return plain_write(path, bytes); }
     let (folder, name) = scope(path)?;
     // Protected host ownership holds stable root-owned kernel locks across the
     // host lifetime. The broker also rejects writes from a stale revision.
@@ -226,16 +226,15 @@ pub(crate) fn plain(path: &Path) -> bool {
         if crate::test_support::isolated(path) {
             return false;
         }
-        let _ = path;
-        true
+        // Existing Linux callers may pass relative data folders. Resolve them
+        // without erasing symlink/ancestor evidence used by enrollment pins.
+        std::path::absolute(path).ok()
+            .and_then(|path| apex_provenance::linux_registration::protected_scope(&path).ok())
+            .is_some_and(|protected| !protected)
     }
 }
 #[cfg(all(not(test), target_os = "linux"))]
-pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
-    #[cfg(feature = "test-support")]
-    if !plain(path) {
-        return local_read(path);
-    }
+fn plain_read(path: &Path) -> io::Result<Vec<u8>> {
     let bytes = std::fs::read(path)?;
     // A fresh read reopens a ledger closed by an earlier failed start.
     if let Ok(mut closed) = CLOSED.get_or_init(Default::default).lock() {
@@ -248,11 +247,7 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
 #[cfg(all(not(test), target_os = "linux"))]
 static CLOSED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 #[cfg(all(not(test), target_os = "linux"))]
-pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    #[cfg(feature = "test-support")]
-    if !plain(path) {
-        return local_write(path, bytes);
-    }
+fn plain_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let closed = CLOSED.get_or_init(Default::default).lock()
         .map_err(|_| io::Error::other("Ledger lock poisoned"))?;
     if closed.contains(path) {

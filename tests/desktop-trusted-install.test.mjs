@@ -134,8 +134,8 @@ test('a dev build and an isolated data folder keep today\'s behavior', () => {
   assert.equal(qa.daemon, `${APP}/Contents/Resources/bin/apex-daemon`);
 });
 
-test('another platform is left alone', () => {
-  const got = plan(fakeFiles(), { platform: 'linux' });
+test('Windows startup retains its platform authority route', () => {
+  const got = plan(fakeFiles(), { platform: 'win32' });
   assert.equal(got.kind, 'run');
 });
 

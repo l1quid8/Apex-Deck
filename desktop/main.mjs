@@ -25,6 +25,7 @@ import { answers, daemonBinary, daemonEndpoint, dataFolder, localDaemon } from '
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
 import { installLogonTask, startLogonTaskDaemon, usesLogonTask } from './winLogonTask.mjs';
 import { TRUSTED_DAEMON, bundlePath, isProtectedCopy, launchPlan, plistDaemonBin, runLaunchPlan } from './trustedInstall.mjs';
+import { linuxLocalDaemon, resolveLinuxLaunch, launchLinuxUI } from './linuxService.mjs';
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, needsAttestation, protectWindowsProcess, requestUpdate } from './provenance.mjs';
@@ -45,7 +46,7 @@ if (app.isPackaged && process.platform === 'win32') protectWindowsProcess();
 const smoke = env.APEX_DECK_SMOKE === '1';
 const devUrl = env.APEX_DECK_DEV_URL || '';
 /** Set for tests and the smoke run: the host's data folder. */
-const dataDir = env.APEX_DECK_DATA_DIR || undefined;
+let dataDir = env.APEX_DECK_DATA_DIR || undefined;
 /** `scheme://host`; URL's own `origin` is "null" for schemes it doesn't know, like app:. */
 const originOf = (url) => {
   try {
@@ -64,7 +65,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
 
-const bin = daemonBinary({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repo, env });
+let bin = daemonBinary({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repo, env });
 
 /** Text of a file, or null when it isn't there: the LaunchAgent may not exist yet. */
 const readText = (file) => {
@@ -76,7 +77,7 @@ const readText = (file) => {
  * hand off to it, carry on with the daemon it already runs, or say why the
  * protected data can't be opened instead of quietly downgrading the agent.
  */
-const plan = launchPlan({
+let plan = launchPlan({
   packaged: app.isPackaged,
   platform: process.platform,
   dataDir,
@@ -85,6 +86,14 @@ const plan = launchPlan({
   daemon: bin,
   plist: readText(agentPlistPath()),
 });
+if(app.isPackaged && process.platform==='linux') {
+  plan=await resolveLinuxLaunch({plan,bundle:app.getAppPath(),dataDir});
+  if(plan.scope?.role==='app' && !plan.protectedSubmissionError) {
+    dataDir=plan.dataDir;
+    bin=plan.daemon;
+    app.setPath('userData',`${dataDir}-desktop`);
+  }
+}
 /** The daemon the LaunchAgent runs: the protected one whenever it is installed. */
 const agentBin = plan.daemon;
 
@@ -178,7 +187,9 @@ function ensureLocal() {
   if (local?.owned && local.alive()) return Promise.resolve(local);
   // launchd keeps the agent's daemon up; windows reconnect to it by themselves.
   if (local?.agent && agentWanted()) return Promise.resolve(local);
-  starting ??= (agentWanted()
+  starting ??= (process.platform === 'linux' && app.isPackaged
+    ? linuxLocalDaemon({ plan, startPortable: () => localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }) })
+    : agentWanted()
     ? startAgent()
     : localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }))
     .then(async (daemon) => {
@@ -347,8 +358,9 @@ ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
   // authority is unavailable until its own broker is deployed.
   if (needsAttestation(frame.cmd, hostId !== LOCAL)) {
     try {
+      if (hostId === LOCAL && plan.protectedSubmissionError) throw new Error(plan.protectedSubmissionError);
       if (hostId !== LOCAL) throw new Error('Protected assistant submissions currently require the installed UI on the same Mac as the project host.');
-      const folder = fs.realpathSync(await dataFolder(bin, dataDir));
+      const folder = plan.scope?.role==='app' ? plan.dataDir : fs.realpathSync(await dataFolder(bin, dataDir));
       const signed = await attestFrame(frame, { dataDir: folder });
       if (event.sender.isDestroyed() || !fromUi(event)) return;
       line = JSON.stringify(signed);
@@ -1268,7 +1280,7 @@ app.whenReady().then(async () => {
   // A copy the broker can't trust never touches the daemon or the LaunchAgent:
   // it opens the protected copy and steps aside (trustedInstall.mjs).
   if (!await runLaunchPlan(plan, {
-    open: (target) => shell.openPath(target),
+    open: (target) => process.platform==='linux' ? launchLinuxUI({scope:plan.scope}) : shell.openPath(target),
     quit: () => app.exit(0),
     notice: showProtectedInstallNotice,
   })) return;

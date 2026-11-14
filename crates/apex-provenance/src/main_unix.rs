@@ -84,6 +84,10 @@ fn atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(&temporary)
         .map_err(|e| e.to_string())?;
+    // The system service's private umask must not make the public verification
+    // key unreadable. Apply the exact intended mode before making data durable.
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+        .map_err(|e| e.to_string())?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())?;
@@ -181,16 +185,31 @@ impl Store {
         Ok(())
     }
 }
+fn provenance_listener(path:&Path)->Result<UnixListener,String> {
+    let listener=UnixListener::bind(path).map_err(|e|e.to_string())?;
+    #[cfg(target_os="linux")]
+    linux::enable_credentials(listener.as_raw_fd())?;
+    Ok(listener)
+}
 fn run() -> Result<(), String> {
+    // Never initialize keys, open a journal or bind a socket for a Linux
+    // authority until its trusted launcher can attest exec transitions.
+    // Immutable paths and kernel UID/PID identity alone cannot grant UI trust.
+    #[cfg(target_os = "linux")]
+    let mut linux_context = linux_runtime::Context::open()?;
     if unsafe { libc::geteuid() } != 0 {
         return Err(
             "This broker must run as the root LaunchDaemon; no user-mode fallback exists".into(),
         );
     }
+    #[cfg(target_os="linux")]
+    linux_install::protected_path(Path::new("/run/apex-deck"))?;
     let root = Path::new(ROOT);
     // The installer creates the directory; no auto-migration of user files.
+    #[cfg(not(target_os="linux"))]
     let config: Config = serde_json::from_slice(&root_file(&root.join("config.json"))?)
         .map_err(|e| e.to_string())?;
+    #[cfg(not(target_os="linux"))]
     if [config.ui_cdhash.as_deref(), Some(config.daemon_cdhash.as_str()), config.cli_cdhash.as_deref(), config.cli_standalone_cdhash.as_deref(), config.daemon_standalone_cdhash.as_deref()]
         .into_iter().flatten()
         .any(|hash| hash.len() != 40 || !hash.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -221,6 +240,11 @@ fn run() -> Result<(), String> {
     if public_path.exists() {
         if root_file(&public_path)? != key.public_key().as_ref() {
             return Err("Authority key mismatch".into());
+        }
+        #[cfg(target_os="linux")]
+        if std::fs::metadata(&public_path).map_err(|e|e.to_string())?.mode() & 0o777 != 0o644 {
+            // Repair only the verified public copy, never rotate private trust.
+            atomic(&public_path, key.public_key().as_ref(), 0o644)?;
         }
     } else {
         atomic(&public_path, key.public_key().as_ref(), 0o644)?;
@@ -261,14 +285,18 @@ fn run() -> Result<(), String> {
         }
         std::fs::remove_file(SOCKET).map_err(|e| e.to_string())?;
     }
-    let listener = UnixListener::bind(SOCKET).map_err(|e| e.to_string())?;
+    let listener = provenance_listener(Path::new(SOCKET))?;
     std::fs::set_permissions(SOCKET, std::fs::Permissions::from_mode(0o666))
         .map_err(|e| e.to_string())?;
+    #[cfg(target_os="linux")]
+    linux_runtime::notify_ready()?;
     // Serialize transactions. Issue and claim are acknowledged after fsync.
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+        #[cfg(not(target_os="linux"))]
+        let (trusted, daemon_uid, uid, trusted_daemon, trusted_cli, cli_uid) = {
         let (_, trusted) = peer(&stream, config.ui_cdhash.as_deref(), Peer::App);
         let (daemon_uid, trusted_daemon_primary) = peer(&stream, Some(&config.daemon_cdhash), Peer::Daemon);
         let uid = daemon_uid;
@@ -278,11 +306,51 @@ fn run() -> Result<(), String> {
         let (standalone_cli_uid, trusted_cli_standalone) = peer(&stream, config.cli_standalone_cdhash.as_deref(), Peer::Cli);
         let trusted_cli = trusted_cli_primary || trusted_cli_standalone;
         let cli_uid = if trusted_cli_primary { primary_cli_uid } else { standalone_cli_uid };
+        (trusted,daemon_uid,uid,trusted_daemon,trusted_cli,cli_uid)
+        };
+        #[cfg(target_os="linux")]
+        let kernel_peer = match linux::KernelPeer::capture(&stream) {Ok(peer)=>peer,Err(_)=>continue};
+        #[cfg(target_os="linux")]
+        let (trusted,daemon_uid,uid,trusted_daemon,trusted_cli,cli_uid) = {
+            let uid=kernel_peer.identity().1;
+            let role=linux_context.role(&kernel_peer).ok().flatten();
+            (role==Some(linux_runtime::Role::App),uid,uid,role==Some(linux_runtime::Role::Daemon),false,u32::MAX)
+        };
         let response = (|| -> Result<Signed, String> {
             if uid == u32::MAX || uid != daemon_uid {
                 return Err("No kernel peer identity".into());
             }
+            #[cfg(not(target_os="linux"))]
             let request = read_frame(&mut stream)?;
+            #[cfg(target_os="linux")]
+            let request = kernel_peer.read_request(&stream)?;
+            #[cfg(target_os="linux")]
+            let _linux_admission = {
+                let payload = match request["op"].as_str() {
+                    Some("scope") => Some(linux_context.scope(&kernel_peer,&request)?),
+                    Some("health") => Some(linux_context.health(&kernel_peer,&request)?),
+                    Some("stop-daemon") => Some(linux_context.stop_daemon(&kernel_peer,&request)?),
+                    Some("launch-daemon") => Some(linux_context.launch(&kernel_peer,&request,linux_runtime::Role::Daemon)?),
+                    Some("launch") if request["role"]=="app" => Some(linux_context.launch(&kernel_peer,&request,linux_runtime::Role::App)?),
+                    _ => None,
+                };
+                if let Some(payload)=payload {return sign(&key,&payload);}
+                let candidate_read=trusted_daemon && matches!(request["op"].as_str(),Some("host_lock"|"read"));
+                let admission=if candidate_read {linux_context.selected()?;None} else {Some(linux_context.admission()?)};
+                linux_context.validate_scope(&kernel_peer,Path::new(request["dataDir"].as_str().ok_or("Missing data directory")?))?;
+                if !trusted && !trusted_daemon {return Err("Request is not from a broker-owned installed role".into());}
+                admission
+            };
+            #[cfg(target_os="linux")]
+            let _linux_launch_lease=linux_context.lease(&kernel_peer)?;
+            #[cfg(target_os="linux")]
+            let (trusted,trusted_daemon) = {
+                let role=linux_context.role(&kernel_peer)?;
+                (role==Some(linux_runtime::Role::App),role==Some(linux_runtime::Role::Daemon))
+            };
+            #[cfg(target_os="linux")]
+            if request["op"] == "update_install" {return Err("Linux release changes require the administrator installation transaction".into());}
+            #[cfg(not(target_os="linux"))]
             if request["op"] == "update_install" {
                 // Only the pinned UI, never its daemon or a shell, can start an install.
                 if !trusted {
@@ -330,7 +398,10 @@ fn run() -> Result<(), String> {
                     Some("issue") => {
                         let role = if trusted { Some(Peer::App) } else if trusted_cli && cli_uid == uid { Some(Peer::Cli) } else { None };
                         let allowed = role.is_some_and(|role| may_issue(role, &request["command"]));
+                        #[cfg(not(target_os="linux"))]
                         let receipt = next.issue(uid, folder, request["command"].clone(), allowed)?;
+                        #[cfg(target_os="linux")]
+                        let receipt = next.issue_at_epoch(uid, folder, request["command"].clone(), allowed, _linux_admission.as_ref().ok_or("Authority admission absent")?.descriptor().epoch)?;
                         json!({"domain":DOMAIN,"kind":"submission","receipt":receipt})
                     }
                     Some("write") => {
@@ -366,6 +437,10 @@ fn run() -> Result<(), String> {
                         }
                         let receipt: Receipt = serde_json::from_value(value["receipt"].clone())
                             .map_err(|e| e.to_string())?;
+                        #[cfg(target_os="linux")]
+                        { if !trusted_daemon {return Err("Only the supervised daemon can claim Linux receipts".into());}
+                        next.claim_at_epoch(uid,folder,&receipt,request["nonce"].as_str().unwrap_or(""),_linux_admission.as_ref().ok_or("Authority admission absent")?.descriptor().epoch)? }
+                        #[cfg(not(target_os="linux"))]
                         next.claim(
                             uid,
                             folder,
@@ -422,6 +497,58 @@ fn document_payload(
     Ok(json!({"domain":DOMAIN,"kind":"document","uid":uid,"dataDir":folder,"name":name,"nonce":nonce,"document":document}))
 }
 fn main() {
+    let args=std::env::args().collect::<Vec<_>>();
+    #[cfg(target_os="linux")]
+    {
+        let result = match args.get(1).map(String::as_str) {
+            Some("probe-linux-daemon") if args.len()==7 => Some((|| -> Result<(),String> {
+                let value=linux_runtime::probe_daemon(Path::new(&args[2]),args[3].parse().map_err(|_|"Invalid probe PID")?,args[4].parse().map_err(|_|"Invalid probe UID")?,args[5].parse().map_err(|_|"Invalid probe generation")?,&args[6])?;
+                println!("{}",serde_json::to_string(&value).map_err(|e|e.to_string())?);Ok(())
+            })()),
+            Some("initialize-linux-authority") if args.len()==2 => Some(linux_service::initialize()),
+            Some("stop-linux-daemon") if args.len()==2 => Some(linux_service::stop_daemon()),
+            Some("wait-linux-daemon") if args.len()==2 => Some(linux_service::wait_daemon()),
+            Some("activate-linux-release") if args.len()==6 => Some(linux_service::activate(Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4]),Path::new(&args[5]))),
+            Some("recover-linux-release") if args.len()==6 => Some(linux_service::recover(Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4]),Path::new(&args[5]))),
+            Some("enroll-linux") if args.len()==2 => Some(linux_enroll::administrator()),
+            Some("request-linux-enrollment") if args.len()==3 => Some(linux_enroll::request(Path::new(&args[2]))),
+            Some("repair-linux-scopes") if args.len()==2 => Some(linux_registration::RegistrationStore::open().and_then(|store|store.publish_scopes())),
+            Some("initialize-linux-enrollments") if args.len()==2 => Some(linux_registration::RegistrationStore::initialize().and_then(|store|store.publish_scopes())),
+            _ => None,
+        };
+        if let Some(result)=result {if let Err(error)=result {eprintln!("apex-provenance: {error}");std::process::exit(1);}return;}
+    }
+    if args.get(1).map(String::as_str)==Some("stage-linux-release") {
+        let result=(|| -> Result<(),String> {
+            if args.len()!=5 {return Err("Usage: apex-provenance stage-linux-release MANIFEST SIGNATURE ARCHIVE".into());}
+            let target=linux_install::stage_release(Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4]))?;
+            println!("Staged verified evaluation payload: {}",target.display());
+            Ok(())
+        })();
+        if let Err(error)=result {eprintln!("apex-provenance: {error}");std::process::exit(1);}
+        return;
+    }
+    if args.get(1).map(String::as_str)==Some("verify-linux-release") {
+        let result=(|| -> Result<(),String> {
+            use std::io::Read;
+            if args.len()!=5 {return Err("Usage: apex-provenance verify-linux-release MANIFEST SIGNATURE ARCHIVE".into());}
+            fn bounded(path: &str, limit: usize)->Result<Vec<u8>,String>{
+                let file=std::fs::File::open(path).map_err(|e|e.to_string())?;
+                let mut bytes=Vec::new();file.take(limit as u64+1).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+                if bytes.len()>limit {return Err("Verification input exceeds limit".into());}Ok(bytes)
+            }
+            let manifest=bounded(&args[2],linux_install::MANIFEST_LIMIT)?;
+            let signature=bounded(&args[3],64)?;
+            let mut archive=std::fs::File::open(&args[4]).map_err(|e|e.to_string())?;
+            let verified=linux_install::verify_release(&manifest,&signature,&mut archive)?;
+            println!("Verified evaluation-only Linux payload: {} {} {}",verified.version,verified.commit,verified.arch);
+            Ok(())
+        })();
+        if let Err(error)=result {eprintln!("apex-provenance: {error}");std::process::exit(1);}
+        return;
+    }
+    #[cfg(target_os="linux")]
+    if !(args.len()==1 || (args.len()==2 && args[1]=="service-linux")) {eprintln!("apex-provenance: Unknown or incomplete Linux service command");std::process::exit(1);}
     if let Err(error) = run() {
         eprintln!("apex-provenance: {error}");
         std::process::exit(1);
@@ -440,6 +567,63 @@ mod tests {
             assert_eq!(uid, unsafe { libc::geteuid() });
             assert!(!trusted, "unsigned local peer cannot claim {role:?}");
         }
+    }
+
+    #[test]
+    fn atomic_key_modes_survive_a_private_service_umask() {
+        const CHILD:&str="APEX_TEST_ATOMIC_UMASK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","tests::atomic_key_modes_survive_a_private_service_umask","--nocapture"])
+                .env(CHILD,"1").output().unwrap();
+            assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        // umask is process-global: exercise it only in the isolated subprocess.
+        unsafe {libc::umask(0o077);}
+        let dir=std::env::temp_dir().join(format!("apex-key-modes-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&dir).unwrap();
+        let public=dir.join("public-key");let private=dir.join("private-key");
+        atomic(&public,b"existing public bytes",0o644).unwrap();
+        atomic(&private,b"existing private bytes",0o600).unwrap();
+        assert_eq!(std::fs::metadata(&public).unwrap().mode()&0o777,0o644);
+        assert_eq!(std::fs::metadata(&private).unwrap().mode()&0o777,0o600);
+        // Repair a formerly masked public file by rewriting identical bytes;
+        // preserve established private authority rather than rotating it.
+        std::fs::set_permissions(&public,std::fs::Permissions::from_mode(0o600)).unwrap();
+        atomic(&public,b"existing public bytes",0o644).unwrap();
+        assert_eq!(std::fs::metadata(&public).unwrap().mode()&0o777,0o644);
+        assert_eq!(std::fs::read(&public).unwrap(),b"existing public bytes");
+        assert_eq!(std::fs::read(&private).unwrap(),b"existing private bytes");
+        assert_eq!(std::fs::metadata(&private).unwrap().mode()&0o777,0o600);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os="linux")]
+    fn listener_authenticates_a_frame_sent_before_accept_and_peer_capture() {
+        use std::io::{Read,BufRead};
+        const CHILD:&str="APEX_TEST_FAST_CLIENT_PATH";
+        if let Some(path)=std::env::var_os(CHILD) {
+            let mut client=UnixStream::connect(path).unwrap();
+            client.write_all(b"{\"op\":\"health\"}\n").unwrap();
+            println!("FRAME-SENT");std::io::stdout().flush().unwrap();
+            client.read_exact(&mut [0u8;1]).unwrap();return;
+        }
+        let path=std::env::temp_dir().join(format!("apex-fast-client-{}",std::process::id()));
+        let _=std::fs::remove_file(&path);
+        let listener=provenance_listener(&path).unwrap();
+        let mut child=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","tests::listener_authenticates_a_frame_sent_before_accept_and_peer_capture","--nocapture"])
+            .env(CHILD,&path).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut reader=std::io::BufReader::new(child.stdout.take().unwrap());
+        loop {let mut line=String::new();assert!(reader.read_line(&mut line).unwrap()>0);if line.contains("FRAME-SENT"){break;}}
+        let (mut server,_)=listener.accept().unwrap();
+        let peer=linux::KernelPeer::capture(&server).unwrap();
+        let result=peer.read_request(&server);
+        server.write_all(b"x").unwrap();assert!(child.wait().unwrap().success());
+        assert_eq!(result.unwrap(),json!({"op":"health"}));
+        drop(listener);std::fs::remove_file(path).unwrap();
     }
 
     const NONCE: &str = "0123456789abcdef0123456789abcdef";

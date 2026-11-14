@@ -17,6 +17,7 @@
     "desktop:package": "node scripts/package-pinned.mjs --dir",
     "desktop:dmg": "node scripts/package-pinned.mjs",
     "desktop:win": "node scripts/package-win.mjs",
+    "desktop:linux": "node scripts/package-linux.mjs",
     "desktop:smoke:multi-host": "cargo build -p apex-daemon --features remote && vite build && node --experimental-strip-types desktop/run-multi-host-smoke.mjs",
     "iphone:sync": "node scripts/build-phone.mjs && scripts/build-iroh-mobile.sh && cap sync ios",
     "iphone:open": "npm run iphone:sync && cap open ios"

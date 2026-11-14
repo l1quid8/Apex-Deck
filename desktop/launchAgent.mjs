@@ -20,7 +20,7 @@ export const agentPlistPath = (home = os.homedir()) => path.join(home, 'Library'
  * The LaunchAgent serves the daemon only for the installed app with no test
  * or dev data folder; a dev build or a test run keeps the daemon Deck owns.
  */
-export const usesLaunchAgent = ({ packaged, dataDir }) => Boolean(packaged) && !dataDir;
+export const usesLaunchAgent = ({ packaged, dataDir, platform = process.platform }) => platform === 'darwin' && Boolean(packaged) && !dataDir;
 
 const xml = (text) => String(text)
   .replace(/&/g, '&amp;')

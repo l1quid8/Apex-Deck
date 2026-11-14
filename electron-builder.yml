@@ -85,6 +85,18 @@ win:
       to: bin/apex-daemon.exe
     - from: target/release/apex-provenance.exe
       to: bin/apex-provenance.exe
+linux:
+  executableName: apex-deck
+  icon: build/icons/icon.png
+  category: Development
+  target: AppImage
+  artifactName: Apex-Deck_${version}_${arch}.${ext}
+  extraResources:
+    - from: target/release/apex-daemon
+      to: bin/apex-daemon
+appImage:
+  # Keep Chromium sandboxing enabled; do not ship the builder's legacy default.
+  executableArgs: []
 nsis:
   # A real installer window, not a silent one-click drop into AppData: the
   # Human picks the folder and can find the app afterwards.
