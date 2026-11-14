@@ -659,6 +659,97 @@ fi
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A gateway whose `claude` runs `script`, with `{dir}` standing for the test
+/// folder, and Deck's own Claude login set to `login`, answering one tool request.
+#[cfg(unix)]
+async fn ask_fake_claude(script: &str, login: Option<&str>) -> (PathBuf, u16, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, keys, issued, _, unused) =
+        gateway_fixture(json!({"kind":"agent","tool":"claude_code"}), KeyScope::Sub).await;
+    unused.abort();
+    if let Some(login) = login {
+        let file = dir.join("logins/claude/.claude/.credentials.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, login).unwrap();
+    }
+    let program = dir.join("claude");
+    std::fs::write(&program, format!("#!/bin/sh\n{}\n", script.replace("{dir}", &dir.to_string_lossy()))).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let state = Arc::new(GatewayHttpState {
+        data_dir: dir.clone(),
+        keys,
+        login_path: Some(format!("{}:/usr/bin:/bin", dir.display())),
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, state));
+    let response = reqwest::Client::new().post(format!("http://{addr}/v1/chat/completions")).bearer_auth(&issued.token)
+        .json(&json!({"model":"claude/default","messages":[{"role":"user","content":"hi"}],"tools":[tool()]})).send().await.unwrap();
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap();
+    server.abort();
+    (dir, status, text)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failing_claude_says_why_in_the_502() {
+    let (dir, status, text) = ask_fake_claude(concat!(
+        "cat > /dev/null\n",
+        "printf '%s' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"Failed to authenticate: OAuth session expired and could not be refreshed\"}'\n",
+        "exit 1"), None).await;
+    assert_eq!(status, 502, "{text}");
+    assert!(text.contains("Failed to authenticate: OAuth session expired and could not be refreshed"), "{text}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Claude then can't renew, or empty, the login every request shares.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn claude_requests_get_decks_login_without_its_renewal_part() {
+    let login = json!({"claudeAiOauth":{"accessToken":"deck","refreshToken":"r-deck","expiresAt":(now_unix() + 8 * 3600) * 1000},
+        "mcpOAuth":{"server":"token"}}).to_string();
+    let (dir, status, text) = ask_fake_claude(concat!(
+        "{ printf '%s\\n' \"$CLAUDE_CONFIG_DIR\"; cat \"$CLAUDE_CONFIG_DIR/.credentials.json\"; echo; } > '{dir}/seen'\n",
+        "cat > /dev/null\n",
+        "printf '%s' '{\"structured_output\":{\"content\":\"hi\",\"tool_calls\":[]},\"total_cost_usd\":0.001}'"), Some(&login)).await;
+    assert_eq!(status, 200, "{text}");
+    let seen = std::fs::read_to_string(dir.join("seen")).unwrap();
+    let (config, given) = seen.split_once('\n').unwrap();
+    let given: Value = serde_json::from_str(given.trim()).unwrap();
+    assert_eq!(given["claudeAiOauth"]["accessToken"], "deck", "{seen}");
+    assert!(given["claudeAiOauth"].get("refreshToken").is_none() && given.get("mcpOAuth").is_none(), "{seen}");
+    assert!(!Path::new(config).starts_with(dir.join("logins")), "{seen}");
+    assert!(!Path::new(config).exists(), "the request's copy goes with its scratch folder");
+    assert_eq!(std::fs::read_to_string(dir.join("logins/claude/.claude/.credentials.json")).unwrap(), login);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A login too close to expiry for a request is renewed first, the same way as
+/// for a jailed launch, and the request then gets the renewed one.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_stale_deck_claude_login_is_renewed_before_the_request() {
+    let login = json!({"claudeAiOauth":{"accessToken":"deck","refreshToken":"r-deck","expiresAt":(now_unix() + 600) * 1000}}).to_string();
+    let (dir, status, text) = ask_fake_claude(concat!(
+        "creds=\"$CLAUDE_CONFIG_DIR/.credentials.json\"\n",
+        "expires=$(sed -n 's/.*\"expiresAt\":\\([0-9]*\\).*/\\1/p' \"$creds\")\n",
+        "if [ \"$expires\" -le $(( $(date +%s) * 1000 + 300000 )) ] && grep -q refreshToken \"$creds\"; then\n",
+        "  printf '{\"claudeAiOauth\":{\"accessToken\":\"renewed\",\"refreshToken\":\"r-renewed\",\"expiresAt\":%s}}' $(( ($(date +%s) + 28800) * 1000 )) > \"$creds\"\n",
+        "fi\n",
+        "{ cat \"$creds\"; echo; } >> '{dir}/seen'\n",
+        "cat > /dev/null\n",
+        "printf '%s' '{\"structured_output\":{\"content\":\"hi\",\"tool_calls\":[]},\"total_cost_usd\":0.001}'"), Some(&login)).await;
+    assert_eq!(status, 200, "{text}");
+    let saved: Value = serde_json::from_slice(&std::fs::read(dir.join("logins/claude/.claude/.credentials.json")).unwrap()).unwrap();
+    assert_eq!(saved["claudeAiOauth"]["refreshToken"], "r-renewed");
+    let seen = std::fs::read_to_string(dir.join("seen")).unwrap();
+    let request: Value = serde_json::from_str(seen.lines().last().unwrap()).unwrap();
+    assert_eq!(request["claudeAiOauth"]["accessToken"], "renewed", "{seen}");
+    assert!(request["claudeAiOauth"].get("refreshToken").is_none(), "{seen}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// Explicitly opted-in paid provider verification; never part of the ordinary suite.
 #[tokio::test]
 #[ignore = "requires local subscription login; makes ten paid model requests"]
@@ -963,4 +1054,24 @@ async fn api_final_usage_is_charged_before_done_even_if_client_closes() {
     provider.await.unwrap();
     server.abort();
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn linux_subscription_client_envelopes_preserve_tool_result_history() {
+    for tool in [AgentTool::Muse, AgentTool::Grok, AgentTool::Gemini] {
+        let request = json!({"tools":[self::tool()],"messages":[
+            {"role":"assistant","tool_calls":[{"id":"client-call","type":"function","function":{"name":"add","arguments":"{\"a\":19,\"b\":23}"}}]},
+            {"role":"tool","tool_call_id":"client-call","content":"42 RECEIPT_UNPREDICTABLE"}
+        ]});
+        let turn = emulation::text_request(&request).unwrap();
+        assert!(turn.system.contains("Never run"));
+        let serialized = serde_json::to_string(&turn.turns).unwrap();
+        assert!(serialized.contains("client-call"));
+        assert!(serialized.contains("RECEIPT_UNPREDICTABLE"));
+        let reply = Reply::text(r#"{"content":"42 RECEIPT_UNPREDICTABLE","tool_calls":[]}"#);
+        let (message, _) = emulation::text_result(&request, &reply).unwrap();
+        assert_eq!(message["content"], "42 RECEIPT_UNPREDICTABLE", "{tool:?}");
+        assert!(emulation::text_result(&request, &Reply::text("not JSON")).is_err());
+        assert!(emulation::text_result(&request, &Reply::text(r#"{"content":"","tool_calls":[{"name":"unknown","arguments":"{}"}]}"#)).is_err());
+    }
 }

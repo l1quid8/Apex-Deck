@@ -40,6 +40,7 @@ pub(crate) const API_KEY_ENV: &str = "META_API_KEY";
 
 /// What a turn needs besides the prompt.
 pub(crate) struct Turn<'a> {
+    pub model_only: bool,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub access: Access,
@@ -438,6 +439,10 @@ pub(crate) async fn run(
         let method = message["method"].as_str().unwrap_or_default();
         let params = &message["params"];
         let item = &params["item"];
+        if turn.model_only && (method=="approval/request" || item["kind"]=="toolCall") {
+            child.terminate_tree().await.map_err(TurnError::CleanupIncomplete)?;
+            return Err(TurnError::Failed("Model-only provider attempted a native action; turn refused".into()));
+        }
         match method {
             "approval/request" => {
                 // The response only says the card is shown; the decision
@@ -649,7 +654,7 @@ mod tests {
 
     #[test]
     fn the_session_and_turn_carry_folder_model_effort_and_images() {
-        let turn = Turn { model: Some("muse-wonder-1.0"), effort: Some("low"), access: Access::Edits, cwd: Some("/w".into()), trusted_computer: false };
+        let turn = Turn { model_only:false, model: Some("muse-wonder-1.0"), effort: Some("low"), access: Access::Edits, cwd: Some("/w".into()), trusted_computer: false };
         let start = session_start(&turn);
         assert_eq!(start["params"]["workspaceRoot"], "/w");
         assert_eq!(start["params"]["modelId"], "muse-wonder-1.0");

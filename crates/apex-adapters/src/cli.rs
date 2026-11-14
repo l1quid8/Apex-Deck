@@ -69,6 +69,20 @@ fn codex_mcp_disable_flags(listing: &[u8]) -> Result<Vec<String>, ParticipantErr
     Ok(flags)
 }
 
+#[derive(Default)]
+struct ModelOnlyRefusal {
+    blocked: AtomicBool,
+    wake: tokio::sync::Notify,
+}
+impl ModelOnlyRefusal {
+    fn block(&self) { self.blocked.store(true,Ordering::SeqCst); self.wake.notify_one(); }
+}
+struct RefuseNative(std::sync::Arc<ModelOnlyRefusal>);
+#[async_trait]
+impl Approver for RefuseNative {
+    async fn decide(&self,_action:ProposedAction)->Decision { self.0.block(); Decision::Reject }
+}
+
 /// A participant backed by a command-line tool.
 ///
 /// Each turn starts the program fresh, writes the whole prompt to its
@@ -91,6 +105,8 @@ pub struct CliParticipant {
     plan: Option<Access>,
     /// Disable every tool for a text-only monitor turn.
     tools_disabled: bool,
+    /// Set only by the progress/approval guard around a model-only turn.
+    native_guarded: bool,
     mcp_disabled: bool,
     isolation: Option<std::sync::Arc<crate::gateway_sandbox::Isolation>>,
     processes: Registry,
@@ -109,7 +125,7 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
+        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
     }
 
     /// Start a conversation turn with tools disabled at both the CLI and
@@ -270,7 +286,7 @@ impl CliParticipant {
         hook: Option<&codex_hook::Hook>,
     ) -> Result<OwnedChild, ParticipantError> {
         #[cfg(unix)]
-        if crate::linux_jail::should_jail(self.config.access) {
+        if self.isolation.is_none() && crate::linux_jail::should_jail(self.config.access) {
             let bwrap = crate::gateway_sandbox::find_bwrap(self.path.as_deref());
             match crate::linux_jail::state(bwrap.as_deref()) {
                 crate::linux_jail::JailState::Fails(reason) => return Err(ParticipantError::Failed(reason)),
@@ -485,7 +501,7 @@ fn random_token() -> String {
         // has gone would make Codex run every tool unasked, so check first.
         let hook = self.codex_hook.as_deref().filter(|helper| !self.mcp_disabled && helper.is_file()).and_then(|helper| {
             #[cfg(unix)]
-            if crate::linux_jail::should_jail(self.config.access) {
+            if self.isolation.is_none() && crate::linux_jail::should_jail(self.config.access) {
                 let token = Self::random_token();
                 let helper_path = Path::new(crate::linux_jail::INIT_PATH);
                 return Some(codex_hook::Hook::bind_jailed(helper_path, token));
@@ -500,7 +516,7 @@ fn random_token() -> String {
             }
         }
         #[cfg(unix)]
-        if crate::linux_jail::should_jail(self.config.access) {
+        if self.isolation.is_none() && crate::linux_jail::should_jail(self.config.access) {
             if let Some(data_dir) = &self.data_dir {
                 let program_path = crate::executable::program("codex", self.path.as_deref());
                 let path_os = self.path.as_ref().map(|p| std::ffi::OsString::from(p)).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
@@ -556,6 +572,7 @@ fn random_token() -> String {
         let child = self.start(program, args)?;
         let effort = clean_effort(self.config.effort.as_deref());
         let turn = muse_server::Turn {
+            model_only: self.tools_disabled && !self.computer_only,
             model: clean_model(model),
             effort: effort.as_deref(),
             access: self.config.access,
@@ -616,11 +633,21 @@ fn random_token() -> String {
                 break;
             }
             let text = clean(decoder.push(&buffer[..read]));
-            report(reader.push(&text), on_progress);
+            let steps=reader.push(&text);
+            if self.tools_disabled && reader.has_native_action() {
+                child.terminate_tree().await.map_err(ParticipantError::CleanupIncomplete)?;
+                return Err(ParticipantError::Failed("Model-only provider attempted a native action; turn refused".into()));
+            }
+            report(steps, on_progress);
         }
         let tail = clean(decoder.finish());
-        report(reader.push(&tail), on_progress);
-        report(reader.finish(), on_progress);
+        let mut steps=reader.push(&tail);
+        steps.extend(reader.finish());
+        if self.tools_disabled && reader.has_native_action() {
+            child.terminate_tree().await.map_err(ParticipantError::CleanupIncomplete)?;
+            return Err(ParticipantError::Failed("Model-only provider attempted a native action; turn refused".into()));
+        }
+        report(steps,on_progress);
 
         let status = child
             .wait()
@@ -895,6 +922,35 @@ impl Participant for CliParticipant {
         if self.tools_disabled && (request.access.is_some_and(|access| access != Access::Read) || request.plan) {
             return Err(ParticipantError::Failed("Text-only turns cannot request workspace access or planning tools.".into()));
         }
+        if self.tools_disabled && !self.computer_only && !self.native_guarded {
+            let mut scoped=self.clone();
+            scoped.native_guarded=true;
+            let refusal=std::sync::Arc::new(ModelOnlyRefusal::default());
+            let deny=RefuseNative(refusal.clone());
+            let progress=|event:Progress<'_>| {
+                let native=match event {
+                    Progress::Work(step)=>step.kind!=apex_core::work_steps::StepKind::Thinking,
+                    Progress::Change(_) | Progress::Todo(_)=>true,
+                    // Claude includes inert built-in plugin metadata in this UI list.
+                    // Its raw init frame verifies actual tools/MCP separately.
+                    Progress::ToolServers(servers)=>!servers.is_empty() && !matches!(self.config.backend, Backend::Agent { tool:AgentTool::ClaudeCode, .. }),
+                    _=>false,
+                };
+                if native { refusal.block(); } else { on_progress(event); }
+            };
+            let operation=scoped.respond_with_approvals(request,&progress,&deny);
+            tokio::pin!(operation);
+            let result=tokio::select! {
+                biased;
+                _=refusal.wake.notified()=>None,
+                result=&mut operation=>Some(result),
+            };
+            if refusal.blocked.load(Ordering::SeqCst) {
+                scoped.cancel_active_turn().await.map_err(ParticipantError::CleanupIncomplete)?;
+                return Err(ParticipantError::Failed("Model-only provider attempted a native action; turn refused".into()));
+            }
+            return result.unwrap_or_else(||Err(ParticipantError::Failed("Model-only native action guard stopped the turn".into())));
+        }
         let computer = request.computer.clone().filter(|_| self.computer_only || (!self.tools_disabled && !self.mcp_disabled));
         if computer != self.computer {
             let mut scoped=self.clone(); scoped.computer=computer;
@@ -968,7 +1024,7 @@ impl Participant for CliParticipant {
         }
         let (program, mut args, format) = self.command_line()?;
         #[cfg(unix)]
-        if crate::linux_jail::should_jail(self.config.access) {
+        if self.isolation.is_none() && crate::linux_jail::should_jail(self.config.access) {
             if let Some(data_dir) = &self.data_dir {
                 if let Backend::Agent { tool, .. } = &self.config.backend {
                     let program_path = crate::executable::program(&program, self.path.as_deref());
@@ -1448,5 +1504,105 @@ mod auto_tests {
     fn an_unsupported_model_is_not_changed_by_an_override() {
         let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"bot","display_name":"Bot","backend":{"kind":"agent","tool":"claude_code","model":"haiku"},"effort":"high"})).unwrap();
         assert_eq!(effective_turn_config(&config, Some("low")), config);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod gateway_linux_regression {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "explicit Linux sandbox acceptance; requires working bubblewrap"]
+    async fn private_gateway_turn_does_not_enter_the_workspace_jail() {
+        use std::os::unix::fs::PermissionsExt;
+        let _held = crate::linux_jail::TEST_LOCK.lock().unwrap();
+        struct Reset;
+        impl Drop for Reset { fn drop(&mut self) { crate::linux_jail::set_forced_for_test(false); } }
+        let _reset = Reset;
+        crate::linux_jail::set_forced_for_test(true);
+        let files = crate::attachments::Staged::new().unwrap();
+        let program = files.dir.join("grok");
+        std::fs::write(&program, r#"#!/bin/sh
+/bin/cat >/dev/null
+[ ! -r /home/l1quid8/.ssh/authorized_keys ] || exit 20
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"PRIVATE_GATEWAY_OK"}]}}'
+"#).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"fixture","display_name":"Fixture","backend":{"kind":"agent","tool":"grok"}})).unwrap();
+        let mut bot=CliParticipant::new(config).with_context(&BuildContext { path:Some(format!("{}:/usr/bin:/bin",files.dir.display())), ..Default::default() }).with_tools_disabled();
+        bot.isolation=Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&Backend::Scripted { lines:vec![] }).unwrap()));
+        let reply=bot.respond(TurnRequest::default(), &|_|{}).await.unwrap();
+        assert_eq!(reply.text,"PRIVATE_GATEWAY_OK");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod model_only_native_regressions {
+    use super::*;
+    #[tokio::test]
+    async fn tool_free_claude_allows_builtin_plugin_metadata_without_native_tools() {
+        use std::os::unix::fs::PermissionsExt;
+        let files=crate::attachments::Staged::new().unwrap();
+        let program=files.dir.join("claude");
+        std::fs::write(&program,r#"#!/bin/sh
+IFS= read -r line
+printf '%s\n' '{"type":"system","subtype":"init","mcp_servers":[],"tools":[],"plugins":[{"name":"cc-plugin-agents-md","path":"builtin","source":"cc-plugin-agents-md@builtin"}]}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"GATEWAY_PONG"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"GATEWAY_PONG"}'
+"#).unwrap();
+        std::fs::set_permissions(&program,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"fixture","display_name":"Fixture","backend":{"kind":"agent","tool":"claude_code"}})).unwrap();
+        let bot=CliParticipant::new(config).with_context(&BuildContext {path:Some(format!("{}:/usr/bin:/bin",files.dir.display())),..Default::default()}).with_tools_disabled();
+        assert_eq!(bot.respond(TurnRequest::default(), &|_|{}).await.unwrap().text,"GATEWAY_PONG");
+        let script=std::fs::read_to_string(&program).unwrap();
+        for (field, value) in [("mcp_servers", "[{\"name\":\"unexpected\"}]"), ("tools", "[\"Bash\"]")] {
+            std::fs::write(&program,script.replace(&format!("\"{field}\":[]"),&format!("\"{field}\":{value}"))).unwrap();
+            let error=bot.respond(TurnRequest::default(), &|_|{}).await.unwrap_err();
+            assert!(error.to_string().contains("advertised native tools"),"{error}");
+            assert!(!bot.cancel_active_turn().await.unwrap());
+        }
+        std::fs::write(&program,script.replace("\"mcp_servers\":[],", "").replace("\"tools\":[]", "\"tools\":[\"Bash\"]")).unwrap();
+        assert!(bot.respond(TurnRequest::default(), &|_|{}).await.unwrap_err().to_string().contains("advertised native tools"));
+    }
+    async fn refuses(tool: AgentTool, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let files=crate::attachments::Staged::new().unwrap();
+        let program=files.dir.join(if tool==AgentTool::Muse {"muse"} else {"grok"});
+        std::fs::write(&program,script).unwrap();
+        std::fs::set_permissions(&program,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config:ParticipantConfig=serde_json::from_value(serde_json::json!({"id":"fixture","display_name":"Fixture","backend":{"kind":"agent","tool":tool}})).unwrap();
+        let mut bot=CliParticipant::new(config).with_context(&BuildContext {path:Some(format!("{}:/usr/bin:/bin",files.dir.display())),..Default::default()}).with_tools_disabled();
+        bot.isolation=Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&Backend::Scripted {lines:vec![]}).unwrap()));
+        let result=bot.respond(TurnRequest::default(), &|_|{}).await;
+        assert!(matches!(result,Err(ParticipantError::Failed(ref why)) if why.contains("native action")),"{result:?}");
+        assert!(!bot.cancel_active_turn().await.unwrap(),"native process must already be stopped");
+    }
+    #[tokio::test]
+    async fn tool_free_grok_rejects_native_tools_even_with_valid_final_text() {
+        let script=r#"#!/bin/sh
+/bin/cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"native","name":"Bash","input":{"command":"echo must-not-run"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"content\":\"ok\",\"tool_calls\":[]}"}]}}'
+"#;
+        refuses(AgentTool::Grok,script).await;
+        refuses(AgentTool::Grok,&script.replace("Bash","todo_write")).await;
+    }
+    #[tokio::test]
+    async fn tool_free_muse_rejects_native_tools_even_with_valid_final_text() {
+        let script=r#"#!/bin/sh
+while IFS= read -r line; do
+case "$line" in
+*'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fixture"}}}' ;;
+*'"method":"session/start"'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"session":{"sessionId":"s1"},"viewCursor":"v0"}}' ;;
+*'"method":"turn/start"'*)
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"status":"accepted","turnId":"t1"}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"item/started","params":{"item":{"itemId":"native","kind":"toolCall","tool":"read_file","args":"{\"path\":\"private\"}"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"item/started","params":{"item":{"itemId":"answer","kind":"agentMessage","text":""}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"itemId":"answer","kind":"agentMessage","text":"{\"content\":\"ok\",\"tool_calls\":[]}"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"turn/completed","params":{"turnId":"t1","terminal":"completed"}}' ;;
+esac
+done
+"#;
+        refuses(AgentTool::Muse,script).await;
+        refuses(AgentTool::Muse,&script.replace("read_file","write_todos")).await;
     }
 }

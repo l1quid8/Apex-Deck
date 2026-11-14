@@ -51,7 +51,7 @@ use apex_core::testing::ScriptedParticipant;
 use apex_core::{Access, AgentTool, Backend, Participant, ParticipantConfig, PlanUsage, RoomKind};
 
 pub use catalog::{codex_models_from_cache, installed_models};
-pub use gateway_sandbox::isolation_available;
+pub use gateway_sandbox::{isolation_available, Isolation as GatewayIsolation};
 pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_ARG as CODEX_HOOK_ARG};
 
 pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSpec, ModelKind};
@@ -236,6 +236,41 @@ pub fn participant_for_room(
     }
 }
 
+fn gateway_codex_home(context: &BuildContext) -> Option<std::path::PathBuf> {
+    context.data_dir.as_ref().map(|d|d.join("codex")).filter(|p|p.join("auth.json").is_file())
+}
+
+fn gateway_plan_slot(context: &BuildContext, model: Option<&str>) -> String {
+    format!("gateway:{}", serde_json::json!([context.data_dir, model]))
+}
+
+pub fn remember_gateway_plan_usage(plan: &PlanUsage, model: Option<&str>, context: &BuildContext) {
+    plan_cache::remember_for(plan, &gateway_plan_slot(context, model));
+}
+
+/// Read the same account used by gateway completions, in a separate cache.
+pub async fn gateway_plan_usage(tool: AgentTool, model: Option<&str>, context: &BuildContext) -> Option<PlanUsage> {
+    let slot = gateway_plan_slot(context, model);
+    if tool == AgentTool::Muse { return plan_cache::last_for(tool, &slot); }
+    let read = || async {
+        match tool {
+            AgentTool::ClaudeCode => claude_usage::read_plan().await,
+            AgentTool::Codex => {
+                let home = gateway_codex_home(context);
+                let result = match start_codex_server_with_home(context, home.as_deref()) {
+                    Ok(child) => codex_server::read_plan(child).await,
+                    Err(why) => Err(why),
+                };
+                result.map_err(|why|plan_cache::Failure::new(why, plan_cache::Failure::SHORT))
+            },
+            AgentTool::Grok => grok_usage::read_plan().await,
+            AgentTool::Gemini => gemini_usage::read_plan(context.path.as_deref(), model).await,
+            AgentTool::Muse => unreachable!(),
+        }
+    };
+    plan_cache::get_within(tool, Some(&slot), plan_cache::AFTER_TURN, read).await.ok().flatten()
+}
+
 /// Read how much of a provider account's plan is used, without asking a
 /// model anything. Codex is asked through its app server. Claude, Grok and
 /// Gemini are read from the endpoints behind each CLI's usage screen, with
@@ -367,8 +402,13 @@ async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
 
 /// `codex app-server` with all three standard streams piped.
 fn start_codex_server(context: &BuildContext) -> Result<owned_process::OwnedChild, String> {
+    start_codex_server_with_home(context, None)
+}
+
+fn start_codex_server_with_home(context: &BuildContext, home: Option<&std::path::Path>) -> Result<owned_process::OwnedChild, String> {
     let mut command = tokio::process::Command::new(executable::program("codex", context.path.as_deref()));
     command.args(codex_server::ARGS).env("NO_COLOR", "1").env("TERM", "dumb");
+    if let Some(home) = home { command.env("CODEX_HOME", home); }
     if let Some(path) = &context.path {
         command.env("PATH", path);
     }
@@ -469,5 +509,20 @@ mod curator_preflight_tests {
             assert_eq!(curator_profile_ok(&config, Some(path)), chat_profile_ok(&config, Some(path)));
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod gateway_telemetry_tests {
+    use super::*;
+    #[test]
+    fn codex_usage_selects_the_dedicated_gateway_login() {
+        let data = std::env::temp_dir().join(format!("gateway-usage-home-{}", std::process::id()));
+        std::fs::create_dir_all(data.join("codex")).unwrap();
+        let context = BuildContext {data_dir:Some(data.clone()), ..Default::default()};
+        assert_eq!(gateway_codex_home(&context), None);
+        std::fs::write(data.join("codex/auth.json"), "{}").unwrap();
+        assert_eq!(gateway_codex_home(&context), Some(data.join("codex")));
+        std::fs::remove_dir_all(data).unwrap();
     }
 }

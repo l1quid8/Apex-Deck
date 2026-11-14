@@ -9,11 +9,13 @@ The gateway returns function requests; **only the client harness executes them**
 | API providers and saved OpenAI-compatible profiles | Original messages, tool definitions, call IDs, arguments, reasoning fields, finish reasons and errors pass through | Upstream SSE passes through |
 | `claude/*` | Fresh CLI invocation with `--json-schema`; native tools, MCP, hooks and slash commands disabled | Validated response is emitted as buffered SSE |
 | `codex/*` | Fresh CLI invocation with strict output schema and a guarded model-only transport | Validated response is emitted as buffered SSE |
-| Other subscription/custom CLI providers | HTTP 409 for function tools | Unsupported |
+| `grok/*`, `muse/*` | Private process home, native tools disabled, validated JSON envelope; native actions abort the turn | Buffered validated SSE |
+| `gemini/*` on Linux | Gateway-owned Antigravity login, fresh private process, strict native permissions and raw event validation | Buffered validated SSE |
+| Custom CLI providers | HTTP 409 for function tools | Unsupported |
 
 Existing normal subscription chat retains its adapter route. Existing bearer authentication, family scopes, daily caps and revocation apply to function requests. Subscription routes require subscription scope; API-only keys cannot use them.
 
-Only OpenAI-compatible `type: "function"` tools are supported. Function arguments must be JSON objects. Claude and Codex output is validated against each supplied parameter schema, the supplied names, `tool_choice` and `parallel_tool_calls`; invalid output returns HTTP 502 and never becomes executable calls. External schema references are unsupported. HTTP request body limit remains 4 MiB.
+Only OpenAI-compatible `type: "function"` tools are supported. Function arguments must be JSON objects. Subscription output is validated against each supplied parameter schema, the supplied names, `tool_choice` and `parallel_tool_calls`; invalid output returns HTTP 502 and never becomes executable calls. External schema references are unsupported. HTTP request body limit remains 4 MiB.
 
 ## Client loop
 
@@ -71,3 +73,13 @@ Final daemon unit rerun: 202 passed, 4 ignored. Clean adapter+daemon suites befo
 Clean export validation on 2026-11-06: full Rust suite 2,453 passed, 32 ignored; JavaScript 3,424 passed, 5 skipped (concurrency 4); TypeScript passed. An initial concurrent JavaScript run failed the phone composer detent timing test, which passed in isolation and in the complete rerun. The initial shared dirty checkout Rust run failed three unrelated host tests (hung save deadline, read dispatch timing, bulk-delete exact card); those unrelated edits are excluded from this merge, and the clean export passed all host tests.
 
 The logs are temporary local evidence, not release artifacts. No API keys or login tokens are recorded here. Local test logs alone do not establish production or Windows UI acceptance.
+
+## Linux Muse, Grok and Gemini
+
+Linux requires working bubblewrap. The private process sandbox mounts only system runtime paths, the selected executable (and Muse's selected sibling binary), and a private per-turn root. Personal rules, MCP configuration, sockets, plugins and workspaces are not copied. Native calls and approvals are refused even when a provider follows them with otherwise valid final JSON; the whole process group is stopped. Grok todo/task and Muse bookkeeping calls are checked before display translation can suppress them. The workspace jail must not replace an already-created gateway process boundary.
+
+Muse and Grok reuse the tool-free adapters and the gateway envelope validator. Complete JSON wire history is provided as data, retaining client call IDs and returned results. No native call is used to execute a client function. Invalid JSON, unknown functions, invalid arguments and ignored tool-choice requirements fail with HTTP 502.
+
+The old Google Gemini CLI is no longer supported for the tested subscription account. On Linux the gateway requires `APEX_GATEWAY_AGY_HOME` naming its dedicated Antigravity login home, and refuses the legacy plaintext fallback. The gateway starts a fresh `agy` process inside the private root; it never attaches the operator's existing agent service. Native permissions are strict, with file/shell/MCP/web deny rules. Input uses the CLI's stream-JSON stdin protocol. Output accepts only strict initialization, user/answer steps, the synthetic schema-only `finish` operation and a completed result. Other native events fail closed. Client function names/arguments remain JSON data validated by the same gateway schema.
+
+Only the authoritative VPS login owner refreshes credentials. Grok and Antigravity request processes receive fresh access credentials without refresh tokens. Muse staging supports schema 1 file logins and schema 2 file/Keychain documents, retaining only subscription access and excluding unrelated API/MCP secrets. Runtime setup, renewal timer, CLI versions and Windows acceptance belong in the deployment runbook. A login or catalog entry alone does not prove a working tool loop.

@@ -306,6 +306,28 @@ pub(super) fn claude_access(input: &[u8], now: u64) -> Result<Vec<u8>, apex_core
     serde_json::to_vec(&json!({"claudeAiOauth": kept})).map_err(|_| refresh())
 }
 
+/// A Claude config folder for one gateway request: Deck's own login without its
+/// renewal part, under the same freshness rule as a launch, and Deck's minimal
+/// settings. Claude there can neither renew nor empty the login every request
+/// shares. `Ok(false)`, with nothing made, when Deck has no Claude login.
+pub fn claude_request_config(data_dir: &Path, folder: &Path) -> Result<bool, JailError> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let bytes = match std::fs::read(login_home(data_dir, "claude").join(".claude/.credentials.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let staged = claude_access(&bytes, now()).map_err(|error| JailError::Login(error.to_string()))?;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(folder)?;
+    let files: [(&str, &[u8]); 3] = [(".credentials.json", &staged),
+        (".claude.json", br#"{"hasCompletedOnboarding":true,"autoUpdates":false}"#), ("settings.json", b"{}")];
+    for (name, contents) in files {
+        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(folder.join(name))?.write_all(contents)?;
+    }
+    Ok(true)
+}
+
 fn gemini_access(input: &[u8], now: u64) -> Result<Vec<u8>, apex_core::ParticipantError> {
     let refresh = || apex_core::ParticipantError::Failed("Gemini’s connection needs refreshing. Refresh its sign-in in Gemini, then retry. Apex Deck has not changed the login.".into());
     let doc: Value = serde_json::from_slice(input).map_err(|_| refresh())?;
@@ -445,6 +467,37 @@ mod tests {
     fn put(path: &Path, value: &Value) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, value.to_string()).unwrap();
+    }
+
+    /// The request can then neither renew nor empty the login every request shares.
+    #[test]
+    fn a_gateway_request_gets_decks_claude_login_without_its_renewal_part() {
+        let f = fixture();
+        let folder = f.root.join("request/claude");
+        assert!(!claude_request_config(&f.data, &folder).unwrap(), "no login, nothing made");
+        assert!(!folder.exists());
+        let mut login = claude_login("deck", soon());
+        login["mcpOAuth"] = json!({"server": {"accessToken": "mcp"}});
+        put(&login_home(&f.data, "claude").join(".claude/.credentials.json"), &login);
+        assert!(claude_request_config(&f.data, &folder).unwrap());
+        let staged = read_json(folder.join(".credentials.json"));
+        assert_eq!(staged["claudeAiOauth"]["accessToken"], "deck");
+        assert_eq!(staged["claudeAiOauth"]["subscriptionType"], "max");
+        assert!(staged["claudeAiOauth"].get("refreshToken").is_none() && staged.get("mcpOAuth").is_none(), "{staged}");
+        assert_eq!(std::fs::metadata(folder.join(".credentials.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(read_json(folder.join(".claude.json"))["hasCompletedOnboarding"], true);
+        assert_eq!(read_json(folder.join("settings.json")), json!({}));
+    }
+
+    #[test]
+    fn a_stale_claude_login_is_refused_for_a_gateway_request() {
+        let f = fixture();
+        let folder = f.root.join("request/claude");
+        put(&login_home(&f.data, "claude").join(".claude/.credentials.json"), &claude_login("deck", (now() + 600) * 1000));
+        let error = claude_request_config(&f.data, &folder).unwrap_err().to_string();
+        assert!(error.contains("needs refreshing"), "{error}");
+        assert!(!folder.join(".credentials.json").exists());
     }
 
     #[test]

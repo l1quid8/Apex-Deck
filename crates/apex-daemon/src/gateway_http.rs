@@ -28,8 +28,10 @@ use crate::gateway_keys::{AuthError, GatewayKey, GatewayKeys, KeyScope};
 use crate::identity;
 
 mod codex;
+mod gemini;
 mod tools;
 mod responses;
+mod telemetry;
 mod emulation;
 #[cfg(test)]
 mod tool_tests;
@@ -584,6 +586,8 @@ pub struct OpenAiModelEntry {
     pub object: &'static str,
     pub created: u64,
     pub owned_by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
 }
 
 /// Installed/configured only; no successful upstream completion is implied.
@@ -595,7 +599,7 @@ pub fn provider_readiness(data: &Path) -> Value {
         let isolation = gateway_isolation_error(&backend);
         let installed = if tool == AgentTool::Gemini {
             let path = apex_host::agents::login_path().unwrap_or_default();
-            std::env::split_paths(&path).any(|p| p.join("gemini").is_file())
+            std::env::split_paths(&path).any(|p| p.join("gemini").is_file() || (gemini::configured(&backend) && p.join("agy").is_file()))
         } else { agents.iter().any(|a| a.key == key && a.found) };
         rows.push(json!({ "id": key, "name": key, "kind": "Subscription CLI", "available": installed && isolation.is_none(),
             "detail": isolation.unwrap_or_else(|| if installed { "Installed; login and completion not checked.".into() } else { "Not installed.".into() }) }));
@@ -617,13 +621,14 @@ pub fn provider_readiness(data: &Path) -> Value {
 pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) -> Vec<OpenAiModelEntry> {
     let mut entries: Vec<OpenAiModelEntry> = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut push = |id: String, owned_by: &str| {
+    let mut push = |id: String, owned_by: &str, context_length: Option<u64>| {
         if seen.insert(id.clone()) {
             entries.push(OpenAiModelEntry {
                 id,
                 object: "model",
                 created: 0,
                 owned_by: owned_by.to_string(),
+                context_length,
             });
         }
     };
@@ -651,13 +656,13 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
             // Antigravity's already-running service with its own MCP config.
             if tool == AgentTool::Gemini {
                 let path = state.login_path.clone().unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
-                if !std::env::split_paths(&path).any(|p| p.join("gemini").is_file()) { continue; }
+                if !std::env::split_paths(&path).any(|p| p.join("gemini").is_file() || (gemini::configured(&Backend::Agent { tool, model: None }) && p.join("agy").is_file())) { continue; }
             }
             let reported = installed_models(tool);
             if is_found(detect_key) || !reported.is_empty() {
                 let owner = tool_prefix(tool);
                 for id in merged_agent_model_ids(tool, &reported) {
-                    push(id, owner);
+                    push(id, owner, None);
                 }
             }
         }
@@ -669,17 +674,19 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
             if apex_adapters::keys::lookup(provider.key_env).is_some() {
                 if let Ok(models) = list_models(provider.base_url, Some(provider.key_env)).await {
                     for m in models {
-                        push(format!("{}/{}", provider.prefix, m.id), provider.prefix);
+                        push(format!("{}/{}", provider.prefix, m.id), provider.prefix, m.context_tokens);
                     }
                 }
             }
         }
         for profile in load_saved_profiles(&state.data_dir) {
-            if let Backend::OpenAiCompatible { model, .. } = &profile.backend {
+            if let Backend::OpenAiCompatible { base_url, api_key_env, model } = &profile.backend {
                 if !model.trim().is_empty() {
+                    let context = apex_adapters::api_model(base_url, api_key_env.as_deref(), model).await.and_then(|m|m.context_tokens);
                     push(
                         format!("{}/{}", profile.id.as_str(), model.trim()),
                         profile.id.as_str(),
+                        context,
                     );
                 }
             }
@@ -691,11 +698,11 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
         for profile in load_saved_profiles(&state.data_dir) {
             match &profile.backend {
                 Backend::Cli { .. } if gateway_isolation_error(&profile.backend).is_none() => {
-                    push(format!("cli/{}", profile.id.as_str()), "cli");
+                    push(format!("cli/{}", profile.id.as_str()), "cli", None);
                 }
                 Backend::Cli { .. } => {}
                 Backend::Scripted { .. } => {
-                    push(format!("scripted/{}", profile.id.as_str()), "scripted");
+                    push(format!("scripted/{}", profile.id.as_str()), "scripted", None);
                 }
                 _ => {}
             }
@@ -934,10 +941,13 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayHttpState>) 
             });
             write_json_response(&mut stream, 200, &body).await;
         }
+        ("POST", "/v1/usage" | "/usage") => {
+            telemetry::handle(&mut stream, &state, &authed_key, &req.body).await;
+        }
         ("POST", "/v1/chat/completions" | "/chat/completions") => {
             handle_chat_completions(&mut stream, &state, &authed_key, &req.body).await;
         }
-        (method, "/v1/models" | "/models" | "/v1/chat/completions" | "/chat/completions") => {
+        (method, "/v1/models" | "/models" | "/v1/usage" | "/usage" | "/v1/chat/completions" | "/chat/completions") => {
             write_openai_error(
                 &mut stream,
                 405,
@@ -967,8 +977,10 @@ pub(crate) fn gateway_isolation_error(backend: &Backend) -> Option<String> {
         Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }
         | Backend::OpenAiCompatible { .. }
         | Backend::Scripted { .. } => None,
-        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. }
-        | Backend::Cli { .. } if cfg!(target_os = "macos") => None,
+        Backend::Agent { tool: AgentTool::Gemini, .. } if cfg!(target_os="linux") && !gemini::configured(backend) =>
+            Some("Linux Gemini gateway support requires the isolated Antigravity route and its gateway-owned login (APEX_GATEWAY_AGY_HOME).".into()),
+        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. } => apex_adapters::isolation_available(None).err(),
+        Backend::Cli { .. } if cfg!(target_os = "macos") => None,
         _ => Some("This backend has no verified MCP isolation and is unavailable to gateway clients. Private MCP tools are never shared.".into()),
     }
 }
@@ -1041,7 +1053,7 @@ async fn handle_chat_completions(
     };
 
     if tools::has_tools(&wire) && !matches!(resolved.config.backend,
-        Backend::OpenAiCompatible { .. } | Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+        Backend::OpenAiCompatible { .. } | Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex | AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. }) {
         write_openai_error(stream,409,"invalid_request_error","This provider has no verified client-only tool mode").await;
         return;
     }
@@ -1060,7 +1072,7 @@ async fn handle_chat_completions(
         return;
     }
 
-    if tools::has_tools(&wire) {
+    if tools::has_tools(&wire) || gemini::configured(&resolved.config.backend) {
         emulation::respond(stream, state, &reserved_key, &resolved, wire).await;
         return;
     }
@@ -1091,10 +1103,11 @@ async fn handle_chat_completions(
 
     // Ignore legacy allow_mcp fields, including on already-issued keys.
     let participant: Arc<dyn apex_core::Participant> = match &resolved.config.backend {
+        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. } => Arc::new(
+            CliParticipant::new(resolved.config.clone()).with_context(&context).with_tools_disabled(),
+        ),
         Backend::Agent { .. } | Backend::Cli { .. } => Arc::new(
-            CliParticipant::new(resolved.config.clone())
-                .with_context(&context)
-                .with_mcp_disabled(),
+            CliParticipant::new(resolved.config.clone()).with_context(&context).with_mcp_disabled(),
         ),
         _ => build_without_tools(resolved.config.clone(), &context),
     };
@@ -1121,9 +1134,11 @@ async fn handle_chat_completions(
     // never reach the branch that ends the request.
     let mut revoke_open = true;
 
+    let context_use = Arc::new(std::sync::Mutex::new(None::<apex_core::ContextUse>));
     if !parsed.stream {
         let approver = GatewayApprover;
-        let run_fut = participant.respond_with_approvals(turn_request, &|_| {}, &approver);
+        let progress = |update: Progress<'_>| { if let Progress::Context(value) = update { *context_use.lock().unwrap() = Some(value); } };
+        let run_fut = participant.respond_with_approvals(turn_request, &progress, &approver);
         tokio::pin!(run_fut);
 
         let result: Result<Reply, Result<ParticipantError, &'static str>> = loop {
@@ -1151,8 +1166,8 @@ async fn handle_chat_completions(
                 if let Some(cost) = reply.cost_micros {
                     state.keys.record_spend(&key_id, cost);
                 }
-                let input_tokens = reply.input_tokens.unwrap_or(0);
-                let output_tokens = reply.output_tokens.unwrap_or(0);
+                let mut usage = telemetry::reply_usage(&reply);
+                usage["context"] = json!(*context_use.lock().unwrap());
                 let body = json!({
                     "id": completion_id,
                     "object": "chat.completion",
@@ -1166,11 +1181,7 @@ async fn handle_chat_completions(
                         },
                         "finish_reason": "stop",
                     }],
-                    "usage": {
-                        "prompt_tokens": input_tokens,
-                        "completion_tokens": output_tokens,
-                        "total_tokens": input_tokens.saturating_add(output_tokens),
-                    }
+                    "usage": usage
                 });
                 write_json_response(stream, 200, &body).await;
             }
@@ -1217,12 +1228,14 @@ async fn handle_chat_completions(
 
     let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<String>();
     let participant_run = Arc::clone(&participant);
+    let run_context = context_use.clone();
     let mut handle = tokio::spawn(async move {
         let approver = GatewayApprover;
         participant_run
             .respond_with_approvals(
                 turn_request,
                 &|update| {
+                    if let Progress::Context(value) = update { *run_context.lock().unwrap() = Some(value); }
                     if let Progress::Text(text) = update {
                         if !text.is_empty() {
                             let _ = delta_tx.send(text.to_string());
@@ -1340,8 +1353,8 @@ async fn handle_chat_completions(
                 });
                 let _ = write_sse_data(stream, &chunk.to_string()).await;
             }
-            let input_tokens = reply.input_tokens.unwrap_or(0);
-            let output_tokens = reply.output_tokens.unwrap_or(0);
+            let mut usage = telemetry::reply_usage(&reply);
+                usage["context"] = json!(*context_use.lock().unwrap());
             let stop_chunk = json!({
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -1352,11 +1365,7 @@ async fn handle_chat_completions(
                     "delta": {},
                     "finish_reason": "stop",
                 }],
-                "usage": {
-                    "prompt_tokens": input_tokens,
-                    "completion_tokens": output_tokens,
-                    "total_tokens": input_tokens.saturating_add(output_tokens),
-                }
+                "usage": usage
             });
             let _ = write_sse_data(stream, &stop_chunk.to_string()).await;
             let _ = write_sse_data(stream, "[DONE]").await;
@@ -1634,9 +1643,11 @@ esac
 
     #[test]
     fn gateway_requires_platform_isolation_for_muse_and_other_clis() {
-        assert_eq!(gateway_isolation_error(&agent(AgentTool::Muse)).is_none(), cfg!(target_os = "macos"));
+        assert_eq!(gateway_isolation_error(&agent(AgentTool::Muse)), apex_adapters::isolation_available(None).err());
         for tool in [AgentTool::Gemini, AgentTool::Grok] {
-            assert_eq!(gateway_isolation_error(&agent(tool)).is_none(), cfg!(target_os = "macos"));
+            if tool==AgentTool::Gemini && cfg!(target_os="linux") && !gemini::configured(&agent(tool)) {
+                assert!(gateway_isolation_error(&agent(tool)).is_some());
+            } else { assert_eq!(gateway_isolation_error(&agent(tool)), apex_adapters::isolation_available(None).err()); }
         }
         for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
             assert!(gateway_isolation_error(&agent(tool)).is_none());
@@ -1857,7 +1868,7 @@ esac
         assert!(streamed.done, "the stream must end with data: [DONE]");
         assert_eq!(streamed.finish_reason.as_deref(), Some("stop"));
         assert!(streamed.saw_role_delta);
-        assert_eq!(streamed.usage.unwrap()["total_tokens"], 0);
+        assert!(streamed.usage.unwrap()["total_tokens"].is_null());
         assert_eq!(keys.list()[0].turns_today, 1);
 
         // 5. Next turn hits the daily cap -> 429
