@@ -13,51 +13,74 @@ test('Threads bot replies include Read aloud in the message action row', () => {
   assert.match(actions[1], /message\.speaker\.kind === "bot" && <ReadAloudAction key="read-aloud" text=\{message\.text\} \/>/);
 });
 
-test('the shared action starts speech and its second click stops playback', async () => {
+function actionFixture(readResponseAloud) {
   const source = readFileSync(new URL('../src/ReadAloudAction.tsx', import.meta.url), 'utf8');
   const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-  const speechSource = readFileSync(new URL('../src/personalSpeech.ts', import.meta.url), 'utf8');
-  const speechCompiled = transform(speechSource.replace(/^export /gm, ''), { transforms: ['typescript'] }).code;
-  const { getSpeech } = new Function(`${speechCompiled}\nreturn { getSpeech };`)();
-
-  let speaking = false;
-  let speechRef;
+  const states = [], refs = [], cleanups = [];
+  let stateIndex = 0, refIndex = 0, mounted = false;
   const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) };
-  const action = new Function('React', 'useEffect', 'useRef', 'useState', 'getSpeech', `${compiled}\nreturn ReadAloudAction;`)(
+  const action = new Function('React', 'useEffect', 'useRef', 'useState', 'readResponseAloud', `${compiled}\nreturn ReadAloudAction;`)(
     React,
-    () => {},
-    initial => (speechRef ??= { current: initial }),
-    () => [speaking, value => { speaking = typeof value === 'function' ? value(speaking) : value; }],
-    getSpeech,
+    effect => { if (!mounted) cleanups.push(effect()); },
+    initial => (refs[refIndex++] ??= { current: initial }),
+    initial => { const i = stateIndex++; if (!(i in states)) states[i] = initial; return [states[i], value => { states[i] = value; }]; },
+    readResponseAloud,
   );
-  const spoken = [];
-  let canceled = 0;
-  const previousSynth = globalThis.speechSynthesis;
-  const previousUtterance = globalThis.SpeechSynthesisUtterance;
-  class Utterance { constructor(text) { this.text = text; } }
-  globalThis.SpeechSynthesisUtterance = Utterance;
-  globalThis.speechSynthesis = { speak: utterance => spoken.push(utterance), cancel: () => { canceled++; }, getVoices: () => [{ name: 'Ava (Enhanced)', lang: 'en-US' }] };
+  return {
+    render(text = 'Read this from the thread.') { stateIndex = refIndex = 0; const tree = action({ text }); mounted = true; return tree; },
+    unmount() { cleanups.forEach(fn => fn?.()); },
+  };
+}
+const button = tree => tree.type === 'button' ? tree : tree.children.find(child => child?.type === 'button');
+const tick = () => new Promise(resolve => setImmediate(resolve));
 
-  try {
-    const idle = action({ text: 'Read this from the thread.' });
-    assert.equal(idle.props['aria-label'], 'Read aloud');
-    idle.props.onClick();
-    assert.equal(spoken.length, 1);
-    assert.equal(spoken[0].text, 'Read this from the thread.');
-    assert.equal(spoken[0].voice.name, 'Ava (Enhanced)');
+test('the shared action reads the response and stops its own pending playback', async () => {
+  let complete, stopped = 0;
+  const texts = [];
+  const f = actionFixture(text => {
+    texts.push(text);
+    return { done: new Promise(resolve => { complete = resolve; }), stop() { stopped++; complete(); } };
+  });
+  button(f.render()).props.onClick();
+  assert.deepEqual(texts, ['Read this from the thread.']);
+  assert.equal(button(f.render()).props['aria-pressed'], true);
+  button(f.render()).props.onClick();
+  await tick();
+  assert.equal(stopped, 1);
+  assert.equal(button(f.render()).props['aria-pressed'], false);
+  assert.equal(f.render('  '), null);
+});
 
-    const active = action({ text: 'Read this from the thread.' });
-    assert.equal(active.props['aria-label'], 'Stop reading aloud');
-    assert.equal(active.props['aria-pressed'], true);
-    active.props.onClick();
-    await Promise.resolve();
-    assert.equal(canceled, 1);
-    assert.equal(speaking, false);
-    assert.equal(action({ text: '  ' }), null);
-  } finally {
-    if (previousSynth === undefined) delete globalThis.speechSynthesis;
-    else globalThis.speechSynthesis = previousSynth;
-    if (previousUtterance === undefined) delete globalThis.SpeechSynthesisUtterance;
-    else globalThis.SpeechSynthesisUtterance = previousUtterance;
-  }
+test('Read aloud displays synthesis and playback errors and permits retry', async () => {
+  const f = actionFixture(() => ({ done: Promise.reject(Error('Speakers unavailable')), stop() {} }));
+  button(f.render()).props.onClick();
+  await tick();
+  const tree = f.render();
+  assert.equal(button(tree).props['aria-pressed'], false);
+  const alert = tree.children.find(child => child?.props?.role === 'alert');
+  assert.ok(alert, 'failure is visible to the user');
+  assert.ok(alert.children.includes('Speakers unavailable'));
+  button(tree).props.onClick();
+  await tick();
+  f.unmount();
+});
+
+test('unmount stops loading and an old completion cannot reset a new playback', async () => {
+  const jobs = [];
+  const f = actionFixture(() => {
+    let complete;
+    const job = { done: new Promise(resolve => { complete = resolve; }), stopped: false, stop() { job.stopped = true; }, complete: () => complete() };
+    jobs.push(job);
+    return job;
+  });
+  button(f.render()).props.onClick();
+  button(f.render()).props.onClick();
+  button(f.render()).props.onClick();
+  jobs[0].complete();
+  await tick();
+  assert.equal(button(f.render()).props['aria-pressed'], true);
+  f.unmount();
+  assert.equal(jobs[1].stopped, true);
+  jobs[1].complete();
+  await tick();
 });

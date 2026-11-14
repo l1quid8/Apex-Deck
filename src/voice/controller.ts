@@ -12,6 +12,7 @@ import type { VoiceAudio } from "./audio.ts";
 import type { LocalVoiceClient } from "./localClient.ts";
 import { resolveCallCommand } from "./routing.ts";
 import { SpeechText } from "./speechText.ts";
+import { DEFAULT_VOICE } from "./settings.ts";
 import { AGENT_FAILED_SPEECH, createCallFlow } from "./callFlow.ts";
 export interface VoiceDependencies<R = VoiceRuntime> {
   runtime: {
@@ -535,7 +536,7 @@ export function createVoiceController<R = VoiceRuntime>(
   // connection fits, so a call stops the sample before it takes the helper.
   let sampling: { stop(): Promise<void> } | undefined;
   const stopSample = () => sampling?.stop() ?? Promise.resolve();
-  async function sample(voice: string, onPlay?: () => void): Promise<void> {
+  async function sample(voice: string, onPlay?: () => void, segments = [SAMPLE_TEXT]): Promise<void> {
     if (state.status !== "off" && state.status !== "error") {
       throw Error("Use the call’s preview button while a call is active.");
     }
@@ -556,13 +557,15 @@ export function createVoiceController<R = VoiceRuntime>(
       (released ??= (async () => {
         stopped = true;
         clearTimeout(timer);
-        helperClient?.close("sample done");
-        player?.stop();
         try {
+          helperClient?.close("sample done");
+          player?.stop();
           // A stop mid-launch waits for it, so a call never inherits a helper this sample then lets go of.
           await previous?.stop();
           const runtime = await launching?.catch(() => undefined);
           if (runtime) await deps.runtime.stop(runtime);
+        } catch (cleanupError) {
+          e ??= cleanupError instanceof Error ? cleanupError : Error(String(cleanupError));
         } finally {
           if (sampling === me) sampling = undefined;
           settle(e);
@@ -571,10 +574,19 @@ export function createVoiceController<R = VoiceRuntime>(
     const me = { stop: () => finish() };
     sampling = me;
     const id = "sample-" + crypto.randomUUID();
-    const pcm: Int16Array[] = [];
+    let pcm: Int16Array[] = [];
+    let currentSegment = 0;
+    let receiving = false;
     const send = (m: Record<string, unknown>) =>
       helperClient?.send({ ...m, callId: id, generation: 0 });
     const fail = (e: Error) => void finish(e);
+    const speakNext = () => {
+      pcm = [];
+      receiving = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => fail(Error("Local speech took too long")), 30000);
+      send({ type: "speak", requestId: "sample", segmentId: currentSegment + 1, text: segments[currentSegment], voice });
+    };
     try {
       await previous?.stop();
       if (stopped) return finished;
@@ -593,24 +605,34 @@ export function createVoiceController<R = VoiceRuntime>(
       helperClient = await deps.connect(
         runtime,
         (e) => {
-          if (stopped || e.callId !== id) return;
+          if (stopped || e.callId !== id || e.generation !== 0) return;
           if (e.type === "ready") {
             if (!e.voices?.includes(voice)) fail(Error("That voice isn't installed"));
-            else
-              send({ type: "speak", requestId: "sample", segmentId: 1, text: SAMPLE_TEXT, voice });
-          } else if (e.type === "audioEnd") {
-            send({ type: "end" });
-            helperClient?.close("sample done");
-            helperClient = undefined;
+            else speakNext();
+          } else if (e.type === "audioEnd" && receiving && e.segmentId === currentSegment + 1) {
+            receiving = false;
+            clearTimeout(timer);
             const all = new Int16Array(pcm.reduce((n, p) => n + p.length, 0));
+            if (!all.length) { fail(Error("Local speech returned no audio")); return; }
             pcm.reduce((at, p) => (all.set(p, at), at + p.length), 0);
+            const last = ++currentSegment === segments.length;
+            if (last) {
+              send({ type: "end" });
+              helperClient?.close("sample done");
+              helperClient = undefined;
+            }
             player = play(all, 24000);
             onPlay?.();
-            player.done.then(() => finish(), (err) => fail(err instanceof Error ? err : Error(String(err))));
-          } else if (e.type === "error") fail(Error(e.message ?? "Local voice failed"));
+            timer = setTimeout(() => fail(Error("Speech playback took too long")), all.length / 24 + 10000);
+            void player.done.then(() => {
+              if (stopped) return;
+              if (last) return finish();
+              speakNext();
+            }).catch((err) => fail(err instanceof Error ? err : Error(String(err))));
+          } else if (e.type === "error" || e.type === "speechDropped") fail(Error(e.message ?? "Local voice failed"));
         },
-        (chunk) => {
-          if (stopped) return;
+        (chunk, gen) => {
+          if (stopped || !receiving || gen !== 0) return;
           pcm.push(chunk);
           send({ type: "playbackProgress", bytes: chunk.byteLength });
         },
@@ -733,6 +755,12 @@ export function createVoiceController<R = VoiceRuntime>(
     preview,
     sample,
     stopSample,
+    readAloud(text: string, voice = DEFAULT_VOICE) {
+      if (!text.trim()) return Promise.resolve();
+      const segments = new SpeechText().push(text, true)
+        .flatMap(part => part.match(/[\s\S]{1,2000}/gu) ?? []);
+      return sample(voice, undefined, segments);
+    },
   };
 }
 

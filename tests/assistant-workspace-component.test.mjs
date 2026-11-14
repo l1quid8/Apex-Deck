@@ -415,7 +415,7 @@ test('a clean kept-mounted settings draft follows newer saved runtime while a di
 
 test('unset shared voice preferences still expose real call defaults and save only explicit edits',async()=>{
  const saved=[];const h=mount({onVoiceSettings:value=>saved.push(value)});const tree=await h.ready();
- assert.ok(input(tree,'Voice for calls'));assert.equal(input(tree,'Voice for calls').props.value,'am_michael');
+ assert.ok(input(tree,'Voice for calls'));assert.equal(input(tree,'Voice for calls').props.value,'am_adam');
  assert.equal(input(tree,'Pause before reply').props.value,700);assert.equal(input(tree,'Call controls').props.value,'pill');
  await submit(h);assert.deepEqual(saved,[]);
  input(h.render(),'Call controls').props.onChange({target:{value:'bar'}});await submit(h);

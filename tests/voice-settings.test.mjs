@@ -42,10 +42,10 @@ test("sanitize limits, ignore prototype keys and malformed values", () => {
   assert.equal("voice" in s.preferences.y, false, "a bad saved voice falls through instead of pinning Michael");
   assert.equal(s.defaultVoice, undefined);
 });
-test("voice order: this chat, then the agent's form, then Settings, then Michael", () => {
+test("voice order: this chat, then the agent's form, then Settings, then Adam", () => {
   const chat = voicePreferenceKey("h", "null", "room", "null");
   let s = readVoiceSettings({});
-  assert.equal(voiceFor(s, "h", "null", "room", "null", null), "am_michael");
+  assert.equal(voiceFor(s, "h", "null", "room", "null", null), "am_adam");
   s = readVoiceSettings({ defaultVoice: "af_heart" });
   assert.equal(voiceFor(s, "h", "null", "room", "null", undefined), "af_heart");
   assert.equal(voiceFor(s, "h", "null", "room", "null", "bm_george"), "bm_george");
