@@ -1,6 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { abandonPromote, botPatch, chatKey, deliveryId, readOpenChat, restoredChat, saveOpenChat, sendBlock, sendPromote, workThreadPlace, DESKTOP_CHAT_DELIVERY_KEY } from '../src/desktopChats.ts';
+import { discoverWorkspaces, reconcileWorkPanes } from '../src/workThreadMetadata.ts';
+
+test('CLI Work discovers projects on their host without reopening removed projects', () => {
+  const hidden = {id:'hidden',path:'/hidden',name:'Hidden',hidden:true};
+  const catalog = listed(emptyCatalog(), 'local', [
+    {id:'cli',kind:'work',cwd:'/repo',title:'Plans'},
+    {id:'other',kind:'work',cwd:'/repo',title:'Other'},
+    {id:'hidden-thread',kind:'work',cwd:'/hidden'},
+    {id:'trash',kind:'work',cwd:'/trash',trashedAt:1},
+  ]);
+  const both = listed(catalog, 'vps', [{id:'remote',kind:'work',cwd:'/repo'}]);
+  let n = 0;
+  const projects = discoverWorkspaces([hidden], both, () => true, () => `ws-${++n}`, path => path.split('/').pop());
+  assert.equal(projects.length, 3);
+  assert.equal(projects[0], hidden);
+  assert.equal(projects[0].hidden, true);
+  assert.equal(projects[1].path, '/repo');
+  assert.equal(projects[2].hostId, 'vps');
+  const panes = reconcileWorkPanes([], projects, both, emptyCatalog(), () => true);
+  assert.equal(panes.find(p => p.id === 'cli').title, 'Plans');
+  assert.equal(panes.find(p => p.id === 'cli').closed, true);
+  assert.equal(discoverWorkspaces(projects, both, () => true, () => 'unused', () => ''), projects);
+  assert.deepEqual(discoverWorkspaces([], both, () => false, () => 'unused', () => ''), []);
+});
 import { DESKTOP_PROMOTES_KEY, PROMOTES_KEY, promoteHolds, promoteKey, readPromoteTickets, settleForPromote } from '../src/chatPromote.ts';
 import { chatRows, emptyCatalog, findRoom, parseChatList, withListedRooms } from '../src/chatCatalog.ts';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';

@@ -9,6 +9,8 @@ import {PersonalAssistantsCollection} from '../src/usePersonalAssistants.ts';
 import {closeTrashedPanes,withoutTrashedPanes} from '../src/threadTrash.ts';
 import {emptyCatalog,parseChatList,withListedRooms,findRoom} from '../src/chatCatalog.ts';
 import {workThreadPlace,reconcileWorkPanes} from '../src/desktopChats.ts';
+import {discoverWorkspaces} from '../src/workThreadMetadata.ts';
+import {pathParts,pathBase,isWindows} from '../src/paths.ts';
 import {assistantIdentityKey, assistantAppearance} from '../src/assistantIdentity.ts';
 import {assistantSidebarPanes, assistantThreadKey} from '../src/assistantSidebar.ts';
 import {rosterMessage} from '../src/assistantWorkspaceModel.ts';
@@ -164,7 +166,7 @@ function appHarness(options = {}) {
   const assistantCollection={archivedAssistants:[],restoreAssistant:async()=>{},assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false,paused:false,personalTasks:[],projects:options.companion?personalRecord.projects:[]}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
   const chatCollection={online:()=>true,catalog:emptyCatalog(),rows:[],archived:[],machines:[],rooms:{},problems:{},machineName:id=>id,backendOf:backendForHost};
   const defaults = {
-    closeTrashedPanes,withoutTrashedPanes,findRoom,workThreadPlace,reconcileWorkPanes,
+    closeTrashedPanes,withoutTrashedPanes,findRoom,workThreadPlace,reconcileWorkPanes,discoverWorkspaces,pathParts,pathBase,isWindows,
     ...companionContext,
     assistantVoiceKeeperOwner,voiceController,
     useAssistantFloat:args=>{floatOptions=args;floatControls=options.companion?realUseAssistantFloat(args):{open:async()=>{}};return floatControls;},
@@ -275,6 +277,20 @@ function find(node, predicate) {
   return null;
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test('desktop catalog discovers a CLI Work project and lists its closed thread without opening it', async () => {
+  const h = appHarness();
+  h.render(); await tick(); h.render();
+  h.chatCollection.catalog = withListedRooms(emptyCatalog(), 'host-a', 'Mac', parseChatList('host-a', {rooms:[{id:'cli-plans',kind:'work',cwd:'/new-cli-folder',title:'Plans',titleExplicit:true,metadataRevision:1}]}), 1);
+  h.render();
+  const rail = child(h.render(), 'ProjectSidebar').props;
+  const work = rail.panes.find(p => p.id === 'cli-plans');
+  assert.ok(work, 'the CLI thread reaches the actual desktop sidebar');
+  assert.equal(work.title, 'Plans');
+  assert.equal(work.closed, true);
+  assert.ok(rail.workspaces.some(w => w.id === work.workspaceId && w.path === '/new-cli-folder' && w.hostId === 'host-a'));
+  h.unmount();
+});
 const child = (tree, name) => find(tree, node => typeof node.type === 'function' && (node.type.displayName ?? node.type.name) === name);
 // Global attention lives in the section tabs' hover lists; a monitor blocker is
 // one Threads row keyed by its workspace.

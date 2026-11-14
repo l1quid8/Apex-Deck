@@ -2668,11 +2668,13 @@ export function PhoneApp() {
     onArchived={() => setChatsArchived((now) => !now)} /> : null;
   const fromChats = Object.entries(chatView.hosts).map(([hostId, host]) => ({
     hostId, name: linkOf(hostId)?.name ?? host.name,
-    rows: promotedWork(chatView, hostId).map((row) => (
+    rows: promotedWork(chatView, hostId)
+      .filter(row => !panes.some(pane => pane.id === row.id && sessionHost(pane) === hostId))
+      .map((row) => (
       <button key={row.id} type="button" className="ph-tl-thread" aria-haspopup="menu" onClick={() => openChatRow(row)}
         onContextMenu={(event) => { event.preventDefault(); setChatSheet({ kind: "work-menu", hostId: row.hostId, id: row.id }); }}>
         <span className="ph-tl-l1"><span className="ph-tl-name">{row.title}</span><span className="ph-tl-age">{row.updatedAt ? ageWords(Date.now() - row.updatedAt) : "New"}</span></span>
-        <span className="ph-tl-l2"><span className="ph-tl-where">From a chat · {row.folderName ?? row.cwd}</span></span>
+        <span className="ph-tl-l2"><span className="ph-tl-where">{row.promotedFrom ? "From a chat · " : "Work · "}{row.folderName ?? row.cwd}</span></span>
       </button>
     )),
   })).filter((item) => item.rows.length > 0);

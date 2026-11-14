@@ -292,6 +292,20 @@ async fn controller_commands_reach_shared_daemon_and_require_real_decisions() {
     let picks: Vec<_> = picker.choices.iter().map(|c| c.action.clone()).collect();
     assert!(matches!(&picks[0], Action::Submit(t) if t == "/new work"));
     assert!(matches!(&picks[1], Action::Submit(t) if t == "/new chat"));
+    let named = dispatch("/new Plans", &empty).await.unwrap();
+    assert!(named.open.is_none(), "a typed name must not skip the Work/Chat choice");
+    let named: Vec<_> = named.menu.expect("/new <name> asks Work or Chat").choices.iter().map(|c| c.action.clone()).collect();
+    assert!(matches!(&named[0], Action::Submit(t) if t == "/new work . Plans"), "a typed name reaches the Work thread too");
+    assert!(matches!(&named[1], Action::Submit(t) if t == "/new chat Plans"));
+    // /rename works on Work threads, and the new name reaches every client's thread list.
+    let here = std::env::current_dir().unwrap();
+    client.request("room_create",json!({"id":"cli-work","participants":[],"options":{"policy":"mention","max_bot_hops":0},"cwd":here})).await.unwrap();
+    let folder = here.file_name().unwrap().to_str().unwrap().to_string();
+    let listed = |rows: Vec<apex_cli::state::Thread>| rows.into_iter().find(|r| r.id == "cli-work").map(|r| r.title);
+    assert_eq!(listed(apex_cli::controller::threads(&observer).await.unwrap()), Some(folder));
+    let work = context(&fixture, &client, Some("cli-work".into())).await;
+    dispatch("/rename Release prep", &work).await.unwrap();
+    assert_eq!(listed(apex_cli::controller::threads(&observer).await.unwrap()), Some("Release prep".into()));
     let created = dispatch("/new chat", &empty).await.unwrap();
     let room = created.open.unwrap();
     let mut c = context(&fixture, &client, Some(room.clone())).await;

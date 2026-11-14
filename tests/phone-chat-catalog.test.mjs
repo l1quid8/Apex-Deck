@@ -52,7 +52,7 @@ test('the merged list survives a restart, so chats show with the machine off', (
   assert.deepEqual(readCatalog(null), emptyCatalog());
 });
 
-test('promoted Work excludes ordinary thread files from both live and cached host lists', () => {
+test('Work includes CLI threads in both live and cached host lists', () => {
   const rooms = [
     room('promoted', { kind: 'work', promotedFrom: 'source', updatedAt: 20 }),
     room('ordinary', { kind: 'work', cwd: '/repo', updatedAt: 30 }),
@@ -63,7 +63,7 @@ test('promoted Work excludes ordinary thread files from both live and cached hos
   ];
   const catalog = withHostRooms(emptyCatalog(), 'mac', 'Mac', parseChatList('mac', { rooms }));
   for (const listed of [catalog, readCatalog(JSON.stringify(catalog))]) {
-    assert.deepEqual(promotedWork(listed, 'mac').map((row) => row.id), ['promoted']);
+    assert.deepEqual(promotedWork(listed, 'mac').map((row) => row.id), ['ordinary', 'promoted']);
     assert.equal(findRoom(listed, 'mac', 'ordinary')?.cwd, '/repo');
   }
 });

@@ -1,6 +1,21 @@
 import type { Pane, Workspace } from './types';
 import type { ChatCatalog } from './chatCatalog';
 import { workspaceHost } from './hostSession.ts';
+import { addFolders } from './workspaces.ts';
+
+/** Discover host-owned projects without undoing an explicit Remove. */
+export function discoverWorkspaces(workspaces: Workspace[], catalog: ChatCatalog, online: (host: string) => boolean, makeId: () => string, nameOf: (path: string) => string): Workspace[] {
+  let next = workspaces;
+  for (const [host, list] of Object.entries(catalog.hosts)) {
+    if (!online(host) || list.listedAt === undefined) continue;
+    for (const row of list.rooms) {
+      if (row.kind !== 'work' || !row.cwd || row.trashedAt || row.archived) continue;
+      if (next.some(w => workspaceHost(w) === host && w.path === row.cwd)) continue;
+      next = addFolders(next, [row.cwd], makeId, path => row.folderName ?? nameOf(path), host).list;
+    }
+  }
+  return next;
+}
 
 /** Reconcile only host-confirmed Work metadata with its owning desktop pane. */
 export function reconcileWorkPanes(panes: Pane[], workspaces: readonly Workspace[], catalog: ChatCatalog, previous: ChatCatalog, online: (host: string) => boolean): Pane[] {
@@ -24,7 +39,7 @@ export function reconcileWorkPanes(panes: Pane[], workspaces: readonly Workspace
   for(const [host,list]of Object.entries(catalog.hosts)){
     if(!online(host)||list.listedAt===undefined)continue;
     for(const row of list.rooms){
-      if(row.kind!=='work'||!row.cwd||row.trashedAt||row.metadataRevision===undefined||next.some(p=>p.id===row.id))continue;
+      if(row.kind!=='work'||!row.cwd||row.trashedAt||next.some(p=>p.id===row.id))continue;
       const workspace=workspaces.find(w=>workspaceHost(w)===host&&w.path===row.cwd);
       if(!workspace)continue;
       next.push({id:row.id,workspaceId:workspace.id,kind:'chat',title:row.title,closed:true,archived:row.archived||undefined,hostMetadataRevision:row.metadataRevision});changed=true;

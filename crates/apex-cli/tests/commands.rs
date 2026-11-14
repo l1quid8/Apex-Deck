@@ -58,6 +58,42 @@ fn work_catalog_keeps_session_title_archive_and_recency_until_explicit_host_edit
     assert_eq!(merge_threads(&session, &explicit)[0].title, "Host name");
 }
 #[test]
+fn unnamed_cli_work_thread_reads_as_its_folder_not_new_chat() {
+    use apex_cli::controller::merge_threads;
+    use serde_json::json;
+    let list = json!({"rooms":[
+        {"id":"cli-work","kind":"work","title":"New chat","titleExplicit":false,"folderName":"apex-deck","updatedAt":1,"archived":false},
+        {"id":"named","kind":"work","title":"Plans","titleExplicit":true,"folderName":"apex-deck","updatedAt":2,"archived":false},
+        {"id":"talk","kind":"chat","title":"New chat","titleExplicit":false,"updatedAt":3,"archived":false}
+    ]});
+    let rows = merge_threads(&json!({}), &list);
+    let title = |id: &str| rows.iter().find(|r| r.id == id).unwrap().title.clone();
+    assert_eq!(title("cli-work"), "apex-deck");
+    assert_eq!(title("named"), "Plans");
+    assert_eq!(title("talk"), "New chat");
+}
+#[test]
+fn new_work_reads_folder_then_name_and_defaults_to_the_folder_name() {
+    use apex_cli::controller::work_target;
+    let root = std::env::temp_dir().join(format!("apex-work-target-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("api")).unwrap();
+    std::fs::create_dir_all(root.join("my app")).unwrap();
+    let root = root.canonicalize().unwrap();
+    let here = |rest: &str| work_target(rest, &root);
+    let root_name = root.file_name().unwrap().to_str().unwrap().to_string();
+    assert_eq!(here("").unwrap(), (root.clone(), root_name.clone()));
+    assert_eq!(here(" . ").unwrap(), (root.clone(), root_name));
+    assert_eq!(here(". Plans for v2").unwrap(), (root.clone(), "Plans for v2".into()));
+    assert_eq!(here("api").unwrap(), (root.join("api"), "api".into()));
+    assert_eq!(here("api Backend").unwrap(), (root.join("api"), "Backend".into()));
+    assert_eq!(here("my app").unwrap(), (root.join("my app"), "my app".into()));
+    // A word that names no folder is refused, never treated as a name in the wrong folder.
+    assert!(here("Plans").unwrap_err().contains("No folder at"));
+    assert!(here("missing Backend").unwrap_err().contains("missing Backend"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+#[test]
 fn model_lookup_uses_the_backend_specific_daemon_api() {
     use apex_cli::controller::model_query;
     use serde_json::json;

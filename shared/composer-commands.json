@@ -185,7 +185,7 @@
   {
     "key": "new",
     "label": "/new",
-    "detail": "Create Talk, or /new work to choose a workspace",
+    "detail": "New thread · choose Work or Chat",
     "surfaces": [
       "cli"
     ],

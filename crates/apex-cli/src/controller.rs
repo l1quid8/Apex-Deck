@@ -77,6 +77,29 @@ pub async fn execute(
         )
         .await
 }
+/// Resolves `/new work [folder] [name]` against the terminal's folder. The whole
+/// text is tried as a folder first (so folder names may contain spaces), then
+/// its first word; anything after that word is the thread name. Without a
+/// name, the thread is named after its folder. Text that names no folder is
+/// refused rather than guessed, so a mistyped folder never lands elsewhere.
+pub fn work_target(rest: &str, here: &Path) -> Result<(std::path::PathBuf, String), String> {
+    let rest = rest.trim();
+    let (folder, name) = if rest.is_empty() || here.join(rest).is_dir() {
+        (rest, "")
+    } else {
+        match rest.split_once(char::is_whitespace) {
+            Some((first, name)) if here.join(first).is_dir() => (first, name.trim()),
+            _ => return Err(format!("No folder at {}", here.join(rest).display())),
+        }
+    };
+    let path = here.join(folder).canonicalize().map_err(|e| e.to_string())?;
+    let name = if name.is_empty() {
+        path.file_name().and_then(|n| n.to_str()).map(str::to_owned).unwrap_or_else(|| path.display().to_string())
+    } else {
+        name.to_string()
+    };
+    Ok((path, name))
+}
 pub async fn threads(client: &Client) -> Result<Vec<Thread>, String> {
     let list = client.request("chat_list", json!({})).await?;
     let session = client.request("session_load", json!({})).await?;
@@ -118,7 +141,10 @@ pub fn merge_threads(session: &Value, list: &Value) -> Vec<Thread> {
             continue;
         }
         let previous = rows.get(id);
-        let title = if row["titleExplicit"] == true || previous.is_none() {
+        let title = if row["titleExplicit"] != true && previous.is_none() && row["kind"] == "work" && row["folderName"].is_string() {
+            // An unnamed Work thread reads as its folder, not the backend's "New chat".
+            row["folderName"].as_str().unwrap().to_string()
+        } else if row["titleExplicit"] == true || previous.is_none() {
             row["title"].as_str().unwrap_or(id).to_string()
         } else {
             previous.unwrap().0.title.clone()
@@ -306,24 +332,32 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
             ));
         }
         HandlerId::New => {
-            if arg.is_empty() {
+            // Anything other than an explicit `work`/`chat` choice opens the picker, so a
+            // typed name can't skip past Work. A typed name becomes the Chat title.
+            let explicit=arg=="work"||arg.starts_with("work ")||arg=="chat"||arg.starts_with("chat ");
+            if !explicit {
                 let here=std::env::current_dir().map(|p|p.display().to_string()).unwrap_or_else(|_|"this terminal's folder".into());
+                let (chat_detail,chat_cmd)=if arg.is_empty(){("Talk only, no folder".to_string(),"/new chat".to_string())}else{(format!("Talk only, named \u{201c}{arg}\u{201d}"),format!("/new chat {arg}"))};
+                // `.` keeps the Work thread in this folder and passes the typed name along.
+                let (work_detail,work_cmd)=if arg.is_empty(){(format!("Agents work in {here}"),"/new work".to_string())}else{(format!("Agents work in {here}, named \u{201c}{arg}\u{201d}"),format!("/new work . {arg}"))};
                 return Ok(menu("New thread",vec![
-                    choice("Work",format!("Agents work in {here}"),Action::Submit("/new work".into())),
-                    choice("Chat","Talk only, no folder",Action::Submit("/new chat".into())),
+                    choice("Work",work_detail,Action::Submit(work_cmd)),
+                    choice("Chat",chat_detail,Action::Submit(chat_cmd)),
                     choice("Cancel","No thread created",Action::Dismiss),
                 ]));
             }
             let arg=if arg=="chat"{String::new()}else{arg.strip_prefix("chat ").map(|t|t.trim().to_string()).unwrap_or(arg)};
             if arg=="work" || arg.starts_with("work ") {
                 let here=std::env::current_dir().map_err(|e|format!("Can't read this terminal's folder: {e}"))?;
-                let folder=arg.strip_prefix("work").unwrap_or("").trim();
-                let path=if folder.is_empty(){here}else{here.join(folder)};
-                if !path.is_dir(){return Err(format!("No folder at {}",path.display()));}
-                let path=path.canonicalize().map_err(|e|e.to_string())?;
+                let (path,name)=work_target(arg.strip_prefix("work").unwrap_or(""),&here)?;
                 let id=format!("work-{}",uuid::Uuid::new_v4().simple());
                 execute(&c.client,&c.data,"room_create",json!({"id":id,"participants":[],"options":{"policy":"mention","max_bot_hops":0},"cwd":path})).await?;
-                out.notice=format!("Work thread in {}. /add a saved agent; /access reviews permissions.",path.display());out.open=Some(id);return Ok(out);
+                out.open=Some(id.clone());
+                out.notice=match execute(&c.client,&c.data,"chat_update_meta",json!({"id":id,"title":name})).await {
+                    Ok(_)=>format!("Work thread \u{201c}{name}\u{201d} in {}. /add a saved agent; /access reviews permissions.",path.display()),
+                    Err(e)=>format!("Work thread in {}, but naming it failed: {e}. /rename to retry.",path.display()),
+                };
+                return Ok(out);
             }
             let id = format!("chat-{}", uuid::Uuid::new_v4().simple());
             execute(&c.client,&c.data,"chat_create",json!({"id":id,"title":if arg.is_empty(){"New chat"}else{&arg},"participants":[],"options":{"policy":"mention","max_bot_hops":0}})).await?;

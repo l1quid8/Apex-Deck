@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { emptyCatalog, parseChatList, withListedRooms } from '../src/chatCatalog.ts';
+import { emptyCatalog, parseChatList, withListedRooms, promotedWork } from '../src/chatCatalog.ts';
+import React from 'react';
 import { reconcileWorkPanes } from '../src/workThreadMetadata.ts';
 import { withoutTrashedPanes, closeTrashedPanes } from '../src/threadTrash.ts';
 import { sidebarSections } from '../src/sidebarModel.ts';
@@ -16,6 +17,17 @@ const end = source.indexOf('  // The queue outlives renders', start);
 const code = transform(source.slice(start, end), { transforms: ['typescript'] }).code;
 const workspaces = [{ id: 'w', name: 'Project', path: '/repo' }];
 const pane = { id: 'thread', workspaceId: 'w', kind: 'chat', title: 'Saved title' };
+
+test('actual phone Work rows include CLI threads once and keep identical ids on another host', () => {
+  let chatView = withListedRooms(emptyCatalog(), 'local', 'Mac', parseChatList('local', {rooms:[{id:'cli',kind:'work',cwd:'/repo',title:'CLI plans'}]}), 1);
+  chatView = withListedRooms(chatView, 'vps', 'VPS', parseChatList('vps', {rooms:[{id:'cli',kind:'work',cwd:'/repo',title:'VPS plans'}]}), 1);
+  const start = source.indexOf('  const fromChats =');
+  const end = source.indexOf('  /** The chat a sheet acts on:', start);
+  const code = transform(source.slice(start,end), {transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
+  const render = panes => new Function('React','chatView','promotedWork','panes','sessionHost','linkOf','ageWords', `${code};return fromChats;`)(React,chatView,promotedWork,panes,p => p.hostId,()=>null,()=> 'New');
+  assert.deepEqual(render([]).map(group=>[group.hostId,group.rows.length]), [['local',1],['vps',1]]);
+  assert.deepEqual(render([{id:'cli',hostId:'local'}]).map(group=>[group.hostId,group.rows.length]), [['vps',1]]);
+});
 const listed = (rows, at) => withListedRooms(emptyCatalog(), 'local', 'Mac', parseChatList('local', { rooms: rows.map(row => ({ id: 'thread', kind: 'work', cwd: '/repo', title: 'Host title', metadataRevision: 1, ...row })) }), at);
 
 function phone() {
