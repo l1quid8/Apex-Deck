@@ -1,4 +1,7 @@
 pub mod approval_card;
+pub mod attachments;
+pub mod composition;
+pub mod history;
 pub mod args;
 pub mod agent_setup;
 pub mod backend;

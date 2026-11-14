@@ -651,7 +651,7 @@ pub fn status_line(s: &AppState, width: u16) -> Line<'static> {
     Line::from(left)
 }
 
-/// The seven panel rows (v6): title, four settings, usage, footer.
+/// The seven panel rows (v6), with room for a wrapped Full-access warning.
 pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
     use crate::settings::{self, Row};
     let (Some(panel), Some(p)) = (s.settings.as_ref(), settings::agent(s)) else {
@@ -720,7 +720,7 @@ pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
         vec![Span::styled(safe(error).replace('\n', " "), Style::default().fg(RED))]
     } else if panel.confirm_full {
         vec![
-            Span::styled(format!("{name} can run commands without asking. "), white),
+            Span::styled(format!("{name} {} ", settings::full_access_warning()), white),
             Span::styled("Enter", white),
             Span::styled(" yes · ", gray),
             Span::styled("Esc", white),
@@ -748,7 +748,11 @@ pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
     };
     let mut footer_spans = vec![Span::raw("   ")];
     footer_spans.extend(footer);
-    out.push(fit(footer_spans, w));
+    if panel.confirm_full {
+        out.extend(wrapped(footer_spans, w));
+    } else {
+        out.push(fit(footer_spans, w));
+    }
     out.into_iter().map(|line| line.style(Style::default().bg(PANEL))).collect()
 }
 pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
@@ -759,6 +763,8 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         .clamp(2, 8)
         .saturating_add(2)
         .min(area.height.saturating_sub(4));
+    let queue=s.composition.queue(s.selected.as_deref());
+    let attachment_rows=if queue.is_empty(){0}else{(queue.len().min(3) as u16+2).min(area.height.saturating_sub(composer+4))};
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -767,6 +773,10 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         Constraint::Length(1),
     ])
     .split(area);
+    let (content,attachment_rect)=if attachment_rows>0 {
+        let parts=Layout::vertical([Constraint::Min(1),Constraint::Length(attachment_rows)]).split(rows[2]);
+        (parts[0],Some(parts[1]))
+    } else {(rows[2],None)};
     f.render_widget(Paragraph::new(header(s, area.width)), rows[0]);
     f.render_widget(
         Paragraph::new(" F1 Welcome   Chat   F3 Threads   F4 Agents   F2 Requests")
@@ -774,12 +784,22 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         rows[1],
     );
     let panel = if s.view != 0 { settings_lines(s, area.width) } else { vec![] };
-    let (screen, panel_rect) = if !panel.is_empty() && rows[2].height > PANEL_ROWS {
-        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(PANEL_ROWS)]).split(rows[2]);
+    let panel_rows = u16::try_from(panel.len()).unwrap_or(u16::MAX).max(PANEL_ROWS);
+    let (screen, panel_rect) = if !panel.is_empty() && content.height > panel_rows {
+        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(panel_rows)]).split(content);
         (parts[0], Some(parts[1]))
     } else {
-        (rows[2], None)
+        (content, None)
     };
+    if let Some(rect)=attachment_rect {
+        let mut lines=vec![Line::from(Span::styled(format!(" Attachments ({})",queue.len()),Style::default().fg(CYAN)))];
+        for (index,item) in queue.iter().take(usize::from(rect.height.saturating_sub(2))).enumerate() {
+            let state=if item.error.is_some(){"error"}else if item.stored.is_some(){"imported"}else{"ready"};
+            lines.push(Line::from(Span::styled(format!(" {}. {} · {} ({:.1} KiB)",index+1,state,safe(&item.name),item.size as f64/1024.0),Style::default().fg(if item.error.is_some(){RED}else{GRAY}))));
+        }
+        lines.push(Line::from(Span::styled(" /attach list · /detach <number|all> · Ctrl+V image",Style::default().fg(DIM_GRAY))));
+        f.render_widget(Paragraph::new(lines),rect);
+    }
     if let Some(rect) = panel_rect {
         f.render_widget(Paragraph::new(panel).style(Style::default().bg(PANEL)), rect);
     }
@@ -808,7 +828,7 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         }
         if s.threads.is_empty() {
             lines.push(Line::from(
-                "  No threads yet. /new creates an empty thread.",
+                "  No threads yet. /new to start a Work or Chat thread.",
             ));
         }
         lines.extend([

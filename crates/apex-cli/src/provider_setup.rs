@@ -1,7 +1,13 @@
 //! Provider-owned authentication. Call login only after suspending the TUI.
 //! No provider tokens or auth files are read or copied by Apex.
+//!
+//! On a Mac, agents use the person's own provider login. On Linux an agent
+//! below Full runs in Deck's jail, which reads Deck's own login in
+//! `<data>/logins/<provider>` instead, so there `/login` signs in that folder.
+//! The person's `~/.claude` or `~/.codex` is never copied in: a copy would
+//! share one refresh token, and the first renewal would sign the other out.
 use serde_json::{json, Value};
-use std::{collections::VecDeque, process::Stdio, time::Duration};
+use std::{collections::VecDeque, path::{Path, PathBuf}, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -25,12 +31,54 @@ const CREDENTIAL_OVERRIDES: &[&str] = &[
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
 ];
-fn subscription_command(program: &std::ffi::OsStr) -> Command {
+/// Which sign-in `/login` and agent readiness use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Store {
+    /// The provider CLI's own default login, shared with the person's tools.
+    Person,
+    /// Deck's own login folder, the one the Linux jail reads.
+    Deck(PathBuf),
+}
+
+impl Store {
+    /// The sign-in agents below Full use on this platform.
+    pub fn for_data(data: &Path, provider: &str) -> Self {
+        #[cfg(target_os = "linux")]
+        return Self::Deck(apex_adapters::linux_jail::home::login_home(data, provider));
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (data, provider);
+            Self::Person
+        }
+    }
+    fn is_deck(&self) -> bool {
+        matches!(self, Self::Deck(_))
+    }
+}
+
+/// Points the command at Deck's login folder, with the same minimal settings a
+/// jail refresh uses, so no hook, plugin or MCP server of the person's loads.
+#[cfg(target_os = "linux")]
+fn use_deck_login(command: &mut Command, home: &Path) -> Result<(), String> {
+    use apex_adapters::linux_jail::refresh;
+    refresh::write_settings(home).map_err(|e| format!("Could not prepare Deck's sign-in folder {}: {e}", home.display()))?;
+    command.current_dir(home.join("work")).envs(refresh::login_vars(home));
+    Ok(())
+}
+#[cfg(not(target_os = "linux"))]
+fn use_deck_login(_: &mut Command, _: &Path) -> Result<(), String> {
+    Err("Deck's own sign-in folder is used only on Linux.".into())
+}
+
+fn subscription_command(program: &std::ffi::OsStr, store: &Store) -> Result<Command, String> {
     let mut command = Command::new(program);
     for key in CREDENTIAL_OVERRIDES {
         command.env_remove(key);
     }
-    command
+    if let Store::Deck(home) = store {
+        use_deck_login(&mut command, home)?;
+    }
+    Ok(command)
 }
 fn check_context_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
     if names
@@ -42,7 +90,11 @@ fn check_context_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(
         Ok(())
     }
 }
-fn check_context() -> Result<(), String> {
+fn check_context(store: &Store) -> Result<(), String> {
+    // Deck's own folder sets both variables itself.
+    if store.is_deck() {
+        return Ok(());
+    }
     let names: Vec<_> = std::env::vars_os()
         .map(|(name, _)| name.to_string_lossy().into_owned())
         .collect();
@@ -124,11 +176,11 @@ struct Codex {
     next_id: u64,
 }
 impl Codex {
-    async fn start() -> Result<Self, String> {
-        Self::start_program(std::ffi::OsStr::new("codex")).await
+    async fn start(store: &Store) -> Result<Self, String> {
+        Self::start_program(std::ffi::OsStr::new("codex"), store).await
     }
-    async fn start_program(program: &std::ffi::OsStr) -> Result<Self, String> {
-        let mut child = subscription_command(program)
+    async fn start_program(program: &std::ffi::OsStr, store: &Store) -> Result<Self, String> {
+        let mut child = subscription_command(program, store)?
             .arg("app-server")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -220,12 +272,12 @@ impl Codex {
 }
 
 /// Reprobe the actual official runtime; this never infers login from a file.
-pub async fn status(provider: &str) -> Result<Value, String> {
+pub async fn status(provider: &str, store: &Store) -> Result<Value, String> {
     method(provider, None)?;
-    check_context()?;
+    check_context(store)?;
     match provider {
         "codex" => {
-            let mut s = Codex::start().await?;
+            let mut s = Codex::start(store).await?;
             let result = s.probe().await;
             s.stop().await;
             result
@@ -233,7 +285,7 @@ pub async fn status(provider: &str) -> Result<Value, String> {
         _ => {
             let output = tokio::time::timeout(
                 REQUEST_TIMEOUT,
-                subscription_command(std::ffi::OsStr::new("claude"))
+                subscription_command(std::ffi::OsStr::new("claude"), store)?
                     .args(["auth", "status"])
                     .stdin(Stdio::null())
                     .stderr(Stdio::null())
@@ -253,26 +305,36 @@ pub async fn status(provider: &str) -> Result<Value, String> {
 /// Uses the same provider-owned credential context as its installed CLI.
 /// Caller must restore the terminal on both Ok and Err. Existing subscription
 /// sessions are reused by default; explicit browser/device selects reauthentication.
-pub async fn login(provider: &str, selected: Option<&str>) -> Result<String, String> {
+pub async fn login(provider: &str, selected: Option<&str>, store: &Store) -> Result<String, String> {
     let mode = method(provider, selected)?;
     let _guard = LOGIN_LOCK
         .try_lock()
         .map_err(|_| "Another provider login is already active.".to_string())?;
-    let current = status(provider).await?;
+    let current = status(provider, store).await?;
     if current["loggedIn"] == true && matches!(mode, "auto" | "reuse") {
         if current["method"] != "subscription" {
             return Err("The provider runtime currently uses API billing. API credential attachment is unavailable; choose an explicit subscription method to change accounts. Existing API credentials were not used.".into());
         }
-        return Ok(format!("{provider} connected using its existing subscription login (shared with your other {provider} tools)."));
+        return Ok(if store.is_deck() {
+            format!("{provider} connected using Deck's existing {provider} sign-in for agents.")
+        } else {
+            format!("{provider} connected using its existing subscription login (shared with your other {provider} tools).")
+        });
     }
     if mode == "reuse" {
-        return Err(format!(
-            "{provider} is not signed in. Run /login {provider} to sign in."
-        ));
+        return Err(if store.is_deck() {
+            format!("Deck's own {provider} sign-in isn't set up yet. On Linux, agents below Full access use Deck's sign-in, not your own {provider} login, which is never copied. Run /login {provider} and choose Sign in.")
+        } else {
+            format!("{provider} is not signed in. Run /login {provider} to sign in.")
+        });
     }
-    eprintln!("Sign-in uses the official {provider} runtime and shares its account with your other {provider} tools. Press Ctrl-C to cancel.");
+    if store.is_deck() {
+        eprintln!("Signing Deck in to {provider} with the official {provider} runtime. This is Deck's own sign-in for agents below Full access; your own {provider} login isn't touched. Press Ctrl-C to cancel.");
+    } else {
+        eprintln!("Sign-in uses the official {provider} runtime and shares its account with your other {provider} tools. Press Ctrl-C to cancel.");
+    }
     if provider == "claude" {
-        let mut child = subscription_command(std::ffi::OsStr::new("claude"))
+        let mut child = subscription_command(std::ffi::OsStr::new("claude"), store)?
             .args(["auth", "login", "--claudeai"])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -290,16 +352,21 @@ pub async fn login(provider: &str, selected: Option<&str>) -> Result<String, Str
             let _ = child.wait().await;
         }
         result?;
-        require_subscription(status(provider).await?)?;
+        require_subscription(status(provider, store).await?)?;
     } else {
-        let mut s = Codex::start().await?;
-        let result = codex_login(&mut s, if mode == "auto" { "chatgpt" } else { mode }).await;
+        let mut s = Codex::start(store).await?;
+        // A server usually has no browser that can reach Codex's local
+        // callback, so a Deck sign-in defaults to the device code.
+        let auto = if store.is_deck() { "chatgptDeviceCode" } else { "chatgpt" };
+        let result = codex_login(&mut s, if mode == "auto" { auto } else { mode }).await;
         s.stop().await;
         result?;
     }
-    Ok(format!(
-        "{provider} connected with provider-owned subscription authentication."
-    ))
+    Ok(if store.is_deck() {
+        format!("{provider} connected: Deck is signed in for agents below Full access. Your own {provider} login wasn't changed.")
+    } else {
+        format!("{provider} connected with provider-owned subscription authentication.")
+    })
 }
 fn require_subscription(s: Value) -> Result<(), String> {
     if s["loggedIn"] == true && s["method"] == "subscription" {
@@ -488,7 +555,7 @@ for line in sys.stdin:
     print(json.dumps({'id':r['id'],'result':result}),flush=True)
 "#).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut session = Codex::start_program(script.as_os_str()).await.unwrap();
+        let mut session = Codex::start_program(script.as_os_str(), &Store::Person).await.unwrap();
         assert_eq!(session.probe().await.unwrap()["loggedIn"], true);
         let started = session
             .rpc("account/login/start", json!({"type":"chatgptDeviceCode"}))
@@ -503,7 +570,7 @@ for line in sys.stdin:
     }
     #[tokio::test]
     async fn missing_runtime_is_actionable() {
-        let e = match Codex::start_program(std::ffi::OsStr::new("/nonexistent/apex-fixture-codex"))
+        let e = match Codex::start_program(std::ffi::OsStr::new("/nonexistent/apex-fixture-codex"), &Store::Person)
             .await
         {
             Ok(_) => panic!("unexpected runtime"),
@@ -515,7 +582,7 @@ for line in sys.stdin:
     #[ignore = "read-only probe of locally installed provider runtimes"]
     async fn local_runtime_probes() {
         for provider in ["codex", "claude"] {
-            let status = status(provider).await.unwrap();
+            let status = status(provider, &Store::Person).await.unwrap();
             eprintln!(
                 "{provider}: loggedIn={}, method={}",
                 status["loggedIn"], status["method"]
@@ -524,8 +591,39 @@ for line in sys.stdin:
         }
     }
     #[test]
+    fn agents_below_full_use_decks_login_only_on_linux() {
+        let store = Store::for_data(std::path::Path::new("/data"), "claude");
+        #[cfg(target_os = "linux")]
+        assert_eq!(store, Store::Deck(PathBuf::from("/data/logins/claude")));
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(store, Store::Person);
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_deck_sign_in_runs_in_decks_folder_and_keeps_its_login() {
+        let data = std::env::temp_dir().join(format!("apex-deck-login-{}", uuid::Uuid::new_v4()));
+        let store = Store::for_data(&data, "claude");
+        let Store::Deck(home) = &store else { panic!("Linux uses Deck's login") };
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/.credentials.json"), "LOGIN").unwrap();
+        let out = subscription_command(std::ffi::OsStr::new("/bin/sh"), &store).unwrap()
+            .args(["-c", "pwd; echo $HOME; echo $CLAUDE_CONFIG_DIR; echo $CODEX_HOME; echo ${ANTHROPIC_API_KEY-unset}"])
+            .env("ANTHROPIC_API_KEY", "SECRET")
+            .output().await.unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines[0], home.join("work").to_str().unwrap());
+        assert_eq!(lines[1], home.to_str().unwrap());
+        assert_eq!(lines[2], home.join(".claude").to_str().unwrap());
+        assert_eq!(lines[3], home.join(".codex").to_str().unwrap());
+        assert_eq!(std::fs::read_to_string(home.join(".claude/.credentials.json")).unwrap(), "LOGIN", "settings never replace the login");
+        assert!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap().contains("cli_auth_credentials_store = \"file\""));
+        assert!(check_context(&store).is_ok());
+        std::fs::remove_dir_all(data).unwrap();
+    }
+    #[test]
     fn subscription_commands_strip_credentials_without_reading_them() {
-        let command = subscription_command(std::ffi::OsStr::new("codex"));
+        let command = subscription_command(std::ffi::OsStr::new("codex"), &Store::Person).unwrap();
         let vars: std::collections::BTreeMap<_, _> = command.as_std().get_envs().collect();
         for key in CREDENTIAL_OVERRIDES {
             assert_eq!(vars.get(std::ffi::OsStr::new(key)), Some(&None));

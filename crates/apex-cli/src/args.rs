@@ -1,5 +1,11 @@
 use std::path::PathBuf;
-pub const HELP:&str="Apex standalone CLI\n\nUsage: apex [--data-dir <absolute-path>] [--thread <id>] [--connect-deck]\n       apex backend status|stop [--data-dir <absolute-path>]\n       apex --help | --version\n\nStarts or reuses the shared local backend automatically. Agents and threads are shared with Apex Deck.\n--connect-deck attaches only; --data-dir selects an isolated store. APEX_DECK_DATA_DIR is honored.\n/login attaches Codex or Claude · /agents create saves an agent\nEnter sends · Shift/Alt+Enter or Ctrl-J adds a line · Ctrl-C exits\n/ commands · @ agent completion · Esc stops current-thread work\nF1 Welcome · F2 approvals/questions · F3 Threads · F4 Agents\nPageUp/PageDown scroll history · Home/End move within composer\n\nProtected configuration and Work actions require the signed CLI authority installer.\n";
+#[cfg(target_os = "macos")]
+macro_rules! help_platform { () => { "Protected configuration and Work actions require the signed CLI authority installer.\n" } }
+#[cfg(target_os = "linux")]
+macro_rules! help_platform { () => { "On Linux, protected actions work once Deck's agent jail check passes (bubblewrap must be installed).\n/login signs in Deck's own provider login, used by agents below Full access.\n" } }
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+macro_rules! help_platform { () => { "Protected configuration and Work actions are not available on this platform yet.\n" } }
+pub const HELP:&str=concat!("Apex standalone CLI\n\nUsage: apex [--data-dir <absolute-path>] [--thread <id>] [--connect-deck]\n       apex backend status|stop [--data-dir <absolute-path>]\n       apex --help | --version\n\nStarts or reuses the shared local backend automatically. Agents and threads are shared with Apex Deck.\n--connect-deck attaches only; --data-dir selects an isolated store. APEX_DECK_DATA_DIR is honored.\n/login attaches Codex or Claude · /agents create saves an agent\nEnter sends · Shift/Alt+Enter or Ctrl-J adds a line · Ctrl-C exits\n/ commands · @ agent completion · Esc stops current-thread work\nF1 Welcome · F2 approvals/questions · F3 Threads · F4 Agents\nPageUp/PageDown scroll history · Home/End move within composer\n\n", help_platform!());
 pub struct Args {
     pub data: PathBuf,
     pub thread: Option<String>,

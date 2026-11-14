@@ -223,3 +223,105 @@ test('platform package contains required files in manifest contract and npm file
     assert.match(entries, /install-cli-provenance\.sh/);
   }
 });
+
+// --- Linux x64: no trusted copy; the launcher runs the packaged binary ---
+
+function makeLinuxPlatform(dir, { daemon = true } = {}) {
+  makeFakeApex(dir);
+  if (daemon) writeFileSync(join(dir, 'apex-daemon'), '#!/bin/sh\n', { mode: 0o755 });
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ formatVersion: 1, product: 'apex-cli', platform: 'linux', version: '0.9.9', architecture: 'x64', files: [] }) + '\n');
+}
+
+test('linux launcher execs the packaged apex without setup or a trusted copy', UNIX_ONLY, () => {
+  const plat = mkdtempSync(join(tmpdir(), 'apex-npm-linux-'));
+  const empty = mkdtempSync(join(tmpdir(), 'apex-npm-prov-'));
+  makeLinuxPlatform(plat);
+  const res = runLauncher({ standaloneDir: empty, platformDir: plat, args: ['--version'], env: { APEX_CLI_NPM_TEST_UNAME: 'Linux-x86_64' } });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /FAKE_APEX_EXECUTED:--version/);
+  assert.doesNotMatch(res.stderr, /sudo|admin/);
+  rmSync(plat, { recursive: true, force: true });
+  rmSync(empty, { recursive: true, force: true });
+});
+
+test('linux launcher says setup and uninstall are not needed', UNIX_ONLY, () => {
+  const plat = mkdtempSync(join(tmpdir(), 'apex-npm-linux-'));
+  makeLinuxPlatform(plat);
+  for (const action of ['setup', 'uninstall']) {
+    const res = runLauncher({ standaloneDir: plat, platformDir: plat, args: [action], env: { APEX_CLI_NPM_TEST_UNAME: 'Linux-x86_64' } });
+    assert.equal(res.status, 0);
+    assert.match(res.stderr, /Linux needs no setup.*npm rm -g @apex-deck\/cli/);
+    assert.doesNotMatch(res.stdout, /FAKE_APEX_EXECUTED/);
+  }
+  rmSync(plat, { recursive: true, force: true });
+});
+
+test('linux launcher refuses a payload without its backend', UNIX_ONLY, () => {
+  const plat = mkdtempSync(join(tmpdir(), 'apex-npm-linux-'));
+  makeLinuxPlatform(plat, { daemon: false });
+  const res = runLauncher({ standaloneDir: plat, platformDir: plat, env: { APEX_CLI_NPM_TEST_UNAME: 'Linux-x86_64' } });
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /files are missing.*Reinstall/);
+  rmSync(plat, { recursive: true, force: true });
+});
+
+test('launcher names supported machines on anything else', UNIX_ONLY, () => {
+  const plat = mkdtempSync(join(tmpdir(), 'apex-npm-linux-'));
+  makeLinuxPlatform(plat);
+  for (const machine of ['Linux-aarch64', 'Darwin-x86_64']) {
+    const res = runLauncher({ standaloneDir: plat, platformDir: plat, env: { APEX_CLI_NPM_TEST_UNAME: machine } });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, new RegExp(`Apple Silicon Macs and Linux x64 only \\(this machine is ${machine}\\)`));
+  }
+  rmSync(plat, { recursive: true, force: true });
+});
+
+test('linux launcher finds the sibling payload and never one from the working folder', UNIX_ONLY, () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'apex-npm-'));
+  const scoped = join(tmp, 'node_modules', '@apex-deck');
+  const cliRoot = join(scoped, 'cli');
+  mkdirSync(join(cliRoot, 'bin'), { recursive: true });
+  const launcher = join(cliRoot, 'bin', 'apex');
+  writeFileSync(launcher, readFileSync(join(process.cwd(), 'npm/cli/bin/apex'), 'utf8'), { mode: 0o755 });
+  // A folder the user happens to be in plants its own payload.
+  const repo = mkdtempSync(join(tmpdir(), 'apex-npm-cwd-'));
+  const planted = join(repo, 'npm', 'cli-linux-x64');
+  mkdirSync(planted, { recursive: true });
+  makeLinuxPlatform(planted);
+  writeFileSync(join(planted, 'apex'), '#!/bin/sh\necho PLANTED\n', { mode: 0o755 });
+  const env = { ...process.env, APEX_CLI_NPM_TEST: '1', APEX_CLI_NPM_TEST_UNAME: 'Linux-x86_64' };
+  const missing = spawnSync('/bin/sh', [launcher], { cwd: repo, encoding: 'utf8', env });
+  assert.equal(missing.status, 1);
+  assert.doesNotMatch(missing.stdout, /PLANTED/);
+  assert.match(missing.stderr, /@apex-deck\/cli-linux-x64/);
+  const plat = join(scoped, 'cli-linux-x64');
+  mkdirSync(plat);
+  makeLinuxPlatform(plat);
+  const found = spawnSync('/bin/sh', [launcher, 'hi'], { cwd: repo, encoding: 'utf8', env });
+  assert.equal(found.status, 0, found.stderr);
+  assert.match(found.stdout, /FAKE_APEX_EXECUTED:hi/);
+  rmSync(tmp, { recursive: true, force: true });
+  rmSync(repo, { recursive: true, force: true });
+});
+
+test('linux packager accepts only x86_64 ELF and payload files', async () => {
+  const { isLinuxX64Elf, linuxManifest } = await import('../scripts/package-cli-npm-linux.mjs');
+  const elf = Buffer.alloc(20); elf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); elf[18] = 0x3e;
+  assert.equal(isLinuxX64Elf(elf), true);
+  const arm = Buffer.from(elf); arm[18] = 0xb7;
+  assert.equal(isLinuxX64Elf(arm), false);
+  assert.equal(isLinuxX64Elf(Buffer.from([0xcf, 0xfa, 0xed, 0xfe])), false);
+  const m = linuxManifest('0.9.9', [{ name: 'apex', sha256: 'a'.repeat(64) }]);
+  assert.equal(m.platform, 'linux');
+  assert.equal(m.architecture, 'x64');
+  assert.throws(() => linuxManifest('0.9.9', [{ name: 'apex-provenance', sha256: 'a'.repeat(64) }]), /Unexpected payload/);
+});
+
+test('launcher package installs on both supported platforms', () => {
+  const j = JSON.parse(readFileSync(join(process.cwd(), 'npm/cli/package.json'), 'utf8'));
+  assert.deepEqual(j.os, ['darwin', 'linux']);
+  assert.deepEqual(j.cpu, ['arm64', 'x64']);
+  assert.ok(j.optionalDependencies['@apex-deck/cli-linux-x64']);
+  const plat = JSON.parse(readFileSync(join(process.cwd(), 'npm/cli-linux-x64/package.json'), 'utf8'));
+  assert.deepEqual([plat.os, plat.cpu], [['linux'], ['x64']]);
+});

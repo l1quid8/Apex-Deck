@@ -1,9 +1,13 @@
 {
   "name": "@apex-deck/cli-darwin-arm64",
-  "version": "0.9.8",
+  "version": "0.9.14",
   "description": "Apex Deck CLI signed binaries for macOS Apple Silicon",
-  "os": ["darwin"],
-  "cpu": ["arm64"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "files": [
     "apex",
     "apex-daemon",

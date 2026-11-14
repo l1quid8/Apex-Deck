@@ -88,6 +88,17 @@ impl Panel {
     }
 }
 
+/// Shown before Full is applied. On Linux, Full is the one level outside the
+/// agent jail, so the agent runs as you and could drive this terminal's
+/// actions itself, including approving its own requests.
+pub fn full_access_warning() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "will run outside the Linux jail as you, and could approve its own requests."
+    } else {
+        "can run commands without asking."
+    }
+}
+
 pub const ACCESS: [(&str, &str); 4] = [("read", "Read"), ("ask", "Ask"), ("edits", "Edits"), ("full", "Full")];
 const EFFORT_ORDER: [&str; 8] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 // Same fallbacks as src/models.ts (AGENT_EFFORTS / API_EFFORTS).

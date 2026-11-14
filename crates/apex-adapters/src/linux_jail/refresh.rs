@@ -63,7 +63,8 @@ fn private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Rewrites Deck's minimal settings around the login and leaves the login alone.
-fn write_settings(home: &Path) -> io::Result<()> {
+/// A sign-in (`apex` `/login` on Linux) runs on the same settings as a refresh.
+pub fn write_settings(home: &Path) -> io::Result<()> {
     let mut folder = std::fs::DirBuilder::new();
     folder.recursive(true).mode(0o700);
     for inner in [".claude", ".codex", "work"] { folder.create(home.join(inner))?; }
@@ -72,12 +73,17 @@ fn write_settings(home: &Path) -> io::Result<()> {
     private_file(&home.join(".codex/config.toml"), b"check_for_update_on_startup = false\ncli_auth_credentials_store = \"file\"\n")
 }
 
+/// The variables that point a provider CLI at Deck's login in `home`, shared by
+/// a refresh and a sign-in so both read and write the same files.
+pub fn login_vars(home: &Path) -> [(&'static str, OsString); 4] {
+    [("HOME", home.into()), ("DISABLE_AUTOUPDATER", "1".into()), ("CLAUDE_CONFIG_DIR", home.join(".claude").into()), ("CODEX_HOME", home.join(".codex").into())]
+}
+
 fn command(program: &Path, path: &OsStr, home: &Path) -> Command {
     let mut command = Command::new(program);
     command.current_dir(home.join("work")).stderr(Stdio::null());
-    let vars: [(&str, OsString); 7] = [("HOME", home.into()), ("PATH", path.into()), ("LANG", "C.UTF-8".into()), ("NO_COLOR", "1".into()),
-        ("DISABLE_AUTOUPDATER", "1".into()), ("CLAUDE_CONFIG_DIR", home.join(".claude").into()), ("CODEX_HOME", home.join(".codex").into())];
-    command.envs(vars);
+    let vars: [(&str, OsString); 3] = [("PATH", path.into()), ("LANG", "C.UTF-8".into()), ("NO_COLOR", "1".into())];
+    command.envs(vars).envs(login_vars(home));
     command
 }
 

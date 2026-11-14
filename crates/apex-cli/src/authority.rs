@@ -51,6 +51,16 @@ fn check_environment(
     Ok(())
 }
 
+/// Linux: refuse ptrace and core dumps from other same-user processes for
+/// the life of this terminal. It only narrows the attack; the jail is the
+/// boundary. Never fails startup.
+pub fn harden_process() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
+}
+
 pub fn assert_trusted_startup() -> Result<(), AuthorityError> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err("Apex CLI requires an interactive terminal; piped commands and stdin submissions are refused.".into());
@@ -97,6 +107,7 @@ fn supported(name: &str) -> bool {
             | "agent_profile_save"
             | "provider_setup_begin"
             | "backend_stop"
+            | "save_attachment"
             | "room_create"
     )
 }
@@ -146,6 +157,14 @@ pub async fn authorize(command: Value, data: &Path) -> Result<Value, AuthorityEr
         return Ok(command);
     }
     assert_trusted_startup()?;
+    // Linux has no root broker. The same-user daemon admits this exact typed
+    // surface only after its agent-jail boot probe passed; it decides, not us.
+    #[cfg(target_os = "linux")]
+    {
+        let _ = data;
+        return Ok(command);
+    }
+    #[cfg(not(target_os = "linux"))]
     let data = data.to_owned();
     tokio::task::spawn_blocking(move || {
         let folder = data.canonicalize().map_err(|e| format!("Cannot resolve Apex data directory: {e}"))?;
@@ -221,6 +240,11 @@ mod tests {
             needs_authority(&json!({"cmd":"room_set_plan","args":{"id":"r","on":true}})).unwrap()
         );
         assert!(!needs_authority(&json!({"cmd":"chat_list","args":{}})).unwrap());
+        assert!(!needs_authority(&json!({"cmd":"save_attachment","args":{"room":"r","name":"notes.txt","data":"aGk="}})).unwrap());
+        for value in [
+            json!({"cmd":"copy_attachment","args":{"room":"r","path":"/etc/passwd"}}),
+            json!({"cmd":"read_attachment","args":{"path":"/etc/passwd"}}),
+        ] { assert!(needs_authority(&value).is_err()); }
         assert!(
             !needs_authority(&json!({"cmd":"room_post","args":{"id":"r","text":"hello"}})).unwrap()
         );

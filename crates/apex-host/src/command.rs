@@ -336,14 +336,15 @@ impl Command {
     }
 }
 
-/// The terminal app's typed protected actions, the same list the Mac broker
-/// issues CLI receipts for, minus `backend_stop` (the control socket owns it).
+/// The terminal app's typed actions: protected submissions plus bounded
+/// thread-scoped attachment bytes. No arbitrary host-path copying or reads.
 /// Never broker admin, device grants, pairing, personal assistant or updates.
 pub fn local_linux_cli_surface(command: &Command) -> bool {
     matches!(command, Command::RoomPost { .. } | Command::RoomDecide { .. } | Command::RoomAnswer { .. }
         | Command::RoomSetPlan { .. } | Command::RoomRunnerStart { .. } | Command::RoomRunnerAction { .. }
         | Command::RoomAddParticipant { .. } | Command::RoomUpdateParticipant { .. } | Command::RoomRemoveParticipant { .. }
-        | Command::RoomSetOptions { .. } | Command::RoomCreate { .. } | Command::AgentProfileSave { .. } | Command::ProviderSetupBegin { .. })
+        | Command::RoomSetOptions { .. } | Command::RoomCreate { .. } | Command::AgentProfileSave { .. } | Command::ProviderSetupBegin { .. }
+        | Command::SaveAttachment { .. })
 }
 
 /// The room a terminal-surface command targets. Keep in step with
@@ -355,6 +356,7 @@ fn local_linux_cli_room(command: &Command) -> Option<&str> {
         | Command::RoomRemoveParticipant { id, .. } | Command::RoomSetOptions { id, .. } | Command::RoomCreate { id, .. } => Some(id),
         Command::RoomRunnerStart { input } => Some(&input.id),
         Command::RoomRunnerAction { input } => Some(&input.id),
+        Command::SaveAttachment { room, .. } => Some(room),
         _ => None,
     }
 }
@@ -506,6 +508,9 @@ impl Host {
         // settings and runners there still need the assistant's receipt.
         if let Some(id) = local_linux_cli_room(&command) {
             if self.assistant_tasks.execution(id).map_err(|e| e.to_string())?.is_some() {
+                if matches!(&command, Command::SaveAttachment { .. }) {
+                    return Err("Terminal attachment import is unavailable for a protected assistant execution room.".into());
+                }
                 return self.call_with_client_capability(command, capability).await;
             }
         }
@@ -890,6 +895,21 @@ mod tests {
         assert!(matches!(undo, Command::RoomCurateUndo { id } if id == "r"));
     }
 
+    #[test]
+    fn terminal_attachment_surface_is_room_scoped_and_cannot_copy_or_read_host_paths() {
+        let save = Command::from_json(json!({"cmd":"save_attachment","args":{"room":"thread","name":"notes.txt","data":"aGk="}})).unwrap();
+        assert!(local_linux_cli_surface(&save));
+        assert_eq!(local_linux_cli_room(&save), Some("thread"));
+        for value in [
+            json!({"cmd":"copy_attachment","args":{"room":"thread","path":"/etc/passwd"}}),
+            json!({"cmd":"read_attachment","args":{"path":"/etc/passwd"}}),
+        ] {
+            let command = Command::from_json(value).unwrap();
+            assert!(!local_linux_cli_surface(&command));
+            assert_eq!(local_linux_cli_room(&command), None);
+        }
+    }
+
     /// Linux terminal admission on the production host (no isolated fixture):
     /// a real Work room is created and its Plan saved only after the recorded
     /// jail probe passed; a missing or failed probe refuses without changing
@@ -912,9 +932,11 @@ mod tests {
         let create = |id: &str| json!({"cmd":"room_create","args":{"id":id,"participants":[],"options":options,"cwd":cwd.to_string_lossy()}});
         let plan = |on: bool| json!({"cmd":"room_set_plan","args":{"id":"cli","on":on}});
         let saved_plan = || host.store().room("cli").unwrap().map(|room| room.snapshot.plan);
+        let attachment = || json!({"cmd":"save_attachment","args":{"room":"cli","name":"notes.txt","data":"aGk="}});
 
         linux_jail::set_state_for_test(None);
         assert!(cli(create("cli")).unwrap_err().contains("hasn't finished its startup check"));
+        assert!(cli(attachment()).unwrap_err().contains("hasn't finished its startup check"));
         linux_jail::record_probe_state(JailState::Fails("no bubblewrap".into()));
         assert!(cli(create("cli")).unwrap_err().contains("failed its startup check: no bubblewrap"));
         assert_eq!(saved_plan(), None, "a refused create must not save a room");
@@ -923,6 +945,8 @@ mod tests {
         cli(create("cli")).unwrap();
         cli(plan(true)).unwrap();
         assert_eq!(saved_plan(), Some(true));
+        let saved = cli(attachment()).unwrap().as_str().unwrap().to_owned();
+        assert_eq!(std::fs::read(saved).unwrap(), b"hi");
 
         for state in [None, Some(JailState::Fails("probe failed".into()))] {
             linux_jail::set_state_for_test(state);
@@ -935,6 +959,7 @@ mod tests {
         let owner = TaskOwner { workspace_id: "workspace".into(), cwd: cwd.to_string_lossy().into_owned(), host_id: "host".into(), conversation_id: "parent".into() };
         let task = host.assistant_tasks.submit_human_request(HumanRequest { request_id: "linux-cli".into(), owner: owner.clone(), text: "work".into(), destination: None }, "work".into(), None).unwrap();
         host.assistant_tasks.bind_execution(&task.id, task.revision, &owner, "cli".into(), TaskMode::ReadOnly, None).unwrap();
+        assert!(cli(attachment()).unwrap_err().contains("protected assistant execution room"));
         let participant = json!({"id":"a","display_name":"A","backend":{"kind":"agent","tool":"codex"},"access":"read"});
         for value in [
             json!({"cmd":"room_post","args":{"id":"cli","text":"hi"}}),

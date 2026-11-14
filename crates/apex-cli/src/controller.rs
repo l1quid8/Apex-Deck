@@ -24,6 +24,29 @@ pub struct Outcome {
     /// Open the settings panel on this row, optionally on one agent.
     pub settings: Option<(crate::settings::Row, Option<String>)>,
 }
+/// The sign-in choices for one provider. On Linux they sign in Deck's own
+/// login, the one jailed agents use, and Codex leads with the device code
+/// because a server rarely has a browser that reaches Codex's local callback.
+pub fn login_menu(provider: &str, store: crate::provider_setup::Store) -> Outcome {
+    let setup = |method: &str| Action::Setup(format!("login {provider} {method}"));
+    let subscription = if provider == "codex" { "browser" } else { "subscription" };
+    let mut choices = Vec::new();
+    if matches!(store, crate::provider_setup::Store::Deck(_)) {
+        choices.push(choice("Use Deck's existing sign-in", "Checks Deck's own login for agents; your own login is never copied", setup("reuse")));
+        if provider == "codex" {
+            choices.push(choice("Sign in with device code", "Open a link on any device and type a code · signs Deck in, not your own Codex", setup("device")));
+            choices.push(choice("Sign in with browser", "Needs a browser on this machine · signs Deck in, not your own Codex", setup("browser")));
+        } else {
+            choices.push(choice("Sign in with subscription", "Official Claude Code sign-in · signs Deck in, not your own ~/.claude", setup(subscription)));
+        }
+    } else {
+        choices.push(choice("Use existing sign-in", "Probe the provider; never copy its tokens", setup("reuse")));
+        choices.push(choice("Sign in with subscription", "Opens the official provider sign-in; shares its account with other provider tools", setup(subscription)));
+        if provider == "codex" { choices.push(choice("Sign in with device code", "Official Codex device-code login", setup("device"))); }
+    }
+    choices.push(choice("Cancel", "Keep existing provider settings", Action::Dismiss));
+    menu(if store == crate::provider_setup::Store::Person { format!("Attach {provider}") } else { format!("Sign Deck in to {provider}") }, choices)
+}
 pub fn choice(label: impl Into<String>, detail: impl Into<String>, action: Action) -> Choice {
     Choice {
         label: label.into(),
@@ -267,11 +290,7 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
                 let mut words=arg.split_whitespace();let provider=words.next().unwrap_or("");let method=words.next();
                 if !matches!(provider,"codex"|"claude") || words.next().is_some() { return Err("Usage: /login codex [browser|device|reuse] or /login claude [subscription|reuse]".into()); }
                 if method.is_none() {
-                    let mut choices=vec![choice("Use existing sign-in", "Probe the provider; never copy its tokens",Action::Setup(format!("login {provider} reuse")))];
-                    choices.push(choice("Sign in with subscription", "Opens the official provider sign-in; shares its account with other provider tools",Action::Setup(format!("login {provider} {}",if provider=="codex"{"browser"}else{"subscription"}))));
-                    if provider=="codex" {choices.push(choice("Sign in with device code", "Official Codex device-code login",Action::Setup("login codex device".into())));}
-                    choices.push(choice("Cancel", "Keep existing provider settings",Action::Dismiss));
-                    return Ok(menu(format!("Attach {provider}"),choices));
+                    return Ok(login_menu(provider, crate::provider_setup::Store::for_data(&c.data, provider)));
                 }
             }
             return Ok(menu("Standalone setup",vec![choice("Continue", "Continue this explicit setup action",Action::Setup(format!("{key} {arg}").trim().to_string())),choice("Cancel","No changes",Action::Dismiss)]));
@@ -374,6 +393,9 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
             .await?;
             out.notice = "Thread renamed.".into();
         }
+        HandlerId::Attach | HandlerId::Detach => {
+            return Err("Attachment commands use the terminal's staged queue.".into());
+        }
         HandlerId::Add => {
             let chat = c.state["snapshot"]["kind"] == "chat";
             let profiles = if chat {
@@ -405,7 +427,7 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
                 }
                 let provider=match p["backend"]["tool"].as_str(){Some("codex")=>Some("codex"),Some("claude_code")=>Some("claude"),_=>None};
                 if let Some(provider)=provider {
-                    if !status.contains_key(provider) {let ready=crate::provider_setup::status(provider).await.is_ok_and(|v|v["loggedIn"]==true&&v["method"]=="subscription");status.insert(provider,ready);}
+                    if !status.contains_key(provider) {let ready=crate::provider_setup::status(provider,&crate::provider_setup::Store::for_data(&c.data,provider)).await.is_ok_and(|v|v["loggedIn"]==true&&v["method"]=="subscription");status.insert(provider,ready);}
                     if status.get(provider)!=Some(&true){continue;}
                 }
                 if row["chatOk"] != true {

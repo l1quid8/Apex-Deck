@@ -351,5 +351,29 @@
     "argumentMode": "optional",
     "scope": "client",
     "appCommand": null
+  },
+  {
+    "key": "attach",
+    "label": "/attach",
+    "detail": "Stage files: /attach <path> \u00b7 Ctrl+V or /attach --clipboard for a screenshot",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "attach",
+    "argumentMode": "optional",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
+    "key": "detach",
+    "label": "/detach",
+    "detail": "Remove staged files: /detach <number> or /detach all",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "detach",
+    "argumentMode": "optional",
+    "scope": "thread",
+    "appCommand": null
   }
 ]
