@@ -35,6 +35,8 @@ pub mod media;
 pub mod model_metrics;
 mod muse_server;
 mod openai;
+/// Shared stateless OpenAI Responses wire translation for direct and gateway clients.
+pub mod responses;
 mod owned_process;
 mod phone_env;
 mod plan_cache;
