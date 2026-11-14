@@ -80,6 +80,28 @@ fi
 /usr/bin/codesign --verify --strict -R='anchor apple generic' "$DAEMON" 2>/dev/null || {
   echo 'FAIL the daemon does not pass a strict anchored signature check' >&2; exit 1; }
 
+# A valid hardened signature alone does not let Electron initialize V8. An
+# outer bundle re-sign can silently drop the main executable's JIT entitlement.
+entitlements=$(/usr/bin/codesign -d --entitlements - --xml "$APP" 2>/dev/null) || {
+  echo 'FAIL cannot read app entitlements' >&2; exit 1; }
+if ! /usr/bin/python3 -I - "$entitlements" <<'PY'
+import plistlib, sys
+raw = sys.argv[1].encode()
+if not raw.strip():
+    raise SystemExit('FAIL app entitlements are absent')
+try:
+    values = plistlib.loads(raw)
+except Exception as error:
+    raise SystemExit('FAIL unreadable app entitlements: %s' % error)
+if not isinstance(values, dict):
+    raise SystemExit('FAIL app entitlements are not a dictionary')
+if values.get('com.apple.security.cs.allow-jit') is not True:
+    raise SystemExit('FAIL app requires com.apple.security.cs.allow-jit = true')
+PY
+then
+  exit 1
+fi
+
 for image in "$APP" "$DAEMON"; do
   details=$(/usr/bin/codesign -d --verbose=4 "$image" 2>&1)
   [[ "$details" == *'(runtime)'* ]] || {

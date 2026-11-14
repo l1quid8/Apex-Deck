@@ -229,10 +229,7 @@ final class Accessibility {
       [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary)
   }
   func running(_ bundle: String) throws -> NSRunningApplication {
-    // A headless copy of the same browser has no windows, so it isn't a second candidate.
-    let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter {
-      !$0.isTerminated && $0.activationPolicy != .prohibited
-    }
+    let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter(NativeAppCandidates.includes)
     guard apps.count == 1 else {
       throw Refusal("target_not_running_or_ambiguous")
     }

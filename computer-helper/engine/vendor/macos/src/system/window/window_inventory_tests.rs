@@ -368,3 +368,42 @@ fn narrowing_leaves_nothing_when_an_application_has_only_panels() {
 
     assert!(windows.is_empty());
 }
+
+#[test]
+fn narrowing_keeps_ax_focused_window_without_cg_visibility() {
+    let mut focused = window_with_state("ax-focused", Some(false), None);
+    focused.state.is_focused = true;
+    focused.state.accessible = false;
+    let mut windows = vec![
+        focused,
+        window_with_state("cg-only-panel", Some(false), None),
+    ];
+
+    narrow_to_real_windows(&mut windows);
+
+    let kept = windows.iter().map(|w| w.id.as_str()).collect::<Vec<_>>();
+    assert_eq!(kept, vec!["ax-focused"]);
+}
+
+#[test]
+fn ax_focused_window_survives_a_missing_cg_onscreen_record() {
+    // Brave reports its focused window as not on screen while still naming it as
+    // the focused AX window, and omits it from AXWindows, so neither the
+    // visibility nor the minimized clause can classify it.
+    let mut focused_record = record("Brave Browser", 10, "UCU click and typing fixture", 44);
+    focused_record.visible = false;
+
+    let mut windows = windows_from_records_with_focus(
+        vec![focused_record],
+        false,
+        |_| Ok(ax_state(Some((None, Some(44))))),
+        |_, _| Ok(true),
+    )
+    .unwrap();
+    narrow_to_real_windows(&mut windows);
+
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].id, "w-44");
+    assert!(windows[0].state.is_focused);
+    assert_eq!(windows[0].state.visible, Some(false));
+}

@@ -14,17 +14,14 @@ public enum TypeLadder {
   /// What a write call proves. Only an outright refusal means nothing can land later.
   public enum Write { case applied, refused, unknown }
   public static func run(text: String, value: String, selection: NSRange?, gate: () throws -> Void,
-    insert: (String) -> Write, replace: (String) -> Write, settled: (String, Double) -> String?) throws {
+    insert: (String) -> Write, replace: (String) -> Write, restoreSelection: (NSRange) -> Bool, settled: (String, Double) -> String?) throws {
     guard !text.isEmpty else { return }
-    let range = selection ?? NSRange(location: value.utf16.count, length: 0)
+    guard let range = selection else { throw Refusal("editable_value_or_selection_unavailable") }
     guard range.location >= 0, range.length >= 0, NSMaxRange(range) <= value.utf16.count else {
       throw Refusal("editable_state_changed")
     }
-    var pending = false // An earlier write may still land, so nothing can promise it didn't.
-    if selection != nil {
-      guard let unchanged = try selectedText(text, value: value, range: range, gate: gate, insert: insert, settled: settled) else { return }
-      pending = unchanged
-    }
+    // An earlier write may still land, so nothing can promise it didn't.
+    guard let pending = try selectedText(text, value: value, range: range, gate: gate, insert: insert, restoreSelection: restoreSelection, settled: settled) else { return }
     do { try gate() } catch let error as Refusal {
       throw pending ? Refusal("\(error.code); delivery=delivery_uncertain; retry=unsafe") : error
     }
@@ -33,13 +30,27 @@ public enum TypeLadder {
       throw Refusal(pending ? uncertain : "type_verification_failed; delivery=not_delivered; retry=safe")
     }
     let live = settled(expected, patiently)
-    if live == expected { return }
+    if live == expected {
+      try restoreCaret(NSRange(location: range.location + text.utf16.count, length: 0), gate: gate, restoreSelection: restoreSelection)
+      return
+    }
     throw Refusal(live == value ? uncertain : unverified)
+  }
+  /// Replacing AXValue may reset the caret to the end. Read back the requested
+  /// insertion point before allowing another chunk or reporting success.
+  private static func restoreCaret(_ range: NSRange, gate: () throws -> Void,
+    restoreSelection: (NSRange) -> Bool) throws {
+    do { try gate() } catch let error as Refusal {
+      throw Refusal("\(error.code); delivery=delivered_unverified; retry=unsafe")
+    }
+    guard restoreSelection(range) else {
+      throw Refusal("type_selection_verification_failed; delivery=delivered_unverified; retry=unsafe")
+    }
   }
   /// Nil when the text went in. Otherwise the first write changed nothing, which is the
   /// cue for the next rung, and the answer says whether that write could still land.
   private static func selectedText(_ text: String, value: String, range: NSRange, gate: () throws -> Void,
-    insert: (String) -> Write, settled: (String, Double) -> String?) throws -> Bool? {
+    insert: (String) -> Write, restoreSelection: (NSRange) -> Bool, settled: (String, Double) -> String?) throws -> Bool? {
     let characters = Array(text)
     var current = value
     var caret = range
@@ -58,6 +69,7 @@ public enum TypeLadder {
       }
       current = next
       caret = NSRange(location: caret.location + piece.utf16.count, length: 0)
+      try restoreCaret(caret, gate: gate, restoreSelection: restoreSelection)
       offset += chunk
     }
     return nil

@@ -92,31 +92,35 @@ final class ValidationTests: XCTestCase {
 
   private final class Field {
     var value: String
+    var selection: NSRange?
     var insertWorks = true
     var valueWorks = true
     var writes = [String]()
     init(_ value: String) { self.value = value }
   }
   private func type(_ text: String, into field: Field, selection: NSRange?, gate: @escaping () throws -> Void = {}) throws {
-    var caret = selection
+    field.selection = selection
     try TypeLadder.run(text: text, value: field.value, selection: selection, gate: gate, insert: { chunk in
       field.writes.append("selected")
-      guard field.insertWorks, let range = caret else { return .applied } // API reports success either way.
+      guard field.insertWorks, let range = field.selection else { return .applied } // API reports success either way.
       field.value = (field.value as NSString).replacingCharacters(in: range, with: chunk)
-      caret = NSRange(location: range.location + chunk.utf16.count, length: 0)
+      field.selection = NSRange(location: range.location + chunk.utf16.count, length: 0)
       return .applied
     }, replace: { value in
       field.writes.append("value")
-      if field.valueWorks { field.value = value }
+      if field.valueWorks {
+        field.value = value
+        field.selection = NSRange(location: value.utf16.count, length: 0)
+      }
       return .applied
-    }, settled: { _, _ in field.value })
+    }, restoreSelection: { field.selection = $0; return true }, settled: { _, _ in field.value })
   }
   func testOnlyTheFinalReadBackIsPatient() throws {
     var waits = [Double]()
     let field = Field("abc"); field.insertWorks = false
     try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: {},
       insert: { _ in .applied }, replace: { field.value = $0; return .applied },
-      settled: { _, wait in waits.append(wait); return field.value })
+      restoreSelection: { _ in true }, settled: { _, wait in waits.append(wait); return field.value })
     XCTAssertEqual(waits, [TypeLadder.quickly, TypeLadder.patiently])
   }
   func testSelectedTextIsEnoughWhenTheAppHonoursIt() throws {
@@ -131,11 +135,53 @@ final class ValidationTests: XCTestCase {
     XCTAssertEqual(field.value, "hello there")
     XCTAssertEqual(field.writes, ["selected", "value"])
   }
-  func testNoSelectionAppendsThroughTheValue() throws {
+  func testConsecutiveFallbackTypesContinueAtTheInsertionPoint() throws {
+    for (value, range, first) in [
+      ("hello world", NSRange(location: 6, length: 0), "big "),
+      ("hello world!", NSRange(location: 6, length: 5), "there"),
+      ("hello world", NSRange(location: 6, length: 0), "👩🏽‍💻")
+    ] {
+      let field = Field(value); field.insertWorks = false
+      try type(first, into: field, selection: range)
+      let expectedCaret = NSRange(location: range.location + first.utf16.count, length: 0)
+      XCTAssertEqual(field.selection, expectedCaret)
+      let afterFirst = (value as NSString).replacingCharacters(in: range, with: first)
+      try type("NEXT", into: field, selection: field.selection)
+      XCTAssertEqual(field.value, (afterFirst as NSString).replacingCharacters(in: expectedCaret, with: "NEXT"))
+    }
+  }
+  func testSelectionWritesAreSkippedWhenStoppedAfterTextLands() throws {
+    var gates = 0
+    var restored = false
+    var value = "abc"
+    XCTAssertThrowsError(try TypeLadder.run(text: "x", value: value,
+      selection: NSRange(location: 0, length: 0), gate: {
+        gates += 1
+        if gates == 3 { throw Refusal("cancelled_or_stopped") }
+      }, insert: { _ in .refused }, replace: { value = $0; return .applied },
+      restoreSelection: { _ in restored = true; return true }, settled: { _, _ in value })) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "cancelled_or_stopped; delivery=delivered_unverified; retry=unsafe")
+    }
+    XCTAssertEqual(value, "xabc")
+    XCTAssertFalse(restored)
+  }
+  func testUnrestorableCaretDoesNotClaimSuccessfulTyping() throws {
+    var value = "abc"
+    XCTAssertThrowsError(try TypeLadder.run(text: "x", value: value,
+      selection: NSRange(location: 0, length: 0), gate: {},
+      insert: { _ in .refused }, replace: { value = $0; return .applied },
+      restoreSelection: { _ in false }, settled: { _, _ in value })) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "type_selection_verification_failed; delivery=delivered_unverified; retry=unsafe")
+    }
+    XCTAssertEqual(value, "xabc")
+  }
+  func testNoSelectionRefusesWithoutGuessingAppend() throws {
     let field = Field("example")
-    try type(".com", into: field, selection: nil)
-    XCTAssertEqual(field.value, "example.com")
-    XCTAssertEqual(field.writes, ["value"])
+    XCTAssertThrowsError(try type(".com", into: field, selection: nil)) {
+      XCTAssertEqual(($0 as? Refusal)?.code, "editable_value_or_selection_unavailable")
+    }
+    XCTAssertEqual(field.value, "example")
+    XCTAssertTrue(field.writes.isEmpty)
   }
   func testAFieldThatIgnoresBothRungsIsNotReportedAsTyped() {
     let field = Field("abc"); field.insertWorks = false; field.valueWorks = false
@@ -146,13 +192,13 @@ final class ValidationTests: XCTestCase {
   func testAFieldThatChangedSomethingElseIsDeliveredButUnverified() {
     let field = Field("abc")
     XCTAssertThrowsError(try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: {},
-      insert: { _ in field.value = "abcx.com"; return .applied }, replace: { _ in .applied }, settled: { _, _ in field.value })) {
+      insert: { _ in field.value = "abcx.com"; return .applied }, replace: { _ in .applied }, restoreSelection: { _ in true }, settled: { _, _ in field.value })) {
       XCTAssertEqual(($0 as? Refusal)?.code, "type_verification_failed; delivery=delivered_unverified; retry=unsafe")
     }
   }
   private func ladder(insert: TypeLadder.Write, replace: TypeLadder.Write, gate: @escaping () throws -> Void = {}) throws {
     try TypeLadder.run(text: "x", value: "abc", selection: NSRange(location: 3, length: 0), gate: gate,
-      insert: { _ in insert }, replace: { _ in replace }, settled: { _, _ in "abc" })
+      insert: { _ in insert }, replace: { _ in replace }, restoreSelection: { _ in true }, settled: { _, _ in "abc" })
   }
   func testOnlyAPlainRefusalOfEveryRungIsSafeToRetry() {
     XCTAssertThrowsError(try ladder(insert: .refused, replace: .refused)) {

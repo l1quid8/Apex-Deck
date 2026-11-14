@@ -157,8 +157,25 @@ fn visible_window_pids(records: &[cg_window::WindowRecord]) -> rustc_hash::FxHas
         .collect()
 }
 
+/// Drop CoreGraphics records that are not windows the caller can target.
+///
+/// A record survives when CoreGraphics reports it on screen, when accessibility
+/// classifies it (a readable `AXMinimized` implies an AX window element), or when
+/// accessibility names it as its application's focused window.
+///
+/// The focus clause covers applications whose focused window carries no
+/// `kCGWindowIsOnscreen` record, which CoreGraphics omits for windows that are not
+/// on the active space. Brave does this for a window it still reports as focused,
+/// and dropping it made capture refuse a window id that the caller had just been
+/// handed. Focus attribution requires an exact AX window identity (the window
+/// number, or an unambiguous title match) and is recorded at most once per
+/// process, so this admits at most one otherwise-invisible window per application.
 fn narrow_to_real_windows(windows: &mut Vec<WindowInfo>) {
-    windows.retain(|window| window.state.visible == Some(true) || window.state.minimized.is_some());
+    windows.retain(|window| {
+        window.state.visible == Some(true)
+            || window.state.minimized.is_some()
+            || window.state.is_focused
+    });
 }
 
 pub(crate) fn exact_window_for_pid_until(

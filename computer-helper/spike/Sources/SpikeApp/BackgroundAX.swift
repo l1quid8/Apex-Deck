@@ -21,19 +21,27 @@ enum BackgroundSupport {
     return false
   }
 
-  static func allWindows(root: AXUIElement) -> [AXUIElement] {
-    guard let raw = attr(root, kAXWindowsAttribute as String) else { return [] }
-    if CFGetTypeID(raw) == CFArrayGetTypeID(), let arr = raw as? [AXUIElement] { return arr }
-    // Fallback: single window via attribute count API
-    var count: CFIndex = 0
-    if AXUIElementGetAttributeValueCount(root, kAXWindowsAttribute as CFString, &count) == .success, count > 0 {
-      var values: CFArray?
-      if AXUIElementCopyAttributeValues(root, kAXWindowsAttribute as CFString, 0, min(count, 50), &values) == .success,
-         let list = values as? [AXUIElement] {
-        return list
+  static func allWindows(root: AXUIElement, read: (AXUIElement, String) -> CFTypeRef? = attr) -> [AXUIElement] {
+    var windows = read(root, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+    if windows.isEmpty {
+      var count: CFIndex = 0
+      if AXUIElementGetAttributeValueCount(root, kAXWindowsAttribute as CFString, &count) == .success, count > 0 {
+        var values: CFArray?
+        if AXUIElementCopyAttributeValues(root, kAXWindowsAttribute as CFString, 0, min(count, 50), &values) == .success,
+           let list = values as? [AXUIElement] {
+          windows = list
+        }
       }
     }
-    return []
+    // Brave can return an empty/incomplete AXWindows while its live focused or
+    // main window remains readable. Re-query those references on every call;
+    // validate still requires the exact captured element, owner and safe ancestry.
+    for key in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+      guard let raw = read(root, key), CFGetTypeID(raw) == AXUIElementGetTypeID() else { continue }
+      let window = raw as! AXUIElement
+      if !windows.contains(where: { same($0, window) }) { windows.append(window) }
+    }
+    return windows
   }
 
   static func windowInfos(root: AXUIElement, focusedWindow: AXUIElement?) -> [WindowInfo] {

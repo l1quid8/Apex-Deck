@@ -355,7 +355,7 @@ final class Server {
     }
     if name == "list_apps" {
       guard args.isEmpty else { throw Refusal("unexpected_arguments") }
-      let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy != .prohibited && Policy.target($0.bundleIdentifier ?? "") }
+      let apps = NSWorkspace.shared.runningApplications.filter { NativeAppCandidates.includes($0) && Policy.target($0.bundleIdentifier ?? "") }
       let rows = [["app": BrowserBroker.resource, "name": BrowserBroker.name]] + apps.prefix(100).map { ["app": $0.bundleIdentifier ?? "", "name": $0.localizedName ?? ""] }
       let bytes = try JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys])
       return ["content": [["type": "text", "text": String(data: bytes, encoding: .utf8) ?? "[]"]]]
@@ -412,7 +412,7 @@ final class Server {
     guard Set(args.keys) == ["app"], let bundle = args["app"] as? String else { throw Refusal("invalid_arguments") }
     guard bundle.allSatisfy(\.isASCII) else { throw Refusal("app_id_not_plain_ascii") }
     guard Policy.target(bundle) else { throw Refusal("protected_or_unavailable_app") }
-    let open = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter { !$0.isTerminated && $0.activationPolicy != .prohibited }
+    let open = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter(NativeAppCandidates.includes)
     let url = try AppIdentity.source(running: open.map(\.bundleURL), registered: NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle))
     let identity = try AppIdentity.capture(url, bundle: bundle)
     // The permission prompt names exactly what's running, checked before anyone is asked.
@@ -424,7 +424,7 @@ final class Server {
     }
     let control = try turns.canControl(token)
     if control, try lease.claim(token) { activity.invalidateObservations() }
-    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter { !$0.isTerminated && $0.activationPolicy != .prohibited }
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).filter(NativeAppCandidates.includes)
     guard running.count <= 1 else { throw Refusal("target_ambiguous") }
     let launching = running.isEmpty
     guard control || !launching else { throw Refusal("read_access_cannot_launch_app") }

@@ -302,9 +302,11 @@ static_entitlements() {
     id="static.entitlements.${pair%%:*}"
     image=${pair#*:}
     [[ -e "$image" ]] || { skip_check "$id" "not installed: $image"; continue; }
-    # stdout only: the deprecated ':-' spelling warns on stderr.
-    /usr/bin/codesign -d --entitlements :- "$image" 2>/dev/null > "$WORK/ent.plist"
-    verdict=$(/usr/bin/python3 -I - "$WORK/ent.plist" <<'PY'
+    if ! /usr/bin/codesign -d --entitlements - --xml "$image" 2>/dev/null > "$WORK/ent.plist"; then
+      fail_check "$id" "cannot read entitlements: $image"
+      continue
+    fi
+    verdict=$(/usr/bin/python3 -I - "$WORK/ent.plist" "${pair%%:*}" <<'PY'
 import plistlib, sys
 banned = {
     'com.apple.security.get-task-allow': 'debugger attach',
@@ -316,6 +318,8 @@ banned = {
 }
 raw = open(sys.argv[1], 'rb').read()
 if not raw.strip():
+    if sys.argv[2] == 'app':
+        print('FAIL app entitlements are absent'); raise SystemExit
     print('OK no entitlements'); raise SystemExit
 try:
     values = plistlib.loads(raw)
@@ -326,6 +330,8 @@ if not isinstance(values, dict):
 found = sorted(k for k in banned if values.get(k))
 if found:
     print('FAIL %s' % ', '.join('%s (%s)' % (k, banned[k]) for k in found)); raise SystemExit
+if sys.argv[2] == 'app' and values.get('com.apple.security.cs.allow-jit') is not True:
+    print('FAIL app requires com.apple.security.cs.allow-jit = true'); raise SystemExit
 print('OK %s' % (', '.join(sorted(values)) or 'none'))
 PY
 )
