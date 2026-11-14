@@ -58,6 +58,15 @@ pub enum Action {
         answers: Vec<Vec<String>>,
     },
 }
+impl Action {
+    /// Approve/Reject (including its confirm step) and question answers.
+    /// These must run while a message is still sending: a Work-thread post
+    /// only returns when the agent's turn ends, and that turn is waiting on
+    /// this very reply.
+    pub fn replies_to_agent(&self) -> bool {
+        matches!(self, Action::Rpc { cmd, .. } if cmd == "room_decide" || cmd == "room_answer")
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Choice {
     pub label: String,
@@ -84,6 +93,8 @@ pub struct AppState {
     pub cursor: Option<Cursor>,
     pub editor: Editor,
     pub menu: Option<Menu>,
+    /// The approval card (`crate::approval_card`), when open.
+    pub card: Option<crate::approval_card::Card>,
     pub notice: String,
     pub drafts: HashMap<String, Editor>,
     pub answering: bool,
@@ -98,6 +109,8 @@ pub struct AppState {
     pub settings: Option<crate::settings::Panel>,
     pub saves: crate::settings::Saves,
     buffered: VecDeque<Value>,
+    /// Requests in the open thread the person has already been told about.
+    announced: std::collections::HashSet<String>,
     /// Highest recovery number already reflected in the selected room's live
     /// view. Set by the first snapshot installed after selection; events at or
     /// below it are already counted, snapshots below it would rewind.
@@ -110,7 +123,20 @@ impl AppState {
         self.activity.clear();
         self.buffered.clear();
         self.applied = None;
+        self.announced.clear();
+        self.card = None;
         self.overflowed = false;
+    }
+    /// Call on every (re)connect. A fresh backend or failed replay drops all
+    /// live state; a resumed replay keeps it. Either way, waiting requests are
+    /// announced again once the thread reloads.
+    pub fn connected(&mut self, hello: &Value) {
+        let boot = hello["boot_id"].as_str().unwrap_or("").to_string();
+        if self.cursor.as_ref().is_none_or(|old| old.boot_id != boot) || hello["resumed"] != true {
+            self.cursor = Some(Cursor { boot_id: boot, seq: hello["last_seq"].as_u64().unwrap_or(0) });
+            self.reset_connection_state();
+        }
+        self.announced.clear();
     }
     pub fn select(&mut self, id: String) {
         self.drafts.insert(
@@ -120,6 +146,7 @@ impl AppState {
         self.editor = self.drafts.remove(&id).unwrap_or_default();
         self.answering = false;
         self.settings = None;
+        self.card = None;
         self.selected = Some(id);
         self.generation += 1;
         self.busy = false;
@@ -127,8 +154,42 @@ impl AppState {
         self.activity.clear();
         self.buffered.clear();
         self.applied = None;
+        self.announced.clear();
         self.history = Default::default();
         self.view = 1;
+    }
+    /// Approvals plus questions waiting in the open thread.
+    pub fn pending_requests(&self) -> usize {
+        self.current().map_or(0, |r| {
+            ["approvals", "questions"].iter().map(|k| r[*k].as_array().map_or(0, Vec::len)).sum()
+        })
+    }
+    /// Call after any event or snapshot. Returns true when the request list
+    /// should open now. When a request is new but the person is typing, in a
+    /// menu or panel, or answering, it only leaves a notice so no keystroke
+    /// meant for something else can approve or reject it.
+    pub fn announce_requests(&mut self, answering: bool) -> bool {
+        let waiting: std::collections::HashSet<String> = self.current().map_or_else(Default::default, |r| {
+            ["approvals", "questions"]
+                .iter()
+                .flat_map(|k| r[*k].as_array().into_iter().flatten())
+                .map(|e| e["request"].to_string())
+                .collect()
+        });
+        let fresh = waiting.iter().any(|k| !self.announced.contains(k));
+        self.announced = waiting;
+        if !fresh {
+            return false;
+        }
+        // An open card already shows the queue ("1 of 2"); nothing to add.
+        if self.card.is_some() {
+            return false;
+        }
+        if self.menu.is_none() && self.settings.is_none() && !answering && self.editor.text.is_empty() {
+            return true;
+        }
+        self.notice = "An agent is waiting for your approval or answer · F2 Requests".into();
+        false
     }
     pub fn current(&self) -> Option<&Value> {
         self.selected.as_ref().and_then(|id| self.rooms.get(id))
@@ -254,7 +315,24 @@ impl AppState {
                 if let Some(active) = room["active"].as_array_mut() {
                     active.retain(|v| v != id);
                 }
+                for list in ["approvals", "questions"] {
+                    if let Some(open) = room[list].as_array_mut() {
+                        open.retain(|v| &v["id"] != id);
+                    }
+                }
             }
+            // Mirror the host's live wait lists so F2 and the auto-prompt see
+            // requests raised after the snapshot was loaded.
+            "approval_requested" => {
+                let entry = json!({"id":id,"request":event["request"],"action":event["action"]});
+                upsert(&mut room["approvals"], entry);
+            }
+            "question_requested" => {
+                let entry = json!({"id":id,"request":event["request"],"questions":event["questions"]});
+                upsert(&mut room["questions"], entry);
+            }
+            "approval_resolved" => drop_request(&mut room["approvals"], &event["request"]),
+            "question_resolved" => drop_request(&mut room["questions"], &event["request"]),
             "idle" | "stopped" => {
                 room["active"] = json!([]);
                 room["approvals"] = json!([]);
@@ -301,9 +379,14 @@ impl AppState {
                     self.activity.remove(p);
                 }
             }
-            "participant_idle" | "failed" => {
+            "participant_idle" => {
                 self.streams.remove(&id);
                 self.activity.remove(&id);
+            }
+            "failed" => {
+                self.streams.remove(&id);
+                self.activity.remove(&id);
+                self.notice = self.failure_notice(&id, event["error"].as_str().unwrap_or(""));
             }
             "idle" | "stopped" => {
                 self.streams.clear();
@@ -311,6 +394,23 @@ impl AppState {
             }
             _ => {}
         }
+    }
+    /// What the person sees when an agent's turn ends in an error, which the
+    /// host doesn't keep in the transcript.
+    fn failure_notice(&self, id: &str, error: &str) -> String {
+        let name = self.members().into_iter().find(|p| p["id"] == id)
+            .and_then(|p| p["display_name"].as_str().or_else(|| p["name"].as_str()).map(str::to_string))
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| id.to_string());
+        let error = error.split_whitespace().collect::<Vec<_>>().join(" ");
+        let lower = error.to_lowercase();
+        let sign_in = lower.contains("not logged in") || lower.contains("not signed in")
+            || lower.contains("token expired") || lower.contains("token has expired")
+            || lower.contains("authentication token") || lower.contains("failed to refresh") && lower.contains("token")
+            || lower.contains("connection needs refreshing");
+        let hint = if sign_in && !lower.contains("/login") { " · Run /login to sign in again." } else { "" };
+        let error = if error.chars().count() > 400 { format!("{}…", error.chars().take(400).collect::<String>()) } else { error };
+        if error.is_empty() { format!("{name} couldn't reply.") } else { format!("{name} couldn't reply: {error}{hint}") }
     }
     /// Agents to show as working: the host's busy list, else live activity.
     pub fn working(&self) -> Vec<String> {
@@ -354,4 +454,18 @@ pub fn mention(p: &Value) -> String {
     serde_json::from_value::<apex_core::ParticipantConfig>(p.clone())
         .map(|p| apex_core::mention_for(&p))
         .unwrap_or_else(|_| p["id"].as_str().unwrap_or("").to_string())
+}
+
+fn upsert(list: &mut Value, entry: Value) {
+    if !list.is_array() {
+        *list = json!([]);
+    }
+    let open = list.as_array_mut().expect("array");
+    open.retain(|v| v["request"] != entry["request"]);
+    open.push(entry);
+}
+fn drop_request(list: &mut Value, request: &Value) {
+    if let Some(open) = list.as_array_mut() {
+        open.retain(|v| &v["request"] != request);
+    }
 }

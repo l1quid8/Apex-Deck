@@ -1,4 +1,5 @@
 use crate::{
+    approval_card::CardIntent,
     args::Args,
     client::{Client, Cursor},
     commands::{parse_input, ParsedInput},
@@ -140,7 +141,11 @@ fn load(s: &AppState, client: &Option<Client>, tx: &mpsc::Sender<Update>) {
     });
 }
 fn apply_outcome(s: &mut AppState, out: Outcome) -> bool {
-    s.notice = out.notice;
+    // A Work post completes after the agent does. Its empty acknowledgment
+    // must not erase a failure event received during that turn.
+    if out.open.is_some() || !out.notice.is_empty() {
+        s.notice = out.notice;
+    }
     if let Some((row, agent)) = out.settings {
         crate::settings::open(s, Some(row), agent);
     }
@@ -232,6 +237,9 @@ fn submit(s: &mut AppState, client: &Option<Client>, data: &Path, tx: &mpsc::Sen
     if !independent {
         s.busy = true;
     }
+    // A deliberate new submission replaces the previous status. Events
+    // raised during this submission remain visible after its acknowledgment.
+    s.notice.clear();
     s.view = 1;
     tokio::spawn(async move {
         let result = if let Some(message_id) = message_id {
@@ -445,11 +453,16 @@ fn run_action(
                     return;
                 }
             };
-            if s.busy {
+            // Replies to a waiting agent skip the pending-message wait (see
+            // `Action::replies_to_agent`); everything else still queues.
+            let independent = action.replies_to_agent();
+            if s.busy && !independent {
                 s.notice = "A command is still pending.".into();
                 return;
             }
-            s.busy = true;
+            if !independent {
+                s.busy = true;
+            }
             s.menu = None;
             let tx = tx.clone();
             let generation = s.generation;
@@ -460,7 +473,7 @@ fn run_action(
                         generation,
                         result,
                         draft: None,
-                        release_busy: true,
+                        release_busy: !independent,
                     })
                     .await;
             });
@@ -531,35 +544,33 @@ fn panel_intent(s: &mut AppState, intent: crate::settings::PanelIntent, client: 
     }
     ensure_models(s, client, tx);
 }
+/// An agent is blocked on the user: open the request list unless that would
+/// steal keystrokes (see `AppState::announce_requests`).
+fn announce_request(s: &mut AppState, answering: bool) {
+    crate::approval_card::sync(s);
+    if s.announce_requests(answering) {
+        requests(s);
+    }
+}
+/// F2, or a new request: approvals open the card; questions, when no
+/// approval is waiting, open the question list.
 fn requests(s: &mut AppState) {
-    let Some(state) = s.current() else {
+    if s.current().is_none() {
         s.notice = "Open a thread first.".into();
         return;
-    };
-    let mut choices = vec![];
-    for a in state["approvals"].as_array().into_iter().flatten() {
-        let title = serde_json::to_string_pretty(&a["action"]).unwrap_or_default();
-        choices.push(choice(
-            format!("Reject · {}", a["id"].as_str().unwrap_or("agent")),
-            title.clone(),
-            rpc(
-                "room_decide",
-                json!({"id":s.selected,"request":a["request"],"approve":false}),
-            ),
-        ));
-        choices.push(choice(
-            format!("Approve · {}", a["id"].as_str().unwrap_or("agent")),
-            title.clone(),
-            Action::Rpc {
-                cmd: "room_decide".into(),
-                args: json!({"id":s.selected,"request":a["request"],"approve":true}),
-                confirmation: Some(format!("Approve this action? {title}")),
-            },
-        ));
     }
+    if crate::approval_card::open(s) {
+        s.settings = None;
+        return;
+    }
+    questions_menu(s);
+}
+fn questions_menu(s: &mut AppState) {
+    let Some(state) = s.current() else { return };
+    let mut choices = vec![];
     for q in state["questions"].as_array().into_iter().flatten() {
         choices.push(choice(
-            format!("Answer · {}", q["id"].as_str().unwrap_or("agent")),
+            format!("Answer · {}", request_agent(s, &q["id"])),
             q["questions"][0]["question"].as_str().unwrap_or("Question"),
             Action::Answer {
                 request: q["request"].as_str().unwrap_or("").into(),
@@ -571,9 +582,16 @@ fn requests(s: &mut AppState) {
     if choices.is_empty() {
         s.notice = "No pending approvals or questions.".into();
     } else {
-        s.menu = menu("Pending requests · default is no approval", choices).menu;
+        s.menu = menu("Questions from agents", choices).menu;
     }
 }
+fn request_agent(s: &AppState, id: &Value) -> String {
+    s.members().iter().find(|p| p["id"] == *id)
+        .and_then(|p| p["display_name"].as_str().or_else(|| p["name"].as_str()))
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| id.as_str().unwrap_or("agent")).to_owned()
+}
+
 async fn setup_agents(command:&str,s:&mut AppState,client:Option<&Client>,data:&Path)->Result<(),String>{
     let client=client.ok_or("Backend is disconnected")?;
     if let Some(payload)=command.strip_prefix("import-save ") {
@@ -620,6 +638,215 @@ async fn setup_agents(command:&str,s:&mut AppState,client:Option<&Client>,data:&
         _=>return Err("Use /agents create, /agents saved, or /agents edit <handle>".into()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use crate::terminal::{handle_event, Intent};
+
+    fn screen(s: &AppState, w: u16, h: u16) -> String {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| { ui::draw(f, s, 0); }).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect()
+    }
+    fn key(c: crossterm::event::KeyCode) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(c, crossterm::event::KeyModifiers::NONE))
+    }
+    fn chained() -> AppState {
+        let mut s = AppState::default();
+        s.select("work".into());
+        s.install_snapshot("work", s.generation, json!({"recovery_seq":0,"cwd":"/tmp/project","snapshot":{"participants":[{"id":"jigga","display_name":"Jigga","access":"ask"},{"id":"codey","display_name":"Codey"}]},
+            "approvals":[
+                {"id":"jigga","request":"r1","action":{"kind":"command","title":"Run a command","detail":"touch test.txt && ls -l test.txt && rm test.txt && ls test.txt 2>&1; git status --short","risky":false}},
+                {"id":"codey","request":"r2","action":{"kind":"edit","title":"Edit src/state.rs","detail":"@@ -10,2 +10,2 @@\n keep\n-old\n+new\n"}}],
+            "questions":[{"id":"codey","request":"q1","questions":[{"question":"Which branch?","options":[]}]}]}));
+        s
+    }
+
+    #[test]
+    fn requests_open_a_card_that_reads_plainly_and_shows_the_exact_command() {
+        let mut s = chained();
+        requests(&mut s);
+        assert!(s.card.is_some() && s.menu.is_none());
+        let text = screen(&s, 110, 30);
+        assert!(text.contains("Jigga wants to run 5 commands"), "{text}");
+        assert!(text.contains("1 of 2 · Ask"), "{text}");
+        assert!(text.contains("Written by Deck · Jigga gave no description"), "{text}");
+        assert!(text.contains("rm test.txt") && text.contains("only if step 2 worked") && text.contains("⚠ deletes files"), "{text}");
+        assert!(text.contains("always runs"), "{text}");
+        assert!(text.contains("Runs in") && text.contains("/tmp/project"), "{text}");
+        assert!(text.contains("Next: Codey wants to edit a file"), "{text}");
+        assert!(text.contains("A Approve") && text.contains("R Reject") && text.contains("Q 1 question"), "{text}");
+        assert!(!text.contains("\"kind\""));
+        // A tiny terminal still shows the keys.
+        let small = screen(&s, 60, 12);
+        assert!(small.contains("A Approve"), "{small}");
+    }
+
+    #[test]
+    fn card_keys_need_a_and_y_to_approve_and_never_act_on_enter_or_typing() {
+        use crossterm::event::KeyCode;
+        let mut s = chained();
+        requests(&mut s);
+        for k in [KeyCode::Enter, KeyCode::Char('x'), KeyCode::Char('y'), KeyCode::Left] {
+            assert_eq!(handle_event(&mut s, key(k)), Intent::Card(CardIntent::None));
+        }
+        assert!(s.editor.text.is_empty(), "keys on the card never reach the composer");
+        assert_eq!(handle_event(&mut s, Event::Paste("rm -rf".into())), Intent::None);
+        assert!(s.editor.text.is_empty());
+        // A then N goes back; A then Y approves exactly the request on show.
+        handle_event(&mut s, key(KeyCode::Char('a')));
+        assert!(screen(&s, 110, 30).contains("Yes, run it"));
+        handle_event(&mut s, key(KeyCode::Char('n')));
+        assert!(!s.card.as_ref().unwrap().confirming);
+        handle_event(&mut s, key(KeyCode::Char('A')));
+        assert_eq!(handle_event(&mut s, key(KeyCode::Char('y'))), Intent::Card(CardIntent::Decide{request:json!("r1"),approve:true}));
+        // The next request shows straight away; R rejects it with no confirm.
+        let text = screen(&s, 110, 30);
+        assert!(text.contains("Codey wants to edit a file") && text.contains("+1 −1 lines"), "{text}");
+        assert!(text.contains("− old") && text.contains("+ new"), "{text}");
+        assert_eq!(handle_event(&mut s, key(KeyCode::Char('r'))), Intent::Card(CardIntent::Decide{request:json!("r2"),approve:false}));
+        crate::approval_card::sync(&mut s);
+        assert!(s.card.is_none(), "nothing left to show");
+        assert!(s.notice.contains("question"), "{}", s.notice);
+    }
+
+    #[test]
+    fn card_tab_d_and_esc_leave_the_agent_waiting() {
+        use crossterm::event::KeyCode;
+        let mut s = chained();
+        requests(&mut s);
+        handle_event(&mut s, key(KeyCode::Tab));
+        assert!(screen(&s, 110, 30).contains("2 of 2"));
+        handle_event(&mut s, key(KeyCode::Char('d')));
+        assert!(s.card.as_ref().unwrap().expanded);
+        // Esc hides the card and stops nothing; F2 brings it back.
+        assert_eq!(handle_event(&mut s, key(KeyCode::Esc)), Intent::Card(CardIntent::None));
+        assert!(s.card.is_none());
+        assert_eq!(handle_event(&mut s, key(KeyCode::F(2))), Intent::Requests);
+        requests(&mut s);
+        assert!(s.card.is_some());
+        // Q opens the questions instead.
+        assert_eq!(handle_event(&mut s, key(KeyCode::Char('q'))), Intent::Card(CardIntent::Questions));
+        questions_menu(&mut s);
+        assert_eq!(s.menu.as_ref().unwrap().choices[0].label, "Answer · Codey");
+    }
+
+    #[test]
+    fn d_shows_every_character_of_a_long_command() {
+        use crossterm::event::KeyCode;
+        let tail = "--and-this-flag-is-the-very-end-of-it";
+        let long = format!("cargo test -p apex-cli --features remote,tls,linux-jail -- --nocapture --test-threads=1 {tail}");
+        let gap = "x".repeat(70);
+        let chain = format!("{long} && echo {gap} > notes.txt; git status --short");
+        let mut s = AppState::default();
+        s.select("work".into());
+        s.install_snapshot("work", s.generation, json!({"recovery_seq":0,"cwd":"/tmp/p","snapshot":{"participants":[{"id":"clyde","display_name":"Clyde","access":"ask"}]},
+            "approvals":[{"id":"clyde","request":"r1","action":{"kind":"command","title":"Run a command","detail":chain}}]}));
+        requests(&mut s);
+        // 60 columns: the first step and the echo step are both wider than a row.
+        let flat = |t: &str| t.lines().map(|l| l.trim_matches(|c: char| c == '│' || c.is_whitespace()).to_string()).collect::<String>().replace(' ', "");
+        let collapsed = screen(&s, 60, 40);
+        assert!(collapsed.contains("D Full command") && collapsed.contains("more lines · D to see all"), "{collapsed}");
+        assert!(flat(&collapsed).contains("writetexttonotes.txt"), "the summary names the file it writes\n{collapsed}");
+        handle_event(&mut s, key(KeyCode::Char('d')));
+        let open = screen(&s, 60, 40);
+        let body: String = open.lines().filter(|l| !l.contains("Esc Hide")).collect::<Vec<_>>().join("\n");
+        assert!(!body.contains('…'), "nothing is cut with …\n{open}");
+        assert!(flat(&collapsed).contains("thenshowgitstatus"), "the headline wraps, not cut\n{collapsed}");
+        let joined = flat(&open);
+        for part in [long.replace(' ', ""), format!("echo{gap}>notes.txt"), "gitstatus--short".into()] {
+            assert!(joined.contains(&part), "missing {part}\n{open}");
+        }
+        assert!(open.contains("only if step 1 worked") && open.contains("always runs"), "{open}");
+        // A short terminal still reaches the end by scrolling.
+        let short = screen(&s, 60, 16);
+        assert!(!flat(&short).contains("gitstatus--short"), "{short}");
+        for _ in 0..40 { handle_event(&mut s, key(KeyCode::Down)); }
+        assert!(flat(&screen(&s, 60, 16)).contains("gitstatus--short"));
+    }
+
+    #[test]
+    fn a_codex_wrapped_command_shows_its_shell_and_steps() {
+        // What Codey sent on the VPS: the 0.9.13 build's card said only "Run bash".
+        let live = "/bin/bash -lc 'echo card-test > card-0913.txt && cat card-0913.txt'";
+        let mut s = AppState::default();
+        s.select("work".into());
+        s.install_snapshot("work", s.generation, json!({"recovery_seq":0,"cwd":"/tmp/p","snapshot":{"participants":[{"id":"codey","display_name":"Codey","access":"ask"}]},
+            "approvals":[{"id":"codey","request":"r1","action":{"kind":"command","title":"Run a command","detail":live}}]}));
+        requests(&mut s);
+        let shown = screen(&s, 100, 30);
+        assert!(shown.contains("Write text to card-0913.txt, then show card-0913.txt"), "{shown}");
+        assert!(!shown.contains("Run bash"), "{shown}");
+        assert!(shown.contains("Shell") && shown.contains("/bin/bash -lc"), "the shell that runs the steps stays visible\n{shown}");
+        assert!(shown.contains("1 echo card-test > card-0913.txt") && shown.contains("2 cat card-0913.txt") && shown.contains("only if step 1 worked"), "{shown}");
+    }
+
+    #[test]
+    fn a_long_description_never_hides_the_command() {
+        use crossterm::event::KeyCode;
+        let words = "check every crate builds then compare the generated output against the saved copy and report any difference you find along the way ".repeat(4);
+        let said = format!("{words}END-OF-DESCRIPTION");
+        let mut s = AppState::default();
+        s.select("work".into());
+        s.install_snapshot("work", s.generation, json!({"recovery_seq":0,"cwd":"/tmp/p","snapshot":{"participants":[{"id":"clyde","display_name":"Clyde","access":"ask"}]},
+            "approvals":[{"id":"clyde","request":"r1","action":{"kind":"command","title":format!("Run a command · {said}"),"detail":"cargo build --workspace && diff out.txt saved.txt; echo LAST-STEP"}}]}));
+        requests(&mut s);
+        let flat = |t: &str| t.lines().map(|l| l.trim_matches(|c: char| c == '│' || c.is_whitespace()).to_string()).collect::<String>().replace(' ', "");
+        // Collapsed in a short terminal: the summary is cut, the command shows.
+        let collapsed = screen(&s, 60, 18);
+        assert!(flat(&collapsed).contains("cargobuild--workspace"), "the command must show\n{collapsed}");
+        assert!(!collapsed.contains("END-OF-DESCRIPTION") && collapsed.contains("D to see all"), "{collapsed}");
+        assert!(collapsed.contains("A Approve"), "{collapsed}");
+        // Expanded: the summary scrolls with the command, so both ends are reachable.
+        handle_event(&mut s, key(KeyCode::Char('d')));
+        let top = screen(&s, 60, 18);
+        assert!(top.contains("check every crate"), "{top}");
+        let mut seen = flat(&top);
+        for _ in 0..40 {
+            handle_event(&mut s, key(KeyCode::Down));
+            seen.push_str(&flat(&screen(&s, 60, 18)));
+        }
+        assert!(seen.contains("END-OF-DESCRIPTION"), "every word of the description is reachable");
+        let bottom = screen(&s, 60, 18);
+        assert!(flat(&bottom).contains("echoLAST-STEP"), "the last step is reachable\n{bottom}");
+    }
+
+    #[test]
+    fn card_shows_the_agents_own_description_and_follows_answers_from_elsewhere() {
+        let mut s = AppState::default();
+        s.select("work".into());
+        let snap = |approvals: Value| json!({"recovery_seq":0,"snapshot":{"participants":[{"id":"codey","display_name":"Codey","access":"ask"}]},"approvals":approvals});
+        s.install_snapshot("work", s.generation, snap(json!([{"id":"codey","request":"r9","action":{"kind":"command","title":"Run a command · Run the tests to check the fix","detail":"cargo test -p apex-cli","expires_at":(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64)+287_000}}])));
+        requests(&mut s);
+        let text = screen(&s, 100, 24);
+        assert!(text.contains("Run the tests to check the fix") && text.contains("Codey's own description"), "{text}");
+        assert!(text.contains("Command") && text.contains("cargo test -p apex-cli"), "{text}");
+        assert!(text.contains("Ask · expires in 4:4"), "{text}");
+        // Answered on the desktop: the card closes by itself.
+        s.rooms.get_mut("work").unwrap()["approvals"] = json!([]);
+        crate::approval_card::sync(&mut s);
+        assert!(s.card.is_none());
+    }
+
+    #[test]
+    fn send_completion_keeps_a_failed_turn_visible() {
+        let mut s = AppState::default();
+        s.select("work".into());
+        s.install_snapshot("work", s.generation, json!({"recovery_seq":0,"snapshot":{"participants":[{"id":"clyde","display_name":"Clyde"}]},"active":["clyde"]}));
+        s.apply_event(json!({"seq":1,"payload":{"room":"work","recovery_seq":1,"event":{"type":"failed","id":"clyde","error":"Authentication token expired"}}}));
+        apply_outcome(&mut s, Outcome{refresh:true,..Outcome::default()});
+        assert!(s.notice.contains("couldn't reply"));
+        assert!(s.notice.contains("/login"));
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| { ui::draw(f, &s, 0); }).unwrap();
+        let screen: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("token expired"));
+        apply_outcome(&mut s, Outcome{open:Some("other".into()),..Outcome::default()});
+        assert!(s.notice.is_empty(), "a failure must not follow the user to another thread");
+    }
 }
 
 pub const OLD_DECK_LOGIN_NOTICE: &str = "Update Apex Deck to use /login — this Deck version does not support provider setup.";
@@ -689,17 +916,19 @@ pub async fn run(args: Args) -> Result<(), String> {
                 Update::ProfileDone(result)=>{s.busy=false;match result{Ok(out)=>{s.pending_agent=None;apply_outcome(&mut s,out);dirty=true;},Err(error)=>{s.agent_wizard=s.pending_agent.take();s.notice=format!("{error}\nAgent draft retained. /cancel cancels; type save to retry after resolving the error.");}}},
                 Update::Connected(c,hello)=>{
                     s.generation+=1;
-                    let boot=hello["boot_id"].as_str().unwrap_or("").to_string();
-                    if s.cursor.as_ref().is_none_or(|old|old.boot_id!=boot)||hello["resumed"]!=true{s.cursor=Some(Cursor{boot_id:boot,seq:hello["last_seq"].as_u64().unwrap_or(0)});s.reset_connection_state();}
+                    s.connected(&hello);
                     client=Some(c);s.connected=false;s.notice="Connected. Loading authoritative threads…".into();load(&s,&client,&tx);loading=true;
                 },
                 Update::Offline(error)=>{s.generation+=1;s.busy=false;s.connected=false;client=None;loading=false;s.notice=error;
                     if s.editor.text.is_empty(){if let Some((_,text))=s.pending_messages.values().find(|(room,_)|Some(room)==s.selected.as_ref()){s.editor.insert(&text.clone());}}
                 },
-                Update::Event(event)=>{let kind=event["event"].as_str().unwrap_or("");if kind=="session-changed"{dirty=true;}if s.apply_event(event){dirty=true;}},
+                Update::Event(event)=>{let kind=event["event"].as_str().unwrap_or("");if kind=="session-changed"{dirty=true;}
+                    if s.apply_event(event){dirty=true;}
+                    announce_request(&mut s,answer.is_some());
+                },
                 Update::Loaded{generation,id,result}=>{
                     if generation!=s.generation{continue;}loading=false;
-                    match result{Ok((rows,state))=>{s.threads=rows;if let (Some(id),Some(state))=(id,state){s.install_snapshot(&id,generation,state);}s.connected=client.is_some()&&!s.overflowed;if s.notice=="Connected. Loading authoritative threads…"{s.notice.clear();}},Err(e)=>{
+                    match result{Ok((rows,state))=>{s.threads=rows;if let (Some(id),Some(state))=(id,state){if s.install_snapshot(&id,generation,state){announce_request(&mut s,answer.is_some());}}s.connected=client.is_some()&&!s.overflowed;if s.notice=="Connected. Loading authoritative threads…"{s.notice.clear();}},Err(e)=>{
                         s.notice=e;s.connected=client.is_some()&&!s.overflowed;s.threads.clear();
                         if s.selected.is_some(){s.selected=None;s.rooms.clear();s.streams.clear();s.view=0;s.generation+=1;}
                         dirty=false;
@@ -710,7 +939,7 @@ pub async fn run(args: Args) -> Result<(), String> {
                         if let Some(draft)=&draft {s.pending_messages.retain(|_,(room,text)|Some(room.as_str())!=s.selected.as_deref()||text!=draft.trim());}
                         if apply_outcome(&mut s,out){dirty=true;}
                         ensure_models(&mut s,&client,&tx);
-                    },Err(e)=>{s.notice=e;if let Some(draft)=draft{if s.editor.text.is_empty(){s.editor.insert(&draft);}}dirty=true;}}
+                    },Err(e)=>{s.notice=e;if let Some(card)=s.card.as_mut(){card.sent.clear();}if let Some(draft)=draft{if s.editor.text.is_empty(){s.editor.insert(&draft);}}dirty=true;}}
                 }
                 Update::Saved{generation,agent,result}=>{if generation==s.generation{crate::settings::saved(&mut s,&agent,result);dirty=true;}}
                 Update::Models{generation,agent,result}=>{if generation==s.generation{
@@ -745,6 +974,14 @@ pub async fn run(args: Args) -> Result<(), String> {
                     Intent::Activate=>{let action=s.menu.as_ref().and_then(|m|m.choices.get(m.selected)).map(|c|c.action.clone());if let Some(action)=action{run_action(&mut s,action,&client,&args.data,&tx,&mut answer);}},
                     Intent::Welcome=>{s.view=0;s.menu=None;},Intent::Threads=>navigate(&mut s,"/threads",&client,&args.data,&tx),
                     Intent::Requests=>requests(&mut s),
+                    Intent::Card(CardIntent::Decide{request,approve})=>{
+                        // The card already showed exactly this request; Y was the confirm.
+                        let action=rpc("room_decide",json!({"id":s.selected,"request":request,"approve":approve}));
+                        run_action(&mut s,action,&client,&args.data,&tx,&mut answer);
+                        crate::approval_card::sync(&mut s);
+                    },
+                    Intent::Card(CardIntent::Questions)=>questions_menu(&mut s),
+                    Intent::Card(CardIntent::None)=>{},
                     Intent::WelcomeUp=>welcome_index=if welcome_index==0{s.threads.len().min(3).saturating_sub(1)}else{welcome_index-1},
                     Intent::WelcomeDown=>welcome_index=(welcome_index+1)%s.threads.len().min(3).max(1),
                     Intent::WelcomeOpen=>{if let Some(row)=s.threads.get(welcome_index){let id=row.id.clone();run_action(&mut s,Action::Open(id),&client,&args.data,&tx,&mut answer);}},

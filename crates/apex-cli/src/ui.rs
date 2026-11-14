@@ -991,6 +991,49 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         ));
     }
     f.render_widget(Paragraph::new(status_line(s, area.width)), rows[4]);
+    // The approval card sits just above the composer, in the space the
+    // conversation uses, so the draft stays visible underneath.
+    let room = rows[2].height.saturating_sub(2);
+    let inner_width = area.width.saturating_sub(4);
+    if let Some(card) =
+        crate::approval_card::view(s, inner_width, usize::from(room).saturating_sub(1))
+    {
+        let lines: Vec<Line> = card.body.into_iter().chain(card.footer).collect();
+        let height = (lines.len() as u16 + 2).min(rows[2].height);
+        let rect = Rect::new(area.x, rows[3].y.saturating_sub(height), area.width, height);
+        f.render_widget(ratatui::widgets::Clear, rect);
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(crate::approval_card::BORDER))
+            .title(Span::styled(
+                safe(&card.title),
+                Style::default()
+                    .fg(crate::approval_card::TITLE)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        if !card.right.is_empty() {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    safe(&card.right),
+                    Style::default().fg(crate::approval_card::RIGHT),
+                ))
+                .right_aligned(),
+            );
+        }
+        // Body first; the key line is last so a cut keeps the keys visible.
+        let keep = usize::from(height.saturating_sub(2));
+        let mut shown = lines;
+        if shown.len() > keep {
+            let footer = shown.pop();
+            shown.truncate(keep.saturating_sub(1));
+            shown.extend(footer);
+        }
+        f.render_widget(
+            Paragraph::new(shown).block(block.padding(ratatui::widgets::Padding::horizontal(1))),
+            rect,
+        );
+        return Rect::default();
+    }
     if let Some(menu) = &s.menu {
         let height = (menu.choices.len() + 3)
             .min(14)

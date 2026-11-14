@@ -61,9 +61,13 @@ pub enum Intent {
     WelcomeDown,
     WelcomeOpen,
     Panel(crate::settings::PanelIntent),
+    /// A key on the approval card.
+    Card(crate::approval_card::CardIntent),
 }
 pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
     match event {
+        // Never let a paste land behind the card unseen.
+        Event::Paste(_) if s.card.is_some() => Intent::None,
         Event::Paste(text) => {
             s.menu = None;
             s.editor.insert(&text);
@@ -79,6 +83,7 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
                 || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
             {
                 s.menu = None;
+                s.card = None;
                 crate::settings::toggle(s);
                 return Intent::Panel(crate::settings::PanelIntent::None);
             }
@@ -95,6 +100,17 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
                     return Intent::Panel(intent);
                 }
             }
+            // The approval card owns every key except the global ones below
+            // it (F-keys, PageUp/PageDown), so typing can't reach the composer
+            // and Enter can't approve or reject.
+            if s.card.is_some()
+                && !matches!(
+                    key.code,
+                    KeyCode::F(_) | KeyCode::PageUp | KeyCode::PageDown
+                )
+            {
+                return Intent::Card(crate::approval_card::handle_key(s, key.code));
+            }
             if (key.code == KeyCode::Enter
                 && key
                     .modifiers
@@ -107,7 +123,11 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
             }
             match key.code {
                 KeyCode::Esc => {
-                    s.menu = None;
+                    // An open menu (including the self-opening requests list)
+                    // takes Esc first; only a bare Esc stops work.
+                    if s.menu.take().is_some() {
+                        return Intent::None;
+                    }
                     return Intent::Stop;
                 }
                 KeyCode::F(1) => return Intent::Welcome,

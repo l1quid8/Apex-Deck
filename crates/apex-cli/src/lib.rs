@@ -1,3 +1,4 @@
+pub mod approval_card;
 pub mod args;
 pub mod agent_setup;
 pub mod backend;

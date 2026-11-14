@@ -756,9 +756,19 @@ impl EventReader {
         }
         if tool == "Bash" {
             let command = input["command"].as_str().unwrap_or("").to_string();
+            // Claude's own description goes in the title, as Codex's reason
+            // does (`codex_server::proposal`). An Always allow rule for a
+            // command matches its detail, so the wording never widens a rule.
+            let description = input["description"]
+                .as_str()
+                .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|d| !d.is_empty());
             return ProposedAction {
                 kind: ActionKind::Command,
-                title: "Run a command".to_string(),
+                title: match description {
+                    Some(d) => format!("Run a command · {d}"),
+                    None => "Run a command".to_string(),
+                },
                 detail: command,
                 expires_at: None,
                 risky: false,
@@ -1905,18 +1915,20 @@ mod tests {
         );
         let run = reader.claude_action(
             "Bash",
-            &serde_json::json!({"command":"rm -rf build","description":"clean"}),
+            &serde_json::json!({"command":"rm -rf build","description":"Remove the\n build  folder"}),
         );
         assert_eq!(
             run,
             ProposedAction {
                 kind: ActionKind::Command,
-                title: "Run a command".into(),
+                title: "Run a command · Remove the build folder".into(),
                 detail: "rm -rf build".into(),
                 expires_at: None,
                 risky: false
             }
         );
+        let bare = reader.claude_action("Bash", &serde_json::json!({"command":"ls","description":"  "}));
+        assert_eq!(bare.title, "Run a command");
         let other = reader.claude_action(
             "WebFetch",
             &serde_json::json!({"url":"https://example.com"}),

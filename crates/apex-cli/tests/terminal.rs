@@ -142,3 +142,35 @@ fn welcome_logo_fits_each_terminal_size_and_keeps_threads_visible() {
         assert!(small.contains("Recent threads") && small.contains("/ for commands"));
     }
 }
+
+#[test]
+fn esc_closes_an_open_menu_without_stopping_work() {
+    // The requests list opens by itself; Esc dismisses it and must never
+    // also stop the agent that is waiting on it.
+    let mut state = AppState::default();
+    state.menu = Some(Menu {
+        title: "Pending requests".into(),
+        choices: vec![],
+        selected: 0,
+        completion: false,
+    });
+    let esc = || Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(handle_event(&mut state, esc()), Intent::None));
+    assert!(state.menu.is_none());
+    // With nothing open, Esc still stops current-thread work.
+    assert!(matches!(handle_event(&mut state, esc()), Intent::Stop));
+}
+
+#[test]
+fn approval_card_owns_modified_enter_without_editing_the_hidden_composer() {
+    for (code, modifiers) in [
+        (KeyCode::Enter, KeyModifiers::SHIFT),
+        (KeyCode::Enter, KeyModifiers::ALT),
+        (KeyCode::Char('j'), KeyModifiers::CONTROL),
+    ] {
+        let mut state = AppState::default();
+        state.card = Some(Default::default());
+        handle_event(&mut state, Event::Key(KeyEvent::new(code, modifiers)));
+        assert!(state.editor.text.is_empty(), "{code:?} {modifiers:?}");
+    }
+}

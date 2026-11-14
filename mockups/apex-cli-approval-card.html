@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apex CLI · approval card mockup v1</title>
+<style>
+  :root { --page:#05070a; --term:#0d1117; --line:#1f2733; --text:#e2e8f0; --gray:#94a3b8; --dim:#5a6575;
+    --cyan:#67e8f9; --mint:#52f3a3; --amber:#fbbf24; --red:#f87171; --code:#fdba74; --band:#1c222c; --purple:#a78bfa; }
+  html,body { margin:0; background:var(--page); color:var(--text);
+    font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+  main { max-width:1500px; margin:0 auto; padding:24px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  p.lede { color:var(--gray); margin:0 0 18px; max-width:980px; }
+  nav { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+  nav button { background:#111827; color:var(--gray); border:1px solid var(--line);
+    border-radius:8px; padding:6px 12px; font:inherit; cursor:pointer; }
+  nav button[aria-selected=true] { color:var(--cyan); border-color:var(--cyan); }
+  .pair { display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start; }
+  figure { margin:0; }
+  figcaption { color:var(--gray); margin:0 0 6px; font-size:12px; }
+  figcaption b { color:var(--text); }
+  .term { background:var(--term); border:1px solid var(--line); border-radius:8px; width:100ch;
+    font:12px/1.35 ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace; white-space:pre; overflow:hidden; padding:6px 0; }
+  .term .row { padding:0 1ch; min-height:1.35em; }
+  .g { color:var(--gray); } .d { color:var(--dim); } .c { color:var(--cyan); } .m { color:var(--mint); }
+  .a { color:var(--amber); } .r { color:var(--red); } .k { color:var(--code); } .p { color:var(--purple); }
+  .b { font-weight:700; } .band { background:var(--band); }
+  .sel { background:#16303a; }
+  .box { color:var(--mint); }
+  ul.notes { color:var(--gray); max-width:1100px; margin:18px 0 0; padding-left:18px; }
+  ul.notes li { margin:4px 0; }
+  ul.notes code, ul.notes b { color:var(--text); }
+  h2 { font-size:14px; margin:28px 0 6px; }
+  table.keys { border-collapse:collapse; color:var(--gray); }
+  table.keys td { padding:3px 14px 3px 0; vertical-align:top; }
+  table.keys td:first-child { color:var(--text); font-family:ui-monospace,Menlo,monospace; white-space:nowrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Apex CLI — approval card (mockup v1)</h1>
+  <p class="lede">Design only, nothing is built. Each screen is a 100-column terminal using the CLI's colours.
+  Left is today's 0.9.12 request list; right is the proposed card. Agent names, folders and commands are sample text.
+  Pick a case:</p>
+  <nav role="tablist" id="tabs"></nav>
+  <section id="stage" class="pair"></section>
+  <ul class="notes" id="notes"></ul>
+
+  <h2>Keys on the card</h2>
+  <table class="keys">
+    <tr><td>A</td><td>Approve. The footer turns into "Approve? Y yes · N back" so one stray key can't run anything.</td></tr>
+    <tr><td>Y</td><td>Confirm the approve (only while the confirm line is showing).</td></tr>
+    <tr><td>R</td><td>Reject straight away. No confirm, because rejecting is always safe.</td></tr>
+    <tr><td>D</td><td>Show or hide the full command or diff, if it's longer than the card shows.</td></tr>
+    <tr><td>Tab</td><td>Next request, when more than one agent is waiting.</td></tr>
+    <tr><td>Esc</td><td>Hide the card. The agent keeps waiting; F2 brings it back.</td></tr>
+    <tr><td>Enter</td><td>Does nothing on the card. No default choice, so a stray Enter can't approve or reject.</td></tr>
+  </table>
+</main>
+<script>
+// Each line is an array of [class, text] segments. "" = default colour.
+const W = 98; // inner width in columns
+function pad(s, n){ return s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length); }
+function len(segs){ return segs.reduce((n, s) => n + s[1].length, 0); }
+
+// Boxed card helpers -------------------------------------------------------
+// Same green square box as the real request list, so the card sits where the list sits today.
+function cardTop(title, right){ const fill = W - 5 - title.length - right.length; return [['box','┌ '],['c b',title],['box',' '+'─'.repeat(Math.max(1, fill))+' '],['g',right],['box','┐']]; }
+function bot(){ return [['box','└'+'─'.repeat(W-2)+'┘']]; }
+function line(segs){ const used = len(segs); return [['box','│ '], ...segs, ['', ' '.repeat(Math.max(0, W - 4 - used))], ['box',' │']]; }
+function blank(){ return line([]); }
+
+const before = {
+  simple: [
+    [['g','Pending requests · default is no approval']],
+    [],
+    [['sel c','› Reject · Clyde'],['sel g','   Run a command: touch test.txt · Expires in 287s']],
+    [['','  Approve · Clyde'],['g','  Run a command: touch test.txt · Expires in 287s']],
+  ],
+  chain: [
+    [['g','Pending requests · default is no approval']],
+    [],
+    [['','  Reject · Jigga'],['g','  Run a command: touch test.txt && ls -l test.txt && rm test.txt && ls test.txt 2>&1; git status --short']],
+    [['sel m','› Approve · Jigga'],['sel m','  Run a command: touch test.txt && ls -l test.txt && rm test.txt && ls test.txt 2>&1; git status --short']],
+  ],
+  edit: [
+    [['g','Pending requests · default is no approval']],
+    [],
+    [['sel c','› Reject · Clyde'],['sel g','   Edit src/chatCatalog.ts: --- a/src/chatCatalog.ts +++ b/src/chatCatalog.ts @@ -150,']],
+    [['','  Approve · Clyde'],['g','  Edit src/chatCatalog.ts: --- a/src/chatCatalog.ts +++ b/src/chatCatalog.ts @@ -150,']],
+  ],
+  codex: [
+    [['g','Pending requests · default is no approval']],
+    [],
+    [['sel c','› Reject · Codey'],['sel g','   Run a command · Run the tests to check the fix: cargo test -p apex-cli --test state']],
+    [['','  Approve · Codey'],['g','  Run a command · Run the tests to check the fix: cargo test -p apex-cli --test state']],
+  ],
+  none: [
+    [['g','Pending requests · default is no approval']],
+    [],
+    [['sel c','› Reject · Gronk'],['sel g','   Run a command: curl -fsSL https://example.com/install.sh | sh']],
+    [['','  Approve · Gronk'],['g','  Run a command: curl -fsSL https://example.com/install.sh | sh']],
+  ],
+  queue: [
+    [['g','Pending requests · default is no approval']],
+    [],
+    [['sel c','› Reject · Clyde'],['sel g','   Run a command: npm install zod@3.23.8']],
+    [['','  Approve · Clyde'],['g','  Run a command: npm install zod@3.23.8']],
+    [['','  Reject · Codey'],['g','   Edit files: crates/apex-cli/src/state.rs']],
+    [['','  Approve · Codey'],['g','  Edit files: crates/apex-cli/src/state.rs']],
+  ],
+  confirm: [
+    [['g','Pending requests · default is no approval']],
+    [],
+    [['g','  Approve this action? Run a command: touch test.txt · Expires in 240s']],
+    [['sel c','› Cancel']],
+    [['','  Confirm']],
+  ],
+};
+
+const FOOT = [['d','A '],['m','Approve'],['d','   R '],['r','Reject'],['d','   D '],['g','Full command'],['d','   Esc '],['g','Hide (agent keeps waiting)']];
+
+const after = {
+  simple: [
+    cardTop('Clyde wants to run a command', 'Ask · expires in 4:47'),
+    blank(),
+    line([['b','Create an empty file named test.txt']]),
+    line([['d','Clyde\'s own description']]),
+    blank(),
+    line([['g','Command   '],['k','touch test.txt']]),
+    line([['g','Runs in   '],['','~/Downloads/apex-deck']]),
+    blank(),
+    line(FOOT),
+    bot(),
+  ],
+  chain: [
+    cardTop('Jigga wants to run 5 commands', 'Ask · expires in 4:47'),
+    blank(),
+    line([['b','Create test.txt, check it, delete it, confirm it\'s gone, then show git status']]),
+    line([['d','Jigga\'s own description']]),
+    blank(),
+    line([['g','Steps     '],['d','1 '],['k','touch test.txt']]),
+    line([['g','          '],['d','2 '],['k','ls -l test.txt'],['d','              only if step 1 worked']]),
+    line([['g','          '],['d','3 '],['k','rm test.txt'],['d','                 only if step 2 worked   '],['a','⚠ deletes files']]),
+    line([['g','          '],['d','4 '],['k','ls test.txt 2>&1'],['d','            only if step 3 worked']]),
+    line([['g','          '],['d','5 '],['k','git status --short'],['d','          always runs']]),
+    line([['g','Runs in   '],['','~/Downloads/apex-deck']]),
+    blank(),
+    line(FOOT),
+    bot(),
+  ],
+  edit: [
+    cardTop('Clyde wants to edit a file', 'Ask · expires in 4:47'),
+    blank(),
+    line([['b','Edit src/chatCatalog.ts'],['g','   +3 −1 lines']]),
+    blank(),
+    line([['d','  150  '],['g','  const promoted = threads.filter((t) =>']]),
+    line([['d','  151  '],['r','−   t.kind === "work" && t.promotedFrom)']]),
+    line([['d','  151  '],['m','+   t.kind === "work")']]),
+    line([['d','  152  '],['m','+ // Work threads made in the CLI show up too.']]),
+    line([['d','  153  '],['m','+ const known = new Set(local.map((t) => t.id));']]),
+    line([['g','In        '],['','~/Downloads/apex-deck']]),
+    blank(),
+    line([['d','A '],['m','Approve'],['d','   R '],['r','Reject'],['d','   D '],['g','Whole diff (14 lines)'],['d','   Esc '],['g','Hide (agent keeps waiting)']]),
+    bot(),
+  ],
+  codex: [
+    cardTop('Codey wants to run a command', 'Ask · expires in 4:47'),
+    blank(),
+    line([['b','Run the tests to check the fix']]),
+    line([['d','Codey\'s own reason']]),
+    blank(),
+    line([['g','Command   '],['k','cargo test -p apex-cli --test state']]),
+    line([['g','Runs in   '],['','~/Downloads/apex-deck']]),
+    blank(),
+    line(FOOT),
+    bot(),
+  ],
+  none: [
+    cardTop('Gronk wants to run a command', 'Ask · expires in 4:47'),
+    blank(),
+    line([['b','Download a script from example.com and run it']]),
+    line([['d','Written by Deck · Gronk gave no description']]),
+    blank(),
+    line([['g','Steps     '],['d','1 '],['k','curl -fsSL https://example.com/install.sh'],['d','   downloads'],['a','   ⚠ uses the internet']]),
+    line([['g','          '],['d','2 '],['k','sh'],['d','                                          runs what step 1 downloaded'],['r','   ⚠ unknown code']]),
+    line([['g','Runs in   '],['','~/Downloads/apex-deck']]),
+    blank(),
+    line(FOOT),
+    bot(),
+  ],
+  queue: [
+    cardTop('Clyde wants to run a command', '1 of 2 · Ask · expires in 4:47'),
+    blank(),
+    line([['b','Add the zod package to the project']]),
+    line([['d','Clyde\'s own description']]),
+    blank(),
+    line([['g','Command   '],['k','npm install zod@3.23.8']]),
+    line([['g','Runs in   '],['','~/Downloads/apex-deck']]),
+    blank(),
+    line([['d','Next: '],['p','Codey'],['g',' wants to edit crates/apex-cli/src/state.rs  ·  Tab to see it']]),
+    line(FOOT),
+    bot(),
+  ],
+  confirm: [
+    cardTop('Clyde wants to run a command', 'Ask · expires in 4:00'),
+    blank(),
+    line([['b','Create an empty file named test.txt']]),
+    line([['d','Clyde\'s own description']]),
+    blank(),
+    line([['g','Command   '],['k','touch test.txt']]),
+    line([['g','Runs in   '],['','~/Downloads/apex-deck']]),
+    blank(),
+    line([['a b','Approve? '],['d','Y '],['m','Yes, run it'],['d','   N '],['g','Back']]),
+    bot(),
+  ],
+};
+
+const cases = [
+  ['simple', 'Simple command (Claude)', [
+    'The top line is the agent\'s own description. Claude already writes one for every shell command; today Deck throws it away (<code>claude_action</code> in <code>crates/apex-adapters/src/events.rs:757</code>). Keeping it is a one-line backend change.',
+    'It\'s labelled "Clyde\'s own description" on purpose: it\'s the agent\'s claim. The <b>Command</b> line is what actually runs, and it\'s always shown in full.',
+    'One card instead of two rows that repeat the same text.',
+  ]],
+  ['chain', 'Chained command', [
+    'Your example. A chained line is split into numbered steps, each with how it connects: <code>&&</code> = "only if the last step worked", <code>;</code> = "always runs", <code>|</code> = "gets the last step\'s output".',
+    'The split is only for reading. Approve still runs the exact original line. If Deck can\'t split it safely (quotes, <code>$(…)</code>, here-docs), it shows the line unsplit.',
+    'Deck adds a small ⚠ tag for a short fixed list of things worth noticing: deleting (<code>rm</code>), <code>sudo</code>, <code>git push</code>/<code>reset --hard</code>, network downloads, piping into a shell. It never says "safe"; no tag just means nothing on the list matched.',
+  ]],
+  ['edit', 'File edit', [
+    'Edits show the change itself, coloured: red removed, green added, with line numbers, instead of the raw diff squashed onto one row.',
+    'Long diffs show the first lines; <b>D</b> opens the whole diff in a scrollable view.',
+  ]],
+  ['codex', 'Codex (gives a reason)', [
+    'Codex sends its own reason with each command. Today it\'s glued into the title ("Run a command · Run the tests…"). The card just moves it to the top line.',
+  ]],
+  ['none', 'No description given', [
+    'When an agent sends no description, Deck writes a plain summary from the command itself, and says so: "Written by Deck".',
+    'This is the riskiest case to get wrong, so Deck\'s summary only uses the fixed list of known commands. Anything it doesn\'t recognise is described as "Run <code>name</code>", never guessed.',
+  ]],
+  ['queue', 'Two agents waiting', [
+    'One card at a time, oldest first. The header shows "1 of 2", and a line underneath says who\'s next. <b>Tab</b> moves between them.',
+    'Answering one card shows the next straight away.',
+  ]],
+  ['confirm', 'After pressing A', [
+    'Approving still takes two keys, like today, but both are on the card: <b>A</b>, then <b>Y</b>. The footer turns amber so it\'s clear you\'re confirming.',
+    '<b>N</b> or Esc goes back to the card. Nothing runs until <b>Y</b>.',
+  ]],
+];
+
+const tabs = document.getElementById('tabs'), stage = document.getElementById('stage'), notes = document.getElementById('notes');
+// Square box drawn like the real CLI's request list and composer (see the 0.9.12 screenshot).
+function frame(title, rows, cls){
+  const out = [[[cls, '┌' + title + '─'.repeat(Math.max(0, W - 2 - title.length)) + '┐']]];
+  for (const raw of rows){
+    // The real CLI cuts long rows at the box edge; do the same here.
+    let room = W - 2; const segs = [];
+    for (const [c, t] of raw){ if (room <= 0) break; segs.push([c, t.slice(0, room)]); room -= Math.min(room, t.length); }
+    const used = len(segs); out.push([[cls,'│'], ...segs, ['', ' '.repeat(Math.max(0, W - 2 - used))], [cls,'│']]); }
+  out.push([[cls, '└' + '─'.repeat(W - 2) + '┘']]);
+  return out;
+}
+function render(rows, isBefore){
+  const el = document.createElement('div'); el.className = 'term';
+  const head = [
+    [['m','◆ '],['b','Apex Deck'],['d',' 0.9.12  ·  '],['','Apex CLI'],['d','  ·  '],['a','Clyde'],['d',', '],['c','Codey'],['d',', '],['a','Jigga'],['d','                    ~/Downloads/apex-deck']],
+    [['d','F1 Welcome   Chat   F3 Threads   F4 Agents   '],['a','F2 Requests']],
+    [],
+    [['c','Clyde']],
+    [['g','  On it.']],
+  ];
+  const panel = isBefore ? frame('Pending requests · default is no approval', [...rows.slice(2), []], 'm') : rows;
+  const all = [...head];
+  while (all.length + panel.length < 22) all.push([]);
+  all.push(...panel);
+  all.push(...frame(' Message Clyde · @ to switch · / for commands ', [[]], 'c'));
+  all.push([['g','★ Clyde'],['', ' '.repeat(W - 21)],['d','⇧Tab settings']]);
+  for (const segs of all){
+    const r = document.createElement('div'); r.className = 'row';
+    for (const [cls, text] of segs){ const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = text; r.append(s); }
+    el.append(r);
+  }
+  return el;
+}
+function show(id){
+  for (const b of tabs.children) b.setAttribute('aria-selected', String(b.dataset.tab === id));
+  const c = cases.find(x => x[0] === id);
+  stage.replaceChildren();
+  const f1 = document.createElement('figure'); f1.innerHTML = '<figcaption><b>Today (0.9.12)</b></figcaption>'; f1.append(render(before[id], true));
+  const f2 = document.createElement('figure'); f2.innerHTML = '<figcaption><b>Proposed card</b></figcaption>'; f2.append(render(after[id], false));
+  stage.append(f1, f2);
+  notes.innerHTML = c[2].map(n => '<li>' + n + '</li>').join('');
+}
+for (const [id, label] of cases){
+  const b = document.createElement('button'); b.setAttribute('role','tab'); b.dataset.tab = id; b.textContent = label;
+  b.onclick = () => show(id); tabs.append(b);
+}
+show('chain');
+</script>
+</body>
+</html>
