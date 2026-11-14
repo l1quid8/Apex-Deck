@@ -5,10 +5,12 @@ import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import path from 'node:path';
-import { createPublicKey, verify, randomUUID } from 'node:crypto';
+import { createPublicKey, verify, randomUUID, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-export const ROOT='/Library/Application Support/Apex Deck Provenance';
-export const SOCKET=process.platform==='win32'?'\\\\.\\pipe\\ApexDeckProvenance-v1':'/var/run/dev.apexdeck.provenance.sock';
+export function authorityPaths(platform=process.platform){
+  return {root:platform==='linux'?'/var/lib/apex-deck-provenance':'/Library/Application Support/Apex Deck Provenance',socket:platform==='win32'?'\\\\.\\pipe\\ApexDeckProvenance-v1':platform==='linux'?'/run/apex-deck/provenance.sock':'/var/run/dev.apexdeck.provenance.sock'};
+}
+export const {root:ROOT,socket:SOCKET}=authorityPaths();
 const LIMIT=1024*1024;
 export const protectedCommands=new Set(['agent_profile_save','provider_setup_begin','backend_stop','computer_set_enabled','computer_set_action_labels','computer_setup','assistant_message','assistant_task_action','personal_send','personal_decide_always','personal_decide','room_post','room_post_to','room_turn','room_decide','room_answer','personal_create','personal_configure','personal_workspace_configure','personal_handoff_select','personal_handoff_control','personal_project_delegate','personal_project_delegate_ui','personal_project_propose_ui','personal_avatar_generate','personal_avatar_cancel','personal_permission_set','personal_rule_add','personal_rule_remove','personal_machine_link','personal_machine_unlink','personal_machine_claim','personal_machine_allow','personal_pause','personal_cancel','personal_task_lifecycle','project_task_lifecycle','personal_todo','personal_archive','personal_reply_cancel','personal_schedule_cancel','personal_browser_session','room_set_trashed','room_create','room_import','room_fork','chat_promote','room_update_participant','room_add_participant','room_remove_participant','room_set_options','room_forget_allowed','room_set_plan','room_runner_start','room_runner_action','room_mount','personal_memory_add','personal_memory_correct','personal_memory_forget','project_memory_save','project_memory_forget','project_memory_stage','project_memory_promote','legacy_import_apply','devices_add','devices_set_tier','devices_set_threads','pair_approve']);
 
@@ -32,14 +34,15 @@ export function assertTrustedStartup(packaged,argv,env,platform=process.platform
   if(badEnv || badArg) throw new Error('Trusted Apex UI refuses development overrides and runtime switches. Use a development build for diagnostics.');
 }
 
-function publicKey(){
-  const file=path.join(ROOT,'public-key');
+export function protectedPublicKey({platform=process.platform,files=fs}={}){
+  const file=path.join(authorityPaths(platform).root,'public-key');
   for(let p=file;;p=path.dirname(p)){
-    const st=fs.lstatSync(p);
+    const st=files.lstatSync(p);
     if(st.isSymbolicLink() || st.uid!==0 || (st.mode&0o022)) throw new Error('Provenance key must be protected by root ownership.');
+    if(p===file?!st.isFile():!st.isDirectory())throw new Error('Provenance key must be a protected regular file under directories.');
     if(p==='/')break;
   }
-  const bytes=fs.readFileSync(file);
+  const bytes=files.readFileSync(file);
   if(bytes.length!==32)throw new Error('Invalid protected provenance public key.');
   return bytes;
 }
@@ -49,7 +52,7 @@ function verifyEnvelope(signed, key) {
   if(!verify(null,Buffer.from(signed.payload),createPublicKey({key:spki,type:'spki',format:'der'}),Buffer.from(signed.signature,'base64')))throw new Error('Invalid provenance signature.');
   return JSON.parse(signed.payload);
 }
-export function issue(request,{publicKey:key,platform=process.platform,endpoint=SOCKET}={}) {
+export function issue(request,{publicKey:key,platform=process.platform,endpoint=authorityPaths(platform).socket}={}) {
   return new Promise((resolve,reject)=>{
     let client, bytes=Buffer.alloc(0), done=false, timer;
     const nonce=randomUUID(); let authenticated=platform!=='win32';
@@ -85,6 +88,21 @@ export function issue(request,{publicKey:key,platform=process.platform,endpoint=
 }
 const windowsHelper=()=>path.join(process.resourcesPath??path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../target/release'),'bin','apex-provenance.exe');
 
+/** Discovery is signed and challenged; it grants no role to an ordinary caller. */
+export async function linuxIdentity({uid=process.getuid?.(),publicKey=protectedPublicKey({platform:'linux'}),send=issue,dataDir}={}) {
+  const nonce=randomBytes(16).toString('hex');
+  const signed=await send({op:'scope',nonce},{publicKey,platform:'linux'});
+  const value=verifyEnvelope(signed,publicKey);
+  const canonical=text=>typeof text==='string' && path.posix.isAbsolute(text) && path.posix.normalize(text)===text && !/[\x00-\x1f\x7f]/.test(text);
+  if(value.domain!=='apex-provenance-v1' || value.kind!=='linux-scope' || value.nonce!==nonce || value.uid!==uid || !Number.isSafeInteger(uid) || uid<=0
+    || !Number.isSafeInteger(value.epoch) || value.epoch<=0 || value.protocol!==1 || !/^[a-f0-9]{64}$/.test(value.manifestSha256??'')
+    || !/^\/opt\/apex-deck\/[a-zA-Z0-9][a-zA-Z0-9.-]{0,199}$/.test(value.tree??'') || !/^[a-f0-9]{32}$/.test(value.brokerInstance??'')
+    || !canonical(value.dataDir) || value.daemonEndpoint!==path.posix.join(value.dataDir,'daemon.sock')
+    || ![null,'app'].includes(value.role) || (value.daemonPid!==null && (!Number.isSafeInteger(value.daemonPid) || value.daemonPid<=0))
+    || (dataDir!==undefined && dataDir!==value.dataDir)) throw new Error('Authenticated Linux scope does not match this account, release or data folder.');
+  return value;
+}
+
 // Close this process to other programs, its own user's included, before it can
 // approve anything. The service refuses a client that isn't closed.
 export function protectWindowsProcess(run=execFileSync){
@@ -103,15 +121,22 @@ export function windowsIdentity(dataDir) {
 }
 export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKey:rawKey,issue:send=issue,platform=process.platform,identity=windowsIdentity}={}){
   if(!protectedCommands.has(frame.cmd))return frame;
+  let linuxScope;
+  if(platform==='linux') {
+    rawKey??=protectedPublicKey({platform});
+    linuxScope=await linuxIdentity({uid,publicKey:rawKey,send,dataDir});
+    if(linuxScope.role!=='app')throw new Error('Protected Linux submissions require the broker-launched installed UI.');
+    dataDir=linuxScope.dataDir;
+  }
   if(platform==='win32' && (typeof uid!=='number' || !rawKey)){const native=await identity(dataDir);uid=native.uid;dataDir=native.dataDir;rawKey=Buffer.from(native.publicKey,'base64');}
   if(typeof uid!=='number')throw new Error('Protected provenance service unavailable. Submission was not sent.');
   const command={cmd:frame.cmd,args:frame.args??{}};
   if(frame.cmd==='assistant_task_action') command.provenanceRequestId=command.args.action==='revise_startup'?'task-action:revise_startup:content-v1':`task-action:${command.args.action}`;
   else if(!['assistant_message','personal_send','personal_decide_always','personal_decide','personal_handoff_select','personal_handoff_control'].includes(frame.cmd)) command.provenanceRequestId=randomUUID();
-  const key=rawKey??publicKey();
+  const key=rawKey??protectedPublicKey({platform});
   const signed=await send({op:'issue',dataDir,command},{publicKey:key,platform});
   const payload=verifyEnvelope(signed,key),receipt=payload.receipt;
-  if(payload.domain!=='apex-provenance-v1' || payload.kind!=='submission' || receipt?.uid!==uid || receipt.dataDir!==dataDir || !isDeepStrictEqual(receipt.command,command))throw new Error('Receipt does not match the submitted command.');
+  if(payload.domain!=='apex-provenance-v1' || payload.kind!=='submission' || receipt?.uid!==uid || receipt.dataDir!==dataDir || !isDeepStrictEqual(receipt.command,command) || (linuxScope && receipt.installationEpoch!==linuxScope.epoch))throw new Error('Receipt does not match the submitted command.');
   return {id:frame.id,cmd:'provenance_execute',args:{receipt:signed}};
 }
 
@@ -120,7 +145,7 @@ export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKe
 // job's id once the broker has signed for it.
 export async function requestUpdate(update,{uid=process.getuid(),publicKey:rawKey,issue:send=issue}={}){
   const request={op:'update_install',version:update.version,package:update.package,sha256:update.sha256,size:update.size};
-  const key=rawKey??publicKey();
+  const key=rawKey??protectedPublicKey();
   const signed=await send(request);
   if(typeof signed?.payload!=='string' || Buffer.byteLength(signed.payload)>LIMIT || typeof signed.signature!=='string')throw new Error('Invalid response from the protected service.');
   const spki=Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),key]);

@@ -277,9 +277,9 @@ impl Host {
 
     pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
         crate::storage::prepare_private_root(&paths.data)?;
-        // Fixture construction is already explicit and isolated. Production,
-        // even with test-support compiled, always uses the protected broker,
-        // except Linux, whose ledgers are plain files and has no broker to own.
+        // Fixture construction is explicit and isolated. Production takes
+        // protected ownership, except unenrolled Linux scopes retaining their
+        // existing plain ledgers. Enrollment evidence closes that fallback.
         let plain = crate::authority_file::plain(&paths.data);
         #[cfg(test)]
         let ownership = None;
@@ -292,6 +292,16 @@ impl Host {
             if fixture || plain { None } else { Some(apex_provenance::HostOwnership::acquire(&paths.data)) }
         };
         let (ownership, mut unavailable) = admit_host_ownership(ownership)?;
+        #[cfg(all(not(test), target_os="linux"))]
+        {
+            #[cfg(feature="test-support")]
+            let isolated=crate::test_support::isolated(&paths.data);
+            #[cfg(not(feature="test-support"))]
+            let isolated=false;
+            if !plain && !isolated && ownership.is_none() {
+                return Err(unavailable.unwrap_or_else(||"Enrolled Linux scope requires protected host ownership".into()));
+            }
+        }
         // Without ownership startup may degrade. Once ownership succeeds, or
         // on Linux plain files, partial authority must never coexist with
         // empty fallback stores: a ledger that can't be read stops startup.

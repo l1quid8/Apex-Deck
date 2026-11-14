@@ -17,7 +17,7 @@ pub struct Descriptor {
     pub epoch: u64,
 }
 impl Descriptor {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         let text = self.tree.to_str().ok_or("Invalid install path")?;
         let name = text
             .strip_prefix("/opt/apex-deck/")
@@ -40,6 +40,104 @@ impl Descriptor {
         }
         Ok(())
     }
+}
+
+/// A candidate can only be constructed by independently authenticated manifest
+/// verification and a complete immutable-tree check. Caller JSON is not proof.
+pub struct VerifiedCandidate {
+    descriptor: Descriptor,
+    manifest: crate::linux_install::LinuxReleaseManifest,
+}
+impl VerifiedCandidate {
+    pub fn verify(
+        tree: &Path,
+        manifest_path: &Path,
+        signature_path: &Path,
+        archive_path: &Path,
+    ) -> Result<Self, String> {
+        use sha2::{Digest, Sha256};
+        for path in [tree, manifest_path, signature_path, archive_path] {
+            crate::linux_install::protected_path(path)?;
+        }
+        let bytes =
+            crate::io::root_file_limit(manifest_path, crate::linux_install::MANIFEST_LIMIT)?;
+        let signature = crate::io::root_file_limit(signature_path, 64)?;
+        let mut archive = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(archive_path)
+            .map_err(|e| e.to_string())?;
+        if !archive.metadata().map_err(|e| e.to_string())?.is_file() {
+            return Err("Expected a protected regular archive".into());
+        }
+        let manifest = crate::linux_install::verify_release(&bytes, &signature, &mut archive)?;
+        crate::linux_install::validate_tree(tree, &manifest)?;
+        let descriptor = Descriptor {
+            tree: tree.into(),
+            manifest_sha256: format!("{:x}", Sha256::digest(&bytes)),
+            protocol: manifest.protocol,
+            epoch: 0,
+        };
+        descriptor.validate()?;
+        Ok(Self {
+            descriptor,
+            manifest,
+        })
+    }
+    pub fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+    pub fn manifest(&self) -> &crate::linux_install::LinuxReleaseManifest {
+        &self.manifest
+    }
+}
+
+/// Hold this guard through peer validation, journal mutation and durable commit.
+/// It prevents activation from changing the epoch during an admitted operation.
+pub struct AdmissionGuard {
+    descriptor: Descriptor,
+    _lock: std::fs::File,
+}
+impl AdmissionGuard {
+    pub fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+}
+
+/// Acquire admission under a lifetime-held shared installation lock. An active
+/// installer, pending writes and non-ready phases close admissions. This never
+/// initializes or repairs missing history.
+pub fn admission() -> Result<AdmissionGuard, String> {
+    admitted_at(Path::new("/var/lib/apex-deck-provenance"))
+}
+fn admitted_at(root: &Path) -> Result<AdmissionGuard, String> {
+    match std::fs::symlink_metadata(root.join("service.pending")) {
+        Ok(_) => return Err("Service transaction pending; admissions closed".into()),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.to_string()),
+    }
+    crate::linux_install::protected_path(root)?;
+    let lock_path = root.join("installation.lock");
+    crate::linux_install::protected_path(&lock_path)?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(lock_path)
+        .map_err(|e| e.to_string())?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+        return Err("Installation transaction in progress; admissions closed".into());
+    }
+    ensure_no_pending(root)?;
+    let state = Activation::restore(&crate::io::root_file_limit(
+        &root.join("installation.json"),
+        16384,
+    )?)?;
+    let descriptor = state.admitted()?.clone();
+    ensure_no_pending(root)?;
+    Ok(AdmissionGuard {
+        descriptor,
+        _lock: lock,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +221,14 @@ impl Activation {
         self.active
             .as_ref()
             .ok_or_else(|| "No active installation".into())
+    }
+    /// Startup/health selection only. This never opens authority admissions.
+    pub fn service_descriptor(&self) -> Result<&Descriptor, String> {
+        self.validate()?;
+        if !matches!(self.phase, Phase::Ready | Phase::Switched) {
+            return Err("Prepared installation cannot start candidate services".into());
+        }
+        self.active.as_ref().ok_or_else(|| "No selected installation".into())
     }
     /// Prepare only after verifying the candidate's signature and full tree.
     /// Advancing the high water mark here means interruption never reuses it.
@@ -619,6 +725,10 @@ mod tests {
         crate::linux_install::protected_path(&root).unwrap();
         let mut store = Store::initialize_at(&root).unwrap();
         assert!(
+            admitted_at(&root).is_err(),
+            "installer lock must close snapshot admission"
+        );
+        assert!(
             Store::open_at(&root).is_err(),
             "concurrent store acquired lock"
         );
@@ -647,11 +757,22 @@ mod tests {
         );
         let store = Store::open_at(&root).unwrap();
         assert_eq!(store.state().unwrap().admitted().unwrap().epoch, 2);
+        assert!(
+            admitted_at(&root).is_err(),
+            "even a ready store held by the installer closes admission"
+        );
         assert_eq!(
             std::fs::read(root.join("journal.json")).unwrap(),
             b"consumed receipts and revocations"
         );
         drop(store);
+        let admission = admitted_at(&root).unwrap();
+        assert_eq!(admission.descriptor().epoch, 2);
+        assert!(
+            Store::open_at(&root).is_err(),
+            "admitted transactions must exclude activation through commit"
+        );
+        drop(admission);
         let mut pending =
             Activation::restore(&std::fs::read(root.join("installation.json")).unwrap()).unwrap();
         pending.prepare(candidate()).unwrap();

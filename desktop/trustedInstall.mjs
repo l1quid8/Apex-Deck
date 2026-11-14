@@ -24,6 +24,26 @@ export const TRUSTED_APP = path.join(TRUSTED_ROOT, 'TrustedUI', 'Apex Deck.app')
 export const daemonIn = (app) => path.join(app, 'Contents', 'Resources', 'bin', 'apex-daemon');
 /** The daemon of the protected copy: the only one the broker will trust. */
 export const TRUSTED_DAEMON = daemonIn(TRUSTED_APP);
+export const LINUX_AUTHORITY_ROOT = '/var/lib/apex-deck-provenance';
+export const LINUX_SAFETY_DISCLOSURE = 'On Linux, unrestricted programs running under the same account can potentially inject into or automate the trusted UI. Protected Linux approvals cannot provide macOS dynamic code-signature guarantees.';
+
+/** Private installation state cannot select a UI, engine or enrolled data folder. */
+function linuxLaunchPlan({ files, daemon }) {
+  let detected = false;
+  let safe = false;
+  try {
+    const stat = files.lstatSync(LINUX_AUTHORITY_ROOT);
+    detected = true;
+    safe = stat.isDirectory() && rootProtected(LINUX_AUTHORITY_ROOT, files);
+  } catch (error) {
+    // An inaccessible installation is not evidence that it is absent.
+    detected = error.code !== 'ENOENT';
+  }
+  const reason = safe
+    ? 'Protected Linux approvals require authenticated installed-UI launch attestation and an enrolled data folder. The installed service must verify this launch before the app can use protected data. Ask an administrator to repair the installation if verification fails.'
+    : 'Protected Linux approvals require a complete administrator-installed authority. The protected installation is missing, unsafe or incomplete; installation or repair is required.';
+  return {kind:'notice',daemon,protectedInstallationDetected:detected,protectedSubmissionError:reason,notice:{message:'Protected Linux approvals are unavailable',detail:`${reason} ${detected?'The portable engine will not be started.':'This evaluation app can still open ordinary Linux hosts.'} ${LINUX_SAFETY_DISCLOSURE}`}};
+}
 
 /**
  * The `.app` a path sits in: Electron hands out
@@ -110,6 +130,7 @@ const isDirectory = (app, files) => {
  * never rewritten to a path the broker would refuse.
  */
 export function launchPlan({ packaged, platform, dataDir, bundle, version, daemon, plist = null, files = fs, trustedApp = TRUSTED_APP }) {
+  if (packaged && platform === 'linux') return linuxLaunchPlan({ files, daemon });
   const running = bundlePath(bundle);
   const current = plistDaemonBin(plist);
   const installed = isDirectory(trustedApp, files);

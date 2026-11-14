@@ -1,5 +1,7 @@
 //! Root-owned submission authority. No shell execution and no general file API;
 //! updates are one queued request file that launchd hands to the update job.
+#[cfg(target_os="linux")]
+pub mod linux_runtime;
 #[cfg(any(windows, test))]
 pub mod broker;
 #[cfg(unix)]
@@ -10,6 +12,12 @@ pub mod linux_install;
 pub mod linux_activation;
 #[cfg(any(target_os="linux",all(unix,test)))]
 pub mod linux_registration;
+#[cfg(target_os = "linux")]
+pub mod linux_enroll;
+#[cfg(target_os = "linux")]
+pub mod linux_fuses;
+#[cfg(any(target_os="linux",all(unix,test)))]
+pub mod linux_service;
 #[cfg(any(target_os = "linux", all(unix, test)))]
 pub mod linux;
 #[cfg(unix)]
@@ -42,7 +50,13 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+#[cfg(target_os = "linux")]
+pub const ROOT: &str = "/var/lib/apex-deck-provenance";
+#[cfg(target_os = "linux")]
+pub const SOCKET: &str = "/run/apex-deck/provenance.sock";
+#[cfg(not(target_os = "linux"))]
 pub const ROOT: &str = "/Library/Application Support/Apex Deck Provenance";
+#[cfg(not(target_os = "linux"))]
 pub const SOCKET: &str = "/var/run/dev.apexdeck.provenance.sock";
 pub const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub const JOURNAL_BYTES: usize = 128 * 1024 * 1024;

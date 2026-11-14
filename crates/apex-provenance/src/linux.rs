@@ -1,6 +1,9 @@
 //! Linux kernel peer identity primitives. Identity alone NEVER grants authority.
 
-fn process_start(stat: &str) -> Result<u64, String> {
+#[path = "linux_launch.rs"]
+pub mod launch;
+
+pub(crate) fn process_start(stat: &str) -> Result<u64, String> {
     stat.rsplit_once(')')
         .and_then(|(_, tail)| tail.split_whitespace().nth(19))
         .ok_or("Incomplete Linux process identity")?
@@ -167,6 +170,25 @@ mod kernel {
             self.alive()?;
             String::from_utf8(bytes).map_err(|_| "Process metadata is not UTF-8".into())
         }
+        /// Open the kernel image via the held proc directory. This deliberately
+        /// follows the proc magic link, never a caller-supplied executable path.
+        /// It identifies the current image only; same-image exec is not attested.
+        pub fn open_executable(&self) -> Result<File, String> {
+            self.validate()?;
+            let fd = unsafe {
+                libc::openat(
+                    self.proc.as_raw_fd(),
+                    c"exe".as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err("Cannot inspect held process executable".into());
+            }
+            let image = unsafe { File::from_raw_fd(fd) };
+            self.validate()?;
+            Ok(image)
+        }
         pub fn validate(&self) -> Result<(), String> {
             self.alive()?;
             if process_start(&self.read_proc("stat", 8192)?)? != self.start {
@@ -261,7 +283,7 @@ mod kernel {
                 }
                 let sender = sender.ok_or("Missing per-message sender identity")?;
                 if (sender.pid, sender.uid, sender.gid) != (self.pid, self.uid, self.gid) {
-                    return Err("Socket inherited or transferred to another sender".into());
+                    return Err(format!("Socket inherited or transferred to another sender: expected pid/uid/gid {}/{}/{}, received {}/{}/{}",self.pid,self.uid,self.gid,sender.pid,sender.uid,sender.gid));
                 }
                 frame.extend_from_slice(&bytes[..n as usize]);
                 if frame.len() > crate::MAX_BYTES {
@@ -367,5 +389,88 @@ mod tests {
         let error = peer.validate().unwrap_err();
         std::fs::remove_file(&path).unwrap();
         assert!(error.contains("exited"), "{error}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn exec_same_image_child_fixture() {
+        use std::{
+            io::{Read, Write},
+            os::{
+                fd::{AsRawFd, FromRawFd},
+                unix::{net::UnixStream, process::CommandExt},
+            },
+            process::Command,
+        };
+        if let Ok(fd) = std::env::var("APEX_TEST_SAME_IMAGE_FD") {
+            let mut stream = unsafe { UnixStream::from_raw_fd(fd.parse().unwrap()) };
+            stream.write_all(b"{\"phase\":\"exec\"}\n").unwrap();
+            stream.read_exact(&mut [0; 1]).unwrap();
+            return;
+        }
+        let Some(path) = std::env::var_os("APEX_TEST_SAME_IMAGE_SOCKET") else {
+            return;
+        };
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        stream.write_all(b"{\"phase\":\"before\"}\n").unwrap();
+        stream.read_exact(&mut [0; 1]).unwrap();
+        let fd = stream.as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            assert!(flags >= 0);
+            assert_eq!(libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC), 0);
+        }
+        let error = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "linux::tests::exec_same_image_child_fixture"])
+            .env("APEX_TEST_SAME_IMAGE_FD", fd.to_string())
+            .exec();
+        panic!("same-image exec failed: {error}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn same_image_exec_survives_kernel_identity_but_never_grants_launch_authority() {
+        use std::{
+            io::Write,
+            os::{fd::AsRawFd, unix::net::UnixListener},
+            process::Command,
+        };
+        let path = std::env::temp_dir().join(format!(
+            "apex-exec-{}-{}.sock",
+            std::process::id(),
+            crate::io::challenge().unwrap()
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        enable_credentials(listener.as_raw_fd()).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "linux::tests::exec_same_image_child_fixture"])
+            .env("APEX_TEST_SAME_IMAGE_SOCKET", &path)
+            .env_remove("APEX_TEST_SAME_IMAGE_FD")
+            .spawn()
+            .unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let peer = KernelPeer::capture(&stream).unwrap();
+        let image = peer.open_executable().unwrap().metadata().unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(peer.read_request(&stream).unwrap()["phase"], "before");
+        stream.write_all(b"x").unwrap();
+        assert_eq!(peer.read_request(&stream).unwrap()["phase"], "exec");
+        let next_image = peer.open_executable().unwrap().metadata().unwrap();
+        assert_eq!(
+            (image.dev(), image.ino()),
+            (next_image.dev(), next_image.ino())
+        );
+        // This is the limitation under test: kernel identity and the pinned
+        // image remain valid after exec. They cannot authorize approval roles.
+        peer.validate().unwrap();
+        stream.write_all(b"x").unwrap();
+        assert!(child.wait().unwrap().success());
+        std::fs::remove_file(path).unwrap();
     }
 }
