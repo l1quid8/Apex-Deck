@@ -497,6 +497,82 @@ test("switching agents mid-call keeps the previous agent working", async () => {
 });
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+test("Read aloud uses the selected voice for synthesis and playback", async () => {
+  const p = samplePlayer();
+  const f = fixture({ playSample: p.playSample });
+  for (const voice of ["af_heart", "bm_george"]) {
+    const done = f.c.readAloud("Hello.", voice);
+    await tick();
+    const start = f.sent.filter(m => m.type === "start").at(-1);
+    // Finish cleanup even when the voice assertion fails.
+    try {
+      assert.equal(start.voice, voice);
+      f.event({ type: "ready", callId: start.callId, generation: 0, voices: [voice] });
+      assert.equal(f.sent.filter(m => m.type === "speak").at(-1).voice, voice);
+      f.helperAudio(new Int16Array([1, 2]));
+      f.event({ type: "audioEnd", callId: start.callId, generation: 0, segmentId: 1 });
+      p.finish();
+      await done;
+    } finally {
+      await f.c.stopSample();
+      await done;
+    }
+  }
+  assert.equal(p.played.length, 2);
+});
+test("Read aloud uses Adam and reads a long reply in bounded segments without opening the mic", async () => {
+  const p = samplePlayer();
+  const f = fixture({ playSample: p.playSample });
+  const done = f.c.readAloud("First sentence. " + Array(30).fill("hello").join(" "));
+  await tick();
+  const start = f.sent.find(m => m.type === "start");
+  assert.equal(start.voice, "am_adam");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_adam"] });
+  for (const [index, text] of ["First sentence.", Array(22).fill("hello").join(" "), Array(8).fill("hello").join(" ")].entries()) {
+    const speak = f.sent.filter(m => m.type === "speak").at(-1);
+    assert.equal(speak.text, text);
+    assert.equal(speak.voice, "am_adam");
+    assert.equal(speak.segmentId, index + 1);
+    f.helperAudio(new Int16Array([1, 2]));
+    f.event({ type: "audioEnd", callId: start.callId, generation: 0, segmentId: index + 1 });
+    assert.equal(p.played.length, index + 1);
+    p.finish();
+    await tick();
+  }
+  await done;
+  assert.equal(f.closed, 0);
+  assert.equal(f.runtimeStops.length, 1);
+});
+
+test("Read aloud reports empty helper audio instead of succeeding silently", async () => {
+  const f = fixture({ playSample: samplePlayer().playSample });
+  const done = f.c.readAloud("Hello.");
+  const rejected = assert.rejects(done, /no audio/i);
+  await tick();
+  const start = f.sent.find(m => m.type === "start");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_adam"] });
+  f.event({ type: "audioEnd", callId: start.callId, generation: 0, segmentId: 1 });
+  await rejected;
+  assert.equal(f.runtimeStops.length, 1);
+});
+
+test("Read aloud propagates playback and helper release failures", async () => {
+  for (const failure of ["playback", "release"]) {
+    const f = fixture({
+      playSample: () => ({ done: failure === "playback" ? Promise.reject(Error("playback failed")) : Promise.resolve(), stop() {} }),
+      stop: async () => { if (failure === "release") throw Error("release failed"); },
+    });
+    const done = f.c.readAloud("Hello.");
+    const rejected = assert.rejects(done, new RegExp(failure + " failed"));
+    await tick();
+    const start = f.sent.find(m => m.type === "start");
+    f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_adam"] });
+    f.helperAudio(new Int16Array([1]));
+    f.event({ type: "audioEnd", callId: start.callId, generation: 0, segmentId: 1 });
+    await rejected;
+  }
+});
+
 function samplePlayer() {
   const played = [];
   let finish;
@@ -682,6 +758,8 @@ test("speaker startup failure reaches the sample caller and releases the runtime
   const rejected = assert.rejects(sample, /speakers unavailable/);
   await tick();
   const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["bf_emma"] });
+  f.helperAudio(new Int16Array([1]));
   f.event({ type: "audioEnd", callId: start.callId, generation: 0, segmentId: 1 });
   await rejected;
   assert.equal(f.runtimeStops.length, 1);

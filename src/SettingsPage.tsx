@@ -757,7 +757,7 @@ function CallsSection({ settings, onChange, backend, highlightId }: { settings: 
       <button disabled={!draft.trim()||busy} onClick={saveKey}>{busy ? "Saving…" : "Save"}</button>
       <button className="ghost" disabled={busy} onClick={()=>{ setDraft(""); setEditing(false); }}>Cancel</button>
     </Row>}
-    <Row id="voice" label="Default local voice" note="For agents with no voice of their own. Set one agent's voice in its form." highlight={highlightId==='voice'}>
+    <Row id="voice" label="Default local voice" note="Used for Read aloud and agents with no voice of their own. Defaults to Adam. Set one agent's call voice in its form." highlight={highlightId==='voice'}>
       <span className="voice-pick">
         <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={e=>onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
           {[...new Set([defaultVoiceOf(voice), ...CALL_VOICES])].map(v=><option key={v} value={v}>{voiceLabel(v)}</option>)}

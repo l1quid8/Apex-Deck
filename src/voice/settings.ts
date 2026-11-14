@@ -31,7 +31,7 @@ export const readCallEngine = (raw: unknown): CallEngine =>
   raw === "realtime" ? "realtime" : raw === "meta" ? "meta" : "local";
 export const readRealtimeVoice = (raw: unknown): string | undefined =>
   typeof raw === "string" && /^[a-z]{2,20}$/.test(raw.trim().toLowerCase()) ? raw.trim().toLowerCase() : undefined;
-export const DEFAULT_VOICE = "am_michael";
+export const DEFAULT_VOICE = "am_adam";
 /** The English Kokoro voices the call helper offers ([ab][fm]_*), for picking one outside a call. */
 export const CALL_VOICES = [
   "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
@@ -110,7 +110,7 @@ export function preferenceFor(
     s.preferences[voicePreferenceKey(host, profile)] ?? { aliases: [] }
   );
 }
-/** The app-wide voice: the one picked in Settings, else Michael. */
+/** The app-wide voice: the one picked in Settings, else Adam. */
 export const defaultVoiceOf = (s: VoiceSettings) => s.defaultVoice ?? DEFAULT_VOICE;
 /**
  * The voice a call uses, first set wins: the one picked for this agent in this chat

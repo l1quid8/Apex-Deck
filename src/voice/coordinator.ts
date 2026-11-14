@@ -1,7 +1,7 @@
 import { createVoiceController, type VoiceController } from "./controller.ts";
 import { openVoiceAudio, playVoiceSample } from "./audio.ts";
 import { connectLocalVoice } from "./localClient.ts";
-import { DEFAULT_SILENCE_MS, readVoiceSettings, voiceFor } from "./settings.ts";
+import { DEFAULT_SILENCE_MS, defaultVoiceOf, readVoiceSettings, voiceFor } from "./settings.ts";
 import { publishPlaybackLevel } from "./playbackLevel.ts";
 import type {
   CallEngine,
@@ -160,9 +160,33 @@ function currentEngineFor(scope: CallScope): CallEngine {
   }
 }
 
-const joined = joinVoiceEngines(localController as VoiceController, realtimeController, currentEngineFor, undefined, metaController as any);
+const joined = joinVoiceEngines(localController as VoiceController, realtimeController, currentEngineFor, () => localController.stopSample(), metaController as any);
 export const voiceController: VoiceController = joined.controller;
 export const callEngine = joined.engine;
+
+// A handle belongs to one message, so an old button cannot stop a newer reader.
+let reading: object | undefined;
+export function readResponseAloud(text: string) {
+  const owner = {};
+  reading = owner;
+  const done = (async () => {
+    const inCall = [localController, realtimeController, metaController]
+      .some(c => !["off", "error"].includes(c.getState().status));
+    if (inCall) throw Error("End the voice call before reading aloud.");
+    // Read Settings at click time so changing the selection affects the next reply.
+    const settings = registry.values().next().value?.settings ?? readVoiceSettings(undefined);
+    await localController.readAloud(text, defaultVoiceOf(settings));
+  })().finally(() => { if (reading === owner) reading = undefined; });
+  return {
+    done,
+    stop() {
+      if (reading !== owner) return;
+      reading = undefined;
+      // Release failures also reject done, which the message displays.
+      void localController.stopSample();
+    },
+  };
+}
 
 // A thread view that only reloads (reconnect, new backend) registers again at
 // once; the call ends only if its thread stays gone past this grace period.
@@ -203,6 +227,9 @@ export function voiceRegistration(scope: CallScope) {
 }
 export const defaultVoiceSettings = () => readVoiceSettings(undefined);
 if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", () => void voiceController.end("window closed"));
+  window.addEventListener("beforeunload", () => {
+    void localController.stopSample();
+    void voiceController.end("window closed");
+  });
   window.apexDeck?.voice?.onSuspend(() => void voiceController.end("Mac went to sleep"));
 }

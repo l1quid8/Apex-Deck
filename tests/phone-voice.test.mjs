@@ -114,7 +114,7 @@ test("phone voice candidates carry the current title for their host and thread",
 test("call transcripts target chosen agent; leaving preserves turn and releases awake", async () => {
   const f = fixture();
   await f.voice.controller.start(f.scope);
-  f.event({ type: "ready", voices: ["am_michael"] });
+  f.event({ type: "ready", voices: ["am_adam", "am_michael"] });
   f.event({ type: "transcript", utteranceId: "u", text: "check the build" });
   await tick();
   await tick();
@@ -154,7 +154,7 @@ test("settings aliases survive recreation and warm only previously called hosts"
 test("offscreen approval marks attention without navigating; opening clears it", async () => {
   const f = fixture();
   await f.voice.controller.start(f.scope);
-  f.event({ type: "ready", voices: ["am_michael"] });
+  f.event({ type: "ready", voices: ["am_adam", "am_michael"] });
   f.event({
     type: "transcript",
     utteranceId: "attention",
@@ -177,7 +177,7 @@ test("offscreen approval marks attention without navigating; opening clears it",
 test("a failed voice post keeps the call up and says so", async () => {
   const f = fixture();
   await f.voice.controller.start(f.voice.candidates("h", "r")[0]);
-  f.event({ type: "ready", voices: ["am_michael"] });
+  f.event({ type: "ready", voices: ["am_adam", "am_michael"] });
   f.event({ type: "transcript", utteranceId: "fail", text: "check the build" });
   await tick();
   await tick();

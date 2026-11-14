@@ -45,7 +45,7 @@ test('Voice field: the play button samples the picked voice, else the Settings v
   };
   assert.equal(sample({ voice: { defaultVoice: 'af_heart' } }), 'af_heart');
   assert.equal(sample({ draft: { voice: 'bf_emma' }, voice: { defaultVoice: 'af_heart' } }), 'bf_emma');
-  assert.equal(sample({}), 'am_michael');
+  assert.equal(sample({}), 'am_adam');
 });
 test('the agent form loads and saves the voice; empty saves none', () => {
   assert.match(source, /voice: config\.voice \?\? ""/);
