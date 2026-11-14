@@ -88,6 +88,8 @@ pub fn command_needs(command: &Command) -> Need {
         // Only the bot's own saved address and key, so nothing leaves for elsewhere.
         RoomBotModels { room, .. } => read(thread(room)),
         RoomBotBalance { room, .. } => read(thread(room)),
+        // Same rule for a saved agent outside any thread: its own address and key only.
+        AgentBotModels { .. } => read(GlobalRead),
 
         // Chat and approvals: posting wakes the thread's bots, which run with
         // the thread's own folder and permission mode.
@@ -558,6 +560,7 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         ModelMetrics { .. } => None,
         AgentModels { .. } => None,
         RoomBotModels { .. } => None,
+        AgentBotModels { .. } => None,
         RoomBotBalance { .. } => None,
         RoomPlanReset { .. } => None,
         OpenTarget { .. } => None,
@@ -753,6 +756,7 @@ pub(crate) mod tests {
             ("voice_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),
+            ("agent_bot_models", Some((ReadOnly, "global_read")), json!({ "participant": "deep" })),
             ("model_metrics", Some((ReadOnly, "global_read")), json!({ "model": "m", "efforts": [], "current": null, "local": false })),
             ("chat_profiles", Some((ReadOnly, "global_read")), json!({})),
             ("agent_profile_list", Some((ReadOnly, "global_read")), json!({})),

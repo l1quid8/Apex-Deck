@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use apex_adapters::{build_without_tools, installed_models, list_models, BuildContext, CliParticipant};
+use apex_adapters::{build_without_tools, list_models, reported_models, BuildContext, CliParticipant};
 use apex_core::{
     Access, AgentTool, Approver, Backend, Decision, ModelChoice, ParticipantConfig,
     ParticipantError, ParticipantId, Progress, ProposedAction, Reply, Role, TurnRequest, ViewTurn,
@@ -87,7 +87,7 @@ pub const KNOWN_API_PROVIDERS: &[KnownApiProvider] = &[
 ];
 
 /// Built-in model IDs per subscription CLI (mirrors `src/models.ts`).
-/// Used in `/v1/models` after any models reported by `installed_models(tool)`.
+/// Used in `/v1/models` after any models reported by `reported_models(tool)`.
 pub fn builtin_agent_models(tool: AgentTool) -> &'static [&'static str] {
     match tool {
         AgentTool::ClaudeCode => &[
@@ -151,7 +151,7 @@ pub fn builtin_agent_models(tool: AgentTool) -> &'static [&'static str] {
     }
 }
 
-/// Merge `installed_models(tool)` with `builtin_agent_models(tool)` in the exact
+/// Merge `reported_models(tool)` with `builtin_agent_models(tool)` in the exact
 /// order `src/models.ts::modelGroups` uses: account-reported models first,
 /// followed by built-in fallback IDs not already in the reported set, then `"default"`.
 pub fn merged_agent_model_ids(tool: AgentTool, reported: &[ModelChoice]) -> Vec<String> {
@@ -658,7 +658,7 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
                 let path = state.login_path.clone().unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
                 if !std::env::split_paths(&path).any(|p| p.join("gemini").is_file() || (gemini::configured(&Backend::Agent { tool, model: None }) && p.join("agy").is_file())) { continue; }
             }
-            let reported = installed_models(tool);
+            let reported = reported_models(tool, state.login_path.as_deref()).await;
             if is_found(detect_key) || !reported.is_empty() {
                 let owner = tool_prefix(tool);
                 for id in merged_agent_model_ids(tool, &reported) {

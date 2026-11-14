@@ -2779,6 +2779,23 @@ impl Host {
         apex_adapters::list_models(&base_url, api_key_env.as_deref()).await
     }
 
+    /// The models saved API agent `participant`'s own server offers, for the
+    /// Agents editor, which has no thread. Like `room_bot_models`, the address
+    /// and key are the saved ones, so a remote device can't point this
+    /// machine's key anywhere else.
+    pub async fn agent_bot_models(&self, participant: &ParticipantId) -> Result<Vec<apex_adapters::ApiModel>, String> {
+        let (base_url, api_key_env) = {
+            let saved = self.chat_saved_profiles()?;
+            let config = saved.iter().find(|p| &p.id == participant)
+                .ok_or_else(|| format!("no saved agent has the id `{participant}`"))?;
+            match &config.backend {
+                apex_core::Backend::OpenAiCompatible { base_url, api_key_env, .. } => (base_url.clone(), api_key_env.clone()),
+                _ => return Err(format!("`{participant}` doesn't run on an API")),
+            }
+        };
+        apex_adapters::list_models(&base_url, api_key_env.as_deref()).await
+    }
+
     /// What is left on an API bot's account, in US dollars, read as `room_bot_models` is.
     pub async fn room_bot_balance(&self, room: &str, participant: &ParticipantId) -> Result<Option<f64>, String> {
         let (base_url, api_key_env) = self.bot_api_account(room, participant)?;
@@ -2813,6 +2830,12 @@ impl Host {
     /// the model picker. Empty when the tool keeps no such list.
     pub fn agent_models(&self, tool: AgentTool) -> Vec<ModelChoice> {
         apex_adapters::installed_models(tool)
+    }
+
+    /// As `agent_models`, but may also ask the provider, so a model the
+    /// account just gained shows up without a Deck update.
+    pub async fn reported_agent_models(&self, tool: AgentTool) -> Vec<ModelChoice> {
+        apex_adapters::reported_models(tool, crate::agents::login_path().as_deref()).await
     }
 
     /// Open a file, folder or web address from a message in its default app,
@@ -6313,6 +6336,39 @@ done
         assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["grok"] })));
         host.settings_save(json!({ "disabledProviders": ["venice"], "confirmSteer": false })).unwrap();
         assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["venice"], "confirmSteer": false })));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn agent_bot_models_reads_the_saved_agents_own_server() {
+        use serde_json::json;
+        use std::io::{Read, Write};
+        // A stand-in model server that answers every request with one model.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/v1", server.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in server.incoming().flatten() {
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let body = r#"{"data":[{"id":"saved-server-model"}]}"#;
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            }
+        });
+        let (host, runtime, data) = host("agent-bot-models");
+        host.session_save(json!({
+            "version": 1,
+            "profiles": [
+                { "id": "api-bot", "display_name": "API Bot", "persona": "", "access": "read",
+                  "backend": { "kind": "open_ai_compatible", "base_url": base, "model": "m", "api_key_env": null } },
+                { "id": "cli-bot", "display_name": "CLI Bot", "persona": "", "access": "read",
+                  "backend": { "kind": "cli", "program": "echo", "args": [] } }
+            ]
+        })).unwrap();
+        let models = runtime.block_on(host.agent_bot_models(&ParticipantId::new("api-bot"))).unwrap();
+        assert!(models.iter().any(|m| m.id == "saved-server-model"), "{models:?}");
+        assert!(runtime.block_on(host.agent_bot_models(&ParticipantId::new("cli-bot"))).unwrap_err().contains("doesn't run on an API"));
+        assert!(runtime.block_on(host.agent_bot_models(&ParticipantId::new("nobody"))).unwrap_err().contains("no saved agent"));
         let _ = std::fs::remove_dir_all(data);
     }
 

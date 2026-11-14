@@ -101,6 +101,8 @@ export interface Backend {
   modelMetrics(model: string, efforts: string[], current: string | null, local: boolean): Promise<import("./types").ModelMetrics | null>;
   /** Models offered to API bot `participant` in thread `room`, asked for with the bot's own saved address and key. */
   roomBotModels?(room: string, participant: string): Promise<ApiModel[]>;
+  /** Models the server of saved API agent `participant` offers, read with its own saved address and key. */
+  agentBotModels?(participant: string): Promise<ApiModel[]>;
   /** What is left on API bot `participant`'s account, in US dollars. Null when the provider has no balance check. */
   roomBotBalance?(room: string, participant: string): Promise<number | null>;
   /** Use one of `tool`'s usage resets (`credit`, or the next one) for the account a bot in `room` is signed in to.

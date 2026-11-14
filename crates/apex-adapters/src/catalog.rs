@@ -3,8 +3,9 @@
 //! The interface ships with a list of known model names for each tool, but
 //! what an account can actually use changes more often than Apex Deck is
 //! released. Where a tool keeps its own list on disk, this reads it so the
-//! picker shows what that install really offers. Nothing here starts a
-//! process or makes a request, and every failure just means "nothing found".
+//! picker shows what that install really offers. [`installed_models`] starts
+//! no process and makes no request; [`reported_models`] may also ask the
+//! provider. Every failure just means "nothing found".
 
 use std::path::PathBuf;
 
@@ -30,9 +31,159 @@ pub fn installed_models(tool: AgentTool) -> Vec<ModelChoice> {
             }
             all
         }),
-        // Claude Code and Gemini CLI keep no list of models on disk.
+        // Claude Code saves only its extra options, not a full list, so
+        // [`reported_models`] reads those beside Anthropic's answer. Gemini
+        // CLI keeps no list of models on disk.
         AgentTool::ClaudeCode | AgentTool::Gemini => Vec::new(),
     }
+}
+
+/// The models `tool` offers this computer's account, for the model picker.
+/// Claude Code saves only its extra options on disk, so for Claude this asks
+/// Anthropic which models the signed-in account may use, then adds the
+/// saved extras (such as a `[1m]` variant). Antigravity is asked with
+/// `agy models`. Other tools read their saved list. `path` is the login
+/// `PATH` used to find `agy`.
+pub async fn reported_models(tool: AgentTool, path: Option<&str>) -> Vec<ModelChoice> {
+    match tool {
+        AgentTool::ClaudeCode => {}
+        AgentTool::Gemini => return agy_models(path).await,
+        _ => return installed_models(tool),
+    }
+    let saved = claude_config()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| claude_models_from_config(&text))
+        .unwrap_or_default();
+    let mut all = crate::claude_usage::account_models().await;
+    for model in saved {
+        if !all.iter().any(|m| m.id == model.id) {
+            all.push(model);
+        }
+    }
+    all
+}
+
+/// Ask Antigravity which models the signed-in account may use, with
+/// `agy models`. The answer is kept for ten minutes, and a failed ask returns
+/// the last good answer or nothing. The older `gemini` CLI has no way to list
+/// models, so it gives nothing and the picker keeps its built-in names.
+async fn agy_models(path: Option<&str>) -> Vec<ModelChoice> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    const FRESH: Duration = Duration::from_secs(600);
+    static SAVED: Mutex<Option<(Instant, Vec<ModelChoice>)>> = Mutex::new(None);
+    if let Some((at, models)) = SAVED.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < FRESH {
+            return models.clone();
+        }
+    }
+    let program = if std::env::var_os("APEX_GATEWAY_AGY_HOME").is_some() { "agy" } else { crate::presets::resolve_gemini_program(path) };
+    if program != "agy" && program != "antigravity" {
+        return Vec::new();
+    }
+    let asked = async {
+        let mut command = tokio::process::Command::new(crate::executable::program(program, path));
+        command.arg("models").env("NO_COLOR", "1").env("TERM", "dumb").current_dir(std::env::temp_dir());
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        if let Some(home) = std::env::var_os("APEX_GATEWAY_AGY_HOME") {
+            command.env("HOME", home);
+        }
+        command.kill_on_drop(true).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        let output = tokio::time::timeout(Duration::from_secs(15), command.output()).await.ok()?.ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let models = agy_models_from_list(&String::from_utf8_lossy(&output.stdout));
+        (!models.is_empty()).then_some(models)
+    };
+    let answer = asked.await;
+    let mut saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    match answer {
+        Some(models) => {
+            *saved = Some((Instant::now(), models.clone()));
+            models
+        }
+        None => saved.as_ref().map(|(_, models)| models.clone()).unwrap_or_default(),
+    }
+}
+
+/// Read `agy models`: one `id<TAB>name` line per model, with a line per
+/// effort level (`gemini-4-argon-high`, "Gemini 4 Argon (High)"). Antigravity
+/// also takes the plain id with `--effort`, which is how Deck runs it, so the
+/// levels fold into one model that lists them. Lines without a tab, such as
+/// "Fetching available models...", are skipped.
+pub fn agy_models_from_list(text: &str) -> Vec<ModelChoice> {
+    const LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+    let mut found: Vec<ModelChoice> = Vec::new();
+    for line in text.lines() {
+        let Some((id, name)) = line.split_once('\t') else { continue };
+        let (id, name) = (id.trim(), name.trim());
+        if id.is_empty() || id.contains(char::is_whitespace) {
+            continue;
+        }
+        let level = LEVELS.iter().find(|level| id.len() > level.len() + 1 && id.ends_with(&format!("-{level}")));
+        let (base, level) = match level {
+            Some(level) => (&id[..id.len() - level.len() - 1], Some(level.to_string())),
+            None => (id, None),
+        };
+        let label = match &level {
+            Some(level) => {
+                let tail = format!("({level})");
+                let lower = name.to_lowercase();
+                if lower.ends_with(&tail) { name[..name.len() - tail.len()].trim_end() } else { name }
+            }
+            None => name,
+        };
+        let label = Some(label).filter(|l| !l.is_empty() && *l != base).map(str::to_string);
+        match found.iter_mut().find(|m| m.id == base) {
+            Some(known) => {
+                if let Some(level) = level {
+                    let efforts = known.efforts.get_or_insert_with(Vec::new);
+                    if !efforts.contains(&level) {
+                        efforts.push(level);
+                    }
+                }
+            }
+            None => found.push(ModelChoice { id: base.to_string(), label, efforts: level.map(|l| vec![l]) }),
+        }
+    }
+    for model in &mut found {
+        if let Some(efforts) = model.efforts.as_mut() {
+            efforts.sort_by_key(|e| LEVELS.iter().position(|l| l == e));
+        }
+    }
+    found
+}
+
+/// Claude Code's settings file: `.claude.json` in `$CLAUDE_CONFIG_DIR`, or
+/// in the home folder.
+fn claude_config() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join(".claude.json"));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".claude.json"))
+}
+
+/// Read the extra model options Claude Code saves for the account in
+/// `additionalModelOptionsCache`: entries with a `value` it passes as the
+/// model and a `label`. The layout is Claude Code's own, so anything else
+/// gives nothing.
+pub fn claude_models_from_config(json: &str) -> Vec<ModelChoice> {
+    let Ok(root) = serde_json::from_str::<Value>(json) else { return Vec::new() };
+    let Some(options) = root.get("additionalModelOptionsCache").and_then(Value::as_array) else { return Vec::new() };
+    let mut found: Vec<ModelChoice> = Vec::new();
+    for option in options {
+        let Some(id) = option.get("value").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else { continue };
+        if found.iter().any(|m| m.id == id) {
+            continue;
+        }
+        let label = option.get("description").or_else(|| option.get("label")).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty() && *s != id).map(str::to_string);
+        found.push(ModelChoice { id: id.to_string(), label, efforts: None });
+    }
+    found
 }
 
 /// Where Muse keeps its data: `$MUSE_HOME`, else `muse` in the XDG data
@@ -303,6 +454,64 @@ mod tests {
     fn tools_without_a_list_on_disk_report_nothing() {
         assert!(installed_models(AgentTool::ClaudeCode).is_empty());
         assert!(installed_models(AgentTool::Gemini).is_empty());
+    }
+
+    #[test]
+    fn claude_extra_options_are_read_from_its_settings() {
+        let json = r#"{"additionalModelOptionsCache":[
+            {"value":"claude-fable-5-2[1m]","label":"Fable","description":"Fable 5.2 · Most capable"},
+            {"value":"claude-fable-5-2[1m]","label":"again"},
+            {"value":"  ","label":"blank"},
+            {"value":"claude-x","label":"claude-x"}
+        ]}"#;
+        assert_eq!(
+            claude_models_from_config(json),
+            vec![
+                ModelChoice { id: "claude-fable-5-2[1m]".into(), label: Some("Fable 5.2 · Most capable".into()), efforts: None },
+                ModelChoice { id: "claude-x".into(), label: None, efforts: None },
+            ]
+        );
+        assert!(claude_models_from_config("not json").is_empty());
+        assert!(claude_models_from_config(r#"{"additionalModelOptionsCache":{}}"#).is_empty());
+    }
+
+    #[test]
+    fn agy_effort_lines_fold_into_one_model() {
+        let text = "Fetching available models...\n\
+gemini-4-argon-medium\tGemini 4 Argon (Medium)\n\
+gemini-4-argon-high\tGemini 4 Argon (High)\n\
+gemini-4-argon-low\tGemini 4 Argon (Low)\n\
+gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)\n\
+claude-opus-5-5-xhigh\tClaude Opus 5.5 (XHigh)\n\
+claude-opus-5-5-high\tClaude Opus 5.5 (High)\n\
+\tno id\n";
+        assert_eq!(
+            agy_models_from_list(text),
+            vec![
+                ModelChoice { id: "gemini-4-argon".into(), label: Some("Gemini 4 Argon".into()), efforts: Some(vec!["low".into(), "medium".into(), "high".into()]) },
+                ModelChoice { id: "gemini-pro-orchestrator-g1-pro".into(), label: Some("Orchestrator (Argon)".into()), efforts: None },
+                ModelChoice { id: "claude-opus-5-5".into(), label: Some("Claude Opus 5.5".into()), efforts: Some(vec!["high".into(), "xhigh".into()]) },
+            ]
+        );
+        assert!(agy_models_from_list("Error: not signed in").is_empty());
+    }
+
+    #[test]
+    fn anthropic_model_list_keeps_order_and_names() {
+        let body = serde_json::json!({"data":[
+            {"id":"claude-mythos-5-2","display_name":"Claude Mythos 5.2"},
+            {"id":"claude-opus-5-5","display_name":"claude-opus-5-5"},
+            {"id":"claude-mythos-5-2","display_name":"dup"},
+            {"display_name":"no id"}
+        ]});
+        assert_eq!(
+            crate::claude_usage::models_from_list(&body),
+            vec![
+                ModelChoice { id: "claude-mythos-5-2".into(), label: Some("Claude Mythos 5.2".into()), efforts: None },
+                ModelChoice { id: "claude-opus-5-5".into(), label: None, efforts: None },
+            ]
+        );
+        assert!(crate::claude_usage::models_from_list(&serde_json::json!({"error":{}})).is_empty());
     }
 
     #[test]

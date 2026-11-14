@@ -86,6 +86,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
     },
     roomBotModels: async (room, participant) => apiModelList(await call<unknown>("room_bot_models", { room, participant })),
+    agentBotModels: async (participant) => apiModelList(await call<unknown>("agent_bot_models", { participant })),
     roomBotBalance: async (room, participant) => {
       const amount = await call<unknown>("room_bot_balance", { room, participant });
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;

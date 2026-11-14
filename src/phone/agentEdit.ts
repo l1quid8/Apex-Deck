@@ -1,7 +1,8 @@
-import type { Access, ParticipantConfig, Speed } from "../types.ts";
+import type { Access, ApiModel, ModelChoice, ParticipantConfig, Speed } from "../types.ts";
 import { botIdentity, slug } from "../slug.ts";
 import { botGroups, phoneSpeed, reasoningLevels } from "../phoneRules.ts";
 import { accessOptions } from "../accessChange.ts";
+import { mediaKind } from "../media.ts";
 
 /**
  * The Agents tab creates, changes and deletes the agents saved on the Mac. Those live in the
@@ -59,14 +60,24 @@ export function agentDraft(config: ParticipantConfig): AgentDraft {
 /** A new agent starts from a bot its machine already knows, with the name left blank to fill in. */
 export const agentTemplateDraft = (template: ParticipantConfig): AgentDraft => ({ ...agentDraft(template), name: "" });
 
-/** Model choices for the agent's own tool, from the phone's catalogue: no thread or room is needed. */
-export const agentModels = (config: ParticipantConfig) => botGroups(config, []);
+/**
+ * Model choices for the agent: for a coding agent, what its machine says the account is offered
+ * (`reported`, from `agent_models`), then the phone's built-in names; for an API agent, what its
+ * server lists (`apiModels`, from `agent_bot_models`). No thread or room is needed.
+ */
+export const agentModels = (config: ParticipantConfig, reported: ModelChoice[] = [], apiModels: ApiModel[] = []) => botGroups(config, reported, sameKind(config, apiModels));
+
+/** An API agent keeps to its kind: a text agent is offered text models, a picture agent picture ones. */
+function sameKind(config: ParticipantConfig, apiModels: ApiModel[]): ApiModel[] {
+  const kind = mediaKind(apiModels.find((model) => model.id === modelOf(config)));
+  return apiModels.filter((model) => mediaKind(model) === kind);
+}
 
 /** Whether the sheet can offer a model at all. */
-export const agentPicksModel = (config: ParticipantConfig) => agentModels(config).length > 0;
+export const agentPicksModel = (config: ParticipantConfig, reported: ModelChoice[] = [], apiModels: ApiModel[] = []) => agentModels(config, reported, apiModels).length > 0;
 
 /** Reasoning levels the chosen model takes; empty when it takes none, and then the row is hidden. */
-export const agentReasoning = (config: ParticipantConfig, model: string) => reasoningLevels(config, agentModels(config), model);
+export const agentReasoning = (config: ParticipantConfig, model: string, reported: ModelChoice[] = [], apiModels: ApiModel[] = []) => reasoningLevels(config, agentModels(config, reported, apiModels), model);
 
 /** Whether the agent's tool has a Speed setting to offer. */
 export const agentPicksSpeed = (config: ParticipantConfig) => phoneSpeed(config);
@@ -95,6 +106,10 @@ export type AgentSave = {
   draft: AgentDraft;
   /** The look a new agent gets, so two made in a row don't come out the same. */
   appearance: { seed: string; color: string } | null;
+  /** The models the machine said the tool offers, so reasoning is checked against the model's own levels. */
+  reported?: ModelChoice[];
+  /** The models an API agent's server listed, for the same check. */
+  apiModels?: ApiModel[];
 };
 
 /**
@@ -107,7 +122,7 @@ export type AgentSave = {
 export function mergeAgentDraft(
   base: ParticipantConfig,
   draft: AgentDraft,
-  { editing, others, appearance, initial }: { editing: string | null; others: readonly ParticipantConfig[]; appearance?: { seed: string; color: string } | null; initial?: AgentDraft },
+  { editing, others, appearance, initial, reported = [], apiModels = [] }: { editing: string | null; others: readonly ParticipantConfig[]; appearance?: { seed: string; color: string } | null; initial?: AgentDraft; reported?: ModelChoice[]; apiModels?: ApiModel[] },
 ): ParticipantConfig | string {
   const problem = agentProblem(draft, others, editing);
   if (problem) return problem;
@@ -119,10 +134,12 @@ export function mergeAgentDraft(
   if (touched("brief")) config.persona = draft.brief.trim();
   if (touched("access")) config.access = draft.access;
   if (touched("model") && base.backend.kind === "agent") config.backend = { ...base.backend, model: draft.model || null };
+  // An API agent always names its model, so a blank pick keeps the saved one.
+  if (touched("model") && base.backend.kind === "open_ai_compatible" && draft.model.trim()) config.backend = { ...base.backend, model: draft.model.trim() };
   // A model can take reasoning levels its neighbour doesn't, so changing either one re-checks the level.
   if (touched("model") || touched("effort")) {
     const model = "model" in config.backend ? config.backend.model ?? "" : "";
-    const levels = agentReasoning(base, model);
+    const levels = agentReasoning(base, model, reported, apiModels);
     const wanted = touched("effort") ? draft.effort : config.effort ?? "";
     // A model that takes no reasoning level must not be sent one.
     config.effort = levels.length > 0 && wanted && levels.includes(wanted) ? wanted : null;
@@ -137,7 +154,7 @@ export function mergeAgentDraft(
 export const agentFromDraft = (
   template: ParticipantConfig,
   draft: AgentDraft,
-  options: { editing: string | null; others: readonly ParticipantConfig[]; appearance?: { seed: string; color: string } | null },
+  options: { editing: string | null; others: readonly ParticipantConfig[]; appearance?: { seed: string; color: string } | null; reported?: ModelChoice[]; apiModels?: ApiModel[] },
 ) => mergeAgentDraft(template, draft, options);
 
 /**
@@ -155,6 +172,8 @@ export function saveAgentDraft(fresh: readonly ParticipantConfig[], change: Agen
     others: fresh.filter((item) => item.id !== change.id),
     appearance: change.appearance,
     initial: change.initial,
+    reported: change.reported,
+    apiModels: change.apiModels,
   });
   if (typeof merged === "string") return merged;
   return upsertAgent(fresh, merged);
