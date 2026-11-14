@@ -54,8 +54,11 @@ inside it at `Contents/Resources/bin/apex-daemon`, and Codex's approval hook
 runs that same copy. Builds use a Developer ID certificate when the build
 Mac’s keychain has one, so macOS keeps permissions such as Full Disk Access
 across rebuilds. Otherwise they are signed ad hoc;
-`APEX_DECK_SIGN_IDENTITY=-` forces ad hoc. Neither mode is notarized. If macOS
-blocks the app, use System Settings → Privacy & Security → **Open Anyway**.
+`APEX_DECK_SIGN_IDENTITY=-` forces ad hoc. A Developer ID build is also
+notarized and stapled when Apple credentials are set; see
+[notarization.md](notarization.md). Ad hoc builds are never notarized. If macOS
+blocks an un-notarized app, use System Settings → Privacy & Security →
+**Open Anyway**.
 
 ## Run on another machine over SSH
 

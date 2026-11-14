@@ -46,6 +46,9 @@ mac:
   # the Developer ID identity instead when the keychain has one.
   identity: "-"
   hardenedRuntime: true
+  # Off unless scripts/package-mac.mjs turns it on: it does when the identity is
+  # a Developer ID and Apple credentials are set (docs/notarization.md).
+  notarize: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   # scripts/package-mac.mjs signs the CLI with its own identifier before this

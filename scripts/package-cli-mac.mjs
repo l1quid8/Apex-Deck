@@ -4,11 +4,17 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, rmSy
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pickIdentity } from './package-mac.mjs';
+import { notarizeFile, notarizeMessage, notarizePlan } from './notarize-mac.mjs';
 
 export function selectIdentity(output, env) {
   const identity=pickIdentity(output,env);
   if(identity==='-') throw new Error('A Developer ID Application identity is required for CLI authority enrollment.');
   return identity;
+}
+export function installNote(notarized) {
+  return notarized
+    ? 'This archive contains Developer ID signed binaries, notarized by Apple. It is not an installer.'
+    : 'This archive contains Developer ID signed binaries. It is not a notarized installer.';
 }
 export function validateVersion(version) {
   if(!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new Error('Invalid release version');
@@ -39,6 +45,8 @@ function main() {
   const version=validateVersion(JSON.parse(readFileSync(join(repo,'package.json'),'utf8')).version);
   const discovery=run('/usr/bin/security',['find-identity','-v','-p','codesigning'],{encoding:'utf8',stdio:'pipe'});
   const identity=selectIdentity(discovery.stdout,process.env);
+  const plan=notarizePlan(identity,process.env);
+  console.log(notarizeMessage(plan));
   for(const [command,...args] of releaseCommands(join(repo,'Cargo.toml'))) run(command,args,{cwd:release});
   const stage=mkdtempSync(join(release,'.apex-cli-'));
   try {
@@ -54,12 +62,21 @@ function main() {
     }
     copyFileSync(join(repo,'scripts/install-cli-provenance.sh'),join(product,'install-cli-provenance.sh'));
     writeFileSync(join(product,'manifest.json'),JSON.stringify(manifestFor(version,files),null,2)+'\n');
-    writeFileSync(join(product,'INSTALL.txt'),`Apex CLI ${version}, macOS Apple Silicon\n\nThis archive contains Developer ID signed binaries. It is not a notarized installer.\nInstall explicitly from this extracted directory:\n  sudo /bin/bash ./install-cli-provenance.sh "$PWD"\nThen launch in your normal user terminal:\n  apex\n\nThe installer preserves existing Deck authority keys, journal and exact pins, adding separate standalone pins. It restarts the authority service. Upgrades: an identical build is a no-op, a newer version or a rebuilt same-version payload replaces Standalone and swaps standalone pins, older is refused. Quit apex and run apex backend stop first; the installer refuses while the CLI or its backend is running and restores the previous install if anything fails. Flags: --no-path-link (skip /usr/local/bin/apex link), --uninstall (remove Standalone and standalone pins, keep data).\nProvider API-key setup is unfinished; use official provider subscription sign-in.\n`);
+    writeFileSync(join(product,'INSTALL.txt'),`Apex CLI ${version}, macOS Apple Silicon\n\n${installNote(plan.notarize)}\nInstall explicitly from this extracted directory:\n  sudo /bin/bash ./install-cli-provenance.sh "$PWD"\nThen launch in your normal user terminal:\n  apex\n\nThe installer preserves existing Deck authority keys, journal and exact pins, adding separate standalone pins. It restarts the authority service. Upgrades: an identical build is a no-op, a newer version or a rebuilt same-version payload replaces Standalone and swaps standalone pins, older is refused. Quit apex and run apex backend stop first; the installer refuses while the CLI or its backend is running and restores the previous install if anything fails. Flags: --no-path-link (skip /usr/local/bin/apex link), --uninstall (remove Standalone and standalone pins, keep data).\nProvider API-key setup is unfinished; use official provider subscription sign-in.\n`);
+    if(plan.notarize) {
+      // A tar.gz cannot be submitted and bare binaries cannot be stapled, so a
+      // zip of the same signed files goes to Apple; Gatekeeper then finds each
+      // binary's ticket online. The tar.gz below holds those exact bytes.
+      const zip=join(stage,`${name}.zip`);
+      run('/usr/bin/ditto',['-c','-k','--keepParent',product,zip]);
+      notarizeFile(zip,plan);
+      rmSync(zip,{force:true});
+    }
     const archive=join(release,`${name}.tar.gz`);
     run('/usr/bin/tar',['--no-xattrs','-czf',archive,'-C',stage,name],{env:{...process.env,COPYFILE_DISABLE:'1'}});
     const hash=createHash('sha256').update(readFileSync(archive)).digest('hex');
     writeFileSync(`${archive}.sha256`,`${hash}  ${name}.tar.gz\n`);
-    console.log(`Signed CLI archive: ${archive}\nSHA256 ${hash}\nNotarization and installed acceptance remain required.`);
+    console.log(`Signed CLI archive: ${archive}\nSHA256 ${hash}\n${plan.notarize?'Notarized by Apple. Installed acceptance remains required.':'Not notarized. Notarization and installed acceptance remain required.'}`);
   } finally { rmSync(stage,{recursive:true,force:true}); }
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
