@@ -39,8 +39,36 @@ The design narrows this without closing it. Packaged Deck refuses runtime
 switches in every Windows spelling. Deck's main process and the daemon close
 their process objects to their own user, including the owner's implicit rights.
 The service refuses a pinned client that isn't closed, has a debugger attached,
-or has loaded a file an ordinary user could replace, so a per-user File Explorer
-add-on pulled in by a file dialog stops approvals until Deck restarts. Renderers
+or has loaded a module whose file or ancestry an untrusted account can replace.
+For loaded code only, a per-service SID may own or write the file/ancestry if
+Windows also verifies the module's Authenticode signature and certificate chain,
+with cached revocation checked when available. Ordinary user owners and writers are refused even when
+the file is signed. A missing/unreadable ACL, reparse point, unknown granting
+ACE or unverifiable signature fails closed. Known deny-only ACE variants do not
+grant permissions and may be ignored. Authority keys and receipts do not gain
+this service-account exception.
+
+Every approval rechecks the file and ancestry without a path cache. If any
+ancestor grants an untrusted principal permission to add files, the module must
+have exactly one hard link. This prevents planting a link to a protected file at
+the former path of a renamed loaded image, while preserving Windows' hard links
+in protected trees. Read handles
+pin the directory chain against rename while the final file is checked, and
+signature verification uses that same file handle, opened without write/delete
+sharing. Successful signature checks alone are cached for at most 60 seconds,
+keyed by volume, 128-bit file ID, change time, last-write time and size; failed
+checks are never cached. Permissions and link counts are always checked again.
+Revocation checks use only Windows' cached revocation data. Missing or offline
+revocation data permits a second full signature and chain check without
+revocation; revoked certificates, bad digests and other trust failures remain
+refused. No network retrieval runs in the approval path. Peer checks run on blocking workers with a five-second response deadline
+and at most four outstanding checks. A timed-out worker retains its slot until
+it returns, so slow trust providers cannot create unbounded background work.
+This does not establish the identity of an image already mapped into
+memory; administrator or service tampering remains outside this boundary.
+The implementation uses [WinVerifyTrust](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust)
+and its [open-file handle](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_file_info)
+support. Deck's renderers
 stay open, a process started suspended can be altered first, and code injected
 without a file passes these checks.
 

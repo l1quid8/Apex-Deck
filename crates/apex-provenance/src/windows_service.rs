@@ -277,7 +277,15 @@ async fn answer(stream: &mut NamedPipeServer, config: &Config) -> Result<Value, 
         return Err("Untrusted provenance peer".into());
     }
     if ui || daemon {
-        win::peer_intact(pid)?;
+        // PSAPI, ACL and Authenticode checks must not block the async pipe
+        // runtime. Bound outstanding checks even if a trust provider stalls.
+        static CHECKS: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
+        crate::blocking_verification::verify(
+            CHECKS.get_or_init(|| Arc::new(Semaphore::new(4))).clone(),
+            Duration::from_secs(5),
+            move || win::peer_intact(pid),
+        )
+        .await?;
     }
     let mut bytes = Vec::new();
     BufReader::new((&mut *stream).take(MAX_BYTES as u64 + 1))

@@ -49,7 +49,9 @@ fn fixture(access: Access, tools: ProjectTools, version: Option<u32>) -> Fixture
 
 fn task(f:&Fixture,receipt:&Value)->AssistantTask {f.host.assistant_tasks.get(receipt["taskId"].as_str().unwrap()).unwrap().unwrap()}
 fn wait_for(f:&Fixture,id:&str)->AssistantTask {
-    let deadline=Instant::now()+Duration::from_secs(10);
+    // A Windows Git snapshot/worktree needs several process launches; parallel
+    // native CI can take longer than ten seconds without a stalled worker.
+    let deadline=Instant::now()+Duration::from_secs(if cfg!(windows) {60} else {10});
     loop {
         let task=f.host.assistant_tasks.get(id).unwrap().unwrap();
         if !matches!(task.status,TaskStatus::Queued|TaskStatus::Running) {return task}

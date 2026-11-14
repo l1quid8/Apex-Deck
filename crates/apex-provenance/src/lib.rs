@@ -1,6 +1,10 @@
 //! Root-owned submission authority. No shell execution and no general file API;
 //! updates are one queued request file that launchd hands to the update job.
 #[cfg(any(windows, test))]
+mod signature_cache;
+#[cfg(any(windows, test))]
+mod trust_policy;
+#[cfg(any(windows, test))]
 pub mod broker;
 #[cfg(unix)]
 pub mod io;
