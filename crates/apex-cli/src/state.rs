@@ -82,6 +82,8 @@ pub struct Menu {
 }
 #[derive(Default)]
 pub struct AppState {
+    pub composition: crate::composition::Composition,
+    pub launch_folder: std::path::PathBuf,
     pub setup: Option<String>,
     pub agent_wizard: Option<crate::agent_setup::Wizard>,
     pub pending_agent: Option<crate::agent_setup::Wizard>,
@@ -92,6 +94,7 @@ pub struct AppState {
     pub threads: Vec<Thread>,
     pub cursor: Option<Cursor>,
     pub editor: Editor,
+    pub input_history: crate::history::History,
     pub menu: Option<Menu>,
     /// The approval card (`crate::approval_card`), when open.
     pub card: Option<crate::approval_card::Card>,
@@ -139,6 +142,7 @@ impl AppState {
         self.announced.clear();
     }
     pub fn select(&mut self, id: String) {
+        self.input_history.restore_draft(&mut self.editor);
         self.drafts.insert(
             self.selected.clone().unwrap_or_default(),
             std::mem::take(&mut self.editor),

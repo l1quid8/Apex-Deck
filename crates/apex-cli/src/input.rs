@@ -45,6 +45,41 @@ impl Editor {
     pub fn end(&mut self) {
         self.cursor = self.text.len();
     }
+    /// Move within logical lines. False means the caret is already on the
+    /// first line, where the caller may choose to enter input history.
+    pub fn up(&mut self) -> bool {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
+        if start == 0 {
+            return false;
+        }
+        let column = self.text[start..self.cursor].chars().count();
+        let previous_end = start - 1;
+        let previous_start = self.text[..previous_end].rfind('\n').map_or(0, |i| i + 1);
+        self.cursor = previous_start
+            + self.text[previous_start..previous_end]
+                .char_indices()
+                .nth(column)
+                .map_or(previous_end - previous_start, |(i, _)| i);
+        true
+    }
+    /// Move within logical lines. False means the last-line boundary.
+    pub fn down(&mut self) -> bool {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
+        let Some(end) = self.text[self.cursor..].find('\n').map(|i| self.cursor + i) else {
+            return false;
+        };
+        let column = self.text[start..self.cursor].chars().count();
+        let next_start = end + 1;
+        let next_end = self.text[next_start..]
+            .find('\n')
+            .map_or(self.text.len(), |i| next_start + i);
+        self.cursor = next_start
+            + self.text[next_start..next_end]
+                .char_indices()
+                .nth(column)
+                .map_or(next_end - next_start, |(i, _)| i);
+        true
+    }
     pub fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.text)

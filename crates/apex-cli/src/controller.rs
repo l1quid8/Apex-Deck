@@ -393,6 +393,9 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
             .await?;
             out.notice = "Thread renamed.".into();
         }
+        HandlerId::Attach | HandlerId::Detach => {
+            return Err("Attachment commands use the terminal's staged queue.".into());
+        }
         HandlerId::Add => {
             let chat = c.state["snapshot"]["kind"] == "chat";
             let profiles = if chat {

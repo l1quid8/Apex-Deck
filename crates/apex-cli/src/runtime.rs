@@ -20,6 +20,8 @@ use std::{
 use tokio::sync::mpsc;
 
 enum Update {
+    Staged { room: String, result: Result<crate::attachments::Queued, String> },
+    Posted { submission: crate::composition::Submission, result: Result<Value, String> },
     ProfileDone(Result<Outcome,String>),
     Connected(Client, Value),
     Event(Value),
@@ -159,7 +161,69 @@ fn apply_outcome(s: &mut AppState, out: Outcome) -> bool {
     }
     opened || out.refresh
 }
+fn record_input(s: &mut AppState, data: &Path) {
+    if let Err(error)=s.input_history.record(data,&s.editor.text) {
+        s.notice=format!("Input history could not be saved: {error}");
+    }
+    s.input_history.reset_navigation();
+}
+fn stage_paths(s: &mut AppState, paths: Vec<PathBuf>) {
+    let Some(room)=s.selected.clone() else {s.notice="Open /threads or create /new before attaching files.".into();return;};
+    let queue=s.composition.queues.entry(room).or_default();
+    if queue.len()+paths.len()>50 {s.notice="Stage at most 50 files per message.".into();return;}
+    let locations=paths.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join(", ");
+    queue.extend(crate::attachments::stage(paths));
+    s.notice=match crate::attachments::validate(queue) {Ok(())=>format!("Staged: {locations} · Enter sends with your next message. /detach removes files."),Err(error)=>error};
+    s.view=1;
+}
+fn stage_clipboard(s: &mut AppState, tx:&mpsc::Sender<Update>) {
+    let Some(room)=s.selected.clone() else {s.notice="Open a thread before attaching a clipboard image.".into();return;};
+    s.notice="Reading this machine's clipboard image…".into();
+    let tx=tx.clone();
+    tokio::spawn(async move {let result=crate::attachments::clipboard_image().await;let _=tx.send(Update::Staged{room,result}).await;});
+}
+fn attachment_command(s:&mut AppState,data:&Path,tx:&mpsc::Sender<Update>)->bool {
+    let ParsedInput::Command{key,args}=parse_input(&s.editor.text) else{return false;};
+    if !matches!(key.as_str(),"attach"|"detach") {return false;}
+    record_input(s,data);
+    if key=="attach" {
+        if args.is_empty() || args=="list" {
+            let choices=s.composition.queue(s.selected.as_deref()).iter().enumerate().map(|(index,item)|choice(format!("{}. {} · {:.1} KiB",index+1,item.name,item.size as f64/1024.0),format!("{} · {}",item.source.display(),item.error.as_deref().unwrap_or("ready")),Action::Dismiss)).collect::<Vec<_>>();
+            if choices.is_empty(){s.notice="No staged files. /attach <path> · Ctrl+V image · /attach --clipboard".into();}else{s.menu=menu("Staged files · /detach <number|all> removes",choices).menu;}
+        }
+        else if args=="--clipboard" {stage_clipboard(s,tx);}
+        else {match crate::attachments::parse_paths(&args,&s.launch_folder) {Ok(paths)=>stage_paths(s,paths),Err(error)=>{s.notice=error;return true;}}}
+    } else {
+        let Some(room)=s.selected.clone() else{s.notice="Open a thread first.".into();return true;};
+        let index=if args=="all" {None} else {match args.parse::<usize>().ok().filter(|n|*n>0) {Some(n)=>Some(n-1),None=>{s.notice="Use /detach <number> or /detach all.".into();return true;}}};
+        if let Err(error)=s.composition.detach(&room,index) {s.notice=error;return true;}
+        s.notice="Attachment queue updated.".into();
+    }
+    s.editor.take();if key!="attach"||(!args.is_empty()&&args!="list"){s.menu=None;}true
+}
+/// Message completions are bound to their originating room, not the current view generation.
+fn posted(s:&mut AppState,submission:crate::composition::Submission,result:Result<Value,String>) {
+    let success=result.is_ok();
+    let selected=s.selected.as_deref()==Some(submission.room.as_str());
+    if selected {s.busy=false;}
+    if result.is_ok() {s.pending_messages.remove(&submission.id);}
+    else {
+        let editor=if selected {&mut s.editor} else {s.drafts.entry(submission.room.clone()).or_default()};
+        if editor.text.is_empty() {*editor=submission.draft.clone();}
+        if selected {s.notice=format!("{} · Draft and attachments retained; retry uses the same message ID.",result.unwrap_err());}
+    }
+    s.composition.complete(submission,success);
+}
+fn restore_pending_draft(s:&mut AppState) {
+    if s.editor.text.is_empty() {
+        if let Some(submission)=s.composition.pending.values().find(|p|Some(p.room.as_str())==s.selected.as_deref()) {
+            s.editor=submission.draft.clone();
+        }
+    }
+}
 fn submit(s: &mut AppState, client: &Option<Client>, data: &Path, tx: &mpsc::Sender<Update>) {
+    let ordinary = !s.workspace_prompt && s.agent_wizard.is_none() && !s.answering;
+    if ordinary && attachment_command(s, data, tx) { return; }
     if s.workspace_prompt {
         let folder=s.editor.text.trim().to_string();
         if folder=="/cancel"{s.workspace_prompt=false;s.editor.take();s.notice="Work creation canceled.".into();return;}
@@ -197,13 +261,13 @@ fn submit(s: &mut AppState, client: &Option<Client>, data: &Path, tx: &mpsc::Sen
         }
     };
     let text = s.editor.text.trim().to_string();
-    if text.is_empty() {
+    if text.is_empty() && s.composition.queue(s.selected.as_deref()).is_empty() {
         return;
     }
     s.menu = None;
     let generation = s.generation;
     let tx = tx.clone();
-    let message_id = if matches!(parse_input(&text), ParsedInput::Message(_)) {
+    if let ParsedInput::Message(message) = parse_input(&text) {
         let Some(room) = s.selected.clone() else {
             s.notice = "Open /threads or create /new first.".into();
             return;
@@ -212,45 +276,47 @@ fn submit(s: &mut AppState, client: &Option<Client>, data: &Path, tx: &mpsc::Sen
             s.notice = "Muted: /add an agent first.".into();
             return;
         }
-        let id = s
-            .pending_messages
-            .iter()
-            .find(|(_, v)| v.0 == room && v.1 == text)
-            .map(|(id, _)| id.clone())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let submission = match s.composition.begin(&room, s.editor.clone(), message) {
+            Ok(value) => value,
+            Err(error) => {s.notice=error;return;}
+        };
         if s.current().is_some_and(|state| {
             state["snapshot"]["transcript"]
                 .as_array()
-                .is_some_and(|messages| messages.iter().any(|m| m["clientMessageId"] == id))
+                .is_some_and(|messages| messages.iter().any(|m| m["clientMessageId"] == submission.id))
         }) {
-            s.pending_messages.remove(&id);
+            s.pending_messages.remove(&submission.id);
+            s.composition.complete(submission,true);
             s.editor.take();
             s.notice = "The previous message was already delivered. No duplicate sent.".into();
             return;
         }
-        s.pending_messages.insert(id.clone(), (room, text.clone()));
-        Some(id)
-    } else {
-        None
-    };
+        s.pending_messages.insert(submission.id.clone(), (room, submission.draft.text.clone()));
+        s.notice.clear();if ordinary {record_input(s,data);}
+        s.editor.take();s.menu=None;s.busy=true;s.view=1;
+        let mut submission=submission;
+        tokio::spawn(async move {
+            let result=async {
+                if submission.wire.is_none() {
+                    crate::attachments::import(&c.client,&submission.room,&mut submission.items).await?;
+                    submission.wire=Some(crate::attachments::append_message(&submission.text,&submission.items)?);
+                }
+                controller::execute(&c.client,&c.data,"room_post",json!({"id":submission.room,"text":submission.wire,"interactiveAnswers":false,"clientMessageId":submission.id})).await
+            }.await;
+            let _=tx.send(Update::Posted{submission,result}).await;
+        });
+        return;
+    }
+    s.notice.clear();if ordinary {record_input(s,data);}
     let draft = s.editor.take();
     if !independent {
         s.busy = true;
     }
     // A deliberate new submission replaces the previous status. Events
     // raised during this submission remain visible after its acknowledgment.
-    s.notice.clear();
     s.view = 1;
     tokio::spawn(async move {
-        let result = if let Some(message_id) = message_id {
-            let text = match parse_input(&text) {
-                ParsedInput::Message(t) => t,
-                _ => unreachable!(),
-            };
-            controller::execute(&c.client,&c.data,"room_post",json!({"id":c.room,"text":text,"interactiveAnswers":false,"clientMessageId":message_id})).await.map(|_|Outcome{refresh:true,..Outcome::default()})
-        } else {
-            controller::dispatch(&text, &c).await
-        };
+        let result = controller::dispatch(&text, &c).await;
         let _ = tx
             .send(Update::Done {
                 generation,
@@ -654,6 +720,43 @@ mod request_tests {
     fn key(c: crossterm::event::KeyCode) -> Event {
         Event::Key(crossterm::event::KeyEvent::new(c, crossterm::event::KeyModifiers::NONE))
     }
+    #[test]
+    fn a_message_completes_in_its_original_thread_after_switching() {
+        let mut s=AppState::default();s.select("one".into());
+        let draft=crate::input::Editor{text:"original draft".into(),cursor:4};
+        let submission=s.composition.begin("one",draft.clone(),draft.text.clone()).unwrap();
+        s.pending_messages.insert(submission.id.clone(),("one".into(),draft.text.clone()));
+        s.select("two".into());s.editor.insert("other draft");s.busy=true;
+        posted(&mut s,submission.clone(),Err("connection lost".into()));
+        assert_eq!(s.editor.text,"other draft");assert!(s.busy);
+        assert_eq!(s.drafts["one"].text,"original draft");
+        assert_eq!(s.drafts["one"].cursor,4);
+        posted(&mut s,submission.clone(),Ok(json!({})));
+        assert!(!s.pending_messages.contains_key(&submission.id));
+        assert!(!s.composition.pending.contains_key(&submission.id));
+        assert_eq!(s.editor.text,"other draft");
+    }
+    #[test]
+    fn attachment_queue_remains_readable_in_a_short_terminal() {
+        let mut s=AppState::default();s.select("one".into());
+        s.connected=true;
+        stage_paths(&mut s,vec![PathBuf::from("/missing-evidence.txt")]);
+        let shown=screen(&s,60,18);
+        assert!(shown.contains("Attachments")&&shown.contains("missing-evidence.txt"),"{shown}");
+        assert!(shown.contains("error")&&shown.contains("/detach"),"{shown}");
+        s.editor.insert("line\n".repeat(10).as_str());
+        let shown=screen(&s,60,18);
+        assert!(shown.contains("missing-evidence.txt")&&shown.contains("error"),"{shown}");
+    }
+    #[test]
+    fn disconnection_restores_the_exact_submission_caret() {
+        let mut s=AppState::default();s.select("one".into());
+        let draft=crate::input::Editor{text:"draft UTF-8 🦀".into(),cursor:6};
+        let submission=s.composition.begin("one",draft.clone(),draft.text.clone()).unwrap();
+        restore_pending_draft(&mut s);
+        posted(&mut s,submission,Err("offline".into()));
+        assert_eq!(s.editor.text,draft.text);assert_eq!(s.editor.cursor,6);
+    }
     fn chained() -> AppState {
         let mut s = AppState::default();
         s.select("work".into());
@@ -867,6 +970,8 @@ pub async fn run(args: Args) -> Result<(), String> {
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).map_err(|e| e.to_string())?;
     let mut s = AppState::default();
+    s.launch_folder=std::env::current_dir().map_err(|e|e.to_string())?;
+    match crate::history::History::load(&args.data) {Ok(history)=>s.input_history=history,Err(error)=>s.notice=format!("Input history could not be loaded: {error}")};
     if let Some(id) = args.thread {
         s.select(id);
     }
@@ -913,6 +1018,8 @@ pub async fn run(args: Args) -> Result<(), String> {
                 terminal.draw(|frame|{menu_rect=ui::draw(frame,&s,welcome_index);}).map_err(|e|e.to_string())?;
             },
             update=updates.recv()=>{let Some(update)=update else{break;};match update{
+                Update::Staged{room,result}=>{match result {Ok(item)=>{let queue=s.composition.queues.entry(room.clone()).or_default();if queue.len()<50 {queue.push(item);}if s.selected.as_deref()==Some(room.as_str()){s.notice=crate::attachments::validate(queue).err().unwrap_or_else(||"Clipboard image staged. Enter sends with your next message.".into());}},Err(error)=>{if s.selected.as_deref()==Some(room.as_str()){s.notice=error;}}}},
+                Update::Posted{submission,result}=>{posted(&mut s,submission,result);dirty=true;},
                 Update::ProfileDone(result)=>{s.busy=false;match result{Ok(out)=>{s.pending_agent=None;apply_outcome(&mut s,out);dirty=true;},Err(error)=>{s.agent_wizard=s.pending_agent.take();s.notice=format!("{error}\nAgent draft retained. /cancel cancels; type save to retry after resolving the error.");}}},
                 Update::Connected(c,hello)=>{
                     s.generation+=1;
@@ -920,7 +1027,7 @@ pub async fn run(args: Args) -> Result<(), String> {
                     client=Some(c);s.connected=false;s.notice="Connected. Loading authoritative threads…".into();load(&s,&client,&tx);loading=true;
                 },
                 Update::Offline(error)=>{s.generation+=1;s.busy=false;s.connected=false;client=None;loading=false;s.notice=error;
-                    if s.editor.text.is_empty(){if let Some((_,text))=s.pending_messages.values().find(|(room,_)|Some(room)==s.selected.as_ref()){s.editor.insert(&text.clone());}}
+                    restore_pending_draft(&mut s);
                 },
                 Update::Event(event)=>{let kind=event["event"].as_str().unwrap_or("");if kind=="session-changed"{dirty=true;}
                     if s.apply_event(event){dirty=true;}
@@ -962,7 +1069,13 @@ pub async fn run(args: Args) -> Result<(), String> {
                 let mouse_action=match &event{Event::Mouse(mouse)if mouse.kind==MouseEventKind::Down(MouseButton::Left)&&menu_rect.contains((mouse.column,mouse.row).into())=>{
                     s.menu.as_mut().and_then(|menu|{let first=menu.selected.saturating_sub(usize::from(menu_rect.height.saturating_sub(4)));let row=usize::from(mouse.row.saturating_sub(menu_rect.y+1))+first;menu.choices.get(row).map(|c|c.action.clone())})},_=>None};
                 if let Some(action)=mouse_action{run_action(&mut s,action,&client,&args.data,&tx,&mut answer);continue;}
+                if let Event::Paste(text)=&event {
+                    if s.card.is_none()&&s.menu.is_none()&&s.settings.is_none()&&!s.answering&&s.agent_wizard.is_none()&&!s.workspace_prompt {
+                        if let Some(paths)=crate::attachments::pasted_paths(text,&s.launch_folder) {stage_paths(&mut s,paths);continue;}
+                    }
+                }
                 match handle_event(&mut s,event){
+                    Intent::Clipboard=>stage_clipboard(&mut s,&tx),
                     Intent::Quit=>break,
                     Intent::Submit=>{
                         if let Some(Action::Answer{request,questions,mut answers})=answer.take(){

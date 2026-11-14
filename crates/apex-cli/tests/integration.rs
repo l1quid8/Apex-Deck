@@ -107,6 +107,36 @@ impl Drop for Fixture {
 fn options() -> Value {
     serde_json::to_value(apex_core::RoomOptions::default()).unwrap()
 }
+
+#[tokio::test]
+async fn terminal_attachments_copy_to_the_originating_room_and_are_shared_without_rereading_the_source() {
+    use apex_cli::attachments::{append_message, import, stage};
+    let mut fixture = Fixture::start();
+    let (sender, _events, _) = fixture.connect().await;
+    let (observer, _observed_events, _) = fixture.connect().await;
+    for id in ["attached-room", "other-room"] {
+        sender.request("chat_create", json!({"id":id,"participants":[],"options":options()})).await.unwrap();
+    }
+    let original = fixture.data.join("original résumé.txt");
+    std::fs::write(&original, b"read this attachment").unwrap();
+    let mut queue = stage(vec![original.clone()]);
+    import(&sender, "attached-room", &mut queue).await.unwrap();
+    let stored = queue[0].stored.clone().expect("import saves a path");
+    assert!(PathBuf::from(&stored).starts_with(fixture.data.join("attachments/attached-room")));
+    assert_eq!(std::fs::read(&original).unwrap(), b"read this attachment");
+    assert_eq!(std::fs::read(&stored).unwrap(), b"read this attachment");
+    std::fs::remove_file(&original).unwrap();
+    import(&sender, "attached-room", &mut queue).await.unwrap();
+    assert_eq!(queue[0].stored.as_deref(), Some(stored.as_str()), "retry keeps its saved path after source removal");
+    assert_eq!(std::fs::read_dir(fixture.data.join("attachments/attached-room")).unwrap().count(), 1);
+    let text = append_message("Explain this", &queue).unwrap();
+    let submit = json!({"id":"attached-room","text":text,"client_message_id":"attachment-delivery"});
+    sender.request("room_post", submit.clone()).await.unwrap();
+    sender.request("room_post", submit).await.unwrap();
+    let seen = observer.request("room_state", json!({"id":"attached-room"})).await.unwrap();
+    assert_eq!(transcript(&seen).iter().filter(|message| message["text"] == text).count(), 1);
+    assert!(transcript(&observer.request("room_state", json!({"id":"other-room"})).await.unwrap()).is_empty());
+}
 fn transcript(state: &Value) -> Vec<Value> {
     state["snapshot"]["transcript"].as_array().unwrap().clone()
 }

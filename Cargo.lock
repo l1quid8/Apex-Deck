@@ -169,6 +169,7 @@ dependencies = [
  "apex-daemon",
  "apex-host",
  "apex-provenance",
+ "base64 0.22.1",
  "crossterm",
  "futures",
  "libc",

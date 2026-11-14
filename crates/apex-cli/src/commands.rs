@@ -15,6 +15,8 @@ pub struct CatalogRow {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HandlerId {
+    Attach,
+    Detach,
     Setup,
     Threads,
     New,

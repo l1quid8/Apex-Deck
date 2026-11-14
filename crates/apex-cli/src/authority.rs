@@ -107,6 +107,7 @@ fn supported(name: &str) -> bool {
             | "agent_profile_save"
             | "provider_setup_begin"
             | "backend_stop"
+            | "save_attachment"
             | "room_create"
     )
 }
@@ -239,6 +240,11 @@ mod tests {
             needs_authority(&json!({"cmd":"room_set_plan","args":{"id":"r","on":true}})).unwrap()
         );
         assert!(!needs_authority(&json!({"cmd":"chat_list","args":{}})).unwrap());
+        assert!(!needs_authority(&json!({"cmd":"save_attachment","args":{"room":"r","name":"notes.txt","data":"aGk="}})).unwrap());
+        for value in [
+            json!({"cmd":"copy_attachment","args":{"room":"r","path":"/etc/passwd"}}),
+            json!({"cmd":"read_attachment","args":{"path":"/etc/passwd"}}),
+        ] { assert!(needs_authority(&value).is_err()); }
         assert!(
             !needs_authority(&json!({"cmd":"room_post","args":{"id":"r","text":"hello"}})).unwrap()
         );

@@ -49,6 +49,7 @@ impl Drop for Guard {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Intent {
+    Clipboard,
     None,
     Quit,
     Submit,
@@ -75,6 +76,14 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
             Intent::None
         }
         Event::Key(key) if key.kind != KeyEventKind::Release => {
+            // Capture ownership before a settings handler can close itself.
+            let composer_context = s.menu.is_none()
+                && s.settings.is_none()
+                && s.card.is_none()
+                && !s.answering
+                && s.agent_wizard.is_none()
+                && !s.workspace_prompt
+                && s.setup.is_none();
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 return Intent::Quit;
             }
@@ -100,6 +109,17 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
                     return Intent::Panel(intent);
                 }
             }
+            // The approval card owns every key except the global ones below
+            // it (F-keys, PageUp/PageDown), so typing can't reach the composer
+            // and Enter can't approve or reject.
+            if s.card.is_some()
+                && !matches!(
+                    key.code,
+                    KeyCode::F(_) | KeyCode::PageUp | KeyCode::PageDown
+                )
+            {
+                return Intent::Card(crate::approval_card::handle_key(s, key.code));
+            }
             if (key.code == KeyCode::Enter
                 && key
                     .modifiers
@@ -109,14 +129,6 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
                 s.menu = None;
                 s.editor.insert("\n");
                 return Intent::None;
-            }
-            // The approval card owns every key except the global ones below
-            // it (F-keys, PageUp/PageDown), so typing can't reach the composer
-            // and Enter can't approve or reject.
-            if s.card.is_some()
-                && !matches!(key.code, KeyCode::F(_) | KeyCode::PageUp | KeyCode::PageDown)
-            {
-                return Intent::Card(crate::approval_card::handle_key(s, key.code));
             }
             match key.code {
                 KeyCode::Esc => {
@@ -143,6 +155,13 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
                     return Intent::None;
                 }
                 _ => {}
+            }
+            if key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                return if composer_context {
+                    Intent::Clipboard
+                } else {
+                    Intent::None
+                };
             }
             if let Some(menu) = s.menu.as_mut() {
                 match key.code {
@@ -175,11 +194,26 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
             }
             match key.code {
                 KeyCode::Enter => {
-                    return if s.editor.text.trim().is_empty() {
+                    return if s.editor.text.trim().is_empty()
+                        && (!composer_context
+                            || s.composition.queue(s.selected.as_deref()).is_empty())
+                    {
                         Intent::None
                     } else {
                         Intent::Submit
                     }
+                }
+                KeyCode::Up => {
+                    if !s.editor.up() && composer_context {
+                        s.input_history.previous(&mut s.editor);
+                    }
+                    return Intent::None;
+                }
+                KeyCode::Down => {
+                    if !s.editor.down() && composer_context {
+                        s.input_history.next(&mut s.editor);
+                    }
+                    return Intent::None;
                 }
                 KeyCode::Left => s.editor.left(),
                 KeyCode::Right => s.editor.right(),
@@ -220,7 +254,18 @@ pub fn completion(s: &mut AppState) {
                 let action = if r.argument_mode == "none"
                     || matches!(
                         r.key.as_str(),
-                        "threads" | "add" | "remove" | "model" | "access" | "help" | "new" | "login" | "agents create" | "agents saved" | "agents edit" | "agents import"
+                        "threads"
+                            | "add"
+                            | "remove"
+                            | "model"
+                            | "access"
+                            | "help"
+                            | "new"
+                            | "login"
+                            | "agents create"
+                            | "agents saved"
+                            | "agents edit"
+                            | "agents import"
                     ) {
                     Action::Submit(format!("/{}", r.key))
                 } else {

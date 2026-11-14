@@ -159,3 +159,81 @@ fn esc_closes_an_open_menu_without_stopping_work() {
     // With nothing open, Esc still stops current-thread work.
     assert!(matches!(handle_event(&mut state, esc()), Intent::Stop));
 }
+
+#[test]
+fn arrows_move_between_unicode_lines_before_recalling_history() {
+    let mut state = AppState::default();
+    state.view = 1;
+    state.editor.insert("界ab\n🦀éz\nlast");
+    state.editor.cursor = "界ab\n🦀é".len();
+    let arrow = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    assert_eq!(handle_event(&mut state, arrow(KeyCode::Up)), Intent::None);
+    assert_eq!(state.editor.cursor, "界a".len());
+    assert_eq!(handle_event(&mut state, arrow(KeyCode::Down)), Intent::None);
+    assert_eq!(state.editor.cursor, "界ab\n🦀é".len());
+    assert_eq!(handle_event(&mut state, arrow(KeyCode::Down)), Intent::None);
+    assert_eq!(state.editor.cursor, "界ab\n🦀éz\nla".len());
+    assert_eq!(state.editor.text, "界ab\n🦀éz\nlast");
+}
+
+#[test]
+fn clipboard_shortcut_belongs_only_to_the_unobscured_composer() {
+    let paste = || Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+    let mut state = AppState::default();
+    state.view = 1;
+    assert_eq!(
+        format!("{:?}", handle_event(&mut state, paste())),
+        "Clipboard"
+    );
+    for mode in [
+        "answer",
+        "workspace",
+        "setup",
+        "wizard",
+        "menu",
+        "settings",
+        "card",
+    ] {
+        let mut state = AppState::default();
+        state.view = 1;
+        match mode {
+            "answer" => state.answering = true,
+            "workspace" => state.workspace_prompt = true,
+            "setup" => state.setup = Some("login codex".into()),
+            "wizard" => {
+                state.agent_wizard = Some(apex_cli::agent_setup::Wizard::new("codex".into(), 0))
+            }
+            "menu" => {
+                state.menu = Some(Menu {
+                    title: "test".into(),
+                    choices: vec![],
+                    selected: 0,
+                    completion: true,
+                })
+            }
+            "settings" => state.settings = Some(Default::default()),
+            "card" => state.card = Some(Default::default()),
+            _ => unreachable!(),
+        }
+        assert_ne!(
+            format!("{:?}", handle_event(&mut state, paste())),
+            "Clipboard",
+            "{mode}"
+        );
+        assert!(state.editor.text.is_empty(), "{mode}");
+    }
+}
+
+#[test]
+fn approval_card_owns_modified_enter_without_editing_the_hidden_composer() {
+    for (code, modifiers) in [
+        (KeyCode::Enter, KeyModifiers::SHIFT),
+        (KeyCode::Enter, KeyModifiers::ALT),
+        (KeyCode::Char('j'), KeyModifiers::CONTROL),
+    ] {
+        let mut state = AppState::default();
+        state.card = Some(Default::default());
+        handle_event(&mut state, Event::Key(KeyEvent::new(code, modifiers)));
+        assert!(state.editor.text.is_empty(), "{code:?} {modifiers:?}");
+    }
+}
