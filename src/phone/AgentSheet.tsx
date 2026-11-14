@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ParticipantConfig } from "../types";
+import type { AgentTool, ApiModel, ModelChoice, ParticipantConfig } from "../types";
 import type { ChatProfile } from "../chatCatalog";
 import { createAppearance } from "../identicon";
 import { effortLabel } from "../models";
@@ -36,6 +36,10 @@ export function AgentSheet(props: {
   onSave(change: AgentSave): void;
   onDelete(): void;
   drafter?: PersonaDrafter;
+  /** Ask the machine which models a tool offers its account. Without it the sheet shows the built-in names. */
+  listModels?(tool: AgentTool): Promise<ModelChoice[]>;
+  /** Ask the machine which models a saved API agent's server offers, by the agent's id. */
+  listApiModels?(agent: string): Promise<ApiModel[]>;
 }) {
   const [template, setTemplate] = useState<ParticipantConfig | null>(props.agent);
   const [opened] = useState<AgentDraft | null>(() => (props.agent ? agentDraft(props.agent) : null));
@@ -43,6 +47,31 @@ export function AgentSheet(props: {
   const [draft, setDraft] = useState<AgentDraft | null>(opened);
   const [confirm, setConfirm] = useState(false);
   const set = (change: Partial<AgentDraft>) => setDraft((now) => (now ? { ...now, ...change } : now));
+
+  // The machine's own list for the agent's tool, so a model the account just gained is offered here too.
+  const tool = template?.backend.kind === "agent" ? template.backend.tool : null;
+  const [reported, setReported] = useState<ModelChoice[]>([]);
+  useEffect(() => {
+    setReported([]);
+    if (!tool || !props.listModels) return;
+    let live = true;
+    props.listModels(tool).then((list) => { if (live) setReported(list); }).catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool]);
+
+  // An API agent's list comes from its own server. The machine looks the agent up by id and uses
+  // the address and key saved with it, so the phone never names a server or a key.
+  const apiAgent = template?.backend.kind === "open_ai_compatible" ? template.id : null;
+  const [apiModels, setApiModels] = useState<ApiModel[]>([]);
+  useEffect(() => {
+    setApiModels([]);
+    if (!apiAgent || !props.listApiModels) return;
+    let live = true;
+    props.listApiModels(apiAgent).then((list) => { if (live) setApiModels(list); }).catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiAgent]);
 
   // --- Persona Write with AI (v2 mockup) ---
   const [writers, setWriters] = useState<WriterOption[]>([]);
@@ -178,8 +207,12 @@ export function AgentSheet(props: {
   }
 
   const problem = agentProblem(draft, props.others, props.agent?.id ?? null);
-  const models = agentPicksModel(template) ? agentModels(template) : [];
-  const levels = agentReasoning(template, draft.model);
+  const models = agentPicksModel(template, reported, apiModels) ? agentModels(template, reported, apiModels) : [];
+  const levels = agentReasoning(template, draft.model, reported, apiModels);
+  // An API agent always runs a named model, so it has no "Default model" to fall back to.
+  const api = template.backend.kind === "open_ai_compatible";
+  // A model the lists don't name, such as one typed on the Mac, still shows as the one in use.
+  const unlisted = draft.model && !models.some((group) => group.models.some((model) => model.id === draft.model)) ? draft.model : "";
   const access = agentAccessChoices(template.backend.kind === "agent" ? template.backend.tool : "");
   const save = () => {
     // What the sheet opened with goes back with the draft: PhoneApp needs the difference to know
@@ -191,6 +224,8 @@ export function AgentSheet(props: {
       initial,
       draft,
       appearance: props.agent ? null : createAppearance(props.others.map((item) => item.appearance).filter((look): look is { seed: string; color: string } => Boolean(look))),
+      reported,
+      apiModels,
     });
   };
 
@@ -292,7 +327,8 @@ export function AgentSheet(props: {
 
     {models.length > 0 && <label className="ph-label">Model
       <select value={draft.model} onChange={(event) => set({ model: event.target.value, effort: "" })}>
-        <option value="">Default model</option>
+        {!api && <option value="">Default model</option>}
+        {unlisted && <option value={unlisted}>{unlisted}</option>}
         {models.map((group) => (
           <optgroup key={group.label} label={group.label}>
             {group.models.map((model) => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}

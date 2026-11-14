@@ -250,6 +250,14 @@ test('a bot\'s models and balance are asked for by thread and bot, never by addr
   assert.equal(await commandBackend({ ...transport, call: async () => 'x' }, stubShell()).roomBotBalance('r', 'deep'), null);
 });
 
+test('a saved API agent\'s models are asked for by the agent\'s id, never by address', async () => {
+  const transport = recording();
+  transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return ['deepseek-flash', { nope: 1 }]; };
+  const backend = commandBackend(transport, stubShell());
+  assert.deepEqual(await backend.agentBotModels('deep'), [{ id: 'deepseek-flash' }]);
+  assert.deepEqual(transport.calls, [{ cmd: 'agent_bot_models', args: { participant: 'deep' } }]);
+});
+
 test('a usage reset is asked for by thread and provider', async () => {
   const transport = recording();
   transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return 'reset'; };
@@ -277,7 +285,7 @@ test('phone methods send the phone commands', async () => {
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onRoomRunnerChanged', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'modelMetrics', 'roomBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'modelMetrics', 'roomBotModels', 'agentBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });
 

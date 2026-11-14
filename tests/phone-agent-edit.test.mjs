@@ -6,7 +6,7 @@ import fs from 'node:fs';
 // writes the fields the sheet shows and keeps the rest, a name another agent answers to is refused, and
 // the agent list ends up exactly as the sheet left it.
 const mod = await import(new URL('../src/phone/agentEdit.ts', import.meta.url).href);
-const { agentAccessChoices, agentDraft, agentFromDraft, agentProblem, agentReasoning, agentTemplateDraft, agentTool, mergeAgentDraft, removeAgent, saveAgentDraft, upsertAgent } = mod;
+const { agentAccessChoices, agentDraft, agentFromDraft, agentModels, agentProblem, agentReasoning, agentTemplateDraft, agentTool, mergeAgentDraft, removeAgent, saveAgentDraft, upsertAgent } = mod;
 const { accessOptions } = await import(new URL('../src/accessChange.ts', import.meta.url).href);
 
 const agent = (over = {}) => ({
@@ -55,6 +55,42 @@ test('editing may keep its own name, but not take another agent’s', () => {
   const other = agent({ id: 'scout', display_name: 'Scout' });
   assert.equal(agentProblem(agentDraft(saved), [other], saved.id), '');
   assert.match(agentProblem({ ...agentDraft(saved), name: 'Scout' }, [other], saved.id), /already answers to @scout/);
+});
+
+test('models the Mac reports are offered first, with their own reasoning levels', () => {
+  const saved = agent({ backend: { kind: 'agent', tool: 'gemini', model: null } });
+  const reported = [{ id: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', efforts: ['low', 'xhigh'] }];
+  const groups = agentModels(saved, reported);
+  assert.match(groups[0].label, /Offered to your Antigravity account/);
+  assert.deepEqual(groups[0].models.map((m) => m.id), ['gemini-4-hydrogen']);
+  assert.deepEqual(agentReasoning(saved, 'gemini-4-hydrogen', reported), ['low', 'xhigh']);
+  // A level the reported model doesn't take is dropped when it saves.
+  const built = agentFromDraft(saved, { ...agentDraft(saved), model: 'gemini-4-hydrogen', effort: 'max' }, { editing: saved.id, others: [], reported });
+  assert.equal(built.backend.model, 'gemini-4-hydrogen');
+  assert.equal(built.effort, null);
+  const kept = agentFromDraft(saved, { ...agentDraft(saved), model: 'gemini-4-hydrogen', effort: 'xhigh' }, { editing: saved.id, others: [], reported });
+  assert.equal(kept.effort, 'xhigh');
+});
+
+test('an API agent is offered its server\'s models of its own kind, and never loses its model', () => {
+  const saved = agent({ id: 'deep', backend: { kind: 'open_ai_compatible', base_url: 'https://api.deepseek.com', model: 'deepseek-chat', api_key_env: 'K' }, effort: null });
+  const listed = [
+    { id: 'deepseek-chat', label: 'DeepSeek Chat' },
+    { id: 'deepseek-reasoner', efforts: ['low', 'high'] },
+    { id: 'painter', kind: 'image' },
+  ];
+  // Text models only: a text agent can't be turned into a picture one from here.
+  assert.deepEqual(agentModels(saved, [], listed).flatMap((g) => g.models.map((m) => m.id)), ['deepseek-chat', 'deepseek-reasoner']);
+  assert.deepEqual(agentModels(saved), [], 'no list from the machine: no picker');
+  assert.deepEqual(agentReasoning(saved, 'deepseek-reasoner', [], listed), ['low', 'high']);
+  const built = agentFromDraft(saved, { ...agentDraft(saved), model: 'deepseek-reasoner', effort: 'high' }, { editing: saved.id, others: [], apiModels: listed });
+  assert.equal(built.backend.model, 'deepseek-reasoner');
+  assert.equal(built.backend.base_url, 'https://api.deepseek.com');
+  assert.equal(built.backend.api_key_env, 'K');
+  assert.equal(built.effort, 'high');
+  // A blank pick keeps the saved model, since an API agent must name one.
+  const blank = agentFromDraft(saved, { ...agentDraft(saved), model: '' }, { editing: saved.id, others: [], apiModels: listed });
+  assert.equal(blank.backend.model, 'deepseek-chat');
 });
 
 test('a model that takes no reasoning level is not sent one', () => {

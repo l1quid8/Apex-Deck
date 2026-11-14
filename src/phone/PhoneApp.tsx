@@ -3168,6 +3168,8 @@ export function PhoneApp() {
                 templates={editing ? null : agentTemplates} templatesProblem={agentTemplatesProblem}
                 saveProblem={agentSaveProblem} saving={agentSaving}
                 drafter={personaDrafter}
+                listModels={macHost ? (tool) => macHost.backend.agentModels(tool) : undefined}
+                listApiModels={macHost?.backend.agentBotModels ? (agent) => macHost.backend.agentBotModels!(agent) : undefined}
                 onSave={(config) => { void saveAgent(config); }}
                 onDelete={() => { if (editing) void deleteAgent(editing.id); }} />
             </Sheet>

@@ -282,6 +282,7 @@ pub enum Command {
     ModelMetrics { model: String, efforts: Vec<String>, #[serde(default)] current: Option<String>, local: bool },
     AgentModels { tool: AgentTool },
     RoomBotModels { room: String, participant: ParticipantId },
+    AgentBotModels { participant: ParticipantId },
     RoomBotBalance { room: String, participant: ParticipantId },
     RoomPlanReset { room: String, tool: AgentTool, #[serde(default)] credit: Option<String>, #[serde(default)] key: Option<String> },
     OpenTarget { target: String, cwd: Option<String>, reveal: Option<bool> },
@@ -832,8 +833,9 @@ impl Host {
             ApiBalance { base_url, api_key_env } => reply(self.api_balance(base_url, api_key_env).await?),
             ApiQuote { base_url, api_key_env, model, media } => reply(self.api_quote(base_url, api_key_env, model, media).await?),
             ModelMetrics { model, efforts, current, local } => reply(self.model_metrics(model, efforts, current, local).await?),
-            AgentModels { tool } => reply(self.agent_models(tool)),
+            AgentModels { tool } => reply(self.reported_agent_models(tool).await),
             RoomBotModels { room, participant } => reply(self.room_bot_models(&room, &participant).await?),
+            AgentBotModels { participant } => reply(self.agent_bot_models(&participant).await?),
             RoomBotBalance { room, participant } => reply(self.room_bot_balance(&room, &participant).await?),
             RoomPlanReset { room, tool, credit, key } => reply(self.room_plan_reset(&room, tool, credit, key).await?),
             OpenTarget { target, cwd, reveal } => reply(self.open_target(target, cwd, reveal)?),
@@ -1187,7 +1189,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 238);
+        assert_eq!(names.len(), 239);
         for name in [
             "personal_handoff_select",
             "personal_handoff_control",
@@ -1227,6 +1229,7 @@ mod tests {
         assert!(names.contains(&"post_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));
+        assert!(names.contains(&"agent_bot_models".to_string()));
         assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"personal_project_delegate".to_string()));

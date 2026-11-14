@@ -200,6 +200,65 @@ pub(crate) fn retry_after(header: Option<&reqwest::header::HeaderValue>) -> Opti
     Some(Duration::from_secs(seconds.clamp(60, 3600)))
 }
 
+/// The models the Claude login may use, from Anthropic's model list, newest
+/// first as Anthropic gives them. The answer is kept for ten minutes so
+/// opening pickers doesn't ask again each time. A failed ask returns the
+/// last good answer, or nothing, and the picker keeps its built-in names.
+pub(crate) async fn account_models() -> Vec<apex_core::ModelChoice> {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    const FRESH: Duration = Duration::from_secs(600);
+    static SAVED: Mutex<Option<(Instant, Vec<apex_core::ModelChoice>)>> = Mutex::new(None);
+    if let Some((at, models)) = SAVED.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < FRESH {
+            return models.clone();
+        }
+    }
+    let asked = async {
+        let token = access_token().await?;
+        let reply = reqwest::Client::new()
+            .get(format!("{API}/v1/models?limit=1000"))
+            .bearer_auth(token)
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("anthropic-version", "2023-06-01")
+            .header(reqwest::header::USER_AGENT, user_agent().await)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?;
+        let body: Value = reply.json().await.ok()?;
+        let models = models_from_list(&body);
+        (!models.is_empty()).then_some(models)
+    };
+    let answer = asked.await;
+    let mut saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    match answer {
+        Some(models) => {
+            *saved = Some((Instant::now(), models.clone()));
+            models
+        }
+        None => saved.as_ref().map(|(_, models)| models.clone()).unwrap_or_default(),
+    }
+}
+
+/// Read an Anthropic `/v1/models` reply: a `data` list of entries with an
+/// `id` and a `display_name`. Effort levels aren't listed, so the picker
+/// takes them from its built-in names where it knows the model.
+pub(crate) fn models_from_list(body: &Value) -> Vec<apex_core::ModelChoice> {
+    let mut out: Vec<apex_core::ModelChoice> = Vec::new();
+    for entry in body["data"].as_array().into_iter().flatten() {
+        let Some(id) = entry["id"].as_str().map(str::trim).filter(|id| !id.is_empty()) else { continue };
+        if out.iter().any(|m| m.id == id) {
+            continue;
+        }
+        let label = entry["display_name"].as_str().map(str::trim).filter(|name| !name.is_empty() && *name != id).map(str::to_string);
+        out.push(apex_core::ModelChoice { id: id.to_string(), label, efforts: None });
+    }
+    out
+}
+
 /// Claude Code keeps its login in the macOS keychain, or in
 /// `~/.claude/.credentials.json` elsewhere.
 async fn access_token() -> Option<String> {
