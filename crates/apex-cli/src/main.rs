@@ -8,7 +8,7 @@ async fn main() {
     let result = async {
         match args::parse(std::env::args().skip(1))? {
             Launch::Help => print!("{}", args::HELP),
-            Launch::Version => println!("apex {}", env!("CARGO_PKG_VERSION")),
+            Launch::Version => println!("{}", args::version_line()),
             Launch::Backend { args, stop } => apex_cli::backend::lifecycle(&args,stop).await?,
             Launch::Interactive(args) => {
                 apex_cli::authority::assert_trusted_startup()?;

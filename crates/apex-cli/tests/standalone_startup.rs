@@ -30,3 +30,10 @@ fn daemon_local_only_refuses_network_flags(){
         let mut args=vec!["serve".to_string(),"--local-only".into()];args.extend(flag.into_iter().map(str::to_string));assert!(parse(&args).is_err());
     }
 }
+
+#[test]
+fn version_names_the_build_commit_so_packagers_can_check_it() {
+    let line = apex_cli::args::version_line();
+    assert!(line.starts_with(&format!("apex {} (", env!("CARGO_PKG_VERSION"))), "{line}");
+    assert!(line.contains(apex_daemon::build_info::commit()), "{line}");
+}

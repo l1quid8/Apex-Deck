@@ -5,12 +5,32 @@
 # Usage: scripts/linux-build.sh [amd64|arm64]   (default: amd64, the usual VPS)
 # Writes target/linux-<arch>/apex-daemon. On an Apple-silicon Mac an amd64
 # build runs under emulation and takes a while.
+#
+#        scripts/linux-build.sh cli
+# Builds the Linux x64 CLI release (apex + apex-daemon, no extra features) into
+# target/linux-amd64-cli/. Only runs in a folder exported from a main commit by
+# scripts/cli-release-source.mjs, and stamps that commit into the binaries.
 set -euo pipefail
 
+mode=daemon
+if [[ "${1:-}" == cli ]]; then mode=cli; shift; fi
 arch=${1:-amd64}
-case "$arch" in amd64|arm64) ;; *) echo "usage: $0 [amd64|arm64]" >&2; exit 2 ;; esac
+case "$arch" in amd64|arm64) ;; *) echo "usage: $0 [cli] [amd64|arm64]" >&2; exit 2 ;; esac
 root="$(cd "$(dirname "$0")/.." && pwd)"
 image=apex-deck-linux-build-$arch
+build_env=()
+if [[ $mode == cli ]]; then
+  [[ $arch == amd64 ]] || { echo "The CLI release is Linux x64 only" >&2; exit 2; }
+  commit="$(node "$root/scripts/cli-release-source.mjs" commit "$root")"
+  build_env=(-e "APEX_BUILD_COMMIT=${commit:0:12}" -e APEX_BUILD_DIRTY=false)
+  out="$root/target/linux-amd64-cli"
+  volume=apex-deck-linux-cli-build-amd64
+  build='cargo build --release --locked -p apex-cli -p apex-daemon && cp /target/release/apex /target/release/apex-daemon /out/'
+else
+  out="$root/target/linux-$arch"
+  volume=apex-deck-linux-build-$arch
+  build='cargo build --release --locked -p apex-daemon --features remote && cp /target/release/apex-daemon /out/'
+fi
 
 docker build -q --platform "linux/$arch" -t "$image" - >/dev/null <<'DOCKERFILE'
 FROM ubuntu:22.04
@@ -24,7 +44,7 @@ RUN git config --global --add safe.directory /src
 ENV PATH=/root/.cargo/bin:$PATH CARGO_TARGET_DIR=/target
 DOCKERFILE
 
-mkdir -p "$root/target/linux-$arch"
+mkdir -p "$out"
 # In a linked worktree .git is a file pointing, by absolute host path, into the
 # main checkout's .git (the common dir), so build.rs's git needs that mounted at
 # the same path. safe.directory /src still covers it: git trusts the work tree.
@@ -35,10 +55,10 @@ if [[ -f "$root/.git" ]]; then
   src_mounts+=(-v "${common}:${common}:ro")
 fi
 docker run --rm --platform "linux/$arch" \
-  "${src_mounts[@]}" \
+  "${src_mounts[@]}" ${build_env[@]+"${build_env[@]}"} \
   -v "apex-deck-cargo-registry-$arch:/root/.cargo/registry" \
-  -v "apex-deck-linux-build-$arch:/target" \
-  -v "$root/target/linux-$arch:/out" \
+  -v "$volume:/target" \
+  -v "$out:/out" \
   -w /src "$image" \
-  sh -c 'cargo build --release --locked -p apex-daemon --features remote && cp /target/release/apex-daemon /out/'
-echo "target/linux-$arch/apex-daemon"
+  sh -c "$build"
+echo "$out"

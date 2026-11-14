@@ -1,6 +1,6 @@
 {
   "name": "@apex-deck/cli-darwin-arm64",
-  "version": "0.9.14",
+  "version": "0.9.15",
   "description": "Apex Deck CLI signed binaries for macOS Apple Silicon",
   "os": [
     "darwin"

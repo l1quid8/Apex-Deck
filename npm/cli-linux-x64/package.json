@@ -1,6 +1,6 @@
 {
   "name": "@apex-deck/cli-linux-x64",
-  "version": "0.9.14",
+  "version": "0.9.15",
   "description": "Apex Deck CLI binaries for Linux x64",
   "os": [
     "linux"

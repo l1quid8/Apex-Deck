@@ -1,6 +1,6 @@
 {
   "name": "@apex-deck/cli",
-  "version": "0.9.14",
+  "version": "0.9.15",
   "description": "Apex Deck standalone CLI launcher - shares agents and threads with the desktop app. macOS needs one-time admin setup; Linux needs none.",
   "bin": {
     "apex": "bin/apex"
@@ -9,8 +9,8 @@
     "bin/"
   ],
   "optionalDependencies": {
-    "@apex-deck/cli-darwin-arm64": "0.9.14",
-    "@apex-deck/cli-linux-x64": "0.9.14"
+    "@apex-deck/cli-darwin-arm64": "0.9.15",
+    "@apex-deck/cli-linux-x64": "0.9.15"
   },
   "os": [
     "darwin",
