@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, rmSy
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { checkSource } from './cli-release-source.mjs';
 
 function run(cmd, args, opts={}) {
   const r = spawnSync(cmd, args, { stdio: 'inherit', ...opts });
@@ -28,7 +29,9 @@ function main() {
   const release = join(repo, 'release');
   if (resolve(process.cwd()) !== release) throw new Error(`Run from ${release}`);
 
-  const pkgVersion = validateVersion(JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version);
+  // Refuses unless this folder is an unmodified export of a commit on main.
+  const source = checkSource(repo);
+  const pkgVersion = validateVersion(source.version);
   const npmCliDir = join(repo, 'npm', 'cli');
   const npmPlatformTpl = join(repo, 'npm', 'cli-darwin-arm64');
 
@@ -57,6 +60,7 @@ function main() {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   if (manifest.version !== pkgVersion) throw new Error(`Manifest version ${manifest.version} != package.json ${pkgVersion}`);
   if (manifest.product !== 'apex-cli' || manifest.architecture !== 'arm64') throw new Error('Unexpected manifest product/arch');
+  if (manifest.sourceCommit !== source.commit) throw new Error(`Signed archive was built from ${manifest.sourceCommit || 'an unrecorded commit'}, not ${source.commit}; rebuild with package-cli-mac.mjs`);
 
   // Verify signatures and hashes of signed dir (never re-sign)
   for (const f of manifest.files) {
@@ -84,17 +88,10 @@ function main() {
   const installTxt = join(signedDir, 'INSTALL.txt');
   if (!existsSync(installTxt)) throw new Error('Missing INSTALL.txt in signed dir');
 
-  // Sync versions in npm package.json files
-  for (const pj of [join(npmCliDir, 'package.json'), join(npmPlatformTpl, 'package.json')]) {
-    const j = JSON.parse(readFileSync(pj, 'utf8'));
-    if (j.version !== pkgVersion) {
-      j.version = pkgVersion;
-      for (const dep of Object.keys(j.optionalDependencies || {})) {
-        if (dep.startsWith('@apex-deck/cli-')) j.optionalDependencies[dep] = pkgVersion;
-      }
-      writeFileSync(pj, JSON.stringify(j, null, 2) + '\n');
-      console.log(`Updated ${pj} version to ${pkgVersion}`);
-    }
+  // The source already agrees on one version (checkSource); never rewrite tracked files here.
+  const launcherJson = JSON.parse(readFileSync(join(npmCliDir, 'package.json'), 'utf8'));
+  for (const [dep, v] of Object.entries(launcherJson.optionalDependencies || {})) {
+    if (dep.startsWith('@apex-deck/cli-') && v !== pkgVersion) throw new Error(`npm/cli lists ${dep}@${v}, expected ${pkgVersion}; fix it on main`);
   }
 
   // Build npm tgz packages

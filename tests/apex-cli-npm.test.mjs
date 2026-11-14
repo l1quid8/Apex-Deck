@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, chmodSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -305,16 +306,41 @@ test('linux launcher finds the sibling payload and never one from the working fo
 });
 
 test('linux packager accepts only x86_64 ELF and payload files', async () => {
-  const { isLinuxX64Elf, linuxManifest } = await import('../scripts/package-cli-npm-linux.mjs');
+  const { isLinuxX64Elf, linuxManifest, embedsCommit } = await import('../scripts/package-cli-npm-linux.mjs');
   const elf = Buffer.alloc(20); elf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); elf[18] = 0x3e;
   assert.equal(isLinuxX64Elf(elf), true);
   const arm = Buffer.from(elf); arm[18] = 0xb7;
   assert.equal(isLinuxX64Elf(arm), false);
   assert.equal(isLinuxX64Elf(Buffer.from([0xcf, 0xfa, 0xed, 0xfe])), false);
-  const m = linuxManifest('0.9.9', [{ name: 'apex', sha256: 'a'.repeat(64) }]);
+  const commit = 'c'.repeat(40);
+  const m = linuxManifest('0.9.9', [{ name: 'apex', sha256: 'a'.repeat(64) }], commit);
   assert.equal(m.platform, 'linux');
   assert.equal(m.architecture, 'x64');
-  assert.throws(() => linuxManifest('0.9.9', [{ name: 'apex-provenance', sha256: 'a'.repeat(64) }]), /Unexpected payload/);
+  assert.equal(m.sourceCommit, commit);
+  assert.throws(() => linuxManifest('0.9.9', [{ name: 'apex-provenance', sha256: 'a'.repeat(64) }], commit), /Unexpected payload/);
+  assert.throws(() => linuxManifest('0.9.9', [{ name: 'apex', sha256: 'a'.repeat(64) }]), /source commit/);
+  // The daemon carries its 12-character build commit; one built elsewhere ("unknown") is refused.
+  assert.equal(embedsCommit(Buffer.from('xx apex-build-commit=cccccccccccc; yy'), commit), true);
+  assert.equal(embedsCommit(Buffer.from('xx apex-build-commit=unknown; yy'), commit), false);
+  // A bare hash is not proof: every binary has "0123456789abcdef" in it somewhere.
+  assert.equal(embedsCommit(Buffer.from('xx 0123456789abcdef yy'), '0123456789ab' + '0'.repeat(28)), false);
+});
+
+test('linux packager refuses a CLI binary built from another commit, not just a stale daemon', UNIX_ONLY, async () => {
+  const { payloadFiles } = await import('../scripts/package-cli-npm-linux.mjs');
+  const commit = 'c'.repeat(40);
+  const bin = text => { const b = Buffer.alloc(20); b.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); b[18] = 0x3e; return Buffer.concat([b, Buffer.from(text)]); };
+  const dir = mkdtempSync(join(tmpdir(), 'apex-linux-payload-'));
+  try {
+    writeFileSync(join(dir, 'apex-daemon'), bin(`apex-build-commit=${commit.slice(0, 12)};`));
+    writeFileSync(join(dir, 'apex'), bin('apex-build-commit=0123456789ab; 0123456789abcdef cccccccccccc'));
+    assert.throws(() => payloadFiles(dir, commit), /apex was not built from cccccccccccc/);
+    writeFileSync(join(dir, 'apex'), bin(`apex-build-commit=${commit.slice(0, 12)};`));
+    const files = payloadFiles(dir, commit);
+    assert.deepEqual(files.map(f => f.name), ['apex', 'apex-daemon']);
+    // The bytes written into the package are the ones that were hashed.
+    for (const f of files) assert.equal(createHash('sha256').update(f.bytes).digest('hex'), f.sha256);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('launcher package installs on both supported platforms', () => {

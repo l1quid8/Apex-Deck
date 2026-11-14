@@ -19,7 +19,10 @@ test('release version and manifest exclude unsafe filenames and missing hashes',
   assert.equal(validateVersion('0.9.8'), '0.9.8');
   assert.throws(()=>validateVersion('../bad'),/version/);
   const files=[{name:'apex',sha256:'a'.repeat(64)}];
-  assert.equal(manifestFor('0.9.8',files).files[0].name,'apex');
-  assert.throws(()=>manifestFor('0.9.8',[{name:'../x',sha256:'a'.repeat(64)}]),/file/);
-  assert.throws(()=>manifestFor('0.9.8',[{name:'apex',sha256:'bad'}]),/hash/);
+  const commit='c'.repeat(40);
+  assert.equal(manifestFor('0.9.8',files,commit).files[0].name,'apex');
+  assert.equal(manifestFor('0.9.8',files,commit).sourceCommit,commit);
+  assert.throws(()=>manifestFor('0.9.8',files),/source commit/);
+  assert.throws(()=>manifestFor('0.9.8',[{name:'../x',sha256:'a'.repeat(64)}],commit),/file/);
+  assert.throws(()=>manifestFor('0.9.8',[{name:'apex',sha256:'bad'}],commit),/hash/);
 });

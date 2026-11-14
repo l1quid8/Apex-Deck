@@ -17,6 +17,13 @@ pub enum Launch {
     Interactive(Args),
     Backend { args: Args, stop: bool },
 }
+/// `apex <version> (<commit>[-dirty])`. Printing the commit also puts it in the
+/// binary, which is how the release packagers tell which commit built it.
+pub fn version_line() -> String {
+    let dirty = if apex_daemon::build_info::dirty() { "-dirty" } else { "" };
+    format!("apex {} ({}{dirty})", env!("CARGO_PKG_VERSION"), apex_daemon::build_info::commit())
+}
+
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Launch, String> {
     let mut args = args.into_iter();
     let mut data = None;

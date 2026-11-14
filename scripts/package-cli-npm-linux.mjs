@@ -2,7 +2,7 @@
 // launcher (@apex-deck/cli) from Linux binaries built by Docker.
 //
 // Usage (from release/): node ../scripts/package-cli-npm-linux.mjs [binDir [outDir]]
-// binDir defaults to ../target/linux-amd64 and must hold `apex` and
+// binDir defaults to ../target/linux-amd64-cli (scripts/linux-build.sh cli) and must hold `apex` and
 // `apex-daemon` built for x86_64 Linux. outDir (default release/) lets a test
 // build avoid overwriting published tarballs there.
 //
@@ -15,6 +15,9 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, rmSy
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { checkSource, embedsCommit } from './cli-release-source.mjs';
+
+export { embedsCommit };
 
 const BINARIES = ['apex', 'apex-daemon'];
 
@@ -24,17 +27,32 @@ export function isLinuxX64Elf(header) {
     && header[4] === 2 && header[5] === 1 && header[18] === 0x3e && header[19] === 0;
 }
 
-export function linuxManifest(version, files) {
+export function linuxManifest(version, files, sourceCommit) {
+  if (!/^[a-f0-9]{40}$/.test(sourceCommit || '')) throw new Error('Invalid source commit');
   for (const file of files) {
     if (!BINARIES.includes(file.name)) throw new Error(`Unexpected payload file ${file.name}`);
     if (!/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('Invalid manifest hash');
   }
-  return { formatVersion: 1, product: 'apex-cli', platform: 'linux', version, architecture: 'x64', files };
+  return { formatVersion: 1, product: 'apex-cli', platform: 'linux', version, architecture: 'x64', sourceCommit, files };
 }
 
 function header(path) {
   const fd = openSync(path, 'r');
   try { const buf = Buffer.alloc(20); readSync(fd, buf, 0, 20, 0); return buf; } finally { closeSync(fd); }
+}
+
+/** Hashes the Linux binaries in `binDir`, refusing any that is missing, not x86_64, or built from another commit. */
+export function payloadFiles(binDir, commit) {
+  return BINARIES.map(name => {
+    const path = join(binDir, name);
+    if (!existsSync(path)) throw new Error(`Missing ${path}`);
+    if (!isLinuxX64Elf(header(path))) throw new Error(`${path} is not a Linux x86_64 binary`);
+    const bytes = readFileSync(path);
+    if (!embedsCommit(bytes, commit)) {
+      throw new Error(`${path} was not built from ${commit.slice(0, 12)}; build both binaries with scripts/linux-build.sh cli from this folder`);
+    }
+    return { name, sha256: createHash('sha256').update(bytes).digest('hex'), bytes };
+  });
 }
 
 function pack(stage, out) {
@@ -53,39 +71,35 @@ function main() {
   const outDir = process.argv[3] ? resolve(process.argv[3]) : release;
   if (!process.argv[3] && resolve(process.cwd()) !== release) throw new Error(`Run from ${release}`);
   mkdirSync(outDir, { recursive: true });
-  const binDir = resolve(process.argv[2] || join(repo, 'target', 'linux-amd64'));
-  const version = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version;
+  const binDir = resolve(process.argv[2] || join(repo, 'target', 'linux-amd64-cli'));
+  // Refuses unless this folder is an unmodified export of a commit on main.
+  const source = checkSource(repo);
+  const version = source.version;
   if (!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new Error(`Invalid version ${version}`);
-
-  const files = BINARIES.map(name => {
-    const path = join(binDir, name);
-    if (!existsSync(path)) throw new Error(`Missing ${path}`);
-    if (!isLinuxX64Elf(header(path))) throw new Error(`${path} is not a Linux x86_64 binary`);
-    return { name, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
-  });
+  const files = payloadFiles(binDir, source.commit);
 
   const launcherDir = join(repo, 'npm', 'cli');
   const platformTpl = join(repo, 'npm', 'cli-linux-x64');
   const launcherJson = JSON.parse(readFileSync(join(launcherDir, 'package.json'), 'utf8'));
   const platformJson = JSON.parse(readFileSync(join(platformTpl, 'package.json'), 'utf8'));
-  launcherJson.version = version;
-  for (const dep of Object.keys(launcherJson.optionalDependencies || {})) {
-    if (dep.startsWith('@apex-deck/cli-')) launcherJson.optionalDependencies[dep] = version;
+  for (const [dep, v] of Object.entries(launcherJson.optionalDependencies || {})) {
+    if (dep.startsWith('@apex-deck/cli-') && v !== version) throw new Error(`npm/cli lists ${dep}@${v}, expected ${version}; fix it on main`);
   }
   if (!launcherJson.optionalDependencies?.['@apex-deck/cli-linux-x64']) throw new Error('Launcher does not list @apex-deck/cli-linux-x64');
   if (!launcherJson.os?.includes('linux') || !launcherJson.cpu?.includes('x64')) throw new Error('Launcher package excludes Linux x64');
-  platformJson.version = version;
 
   const work = mkdtempSync(join(outDir, '.npm-cli-linux-'));
   try {
     const plat = join(work, 'plat');
     mkdirSync(plat);
     writeFileSync(join(plat, 'package.json'), JSON.stringify(platformJson, null, 2) + '\n');
-    for (const name of BINARIES) {
-      copyFileSync(join(binDir, name), join(plat, name));
+    // Write the bytes that were hashed and checked, not a second read of binDir.
+    for (const { name, bytes } of files) {
+      writeFileSync(join(plat, name), bytes);
       chmodSync(join(plat, name), 0o755);
     }
-    writeFileSync(join(plat, 'manifest.json'), JSON.stringify(linuxManifest(version, files), null, 2) + '\n');
+    const listed = files.map(({ name, sha256 }) => ({ name, sha256 }));
+    writeFileSync(join(plat, 'manifest.json'), JSON.stringify(linuxManifest(version, listed, source.commit), null, 2) + '\n');
     writeFileSync(join(plat, 'README.md'), `# @apex-deck/cli-linux-x64\n\nApex Deck CLI binaries for Linux x64, version ${version}. Installed by @apex-deck/cli; not meant to be installed directly.\n`);
     const platOut = pack(plat, join(outDir, `apex-deck-cli-linux-x64-${version}.tgz`));
 
