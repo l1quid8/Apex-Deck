@@ -26,5 +26,8 @@ unicode-width = "0.2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+apex-adapters = { path = "../apex-adapters" }
+
 [dev-dependencies]
 ring = "0.17"

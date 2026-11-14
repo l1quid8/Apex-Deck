@@ -164,6 +164,7 @@ dependencies = [
 name = "apex-cli"
 version = "0.9.9"
 dependencies = [
+ "apex-adapters",
  "apex-core",
  "apex-daemon",
  "apex-host",

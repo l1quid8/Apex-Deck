@@ -4,6 +4,7 @@ use apex_cli::{
 };
 #[tokio::main]
 async fn main() {
+    apex_cli::authority::harden_process();
     let result = async {
         match args::parse(std::env::args().skip(1))? {
             Launch::Help => print!("{}", args::HELP),

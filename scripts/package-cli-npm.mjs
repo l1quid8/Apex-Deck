@@ -89,8 +89,8 @@ function main() {
     const j = JSON.parse(readFileSync(pj, 'utf8'));
     if (j.version !== pkgVersion) {
       j.version = pkgVersion;
-      if (j.optionalDependencies && j.optionalDependencies['@apex-deck/cli-darwin-arm64']) {
-        j.optionalDependencies['@apex-deck/cli-darwin-arm64'] = pkgVersion;
+      for (const dep of Object.keys(j.optionalDependencies || {})) {
+        if (dep.startsWith('@apex-deck/cli-')) j.optionalDependencies[dep] = pkgVersion;
       }
       writeFileSync(pj, JSON.stringify(j, null, 2) + '\n');
       console.log(`Updated ${pj} version to ${pkgVersion}`);

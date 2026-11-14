@@ -651,7 +651,7 @@ pub fn status_line(s: &AppState, width: u16) -> Line<'static> {
     Line::from(left)
 }
 
-/// The seven panel rows (v6): title, four settings, usage, footer.
+/// The seven panel rows (v6), with room for a wrapped Full-access warning.
 pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
     use crate::settings::{self, Row};
     let (Some(panel), Some(p)) = (s.settings.as_ref(), settings::agent(s)) else {
@@ -720,7 +720,7 @@ pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
         vec![Span::styled(safe(error).replace('\n', " "), Style::default().fg(RED))]
     } else if panel.confirm_full {
         vec![
-            Span::styled(format!("{name} can run commands without asking. "), white),
+            Span::styled(format!("{name} {} ", settings::full_access_warning()), white),
             Span::styled("Enter", white),
             Span::styled(" yes · ", gray),
             Span::styled("Esc", white),
@@ -748,7 +748,11 @@ pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
     };
     let mut footer_spans = vec![Span::raw("   ")];
     footer_spans.extend(footer);
-    out.push(fit(footer_spans, w));
+    if panel.confirm_full {
+        out.extend(wrapped(footer_spans, w));
+    } else {
+        out.push(fit(footer_spans, w));
+    }
     out.into_iter().map(|line| line.style(Style::default().bg(PANEL))).collect()
 }
 pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
@@ -774,8 +778,9 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         rows[1],
     );
     let panel = if s.view != 0 { settings_lines(s, area.width) } else { vec![] };
-    let (screen, panel_rect) = if !panel.is_empty() && rows[2].height > PANEL_ROWS {
-        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(PANEL_ROWS)]).split(rows[2]);
+    let panel_rows = u16::try_from(panel.len()).unwrap_or(u16::MAX).max(PANEL_ROWS);
+    let (screen, panel_rect) = if !panel.is_empty() && rows[2].height > panel_rows {
+        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(panel_rows)]).split(rows[2]);
         (parts[0], Some(parts[1]))
     } else {
         (rows[2], None)
@@ -808,7 +813,7 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
         }
         if s.threads.is_empty() {
             lines.push(Line::from(
-                "  No threads yet. /new creates an empty thread.",
+                "  No threads yet. /new to start a Work or Chat thread.",
             ));
         }
         lines.extend([

@@ -597,7 +597,7 @@ async fn setup_agents(command:&str,s:&mut AppState,client:Option<&Client>,data:&
     if let Some(payload)=command.strip_prefix("import-save ") {
         let input:Value=serde_json::from_str(payload).map_err(|e|e.to_string())?;
         let provider=input["provider"].as_str().ok_or("Missing import provider")?;
-        let status=crate::provider_setup::status(provider).await?;
+        let status=crate::provider_setup::status(provider,&crate::provider_setup::Store::for_data(data,provider)).await?;
         if status["loggedIn"]!=true||status["method"]!="subscription"{return Err(format!("Run /login {provider} before importing this agent"));}
         controller::execute(client,data,"agent_profile_save",input).await?;
         s.notice="Imported selected profile with Ask access. Source and credentials were not changed.".into();return Ok(());
@@ -617,7 +617,7 @@ async fn setup_agents(command:&str,s:&mut AppState,client:Option<&Client>,data:&
             let Some(provider)=provider else {
                 let out=menu("Choose provider for new agent",vec![choice("Codex","Use attached ChatGPT subscription",Action::Setup("agents create codex".into())),choice("Claude","Use attached Claude subscription",Action::Setup("agents create claude".into())),choice("Cancel","No changes",Action::Dismiss)]);s.menu=out.menu;return Ok(());
             };
-            let status=crate::provider_setup::status(provider).await?;
+            let status=crate::provider_setup::status(provider,&crate::provider_setup::Store::for_data(data,provider)).await?;
             if status["loggedIn"]!=true || status["method"]!="subscription" {return Err(format!("Provider is not attached with a subscription. Run /login {provider} first."));}
             let mut wizard=crate::agent_setup::Wizard::new(provider.into(),saved["revision"].as_u64().unwrap_or(0));
             if let Some(p)=selected {wizard.replace=true;wizard.handle=Some(crate::state::mention(p));wizard.profile_id=p["id"].as_str().map(str::to_string);}
@@ -896,7 +896,7 @@ pub async fn run(args: Args) -> Result<(), String> {
                 // provider process is the sole owner of terminal input.
                 drop(events.take());
                 Guard::restore();
-                let result=crate::provider_setup::login(words.get(1).copied().unwrap_or(""),words.get(2).copied()).await;
+                let result=crate::provider_setup::login(provider,words.get(2).copied(),&crate::provider_setup::Store::for_data(&args.data,provider)).await;
                 let guard=Guard::enter().map_err(|e|e.to_string())?;std::mem::forget(guard);
                 terminal.clear().map_err(|e|e.to_string())?;events=Some(EventStream::new());
                 s.notice=match result {Ok(message)=>message,Err(error)=>error};dirty=true;

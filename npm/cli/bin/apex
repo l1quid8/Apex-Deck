@@ -1,7 +1,9 @@
 #!/bin/sh
 # Apex CLI launcher for npm distribution
-# - Always execs the root-owned Standalone/apex, never the npm copy
-# - Handles one-time setup and upgrades via sudo hint
+# - macOS: always execs the root-owned Standalone/apex, never the npm copy,
+#   and handles one-time setup and upgrades via sudo hint
+# - Linux: execs the npm copy directly. There is no root broker there; the
+#   backend admits the terminal only after its agent-jail check passed.
 # - Test overrides via APEX_CLI_NPM_TEST env (fake Standalone / platform dirs)
 set -eu
 
@@ -40,6 +42,18 @@ except:
 PY
 )
 
+# Platform package for this machine (test override: APEX_CLI_NPM_TEST_UNAME)
+if [ -n "${APEX_CLI_NPM_TEST:-}" ] && [ -n "${APEX_CLI_NPM_TEST_UNAME:-}" ]; then
+  machine="$APEX_CLI_NPM_TEST_UNAME"
+else
+  machine="$(uname -s)-$(uname -m)"
+fi
+case "$machine" in
+  Darwin-arm64) plat_pkg=cli-darwin-arm64 ;;
+  Linux-x86_64) plat_pkg=cli-linux-x64 ;;
+  *) echo "Apex CLI runs on Apple Silicon Macs and Linux x64 only (this machine is $machine)." >&2; exit 1 ;;
+esac
+
 # Determine platform package directory
 # In production: sibling ../cli-darwin-arm64 or node_modules
 find_platform_dir() {
@@ -52,27 +66,29 @@ find_platform_dir() {
   fi
   # Candidates relative to this file
   base=$(dirname "$(dirname "$abs_launcher")") # @apex-deck/cli root
-  # 1. sibling package @apex-deck/cli-darwin-arm64 at same node_modules level
-  #    e.g. /opt/homebrew/lib/node_modules/@apex-deck/cli -> ../cli-darwin-arm64
-  cand="$base/../cli-darwin-arm64"
+  # 1. sibling package @apex-deck/$plat_pkg at same node_modules level
+  #    e.g. /opt/homebrew/lib/node_modules/@apex-deck/cli -> ../$plat_pkg
+  cand="$base/../$plat_pkg"
   if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
-  # 2. nested optional dep: <cli>/node_modules/@apex-deck/cli-darwin-arm64
-  cand="$base/node_modules/@apex-deck/cli-darwin-arm64"
+  # 2. nested optional dep: <cli>/node_modules/@apex-deck/$plat_pkg
+  cand="$base/node_modules/@apex-deck/$plat_pkg"
   if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
   # 3. global: resolve via npm root -g ? Try common global locations
   #    Walk up from launcher to find node_modules containing platform
   dir=$(dirname "$abs_launcher")
   while [ "$dir" != "/" ] && [ "$dir" != "." ]; do
-    cand="$dir/@apex-deck/cli-darwin-arm64"
+    cand="$dir/@apex-deck/$plat_pkg"
     if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
-    cand="$dir/node_modules/@apex-deck/cli-darwin-arm64"
+    cand="$dir/node_modules/@apex-deck/$plat_pkg"
     if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
     dir=$(dirname "$dir")
   done
-  # 4. Relative to CWD if running from repo
-  cand="$(pwd)/npm/cli-darwin-arm64"
+  # 4. Relative to CWD if running from repo. Never on Linux, where the
+  #    platform binary is executed: a folder must not supply it.
+  [ "$plat_pkg" = "cli-linux-x64" ] && return 1
+  cand="$(pwd)/npm/$plat_pkg"
   if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
-  cand="$(pwd)/../cli-darwin-arm64"
+  cand="$(pwd)/../$plat_pkg"
   if [ -d "$cand" ] && [ -f "$cand/manifest.json" ]; then echo "$cand"; return 0; fi
   return 1
 }
@@ -80,8 +96,23 @@ find_platform_dir() {
 platform_dir=""
 if ! platform_dir=$(find_platform_dir); then
   echo "Apex CLI platform package not found. Reinstall with: npm i -g @apex-deck/cli" >&2
-  echo "Looked for @apex-deck/cli-darwin-arm64 alongside $(dirname "$abs_launcher")" >&2
+  echo "Looked for @apex-deck/$plat_pkg alongside $(dirname "$abs_launcher")" >&2
   exit 1
+fi
+
+# Linux: no trusted copy or admin setup; run the packaged binary.
+if [ "$plat_pkg" = "cli-linux-x64" ]; then
+  case "${1:-}" in
+    setup|uninstall)
+      echo "Linux needs no setup. To remove Apex CLI: npm rm -g @apex-deck/cli" >&2
+      exit 0
+      ;;
+  esac
+  if [ ! -x "$platform_dir/apex" ] || [ ! -x "$platform_dir/apex-daemon" ]; then
+    echo "Apex CLI files are missing from $platform_dir. Reinstall with: npm i -g @apex-deck/cli" >&2
+    exit 1
+  fi
+  exec "$platform_dir/apex" "$@"
 fi
 
 # Standalone root (test override)

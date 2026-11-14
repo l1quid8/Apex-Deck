@@ -66,12 +66,19 @@ pub async fn lifecycle(args: &Args, stop: bool) -> Result<(),String> {
     print!("Stop the shared backend and all active work in connected terminals and desktop windows? Type stop: ");std::io::stdout().flush().map_err(|e|e.to_string())?;
     let mut answer=String::new();std::io::stdin().read_line(&mut answer).map_err(|e|e.to_string())?;
     if answer.trim()!="stop" {println!("Canceled.");return Ok(());}
-    let authorized=crate::authority::authorize(serde_json::json!({"cmd":"backend_stop","args":{"bootId":hello["boot_id"]}}),&args.data).await?;
+    // Linux has no receipt broker: the same-user control socket, which only a
+    // terminal-started backend opens, is the whole check (see serve.rs).
+    let request=if cfg!(target_os="linux") {
+        serde_json::json!({"op":"stop","bootId":hello["boot_id"]})
+    } else {
+        let authorized=crate::authority::authorize(serde_json::json!({"cmd":"backend_stop","args":{"bootId":hello["boot_id"]}}),&args.data).await?;
+        serde_json::json!({"op":"stop","receipt":authorized["args"]["receipt"]})
+    };
     use futures::{SinkExt,StreamExt};
     let endpoint=apex_daemon::ipc::endpoint(&args.data).map_err(|e|e.to_string())?.with_file_name("ctl.sock");
-    let stream=apex_daemon::ipc::connect(&endpoint).await.map_err(|e|format!("Standalone backend control unavailable: {e}"))?;
+    let stream=apex_daemon::ipc::connect(&endpoint).await.map_err(|e|if cfg!(target_os="linux") {format!("This backend wasn't started by apex, so it has no stop control here. Stop the Deck service with systemctl instead ({e}).")} else {format!("Standalone backend control unavailable: {e}")})?;
     let(r,w)=apex_daemon::ipc::split(stream);let(mut input,mut output)=apex_daemon::protocol::lines(r,w);
-    output.send(serde_json::json!({"op":"stop","receipt":authorized["args"]["receipt"]}).to_string()).await.map_err(|e|e.to_string())?;
+    output.send(request.to_string()).await.map_err(|e|e.to_string())?;
     let line=tokio::time::timeout(Duration::from_secs(3),input.next()).await.map_err(|_|"Backend stop outcome unknown; check status before retrying")?.ok_or("Backend closed without confirmation")?.map_err(|e|e.to_string())?;
     if serde_json::from_str::<Value>(&line).map_err(|e|e.to_string())?["ok"]!=true{return Err("Backend refused stop".into());}
     println!("Backend is stopping.");Ok(())

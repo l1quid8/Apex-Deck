@@ -1,0 +1,24 @@
+{
+  "name": "@apex-deck/cli-linux-x64",
+  "version": "0.9.14",
+  "description": "Apex Deck CLI binaries for Linux x64",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "apex",
+    "apex-daemon",
+    "manifest.json"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apex-deck/apex-deck"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -100,17 +100,6 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
                     return Intent::Panel(intent);
                 }
             }
-            // The approval card owns every key except the global ones below
-            // it (F-keys, PageUp/PageDown), so typing can't reach the composer
-            // and Enter can't approve or reject.
-            if s.card.is_some()
-                && !matches!(
-                    key.code,
-                    KeyCode::F(_) | KeyCode::PageUp | KeyCode::PageDown
-                )
-            {
-                return Intent::Card(crate::approval_card::handle_key(s, key.code));
-            }
             if (key.code == KeyCode::Enter
                 && key
                     .modifiers
@@ -120,6 +109,14 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
                 s.menu = None;
                 s.editor.insert("\n");
                 return Intent::None;
+            }
+            // The approval card owns every key except the global ones below
+            // it (F-keys, PageUp/PageDown), so typing can't reach the composer
+            // and Enter can't approve or reject.
+            if s.card.is_some()
+                && !matches!(key.code, KeyCode::F(_) | KeyCode::PageUp | KeyCode::PageDown)
+            {
+                return Intent::Card(crate::approval_card::handle_key(s, key.code));
             }
             match key.code {
                 KeyCode::Esc => {

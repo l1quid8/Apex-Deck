@@ -324,8 +324,13 @@ fn settings_footer_states_fit_at_80_columns() {
     assert!(text(&b).contains("Enter applies Full · now Ask · Esc cancels"), "{}", text(&b));
     assert!(text(&b).contains("◂  Full  ▸"), "pending choice shows in the row");
     s.settings.as_mut().unwrap().confirm_full = true;
-    let b = render(&s, 80, 24);
-    assert!(text(&b).contains("Muck can run commands without asking. Enter yes · Esc no"));
+    for width in [40, 80, 120] {
+        let b = render(&s, width, 24);
+        widths_fit(&b);
+        let shown = text(&b).split_whitespace().collect::<Vec<_>>().join(" ");
+        let warning = format!("Muck {} Enter yes · Esc no", settings::full_access_warning());
+        assert!(shown.contains(&warning), "the complete warning and both choices must remain visible at {width} columns:\n{}", text(&b));
+    }
     s.settings.as_mut().unwrap().confirm_full = false;
     s.settings.as_mut().unwrap().pending_access = None;
     s.settings.as_mut().unwrap().row = Some(Row::Reasoning);
