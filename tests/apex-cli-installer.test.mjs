@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const UNIX_ONLY = process.platform === 'win32' ? { skip: 'Unix-only: runs the /bin/sh installer and launcher' } : {};
 
@@ -99,6 +99,7 @@ async function withHarness(fn) {
   try { await fn(h); } finally { h.close(); }
 }
 
+const lstatExists = (p) => { try { lstatSync(p); return true; } catch { return false; } };
 const ok = (r) => assert.equal(r.status, 0, r.stdout + r.stderr);
 const fails = (r) => assert.notEqual(r.status, 0, r.stdout + r.stderr);
 
@@ -236,4 +237,30 @@ test('failed reinstall after uninstall removes the service file it wrote', UNIX_
   // A failure after commit keeps the lock by design: inspect before retrying.
   assert.equal(h.lockHeld(), true);
   h.unflag('fail-bootstrap');
+}));
+
+// Regression: the 0.9.11 upgrade on a real Mac refused because the script
+// called /bin/readlink, which does not exist, so an existing correct shortcut
+// looked foreign. Every earlier test passed --no-path-link and never hit it.
+test('upgrade keeps an existing Standalone shortcut, refuses a foreign one, uninstall removes it', UNIX_ONLY, () => withHarness(async (h) => {
+  const link = join(h.t, 'usr/local/bin/apex');
+  ok(h.run(h.payload('a', '0.9.9', 'A')));
+  assert.equal(readlinkSync(link), join(h.product, 'apex'));
+  const r = h.run(h.payload('b', '0.9.11', 'B'));
+  ok(r);
+  assert.doesNotMatch(r.stderr, /readlink|refusing replacement/);
+  assert.equal(h.installedBuild(), 'echo apex 0.9.11 B');
+  assert.equal(readlinkSync(link), join(h.product, 'apex'));
+
+  rmSync(link); symlinkSync('/opt/other/apex', link);
+  const foreign = h.run(h.payload('c', '0.9.12', 'C'));
+  fails(foreign);
+  assert.match(foreign.stderr, /does not point to Standalone; refusing replacement/);
+  assert.doesNotMatch(foreign.stderr, /No such file/);
+  assert.equal(h.installedBuild(), 'echo apex 0.9.11 B');
+  assert.equal(readlinkSync(link), '/opt/other/apex');
+
+  rmSync(link); symlinkSync(join(h.product, 'apex'), link);
+  ok(h.run('--uninstall'));
+  assert.equal(lstatExists(link), false);
 }));

@@ -84,7 +84,7 @@ PY
   if [[ -e "$product" || -L "$product" ]]; then /bin/mv "$product" "$stage/product.before"; fi
 
   if [[ -L /usr/local/bin/apex ]]; then
-    target=$(/bin/readlink /usr/local/bin/apex || true)
+    target=$(/usr/bin/readlink /usr/local/bin/apex || true)
     case "$target" in
       *Standalone/apex*|*Apex\ Deck\ Provenance/Standalone/apex*) /bin/rm -f /usr/local/bin/apex ;;
     esac
@@ -325,7 +325,7 @@ PY
 
 if [[ $no_path_link == 0 ]]; then
   if [[ -L /usr/local/bin/apex ]]; then
-    t=$(/bin/readlink /usr/local/bin/apex || true)
+    t=$(/usr/bin/readlink /usr/local/bin/apex || true)
     case "$t" in
       *Standalone/apex*|*Apex\ Deck\ Provenance/Standalone/apex*) ;;
       *) echo '/usr/local/bin/apex exists and does not point to Standalone; refusing replacement.' >&2; exit 1 ;;
