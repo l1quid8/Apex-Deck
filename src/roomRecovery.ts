@@ -136,6 +136,22 @@ const fingerprint = (m: Numbered) =>
   m.speaker && m.text !== undefined ? `${m.speaker.kind === "bot" ? `bot:${m.speaker.id}` : "human"}\n${m.text}` : undefined;
 
 /**
+ * Whether `incoming` is a different message from `kept`, which already holds
+ * its number. A repeat of the same message is not; neither is a bare number,
+ * which cannot be compared.
+ */
+export function messageCollision(kept: Numbered, incoming: Numbered): boolean {
+  const a = fingerprint(kept), b = fingerprint(incoming);
+  return a !== undefined && b !== undefined && a !== b;
+}
+
+/** One console line for a dropped message that reused a number, the same on desktop and phone. */
+export function logMessageCollision(thread: string) {
+  return (seq: number, kept: Numbered, dropped: Numbered) =>
+    console.warn(`[${thread}] dropped a message reusing number ${seq}`, { kept, dropped });
+}
+
+/**
  * Accepts each message number once. Saved and live messages overlap during
  * recovery, so a repeat of the same message is expected and dropped quietly.
  * A different message under a number already taken means the host numbered
@@ -149,8 +165,7 @@ export function messageDedup(onCollision?: (seq: number, kept: Numbered, dropped
       const m = typeof message === "number" ? { seq: message } : message;
       const kept = seen.get(m.seq);
       if (!kept) { seen.set(m.seq, m); return true; }
-      const a = fingerprint(kept), b = fingerprint(m);
-      if (a !== undefined && b !== undefined && a !== b) onCollision?.(m.seq, kept, m);
+      if (messageCollision(kept, m)) onCollision?.(m.seq, kept, m);
       return false;
     },
     truncate(from: number) { for (const seq of seen.keys()) if (seq >= from) seen.delete(seq); },

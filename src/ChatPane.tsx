@@ -27,7 +27,7 @@ import { ConnectionBanner } from "./ConnectionBanner";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
 import { LegacyBadge, LegacyImportPanel } from "./LegacyImportScreen";
 import { hostCanMutate } from "./hostAvailability";
-import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaitingForOwner, loadRoomAttach, loadRoomState, loadRoomTotals, messageDedup, representedRoomEvent } from "./roomRecovery.ts";
+import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaitingForOwner, loadRoomAttach, loadRoomState, loadRoomTotals, logMessageCollision, messageDedup, representedRoomEvent } from "./roomRecovery.ts";
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
@@ -1102,9 +1102,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
 
   // A different message under a number already shown is a host bug, never
   // a replay; say so in the console instead of losing it without a trace.
-  const messageNumbers = useRef(messageDedup((seq, kept, dropped) => console.warn(
-    `[chat ${pane.id}] dropped a message reusing number ${seq}`, { kept, dropped },
-  ))).current;
+  const messageNumbers = useRef(messageDedup(logMessageCollision(`chat ${pane.id}`))).current;
 
   const notify = (message: string, tone: Notice["tone"] = "info", action?: NoticeAction, source?: Notice["source"]) =>
     setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone, ...(source ? { source } : {}), ...(action ? { action } : {}) } }]);

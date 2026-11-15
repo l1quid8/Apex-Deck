@@ -89,6 +89,45 @@ test('a replayed message is dropped quietly but a different one under the same n
   assert.equal(collisions.length, 1);
 });
 
+test('the phone chat drops a reused message number and logs it only when the message differs', async () => {
+  const { transform } = (await import('node:module')).createRequire(import.meta.url)('sucrase');
+  const source = (await import('node:fs')).readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url), 'utf8');
+  const start = source.indexOf('      if (event.type === "message_added") {');
+  const end = source.indexOf('      if (event.type === "approval_requested")', start);
+  assert.ok(start >= 0 && end > start, 'the phone message_added handler');
+  const code = transform(source.slice(start, end), { transforms: ['typescript'] }).code;
+  const warnings = [];
+  const human = { kind: 'human' }, deck = { kind: 'bot', id: 'deck' };
+  const env = {
+    id: 't', openHostId: 'mac', roomRef: { current: null }, room: null,
+    messageCollision: mod.messageCollision,
+    logMessageCollision: (thread) => (seq, kept, dropped) => warnings.push({ thread, seq, kept: kept.text, dropped: dropped.text }),
+    setRoom: (next) => { env.room = typeof next === 'function' ? next(env.room) : next; env.roomRef.current = env.room; },
+  };
+  const apply = new Function('env', 'event', `with(env){${code}}`);
+  env.setRoom({ id: 't', hostId: 'mac', messages: [{ seq: 0, speaker: human, text: 'hello' }] });
+  apply(env, { type: 'message_added', message: { seq: 0, speaker: human, text: 'hello' } });
+  assert.deepEqual(warnings, [], 'a replay is quiet');
+  apply(env, { type: 'message_added', message: { seq: 0, speaker: deck, text: 'note' } });
+  assert.deepEqual(warnings, [{ thread: 'phone chat t', seq: 0, kept: 'hello', dropped: 'note' }]);
+  assert.equal(env.room.messages.length, 1, 'the colliding message is still dropped');
+  apply(env, { type: 'message_added', message: { seq: 1, speaker: deck, text: 'next' } });
+  assert.deepEqual(env.room.messages.map((m) => m.seq), [0, 1], 'a new number is shown');
+  env.setRoom({ id: 't', hostId: 'other', messages: [{ seq: 0, speaker: human, text: 'theirs' }] });
+  apply(env, { type: 'message_added', message: { seq: 0, speaker: deck, text: 'note' } });
+  assert.equal(warnings.length, 1, "another machine's thread with the same id is not compared");
+});
+
+test('the shared collision line names the thread and both messages', () => {
+  const lines = [];
+  const warn = console.warn;
+  console.warn = (...args) => lines.push(args);
+  try { mod.logMessageCollision('phone chat t')(3, { seq: 3, text: 'a' }, { seq: 3, text: 'b' }); }
+  finally { console.warn = warn; }
+  assert.deepEqual(lines, [['[phone chat t] dropped a message reusing number 3', { kept: { seq: 3, text: 'a' }, dropped: { seq: 3, text: 'b' } }]]);
+  assert.equal(mod.messageCollision({ seq: 3 }, { seq: 3, speaker: { kind: 'human' }, text: 'b' }), false, 'a bare number is never a collision');
+});
+
 test('a failed room load stays pending until a later successful recovery', async () => {
   let succeeds = false;
   const recovery = mod.createRoomRecovery({load:async()=>{if(!succeeds)throw Error('drop');return 'ok';},apply:()=>{},fail:()=>{}});
