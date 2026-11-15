@@ -182,7 +182,7 @@ pub enum Command {
     RoomFork { source: String, target: String, upto: Option<usize> },
     /// A thread's snapshot made into a new room here: a fork to this machine, or a thread moved before it started.
     /// With `replace`, a room already called `id` here is written over in one step and then closed, as when a thread that hasn't started moves to another folder.
-    RoomImport { id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: Option<bool> },
+    RoomImport { id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: Option<bool>, #[serde(default)] expected_room_revision: Option<u64> },
     ExportThread { file_name: String, contents: String },
     /// The desktop sends raw bytes; over the wire `data` is base64.
     SaveAttachment { room: String, name: String, data: String },
@@ -204,6 +204,10 @@ pub enum Command {
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     ChatProfiles {},
     ChatList {},
+    ProjectList {},
+    ProjectAdd { path: String, #[serde(default)] name: Option<String> },
+    ProjectRename { path: String, name: String },
+    ProjectRemove { path: String },
     ChatCreate { id: String, participants: Vec<crate::chat_bots::ChatBotRequest>, options: RoomOptions, #[serde(default)] title: Option<String> },
     RoomSetTrashed { id: String, trashed: bool },
     ChatUpdateMeta { id: String, #[serde(default)] title: Option<String>, #[serde(default)] archived: Option<bool>, #[serde(default)] moved_to: Option<Option<crate::storage::ChatMovedTo>> },
@@ -344,7 +348,7 @@ pub fn local_linux_cli_surface(command: &Command) -> bool {
     matches!(command, Command::RoomPost { .. } | Command::RoomDecide { .. } | Command::RoomAnswer { .. }
         | Command::RoomSetPlan { .. } | Command::RoomRunnerStart { .. } | Command::RoomRunnerAction { .. }
         | Command::RoomAddParticipant { .. } | Command::RoomUpdateParticipant { .. } | Command::RoomRemoveParticipant { .. }
-        | Command::RoomSetOptions { .. } | Command::RoomCreate { .. } | Command::AgentProfileSave { .. } | Command::ProviderSetupBegin { .. }
+        | Command::RoomSetOptions { .. } | Command::RoomCreate { .. } | Command::RoomSetTrashed { .. } | Command::RoomImport { .. } | Command::AgentProfileSave { .. } | Command::ProviderSetupBegin { .. }
         | Command::SaveAttachment { .. })
 }
 
@@ -354,7 +358,7 @@ fn local_linux_cli_room(command: &Command) -> Option<&str> {
     match command {
         Command::RoomPost { id, .. } | Command::RoomDecide { id, .. } | Command::RoomAnswer { id, .. }
         | Command::RoomSetPlan { id, .. } | Command::RoomAddParticipant { id, .. } | Command::RoomUpdateParticipant { id, .. }
-        | Command::RoomRemoveParticipant { id, .. } | Command::RoomSetOptions { id, .. } | Command::RoomCreate { id, .. } => Some(id),
+        | Command::RoomRemoveParticipant { id, .. } | Command::RoomSetOptions { id, .. } | Command::RoomCreate { id, .. } | Command::RoomSetTrashed { id, .. } | Command::RoomImport { id, .. } => Some(id),
         Command::RoomRunnerStart { input } => Some(&input.id),
         Command::RoomRunnerAction { input } => Some(&input.id),
         Command::SaveAttachment { room, .. } => Some(room),
@@ -753,7 +757,7 @@ impl Host {
             RoomGitStatus { id } => reply(self.room_git_status(id).await?),
             RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
-            RoomImport { id, snapshot, cwd, replace } => reply(self.room_import(id, snapshot, cwd, replace.unwrap_or(false))?),
+            RoomImport { id, snapshot, cwd, replace, expected_room_revision } => reply(self.room_import_checked(id, snapshot, cwd, replace.unwrap_or(false), expected_room_revision)?),
             ExportThread { file_name, contents } => reply(self.export_thread(file_name, contents)?),
             SaveAttachment { room, name, data } => {
                 let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("the attachment could not be read: {e}"))?;
@@ -771,6 +775,10 @@ impl Host {
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
             ChatProfiles {} => reply(self.chat_profiles()?),
             ChatList {} => reply(self.chat_list()?),
+            ProjectList {} => reply(self.project_list()?),
+            ProjectAdd { path, name } => reply(self.project_change(path, name, "add")?),
+            ProjectRename { path, name } => reply(self.project_change(path, Some(name), "rename")?),
+            ProjectRemove { path } => reply(self.project_change(path, None, "remove")?),
             ChatCreate { id, title, participants, options } => reply(self.chat_create(id, title, participants, options)?),
             RoomSetTrashed { id, trashed } => reply(self.room_set_trashed(id, trashed)?),
             ChatUpdateMeta { id, title, archived, moved_to } => reply(self.chat_update_meta(id, title, archived, moved_to)?),
@@ -1189,7 +1197,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 239);
+        assert_eq!(names.len(), 243);
         for name in [
             "personal_handoff_select",
             "personal_handoff_control",

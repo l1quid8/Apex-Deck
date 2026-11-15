@@ -5,6 +5,7 @@
 import type { Message, ParticipantConfig } from "./types.ts";
 
 export interface ChatBot { id: string; name: string }
+export interface ProjectEntry { path: string; name: string; removed: boolean; revision: number; aliases?: string[] }
 export interface ChatEntry {
   hostId: string;
   id: string;
@@ -20,6 +21,9 @@ export interface ChatEntry {
   trashedAt?: number;
   /** A promoted Work thread's folder; null for a chat. */
   cwd: string | null;
+  projectCwd?: string;
+  /** Checked on the owning host. Absent when unavailable or using an older host. */
+  cwdAvailable?: boolean;
   folderName: string | null;
   promotedFrom: string | null;
   promotedTo: string | null;
@@ -31,7 +35,7 @@ export interface ChatEntry {
 export interface ChatCatalog {
   version: 1;
   /** `listedAt`: when the phone last asked that machine for its whole list and got an answer. */
-  hosts: Record<string, { name: string; rooms: ChatEntry[]; listedAt?: number }>;
+  hosts: Record<string, { name: string; rooms: ChatEntry[]; listedAt?: number; projects?: ProjectEntry[]; deletedThreads?: string[] }>;
   /** What New chat starts with: the last machine and the saved profiles last picked there. */
   last: { hostId: string; profiles: string[] } | null;
 }
@@ -73,6 +77,8 @@ function entry(hostId: string, raw: unknown): ChatEntry | null {
     ...(typeof raw.archiveExplicit==='boolean' ? {archiveExplicit:raw.archiveExplicit}:{}),
     ...(typeof raw.trashedAt === "number" && Number.isFinite(raw.trashedAt) && raw.trashedAt > 0 ? { trashedAt: raw.trashedAt } : {}),
     cwd: text(raw.cwd),
+    ...(text(raw.projectCwd) ? {projectCwd:raw.projectCwd as string} : {}),
+    ...(typeof raw.cwdAvailable === 'boolean' ? { cwdAvailable: raw.cwdAvailable } : {}),
     folderName: text(raw.folderName),
     promotedFrom: text(raw.promotedFrom),
     promotedTo: text(raw.promotedTo),
@@ -93,7 +99,16 @@ export function parseChatEntry(hostId: string, raw: unknown): ChatEntry | null {
 /** Replace one machine's rows, keeping when it last listed them all. */
 export function withHostRooms(catalog: ChatCatalog, hostId: string, name: string, rooms: ChatEntry[]): ChatCatalog {
   const listedAt = catalog.hosts[hostId]?.listedAt;
-  return { ...catalog, hosts: { ...catalog.hosts, [hostId]: listedAt === undefined ? { name, rooms } : { name, rooms, listedAt } } };
+  return { ...catalog, hosts: { ...catalog.hosts, [hostId]: { ...catalog.hosts[hostId], name, rooms, ...(listedAt === undefined ? {} : {listedAt}) } } };
+}
+
+/** Full host reply including durable lifecycle state. Older hosts omit it. */
+export function withListedChatResponse(catalog: ChatCatalog, hostId: string, name: string, raw: unknown, askedAt: number): ChatCatalog {
+  const listed = withListedRooms(catalog,hostId,name,parseChatList(hostId,raw),askedAt);
+  if (listed === catalog || !record(raw)) return listed;
+  const projects = Array.isArray(raw.projects) ? raw.projects.flatMap(row => record(row) && text(row.path) && text(row.name) && typeof row.removed === 'boolean' && Number.isSafeInteger(row.revision) && (row.revision as number) >= 0 ? [{path:row.path as string,name:row.name as string,removed:row.removed,revision:row.revision as number,...(Array.isArray(row.aliases)?{aliases:row.aliases.filter((p):p is string=>typeof p==='string'&&!!p)}:{})}] : []) : undefined;
+  const deletedThreads = Array.isArray(raw.deletedThreads) ? raw.deletedThreads.filter((id): id is string => typeof id === 'string' && !!id) : undefined;
+  return {...listed,hosts:{...listed.hosts,[hostId]:{...listed.hosts[hostId],projects,deletedThreads}}};
 }
 
 /** A machine's whole `chat_list` answer, for a request sent at `askedAt`. What it leaves out the phone may not see. */
@@ -150,7 +165,7 @@ export function chatRows(catalog: ChatCatalog, archived: boolean): { rows: ChatE
 
 /** Host Work threads, including CLI-created threads, for Projects. */
 export function promotedWork(catalog: ChatCatalog, hostId: string): ChatEntry[] {
-  return (catalog.hosts[hostId]?.rooms ?? []).filter((row) => row.kind === "work" && (row.cwd || row.promotedFrom) && !row.archived && !row.trashedAt).sort((a, b) => b.updatedAt - a.updatedAt);
+  return (catalog.hosts[hostId]?.rooms ?? []).filter((row) => row.kind === "work" && (row.cwd || row.promotedFrom) && row.cwdAvailable !== false && !row.archived && !row.trashedAt).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function findRoom(catalog: ChatCatalog, hostId: string, id: string): ChatEntry | null {

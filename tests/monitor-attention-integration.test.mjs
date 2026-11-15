@@ -9,7 +9,7 @@ import {PersonalAssistantsCollection} from '../src/usePersonalAssistants.ts';
 import {closeTrashedPanes,withoutTrashedPanes} from '../src/threadTrash.ts';
 import {emptyCatalog,parseChatList,withListedRooms,findRoom} from '../src/chatCatalog.ts';
 import {workThreadPlace,reconcileWorkPanes} from '../src/desktopChats.ts';
-import {discoverWorkspaces} from '../src/workThreadMetadata.ts';
+import {discoverWorkspaces,workPresentation} from '../src/workThreadMetadata.ts';
 import {pathParts,pathBase,isWindows} from '../src/paths.ts';
 import {assistantIdentityKey, assistantAppearance} from '../src/assistantIdentity.ts';
 import {assistantSidebarPanes, assistantThreadKey} from '../src/assistantSidebar.ts';
@@ -166,7 +166,7 @@ function appHarness(options = {}) {
   const assistantCollection={archivedAssistants:[],restoreAssistant:async()=>{},assistants:[{ref:assistantRef,name:'Null',hostName:'Mac',offline:false,paused:false,personalTasks:[],projects:options.companion?personalRecord.projects:[]}],selected:assistantRef,hosts:[{hostId:project.hostId,routeHostId:project.hostId,name:'Mac',state:'ready'}],lane:()=>personalLane,pendingLane:()=>null,emptyLane:()=>null,select(){},refresh:async()=>{}};
   const chatCollection={online:()=>true,catalog:emptyCatalog(),rows:[],archived:[],machines:[],rooms:{},problems:{},machineName:id=>id,backendOf:backendForHost};
   const defaults = {
-    closeTrashedPanes,withoutTrashedPanes,findRoom,workThreadPlace,reconcileWorkPanes,discoverWorkspaces,pathParts,pathBase,isWindows,
+    closeTrashedPanes,withoutTrashedPanes,findRoom,workThreadPlace,reconcileWorkPanes,discoverWorkspaces,workPresentation,pathParts,pathBase,isWindows,
     ...companionContext,
     assistantVoiceKeeperOwner,voiceController,
     useAssistantFloat:args=>{floatOptions=args;floatControls=options.companion?realUseAssistantFloat(args):{open:async()=>{}};return floatControls;},

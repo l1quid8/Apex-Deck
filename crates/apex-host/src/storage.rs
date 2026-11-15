@@ -147,6 +147,12 @@ pub struct ChatListEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trashed_at: Option<u64>,
     pub cwd: Option<String>,
+    /// Stable project root; a registered worktree mount keeps its original project.
+    pub project_cwd: Option<String>,
+    /// Advisory folder availability, checked on the owning host. Unknown errors
+    /// must not be mistaken for a deleted project or remove saved history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd_available: Option<bool>,
     pub folder_name: Option<String>,
     pub promoted_from: Option<String>,
     pub promoted_to: Option<String>,
@@ -234,6 +240,9 @@ pub const MAX_SAVED_CARDS: usize = 500;
 
 /// Serialize writes, flush the replacement, then atomically replace the old
 /// document. A failed read is reported, never treated as an empty session.
+mod lifecycle;
+pub use lifecycle::ProjectEntry;
+
 pub struct Store {
     root: PathBuf,
     writes: Mutex<()>,
@@ -326,6 +335,7 @@ impl Store {
     pub(crate) fn save_session_snapshot(&self, session: &serde_json::Value) -> Result<serde_json::Value, String> {
         let _guard = self.writes.lock().unwrap();
         let mut next = session.clone();
+        self.reconcile_lifecycle_session(&mut next)?;
         let fields = next.as_object_mut().ok_or("Saved session is not an object")?;
         let current = self.session()?.unwrap_or(serde_json::json!({}));
         let revision = current["profileRevision"].as_u64().unwrap_or(0);
@@ -448,6 +458,7 @@ impl Store {
     }
 
     pub fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
+        if self.room_deleted(id)? { return Ok(None); }
         let Some(room):Option<SavedRoom>=self.read(&self.room_path(id))? else{return Ok(None)};
         self.apply_room_authority(id, room, &self.room_authorities()?).map(Some)
     }
@@ -495,6 +506,7 @@ impl Store {
     /// host starts any worker or accepts a command, including unopened rooms.
     pub(crate) fn interrupt_client_messages(&self) -> Result<(), String> {
         for id in self.room_ids()? {
+            if self.room_deleted(&id)? { continue; }
             let Some(raw): Option<SavedRoom> = self.read(&self.room_path(&id))? else { continue; };
             if !raw.snapshot.client_messages.values().any(|record| record.state == apex_core::ClientMessageState::Running) { continue; }
             let mut saved = self.room(&id)?.ok_or("Saved chat disappeared during recovery")?;
@@ -610,6 +622,7 @@ impl Store {
 
     pub fn save_room(&self, id: &str, room: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
+        self.require_room_not_deleted(id)?;
         // Invariant: the manifest never claims permissions the saved room didn't get.
         // `room()` takes permission fields from the manifest and the transcript from
         // the room file, so the room file goes first (a newer file under an older
@@ -843,7 +856,10 @@ impl Store {
         if std::fs::symlink_metadata(&path).is_ok(){return Err("a thread with that id already exists".into());}
         self.save_room_authority(id,saved)?;
         write_new(&path, saved)?;
-        sync_directory(parent).map_err(|e| e.to_string())
+        sync_directory(parent).map_err(|e| e.to_string())?;
+        // A protected explicit import can move a room back to this host, or
+        // retry a failed transfer. Implicit room_create remains fenced.
+        self.imported_room_held(id)
     }
 
     /// Give up on one promote request for good. Under the same write lock as
@@ -1074,6 +1090,7 @@ impl Store {
 
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
+        self.tombstone_room_held(id)?;
         let mut authorities=self.room_authorities()?;
         authorities.remove(id);
         crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
@@ -1101,6 +1118,7 @@ impl Store {
 
     pub fn save_chat_meta(&self, id: &str, meta: &ChatRoomMeta) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
+        self.require_room_not_deleted(id)?;
         let mut metas = self.chat_metas_held()?;
         metas.insert(id.into(), meta.clone());
         self.write_held(&self.root.join("chat-meta-v1.json"), &metas)
@@ -1112,6 +1130,7 @@ impl Store {
         f: impl FnOnce(&mut ChatRoomMeta),
     ) -> Result<ChatRoomMeta, String> {
         let _guard = self.writes.lock().unwrap();
+        self.require_room_not_deleted(id)?;
         let mut metas = self.chat_metas_held()?;
         let mut meta = metas.remove(id).unwrap_or_default();
         f(&mut meta);
@@ -1124,6 +1143,7 @@ impl Store {
     /// Every authority-validated saved chat or Work room. Catalog metadata is optional.
     pub fn chat_list(&self) -> Result<Vec<ChatListEntry>, String> {
         let metas = self.chat_metas_held()?;
+        let deleted = self.deleted_threads()?;
         let authorities = self.room_authorities()?;
         let mut candidate_ids: std::collections::BTreeSet<String> = metas.keys().cloned().collect();
         for (id, entry) in &authorities {
@@ -1146,6 +1166,7 @@ impl Store {
         }
         let mut out = Vec::new();
         for id in candidate_ids {
+            if deleted.contains(&id) { continue; }
             let meta = metas.get(&id).cloned();
             let saved = match self.read(&self.room_path(&id)) {
                 Ok(Some(saved)) => saved,
@@ -1190,6 +1211,13 @@ impl Store {
                     p
                 })
                 .collect();
+            let cwd_available = saved.cwd.as_deref().and_then(|cwd| {
+                match std::fs::metadata(cwd) {
+                    Ok(meta) => Some(meta.is_dir()),
+                    Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Some(false),
+                    Err(_) => None,
+                }
+            });
             out.push(ChatListEntry {
                 metadata_revision: meta.metadata_revision,
                 title_explicit,
@@ -1201,7 +1229,9 @@ impl Store {
                 updated_at,
                 archived: meta.archived,
                 trashed_at: meta.trashed_at,
+                project_cwd: saved.mounts.first().map(|m|m.from.clone()).or_else(||saved.cwd.clone()),
                 cwd: saved.cwd,
+                cwd_available,
                 folder_name,
                 promoted_from: meta.promoted_from,
                 promoted_to: meta.promoted_to,
@@ -1466,6 +1496,27 @@ mod tests {
     }
 
     #[test]
+    fn chat_list_reports_missing_work_folders_without_losing_saved_rooms() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let saved = SavedRoom { cwd: Some(cwd.to_string_lossy().into_owned()), mounts: vec![], snapshot: Room::new(vec![], RoomOptions::default()).snapshot() };
+        store.save_room("kept-history", &saved).unwrap();
+        let row = || serde_json::to_value(store.chat_list().unwrap().into_iter().find(|r| r.id == "kept-history").unwrap()).unwrap();
+        assert_eq!(row()["cwdAvailable"], true);
+        std::fs::remove_dir(&cwd).unwrap();
+        assert_eq!(row()["cwdAvailable"], false);
+        assert!(store.room("kept-history").unwrap().is_some());
+        std::fs::write(&cwd, "a file is not a project folder").unwrap();
+        assert_eq!(row()["cwdAvailable"], false);
+        std::fs::remove_file(&cwd).unwrap();
+        std::fs::create_dir(&cwd).unwrap();
+        assert_eq!(row()["cwdAvailable"], true);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn chat_list_includes_native_zero_bot_work_rooms_without_optional_metadata() {
         let runtime=tokio::runtime::Runtime::new().unwrap();
         let root=temp();
@@ -1557,6 +1608,24 @@ mod tests {
         // A later externally changed/corrupted manifest is still read afresh.
         crate::authority_file::write(&root.join("room-authority-v1.json"), b"broken").unwrap();
         assert!(store.save_room("r", &saved).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_does_not_recover_a_tombstoned_room_left_by_failed_cleanup() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut saved = SavedRoom {cwd:None,mounts:vec![],snapshot:Room::new(vec![],RoomOptions::default()).snapshot()};
+        saved.snapshot.client_messages.insert("accepted".into(),apex_core::ClientMessageRecord {state:apex_core::ClientMessageState::Running,reply_seqs:vec![],human_seq:None,request:None});
+        store.save_room("deleted",&saved).unwrap();
+        let before = std::fs::read(store.room_path("deleted")).unwrap();
+        {
+            let _guard = store.writes.lock().unwrap();
+            store.tombstone_room_held("deleted").unwrap();
+        }
+        store.interrupt_client_messages().expect("leftover physical files must not block startup");
+        assert!(store.room("deleted").unwrap().is_none());
+        assert_eq!(std::fs::read(store.room_path("deleted")).unwrap(),before,"recovery must not rewrite deleted history");
         std::fs::remove_dir_all(root).unwrap();
     }
 

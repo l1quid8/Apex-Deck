@@ -132,7 +132,9 @@ async fn partial_native_delete_without_manifest_reports_remaining_ids_and_never_
     let run=f.host.personal_step(&tools).await;
     std::fs::set_permissions(&rooms,before).unwrap();
     run.unwrap();
-    assert!(f.host.store().room("one").is_err(),"real deletion failure removed authority but preserved the raw room file");
+    assert!(f.host.store().room_ids().unwrap().contains(&"one".to_owned()),"real deletion failure preserved the raw room file");
+    assert!(f.host.store().room_deleted("one").unwrap(),"failed physical cleanup must still fence stale clients");
+    assert!(f.host.store().room("one").unwrap().is_none(),"tombstoned history is unavailable even when cleanup failed");
     let a=f.get();let output=&a.tasks[0].receipts.last().unwrap().output_excerpt;
     assert!(output.contains("Completed IDs: none")&&output.contains("Remaining IDs: anchor, one"),"partial native errors must preserve honest progress: {output}");
     f.host.change_assistant(&f.assistant,|a|{a.tasks[0].status=TaskStatus::Running;a.tasks[0].receipts.last_mut().unwrap().phase=crate::personal::OpPhase::Attempted;Ok(())}).unwrap();

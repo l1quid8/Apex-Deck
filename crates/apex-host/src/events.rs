@@ -24,6 +24,9 @@ use tokio::sync::broadcast;
 // every clone to shrink a value that is moved through a channel.
 #[allow(clippy::large_enum_variant)]
 pub enum HostEvent {
+    /// A durable project or thread lifecycle change. Reload the owning host's catalog.
+    #[serde(rename = "thread-catalog-changed")]
+    ThreadCatalogChanged {},
     /// Durable assistant ledger changed. Clients reload only their owning project.
     #[serde(rename = "assistant-tasks-changed")]
     AssistantTasksChanged { #[serde(rename = "workspaceId")] workspace_id: String, revision: u64 },
@@ -59,6 +62,7 @@ impl HostEvent {
     /// The event name the desktop UI listens for.
     pub fn name(&self) -> &'static str {
         match self {
+            HostEvent::ThreadCatalogChanged {} => "thread-catalog-changed",
             HostEvent::AssistantTasksChanged { .. } => "assistant-tasks-changed",
             HostEvent::PersonalChanged { .. } => "personal-changed",
             HostEvent::RoomRunnerChanged { .. } => "room-runner-changed",

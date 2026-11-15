@@ -28,6 +28,7 @@ export function normalizeWorkspaces(value: unknown): Workspace[] {
     ids.add(v.id);
     const w: Workspace = { id: v.id, name: v.name, path: v.path };
     if (v.hidden === true) w.hidden = true;
+    if (Number.isSafeInteger(v.hostProjectRevision) && v.hostProjectRevision >= 0) w.hostProjectRevision = v.hostProjectRevision;
     if (v.pinned === true) w.pinned = true;
     if (v.collapsed === true) w.collapsed = true;
     if (Number.isSafeInteger(v.sidebarOrder) && v.sidebarOrder >= 0) w.sidebarOrder = v.sidebarOrder;

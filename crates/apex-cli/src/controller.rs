@@ -131,6 +131,8 @@ pub async fn threads(client: &Client) -> Result<Vec<Thread>, String> {
 pub fn merge_threads(session: &Value, list: &Value) -> Vec<Thread> {
     let mut rows = std::collections::HashMap::new();
     for row in session["panes"].as_array().into_iter().flatten() {
+        let workspace = session["workspaces"].as_array().into_iter().flatten().find(|w|w["id"] == row["workspaceId"]);
+        if row["hostId"].as_str().is_some_and(|id|id != "local") || workspace.is_some_and(|w|w["hostId"].as_str().is_some_and(|id|id != "local")) { continue; }
         if row["kind"] != "chat"
             || row["assistantTaskId"].is_string()
             || row["assistantDraftFor"].is_object()
@@ -157,6 +159,7 @@ pub fn merge_threads(session: &Value, list: &Value) -> Vec<Thread> {
             continue;
         };
         if row["trashedAt"].is_number()
+            || list["deletedThreads"].as_array().is_some_and(|ids|ids.contains(&json!(id)))
             || row["movedTo"].is_object()
             || row["promotedTo"].is_string()
         {
@@ -194,6 +197,12 @@ pub fn merge_threads(session: &Value, list: &Value) -> Vec<Thread> {
             ),
         );
     }
+    // Session panes supply legacy names, never existence. Drafts, foreign-host
+    // panes and deleted ids cannot become rooms just by appearing in a session.
+    rows.retain(|id,_|list["rooms"].as_array().into_iter().flatten().any(|room| {
+        let root = room.get("projectCwd").filter(|p|p.is_string()).unwrap_or(&room["cwd"]);
+        room["id"].as_str() == Some(id.as_str()) && room["cwdAvailable"] != false && !list["projects"].as_array().into_iter().flatten().any(|project|project["removed"] == true && (&project["path"] == root || project["aliases"].as_array().is_some_and(|aliases|aliases.contains(root))))
+    }));
     let mut rows: Vec<_> = rows
         .into_values()
         .filter_map(|(row, archived)| if archived { None } else { Some(row) })
@@ -279,6 +288,52 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
         ..Outcome::default()
     };
     match row.handler {
+        HandlerId::Projects => {
+            let (verb, rest) = arg.split_once(char::is_whitespace).unwrap_or((&arg,""));
+            let cwd = c.state["mounts"].as_array().and_then(|m|m.first()).and_then(|m|m["from"].as_str()).or_else(||c.state["cwd"].as_str()).map(PathBuf::from).unwrap_or(std::env::current_dir().map_err(|e|e.to_string())?);
+            match verb {
+                "add" => {
+                    let path = cwd.join(rest.trim()).canonicalize().map_err(|e|format!("Cannot add project: {e}"))?;
+                    let row = execute(&c.client,&c.data,"project_add",json!({"path":path})).await?;
+                    out.notice = format!("Project \u{201c}{}\u{201d} added on every interface.",row["name"].as_str().unwrap_or("Project"));
+                }
+                "rename" if !rest.trim().is_empty() => {
+                    execute(&c.client,&c.data,"project_rename",json!({"path":cwd,"name":rest.trim()})).await?;
+                    out.notice = "Project renamed on every interface. Folder on disk unchanged.".into();
+                }
+                "remove" if rest.is_empty() => return Ok(confirm(format!("Remove project {} from every interface? Saved threads and files are kept. /projects add restores it.",cwd.display()),"project_remove",json!({"path":cwd}))),
+                "" => {
+                    let listed = c.client.request("project_list",json!({})).await?;
+                    let mut choices = vec![choice("Add a project", "Type its folder after /projects add",Action::Insert("/projects add ".into())),choice("Rename current project",cwd.display().to_string(),Action::Insert("/projects rename ".into())),choice("Remove current project",cwd.display().to_string(),Action::Submit("/projects remove".into()))];
+                    for project in listed["projects"].as_array().into_iter().flatten() {
+                        let Some(path) = project["path"].as_str() else {continue};
+                        choices.push(choice(project["name"].as_str().unwrap_or(path),format!("{} · {path}",if project["removed"]==true {"Removed · add to restore"} else {"Project"}),Action::Insert(format!("/projects add {path}"))));
+                    }
+                    return Ok(menu("Projects on this machine",choices));
+                }
+                _ => return Err("Usage: /projects, /projects add [folder], /projects rename <name>, or /projects remove. Rename/remove use this Work thread's folder, otherwise the terminal folder.".into()),
+            }
+        }
+        HandlerId::Delete => {
+            let (command, words) = match arg.as_str() {
+                "" => ("room_set_trashed","Move this thread to shared Trash? /threads trash restores it."),
+                "permanent" => ("room_delete","Permanently delete this thread and its saved history on every interface? This cannot be undone."),
+                _ => return Err("Usage: /delete, or /delete permanent".into()),
+            };
+            return Ok(confirm(words,command,if command=="room_delete" {json!({"id":id})} else {json!({"id":id,"trashed":true})}));
+        }
+        HandlerId::Archive => {
+            execute(&c.client,&c.data,"chat_update_meta",json!({"id":id,"archived":true})).await?;
+            out.notice = "Thread archived everywhere. /threads archived restores it.".into();
+        }
+        HandlerId::Folder => {
+            if c.state["snapshot"]["kind"] == "chat" {return Err("Talk-only chats have no folder. Create a Work thread with /new work.".into());}
+            if c.state["snapshot"]["transcript"].as_array().is_some_and(|t|!t.is_empty()) {return Err("This thread has started. Create a new Work thread there or fork it from the app.".into());}
+            let path = std::env::current_dir().map_err(|e|e.to_string())?.join(&arg).canonicalize().map_err(|e|e.to_string())?;
+            if !path.is_dir() {return Err("Work folder must be a directory.".into());}
+            let revision = c.state["roomRevision"].as_u64().ok_or("Update Deck on this machine before changing a thread's folder from the CLI.")?;
+            return Ok(confirm(format!("Move this unstarted thread to {} on every interface? Files stay where they are.",path.display()),"room_import",json!({"id":id,"snapshot":c.state["snapshot"],"cwd":path,"replace":true,"expectedRoomRevision":revision})));
+        }
         HandlerId::Setup => {
             if key=="login" && arg.is_empty() {
                 return Ok(menu("Attach a provider", vec![
@@ -315,6 +370,12 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
             ))
         }
         HandlerId::Threads => {
+            if arg == "trash" || arg == "archived" {
+                let listed = c.client.request("chat_list",json!({})).await?;
+                let choices = listed["rooms"].as_array().into_iter().flatten().filter(|row|if arg == "trash" {row["trashedAt"].is_number()} else {row["archived"] == true && !row["trashedAt"].is_number()}).map(|row|choice(row["title"].as_str().unwrap_or("Thread"),format!("Restore · {}",row["id"].as_str().unwrap_or("")),if arg=="trash" {rpc("room_set_trashed",json!({"id":row["id"],"trashed":false}))}else{rpc("chat_update_meta",json!({"id":row["id"],"archived":false}))})).collect::<Vec<_>>();
+                if choices.is_empty() {out.notice=format!("No threads in {arg}.");return Ok(out);}
+                return Ok(menu(format!("Restore from {arg}"),choices));
+            }
             let rows = threads(&c.client).await?;
             let prefix = arg.to_lowercase();
             let matched: Vec<_> = rows
@@ -370,6 +431,7 @@ pub async fn dispatch(text: &str, c: &Context) -> Result<Outcome, String> {
                 let here=std::env::current_dir().map_err(|e|format!("Can't read this terminal's folder: {e}"))?;
                 let (path,name)=work_target(arg.strip_prefix("work").unwrap_or(""),&here)?;
                 let id=format!("work-{}",uuid::Uuid::new_v4().simple());
+                execute(&c.client,&c.data,"project_add",json!({"path":path})).await?;
                 execute(&c.client,&c.data,"room_create",json!({"id":id,"participants":[],"options":{"policy":"mention","max_bot_hops":0},"cwd":path})).await?;
                 out.open=Some(id.clone());
                 out.notice=match execute(&c.client,&c.data,"chat_update_meta",json!({"id":id,"title":name})).await {

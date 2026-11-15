@@ -125,7 +125,7 @@ fn load(s: &AppState, client: &Option<Client>, tx: &mpsc::Sender<Update>) {
     tokio::spawn(async move {
         let result = async {
             let rows = controller::threads(&client).await?;
-            let state = if let Some(id) = &id {
+            let state = if let Some(id) = id.as_ref().filter(|id|rows.iter().any(|row|&row.id==*id)) {
                 Some(client.request("room_state", json!({"id":id})).await?)
             } else {
                 None
@@ -1029,13 +1029,13 @@ pub async fn run(args: Args) -> Result<(), String> {
                 Update::Offline(error)=>{s.generation+=1;s.busy=false;s.connected=false;client=None;loading=false;s.notice=error;
                     restore_pending_draft(&mut s);
                 },
-                Update::Event(event)=>{let kind=event["event"].as_str().unwrap_or("");if kind=="session-changed"{dirty=true;}
+                Update::Event(event)=>{let kind=event["event"].as_str().unwrap_or("");if kind=="session-changed"||kind=="thread-catalog-changed"{dirty=true;}
                     if s.apply_event(event){dirty=true;}
                     announce_request(&mut s,answer.is_some());
                 },
                 Update::Loaded{generation,id,result}=>{
                     if generation!=s.generation{continue;}loading=false;
-                    match result{Ok((rows,state))=>{s.threads=rows;if let (Some(id),Some(state))=(id,state){if s.install_snapshot(&id,generation,state){announce_request(&mut s,answer.is_some());}}s.connected=client.is_some()&&!s.overflowed;if s.notice=="Connected. Loading authoritative threads…"{s.notice.clear();}},Err(e)=>{
+                    match result{Ok((rows,state))=>{s.threads=rows;if let (Some(id),Some(state))=(&id,&state){if s.install_snapshot(id,generation,state.clone()){announce_request(&mut s,answer.is_some());}}else if id.is_some() && s.selected==id {s.selected=None;s.rooms.clear();s.streams.clear();s.menu=None;s.card=None;s.view=0;s.generation+=1;s.notice="Thread removed, archived, or in Trash. /threads lists available threads.".into();}s.connected=client.is_some()&&!s.overflowed;if s.notice=="Connected. Loading authoritative threads…"{s.notice.clear();}},Err(e)=>{
                         s.notice=e;s.connected=client.is_some()&&!s.overflowed;s.threads.clear();
                         if s.selected.is_some(){s.selected=None;s.rooms.clear();s.streams.clear();s.view=0;s.generation+=1;}
                         dirty=false;

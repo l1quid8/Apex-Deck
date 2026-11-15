@@ -378,11 +378,12 @@ fn room_state_is_read_only_and_restores_without_live_work() {
     let _ = std::fs::remove_dir_all(&data);
     let first = Running::start(&data);
     first.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":null}})).unwrap();
+    let before = first.events();
     let state = first.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
     assert_eq!(state["active"], json!([]));
     assert_eq!(state["approvals"], json!([]));
     assert_eq!(state["snapshot"]["transcript"], json!([]));
-    assert!(first.events().is_empty(), "reading state must not run a participant");
+    assert_eq!(first.events(), before, "reading state must not emit events or run a participant");
     assert!(first.call(json!({"cmd":"room_state","args":{"id":"missing"}})).is_err());
     first.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot hi"}})).unwrap();
     drop(first);

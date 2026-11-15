@@ -13,7 +13,7 @@ import type { Access, Pane, ParticipantConfig, RoomEvent, RoomSnapshot, Speed, W
 import { workspaceHost } from "./hostSession.ts";
 import { addFolders, setHidden } from "./workspaces.ts";
 import { ChatDeliveryController, JsonChatDeliveryStorage, type ChatDeliverySnapshot } from "./chatDelivery.ts";
-import { chatRows, chatTitle, emptyCatalog, findRoom, parseChatEntry, parseChatList, parseChatProfiles, withListedRooms, withRoom, withoutHosts, type ChatCatalog, type ChatEntry, type ChatProfile } from "./chatCatalog.ts";
+import { chatRows, chatTitle, emptyCatalog, findRoom, parseChatEntry, parseChatProfiles, withListedChatResponse, withRoom, withoutHosts, type ChatCatalog, type ChatEntry, type ChatProfile } from "./chatCatalog.ts";
 import { DESKTOP_PROMOTES_KEY, parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets, type PromoteTicket } from "./chatPromote.ts";
 import { createChatDeliveryRpc } from "./phone/phoneChatDelivery.ts";
 import { watchChatDelivery } from "./phone/chatDeliveryWatch.ts";
@@ -69,8 +69,9 @@ export function workThreadPlace(workspaces: Workspace[], panes: Pane[], hostId: 
   }
   // Deck keys a thread's pane by room id alone, so the same id open from another machine can't show beside it.
   if (panes.some((pane) => pane.id === work.id)) return "clash";
-  const { list, ids } = addFolders(workspaces, [work.cwd], makeId, (path) => work.folderName ?? nameOf(path), hostId);
-  return { workspaces: list, pane: { id: work.id, workspaceId: ids[0], kind: "chat", title: work.title }, added: true, restored: hiddenId(ids[0]) };
+  const root = work.projectCwd ?? work.cwd;
+  const { list, ids } = addFolders(workspaces, [root], makeId, (path) => work.folderName ?? nameOf(path), hostId);
+  return { workspaces: list, pane: { id: work.id, workspaceId: ids[0], kind: "chat", title: work.title, ...(work.cwd !== root ? {mount:work.cwd} : {}) }, added: true, restored: hiddenId(ids[0]) };
 }
 
 type Call = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
@@ -220,8 +221,8 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
     if (backend.supports && !backend.supports("chat_rooms")) { setRooms((all) => ({ ...all, [hostId]: false })); return; }
     const askedAt = Date.now();
     try {
-      const rows = parseChatList(hostId, await backend.call<unknown>("chat_list", {}));
-      setCatalog((current) => withListedRooms(current, hostId, machineName(hostId), rows, askedAt));
+      const reply = await backend.call<unknown>("chat_list", {});
+      setCatalog((current) => withListedChatResponse(current, hostId, machineName(hostId), reply, askedAt));
       setRooms((all) => ({ ...all, [hostId]: true }));
       setProblems((all) => { if (!all[hostId]) return all; const { [hostId]: _, ...rest } = all; return rest; });
     } catch (error) { setProblems((all) => ({ ...all, [hostId]: words(error) })); }
@@ -253,6 +254,7 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
         if (now === "connected") soon(hostId);
       }));
       const backend = live.current.backendOf(hostId);
+      backend?.onThreadCatalogChanged?.(() => { if (on) void refresh(hostId); }).then(stop => { if (on) stops.push(stop); else stop(); }).catch(() => {});
       backend?.onRoomEvent((room, raw) => {
         const event: RoomEvent = raw.type === "voice_event" ? raw.event : raw;
         if ((event.type === "message_added" || event.type === "idle") && findRoom(catalogRef.current, hostId, room)) soon(hostId);
