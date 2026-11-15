@@ -1,7 +1,8 @@
 //! Git snapshots and isolated worktrees for concurrent bot editing.
 
-use apex_core::{CopyProvider, Message, ParticipantId, RoomEvent, Speaker};
+use apex_core::{CopyProvider, Message, ParticipantId, Room, RoomEvent, Speaker};
 use futures::future::BoxFuture;
+use futures::lock::Mutex as AsyncMutex;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -997,6 +998,11 @@ pub type ReconcileStarter = Arc<
     dyn Fn(String, ParticipantId, String) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
 >;
 
+/// Finds the thread's live transcript at the moment a note is posted, so a
+/// thread opened after the task was queued (recovery at startup) still gets
+/// its note; None while the thread is not open.
+pub type RoomLookup = Arc<dyn Fn() -> Option<Arc<AsyncMutex<Room>>> + Send + Sync>;
+
 /// How long a new turn waits for the agent's previous copy to fold back.
 const FOLD_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -1046,6 +1052,11 @@ pub struct FoldTask {
     pub editor_handle: Arc<Mutex<Option<ParticipantId>>>,
     pub event_sink: Arc<dyn Fn(RoomEvent) + Send + Sync>,
     pub reconcile: Option<ReconcileStarter>,
+    /// Reaches the thread's live transcript. A note about the fold is pushed
+    /// into it, so it takes the next sequence number and is saved with the
+    /// rest. Without one (or while the thread is not open) the note is only
+    /// shown.
+    pub room: Option<RoomLookup>,
 }
 
 pub struct FoldQueue {
@@ -1128,7 +1139,7 @@ impl FoldQueue {
         }
     }
 
-    fn mark_needs_you(&self, copy: &BotCopy, task: &FoldTask, reason: &str, files: &[String]) {
+    async fn mark_needs_you(&self, copy: &BotCopy, task: &FoldTask, reason: &str, files: &[String]) {
         let mut updated = copy.clone();
         updated.state = CopyState::NeedsYou {
             reason: reason.to_string(),
@@ -1137,10 +1148,19 @@ impl FoldQueue {
             eprintln!("bot copy {}/{}: could not save its Needs you state: {e}", copy.thread, copy.bot);
         }
         let note = human_note_line(copy.name.as_deref().unwrap_or(&copy.bot), files, reason);
-        Self::post_note(task, note);
+        Self::post_note(task, note).await;
     }
 
-    fn post_note(task: &FoldTask, note: String) {
+    /// A line from Deck in the thread. With the room at hand it is a real
+    /// message: numbered under the room's lock and saved by the event sink
+    /// like a reply, so it survives a reload. Without the room nothing can be
+    /// saved, and the line is only shown.
+    async fn post_note(task: &FoldTask, note: String) {
+        if let Some(room) = task.room.as_ref().and_then(|find| find()) {
+            let sink = |event| (task.event_sink)(event);
+            room.lock().await.append_deck_note(note, &sink);
+            return;
+        }
         (task.event_sink)(RoomEvent::MessageAdded {
             message: Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                 servers: Vec::new(),
@@ -1166,7 +1186,7 @@ impl FoldQueue {
         };
         let next_attempt = current_attempt + 1;
         if next_attempt > 2 {
-            self.mark_needs_you(copy, task, reason, files);
+            self.mark_needs_you(copy, task, reason, files).await;
             return;
         }
         let mut updated = copy.clone();
@@ -1175,7 +1195,7 @@ impl FoldQueue {
             files: files.to_vec(),
         };
         if let Err(e) = save_state(&self.data, &updated) {
-            self.mark_needs_you(copy, task, &format!("could not save copy state: {e}"), files);
+            self.mark_needs_you(copy, task, &format!("could not save copy state: {e}"), files).await;
             return;
         }
 
@@ -1183,10 +1203,10 @@ impl FoldQueue {
         if let Some(starter) = reconcile {
             let bot_id = ParticipantId::new(&copy.bot);
             if let Err(e) = (starter)(task.thread.clone(), bot_id, msg).await {
-                self.mark_needs_you(copy, task, &format!("could not start reconcile turn: {e}"), files);
+                self.mark_needs_you(copy, task, &format!("could not start reconcile turn: {e}"), files).await;
             }
         } else {
-            self.mark_needs_you(copy, task, "no reconcile starter available", files);
+            self.mark_needs_you(copy, task, "no reconcile starter available", files).await;
         }
     }
 
@@ -1227,11 +1247,11 @@ impl FoldQueue {
             let merge_outcome = match crate::project_process::spawn_blocking(&self.data, move |data| merge_main_into_copy(data, &copy_clone)).await {
                 Ok(Ok(o)) => o,
                 Ok(Err(e)) => {
-                    self.mark_needs_you(&copy, &task, &e, &[]);
+                    self.mark_needs_you(&copy, &task, &e, &[]).await;
                     break;
                 }
                 Err(e) => {
-                    self.mark_needs_you(&copy, &task, &e.to_string(), &[]);
+                    self.mark_needs_you(&copy, &task, &e.to_string(), &[]).await;
                     break;
                 }
             };
@@ -1263,7 +1283,7 @@ impl FoldQueue {
                                 Self::post_note(&task, format!(
                                     "{who} also changed files outside this thread's folder: {}.",
                                     outside.join(", ")
-                                ));
+                                )).await;
                             }
                             for f in applied {
                                 (task.event_sink)(RoomEvent::Changed {
@@ -1276,11 +1296,11 @@ impl FoldQueue {
                         Ok(Ok(FoldOutcome::MainMoved)) => {
                             retries += 1;
                             if retries > 3 {
-                                self.mark_needs_you(&copy, &task, "main folder kept moving", &[]);
+                                self.mark_needs_you(&copy, &task, "main folder kept moving", &[]).await;
                                 break;
                             }
                             if let Err(e) = wait_for_quiet_main(&self.data, &copy.root, self.quiet_duration).await {
-                                self.mark_needs_you(&copy, &task, &e, &[]);
+                                self.mark_needs_you(&copy, &task, &e, &[]).await;
                                 break;
                             }
                             continue;
@@ -1294,11 +1314,11 @@ impl FoldQueue {
                             break;
                         }
                         Ok(Err(e)) => {
-                            self.mark_needs_you(&copy, &task, &e, &[]);
+                            self.mark_needs_you(&copy, &task, &e, &[]).await;
                             break;
                         }
                         Err(e) => {
-                            self.mark_needs_you(&copy, &task, &e.to_string(), &[]);
+                            self.mark_needs_you(&copy, &task, &e.to_string(), &[]).await;
                             break;
                         }
                     }
@@ -1314,11 +1334,11 @@ impl FoldQueue {
                 FoldOutcome::MainMoved => {
                     retries += 1;
                     if retries > 3 {
-                        self.mark_needs_you(&copy, &task, "main folder kept moving", &[]);
+                        self.mark_needs_you(&copy, &task, "main folder kept moving", &[]).await;
                         break;
                     }
                     if let Err(e) = wait_for_quiet_main(&self.data, &copy.root, self.quiet_duration).await {
-                        self.mark_needs_you(&copy, &task, &e, &[]);
+                        self.mark_needs_you(&copy, &task, &e, &[]).await;
                         break;
                     }
                     continue;
@@ -1349,6 +1369,7 @@ pub struct BotCopies {
     queue: Arc<FoldQueue>,
     active: Mutex<HashMap<ParticipantId, BotCopy>>,
     name_of: Option<Arc<dyn Fn(&ParticipantId) -> Option<String> + Send + Sync>>,
+    room: Option<RoomLookup>,
 }
 
 impl BotCopies {
@@ -1369,7 +1390,15 @@ impl BotCopies {
             queue,
             active: Mutex::default(),
             name_of: None,
+            room: None,
         }
+    }
+
+    /// How to reach the thread's live transcript, where the fold queue's
+    /// notes land in sequence instead of being shown once and forgotten.
+    pub fn with_room(mut self, room: RoomLookup) -> Self {
+        self.room = Some(room);
+        self
     }
 
     /// Where the agent starts inside its copy: the folder matching the thread's,
@@ -1507,6 +1536,7 @@ impl CopyProvider for BotCopies {
                     editor_handle: Arc::clone(&self.editor_handle),
                     event_sink: Arc::clone(&self.event_sink),
                     reconcile: None,
+                    room: self.room.clone(),
                 };
                 self.queue.enqueue(task);
             }
@@ -2587,6 +2617,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(move |e| if let RoomEvent::MessageAdded { message } = e { seen.lock().unwrap().push(message.text); }),
             reconcile: None,
+            room: None,
         });
         queue.wait_idle().await;
         assert!(load_copies(&data).is_empty(), "no record is left to block the next copy");
@@ -2883,6 +2914,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
             reconcile: None,
+            room: None,
         };
         fold_queue.enqueue(task);
         fold_queue.wait_idle().await;
@@ -2930,6 +2962,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(|_| {}),
             reconcile: None,
+            room: None,
         };
         fold_queue.enqueue(task);
 
@@ -2984,6 +3017,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(|_| {}),
             reconcile: Some(reconcile_mock),
+            room: None,
         };
         fold_queue.enqueue(task);
         fold_queue.wait_idle().await;
@@ -3039,6 +3073,7 @@ mod tests {
                     editor_handle: Arc::new(Mutex::new(None)),
                     event_sink: Arc::new(|_| {}),
                     reconcile: None,
+                    room: None,
                 });
                 Ok(())
             })
@@ -3050,6 +3085,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(|_| {}),
             reconcile: Some(reconcile_starter),
+            room: None,
         });
         fold_queue.wait_idle().await;
 
@@ -3101,6 +3137,7 @@ mod tests {
                     editor_handle: Arc::new(Mutex::new(None)),
                     event_sink: ev_sink,
                     reconcile: None,
+                    room: None,
                 });
                 Ok(())
             })
@@ -3113,6 +3150,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
             reconcile: None,
+            room: None,
         });
         fold_queue.wait_idle().await;
 
@@ -3186,6 +3224,7 @@ mod tests {
                     editor_handle: Arc::new(Mutex::new(None)),
                     event_sink: ev_sink,
                     reconcile: None,
+                    room: None,
                 });
                 Ok(())
             })
@@ -3198,6 +3237,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
             reconcile: None,
+            room: None,
         });
         fold_queue.wait_idle().await;
 
@@ -3258,6 +3298,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
             reconcile: None,
+            room: None,
         });
         fold_queue.wait_idle().await;
 
@@ -3308,6 +3349,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(|_| {}),
             reconcile: None,
+            room: None,
         });
         fold_queue.wait_idle().await;
 
@@ -3347,6 +3389,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: Arc::new(|_| {}),
             reconcile: None,
+            room: None,
         });
         fold_queue.wait_idle().await;
 
@@ -3451,6 +3494,7 @@ mod tests {
             editor_handle: Arc::clone(&editor_handle),
             event_sink: Arc::new(|_| {}),
             reconcile: None,
+            room: None,
         });
         fold_queue.wait_idle().await;
 
@@ -3466,6 +3510,7 @@ mod tests {
                 editor_handle: Arc::clone(&editor_handle),
                 event_sink: Arc::new(|_| {}),
                 reconcile: None,
+                room: None,
             });
             fold_queue.wait_idle().await;
         }
