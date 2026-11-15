@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 
 import { availableCount, clockCountdown, exactDeadline, liveCredits, outcomeLine, resetAsk, SOON_SECONDS, type ResetOutcome } from "./resetCredits.ts";
 import type { PlanWindow, ResetCredit, ResetCredits } from "./types";
+import { countdown } from "./battery";
+import { ResetIcon } from "./QuickControls";
 
 /** About how tall the deadline card is, to choose above or below. */
 const TIP_HEIGHT = 96;
@@ -16,8 +18,6 @@ function useSeconds(): number {
   }, []);
   return now;
 }
-
-const Chevron = () => <svg className="model-select-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 
 /** A card under an expiry while the pointer rests on it: the exact deadline and when the credit was granted. */
 function DeadlineCard({ credit, at }: { credit: ResetCredit; at: DOMRect }) {
@@ -47,8 +47,8 @@ interface Props {
   use(credit: ResetCredit | null): Promise<ResetOutcome>;
 }
 
-/** The Resets row of a bot's quick menu: a count and the next expiry, opening
- *  like the Model picker into one card per credit, each counting down to the
+/** The Resets cell of a bot's quick menu: a count on the reset icon and the time to
+ *  the next expiry, opening under the icon strip into one card per credit, each counting down to the
  *  second. Use asks in place before it spends anything. */
 export function QuickResets({ credits, windows, provider, use }: Props) {
   const now = useSeconds();
@@ -95,19 +95,16 @@ export function QuickResets({ credits, windows, provider, use }: Props) {
 
   return (
     <div className="quick-resets">
-      <div className="model-select">
-        <span className="model-select-label">Resets</span>
-        <button type="button" className="model-select-trigger quick-resets-trigger" aria-expanded={open || asking !== undefined} disabled={count === 0}
-          onClick={() => { setOpen((was) => !(was || asking !== undefined)); setAsking(undefined); setStatus(null); }}>
-          <span className="reset-pill">{count}</span>
-          {first?.expires_at != null
-            ? <span className="quick-resets-next" {...hover(first)}>next expires <time dateTime={new Date(first.expires_at * 1000).toISOString()}>{clockCountdown(first.expires_at, now)}</time></span>
-            : <span className="quick-resets-next">{count ? "expiry not given" : "none left"}</span>}
-          <Chevron />
-        </button>
-      </div>
+      <button type="button" className="quick-cell quick-resets-trigger" aria-expanded={open || asking !== undefined} disabled={count === 0}
+        aria-label={`Resets: ${count} left${first?.expires_at != null ? `, next expires in ${clockCountdown(first.expires_at, now)}` : ""}`}
+        onClick={() => { setOpen((was) => !(was || asking !== undefined)); setAsking(undefined); setStatus(null); }}>
+        <span className="quick-cell-icon" aria-hidden="true"><ResetIcon /><span className="quick-cell-badge">{count}</span></span>
+        {first?.expires_at != null
+          ? <span className="quick-cell-label quick-resets-next" {...hover(first)}><time dateTime={new Date(first.expires_at * 1000).toISOString()}>{countdown(first.expires_at, now)}</time></span>
+          : <span className="quick-cell-label quick-resets-next">{count ? "Resets" : "None left"}</span>}
+      </button>
       {asking !== undefined ? (() => { const ask = resetAsk(windows, asking, provider, now); return (
-        <div className="reset-confirm" role="alertdialog" aria-label={`Reset ${provider} usage`}>
+        <div className="reset-confirm quick-wide" role="alertdialog" aria-label={`Reset ${provider} usage`}>
           <p><b>Reset {provider} usage now?</b></p>
           {ask.usage && <p>{ask.usage.name} is <b>{ask.usage.used}% used</b>{ask.usage.after}</p>}
           {ask.barely && <p className="reset-warn">Barely used — this would spend a credit for little gain.</p>}
@@ -118,7 +115,7 @@ export function QuickResets({ credits, windows, provider, use }: Props) {
           </div>
         </div>
       ); })() : open && (
-        <div className="reset-credits">
+        <div className="reset-credits quick-wide">
           {live.map(card)}
           {live.length === 0 && count > 0 && (
             // The provider gave only a count, so Use spends whichever it picks.
@@ -131,7 +128,7 @@ export function QuickResets({ credits, windows, provider, use }: Props) {
           {live.length > 0 && count > live.length && <p className="muted reset-more">+{count - live.length} more</p>}
         </div>
       )}
-      {status && <p className={status.good ? "reset-status good" : "reset-status meh"} role="status">{status.text}</p>}
+      {status && <p className={status.good ? "reset-status good quick-wide" : "reset-status meh quick-wide"} role="status">{status.text}</p>}
       {tip && <DeadlineCard credit={tip.credit} at={tip.at} />}
     </div>
   );

@@ -53,8 +53,10 @@ test('composer access switches immediately, persists, and marks a busy change un
         await wait(()=>window.ready);await run(()=>window.fixture.mount('classic'));
         await wait(()=>document.querySelector('.chip-access')?.textContent==='Read-only');
         await run(()=>document.querySelector('.chip-name').click());
-        await wait(()=>document.querySelector('.bot-access button'));
-        await run(()=>Array.from(document.querySelectorAll('.bot-access button')).find(b=>b.textContent==='Full').click());
+        await wait(()=>document.querySelector('button.bot-access'));
+        // Access is one icon: three clicks step Read-only to Full, and only Full saves.
+        await run(()=>{const b=document.querySelector('button.bot-access');b.click();b.click();b.click();});
+        assert.equal(await run(()=>document.querySelector('button.bot-access .quick-cell-label').textContent),'Full','icon steps at once');
         await wait(()=>document.querySelector('.chip-access')?.textContent.includes('Full'));
         await wait(()=>document.querySelector('.chip-access')?.textContent.includes('after this reply'));
         assert.equal(await run(()=>window.fixture.count('roomUpdateParticipant')),1,'no confirmation step');
@@ -67,13 +69,13 @@ test('composer access switches immediately, persists, and marks a busy change un
         await run(()=>window.fixture.emit({type:'participant_idle',id:'bot'}));
         await wait(()=>document.querySelector('.chip-access')?.textContent==='Full');
         await run(()=>document.querySelector('.chip-name').click());await run(()=>document.querySelector('.chip-name').click());
-        await wait(()=>document.querySelector('.bot-access [aria-checked="true"]')?.textContent==='Full');
+        await wait(()=>document.querySelector('button.bot-access .quick-cell-label')?.textContent==='Full');
         fs.writeFileSync('/tmp/apex-access-v4.png',(await win.webContents.capturePage()).toPNG());
-        await run(()=>{window.fixture.fail=true;Array.from(document.querySelectorAll('.bot-access button')).find(b=>b.textContent==='Read-only').click();});
+        await run(()=>{window.fixture.fail=true;document.querySelector('button.bot-access').click();});
         await wait(()=>document.querySelector('.bot-settings [role="alert"]'));
-        assert.equal(await run(()=>document.querySelector('.bot-access [aria-checked="true"]').textContent),'Full','failed save restores saved access');
+        assert.equal(await run(()=>document.querySelector('button.bot-access .quick-cell-label').textContent),'Full','failed save restores saved access');
         assert.equal(await run(()=>document.querySelector('.chip-access').textContent),'Full');
-        await run(()=>{window.fixture.fail=false;Array.from(document.querySelectorAll('.bot-access button')).find(b=>b.textContent==='Read-only').click();});
+        await run(()=>{window.fixture.fail=false;document.querySelector('button.bot-access').click();});
         await wait(()=>document.querySelector('.chip-access')?.textContent==='Read-only');
         assert.equal(await run(()=>getComputedStyle(document.querySelector('.chip-access')).color),fullStyle.color,'all levels use neutral styling');
         await run(()=>document.querySelector('.chip-name').click());

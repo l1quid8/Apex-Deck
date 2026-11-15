@@ -10,7 +10,7 @@ const source = fs.readFileSync(new URL('../src/BotSettings.tsx', import.meta.url
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
 const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
 const find = (tree, test) => !tree || typeof tree !== 'object' ? null : test(tree) ? tree : tree.children?.map(child => find(child, test)).find(Boolean);
-const Segmented = () => null, ReasoningSlider = () => null;
+const CycleButton = () => null, ReasoningBars = () => null, SpeedGauge = () => null, AccessIcon = () => null;
 function mount(extra = {}) {
   const profile = { id: 'a', display_name: 'Null', backend: { kind: 'agent', tool: 'codex', model: 'old' }, access: 'ask', effort: 'high', persona: '' };
   const saves = [], rooms = [];
@@ -18,14 +18,14 @@ function mount(extra = {}) {
   const state = []; let cursor = 0;
   const useState = initial => { const i = cursor++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], value => state[i] = typeof value === 'function' ? value(state[i]) : value]; };
   const useRef = initial => { const i = cursor++; return state[i] ??= { current: initial }; };
-  const bindings = { document: { body: {} }, window: { innerWidth: 1200, innerHeight: 900 }, menuPlacement: () => ({}), React, Fragment: 'fragment', useState, useRef, useEffect() {}, useLayoutEffect() {}, createPortal: tree => tree, latestSaveQueue, applyTurnChange, accessOptionsFor, Segmented, ReasoningSlider, supportsSpeed: () => true, SPEED_OPTIONS: [], speedHint: () => '', AGENT_EFFORTS: { codex: [] }, API_EFFORTS: [], modelGroups: () => [{ models: [{ id: 'old' }] }], apiModelGroups: () => [], effortsFor: () => ['low', 'high'], findModel: () => ({ id: 'old' }), mediaKind: () => null };
+  const bindings = { document: { body: {} }, window: { innerWidth: 1200, innerHeight: 900 }, menuPlacement: () => ({}), React, Fragment: 'fragment', useState, useRef, useEffect() {}, useLayoutEffect() {}, createPortal: tree => tree, latestSaveQueue, applyTurnChange, accessOptionsFor, CycleButton, ReasoningBars, SpeedGauge, AccessIcon, effortLabel: level => level, supportsSpeed: () => true, SPEED_OPTIONS: [], speedHint: () => '', AGENT_EFFORTS: { codex: [] }, API_EFFORTS: [], modelGroups: () => [{ models: [{ id: 'old' }] }], apiModelGroups: () => [], effortsFor: () => ['low', 'high'], findModel: () => ({ id: 'old' }), mediaKind: () => null };
   const Component = new Function(...Object.keys(bindings), compiled + '\nreturn BotSettings;')(...Object.values(bindings));
   return { saves, rooms, render() { cursor = 0; return Component(props); } };
 }
 
 test('assistant quick settings loads the assistant snapshot without creating a routing room', async () => {
   const h = mount();
-  find(h.render(), node => node.type === ReasoningSlider).props.onCommit('low');
+  find(h.render(), node => node.type === CycleButton && node.props.label === 'Reasoning').props.onChange('low');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.rooms.length, 0);
   assert.equal(h.saves[0][0].effort, 'low');

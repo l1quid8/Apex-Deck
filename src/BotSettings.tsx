@@ -4,10 +4,9 @@ import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { Access, ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
 import { accessOptions as accessOptionsFor, applyNowFirst } from './accessChange';
-import { Segmented } from './AgentPicker';
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from './speed';
-import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
-import { ReasoningSlider } from './ReasoningSlider';
+import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortLabel, effortsFor, findModel, modelGroups } from './models';
+import { AccessIcon, CycleButton, ReasoningBars, SpeedGauge } from './QuickControls';
 import { latestSaveQueue } from './settingsSave';
 import { applyTurnChange } from './participantSettings';
 import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media';
@@ -296,20 +295,25 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       setOpen(false);
     }
   };
+  const effortText = (value: string) => value === 'xhigh' ? 'xHigh' : value ? effortLabel(value) : 'Default';
+  const effortSteps = ['', ...efforts];
+  const effortOptions = effortSteps.map(value => ({ value, text: effortText(value), title: value ? undefined : apiModel?.default_effort ? `Uses ${effortText(apiModel.default_effort)}` : "Follows the tool's own setting" }));
+  const speed = 'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? '';
+  const modelName = model ? current?.label ?? model : rich ? 'Provider default' : 'Default';
   const panel = <div ref={root} className={inline ? 'bot-settings is-inline' : 'bot-settings'} style={inline ? undefined : position} onScroll={() => setOpen(false)} role={inline ? 'group' : 'dialog'} aria-label={`Settings for ${config.display_name}`}>
-    <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
-    {provider}
-    {disabledReason && <p role="status" className="muted">{disabledReason}</p>}
-    <fieldset aria-busy={saving} disabled={!!disabledReason}>
+    <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div>
       <div className="model-select">
-        <span className="model-select-label">Model</span>
-        <button ref={triggerRef} type="button" className="model-select-trigger" aria-haspopup="menu" aria-expanded={open} onClick={toggleMenu}>
-          <span>{model ? current?.label ?? model : rich ? 'Provider default' : 'Default'}</span><svg className="model-select-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        <button ref={triggerRef} type="button" className="model-select-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`Model: ${modelName}`} title={`Model: ${modelName}`} disabled={!!disabledReason} onClick={toggleMenu}>
+          <span>{modelName}</span><svg className="model-select-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </button>
         {open && createPortal(
           <div ref={menuRef} className={rich ? 'model-menu stacked' : 'model-menu'} role="menu" aria-label="Model" style={menuPos}>
-            <input autoFocus className="model-filter" aria-label="Filter models" placeholder="Filter models" value={filter} onChange={event => setFilter(event.currentTarget.value)} />
-            {query && !shown.length && <p className="muted">No matching models.</p>}
+            <label className="model-search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" /></svg>
+              <input autoFocus className="model-filter" aria-label="Filter models" placeholder="Search models" value={filter} onChange={event => setFilter(event.currentTarget.value)} />
+              <kbd>esc</kbd>
+            </label>
+            {query && !shown.length && <p className="muted model-menu-empty">No models match “{filter.trim()}”.</p>}
             {items.map((m, i) => <Fragment key={m.id || 'default'}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" disabled={!!disabledReason || (!allowDefaultModel && !m.id) || (!!offeredModels && !offeredModels.some(item => item.id === m.id))} onClick={() => pickModel(m.id)}>
               {nameOf(m)}
               <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>{i < 9 && <kbd>{i + 1}</kbd>}
@@ -331,10 +335,22 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
           document.body
         )}
       </div>
-      {!mediaType && <ReasoningSlider efforts={efforts} value={supportedEffort} defaultLabel={apiModel?.default_effort ?? undefined} onCommit={commitEffort} />}
-      {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
-      {talkOnly ? <div className="bot-access"><span className="model-select-label">Access</span><span>Talk only</span></div> : (tool || api) && <>
-        <div className="bot-access"><span className="model-select-label">Access</span><Segmented label="Access" name="quick-bot-access" options={accessOptions} value={access} onChange={access => { void apply({ access }); }} /></div>
+    </div>
+    {provider}
+    {disabledReason && <p role="status" className="muted">{disabledReason}</p>}
+    <fieldset aria-busy={saving} disabled={!!disabledReason}>
+      <div className="quick-strip">
+        {!mediaType && <CycleButton label="Reasoning" className="bot-effort" options={effortOptions} value={supportedEffort} disabled={!efforts.length}
+          onChange={commitEffort} icon={value => <ReasoningBars steps={effortSteps.length} index={Math.max(0, effortSteps.indexOf(value))} />} />}
+        {supportsSpeed(config.backend) && <CycleButton label="Speed" className="bot-speed" options={SPEED_OPTIONS} value={speed} hint={speedHint(tool ?? undefined)}
+          onChange={speed => { void apply({ speed: speed || null }); }} icon={value => <SpeedGauge value={value} />} />}
+        {talkOnly
+          ? <span className="quick-cell bot-access" title="Access: Talk only"><span className="quick-cell-icon" aria-hidden="true"><AccessIcon value="talk" /></span><span className="quick-cell-label">Talk only</span></span>
+          : (tool || api) && <CycleButton label="Access" className="bot-access" options={accessOptions} value={access}
+            onChange={access => { void apply({ access }); }} icon={value => <AccessIcon value={value} />} />}
+        {resets}
+      </div>
+      {!talkOnly && (tool || api) && <>
         {accessPending && accessChange && !laterChosen
           ? <div className="bot-access-choice" role="group" aria-label="When to apply this access">
               <p className="muted bot-access-note">Applies after this reply. Apply now stops this agent and restarts it from the chat, so it loses track of its current steps and a running command is cut off.</p>
@@ -345,7 +361,6 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
             </div>
           : accessPending && <p className="muted bot-access-note" role="status">Applies after this reply.</p>}
       </>}
-      {resets}
       {api && !mediaType && !talkOnly && <details className="bot-computer">
         <summary>Advanced</summary>
         <label className="check-label"><input type="checkbox" checked={touched.current.can_read_images ?? config.can_read_images ?? false} onChange={e => { void apply({ can_read_images: e.target.checked }); }} /> This model can read images</label>

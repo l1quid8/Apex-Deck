@@ -73,8 +73,9 @@ test('Model switching and supported speed selections persist when the quick sele
           const supported=['codex','claude_code','openai'].includes(tool);
           assert.equal(await run(()=>!!document.querySelector('.bot-speed')),supported,'speed eligibility for '+tool);
           if(!supported) continue;
-          for(const [label,value] of [['Fast','fast'],['Standard','standard'],['Default',undefined]]){
-            await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".bot-speed button")).find(b=>b.textContent==='+JSON.stringify(label)+').click()');
+          // Speed is one icon that steps Default, Standard, Fast on each click.
+          for(const [label,value] of [['Standard','standard'],['Fast','fast'],['Default',undefined]]){
+            await run(()=>document.querySelector('button.bot-speed').click());
             for(let i=0;i<100;i++){
               if(await run(()=>window.fixture.config.speed)===value)break;
               await new Promise(r=>setTimeout(r,20));
@@ -82,23 +83,25 @@ test('Model switching and supported speed selections persist when the quick sele
             assert.equal(await run(()=>window.fixture.config.speed),value,'saved '+label+' for '+tool);
             await run(()=>{window.fixture.config=JSON.parse(JSON.stringify(window.fixture.config));window.fixture.key=Math.random();window.fixture.render();});
             await new Promise(r=>setTimeout(r,50));
-            assert.equal(await run(()=>document.querySelector('.bot-speed [aria-checked="true"]')?.textContent),label,'reopened '+label+' for '+tool);
+            assert.equal(await run(()=>document.querySelector('.bot-speed .quick-cell-label')?.textContent),label,'reopened '+label+' for '+tool);
           }
         }
         for(const tool of ['claude_code','codex','gemini','grok','muse','api']){
           await win.webContents.executeJavaScript('window.fixture.mount('+JSON.stringify(tool)+')');
           await wait(()=>document.querySelector('.model-select-trigger'));
-          const labels=await run(()=>Array.from(document.querySelectorAll('[aria-label="Access"] button')).map(b=>b.textContent));
-          assert.deepEqual(labels,['grok','muse'].includes(tool)?['Read-only','Edit','Full']:['Read-only','Ask','Edit','Full'],'access choices for '+tool);
-          for(const label of labels.slice().reverse()){
-            await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".bot-access button")).find(b=>b.textContent==='+JSON.stringify(label)+').click()');
-            await wait(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]'));
-            for(let i=0;i<100;i++){if(await run(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]').textContent)===label && await run(()=>!document.querySelector('fieldset').getAttribute('aria-busy')||document.querySelector('fieldset').getAttribute('aria-busy')==='false'))break;await new Promise(r=>setTimeout(r,20));}
+          // Access is one icon that steps through the tool's choices, least first, and wraps.
+          const choices=['grok','muse'].includes(tool)?['Read-only','Edit','Full']:['Read-only','Ask','Edit','Full'];
+          const start=choices.indexOf(await run(()=>document.querySelector('button.bot-access .quick-cell-label').textContent));
+          assert.ok(start>=0,'current access is a choice for '+tool);
+          for(let k=1;k<=choices.length;k++){
+            const label=choices[(start+k)%choices.length];
+            await run(()=>document.querySelector('button.bot-access').click());
             const expected={'Read-only':'read',Ask:'ask',Edit:'edits',Full:'full'}[label];
-            assert.equal(await run(()=>window.fixture.config.access),expected,'saved access for '+tool);
+            for(let i=0;i<100;i++){if(await run(()=>window.fixture.config.access)===expected && await run(()=>!document.querySelector('fieldset').getAttribute('aria-busy')||document.querySelector('fieldset').getAttribute('aria-busy')==='false'))break;await new Promise(r=>setTimeout(r,20));}
+            assert.equal(await run(()=>window.fixture.config.access),expected,'saved access '+label+' for '+tool);
             await run(()=>{window.fixture.key=Math.random();window.fixture.render();});
-            await wait(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]'));
-            assert.equal(await run(()=>document.querySelector('[aria-label="Access"] [aria-checked="true"]').textContent),label,'access persists after reopen');
+            await wait(()=>document.querySelector('button.bot-access'));
+            assert.equal(await run(()=>document.querySelector('button.bot-access .quick-cell-label').textContent),label,'access persists after reopen');
           }
         }
         console.log('Model selector Chromium checks passed'); app.exit(0);
