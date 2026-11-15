@@ -732,14 +732,11 @@ impl ConcurrentRoom {
             if let Some(reason) = copy_refused.take() {
                 // Working in the shared folder without saying so hides why an
                 // agent's turn could clash with the others'.
-                let name = self.room.lock().await.configs().iter().find(|c| c.id == ticket.id).map(|c| c.display_name.clone()).unwrap_or_else(|| ticket.id.to_string());
-                sink(RoomEvent::MessageAdded { message: crate::Message {
-                    late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
-                    servers: Vec::new(), seq: 0,
-                    speaker: Speaker::Bot(ParticipantId::new("deck")),
-                    text: shared_folder_line(&name, &reason),
-                    at: None,
-                } });
+                // A real message, numbered under the room's lock, so it is saved
+                // with the rest of the thread instead of shown once and dropped.
+                let mut room = self.room.lock().await;
+                let name = room.configs().iter().find(|c| c.id == ticket.id).map(|c| c.display_name.clone()).unwrap_or_else(|| ticket.id.to_string());
+                room.append_deck_note(shared_folder_line(&name, &reason), sink);
             }
         }
         if let Some(held_by) = held_by {

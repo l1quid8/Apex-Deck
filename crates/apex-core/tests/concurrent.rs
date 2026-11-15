@@ -376,12 +376,20 @@ fn provider_error_falls_back_to_read_only_with_reason() {
             expected_line,
         )]);
 
-        // A fell back to the shared folder; the thread is told, not left guessing.
-        let notes: Vec<String> = events.lock().unwrap().iter().filter_map(|e| match e {
-            RoomEvent::MessageAdded { message } => Some(message.text.clone()),
+        // A fell back to the shared folder; the thread is told, not left
+        // guessing, by a real message: numbered after the human's line and
+        // kept in the transcript, so it is saved and survives a reload.
+        let line = apex_core::shared_folder_line("A", "disk full");
+        let added: Vec<apex_core::Message> = events.lock().unwrap().iter().filter_map(|e| match e {
+            RoomEvent::MessageAdded { message } => Some(message.clone()),
             _ => None,
         }).collect();
-        assert!(notes.contains(&apex_core::shared_folder_line("A", "disk full")), "{notes:?}");
+        let note = added.iter().find(|m| m.text == line).unwrap_or_else(|| panic!("no shared-folder note in {added:?}"));
+        assert_eq!(note.speaker, apex_core::Speaker::Bot(ParticipantId::new("deck")));
+        assert_eq!(note.seq, 1, "right after the human's line, before any reply");
+        let transcript = concurrent.room().lock().await.transcript().to_vec();
+        assert_eq!(transcript.get(1), Some(note), "the note is part of the thread's history");
+        assert_eq!(added, transcript, "every announced message is in the transcript, in order");
     });
 }
 
