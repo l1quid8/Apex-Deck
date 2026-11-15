@@ -18,6 +18,7 @@
 //! page, ask below Full access.
 
 pub(crate) mod files;
+mod code_mode;
 pub mod mcp_client;
 pub(crate) mod shell;
 pub(crate) mod web;
@@ -166,6 +167,10 @@ pub(crate) struct Turn<'a> {
     servers: Vec<mcp_client::ServerSpec>,
     cwd: Option<PathBuf>,
     roots: files::Roots,
+    /// Set when a permission check turns a call down, whether the person
+    /// declined or the access level forbids it. Code Mode reads it to tell
+    /// a refused child from one that failed.
+    refused: std::sync::atomic::AtomicBool,
 }
 
 /// Whether a call may go ahead.
@@ -184,7 +189,7 @@ impl<'a> Turn<'a> {
             progress(Progress::ToolServers(&menu));
         }
         let roots = tools.roots.clone();
-        Self { tools, access, plan, own, can_read_images: false, trusted_computer: false, approver, progress, jobs: shell::Jobs::default(), servers, cwd: None, roots }
+        Self { tools, access, plan, own, can_read_images: false, trusted_computer: false, approver, progress, jobs: shell::Jobs::default(), servers, cwd: None, roots, refused: Default::default() }
     }
 
     pub fn with_computer(mut self, computer: Option<&apex_core::ComputerTurn>) -> Self {
@@ -249,6 +254,7 @@ impl<'a> Turn<'a> {
                 Access::Full => "You may edit files and run commands without asking. MCP tools that can spend money or publish still ask the person first.\n",
             }
         });
+        out.push_str("For a multi-file task, deck_code_mode can batch file calls and filter intermediate results before they enter your context. Write one short plan: a single forEach call covers any number of files. It runs up to four independent reads at a time, with ordered writes, per-child permissions and batch-only retention. Metrics are bytes, not tokens.\n");
         out
     }
 
@@ -264,6 +270,7 @@ impl<'a> Turn<'a> {
     fn all_definitions(&self) -> Vec<Value> {
         let path = json!({"type": "string", "description": "A path relative to the project folder, or absolute."});
         let mut out = vec![
+            code_mode::definition(),
             tool(
                 "read_file",
                 "Read a text file. Lines come back numbered. Long files come in pieces: use offset and limit for the rest.",
@@ -389,13 +396,17 @@ impl<'a> Turn<'a> {
     async fn allowed(&self, need: Need) -> Result<(), String> {
         match need {
             Need::Free => Ok(()),
-            Need::Refuse(why) => Err(why),
+            Need::Refuse(why) => {
+                self.refused.store(true, std::sync::atomic::Ordering::Relaxed);
+                Err(why)
+            }
             Need::Ask(action) => {
                 (self.progress)(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
                 let title = action.title.clone();
                 if self.approver.decide(action).await.approved() {
                     Ok(())
                 } else {
+                    self.refused.store(true, std::sync::atomic::Ordering::Relaxed);
                     Err(format!("The person declined: {title}. Don't try the same thing again; ask them, or find another way."))
                 }
             }
@@ -446,15 +457,22 @@ impl<'a> Turn<'a> {
 
     /// Carry out one call and give back what the model should be told.
     pub async fn run(&mut self, call: &ToolCall) -> ToolReply {
+        self.run_checked(call).await.0
+    }
+
+    async fn run_checked(&mut self, call: &ToolCall) -> (ToolReply, bool) {
         let private = call.has_computer_content();
         let arguments: Value = if call.arguments.trim().is_empty() {
             json!({})
         } else {
             match serde_json::from_str(&call.arguments) {
                 Ok(value @ Value::Object(_)) => value,
-                Ok(_) => return "The arguments must be a JSON object. Send the call again.".into(),
-                Err(_) if private => return "The arguments weren't valid JSON. Send the call again with a JSON object.".into(),
-                Err(e) => return format!("The arguments weren't valid JSON ({e}). Send the call again with a JSON object.").into(),
+                Ok(_) => return ("The arguments must be a JSON object. Send the call again.".into(), false),
+                Err(_) if private => return ("The arguments weren't valid JSON. Send the call again with a JSON object.".into(), false),
+                Err(e) => match code_mode::complete_plan(call) {
+                    Some(plan) => plan,
+                    None => return (format!("The arguments weren't valid JSON ({e}). Send the call again with a JSON object.").into(), false),
+                },
             }
         };
         let started = Instant::now();
@@ -472,7 +490,7 @@ impl<'a> Turn<'a> {
             step.output = Some(shown);
         }
         (self.progress)(Progress::Work(&step));
-        ToolReply { text: cut_result(&text), images }
+        (ToolReply { text: cut_result(&text), images }, !failed)
     }
 
     async fn dispatch(&mut self, call: &ToolCall, args: &Value) -> (WorkStep, Result<Done, String>) {
@@ -481,6 +499,12 @@ impl<'a> Turn<'a> {
         }
         let s = |key: &str| args[key].as_str().unwrap_or("").to_string();
         match call.name.as_str() {
+            "deck_code_mode" => {
+                let step = self.step(call, StepKind::Tool, "Run Code Mode batch", "Bounded file-tool plan");
+                (self.progress)(Progress::Work(&step));
+                let outcome = self.code_mode(call, args).await;
+                (step, outcome)
+            }
             "read_file" | "list_dir" | "glob" | "grep" => {
                 let raw = s("path");
                 let resolved = match self.roots.resolve(&raw) {
@@ -927,6 +951,7 @@ and never describe results you haven't been shown.\n";
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod code_mode_tests { include!("code_mode_tests.rs"); }
     use apex_core::{Decision, NoApprover};
     use std::sync::Mutex;
 
@@ -1018,7 +1043,7 @@ done
         let servers = vec![mcp_client::ServerSpec { name: server.into(), transport: mcp_client::Transport::Stdio {
             command: "sh".into(), args: vec!["-c".into(), script.into()], env: vec![],
         }}];
-        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images, approver: &answers,
+        let mut turn = Turn { refused: Default::default(), trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images, approver: &answers,
             progress: &progress, jobs: shell::Jobs::default(), servers, cwd: None, roots: tools.roots.clone() };
         let result = turn.run(&call("mcp_call", json!({"server": server, "tool": tool,
             "arguments": {"text":"TYPED_SECRET", "app":"APP_SECRET", "snapshot":"SNAPSHOT_SECRET"}}))).await;
@@ -1130,7 +1155,7 @@ done
     async fn screenshot_is_refused_before_connecting_or_capturing() {
         let tools = ToolBox::new(&crate::BuildContext::default());
         let progress = |_: Progress<'_>| {};
-        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full,
+        let mut turn = Turn { refused: Default::default(), trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full,
             can_read_images: false, approver: &NoApprover, progress: &progress, jobs: shell::Jobs::default(),
             cwd: None, roots: tools.roots.clone(), servers: vec![mcp_client::ServerSpec {
                 name: "apex-computer".into(), transport: mcp_client::Transport::Unsupported("connection attempted".into())
@@ -1145,7 +1170,7 @@ done
         let tools = ToolBox::new(&crate::BuildContext::default());
         let steps = Mutex::new(Vec::new());
         let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
-        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
+        let mut turn = Turn { refused: Default::default(), trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
             progress: &progress, jobs: shell::Jobs::default(), cwd: None, roots: tools.roots.clone(),
             servers: vec![mcp_client::ServerSpec { name: "apex-computer".into(),
                 transport: mcp_client::Transport::Unsupported("SCREEN_SECRET TOKEN_SECRET".into()) }] };
@@ -1162,7 +1187,7 @@ done
         let tools = ToolBox::new(&crate::BuildContext::default());
         let steps = Mutex::new(Vec::new());
         let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
-        let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
+        let mut turn = Turn { refused: Default::default(), trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &NoApprover,
             progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
         let call = ToolCall { name: "mcp_call".into(), arguments: r#"{"server":"apex-computer","arguments":{"text":"TYPED_SECRET"},"broken":"#.into(), ..Default::default() };
         assert!(call.has_computer_content());
@@ -1185,7 +1210,7 @@ done
                 let steps = Mutex::new(Vec::new());
                 let progress = |p: Progress<'_>| if let Progress::Work(step) = p { steps.lock().unwrap().push(step.clone()); };
                 let answers = approver(Decision::Approve);
-                let mut turn = Turn { trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &answers,
+                let mut turn = Turn { refused: Default::default(), trusted_computer: false, tools: &tools, access: Access::Full, plan: false, own: Access::Full, can_read_images: false, approver: &answers,
                     progress: &progress, jobs: shell::Jobs::default(), servers: vec![], cwd: None, roots: tools.roots.clone() };
                 let mut args = json!({"tool":"TOOL_SECRET", "arguments":{"text":"TYPED_SECRET", "credential":"TOKEN_SECRET"}});
                 if let Some(server) = &server { args["server"] = server.clone(); }

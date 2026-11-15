@@ -239,6 +239,45 @@ pub(crate) struct RoomApprover<'a> {
     pub(crate) on_event: EventSink<'a>,
 }
 
+/// Stop is not a negative answer. Keep the provider suspended until the
+/// interruptible turn drops it, rather than letting rejection advance its queue.
+struct TurnApprover<'a> {
+    inner: &'a dyn Approver,
+    stop: &'a AtomicBool,
+}
+
+impl TurnApprover<'_> {
+    async fn active(&self) {
+        if self.stop.load(Ordering::SeqCst) {
+            futures::future::pending::<()>().await;
+        }
+    }
+}
+
+#[async_trait]
+impl Approver for TurnApprover<'_> {
+    async fn decide(&self, action: ProposedAction) -> Decision {
+        self.active().await;
+        let answer = self.inner.decide(action).await;
+        self.active().await;
+        answer
+    }
+
+    async fn decide_plan(&self, action: ProposedAction) -> crate::PlanAnswer {
+        self.active().await;
+        let answer = self.inner.decide_plan(action).await;
+        self.active().await;
+        answer
+    }
+
+    async fn ask(&self, questions: Vec<crate::Question>) -> crate::Answer {
+        self.active().await;
+        let answer = self.inner.ask(questions).await;
+        self.active().await;
+        answer
+    }
+}
+
 impl RoomApprover<'_> {
     /// Ask, and say which card it was (none when a saved rule answered).
     async fn decide_tracked(&self, action: ProposedAction) -> (Option<String>, Decision) {
@@ -1479,7 +1518,8 @@ impl Room {
             if let Progress::Text(text) = update { partial.lock().unwrap().push_str(text); }
             progress(update);
         };
-        let response = participant.respond_with_approvals(request, &capture, approver).fuse();
+        let guarded = TurnApprover { inner: approver, stop: &stop };
+        let response = participant.respond_with_approvals(request, &capture, &guarded).fuse();
         let cancelled = async {
             while !stop.load(Ordering::SeqCst) {
                 futures_timer::Delay::new(std::time::Duration::from_millis(25)).await;
@@ -1732,6 +1772,40 @@ mod approver_tests {
         assert!(!request.plan, "a planning fork would plan instead of suggesting");
         assert!(!request.system.contains(PLAN_SYSTEM));
         assert_eq!(request.access, Some(crate::Access::Read));
+    }
+
+    #[test]
+    fn stop_while_approval_wakes_does_not_request_the_next_card() {
+        struct TwoCards { config: ParticipantConfig }
+        #[async_trait]
+        impl Participant for TwoCards {
+            fn config(&self) -> &ParticipantConfig { &self.config }
+            async fn respond(&self, _: TurnRequest, _: crate::participant::DeltaSink<'_>) -> Result<Reply, ParticipantError> { unreachable!() }
+            async fn respond_with_approvals(&self, _: TurnRequest, _: ProgressSink<'_>, approver: &dyn Approver) -> Result<Reply, ParticipantError> {
+                for title in ["first", "queued"] {
+                    approver.decide(ProposedAction { kind: ActionKind::Edit, title: title.into(), detail: String::new(), expires_at: None, risky: false }).await;
+                }
+                Ok(Reply::text("done"))
+            }
+        }
+        let bot = TwoCards { config: serde_json::from_value(serde_json::json!({"id":"test","display_name":"Test","backend":{"kind":"agent","tool":"claude_code"}})).unwrap() };
+        let desk = ApprovalDesk::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let requested = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| {
+            if let RoomEvent::ApprovalRequested { request, action, .. } = event {
+                requested.lock().unwrap().push(action.title);
+                // The real host sets Stop before rejecting the waiting card.
+                stop.store(true, Ordering::SeqCst);
+                desk.resolve(&request, Decision::Reject);
+            }
+        };
+        let approver = RoomApprover { desk: &desk, id: &bot.config.id, on_event: &sink };
+        let request = TurnRequest { computer:None, effort_override:None, access:None, system:String::new(), turns:vec![], unseen:vec![], plan:false, cwd:None };
+        let reply = futures::executor::block_on(Room::interruptible(&bot, request, stop.clone(), &|_| {}, &approver)).unwrap();
+        assert_eq!(*requested.lock().unwrap(), ["first"]);
+        assert!(reply.text.contains("Interrupted"));
+        assert_eq!(desk.waiting(), 0);
     }
 
     #[test]

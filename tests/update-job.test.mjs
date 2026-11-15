@@ -384,3 +384,19 @@ assert result['id']==rid and result['outcome']=='failed' and 'could not start' i
 assert seen==[('reopen',501)] and list(u.QUEUE.iterdir())==[]
 shutil.rmtree(directory)
 `));
+
+test('the update rewrites a Background broker service as Interactive and leaves an Interactive one untouched', () => python(String.raw`
+import plistlib
+with tempfile.TemporaryDirectory() as directory:
+ u.BROKER_PLIST=pathlib.Path(directory)/'dev.apexdeck.provenance.plist'
+ service={'Label':'dev.apexdeck.provenance','ProgramArguments':[str(u.ROOT/'apex-provenance')],'UserName':'root','RunAtLoad':True,'KeepAlive':True,'StandardErrorPath':'/var/log/apex-provenance.log','ProcessType':'Background'}
+ u.BROKER_PLIST.write_bytes(plistlib.dumps(service))
+ assert u.repair_broker_plist() is True
+ repaired=plistlib.loads(u.BROKER_PLIST.read_bytes())
+ assert repaired==dict(service,ProcessType='Interactive'),repaired
+ assert u.BROKER_PLIST.stat().st_mode&0o777==0o644
+ assert not (pathlib.Path(directory)/'dev.apexdeck.provenance.plist.next').exists()
+ before=u.BROKER_PLIST.read_bytes()
+ assert u.repair_broker_plist() is False
+ assert u.BROKER_PLIST.read_bytes()==before
+`));

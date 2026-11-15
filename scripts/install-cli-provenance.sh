@@ -186,6 +186,7 @@ stage=$(/usr/bin/mktemp -d "$root/.cli-install.XXXXXX")
 /bin/chmod 700 "$stage"
 committed=0
 plist_created=0
+plist_repaired=0
 product_placed=0
 rollback() {
   st=$?
@@ -204,6 +205,7 @@ rollback() {
       # This run wrote the service file; there was no service before it.
       /bin/rm -f "$plist" 2>/dev/null || true
     else
+      [[ -f "$stage/plist.before" ]] && /bin/cp -p "$stage/plist.before" "$plist" 2>/dev/null || true
       /bin/launchctl bootstrap system "$plist" >/dev/null 2>&1 || true
     fi
     echo 'CLI enrollment failed. Inspect authority before retrying.' >&2
@@ -364,11 +366,12 @@ PY
 /usr/bin/install -o root -g wheel -m 755 "$stage/apex-daemon" "$stage/product/apex-daemon"
 /usr/bin/install -o root -g wheel -m 644 "$stage/manifest.json" "$stage/product/manifest.json"
 
-# Uninstall removes the service file but keeps the authority directory, so a
-# reinstall (existing=1) can also find it missing. Recreate it whenever absent.
-if [[ ! -e "$plist" && ! -L "$plist" ]]; then
-  plist_created=1
-  /bin/cat > "$plist" <<'PLIST'
+# The broker answers approvals people are waiting on, so it runs as an
+# Interactive launchd job. As a Background job its CPU and disk I/O were
+# throttled below every app, and each serial transaction stretched to many
+# seconds whenever a build or test load ran on the Mac.
+write_service_file() {
+  /bin/cat > "$plist.next" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -376,14 +379,40 @@ if [[ ! -e "$plist" && ! -L "$plist" ]]; then
 <key>ProgramArguments</key><array><string>/Library/Application Support/Apex Deck Provenance/apex-provenance</string></array>
 <key>UserName</key><string>root</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>StandardErrorPath</key><string>/var/log/apex-provenance.log</string>
-<key>ProcessType</key><string>Background</string>
+<key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 PLIST
-  /usr/sbin/chown root:wheel "$plist"; /bin/chmod 644 "$plist"
+  /usr/sbin/chown root:wheel "$plist.next"; /bin/chmod 644 "$plist.next"
+  /bin/mv "$plist.next" "$plist"
+}
+# Uninstall removes the service file but keeps the authority directory, so a
+# reinstall (existing=1) can also find it missing. Recreate it whenever absent.
+if [[ ! -e "$plist" && ! -L "$plist" ]]; then
+  plist_created=1
+  write_service_file
+elif [[ -f "$plist" && ! -L "$plist" ]]; then
+  # Parse XML or binary plists rather than matching their whitespace. Keep all
+  # existing service settings, and stage the change before stopping the broker.
+  plist_repaired=$(/usr/bin/python3 -I - "$plist" "$stage/plist.after" <<'PY'
+import plistlib,sys
+with open(sys.argv[1],'rb') as f: service=plistlib.load(f)
+if not isinstance(service,dict): raise SystemExit('Invalid broker service plist')
+if service.get('ProcessType')=='Interactive': print(0)
+else:
+  service['ProcessType']='Interactive'
+  with open(sys.argv[2],'xb') as f: plistlib.dump(service,f)
+  print(1)
+PY
+)
+  if [[ $plist_repaired == 1 ]]; then /bin/cp -p "$plist" "$stage/plist.before"; fi
 fi
 
 if [[ $existing == 1 ]]; then /bin/launchctl bootout system "$plist" >/dev/null 2>&1 || true; fi
 committed=1
+if [[ $plist_repaired == 1 ]]; then
+  /usr/bin/install -o root -g wheel -m 644 "$stage/plist.after" "$stage/plist.ready"
+  /bin/mv "$stage/plist.ready" "$plist"
+fi
 if [[ -e "$product" || -L "$product" ]]; then /bin/mv "$product" "$stage/product.before"; fi
 /bin/mv "$stage/product" "$product"
 product_placed=1

@@ -202,6 +202,13 @@ fn run() -> Result<(), String> {
             "This broker must run as the root LaunchDaemon; no user-mode fallback exists".into(),
         );
     }
+    // An older automatic updater starts this new binary using its old launchd
+    // definition. Finish the scheduling migration before touching authority or
+    // announcing readiness; the independent repair job reloads this service.
+    #[cfg(target_os = "macos")]
+    if macos_service::startup()? {
+        return Err("Broker scheduling migration queued; waiting for launchd to reload the Interactive service".into());
+    }
     #[cfg(target_os="linux")]
     linux_install::protected_path(Path::new("/run/apex-deck"))?;
     let root = Path::new(ROOT);
@@ -379,12 +386,16 @@ fn run() -> Result<(), String> {
                 return Ok(signed);
             }
             // Writes change the live journal in place and roll back on any
-            // failure. Compaction cannot be undone key by key, so only then
-            // keep a full copy.
-            let backup = journal.compaction_due(COMPACT_AT).then(|| journal.clone());
+            // failure. Compaction cannot be undone key by key, so only when it
+            // will actually retire entries keep a full copy; at the threshold
+            // with nothing foldable, neither the copy nor the attempt is made.
+            let compacting = journal.compaction_would_fold(COMPACT_AT);
+            let backup = compacting.then(|| journal.clone());
             let next = &mut journal;
             let result = (|| -> Result<Signed, String> {
-                next.compact_if_due(&key, COMPACT_AT)?;
+                if compacting {
+                    next.compact_if_due(&key, COMPACT_AT)?;
+                }
                 let payload = match request["op"].as_str() {
                     Some("phone_claim") => next.claim_device_command(
                         uid, folder,
@@ -498,6 +509,14 @@ fn document_payload(
 }
 fn main() {
     let args=std::env::args().collect::<Vec<_>>();
+    #[cfg(target_os = "macos")]
+    if args.len() == 2 && args[1] == "repair-macos-service" {
+        if let Err(error) = macos_service::repair() {
+            eprintln!("apex-provenance: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     #[cfg(target_os="linux")]
     {
         let result = match args.get(1).map(String::as_str) {

@@ -143,6 +143,18 @@ def preflight(payload=False):
         protected(STAGED); validate_bundle(STAGED)
     return user,agent
 
+def repair_broker_plist():
+    """The broker must run as an Interactive job: people wait on its approvals,
+    and a Background job's throttled CPU and disk I/O stretched each serial
+    transaction to many seconds under build load. Returns True when rewritten."""
+    with BROKER_PLIST.open('rb') as f: service = plistlib.load(f)
+    if service.get('ProcessType') == 'Interactive': return False
+    service['ProcessType'] = 'Interactive'
+    staged = BROKER_PLIST.with_name(BROKER_PLIST.name + '.next')
+    with staged.open('wb') as f: plistlib.dump(service, f)
+    os.chmod(staged, 0o644); os.replace(staged, BROKER_PLIST)
+    return True
+
 def service_pid(state):
     match=re.search(r'^\s*pid = ([0-9]+)\s*$',state,re.MULTILINE)
     return int(match.group(1)) if match else None
@@ -269,6 +281,7 @@ def install(notes=None):
             if authority_digest(name)!=want: raise RuntimeError('Authority changed during installation')
         validate_bundle(TRUSTED); validate_bundle(APPLICATION)
         previous_socket=broker_socket_identity()
+        repair_broker_plist()
         run('/bin/launchctl','bootstrap','system',BROKER_PLIST); broker_started=True
         wait_for_broker(previous_broker_pid,previous_socket)
         # Startup validates and replays the signed journal, then folds journal.log

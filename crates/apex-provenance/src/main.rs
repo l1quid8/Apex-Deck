@@ -1,5 +1,7 @@
 #[cfg(unix)]
 include!("main_unix.rs");
+#[cfg(target_os = "macos")]
+mod macos_service;
 #[cfg(windows)]
 mod windows_service;
 #[cfg(any(windows, test))]

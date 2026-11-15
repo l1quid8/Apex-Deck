@@ -12,6 +12,12 @@ const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the s
 // upgrade.py runs under fake system calls here, which needs /usr/bin/python3 and POSIX files.
 const POSIX_ONLY = process.platform === 'win32' ? { skip: 'upgrade.py is macOS-only' } : {};
 const manifest={id:'12345678-1234-1234-1234-123456789abc',version:'0.8.2',ui:'a'.repeat(40),daemon:'b'.repeat(40),broker:'c'.repeat(40)};
+// Older installations run the broker as a Background launchd job; the install repairs it.
+const brokerPlist=String.raw`
+import plistlib
+u.BROKER_PLIST=base/'dev.apexdeck.provenance.plist'
+u.BROKER_PLIST.write_bytes(plistlib.dumps({'Label':'dev.apexdeck.provenance','ProgramArguments':[str(u.ROOT/'apex-provenance')],'UserName':'root','RunAtLoad':True,'KeepAlive':True,'StandardErrorPath':'/var/log/apex-provenance.log','ProcessType':'Background'}))
+`;
 function python(program){
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'apex-upgrade-test-'));
  try{
@@ -72,6 +78,7 @@ with tempfile.TemporaryDirectory() as directory:
  for name in u.AUTHORITY:(u.ROOT/name).write_bytes(('old-'+name).encode())
  before={name:u.digest(u.ROOT/name) for name in (*u.AUTHORITY,'config.json')}
  agent=base/'agent.plist';agent.write_text('unchanged agent');u.preflight=lambda payload=False:(types.SimpleNamespace(pw_uid=501),agent)
+ exec(${JSON.stringify(brokerPlist)})
  u.protected=lambda p:None;u.validate_bundle=lambda p:None;u.app_running=lambda uid=None:False
  u.pwd.getpwall=lambda:[]
  original_rename=u.os.rename
@@ -98,6 +105,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert (u.ROOT/'apex-provenance').read_text()=='old-broker'
  assert before=={name:u.digest(u.ROOT/name) for name in before}
  backup=u.UPGRADES/('backup-'+u.M['id']);assert (backup/'authority/journal.json').read_bytes()==(u.ROOT/'journal.json').read_bytes()
+ assert plistlib.loads(u.BROKER_PLIST.read_bytes())['ProcessType']=='Interactive'
  assert (backup/'failed-previous-trusted.app').exists();assert not (u.UPGRADES/'install.lock').exists()
 `));
 
@@ -143,6 +151,7 @@ u.STAGED=base/'staged.app';(u.STAGED/'Contents/Resources/bin').mkdir(parents=Tru
 (u.ROOT/'apex-provenance').write_text('old-broker');(u.ROOT/'config.json').write_text(json.dumps({'uiCdhash':'old','daemonCdhash':'old'}))
 for name in u.AUTHORITY:(u.ROOT/name).write_bytes(('old-'+name).encode())
 agent=base/'agent.plist';agent.write_text('requester agent');u.preflight=lambda payload=False:(types.SimpleNamespace(pw_uid=501),agent)
+`+brokerPlist+String.raw`
 other=base/'other';(other/'Library/LaunchAgents').mkdir(parents=True)
 other_agent=other/'Library/LaunchAgents/dev.apexdeck.daemon.plist';other_agent.write_text('other agent')
 accounts=[types.SimpleNamespace(pw_uid=uid,pw_dir=str(home),pw_name=name,pw_gecos=full) for uid,home,name,full in ((0,'/var/root','root','System Administrator'),(-2,'/var/empty','nobody','Unprivileged User'),(501,base,'person','Person'),(502,other,'other','Other Person'))]
@@ -184,6 +193,8 @@ u.run=fake_run
 test('another signed-in account’s background service stops for the install and starts again on the new copy',POSIX_ONLY,()=>python(accountsFixture+String.raw`
 u.install()
 assert (u.TRUSTED/'version').read_text()=='new'
+# The broker restarts from a service file repaired to the Interactive process type.
+assert plistlib.loads(u.BROKER_PLIST.read_bytes())['ProcessType']=='Interactive'
 # Both services are down before the broker is, and the other account's comes back
 # once the new broker is up: nobody there will reopen Deck to start it.
 assert events==[('stop',501),('stop',502),'broker down','broker up',('start',502,str(other_agent),'new')],events

@@ -141,6 +141,12 @@ struct Changed {
     // Compaction removes entries; only a full snapshot can record that.
     rewrite: bool,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fold {
+    Resolved,
+    Orphaned,
+    Expired,
+}
 /// What the broker must persist for the mutations since the last commit.
 pub enum Change {
     None,
@@ -346,8 +352,37 @@ impl Journal {
             .transpose()
     }
 
-    pub fn compact_if_due(&mut self, key: &Ed25519KeyPair, at: usize) -> Result<bool, String> {
+    /// Why one live entry may leave the journal at the next compaction.
+    fn fold(entry: &Entry, now: u64) -> Option<Fold> {
+        if entry.claimed && entry.outcome.is_some() {
+            Some(Fold::Resolved)
+        } else if entry.claimed
+            && entry.claimed_at != 0
+            && now.saturating_sub(entry.claimed_at) > ORPHAN_GRACE_MS
+        {
+            Some(Fold::Orphaned)
+        } else if !entry.claimed
+            && entry.issued_at != 0
+            && now.saturating_sub(entry.issued_at) > UNCLAIMED_TTL_MS
+        {
+            Some(Fold::Expired)
+        } else {
+            None
+        }
+    }
+    /// Whether compaction at this threshold would retire at least one entry.
+    /// A plain scan: at the threshold with nothing yet foldable, every write
+    /// would otherwise repeat the full validation, checkpoint parse and journal
+    /// copy (hundreds of milliseconds each) for a compaction that changes nothing.
+    pub fn compaction_would_fold(&self, at: usize) -> bool {
         if self.entries.len() < at {
+            return false;
+        }
+        let now = now_ms();
+        self.entries.values().any(|entry| Self::fold(entry, now).is_some())
+    }
+    pub fn compact_if_due(&mut self, key: &Ed25519KeyPair, at: usize) -> Result<bool, String> {
+        if !self.compaction_would_fold(at) {
             return Ok(false);
         }
         let before = self.entries.len();
@@ -373,22 +408,17 @@ impl Journal {
         let now = now_ms();
         let mut removed = Vec::new();
         for (id, entry) in &self.entries {
-            let counter = if entry.claimed && entry.outcome.is_some() {
-                payload.claims.insert(id.clone(), entry.claimed_at);
-                &mut payload.resolved
-            } else if entry.claimed
-                && entry.claimed_at != 0
-                && now.saturating_sub(entry.claimed_at) > ORPHAN_GRACE_MS
-            {
-                payload.claims.insert(id.clone(), entry.claimed_at);
-                &mut payload.orphaned
-            } else if !entry.claimed
-                && entry.issued_at != 0
-                && now.saturating_sub(entry.issued_at) > UNCLAIMED_TTL_MS
-            {
-                &mut payload.expired
-            } else {
-                continue;
+            let counter = match Self::fold(entry, now) {
+                Some(Fold::Resolved) => {
+                    payload.claims.insert(id.clone(), entry.claimed_at);
+                    &mut payload.resolved
+                }
+                Some(Fold::Orphaned) => {
+                    payload.claims.insert(id.clone(), entry.claimed_at);
+                    &mut payload.orphaned
+                }
+                Some(Fold::Expired) => &mut payload.expired,
+                None => continue,
             };
             *counter = counter
                 .checked_add(1)
@@ -1212,6 +1242,36 @@ mod tests {
         assert!(journal.issue(501, "/data", command("hello"), true).is_err());
     }
 
+    // Regression: at the threshold with only fresh, unresolved claims, every
+    // write re-ran validation, checkpoint parsing and a full journal copy for a
+    // compaction that retired nothing. The attempt is now skipped outright and
+    // still runs as soon as one entry can fold.
+    #[test]
+    fn compaction_attempt_with_nothing_foldable_is_skipped_until_an_entry_can_fold() {
+        let key = new_key().unwrap();
+        let mut journal = Journal::new();
+        let first = claimed(&mut journal);
+        let mut second = command("second");
+        second["args"]["requestId"] = json!("r2");
+        let receipt = journal.issue(501, "/data", second, true).unwrap();
+        journal.claim(501, "/data", &receipt, NONCE).unwrap();
+        journal.committed();
+        assert!(journal.compaction_due(2));
+        assert!(!journal.compaction_would_fold(2));
+        assert!(!journal.compact_if_due(&key, 2).unwrap());
+        assert!(matches!(journal.change().unwrap(), Change::None));
+        assert!(journal.checkpoint.is_none());
+        assert_eq!(journal.entries.len(), 2);
+        journal
+            .finish(501, "/data", &first.key, json!({"status":"succeeded"}), true)
+            .unwrap();
+        assert!(journal.compaction_would_fold(2));
+        assert!(journal.compact_if_due(&key, 2).unwrap());
+        assert!(matches!(journal.change().unwrap(), Change::Rewrite));
+        assert_eq!(journal.entries.len(), 1);
+        assert!(journal.claims.contains_key(&first.key));
+    }
+
     #[test]
     fn legacy_journal_without_checkpoint_or_timestamps_remains_usable() {
         let key = new_key().unwrap();
@@ -1914,5 +1974,54 @@ mod tests {
                 .value,
             json!({"writer":"second"})
         );
+    }
+}
+
+#[cfg(test)]
+mod write_cost_bench {
+    //! Measures one broker write transaction's in-memory cost at the compaction
+    //! threshold with nothing foldable. Run: cargo test --release -p apex-provenance write_cost -- --nocapture --ignored
+    use super::*;
+    fn fill(journal: &mut Journal, n: usize, claims: usize, key: &Ed25519KeyPair) {
+        let now = now_ms();
+        for i in 0..n {
+            let command = json!({"cmd":"room_post","args":{"id":"work-abc","text":"append a line"},"provenanceRequestId":format!("req-{i:08}")});
+            let k = command_key(501, "/Users/x/Library/Application Support/Apex Deck", &command).unwrap();
+            journal.entries.insert(k.clone(), Entry { receipt: Receipt { uid: 501, data_dir: "/Users/x/Library/Application Support/Apex Deck".into(), command, key: k, issuance_id: Some("aaaa".into()), installation_epoch: None }, claimed: true, outcome: None, issued_at: now, claimed_at: now });
+        }
+        let mut map = BTreeMap::new();
+        for i in 0..claims { map.insert(format!("{:064x}", i), now); }
+        let payload = CheckpointPayload { domain: DOMAIN.into(), kind: "checkpoint".into(), generation: 1, claims: map.clone(), folded: claims as u64, resolved: claims as u64, orphaned: 0, expired: 0 };
+        journal.checkpoint = Some(sign(key, &serde_json::to_value(&payload).unwrap()).unwrap());
+        journal.claims = map;
+    }
+    fn one_write(journal: &mut Journal, key: &Ed25519KeyPair, i: usize) -> (f64, f64, f64, f64) {
+        let t0 = std::time::Instant::now();
+        let compacting = journal.compaction_would_fold(COMPACT_AT);
+        let backup = compacting.then(|| journal.clone());
+        let t1 = std::time::Instant::now();
+        if compacting { journal.compact_if_due(key, COMPACT_AT).unwrap(); }
+        let t2 = std::time::Instant::now();
+        let command = json!({"cmd":"room_post","args":{"id":"work-abc","text":"new"},"provenanceRequestId":format!("new-{i}")});
+        journal.issue(501, "/Users/x/Library/Application Support/Apex Deck", command, true).unwrap();
+        let line = match journal.change().unwrap() { Change::Append(l) => l.len(), _ => 0 };
+        let t3 = std::time::Instant::now();
+        drop(backup); journal.committed();
+        let _ = line;
+        (t1.duration_since(t0).as_secs_f64()*1e3, t2.duration_since(t1).as_secs_f64()*1e3, t3.duration_since(t2).as_secs_f64()*1e3, t3.duration_since(t0).as_secs_f64()*1e3)
+    }
+    #[test]
+    #[ignore]
+    fn write_cost_at_threshold_with_nothing_foldable() {
+        let key = new_key().unwrap();
+        for (label, n, claims) in [("below threshold", COMPACT_AT - 1000, 100_000usize), ("at threshold, 100k checkpoint claims", COMPACT_AT, 100_000), ("at threshold, 10k claims", COMPACT_AT, 10_000)] {
+            let mut journal = Journal::new();
+            fill(&mut journal, n, claims, &key);
+            let bytes = serde_json::to_vec(&journal).unwrap().len();
+            for i in 0..3 {
+                let (clone, compact, issue, total) = one_write(&mut journal, &key, i);
+                eprintln!("{label}: entries={} journal={:.1}MB  clone {clone:.0}ms  compact_if_due {compact:.0}ms  issue+change {issue:.0}ms  total {total:.0}ms", journal.entries.len(), bytes as f64/1e6);
+            }
+        }
     }
 }

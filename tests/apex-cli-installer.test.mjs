@@ -264,3 +264,93 @@ test('upgrade keeps an existing Standalone shortcut, refuses a foreign one, unin
   ok(h.run('--uninstall'));
   assert.equal(lstatExists(link), false);
 }));
+
+// Regression: the broker ran as a launchd "Background" process (CPU and disk
+// I/O throttled below every app). Under a build-sized load on the Mac, each
+// serial approval transaction stretched from well under a second to many
+// seconds. Users wait on this service, so it is Interactive, and an upgrade
+// repairs an existing Background service file before restarting the broker.
+test('fresh install writes an Interactive broker service', UNIX_ONLY, () => withHarness(async (h) => {
+  ok(h.run('--no-path-link', h.payload('a', '0.9.15', 'A')));
+  assert.match(h.read(h.plist), /<key>ProcessType<\/key><string>Interactive<\/string>/);
+  assert.doesNotMatch(h.read(h.plist), /Background/);
+}));
+
+test('upgrade repairs a Background broker service type and restarts from the repaired file', UNIX_ONLY, () => withHarness(async (h) => {
+  ok(h.run('--no-path-link', h.payload('a', '0.9.15', 'A')));
+  writeFileSync(h.plist, h.read(h.plist).replace('<string>Interactive</string>', '<string>Background</string>'));
+  assert.match(h.read(h.plist), /Background/);
+  const r = h.run('--no-path-link', h.payload('b', '0.9.16', 'B'));
+  ok(r);
+  const plist = h.read(h.plist);
+  assert.match(plist, /<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
+  assert.doesNotMatch(plist, /Background/);
+  assert.match(plist, /<key>Label<\/key>\s*<string>dev\.apexdeck\.provenance<\/string>/);
+  assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
+  const log = h.read(join(h.t, 'launchctl.log')).trim().split('\n');
+  assert.ok(log.indexOf(`bootout system ${h.plist}`) < log.lastIndexOf(`bootstrap system ${h.plist}`), log.join('\n'));
+}));
+
+test('upgrade leaves an already Interactive broker service file byte for byte', UNIX_ONLY, () => withHarness(async (h) => {
+  ok(h.run('--no-path-link', h.payload('a', '0.9.15', 'A')));
+  const before = h.read(h.plist);
+  ok(h.run('--no-path-link', h.payload('b', '0.9.16', 'B')));
+  assert.equal(h.read(h.plist), before);
+}));
+
+test('upgrade repairs a multiline Background plist without dropping other service settings', UNIX_ONLY, () => withHarness(async (h) => {
+  ok(h.run('--no-path-link', h.payload('a', '0.9.15', 'A')));
+  const original = h.read(h.plist)
+    .replace('<key>ProcessType</key><string>Interactive</string>', '<key>ProcessType</key>\n\t<string>Background</string>')
+    .replace('</dict></plist>', '<key>EnvironmentVariables</key><dict><key>EXAMPLE</key><string>preserved</string></dict></dict></plist>');
+  writeFileSync(h.plist, original);
+  ok(h.run('--no-path-link', h.payload('b', '0.9.16', 'B')));
+  const result = spawnSync('/usr/bin/python3', ['-I', '-c', `import plistlib,sys
+with open(sys.argv[1],'rb') as f: service=plistlib.load(f)
+assert service['ProcessType']=='Interactive',service
+assert service['EnvironmentVariables']=={'EXAMPLE':'preserved'},service
+assert service['Label']=='dev.apexdeck.provenance' and service['KeepAlive'] is True
+`, h.plist], { encoding: 'utf8' });
+  ok(result);
+}));
+
+test('upgrade repairs a binary broker plist and a missing ProcessType', UNIX_ONLY, () => withHarness(async (h) => {
+  ok(h.run('--no-path-link', h.payload('a', '0.9.15', 'A')));
+  for (const [name, processType] of [['binary', 'Background'], ['missing', null]]) {
+    ok(spawnSync('/usr/bin/python3', ['-I', '-c', `import plistlib,sys
+with open(sys.argv[1],'rb') as f: service=plistlib.load(f)
+if sys.argv[2]=='missing': service.pop('ProcessType',None)
+else: service['ProcessType']='Background'
+with open(sys.argv[1],'wb') as f: plistlib.dump(service,f,fmt=plistlib.FMT_BINARY)
+`, h.plist, name], { encoding: 'utf8' }));
+    ok(h.run('--no-path-link', h.payload(name, '0.9.16', name)));
+    ok(spawnSync('/usr/bin/python3', ['-I', '-c', `import plistlib,sys
+with open(sys.argv[1],'rb') as f: assert plistlib.load(f)['ProcessType']=='Interactive'
+`, h.plist], { encoding: 'utf8' }));
+  }
+}));
+
+test('a failed CLI upgrade restores the original multiline plist byte for byte', UNIX_ONLY, () => withHarness(async (h) => {
+  ok(h.run('--no-path-link', h.payload('a', '0.9.15', 'A')));
+  const original = h.read(h.plist).replace('<string>Interactive</string>', '\n\t<string>Background</string>');
+  writeFileSync(h.plist, original);
+  const config = h.read(join(h.root, 'config.json'));
+  h.flag('fail-bootstrap');
+  fails(h.run('--no-path-link', h.payload('b', '0.9.16', 'B')));
+  assert.equal(h.read(h.plist), original);
+  assert.equal(h.read(join(h.root, 'config.json')), config);
+  assert.equal(h.installedBuild(), 'echo apex 0.9.15 A');
+}));
+
+test('a malformed existing plist refuses the CLI upgrade without changing enrollment', UNIX_ONLY, () => withHarness(async (h) => {
+  ok(h.run('--no-path-link', h.payload('a', '0.9.15', 'A')));
+  writeFileSync(h.plist, 'invalid plist');
+  const config = h.read(join(h.root, 'config.json'));
+  const launchLog = h.read(join(h.t, 'launchctl.log'));
+  fails(h.run('--no-path-link', h.payload('b', '0.9.16', 'B')));
+  assert.equal(h.read(h.plist), 'invalid plist');
+  assert.equal(h.read(join(h.root, 'config.json')), config);
+  assert.equal(h.read(join(h.t, 'launchctl.log')), launchLog);
+  assert.equal(h.installedBuild(), 'echo apex 0.9.15 A');
+  assert.equal(h.lockHeld(), false);
+}));

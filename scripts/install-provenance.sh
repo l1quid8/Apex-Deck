@@ -80,7 +80,7 @@ plist='/Library/LaunchDaemons/dev.apexdeck.provenance.plist'
 <key>ProgramArguments</key><array><string>/Library/Application Support/Apex Deck Provenance/apex-provenance</string></array>
 <key>UserName</key><string>root</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>StandardErrorPath</key><string>/var/log/apex-provenance.log</string>
-<key>ProcessType</key><string>Background</string>
+<key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 PLIST
 /usr/sbin/chown root:wheel "$plist"
