@@ -131,7 +131,7 @@ import { identityFor, parsePairingLink, scansAtLaunch, startPairing, withPairedM
 import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, takeScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
 import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
-import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
+import { createRoomRecovery, loadRoomState, logMessageCollision, messageCollision, representedRoomEvent, trackShownNumbers } from "../roomRecovery";
 import { phoneTrace, roughKb } from "./phoneTrace";
 import { copyAge, createThreadCopies, loadRetryDelay, RESUME_CHECK_MS, SLOW_LOAD_MS, whenSlow } from "./threadCopies";
 import { ConnectionLog } from "./ConnectionLog";
@@ -591,6 +591,8 @@ export function PhoneApp() {
   /** The open thread as last drawn, for names inside event handlers. */
   const roomRef = useRef<Room | null>(null);
   roomRef.current = room;
+  /** Who holds each message number, counting messages accepted since the last draw. */
+  const messageHolders = useRef(trackShownNumbers<Room>()).current;
   /** The last copy of each recently opened thread, by machine and thread, shown at once when it opens again. */
   const threadCopies = useRef(createThreadCopies<Room>());
   useEffect(() => { if (room && !room.stale) threadCopies.current.put(machineThreadKey(room.hostId, room.id), room); }, [room]);
@@ -1641,7 +1643,15 @@ export function PhoneApp() {
       if (event.type === "participants_changed") setRoom((current) => current && current.id === id ? { ...current, configs: event.participants, participants: event.participants.map(toPerson) } : current);
       if (event.type === "participant_changed") settingsHeard.set(event.participant.id, event.participant);
       if (event.type === "participant_changed") setRoom((current) => current && current.id === id ? { ...current, configs: current.configs.map((config) => config.id === event.participant.id ? event.participant : config), participants: current.participants.map((person) => person.id === event.participant.id ? toPerson(event.participant) : person) } : current);
-      if (event.type === "message_added") setRoom((current) => current && current.id === id && !current.messages.some((message) => message.seq === event.message.seq) ? { ...current, messages: [...current.messages, event.message] } : current);
+      if (event.type === "message_added") {
+        // A different message under a number already taken is a host bug,
+        // never a replay: it is still dropped, but said in the console. The
+        // holder counts messages not drawn yet, so two in one tick compare.
+        const shown = roomRef.current;
+        const kept = shown && shown.id === id && shown.hostId === openHostId ? messageHolders.holder(shown, event.message) : undefined;
+        if (kept && messageCollision(kept, event.message)) logMessageCollision(`phone chat ${id}`)(event.message.seq, kept, event.message);
+        setRoom((current) => current && current.id === id && !current.messages.some((message) => message.seq === event.message.seq) ? { ...current, messages: [...current.messages, event.message] } : current);
+      }
       if (event.type === "approval_requested") setRoom((current) => current && current.id === id ? { ...current, approvals: [...current.approvals.filter((card) => card.request !== event.request), { id: event.id, request: event.request, action: event.action }] } : current);
       if (event.type === "approval_resolved") setRoom((current) => current && current.id === id ? { ...current, approvals: current.approvals.filter((card) => card.request !== event.request) } : current);
       if (event.type === "compacted") setRoom((current) => current && current.id === id ? { ...current, compaction: { by: event.id, summary: event.summary, upto: event.upto } } : current);

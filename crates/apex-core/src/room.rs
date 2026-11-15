@@ -1353,6 +1353,13 @@ impl Room {
         self.push(Speaker::Bot(ParticipantId::new("apex-agent")), text, on_event);
     }
 
+    /// A line from Deck itself about the thread (a copy that could not be
+    /// folded in, say). It is numbered and announced like any other message,
+    /// so the sink saves it in sequence; it never authorizes a turn.
+    pub fn append_deck_note(&mut self, text: String, on_event: EventSink<'_>) {
+        self.push(Speaker::Bot(ParticipantId::new("deck")), text, on_event);
+    }
+
     pub fn resolve_targets(&self, text: &str) -> Vec<ParticipantId> {
         let configs = self.configs();
         // A bot that answers only when named is reached only by its handle.

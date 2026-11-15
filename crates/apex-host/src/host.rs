@@ -404,26 +404,16 @@ impl Host {
                 }
                 continue;
             }
-            let host_weak = Arc::downgrade(&host);
-            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
-                let thread_id = thread_id.clone();
-                move |event| {
-                    if let Some(host) = host_weak.upgrade() {
-                        host.room_event(&thread_id, event);
-                    }
-                }
-            });
-            let editor_handle = if let Ok(handle) = host.handle(&thread_id) {
-                handle.runtime.editor_handle()
-            } else {
-                Arc::new(Mutex::new(None))
-            };
+            let event_sink = host.fold_event_sink(thread_id.clone());
+            let room = host.fold_room_lookup(thread_id.clone());
+            let editor_handle = host.handle(&thread_id).map(|handle| handle.runtime.editor_handle()).unwrap_or_default();
             host.fold_queue.enqueue(crate::bot_copies::FoldTask {
                 thread: thread_id,
                 copy,
                 editor_handle,
                 event_sink,
                 reconcile: None,
+                room: Some(room),
             });
         }
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
@@ -573,6 +563,32 @@ impl Host {
         } else {
             self.emit_room_event(room, event, None, None);
         }
+    }
+
+    /// Where the fold queue reports. It runs after a turn, outside any
+    /// chain, so a note it posts is saved in sequence before it is shown,
+    /// like a reply; its other events are only shown, as before.
+    fn fold_event_sink(self: &Arc<Self>, thread_id: String) -> Arc<dyn Fn(RoomEvent) + Send + Sync> {
+        let host = Arc::downgrade(self);
+        Arc::new(move |event| {
+            let Some(host) = host.upgrade() else { return };
+            if matches!(event, RoomEvent::MessageAdded { .. }) {
+                if let Ok(handle) = host.handle(&thread_id) {
+                    if let Err(why) = host.persist_and_emit(&thread_id, &handle, event) {
+                        eprintln!("[apex-deck] could not save Deck's note in {thread_id}: {why}");
+                    }
+                    return;
+                }
+            }
+            host.room_event(&thread_id, event);
+        })
+    }
+
+    /// The thread's live transcript as it is when the fold queue posts a
+    /// note: the room open under this id then, or none.
+    fn fold_room_lookup(self: &Arc<Self>, thread_id: String) -> crate::bot_copies::RoomLookup {
+        let host = Arc::downgrade(self);
+        Arc::new(move || host.upgrade()?.handle(&thread_id).ok().map(|handle| Arc::clone(&handle.room)))
     }
 
     /// Async control operations keep their original handle across replacement.
@@ -1330,23 +1346,14 @@ impl Host {
         let mut runtime = ConcurrentRoom::new(room).with_turn_lifecycle(Arc::new(crate::computer::TurnHook { host: Arc::downgrade(self), computer: Arc::clone(&self.computer), thread: id.clone(), work_room: !kind.is_chat(), ended: None }));
         if let Some(cwd) = &context.cwd {
             runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint), retired: Arc::clone(&deleted) }));
-            let this = Arc::downgrade(self);
-            let event_sink: Arc<dyn Fn(apex_core::RoomEvent) + Send + Sync> = Arc::new({
-                let id = id.clone();
-                move |event| {
-                    if let Some(this) = this.upgrade() {
-                        this.room_event(&id, event);
-                    }
-                }
-            });
             let bot_copies = Arc::new(crate::bot_copies::BotCopies::new(
                 self.assistant_data_dir().to_path_buf(),
                 id.clone(),
                 cwd.clone(),
                 runtime.editor_handle(),
-                event_sink,
+                self.fold_event_sink(id.clone()),
                 Arc::clone(&self.fold_queue),
-            ).with_names(Arc::new({
+            ).with_room(self.fold_room_lookup(id.clone())).with_names(Arc::new({
                 let (this, id) = (Arc::downgrade(self), id.clone());
                 move |bot| {
                     let room = this.upgrade()?.store.room(&id).ok()??;
@@ -4666,6 +4673,62 @@ mod tests {
             checkpoint_room(&handle, &store, "room").await.unwrap();
             assert!(store.room("room").unwrap().is_none());
         });
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    /// A fold that fails leaves Deck's "couldn't be folded in" line in the
+    /// thread as a real message: numbered after the replies and saved, so it
+    /// is still there after a reload.
+    #[tokio::test]
+    async fn fold_failure_note_is_saved_in_sequence_after_the_reply() {
+        let (handle, store, path) = checkpoint_fixture("fold-note");
+        let store = Arc::new(store);
+        let root = path.join("repo");
+        let data = path.join("deck-data");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        let git = |args: &[&str]| {
+            let out = crate::project_process::fixture_git_command().arg("-C").arg(&root).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(root.join("seed.txt"), "seed").unwrap();
+        git(&["add", "seed.txt"]);
+        git(&["commit", "-m", "initial seed"]);
+        let copy = crate::bot_copies::create_copy(&root, &data, "room", "null").unwrap();
+        // The merge fails: the copy's folder is still there but no longer a checkout.
+        std::fs::remove_file(copy.work.join(".git")).unwrap();
+
+        let failures: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = |event| persist_event(&handle, &store, "room", &event).unwrap();
+        let batch = handle.runtime.begin_post("@null work", None, &sink).await.unwrap();
+        handle.runtime.run(batch, &sink).await;
+        assert_eq!(store.room("room").unwrap().unwrap().snapshot.transcript.len(), 2, "the human line and null's reply");
+
+        let queue = Arc::new(crate::bot_copies::FoldQueue::new(data));
+        queue.enqueue(crate::bot_copies::FoldTask {
+            thread: "room".into(),
+            copy: copy.clone(),
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: Arc::new({
+                let (handle, store, failures) = (handle.clone(), Arc::clone(&store), Arc::clone(&failures));
+                move |event| if let Err(why) = persist_event(&handle, &store, "room", &event) { failures.lock().unwrap().push(why); }
+            }),
+            reconcile: None,
+            room: Some(Arc::new({ let room = Arc::clone(&handle.room); move || Some(Arc::clone(&room)) })),
+        });
+        queue.wait_idle().await;
+
+        assert_eq!(*failures.lock().unwrap(), Vec::<String>::new(), "the note was accepted by the saved history");
+        let saved = store.room("room").unwrap().unwrap().snapshot.transcript;
+        assert_eq!(saved.len(), 3, "the note is saved after the reply: {saved:?}");
+        let note = &saved[2];
+        assert_eq!(note.seq, 2);
+        assert_eq!(note.speaker, apex_core::Speaker::Bot(ParticipantId::new("deck")));
+        assert!(note.text.contains("null's changes couldn't be folded in") && note.text.contains("Worktrees tab"), "{}", note.text);
+        assert_eq!(saved, handle.room.lock().await.transcript().to_vec(), "the live room and the saved history agree");
         std::fs::remove_dir_all(path).unwrap();
     }
 

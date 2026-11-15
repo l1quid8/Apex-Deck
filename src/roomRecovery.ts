@@ -1,5 +1,5 @@
 import type { Backend } from "./backend";
-import type { ParticipantConfig, RoomEvent, RoomOptions, RoomSnapshot, RoomState } from "./types";
+import type { Message, ParticipantConfig, RoomEvent, RoomOptions, RoomSnapshot, RoomState } from "./types";
 
 export async function loadRoomState(backend: Backend, id: string, participants: ParticipantConfig[], options: RoomOptions, cwd: string): Promise<RoomState> {
   const unsupported = (error: unknown) => /unknown variant [`'"]?room_state|unknown command.*room_state|unsupported.*room_state/i.test(String(error));
@@ -129,12 +129,67 @@ export function representedRoomEvent(state: RoomState, event: RoomEvent): boolea
   }
 }
 
-export function messageDedup() {
-  const seen = new Set<number>();
+type Numbered = Pick<Message, "seq"> & Partial<Pick<Message, "speaker" | "text">>;
+
+/** Who said what, so a replayed message can be told from a different one. */
+const fingerprint = (m: Numbered) =>
+  m.speaker && m.text !== undefined ? `${m.speaker.kind === "bot" ? `bot:${m.speaker.id}` : "human"}\n${m.text}` : undefined;
+
+/**
+ * Whether `incoming` is a different message from `kept`, which already holds
+ * its number. A repeat of the same message is not; neither is a bare number,
+ * which cannot be compared.
+ */
+export function messageCollision(kept: Numbered, incoming: Numbered): boolean {
+  const a = fingerprint(kept), b = fingerprint(incoming);
+  return a !== undefined && b !== undefined && a !== b;
+}
+
+/**
+ * Which message holds a number in a thread whose state updates are drawn
+ * later. The thread as last drawn misses messages accepted since, so two
+ * messages arriving before the next draw would not be compared; this also
+ * remembers those. A newly drawn thread is the record again, which also
+ * frees the numbers of a cleared or rewound thread.
+ */
+export function trackShownNumbers<T extends { messages: readonly Numbered[] }>() {
+  let drawn: T | null = null;
+  let since = new Map<number, Numbered>();
   return {
-    restore(messages: readonly { seq: number }[]) { seen.clear(); messages.forEach(m => seen.add(m.seq)); },
-    accept(seq: number) { if (seen.has(seq)) return false; seen.add(seq); return true; },
-    truncate(from: number) { for (const seq of seen) if (seq >= from) seen.delete(seq); },
+    /** The message already holding `message`'s number, or none, in which case `message` now holds it. */
+    holder(shown: T, message: Numbered): Numbered | undefined {
+      if (shown !== drawn) { drawn = shown; since = new Map(); }
+      const kept = shown.messages.find(m => m.seq === message.seq) ?? since.get(message.seq);
+      if (!kept) since.set(message.seq, message);
+      return kept;
+    },
+  };
+}
+
+/** One console line for a dropped message that reused a number, the same on desktop and phone. */
+export function logMessageCollision(thread: string) {
+  return (seq: number, kept: Numbered, dropped: Numbered) =>
+    console.warn(`[${thread}] dropped a message reusing number ${seq}`, { kept, dropped });
+}
+
+/**
+ * Accepts each message number once. Saved and live messages overlap during
+ * recovery, so a repeat of the same message is expected and dropped quietly.
+ * A different message under a number already taken means the host numbered
+ * it wrongly; it is still dropped, but `onCollision` hears about it.
+ */
+export function messageDedup(onCollision?: (seq: number, kept: Numbered, dropped: Numbered) => void) {
+  const seen = new Map<number, Numbered>();
+  return {
+    restore(messages: readonly Numbered[]) { seen.clear(); messages.forEach(m => seen.set(m.seq, m)); },
+    accept(message: number | Numbered) {
+      const m = typeof message === "number" ? { seq: message } : message;
+      const kept = seen.get(m.seq);
+      if (!kept) { seen.set(m.seq, m); return true; }
+      if (messageCollision(kept, m)) onCollision?.(m.seq, kept, m);
+      return false;
+    },
+    truncate(from: number) { for (const seq of seen.keys()) if (seq >= from) seen.delete(seq); },
   };
 }
 

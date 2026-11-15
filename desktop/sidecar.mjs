@@ -71,6 +71,12 @@ export function answers(socket) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** The pid `daemon.json` names (written last, once a daemon is ready), or null. */
+function recordedPid(infoPath) {
+  try { const pid = JSON.parse(fs.readFileSync(infoPath, 'utf8')).pid; return Number.isInteger(pid) ? pid : null; }
+  catch { return null; }
+}
+
 /**
  * Wait until something answers on `socket` (or, with `wanted` false, until
  * nothing does). Resolves false when that takes longer than `timeout`.
@@ -122,7 +128,10 @@ export async function localDaemon({ bin, dataDir, remote = false, log = () => {}
       const words = stderr.trim().split('\n').filter(Boolean).at(-1)?.replace(/^apex-daemon: /, '');
       throw new Error(words || `apex-daemon stopped as it started (${exited.code ?? exited.signal}).`);
     }
-    if (await answers(socket)) break;
+    // An answer proves only that some daemon is ready. Under load one that
+    // won the lock can answer while ours is still starting, and ours then
+    // exits; it is ours once daemon.json names it.
+    if (await answers(socket) && recordedPid(path.join(folder, 'daemon.json')) === child.pid) break;
     if (Date.now() - started > 15_000) {
       child.kill('SIGKILL');
       throw new Error('apex-daemon did not start within 15 seconds.');

@@ -80,6 +80,43 @@ test('every script that builds the daemon for the desktop builds it with remote 
 
 
 // The fake serves a UNIX socket path; Windows uses a named pipe instead.
+test('a daemon that answers while ours is still starting is not taken for ours', { skip: process.platform === 'win32' }, async () => {
+  // Under load a losing daemon can still be starting when the winner begins
+  // to answer. The answer is the winner's, so ours must not be called owned.
+  const dir = fs.mkdtempSync('/tmp/deck-slow-loser-');
+  const fixture = path.join(dir, 'fake-daemon.cjs');
+  fs.writeFileSync(fixture, `#!/usr/bin/env node
+const net = require('node:net');
+const path = require('node:path');
+const fs = require('node:fs');
+const folder = process.argv[process.argv.indexOf('--data-dir') + 1];
+if (process.argv[2] === 'data-dir') { console.log(folder); process.exit(0); }
+if (process.argv[2] === 'endpoint') { console.log(path.join(folder, 'daemon.sock')); process.exit(0); }
+const winner = process.argv[2] === 'winner';
+// The loser is slow to reach the lock, and exits when it finds it taken.
+setTimeout(() => {
+  try { fs.writeFileSync(path.join(folder, 'owner.lock'), String(process.pid), { flag: 'wx' }); } catch { process.exit(1); }
+  const server = net.createServer(c => c.end());
+  server.on('error', () => process.exit(1));
+  setTimeout(() => server.listen(path.join(folder, 'daemon.sock'), () => fs.writeFileSync(path.join(folder, 'daemon.json'), JSON.stringify({ pid: process.pid }))), winner ? 300 : 0);
+}, winner ? 0 : 900);
+`, { mode: 0o700 });
+  const { spawn } = await import('node:child_process');
+  const winner = spawn(fixture, ['winner', '--data-dir', dir], { stdio: 'ignore' });
+  let ours;
+  try {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    ours = await localDaemon({ bin: fixture, dataDir: dir });
+    assert.equal(ours.owned, false, 'the daemon answering is the winner, not the one we started');
+    assert.equal(await waitForSocket(ours.socket, { timeout: 300 }), true, 'and it is still there to use');
+  } finally {
+    winner.kill('SIGKILL');
+    ours?.child?.kill('SIGKILL');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('desktop exit leaves its shared daemon alive and simultaneous startup reuses the winner', { skip: process.platform === 'win32' }, async () => {
   const dir = fs.mkdtempSync('/tmp/deck-shared-');
   const fixture = path.join(dir, 'fake-daemon.cjs');
@@ -93,8 +130,9 @@ if (process.argv[2] === 'endpoint') { console.log(path.join(folder, 'daemon.sock
 try { fs.writeFileSync(path.join(folder, 'owner.lock'), String(process.pid), { flag: 'wx' }); } catch { process.exit(1); }
 const server = net.createServer(c => c.end());
 server.on('error', () => process.exit(1));
-// The lock is acquired well before readiness, as with a real host startup.
-setTimeout(() => server.listen(path.join(folder, 'daemon.sock')), 250);
+// The lock is acquired well before readiness, as with a real host startup,
+// and daemon.json naming this process is written last, once it listens.
+setTimeout(() => server.listen(path.join(folder, 'daemon.sock'), () => fs.writeFileSync(path.join(folder, 'daemon.json'), JSON.stringify({ pid: process.pid }))), 250);
 `, { mode: 0o700 });
   let daemons = [];
   try {
