@@ -35,7 +35,7 @@ import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, Curation, NextStep, PlanRun, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, Curation, NextStep, PlanRun, PlanWindow, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -56,7 +56,7 @@ import { botIdentity, mentionable, mentionFor, slug } from "./slug";
 import { copyRenamer, savedToAgents, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { addInOrder, batchLabel, checkBatch, lineupText, MAX_NEW_BOTS, splitAdded } from "./batchAdd";
-import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { appendToolToken, findTrigger, insertAt } from "./composerMenu";
@@ -79,7 +79,8 @@ import { ProviderLogo } from "./providerLogos";
 import { DeckIcon } from "./DeckIcon";
 import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
-import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
+import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, resetLabel, shortCount, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
+import { CompactIcon, TokenIcon, UsageRing } from "./QuickControls";
 import { AGENT_LABEL, chipDescription, foldedFor, levelsShown, saveFolded, type ChipParts } from "./botChip";
 import { planOf, usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
@@ -3109,33 +3110,40 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const spent = spendLine(used[p.id], dollars);
     // Bots showing the same figure: one model's own group, or the account's own.
     const sharing = state ? participants.filter((other) => planStateOf(other) === state).length : 0;
+    const nowSeconds = Date.now() / 1000;
+    const live = windows ? liveWindows(windows, nowSeconds) : [];
+    const ctx = contextLevel(fill);
+    const totals = used[p.id];
+    const cell = (key: string, ring: ReactNode, name: string, value: string, title: string, low = false) => (
+      <span key={key} className={low ? "quick-cell usage-low" : "quick-cell"} title={title} role="img" aria-label={title}>
+        <span className="quick-cell-icon" aria-hidden="true">{ring}</span>
+        <span className="quick-cell-label">{name} <b>{value}</b></span>
+      </span>
+    );
+    const shortWindow = (w: PlanWindow) => w.window_minutes === 300 ? "5h" : w.window_minutes === 10_080 ? "wk" : windowLabel(w);
     return (
       <div ref={at ? cardBox : undefined} className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
-        {!makesMedia(p) && <div className="usage-row">
-          <span className="usage-label">Context</span>
-          <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : "Not reported"}</span>
-        </div>}
-        {account ? <>
-          <div className="usage-row"><span className="usage-label">Subscription</span><span>Not reported</span></div>
-          <div className="usage-row">
-            <span className="usage-label">Balance</span>
-            <span>{left != null ? `${dollars(left)} left on this account` : "Not reported"}</span>
-          </div>
-          {!!spent && <div className="usage-row">
-            <span className="usage-label">Cost</span>
-            <span>{spent} in this chat</span>
-          </div>}
-        </> : <div className="usage-row">
-          <span className="usage-label">{gatewayPlan(p) ? "Subscription" : "Plan"}</span>
-          <span className={isLow(provider ? planLevel(windows, Date.now() / 1000) : null) ? "usage-low" : undefined}>
-            {plan ?? "Not reported"}
-          </span>
-        </div>}
+        <div className="quick-strip usage-strip">
+          {!makesMedia(p) && cell("ctx", <UsageRing level={ctx} glyph="context" low={isLow(ctx)} />, "ctx", ctx === null ? "—" : `${percent(ctx)}%`, `Context: ${fill ? contextLine(fill) : "Not reported"}`, isLow(ctx))}
+          {account
+            ? cell("balance", <UsageRing level={null} glyph="money" />, "", left != null ? dollars(left) : "—", `Balance: ${left != null ? `${dollars(left)} left on this account` : "Not reported"}${spent ? ` · ${spent} in this chat` : ""}`)
+            : live.length
+              ? live.map((w) => { const level = 1 - Math.min(100, w.used_percent) / 100; return cell(w.name, <UsageRing level={level} glyph={w.window_minutes === 300 || (w.window_minutes ?? 0) < 1440 ? "clock" : "calendar"} low={isLow(level)} />, shortWindow(w), `${percent(level)}%`, `${gatewayPlan(p) ? "Subscription" : "Plan"} · ${windowLabel(w)}: ${percent(level)}% left${w.resets_at != null ? ` · resets ${resetLabel(w.resets_at, new Date())}` : ""}`, isLow(level)); })
+              : cell("plan", <UsageRing level={provider ? planLevel(windows, nowSeconds) : null} glyph="calendar" />, "plan", plan ? `${percent(planLevel(windows, nowSeconds) ?? 0)}%` : "—", `${gatewayPlan(p) ? "Subscription" : "Plan"}: ${plan ?? "Not reported"}`)}
+          <button className="quick-cell usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} aria-label="Compact now" title="Compact now · Summarize earlier turns so every model starts from the summary">
+            <span className="quick-cell-icon" aria-hidden="true"><CompactIcon /></span>
+            <span className="quick-cell-label">Compact</span>
+          </button>
+        </div>
         {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
-        <p className="usage-note">{tokenLine(used[p.id])}</p>
-        <button className="ghost usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} title="Summarize earlier turns so every model starts from the summary">
-          Compact now
-        </button>
+        <div className="usage-tokens" title={tokenLine(totals)}>
+          {totals && totals.turns > 0 ? <>
+            <span aria-label="Input tokens"><TokenIcon kind="in" />{totals.input_reported_turns === 0 ? "—" : shortCount(totals.input)}</span>
+            <span aria-label="Output tokens"><TokenIcon kind="out" />{totals.output_reported_turns === 0 ? "—" : shortCount(totals.output)}</span>
+            <span aria-label="Cached share of input"><TokenIcon kind="cached" />{totals.cached_input == null || !totals.input ? "—" : `${percent(totals.cached_input / totals.input)}%`}</span>
+            <span aria-label="Turns"><TokenIcon kind="turns" />{totals.turns}</span>
+          </> : <span className="usage-tokens-none">Tokens not reported</span>}
+        </div>
       </div>
     );
   };
@@ -3856,7 +3864,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         setAccessFrom(({ [id]: _applied, ...rest }) => rest);
         setPendingSettings(({ [id]: _applied, ...rest }) => rest);
         void backend.roomApplyAccess(pane.id, id).catch((error) => notify(`Could not apply access now: ${String(error)}`, "error"));
-      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "Not reported" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={shown === null ? `${title}: Not reported` : resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const before = participants.find(p => p.id === config.id)?.access;
         const saved = await backend.roomUpdateParticipant(pane.id, config, base, cwd);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
