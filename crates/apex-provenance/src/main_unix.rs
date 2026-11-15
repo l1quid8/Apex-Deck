@@ -51,13 +51,14 @@ fn peer_requirement(role: Peer, hash: Option<&str>) -> Option<String> {
 fn may_issue(role: Peer, command: &serde_json::Value) -> bool {
     role == Peer::App || (role == Peer::Cli && cli_submission(command))
 }
-// Only the terminal's typed first-build operations. Never admit broker admin,
+// Only the terminal's typed operations. Never admit broker admin,
 // device grants, personal assistant APIs, arbitrary room execution or updates.
 fn cli_submission(command: &serde_json::Value) -> bool {
     matches!(command["cmd"].as_str(), Some("room_post" | "room_decide" | "room_answer"
         | "room_set_plan" | "room_runner_start" | "room_runner_action"
         | "room_add_participant" | "room_update_participant" | "room_remove_participant"
-        | "room_set_options" | "room_create" | "agent_profile_save" | "provider_setup_begin" | "backend_stop"))
+        | "room_set_options" | "room_create" | "room_set_trashed"
+        | "agent_profile_save" | "provider_setup_begin" | "backend_stop"))
 }
 fn peer(stream: &UnixStream, hash: Option<&str>, role: Peer) -> (u32, bool) {
     let uid = u32::MAX;
@@ -772,6 +773,14 @@ mod tests {
 #[cfg(test)]
 mod cli_admission_tests {
     use super::*;
+    #[test]
+    fn pinned_cli_can_trash_and_restore_threads_but_daemon_cannot() {
+        for trashed in [true, false] {
+            let command = json!({"cmd":"room_set_trashed", "args":{"id":"thread-1", "trashed":trashed}});
+            assert!(may_issue(Peer::Cli, &command), "CLI trash={trashed}");
+            assert!(!may_issue(Peer::Daemon, &command));
+        }
+    }
     #[test]
     fn legacy_configs_disable_cli_and_pins_require_exact_identity() {
         let old: Config = serde_json::from_value(json!({"uiCdhash":"a".repeat(40),"daemonCdhash":"b".repeat(40)})).unwrap();
