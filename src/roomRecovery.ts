@@ -145,6 +145,27 @@ export function messageCollision(kept: Numbered, incoming: Numbered): boolean {
   return a !== undefined && b !== undefined && a !== b;
 }
 
+/**
+ * Which message holds a number in a thread whose state updates are drawn
+ * later. The thread as last drawn misses messages accepted since, so two
+ * messages arriving before the next draw would not be compared; this also
+ * remembers those. A newly drawn thread is the record again, which also
+ * frees the numbers of a cleared or rewound thread.
+ */
+export function trackShownNumbers<T extends { messages: readonly Numbered[] }>() {
+  let drawn: T | null = null;
+  let since = new Map<number, Numbered>();
+  return {
+    /** The message already holding `message`'s number, or none, in which case `message` now holds it. */
+    holder(shown: T, message: Numbered): Numbered | undefined {
+      if (shown !== drawn) { drawn = shown; since = new Map(); }
+      const kept = shown.messages.find(m => m.seq === message.seq) ?? since.get(message.seq);
+      if (!kept) since.set(message.seq, message);
+      return kept;
+    },
+  };
+}
+
 /** One console line for a dropped message that reused a number, the same on desktop and phone. */
 export function logMessageCollision(thread: string) {
   return (seq: number, kept: Numbered, dropped: Numbered) =>

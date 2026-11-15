@@ -89,22 +89,43 @@ test('a replayed message is dropped quietly but a different one under the same n
   assert.equal(collisions.length, 1);
 });
 
-test('the phone chat drops a reused message number and logs it only when the message differs', async () => {
+/** PhoneApp's own message_added handler, sliced from the source and run against stand-ins. */
+async function phoneMessageHandler() {
   const { transform } = (await import('node:module')).createRequire(import.meta.url)('sucrase');
   const source = (await import('node:fs')).readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url), 'utf8');
   const start = source.indexOf('      if (event.type === "message_added") {');
   const end = source.indexOf('      if (event.type === "approval_requested")', start);
   assert.ok(start >= 0 && end > start, 'the phone message_added handler');
   const code = transform(source.slice(start, end), { transforms: ['typescript'] }).code;
+  return new Function('env', 'event', `with(env){${code}}`);
+}
+
+/**
+ * A phone screen stand-in. setRoom only queues, as React does; draw() applies
+ * the queue and updates roomRef, as a render does. With `drawEachSet` every
+ * update is drawn at once.
+ */
+function phoneScreen({ drawEachSet }) {
   const warnings = [];
-  const human = { kind: 'human' }, deck = { kind: 'bot', id: 'deck' };
+  const queued = [];
   const env = {
     id: 't', openHostId: 'mac', roomRef: { current: null }, room: null,
     messageCollision: mod.messageCollision,
+    messageHolders: mod.trackShownNumbers(),
     logMessageCollision: (thread) => (seq, kept, dropped) => warnings.push({ thread, seq, kept: kept.text, dropped: dropped.text }),
-    setRoom: (next) => { env.room = typeof next === 'function' ? next(env.room) : next; env.roomRef.current = env.room; },
+    setRoom: (next) => { queued.push(next); if (drawEachSet) env.draw(); },
+    draw: () => {
+      for (const next of queued.splice(0)) env.room = typeof next === 'function' ? next(env.room) : next;
+      env.roomRef.current = env.room;
+    },
   };
-  const apply = new Function('env', 'event', `with(env){${code}}`);
+  return { env, warnings };
+}
+
+test('the phone chat drops a reused message number and logs it only when the message differs', async () => {
+  const apply = await phoneMessageHandler();
+  const { env, warnings } = phoneScreen({ drawEachSet: true });
+  const human = { kind: 'human' }, deck = { kind: 'bot', id: 'deck' };
   env.setRoom({ id: 't', hostId: 'mac', messages: [{ seq: 0, speaker: human, text: 'hello' }] });
   apply(env, { type: 'message_added', message: { seq: 0, speaker: human, text: 'hello' } });
   assert.deepEqual(warnings, [], 'a replay is quiet');
@@ -116,6 +137,30 @@ test('the phone chat drops a reused message number and logs it only when the mes
   env.setRoom({ id: 't', hostId: 'other', messages: [{ seq: 0, speaker: human, text: 'theirs' }] });
   apply(env, { type: 'message_added', message: { seq: 0, speaker: deck, text: 'note' } });
   assert.equal(warnings.length, 1, "another machine's thread with the same id is not compared");
+});
+
+test('the phone chat logs two colliding messages that arrive before the screen is drawn again', async () => {
+  const apply = await phoneMessageHandler();
+  const { env, warnings } = phoneScreen({ drawEachSet: false });
+  const human = { kind: 'human' }, deck = { kind: 'bot', id: 'deck' };
+  env.setRoom({ id: 't', hostId: 'mac', messages: [{ seq: 0, speaker: human, text: 'hello' }] });
+  env.draw();
+  // Same tick: neither message is drawn yet when the next one arrives.
+  apply(env, { type: 'message_added', message: { seq: 1, speaker: deck, text: 'first' } });
+  apply(env, { type: 'message_added', message: { seq: 1, speaker: deck, text: 'first' } });
+  assert.deepEqual(warnings, [], 'a replay in the same tick is still quiet');
+  apply(env, { type: 'message_added', message: { seq: 1, speaker: deck, text: 'second' } });
+  assert.deepEqual(warnings, [{ thread: 'phone chat t', seq: 1, kept: 'first', dropped: 'second' }], 'the undrawn first message is compared');
+  env.draw();
+  assert.deepEqual(env.room.messages.map((m) => m.text), ['hello', 'first'], 'only the first message under the number is shown');
+  // After a draw the shown thread is the record again.
+  apply(env, { type: 'message_added', message: { seq: 1, speaker: human, text: 'third' } });
+  assert.equal(warnings.length, 2);
+  // A cleared thread frees its numbers once drawn.
+  env.setRoom((current) => ({ ...current, messages: [] }));
+  env.draw();
+  apply(env, { type: 'message_added', message: { seq: 0, speaker: human, text: 'fresh start' } });
+  assert.equal(warnings.length, 2, 'a number freed by a clear is not a collision');
 });
 
 test('the shared collision line names the thread and both messages', () => {
