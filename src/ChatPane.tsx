@@ -1100,7 +1100,11 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     pendingLow.current.clear();
   };
 
-  const messageNumbers = useRef(messageDedup()).current;
+  // A different message under a number already shown is a host bug, never
+  // a replay; say so in the console instead of losing it without a trace.
+  const messageNumbers = useRef(messageDedup((seq, kept, dropped) => console.warn(
+    `[chat ${pane.id}] dropped a message reusing number ${seq}`, { kept, dropped },
+  ))).current;
 
   const notify = (message: string, tone: Notice["tone"] = "info", action?: NoticeAction, source?: Notice["source"]) =>
     setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone, ...(source ? { source } : {}), ...(action ? { action } : {}) } }]);
@@ -1138,7 +1142,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       if (!alive) return;
       if (recoveredState && representedRoomEvent(recoveredState, event)) return;
       if (event.type === "message_added") {
-        if (!messageNumbers.accept(event.message.seq)) return;
+        if (!messageNumbers.accept(event.message)) return;
       }
       recordApproval(pane.id, event, backend.host?.id);
       recordQuestion(pane.id, event);

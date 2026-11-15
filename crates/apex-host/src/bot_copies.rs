@@ -1,6 +1,6 @@
 //! Git snapshots and isolated worktrees for concurrent bot editing.
 
-use apex_core::{CopyProvider, Message, ParticipantId, Room, RoomEvent, Speaker};
+use apex_core::{CopyProvider, ParticipantId, Room, RoomEvent};
 use futures::future::BoxFuture;
 use futures::lock::Mutex as AsyncMutex;
 use serde::{Deserialize, Serialize};
@@ -1151,25 +1151,20 @@ impl FoldQueue {
         Self::post_note(task, note).await;
     }
 
-    /// A line from Deck in the thread. With the room at hand it is a real
-    /// message: numbered under the room's lock and saved by the event sink
-    /// like a reply, so it survives a reload. Without the room nothing can be
-    /// saved, and the line is only shown.
+    /// A line from Deck in the thread: a real message, numbered under the
+    /// room's lock and saved by the event sink like a reply, so it survives a
+    /// reload. With the thread not open there is no transcript to number it
+    /// in, and a made-up number would collide with a real message, so the
+    /// line goes to the log instead; the copy's Needs you state is saved
+    /// either way and shows in the Worktrees tab.
     async fn post_note(task: &FoldTask, note: String) {
-        if let Some(room) = task.room.as_ref().and_then(|find| find()) {
-            let sink = |event| (task.event_sink)(event);
-            room.lock().await.append_deck_note(note, &sink);
-            return;
+        match task.room.as_ref().and_then(|find| find()) {
+            Some(room) => {
+                let sink = |event| (task.event_sink)(event);
+                room.lock().await.append_deck_note(note, &sink);
+            }
+            None => eprintln!("[apex-deck] thread {} is not open; Deck's note was not posted: {note}", task.thread),
         }
-        (task.event_sink)(RoomEvent::MessageAdded {
-            message: Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
-                servers: Vec::new(),
-                seq: 0,
-                speaker: Speaker::Bot(ParticipantId::new("deck")),
-                text: note,
-                at: None,
-            },
-        });
     }
 
     async fn send_back(
@@ -2519,7 +2514,7 @@ mod tests {
             Arc::new(Mutex::new(None)),
             sink,
             Arc::clone(&fold_queue),
-        );
+        ).with_room(open_room().1);
         let id = ParticipantId::new("bot1");
         let dir = copies.copy_for(&id).await.unwrap();
         let copy = load_copies(&data).into_iter().find(|c| c.bot == "bot1").unwrap();
@@ -2542,6 +2537,14 @@ mod tests {
         assert!(notes.iter().any(|n| n.contains("outside this thread's folder: outside.txt")), "{notes:?}");
         assert!(!copy.work.exists(), "the copy folder is removed");
         assert!(load_copies(&data).is_empty(), "the folded copy is removed");
+    }
+
+    /// An open thread with an empty transcript, for tests that read the
+    /// notes the fold queue posts into it.
+    fn open_room() -> (Arc<AsyncMutex<Room>>, RoomLookup) {
+        let room = Arc::new(AsyncMutex::new(Room::new(vec![], apex_core::RoomOptions::default())));
+        let lookup: RoomLookup = Arc::new({ let room = Arc::clone(&room); move || Some(Arc::clone(&room)) });
+        (room, lookup)
     }
 
     fn plain_copies(data: &Path, thread: &str, root: &Path) -> BotCopies {
@@ -2908,13 +2911,14 @@ mod tests {
             let ev = Arc::clone(&events);
             Arc::new(move |e| ev.lock().unwrap().push(e))
         };
+        let (room, lookup) = open_room();
         let task = FoldTask {
             thread: "t1".into(),
             copy: copy.clone(),
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
             reconcile: None,
-            room: None,
+            room: Some(lookup),
         };
         fold_queue.enqueue(task);
         fold_queue.wait_idle().await;
@@ -2934,7 +2938,28 @@ mod tests {
         if let Some(RoomEvent::MessageAdded { message }) = note {
             assert!(message.text.contains("bot1"));
             assert!(message.text.contains("Worktrees tab"));
+            assert_eq!(room.lock().await.transcript(), std::slice::from_ref(message), "the note is the thread's first message, numbered 0");
         }
+    }
+
+    #[tokio::test]
+    async fn a_note_for_a_thread_that_is_not_open_is_not_shown_with_a_made_up_number() {
+        let (_tmp, root, data) = init_repo("fold-err-closed");
+        let copy = create_copy(&root, &data, "t-closed", "bot1").unwrap();
+        fs::remove_file(copy.work.join(".git")).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let fold_queue = Arc::new(FoldQueue::new(data.clone()));
+        fold_queue.enqueue(FoldTask {
+            thread: "t-closed".into(),
+            copy,
+            editor_handle: Arc::new(Mutex::new(None)),
+            event_sink: { let ev = Arc::clone(&events); Arc::new(move |e| ev.lock().unwrap().push(e)) },
+            reconcile: None,
+            room: Some(Arc::new(|| None)),
+        });
+        fold_queue.wait_idle().await;
+        assert!(matches!(load_copies(&data)[0].state, CopyState::NeedsYou { .. }), "the Worktrees tab still says it needs you");
+        assert!(!events.lock().unwrap().iter().any(|e| matches!(e, RoomEvent::MessageAdded { .. })), "no message without a transcript to number it in");
     }
 
     #[tokio::test]
@@ -3121,12 +3146,15 @@ mod tests {
             Arc::new(move |e| ev.lock().unwrap().push(e))
         };
         let ev_sink_cb = Arc::clone(&ev_sink);
+        let (_room, lookup) = open_room();
+        let lookup_cb = Arc::clone(&lookup);
 
         let reconcile_starter: ReconcileStarter = Arc::new(move |thread, bot, _msg| {
             let data_clone = data_clone.clone();
             let queue = Arc::clone(&queue_clone);
             let attempts_cb = Arc::clone(&attempts_cb);
             let ev_sink = Arc::clone(&ev_sink_cb);
+            let lookup = Arc::clone(&lookup_cb);
             Box::pin(async move {
                 *attempts_cb.lock().unwrap() += 1;
                 // Bot does NOT fix the conflict, just re-queues turn finished
@@ -3137,7 +3165,7 @@ mod tests {
                     editor_handle: Arc::new(Mutex::new(None)),
                     event_sink: ev_sink,
                     reconcile: None,
-                    room: None,
+                    room: Some(lookup),
                 });
                 Ok(())
             })
@@ -3150,7 +3178,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
             reconcile: None,
-            room: None,
+            room: Some(lookup),
         });
         fold_queue.wait_idle().await;
 
@@ -3205,12 +3233,15 @@ mod tests {
             Arc::new(move |e| ev.lock().unwrap().push(e))
         };
         let ev_sink_cb = Arc::clone(&ev_sink);
+        let (_room, lookup) = open_room();
+        let lookup_cb = Arc::clone(&lookup);
 
         let reconcile_starter: ReconcileStarter = Arc::new(move |thread, bot, _msg| {
             let data_clone = data_clone.clone();
             let queue = Arc::clone(&queue_clone);
             let attempts_cb = Arc::clone(&attempts_cb);
             let ev_sink = Arc::clone(&ev_sink_cb);
+            let lookup = Arc::clone(&lookup_cb);
             Box::pin(async move {
                 *attempts_cb.lock().unwrap() += 1;
                 // The bot answers without fixing the check, so the fold is attempted again.
@@ -3224,7 +3255,7 @@ mod tests {
                     editor_handle: Arc::new(Mutex::new(None)),
                     event_sink: ev_sink,
                     reconcile: None,
-                    room: None,
+                    room: Some(lookup),
                 });
                 Ok(())
             })
@@ -3237,7 +3268,7 @@ mod tests {
             editor_handle: Arc::new(Mutex::new(None)),
             event_sink: ev_sink,
             reconcile: None,
-            room: None,
+            room: Some(lookup),
         });
         fold_queue.wait_idle().await;
 

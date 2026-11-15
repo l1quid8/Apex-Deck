@@ -1,5 +1,5 @@
 import type { Backend } from "./backend";
-import type { ParticipantConfig, RoomEvent, RoomOptions, RoomSnapshot, RoomState } from "./types";
+import type { Message, ParticipantConfig, RoomEvent, RoomOptions, RoomSnapshot, RoomState } from "./types";
 
 export async function loadRoomState(backend: Backend, id: string, participants: ParticipantConfig[], options: RoomOptions, cwd: string): Promise<RoomState> {
   const unsupported = (error: unknown) => /unknown variant [`'"]?room_state|unknown command.*room_state|unsupported.*room_state/i.test(String(error));
@@ -129,12 +129,31 @@ export function representedRoomEvent(state: RoomState, event: RoomEvent): boolea
   }
 }
 
-export function messageDedup() {
-  const seen = new Set<number>();
+type Numbered = Pick<Message, "seq"> & Partial<Pick<Message, "speaker" | "text">>;
+
+/** Who said what, so a replayed message can be told from a different one. */
+const fingerprint = (m: Numbered) =>
+  m.speaker && m.text !== undefined ? `${m.speaker.kind === "bot" ? `bot:${m.speaker.id}` : "human"}\n${m.text}` : undefined;
+
+/**
+ * Accepts each message number once. Saved and live messages overlap during
+ * recovery, so a repeat of the same message is expected and dropped quietly.
+ * A different message under a number already taken means the host numbered
+ * it wrongly; it is still dropped, but `onCollision` hears about it.
+ */
+export function messageDedup(onCollision?: (seq: number, kept: Numbered, dropped: Numbered) => void) {
+  const seen = new Map<number, Numbered>();
   return {
-    restore(messages: readonly { seq: number }[]) { seen.clear(); messages.forEach(m => seen.add(m.seq)); },
-    accept(seq: number) { if (seen.has(seq)) return false; seen.add(seq); return true; },
-    truncate(from: number) { for (const seq of seen) if (seq >= from) seen.delete(seq); },
+    restore(messages: readonly Numbered[]) { seen.clear(); messages.forEach(m => seen.set(m.seq, m)); },
+    accept(message: number | Numbered) {
+      const m = typeof message === "number" ? { seq: message } : message;
+      const kept = seen.get(m.seq);
+      if (!kept) { seen.set(m.seq, m); return true; }
+      const a = fingerprint(kept), b = fingerprint(m);
+      if (a !== undefined && b !== undefined && a !== b) onCollision?.(m.seq, kept, m);
+      return false;
+    },
+    truncate(from: number) { for (const seq of seen.keys()) if (seq >= from) seen.delete(seq); },
   };
 }
 

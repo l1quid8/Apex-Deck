@@ -71,6 +71,24 @@ test('message deduplication permits reused numbers after clear and revert', () =
   assert.equal(seen.accept(0), true);
 });
 
+test('a replayed message is dropped quietly but a different one under the same number is reported', () => {
+  const collisions = [];
+  const seen = mod.messageDedup((seq, kept, dropped) => collisions.push({ seq, kept: kept.text, dropped: dropped.text }));
+  const human = { kind: 'human' };
+  const deck = { kind: 'bot', id: 'deck' };
+  seen.restore([{ seq: 0, speaker: human, text: 'hello' }]);
+  assert.equal(seen.accept({ seq: 0, speaker: human, text: 'hello' }), false, 'a replay of a saved message');
+  assert.deepEqual(collisions, [], 'replays are expected during recovery');
+  assert.equal(seen.accept({ seq: 0, speaker: deck, text: "A's changes couldn't be folded in" }), false, 'still dropped');
+  assert.deepEqual(collisions, [{ seq: 0, kept: 'hello', dropped: "A's changes couldn't be folded in" }]);
+  assert.equal(seen.accept({ seq: 1, speaker: deck, text: 'next' }), true);
+  assert.equal(seen.accept(1), false, 'a bare number cannot be compared, so it is never reported');
+  assert.equal(collisions.length, 1);
+  seen.truncate(1);
+  assert.equal(seen.accept({ seq: 1, speaker: human, text: 'edited' }), true, 'a rewound number is free again');
+  assert.equal(collisions.length, 1);
+});
+
 test('a failed room load stays pending until a later successful recovery', async () => {
   let succeeds = false;
   const recovery = mod.createRoomRecovery({load:async()=>{if(!succeeds)throw Error('drop');return 'ok';},apply:()=>{},fail:()=>{}});
