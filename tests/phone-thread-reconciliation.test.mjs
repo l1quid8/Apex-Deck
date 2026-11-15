@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { emptyCatalog, parseChatList, withListedRooms, promotedWork } from '../src/chatCatalog.ts';
 import React from 'react';
-import { reconcileWorkPanes } from '../src/workThreadMetadata.ts';
+import { reconcileWorkPanes, workPresentation } from '../src/workThreadMetadata.ts';
 import { withoutTrashedPanes, closeTrashedPanes } from '../src/threadTrash.ts';
 import { sidebarSections } from '../src/sidebarModel.ts';
 import { pruneOpenThreads, openKeyParts } from '../src/phone/openThreads.ts';
@@ -14,7 +14,9 @@ const { transform } = createRequire(import.meta.url)('sucrase');
 const source = fs.readFileSync(new URL('../src/phone/PhoneApp.tsx', import.meta.url), 'utf8');
 const start = source.indexOf('  const savedPanes =');
 const end = source.indexOf('  // The queue outlives renders', start);
-const code = transform(source.slice(start, end), { transforms: ['typescript'] }).code;
+const presentationStart = source.indexOf('  const presentation = useMemo(() => workPresentation');
+const presentationEnd = source.indexOf('  const phoneHost =', presentationStart);
+const code = transform(source.slice(presentationStart, presentationEnd) + source.slice(start, end), { transforms: ['typescript'] }).code;
 const workspaces = [{ id: 'w', name: 'Project', path: '/repo' }];
 const pane = { id: 'thread', workspaceId: 'w', kind: 'chat', title: 'Saved title' };
 
@@ -37,14 +39,28 @@ function phone() {
     session: { version: 1, workspaces, panes: [pane], profiles: [] }, workspaces,
     catalog: emptyCatalog(), seen: {}, visibleAssistantRegistry: {}, links: [{ id: 'local', status: 'online' }], onlineKey: 'local',
     sessionRef: { current: null }, SESSION_KEY: 'session', localStorage: { setItem() {} },
-    reconcileWorkPanes, withoutTrashedPanes, closeTrashedPanes, sidebarSections,
+    reconcileWorkPanes, workPresentation, withoutTrashedPanes, closeTrashedPanes, sidebarSections,
     mergeAssistantPanes: panes => panes, linkOf: id => env.links.find(link => link.id === id),
     useMemo: fn => fn(), useEffect: fn => fn(),
     useRef: value => refs[cursor++] ?? (refs[cursor - 1] = { current: value }),
     setSession: change => { env.session = typeof change === 'function' ? change(env.session) : change; },
   };
-  return { env, render() { cursor = 0; return new Function('env', `with(env){${code};return {panes,sections}}`)(env); } };
+  return { env, render() { cursor = 0; return new Function('env', `with(env){${code};return {panes,sections,workspaces}}`)(env); } };
 }
+
+test('actual phone saved Work presentation hides a missing folder and restores its original history', () => {
+  const p = phone();
+  p.env.catalog = listed([{cwdAvailable:false}], 1);
+  const view = p.render();
+  assert.deepEqual(view.workspaces, []);
+  assert.deepEqual(view.panes, []);
+  assert.deepEqual(view.sections.projects, []);
+  assert.equal(p.env.session.workspaces[0].id, 'w');
+  assert.equal(p.env.session.panes[0].id, 'thread');
+  p.env.catalog = listed([{cwdAvailable:true}], 2);
+  assert.equal(p.render().sections.projects[0].panes[0].id, 'thread');
+  assert.equal(p.env.session.panes.length, 1);
+});
 
 test('phone project, pinned and archive lists hide Trash while preserving the saved pane', () => {
   const p = phone();

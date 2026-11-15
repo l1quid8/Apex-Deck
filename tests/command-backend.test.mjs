@@ -284,7 +284,7 @@ test('phone methods send the phone commands', async () => {
 
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
-  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onRoomRunnerChanged', 'onSessionChanged', 'onAssistantTasksChanged',
+  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onRoomRunnerChanged', 'onSessionChanged', 'onThreadCatalogChanged', 'onAssistantTasksChanged',
     'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'modelMetrics', 'roomBotModels', 'agentBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

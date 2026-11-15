@@ -109,6 +109,72 @@ fn options() -> Value {
 }
 
 #[tokio::test]
+async fn desktop_and_cli_share_project_and_thread_lifecycle_across_restart() {
+    use apex_cli::{controller::{dispatch,action},state::Action};
+    let mut fixture = Fixture::start();
+    let cwd = fixture.data.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/desktop-lifecycle-client.mjs");
+    let desktop_data = fixture.data.clone();
+    let desktop = |phase: &str| {
+        let result = Command::new("node").args(["--experimental-strip-types"]).arg(&script).arg(&desktop_data).arg(phase).arg(&cwd).output().unwrap();
+        assert!(result.status.success(),"desktop {phase}: {}",String::from_utf8_lossy(&result.stderr));
+        assert!(String::from_utf8_lossy(&result.stdout).contains("DESKTOP_LIFECYCLE_OK"));
+    };
+    let (client,mut events,_) = fixture.connect().await;
+    desktop("create");
+    let c = context(&fixture,&client,Some("desktop-thread".into())).await;
+    assert!(c.threads.iter().any(|r|r.id=="desktop-thread"&&r.title=="Desktop thread"));
+    let other = fixture.data.join("other-project");
+    std::fs::create_dir_all(&other).unwrap();
+    for target in [&other,&cwd] {
+        let c = context(&fixture,&client,Some("desktop-thread".into())).await;
+        let menu = dispatch(&format!("/folder {}",target.display()),&c).await.unwrap().menu.unwrap();
+        assert!(matches!(menu.choices[0].action,Action::Dismiss));
+        let Action::Rpc{cmd,args,..} = &menu.choices[1].action else {panic!("folder change must use shared import")};
+        assert_eq!(cmd,"room_import");
+        assert!(args["expectedRoomRevision"].is_u64());
+        client.request(cmd,args.clone()).await.unwrap();
+        if target == &other {desktop("folder");}
+    }
+    let c = context(&fixture,&client,Some("desktop-thread".into())).await;
+    dispatch("/rename CLI renamed thread",&c).await.unwrap();
+    dispatch("/projects rename CLI project",&c).await.unwrap();
+    desktop("edit");
+    assert!(!apex_cli::controller::threads(&client).await.unwrap().iter().any(|r|r.id=="desktop-thread"),"desktop Trash evicts CLI row");
+    let trash = dispatch("/threads trash",&c).await.unwrap().menu.unwrap();
+    assert_eq!(trash.choices[0].label,"Desktop renamed thread");
+    // The fixture supplies verified UI admission; production CLI execution of
+    // this protected command additionally requires the signed interactive CLI.
+    let Action::Rpc {cmd,args,..} = &trash.choices[0].action else { panic!("restore must use the shared command") };
+    assert_eq!(cmd,"room_set_trashed");
+    assert_eq!(args,&json!({"id":"desktop-thread","trashed":false}));
+    client.request(cmd,args.clone()).await.unwrap();
+    let c = context(&fixture,&client,Some("desktop-thread".into())).await;
+    let delete = dispatch("/delete permanent",&c).await.unwrap().menu.unwrap();
+    assert!(matches!(delete.choices[0].action,Action::Dismiss),"destruction always defaults to Cancel");
+    action(&delete.choices[1].action,&c).await.unwrap();
+    let remove = dispatch("/projects remove",&c).await.unwrap().menu.unwrap();
+    assert!(matches!(remove.choices[0].action,Action::Dismiss));
+    action(&remove.choices[1].action,&c).await.unwrap();
+    // Consume the command notifications through an independent subscription.
+    let mut notified = false;
+    while let Ok(event) = events.try_recv() { notified |= event["event"] == "thread-catalog-changed"; }
+    assert!(notified,"other clients receive lifecycle refresh events");
+    desktop("deleted");
+    drop(client);
+    fixture.restart();
+    let (client,_restarted_events,_) = fixture.connect().await;
+    let listed = client.request("project_list",json!({})).await.unwrap();
+    let restored = listed["projects"].as_array().unwrap().iter().find(|p|p["path"].as_str()==cwd.to_str()).unwrap();
+    assert_eq!(restored["name"],"Desktop renamed project");
+    assert_eq!(restored["removed"],false,"desktop re-add reaches CLI after restart");
+    assert!(apex_cli::controller::threads(&client).await.unwrap().is_empty());
+    assert!(cwd.is_dir());
+}
+
+#[tokio::test]
 async fn terminal_attachments_copy_to_the_originating_room_and_are_shared_without_rereading_the_source() {
     use apex_cli::attachments::{append_message, import, stage};
     let mut fixture = Fixture::start();

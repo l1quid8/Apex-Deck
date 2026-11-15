@@ -26,13 +26,32 @@ test('CLI Work discovers projects on their host without reopening removed projec
   assert.deepEqual(discoverWorkspaces([], both, () => false, () => 'unused', () => ''), []);
 });
 import { DESKTOP_PROMOTES_KEY, PROMOTES_KEY, promoteHolds, promoteKey, readPromoteTickets, settleForPromote } from '../src/chatPromote.ts';
-import { chatRows, emptyCatalog, findRoom, parseChatList, withListedRooms } from '../src/chatCatalog.ts';
+import { chatRows, emptyCatalog, findRoom, parseChatList, promotedWork, withListedRooms } from '../src/chatCatalog.ts';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';
 
 const memory = () => { const data = new Map(); return { getItem: k => data.has(k) ? data.get(k) : null, setItem: (k, v) => data.set(k, String(v)), removeItem: k => data.delete(k), data }; };
 const listed = (catalog, hostId, rooms, at = 1) => withListedRooms(catalog, hostId, hostId, parseChatList(hostId, { rooms }), at);
 const chat = (id, extra = {}) => ({ id, kind: 'chat', title: id, participants: [{ id: 'jigga', display_name: 'Jigga' }], updatedAt: 1, ...extra });
 const bot = (backend, extra = {}) => ({ id: 'jigga', display_name: 'Jigga', persona: '', access: 'read', effort: null, backend, ...extra });
+
+test('missing Work folders do not recreate projects or panes, but restored and unknown folders remain discoverable', () => {
+  const rows = [
+    {id:'stale',kind:'work',cwd:'/removed',cwdAvailable:false},
+    {id:'live',kind:'work',cwd:'/live',cwdAvailable:true},
+    {id:'legacy',kind:'work',cwd:'/legacy'},
+  ];
+  const catalog = listed(emptyCatalog(), 'local', rows);
+  let n = 0;
+  const projects = discoverWorkspaces([], catalog, () => true, () => `ws-${++n}`, path => path);
+  assert.deepEqual(projects.map(w => w.path), ['/live', '/legacy']);
+  const removed = {id:'removed',name:'Removed',path:'/removed'};
+  assert.deepEqual(reconcileWorkPanes([], [removed], catalog, emptyCatalog(), () => true), []);
+  assert.deepEqual(promotedWork(catalog, 'local').map(row => row.id).sort(), ['legacy', 'live']);
+  const saved = [{id:'stale',workspaceId:'removed',kind:'chat',title:'Keep history',closed:true}];
+  assert.equal(reconcileWorkPanes(saved, [removed], catalog, emptyCatalog(), () => true)[0].title, 'Keep history');
+  const restored = listed(catalog, 'local', [{...rows[0],cwdAvailable:true}], 2);
+  assert.deepEqual(discoverWorkspaces([], restored, () => true, () => 'restored', path => path).map(w => w.path), ['/removed']);
+});
 
 test('two machines with the same room id stay two chats, with two outboxes', () => {
   let catalog = listed(emptyCatalog(), 'local', [chat('shared')]);

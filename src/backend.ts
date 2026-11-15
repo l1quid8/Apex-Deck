@@ -48,6 +48,7 @@ export interface Backend {
   /** The saved session changed, by this app or another client such as the phone. */
   onAssistantTasksChanged?(cb: (payload: unknown) => void): Promise<Unlisten>;
   onSessionChanged?(cb: (session: AppSession) => void): Promise<Unlisten>;
+  onThreadCatalogChanged?(cb: () => void): Promise<Unlisten>;
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;

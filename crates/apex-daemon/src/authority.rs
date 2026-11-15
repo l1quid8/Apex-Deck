@@ -54,6 +54,8 @@ pub fn command_needs(command: &Command) -> Need {
         // Read-only.
         VoiceCapabilities {} | PostCapabilities {} => read(GlobalRead),
         SessionLoad {} => read(GlobalRead),
+        ProjectList {} => read(Global),
+        ProjectAdd { .. } | ProjectRename { .. } | ProjectRemove { .. } => full(Global),
         MonitorList {} | MonitorGet { .. } => read(Global),
         AssistantTasksList { .. } => read(Global),
         // D3: the personal assistant holds one conversation across everything,
@@ -195,6 +197,7 @@ pub fn command_needs(command: &Command) -> Need {
 /// What a device needs to receive `event`.
 pub fn event_needs(event: &HostEvent) -> Need {
     match event {
+        HostEvent::ThreadCatalogChanged {} => read(Scope::Global),
         HostEvent::AssistantTasksChanged { .. } => read(Scope::Global),
         HostEvent::PersonalChanged { .. } => full(Scope::Global),
         HostEvent::RoomRunnerChanged { room, .. } => read(thread(room)),
@@ -296,6 +299,10 @@ pub fn filter_chat_list(threads: &Threads, list: Value) -> Value {
     match list {
         Value::Array(items) => Value::Array(filter_array(allowed, items)),
         Value::Object(mut obj) => {
+            obj.remove("projects");
+            if let Some(Value::Array(ids)) = obj.remove("deletedThreads") {
+                obj.insert("deletedThreads".into(),Value::Array(ids.into_iter().filter(|id|id.as_str().is_some_and(|id|allowed.iter().any(|a|a==id))).collect()));
+            }
             if let Some(Value::Array(items)) = obj.remove("rooms") {
                 obj.insert("rooms".into(), Value::Array(filter_array(allowed, items)));
             }
@@ -526,6 +533,7 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         ProviderSetupBegin { .. } => None,
         BackendStop { .. } => None,
         ChatList {} => None,
+        ProjectList {} | ProjectAdd { .. } | ProjectRename { .. } | ProjectRemove { .. } => None,
         ChatUpdateMeta { .. } => None,
         ChatRemoveParticipant { .. } => None,
         ChatMessageClaim { .. } => None,
@@ -759,6 +767,10 @@ pub(crate) mod tests {
             ("agent_bot_models", Some((ReadOnly, "global_read")), json!({ "participant": "deep" })),
             ("model_metrics", Some((ReadOnly, "global_read")), json!({ "model": "m", "efforts": [], "current": null, "local": false })),
             ("chat_profiles", Some((ReadOnly, "global_read")), json!({})),
+            ("project_list", Some((ReadOnly, "global")), json!({})),
+            ("project_add", Some((Full, "global")), json!({"path":"/repo"})),
+            ("project_rename", Some((Full, "global")), json!({"path":"/repo","name":"Renamed"})),
+            ("project_remove", Some((Full, "global")), json!({"path":"/repo"})),
             ("agent_profile_list", Some((ReadOnly, "global_read")), json!({})),
             ("agent_profile_save", Some((Full, "global")), json!({"handle":"null","name":"Null","provider":"codex","model":null,"instructions":"","access":"ask","expectedRevision":0})),
             ("provider_setup_begin", Some((Full, "global")), json!({"provider":"codex","method":"reuse"})),

@@ -558,6 +558,8 @@ export interface ThreadStatus {
 }
 
 export interface Workspace {
+  /** Revision of the owning host's durable project name/removal record. */
+  hostProjectRevision?: number;
   id: string;
   name: string;
   /** Folder on disk. Empty in the browser demo. */

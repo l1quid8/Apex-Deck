@@ -967,7 +967,10 @@ impl Host {
     /// Open group chat `id`, restoring saved data before creating a new room.
     /// `cwd` is the workspace folder; command-line participants run there.
     pub fn room_create(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>) -> Result<RoomSnapshot, String> {
-        self.room_open(id, participants, options, cwd, false)
+        let fresh = self.store.room(&id)?.is_none();
+        let snapshot = self.room_open(id, participants, options, cwd, false)?;
+        if fresh { self.emit(HostEvent::ThreadCatalogChanged {}); }
+        Ok(snapshot)
     }
 
     /// This machine's saved bot profiles, or its detected agents on a
@@ -1077,7 +1080,16 @@ impl Host {
 
     /// Every saved chat room or promoted work room with an entry in `chat-meta-v1.json`.
     pub fn chat_list(&self) -> Result<serde_json::Value, String> {
-        Ok(serde_json::json!({ "rooms": self.store.chat_list()? }))
+        self.store.chat_catalog()
+    }
+
+    pub(crate) fn project_change(&self, path: String, name: Option<String>, action: &str) -> Result<crate::storage::ProjectEntry, String> {
+        let project = self.store.change_project(path, name, action)?;
+        self.emit(HostEvent::ThreadCatalogChanged {});
+        Ok(project)
+    }
+    pub fn project_list(&self) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({"projects": self.store.project_list()?}))
     }
 
     /// Create or reopen talk-only chat room `id`.
@@ -1128,6 +1140,7 @@ impl Host {
                 }
             }
         })?;
+        self.emit(HostEvent::ThreadCatalogChanged {});
         Ok(snapshot)
     }
 
@@ -1143,7 +1156,9 @@ impl Host {
         let _action=match &handle {Some(h)=>Some(h.checkout_action.try_write().map_err(|_|"Wait for the current room action to finish.")?),None=>None};
         if self.store.room(&id)?.is_none() {return Err("Thread unavailable.".into())}
         if handle.as_ref().is_some_and(|h|h.runtime.busy() || h.has_pending_human_waits()) {return Err("Stop work and resolve outstanding requests before moving this thread to Trash.".into())}
-        self.store.update_chat_meta(&id,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})
+        let meta = self.store.update_chat_meta(&id,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})?;
+        self.emit(HostEvent::ThreadCatalogChanged {});
+        Ok(meta)
     }
 
     pub fn chat_update_meta(
@@ -1153,6 +1168,8 @@ impl Host {
         archived: Option<bool>,
         moved_to: Option<Option<crate::storage::ChatMovedTo>>,
     ) -> Result<crate::storage::ChatRoomMeta, String> {
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        self.store.require_room_not_deleted(&id)?;
         if self.store.room(&id)?.is_none() && !self.rooms.lock().unwrap().contains_key(&id) {
             return Err(format!("no group chat with id {id}"));
         }
@@ -1160,7 +1177,7 @@ impl Host {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        self.store.update_chat_meta(&id, |meta| {
+        let meta = self.store.update_chat_meta(&id, |meta| {
             if let Some(t) = title {
                 meta.title_managed=true;
                 let trimmed = t.trim();
@@ -1174,7 +1191,9 @@ impl Host {
                 meta.moved_to = m;
             }
             meta.updated_at = meta.updated_at.max(now);
-        })
+        })?;
+        self.emit(HostEvent::ThreadCatalogChanged {});
+        Ok(meta)
     }
 
     /// A read may attach to saved authority, but cannot create a new manifest.
@@ -1192,6 +1211,7 @@ impl Host {
         saved_only: bool,
     ) -> Result<RoomSnapshot, String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
+        self.store.require_room_not_deleted(&id)?;
         if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some_and(|entry| entry.is_tombstoned()) { return Err("This execution thread was deleted.".into()); }
         if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
             let existing = handle.checkpoint.lock().unwrap().snapshot.clone();
@@ -3064,7 +3084,9 @@ impl Host {
     }
 
     pub fn session_load(&self) -> Result<Option<serde_json::Value>, String> {
-        Ok(self.session()?.map(|session| session.to_value()))
+        let mut session = self.session()?.map(|session| session.to_value());
+        if let Some(session) = &mut session { self.store.reconcile_lifecycle_session(session)?; }
+        Ok(session)
     }
 
     /// Replace the whole session and tell every client.
@@ -3214,6 +3236,7 @@ impl Host {
         };
         let result = combine_result(result, crate::journal::remove(&self.paths.data.join("attachments"), &id));
         drop(_lifecycle);
+        self.emit(HostEvent::ThreadCatalogChanged {});
         // Publish after the durable tombstone, including when later cleanup
         // fails. Every client must evict this worker, not just the deleting UI.
         // Assistant-initiated deletion may hold the personal authority lock;
@@ -3487,6 +3510,13 @@ impl Host {
 
     /// Switch a chat to a registered checkout of its own repository, retaining history.
     pub fn room_mount(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
+        let mounted = self.room_mount_inner(id.clone(),cwd)?;
+        self.store.update_chat_meta(&id,|_|{})?;
+        self.emit(HostEvent::ThreadCatalogChanged {});
+        Ok(mounted)
+    }
+
+    fn room_mount_inner(&self, id: String, cwd: String) -> Result<serde_json::Value, String> {
         // Full gate for mount: only Full bots are gated per Task 6
         let target_for_gate = PathBuf::from(&cwd);
         let has_full = {
@@ -3553,7 +3583,21 @@ impl Host {
     /// `replace` the saved room is written over in one step and only then
     /// closed, so a failed write leaves it whole and open. Artifacts stay.
     pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool) -> Result<(), String> {
+        self.room_import_checked(id,snapshot,cwd,replace,None)
+    }
+
+    pub fn room_import_checked(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool, expected_room_revision: Option<u64>) -> Result<(), String> {
+        self.room_import_inner(id.clone(),snapshot,cwd,replace,expected_room_revision)?;
+        self.store.update_chat_meta(&id,|_|{})?;
+        self.emit(HostEvent::ThreadCatalogChanged {});
+        Ok(())
+    }
+
+    fn room_import_inner(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool, expected_room_revision: Option<u64>) -> Result<(), String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if expected_room_revision.is_some() && (!replace || self.store.room_deleted(&id)?) {
+            return Err("This thread changed. Refresh it before choosing another folder.".into());
+        }
         if snapshot.kind.is_chat() {
             return Err("Use chat_import for talk-only chat rooms.".into());
         }
@@ -3568,7 +3612,7 @@ impl Host {
         clean.changes.clear();
         clean.baseline = None;
         let saved = SavedRoom { mounts: vec![], cwd: cwd.filter(|c| !c.is_empty()), snapshot: clean };
-        if !replace {
+        if !replace || self.store.room_deleted(&id)? {
             if self.rooms.lock().unwrap().contains_key(&id) {
                 return Err("a thread with that id already exists".into());
             }
@@ -3579,13 +3623,24 @@ impl Host {
             // Under the checkpoint lock no event of the old room saves over the
             // new copy, and once it is written none ever will.
             Ok(handle) => {
-                let _checkpoint = handle.checkpoint.lock().unwrap();
-                *handle.journal_hint.lock().unwrap() = None;
-                crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
-                self.store.save_room(&id, &saved)?;
-                handle.deleted.store(true, Ordering::SeqCst);
+                let _action = handle.checkout_action.try_write().map_err(|_|"room-busy: Wait for the current room action to finish.")?;
+                // Both admission routes share this transcript lock. Validate
+                // and retire at the commit boundary, so a post either commits
+                // first (and prevents the move) or sees the retired handle.
+                handle.runtime.retire_if_idle(|room| {
+                    if expected_room_revision.is_some_and(|expected|handle.observation_revision.load(Ordering::SeqCst)!=expected || !room.transcript().is_empty()) {
+                        return Err("This thread changed or started. Refresh it before choosing another folder.".into());
+                    }
+                    let _checkpoint = handle.checkpoint.lock().unwrap();
+                    *handle.journal_hint.lock().unwrap() = None;
+                    crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
+                    self.store.save_room(&id, &saved)?;
+                    handle.deleted.store(true, Ordering::SeqCst);
+                    Ok(())
+                })?;
             }
             Err(_) => {
+                if expected_room_revision.is_some() { return Err("Reopen this thread before choosing another folder.".into()); }
                 crate::journal::remove(&self.paths.data.join("attachments"), &id)?;
                 self.store.save_room(&id, &saved)?;
             },
@@ -4785,6 +4840,25 @@ mod host_tests {
         let tree = projects.join("tree");
         git(&["worktree", "add", "-b", "feature", tree.to_str().unwrap()]);
         (repo.canonicalize().unwrap(), tree.canonicalize().unwrap())
+    }
+
+    #[test]
+    fn checked_folder_import_waits_for_an_accepted_client_action() {
+        let (host, runtime, data) = host("import-checkout-gate");
+        let (repo, tree) = mount_repo(&data);
+        let snapshot = host.room_create("r".into(),vec![],RoomOptions::default(),Some(repo.to_string_lossy().into())).unwrap();
+        let handle = host.handle("r").unwrap();
+        runtime.block_on(async {
+            let read = handle.room.lock().await;
+            let result = host.room_import_checked("r".into(),snapshot.clone(),Some(tree.to_string_lossy().into()),true,Some(0));
+            assert!(result.is_err(),"an in-flight transcript admission must fence folder replacement");
+            assert_eq!(host.store.room("r").unwrap().unwrap().cwd.as_deref(),repo.to_str());
+            drop(read);
+        });
+        host.room_import_checked("r".into(),snapshot,Some(tree.to_string_lossy().into()),true,Some(0)).unwrap();
+        assert_eq!(host.store.room("r").unwrap().unwrap().cwd.as_deref(),tree.to_str());
+        host.shutdown(); drop(host); drop(runtime);
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]

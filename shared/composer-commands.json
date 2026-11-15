@@ -185,7 +185,7 @@
   {
     "key": "new",
     "label": "/new",
-    "detail": "New thread · choose Work or Chat",
+    "detail": "New thread \u00b7 choose Work or Chat",
     "surfaces": [
       "cli"
     ],
@@ -373,6 +373,54 @@
     ],
     "handler": "detach",
     "argumentMode": "optional",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
+    "key": "projects",
+    "label": "/projects",
+    "detail": "List projects; add <folder>, rename <name>, or remove the current project",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "projects",
+    "argumentMode": "optional",
+    "scope": "client",
+    "appCommand": null
+  },
+  {
+    "key": "delete",
+    "label": "/delete",
+    "detail": "Move this thread to shared Trash; permanent deletes it forever",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "delete",
+    "argumentMode": "optional",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
+    "key": "archive",
+    "label": "/archive",
+    "detail": "Archive this thread on every interface",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "archive",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
+    "key": "folder",
+    "label": "/folder",
+    "detail": "Change this Work thread folder without moving files",
+    "surfaces": [
+      "cli"
+    ],
+    "handler": "folder",
+    "argumentMode": "required",
     "scope": "thread",
     "appCommand": null
   }

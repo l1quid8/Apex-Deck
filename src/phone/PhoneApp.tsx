@@ -99,7 +99,7 @@ import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuatio
 import { ThreadList } from "./ThreadList";
 import { chatOutboxRows, chatRights, chatRoute, machineThreadKey, mayPostIn, pickOpenPane, projectChats, threadKey, type ChatRights } from "./chatRoutes";
 import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets } from "../chatPromote.ts";
-import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedRooms, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
+import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedChatResponse, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
 import { PhoneArtifacts } from "./ArtifactSheet";
 import { LockRow } from "./LockRow";
@@ -117,7 +117,8 @@ import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
-import { reconcileWorkPanes } from "../workThreadMetadata.ts";
+import { reconcileWorkPanes, workPresentation } from "../workThreadMetadata.ts";
+import { changeProject } from "../projectLifecycle.ts";
 import { closeTrashedPanes, withoutTrashedPanes } from "../threadTrash.ts";
 import { stepDraft } from "./stepDraft";
 import { edgeSwipe, neighbour, roomFits, stripPlace, swipeBlocked, swipeIntent, swipeLostCapture, swipeRelease } from "./threadSwipe";
@@ -785,7 +786,8 @@ export function PhoneApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onlineKey]);
 
-  const workspaces = session?.workspaces ?? [];
+  const presentation = useMemo(() => workPresentation(session?.workspaces ?? [], session?.panes ?? [], catalog, hostId => linkOf(hostId)?.status === 'online'), [session, catalog, onlineKey]);
+  const workspaces = presentation.workspaces;
   const phoneHost = (id: string) => hosts.find((host) => host.machine.id === id) ?? null;
   // A reader per thread, kept stable so a picture's tile doesn't reload on every render.
   const pictureReaders = useRef(new Map<string, (path: string, by: string | null) => Promise<ArrayBuffer>>());
@@ -817,8 +819,8 @@ export function PhoneApp() {
     const previous = priorWorkCatalog.current;
     priorWorkCatalog.current = catalog;
     if (!session) return;
-    const reconciled = reconcileWorkPanes(session.panes, workspaces, catalog, previous, (hostId) => linkOf(hostId)?.status === "online");
-    const nextPanes = closeTrashedPanes(reconciled, workspaces, catalog);
+    const reconciled = reconcileWorkPanes(session.panes, session.workspaces, catalog, previous, (hostId) => linkOf(hostId)?.status === "online");
+    const nextPanes = closeTrashedPanes(reconciled, session.workspaces, catalog);
     if (nextPanes === session.panes) return;
     // Host metadata updates the phone's cache, never writes a stale layout back to the Mac.
     const next = { ...session, panes: nextPanes };
@@ -827,7 +829,7 @@ export function PhoneApp() {
     try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* memory still updates */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalog, savedPanes, workspaces, onlineKey]);
-  const humanPanes = useMemo(() => (savedPanes ?? []).map((pane) => (seen[pane.id] ?? 0) > (pane.activeAt ?? 0) ? { ...pane, activeAt: seen[pane.id] } : pane), [savedPanes, seen]);
+  const humanPanes = useMemo(() => presentation.panes.map((pane) => (seen[pane.id] ?? 0) > (pane.activeAt ?? 0) ? { ...pane, activeAt: seen[pane.id] } : pane), [presentation.panes, seen]);
   const panes = useMemo(() => withoutTrashedPanes(mergeAssistantPanes(humanPanes, visibleAssistantRegistry), workspaces, catalog), [humanPanes, visibleAssistantRegistry, workspaces, catalog]);
   const sections = useMemo(() => sidebarSections(panes, workspaces, "threads", new Set()), [panes, workspaces]);
   // The queue outlives renders, so it reads the machines and who is working as they are now.
@@ -1048,8 +1050,9 @@ export function PhoneApp() {
     const host = phoneHost(hostId);
     if (!host || !host.supports("chat_rooms") || toLink(host.connection.get().status) !== "online") return null;
     const askedAt = Date.now();
-    const rows = parseChatList(hostId, await host.backend.call<unknown>("chat_list", {}));
-    setCatalog((current) => withListedRooms(current, hostId, host.machine.name, rows, askedAt));
+    const reply = await host.backend.call<unknown>("chat_list", {});
+    const rows = parseChatList(hostId, reply);
+    setCatalog((current) => withListedChatResponse(current, hostId, host.machine.name, reply, askedAt));
     return rows;
   }
   // Each machine is asked for its list when it comes online and whenever the person is back on the list.
@@ -2264,6 +2267,7 @@ export function PhoneApp() {
         const host = phoneHost(hostId);
         if (!host || toLink(host.connection.get().status) !== "online") throw new Error("Connect the project's machine before removing it.");
         if (!canStartOn(hostId)) throw new Error("Removing a project needs Full access on its machine.");
+        await changeProject(host.backend,workspace,'remove');
         await stopProjectPanes(current.panes.filter((pane) => pane.workspaceId === id), host.backend, (paneId) => {
           const queue = queues.current.get(queueKey(hostId, paneId));
           if (queue) {
@@ -2299,6 +2303,10 @@ export function PhoneApp() {
     if (!removed) return;
     if (projectUndoTimer.current) clearTimeout(projectUndoTimer.current);
     try {
+      const workspace = removed.undo.workspace;
+      const host = phoneHost(workspaceHost(workspace));
+      if (!host) throw new Error('Reconnect the project machine before restoring it.');
+      await changeProject(host.backend,workspace,'add');
       await saveSession((current) => restoreProjectTo(current, removed.undo));
       setProjectUndo((current) => current === removed ? null : current);
     } catch (error) {
@@ -2464,7 +2472,11 @@ export function PhoneApp() {
   async function useFolder(path: string) {
     if (!browse) return;
     const browsing = browse;
-    const nameOf = browsing.projectName ? () => browsing.projectName! : folderName;
+    const host = phoneHost(browsing.hostId);
+    if (!host) throw new Error('Reconnect the project machine before adding a folder.');
+    const confirmed = await changeProject(host.backend,{id:'',path,name:browsing.projectName ?? folderName(path)},'add',browsing.projectName ?? undefined);
+    path = confirmed.path;
+    const nameOf = () => confirmed.name;
     const next = await saveSession((current) => ({ ...current, workspaces: addFolders(current.workspaces, [path], () => `ws-${Date.now().toString(36)}`, nameOf, browsing.hostId, browsing.family).list }));
     setBrowse(null);
     const workspace = next.workspaces.find((item) => item.path === path && workspaceHost(item) === browsing.hostId);

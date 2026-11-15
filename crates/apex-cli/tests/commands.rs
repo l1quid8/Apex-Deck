@@ -1,5 +1,22 @@
 use apex_cli::commands::{catalog, parse_input, runner_input, ParsedInput};
 #[test]
+fn shared_lifecycle_commands_parse_without_a_selected_thread() {
+    for (text, handler) in [("/projects rename New project", "projects"), ("/delete", "delete"), ("/archive", "archive"), ("/folder /tmp", "folder")] {
+        assert!(matches!(parse_input(text),ParsedInput::Command{key,..} if key==handler),"{text}");
+    }
+}
+
+#[test]
+fn stale_session_rows_do_not_resurrect_deleted_remote_or_removed_project_threads() {
+    use apex_cli::controller::merge_threads;
+    use serde_json::json;
+    let session = json!({"workspaces":[{"id":"w","path":"/repo"},{"id":"remote","path":"/repo","hostId":"vps"}],"panes":[{"id":"deleted","kind":"chat","workspaceId":"w"},{"id":"remote-only","kind":"chat","workspaceId":"remote"},{"id":"draft","kind":"chat","workspaceId":"w"}]});
+    let list = json!({"rooms":[{"id":"saved","kind":"work","cwd":"/repo","title":"Saved"}],"projects":[{"path":"/repo","removed":true}],"deletedThreads":["deleted"]});
+    assert!(merge_threads(&session,&list).is_empty());
+    let list = json!({"rooms":[{"id":"saved","kind":"work","cwd":"/repo","title":"Saved"}],"projects":[{"path":"/repo","removed":false}],"deletedThreads":["deleted"]});
+    assert_eq!(merge_threads(&session,&list).iter().map(|r|r.id.as_str()).collect::<Vec<_>>(),vec!["saved"],"CLI lists saved host rooms, not desktop-only drafts");
+}
+#[test]
 fn registry_is_dispatchable_and_longest_match_wins() {
     let rows = catalog().unwrap();
     assert!(rows.iter().any(|r| r.key == "threads"));

@@ -113,7 +113,7 @@ import { threadPaneStatus, workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestions, removeCounts, removeProjectQuestion, removeQuestion, restoredArrangements, savedArrangements, savedPanes, stillRunning, assistantsRunning } from "./closing";
 import { remoteProfileEdit, remoteSessionEdit } from "./sessionSync";
-import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import { activeAfter, addFolders, listedPanes, openThreadIds, removeWorkspacePanes, reopenThreads, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
 import { WorkspaceTasks } from "./WorkspaceTasksScreen";
@@ -139,7 +139,8 @@ import { TalkOnlyChat } from "./TalkOnlyChat.tsx";
 import { ThreadTrash } from "./ThreadTrashPanel";
 import { closeTrashedPanes, withoutTrashedPanes } from "./threadTrash.ts";
 import { findRoom, type ChatEntry } from "./chatCatalog.ts";
-import { discoverWorkspaces } from "./workThreadMetadata.ts";
+import { discoverWorkspaces, workPresentation } from "./workThreadMetadata.ts";
+import { changeProject } from "./projectLifecycle.ts";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A terminal counts as working if it produced output this recently. */
@@ -256,9 +257,32 @@ export function App() {
   const saveQueue = useRef(Promise.resolve());
   const [backend, setBackend] = useState<Backend | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  /** Saved machines, for the sidebar's server names and Copy folder path. */
+  const [hostList, setHostList] = useState<HostEntry[]>([]);
+  /** Short notes at the bottom: what was copied, archived, saved. Some offer Undo. */
+  const [toasts, setToasts] = useState<{ id: number; text: string; undo?: () => void }[]>([]);
+  const toastSeq = useRef(0);
+  const toast = useCallback((text: string, undo?: () => void) => {
+    const id = ++toastSeq.current;
+    setToasts((all) => [...all.slice(-2), { id, text, undo }]);
+    setTimeout(() => setToasts((all) => all.filter((t) => t.id !== id)), undo ? UNDO_MS : TOAST_MS);
+  }, []);
+  // Catalog availability is needed before restoring saved projects into the UI.
+  const chatMachines = useMemo(() => backend ? [{ id: "local", name: LOCAL_HOST_NAME }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
+  const chats = useDesktopChats({
+    machines: chatMachines,
+    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
+    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
+    onError: (text) => toast(text),
+  });
   const [records, setRecords] = useState<{ workspaces: Workspace[]; panes: Pane[]; importedHostSessions: string[] }>({workspaces: loadWorkspaces(), panes: [], importedHostSessions: []});
-  const { workspaces, panes: savedPanesForSession, importedHostSessions } = records;
+  const { workspaces: savedWorkspaces, panes: savedPanesForSession, importedHostSessions } = records;
   const panes = savedPanesForSession;
+  // Presentation is derived, never saved over the complete session. Restoring
+  // a folder (or reconnecting an unknown host) must retain its original records.
+  const workOnlineKey = chats.machines.filter(machine => chats.online(machine.id)).map(machine => machine.id).join('\n');
+  const presentation = useMemo(() => workPresentation(savedWorkspaces, panes, chats.catalog, chats.online), [savedWorkspaces, panes, chats.catalog, workOnlineKey]);
+  const workspaces = presentation.workspaces;
   const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
   const globalTaskFeed = useRef<{ rows: WorkspaceTaskRow[]; problems: string[]; personalSources: import('./workspaceTasks.ts').PersonalTaskSource[]; delegationTargets: import('./taskManagerDelegation.ts').TaskDelegationTarget[] }>({ rows: [], problems: [], personalSources: [], delegationTargets: [] });
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
@@ -297,17 +321,17 @@ export function App() {
   const keepAssistantThread=(pane:Pane&{hostId?:string})=>setKeptAssistantThreads(old=>{const next=new Set(old);next.add(assistantThreadKey(pane));localStorage.setItem('apex-assistant-kept-threads',JSON.stringify([...next]));return next;});
   const allViewPanes = useMemo(() => {
     const closed = new Set(closedTaskPanes);
-    return mergeAssistantPanes(panes, currentAssistantRegistry).map((pane) => {
+    return mergeAssistantPanes(presentation.panes, currentAssistantRegistry).map((pane) => {
       if (!pane.assistantTaskId) return pane;
       const title = taskPaneTitles[pane.id];
       return { ...pane, ...(title ? { title } : {}), ...(closed.has(pane.id) ? { closed: true } : {}) };
     });
-  }, [panes, currentAssistantRegistry, closedTaskPanes, taskPaneTitles]);
+  }, [presentation.panes, currentAssistantRegistry, closedTaskPanes, taskPaneTitles]);
   /** The newest lists, for work that finishes after a folder picker or a host call. */
-  const latest = useRef({ workspaces, panes });
+  const latest = useRef({ workspaces: savedWorkspaces, panes });
   const saveTag = useRef(Math.random().toString(36).slice(2));
   const saveSeq = useRef(0);
-  latest.current = { workspaces, panes };
+  latest.current = { workspaces: savedWorkspaces, panes };
   const setWorkspaces = useCallback((next: Workspace[] | ((old: Workspace[]) => Workspace[])) => setRecords(r => ({ ...r, workspaces: typeof next === "function" ? next(r.workspaces) : next })), []);
   const setPanes = useCallback((next: Pane[] | ((old: Pane[]) => Pane[])) => setRecords(r => ({ ...r, panes: typeof next === "function" ? next(r.panes) : next })), []);
   const setChatFolder = useCallback((id: string, cwd: string) => setPanes(all => all.map(p => p.id === id && p.mount !== cwd ? {...p, mount:cwd} : p)), [setPanes]);
@@ -484,14 +508,6 @@ export function App() {
   const removeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   /** The pane head whose ⋯ menu is open. The sidebar keeps its own menus. */
   const [headMenu, setHeadMenu] = useState<{ id: string; anchor: MenuAnchor; opener: HTMLElement | null } | null>(null);
-  /** Short notes at the bottom: what was copied, archived, saved. Some offer Undo. */
-  const [toasts, setToasts] = useState<{ id: number; text: string; undo?: () => void }[]>([]);
-  const toastSeq = useRef(0);
-  const toast = useCallback((text: string, undo?: () => void) => {
-    const id = ++toastSeq.current;
-    setToasts((all) => [...all.slice(-2), { id, text, undo }]);
-    setTimeout(() => setToasts((all) => all.filter((t) => t.id !== id)), undo ? UNDO_MS : TOAST_MS);
-  }, []);
   /** Agents renamed in the Agents tab, for every thread to rename its copy of. */
   const [copyRenames, setCopyRenames] = useState<CopyRename[]>([]);
   const renameSeq = useRef(0);
@@ -531,8 +547,6 @@ export function App() {
     noteRenames(profiles, changed);
     setProfiles((list) => upsertProfiles(list, changed));
   };
-  /** Saved machines, for the sidebar's server names and Copy folder path. */
-  const [hostList, setHostList] = useState<HostEntry[]>([]);
   /** Edit connection… (or Add a server), while open. */
   const [connectionDialog, setConnectionDialog] = useState<ConnectionMode | null>(null);
   /** A started thread pointed somewhere else: it asks New thread or Fork there. With `why`, it couldn't move and only New thread is offered. */
@@ -764,6 +778,7 @@ export function App() {
       if (folders.length > 0) {
         // Open folders named on the command line, reusing any already listed
         // and bringing back any removed from the list.
+        for (const path of folders) await changeProject(b,{id:'',name:folderName(path),path},'add');
         const { list, ids } = addFolders(known, folders, () => newId("ws"), folderName);
         setWorkspaces(list);
         setActiveWorkspace(ids[0] ?? null);
@@ -780,7 +795,7 @@ export function App() {
   // For the phone: which daemon each saved server is, so a server it paired by
   // QR code lines up with the projects filed under this Mac's id for it.
   const hostIds = useMemo(() => macHostIds(hostList), [hostList]);
-  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements: savedArrangements(withPoppedOut(arrangements, poppedOut), workspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1, hostIds };
+  const currentSession: AppSession = { version: 1, workspaces: savedWorkspaces, panes: savedPanes(panes), profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements: savedArrangements(withPoppedOut(arrangements, poppedOut), savedWorkspaces.map(w => w.id)), rightPanel: withPoppedTabs(panel, poppedTabs), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1, hostIds };
   sessionRef.current = currentSession;
   useEffect(() => {
     if (!backend?.machines || !backend.hosts) return;
@@ -802,14 +817,14 @@ export function App() {
 
   useEffect(() => {
     if (!backend) return;
-    void backend.hosts?.references?.(workspaces.map(workspaceHost)).catch(() => {});
-    saveWorkspaces(workspaces);
+    void backend.hosts?.references?.(savedWorkspaces.map(workspaceHost)).catch(() => {});
+    saveWorkspaces(savedWorkspaces);
     // Tagged so its echo from the helper is told apart from the phone's edits.
     const session = { ...sessionRef.current!, savedBy: `${saveTag.current}:${++saveSeq.current}` };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions, hostIds]);
+  }, [backend, savedWorkspaces, panes, profiles, profileRevision, activeWorkspace, focusedPane, section, arrangements, panel, poppedOut, poppedTabs, detailsOpen, detailsCollapsed, importedHostSessions, hostIds]);
 
   // The phone saves threads straight to the Mac's session. Take its edits in
   // before the next save here writes over them.
@@ -932,15 +947,6 @@ export function App() {
     return threadPaneStatus(threadStatus[pane.id], attention[pane.id]);
   };
 
-  // Chats: talk-only threads with no folder, listed by each machine (desktopChats.ts).
-  // Empty until the backend is ready, so each machine's listeners mount once it can be reached.
-  const chatMachines = useMemo(() => backend ? [{ id: "local", name: LOCAL_HOST_NAME }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name }))] : [], [hostList, backend]);
-  const chats = useDesktopChats({
-    machines: chatMachines,
-    backendOf: (id) => { if (!backend) return null; try { return hostBackend(id); } catch { return null; } },
-    connectionOf: (id) => { try { return backend?.machines?.connection(id) ?? null; } catch { return null; } },
-    onError: (text) => toast(text),
-  });
   const priorWorkCatalog=useRef(chats.catalog);
   useEffect(()=>{
     const previous=priorWorkCatalog.current;priorWorkCatalog.current=chats.catalog;
@@ -1120,8 +1126,28 @@ export function App() {
       setActiveWorkspace(workspace.id);
       return;
     }
-    await pickWorkspaceFolder({ pick: () => (backend.machines?.get(hostId) ?? backend).pickFolder(),
-      update: setWorkspaces, select: setActiveWorkspace, id: newId("ws"), nameOf: folderName, hostId });
+    const route = backend.machines?.get(hostId) ?? backend;
+    try {
+      const path = await route.pickFolder();
+      if (!path) return;
+      const saved = await changeProject(route,{id:newId('ws'),name:folderName(path),path},'add');
+      setWorkspaces(list => {
+        const added = addFolders(list,[saved.path],()=>saved.id,()=>saved.name,hostId);
+        queueMicrotask(()=>setActiveWorkspace(added.ids[0]));
+        return added.list.map(w => w.id === added.ids[0] ? {...w,name:saved.name,hidden:false,hostProjectRevision:saved.hostProjectRevision} : w);
+      });
+      void chats.refresh(hostId);
+    } catch (error) { toast(String(error)); }
+  };
+
+  const renameProject = async (id: string, name: string) => {
+    const workspace = latest.current.workspaces.find(w => w.id === id);
+    if (!workspace || !name.trim()) return;
+    try {
+      const saved = await changeProject(hostBackend(workspaceHost(workspace)),workspace,'rename',name);
+      setWorkspaces(list => list.map(w => w.id === id ? {...w,...saved} : w));
+      void chats.refresh(workspaceHost(workspace));
+    } catch (error) { toast(String(error)); }
   };
 
   /** Take a workspace out of the app, with a few seconds to Undo. Its folder
@@ -1133,15 +1159,19 @@ export function App() {
       own.filter((p) => p.kind === "chat").map((p) => threadStatus[p.id]),
     );
     const reopen = openThreadIds(own, workspace.id);
-    const remove = () => {
+    const remove = async () => {
+      let saved: Workspace;
+      try { saved = await changeProject(hostBackend(workspaceHost(workspace)),workspace,'remove'); }
+      catch (error) { toast(String(error)); return; }
       for (const pane of own) if (pane.kind === "terminal") lastOutput.current.delete(pane.id);
       setPanes((list) => removeWorkspacePanes(list, workspace.id));
-      setWorkspaces((list) => setHidden(list, workspace.id, true));
+      setWorkspaces((list) => list.map(w => w.id === workspace.id ? {...w,...saved} : w));
       setFocusedPane((id) => (id && own.some((p) => p.id === id) ? null : id));
       setMaximized((id) => (id && own.some((p) => p.id === id) ? null : id));
       clearTimeout(removeTimer.current);
       setUndoableRemove({ id: workspace.id, name: workspace.name, reopen });
       removeTimer.current = setTimeout(() => setUndoableRemove((u) => (u?.id === workspace.id ? null : u)), UNDO_MS);
+      void chats.refresh(workspaceHost(workspace));
     };
     // The sidebar's Remove project… always asks; other removals ask only while something runs.
     const asked = always ? removeProjectQuestion(workspace.name, counts) : removeQuestion(workspace.name, counts);
@@ -1149,20 +1179,19 @@ export function App() {
     else remove();
   };
 
-  // A removed project leaves the app for good once its Undo runs out. Its folder on disk is never touched.
-  useEffect(() => {
-    const gone = new Set(workspaces.filter((w) => w.hidden && w.id !== undoableRemove?.id).map((w) => w.id));
-    if (gone.size === 0) return;
-    setWorkspaces((list) => list.filter((w) => !gone.has(w.id)));
-    setPanes((list) => list.filter((p) => !gone.has(p.workspaceId)));
-  }, [workspaces, undoableRemove]);
+  // Keep removal records after Undo expires so discovery cannot add them back.
 
   /** Undo a removal: the row and its threads come back. Its terminals can't. */
-  const undoRemove = () => {
+  const undoRemove = async () => {
     if (!undoableRemove) return;
-    clearTimeout(removeTimer.current);
     const { id, reopen } = undoableRemove;
-    setWorkspaces((list) => setHidden(list, id, false));
+    const workspace = latest.current.workspaces.find(w => w.id === id);
+    if (!workspace) return;
+    let saved: Workspace;
+    try { saved = await changeProject(hostBackend(workspaceHost(workspace)),workspace,'add'); }
+    catch (error) { toast(String(error)); return; }
+    clearTimeout(removeTimer.current);
+    setWorkspaces((list) => list.map(w => w.id === id ? {...w,...saved} : w));
     setPanes((list) => reopenThreads(list, reopen));
     setActiveWorkspace(id);
     setUndoableRemove(null);
@@ -2304,7 +2333,7 @@ export function App() {
   const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
   /** `work` is the machine's own answer to a move, which the list may not hold yet. */
   const openWorkThread = (row: ChatEntry, workId: string, work?: ChatEntry) => {
-    const place = workThreadPlace(workspaces, panes, row.hostId, work ?? findRoom(chats.catalog, row.hostId, workId), () => newId("ws"), folderName);
+    const place = workThreadPlace(savedWorkspaces, panes, row.hostId, work ?? findRoom(chats.catalog, row.hostId, workId), () => newId("ws"), folderName);
     if (place === "unlisted") { toast(`${chats.machineName(row.hostId)} hasn't listed that Work thread yet. Try again once it's connected.`); return; }
     if (place === "clash") { toast("A thread with the same id from another machine is open. Close it to open this one."); return; }
     if (place.added || place.restored) setWorkspaces(place.workspaces);
@@ -2321,7 +2350,7 @@ export function App() {
   const restoreTrashedThread = async (row: ChatEntry) => {
     await chats.setTrashed(row, false);
     if (row.kind === "work") {
-      const place = workThreadPlace(workspaces, panes, row.hostId, {...row,trashedAt:undefined}, () => newId("ws"), folderName);
+      const place = workThreadPlace(savedWorkspaces, panes, row.hostId, {...row,trashedAt:undefined}, () => newId("ws"), folderName);
       if (typeof place === "string") {
         toast(place === "clash" ? `Restored on ${chats.machineName(row.hostId)}. Close the thread with the same id on the other machine before opening this one.` : `Restored on ${chats.machineName(row.hostId)}. Open it from its project.`);
         return;
@@ -2637,11 +2666,12 @@ export function App() {
   const projectOn = async (hostId: string, title: string, name?: string, family?: string): Promise<Workspace | null> => {
     const path = await hostBackend(hostId).pickPath("directory", title);
     if (!path) return null;
-    const nameOf = (p: string) => name ?? folderName(p);
-    const made = addFolders(latest.current.workspaces, [path], () => newId("ws"), nameOf, hostId, family);
+    const confirmed = await changeProject(hostBackend(hostId),{id:'',path,name:name ?? folderName(path)},'add',name);
+    const nameOf = () => confirmed.name;
+    const made = addFolders(latest.current.workspaces, [confirmed.path], () => newId("ws"), nameOf, hostId, family);
     const id = made.ids[0];
     // Merged into the newest list: a background import may have landed while the picker was open.
-    setWorkspaces((list) => addFolders(list, [path], () => id, nameOf, hostId, family).list);
+    setWorkspaces((list) => addFolders(list, [confirmed.path], () => id, nameOf, hostId, family).list);
     return made.list.find((w) => w.id === id) ?? null;
   };
   /** The Work bar of one thread: its project, every place it could run, and the actions there. */
@@ -3112,7 +3142,7 @@ export function App() {
             onOpenPane={pane=>{setOpenChat(null);setMainView({kind:"workspace"});focusPane(pane);}}
             onTogglePin={(pane) => { if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId) runPaneMenu(pane, "pin", "rail"); }}
             onRenamePane={(id, title) => { if (viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) setTaskPaneTitle(id, title); else renamePane(id, title); }}
-            onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
+            onRenameWorkspace={(id, name) => void renameProject(id, name)}
             onProjectClick={(workspace) => {
               setOpenChat(null);
               setMainView({kind:"workspace"});
