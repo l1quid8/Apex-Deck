@@ -1471,7 +1471,30 @@ Record every run with `scripts/measure-claude-cache.py` (after Task 8 Step 0) in
 
 ## Probe results
 
-(Task 1 and Task 9 Step 5 fill this in.)
+### Task 1, run 2026-11-16 (Claude Code 2.1.325 at `~/.local/bin/claude`, codex-cli 0.166.0, macOS 27.2, `--model haiku`, cwd a scratch folder)
+
+Scratch files were in the session scratchpad, not committed. Step 3b could not be run under `--permission-mode bypassPermissions` (the harness refused to start Claude that way); it ran under `--permission-mode default --allowedTools 'Bash(sleep 20 && echo done)'` instead, which reaches the same question.
+
+| Question | Answer | Evidence |
+|---|---|---|
+| **1a** Two `result` events on one `claude -p --input-format stream-json` process | **Yes** | 14 output lines; `result` at turn 1 (`"result":"OK"`) and turn 2 (`"result":"PINEAPPLE."`), same `session_id` 692bd719. Process exited 0 when stdin closed. |
+| **1b** Does `system/init` repeat | **Yes, once per turn** (2 `init` events, same `session_id`, `model: claude-haiku-5-5`). Hook and `commands_changed` events only before the first. |
+| **1c** `total_cost_usd` per turn or cumulative | **Cumulative.** Turn 1: 0.0089864. Turn 2 result: 0.0153860. Turn 2 alone (30,529 1h-cache-write + 28,813 cache-read + 11 out) prices to 0.0064, and 0.0089864 + 0.0064 = 0.01539. |
+| **1c** `usage` per turn or cumulative | **Per turn.** Turn 1 usage: cache_creation 44,921, cache_read 0. Turn 2 usage: cache_creation 30,529, cache_read 28,813. `num_turns` is 1 in both results. |
+| **1d** (unasked, matters for Task 5/9) Did the cache prefix hold across the two turns | **Only partly.** Turn 2 read 28,813 of the 44,921 tokens written in turn 1 and re-wrote 30,529. Something in the prefix changed between turns inside one process (not investigated; candidates: dynamic system-prompt text, the `commands_changed` refresh). Task 5's measurement must look at `cache_read` vs `cache_creation`, not assume a continued turn is all cache hits. |
+| **2** One two-turn process writes exactly one session file | **Yes.** Exactly one new `~/.claude/projects/<cwd>/692bd719-….jsonl` (49 lines) for the Step 1 process; `grep -c '"type":"user"'` = 2, both turns present. |
+| **3a** `control_request` interrupt after 3 s gets a `result`; third turn works | **Yes.** `control_response` `{"subtype":"success","request_id":"i1"}`, then a synthetic user line `[Request interrupted by user]`, then `result` with **`subtype: "error_during_execution"`, `is_error: true`, `num_turns: 2`, cost 0**. A third user turn then ran normally (`result` success, `"READY"`). **Design note:** an interrupt looks like a failed turn in the result stream. The rule "every failed turn closes the session" must exempt an interrupt Deck itself sent, or Stop will always cost a fresh start. |
+| **3b** Anything printed after `result` while stdin stays open | **Yes, a whole unprompted turn.** Turn 1: Bash `run_in_background:true` started, assistant said STARTED, `result` success. Then, with no further input: `task_summary`, `task_updated`, `task_notification`, `background_tasks_changed`, a second **`system/init`**, a new assistant message ("The background command finished with exit code 0…"), a second **`result`** (success), and two `ui_invalidate` events. **Design note (Review Focus 3):** a kept-open Claude program can emit `init`/`assistant`/`result` on its own when a background task finishes. The live-session turn loop must ignore or attribute results that arrive while no Deck turn is open, and must not post them as a reply or count them against the next turn. |
+| **4a** Codex second turn on the same `threadId` answers PINEAPPLE | **Yes.** `thread/start` `{"ephemeral":true,"sandbox":"read-only","approvalPolicy":"never"}` → thread 01a1e378-67ca; turn 1 `agentMessage` "OK"; turn 2 (same threadId) `agentMessage` "PINEAPPLE". Both `turn/completed`. |
+| **4b** `thread/tokenUsage/updated`: `total` grows, `last` is per request | **Yes.** After turn 1: total 24,728 / last 24,728 (cached 8,192). After turn 2: total 59,211 / last 34,483 (cached 24,576 of 34,476 input). So a continued Codex turn still sends the full context (34k) but mostly from cache. |
+| **4c** Nothing new under `~/.codex/sessions` | **Yes.** 0 files newer than the marker before and after. |
+| **5** Methods printed in 2 idle minutes after turn 2 | **None.** Last message was `turn/completed` at t=17.7 s; nothing until stdin was closed at t≈138 s. (Before/during turns, non-turn notifications seen: `configWarning`, `remoteControl/status/changed`, `account/updated`, `account/rateLimits/updated`, `mcpServer/startupStatus/updated` ×many, `hook/started`/`hook/completed`, `turn/moderationMetadata`.) |
+
+**Gate: passed.** Both CLIs take a second turn on one process/thread with memory of the first. Cost is cumulative on Claude (`total_cost_usd`), so Task 5 keeps its per-turn cost baseline; token `usage` is already per turn and needs none. Codex `total` accumulates as the design assumed, `last` is the per-turn figure.
+
+**Two facts the later tasks must absorb:** (1) an interrupt ends in `result` `error_during_execution`, so Stop must not be treated as a failure that closes the program; (2) a Claude program can produce an unsolicited `init`+`result` after its turn ends (background task completion), so the turn loop needs an "idle, not ours" state for results outside an open Deck turn. (3, softer) The cache prefix did not fully hold between two turns of one process; measure before assuming the continued-turn saving.
+
+Observation, not a result: on `thread/start` the app-server started every MCP server from the user's global `~/.codex/config.toml` (eleven, several failing to sign in). Deck's `codex_server.rs` passes its own config, so this is a probe artifact, but the startup chatter is ~40 notifications per thread start.
 
 ## Results
 
