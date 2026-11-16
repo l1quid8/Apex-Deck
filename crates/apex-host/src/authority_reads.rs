@@ -16,6 +16,7 @@ struct Pending {
 
 #[derive(Default)]
 pub(crate) struct ReadGate {
+    admission: Mutex<()>,
     access: RwLock<()>,
     pending: Mutex<Option<Arc<Pending>>>,
 }
@@ -26,7 +27,9 @@ fn poisoned() -> io::Error {
 
 impl ReadGate {
     pub(crate) fn read(&self, load: impl FnOnce() -> io::Result<Vec<u8>>) -> io::Result<Vec<u8>> {
+        let admission = self.admission.lock().map_err(|_| poisoned())?;
         let _access = self.access.read().map_err(|_| poisoned())?;
+        drop(admission);
         let (pending, owner) = {
             let mut active = self.pending.lock().map_err(|_| poisoned())?;
             match active.as_ref() {
@@ -65,7 +68,12 @@ impl ReadGate {
     }
 
     pub(crate) fn write(&self) -> io::Result<RwLockWriteGuard<'_, ()>> {
-        self.access.write().map_err(|_| poisoned())
+        // A waiting writer holds admission so new readers cannot extend
+        // its wait on platforms whose RwLock favors readers.
+        let admission = self.admission.lock().map_err(|_| poisoned())?;
+        let access = self.access.write().map_err(|_| poisoned())?;
+        drop(admission);
+        Ok(access)
     }
 }
 
@@ -144,6 +152,39 @@ mod tests {
             assert!(gate.access.try_read().is_err());
         }
         assert_eq!(gate.read(|| Ok(vec![value.load(Ordering::SeqCst) as u8])).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn a_waiting_writer_runs_before_new_readers() {
+        let gate = Arc::new(ReadGate::default());
+        let value = Arc::new(AtomicUsize::new(1));
+        let (started, began) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let first_gate = gate.clone();
+        let first = thread::spawn(move || first_gate.read(|| {
+            started.send(()).unwrap();
+            released.recv().unwrap();
+            Ok(vec![1])
+        }).unwrap());
+        began.recv_timeout(Duration::from_secs(5)).unwrap();
+        let writer_gate = gate.clone();
+        let writer_value = value.clone();
+        let writer = thread::spawn(move || {
+            let _write = writer_gate.write().unwrap();
+            writer_value.store(2, Ordering::SeqCst);
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while gate.admission.try_lock().is_ok() {
+            assert!(Instant::now() < deadline, "writer should wait at the admission gate");
+            thread::yield_now();
+        }
+        let next_gate = gate.clone();
+        let next_value = value.clone();
+        let next = thread::spawn(move || next_gate.read(|| Ok(vec![next_value.load(Ordering::SeqCst) as u8])).unwrap());
+        release.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), vec![1]);
+        writer.join().unwrap();
+        assert_eq!(next.join().unwrap(), vec![2]);
     }
 
     #[test]
