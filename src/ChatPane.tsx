@@ -31,7 +31,9 @@ import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaiti
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
-import { responsePin, pinSource, pinText, pinsBefore, pinsAfterClear } from "./messagePins";
+import { useThreadPinActions } from "./thread/useThreadPinActions";
+import { messagePinChange, type PinChange } from "./thread/threadActions";
+import { pinSource, pinText, pinsBefore, pinsAfterClear } from "./messagePins";
 import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
@@ -655,14 +657,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const timer = setTimeout(() => setRemovedNote(null), REMOVED_NOTE_MS);
     return () => clearTimeout(timer);
   }, [removedNote]);
-  const [unpinning, setUnpinning] = useState(false);
-  const unpinPending = useRef(false);
-  const removePin = (index: number) => {
-    if (unpinPending.current) return;
-    unpinPending.current = true; setUnpinning(true);
-    backend.roomUnpin(pane.id, index).then(setPins)
-      .catch((error) => notify(`Could not unpin: ${String(error)}`, "error"))
-      .finally(() => { unpinPending.current = false; setUnpinning(false); });
+  const { actions: pinActions, pending: unpinning } = useThreadPinActions();
+  const changePin = (change: PinChange) => {
+    void pinActions.apply(backend, pane.id, change, setPins)
+      .catch(error => notify(`Could not ${change.kind}: ${String(error)}`, "error"));
   };
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   /** Each running turn: when it began, the steps taken so far, and whether
@@ -2070,19 +2068,12 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";
     const goBackHint = busy ? "Stop the agents first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
     const copiedHere = copied === message.seq;
-    const pinIndex = pins.findIndex(pin => pinSource(pin) === message.seq);
-    const pinned = pinIndex >= 0;
+    const pinChange = messagePinChange(pins, message.seq, message.text);
+    const pinned = pinChange.kind === "unpin";
     const canPin = message.speaker.kind === "bot" || message.speaker.kind === "human";
     const pinTarget = message.speaker.kind === "human" ? "your message" : "response";
     const pinLabel = `${pinned ? "Unpin" : "Pin"} ${pinTarget}`;
-    const togglePin = () => {
-      if (unpinPending.current) return;
-      if (pinned) return removePin(pinIndex);
-      unpinPending.current = true; setUnpinning(true);
-      void backend.roomPin(pane.id, responsePin(message.seq, message.text)).then(setPins)
-        .catch(error => notify(`Could not pin: ${String(error)}`, "error"))
-        .finally(() => { unpinPending.current = false; setUnpinning(false); });
-    };
+    const togglePin = () => changePin(pinChange);
     const expanded = messageMenu === message.seq;
     const disclosure = <button type="button" className="msg-action action-disclosure" data-message-more={message.seq}
       title={expanded ? "Hide message actions" : "Show message actions"}
@@ -3716,7 +3707,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         <div className="pins-list">
         {pins.map((pin, index) => <div className="pin" key={pin}>
           {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => jumpToMessage(pinSource(pin)!)}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
-          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning || chatReadOnly} onClick={() => removePin(index)}>×</button>
+          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning || chatReadOnly} onClick={() => changePin({ kind: "unpin", index })}>×</button>
         </div>)}
         </div>
       </details> : <p className="muted">No pinned responses. Use the pin icon on a model response.</p>);

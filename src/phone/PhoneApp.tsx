@@ -115,7 +115,9 @@ import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
 import { PickedText } from "./PickedText";
 import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
-import { pinSource, pinText, responsePin } from "../messagePins";
+import { useThreadPinActions } from "../thread/useThreadPinActions";
+import { messagePinChange, type PinChange } from "../thread/threadActions";
+import { pinSource, pinText } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
 import { applyHistoryChange, historyConfirmation, planHistoryChange, retryBot } from "../threadHistoryActions";
 import { failedLine, saveGoBackAlways, type GoBack } from "../revertConfirm";
@@ -561,8 +563,7 @@ export function PhoneApp() {
   /** The Retry or Revert question open under a message. */
   const [goingBack, setGoingBack] = useState<GoingBack | null>(null);
   /** A pin or unpin is on its way; one at a time, as on the desktop. */
-  const [pinning, setPinning] = useState(false);
-  const pinPending = useRef(false);
+  const { actions: pinActions, pending: pinning } = useThreadPinActions();
   const [approvalStays, setApprovalStays] = useState<Record<string, boolean>>({});
   const [agents, setAgents] = useState<string[]>([]);
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
@@ -2406,27 +2407,18 @@ export function PhoneApp() {
   function togglePin(paneId: string, message: Message) {
     const shown = roomRef.current;
     if (!shown || shown.id !== paneId) return;
-    const index = shown.pins.findIndex((pin) => pinSource(pin) === message.seq);
-    if (index >= 0) { unpin(paneId, index); return; }
-    if (pinPending.current) return;
-    const host = changeHost("Pinning");
-    if (!host) return;
-    pinPending.current = true; setPinning(true);
-    void host.backend.roomPin(paneId, responsePin(message.seq, splitTldr(message.text).text))
-      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
-      .catch((error) => setNotice(`Could not pin: ${words(error)}`))
-      .finally(() => { pinPending.current = false; setPinning(false); });
+    changePin(paneId, messagePinChange(shown.pins, message.seq, splitTldr(message.text).text));
   }
 
-  function unpin(paneId: string, index: number) {
-    if (pinPending.current) return;
-    const host = changeHost("Unpinning");
+  function changePin(paneId: string, change: PinChange) {
+    if (pinActions.isPending()) return;
+    const host = changeHost(change.kind === "pin" ? "Pinning" : "Unpinning");
     if (!host) return;
-    pinPending.current = true; setPinning(true);
-    void host.backend.roomUnpin(paneId, index)
-      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
-      .catch((error) => setNotice(`Could not unpin: ${words(error)}`))
-      .finally(() => { pinPending.current = false; setPinning(false); });
+    const hostId = openHostId;
+    void pinActions.apply(host.backend, paneId, change, pins => {
+      setRoom(current => current?.id === paneId && screenRef.current.hostId === hostId
+        ? { ...current, pins } : current);
+    }).catch(error => setNotice(`Could not ${change.kind}: ${words(error)}`));
   }
 
   /** Retry on a bot's reply, Revert on your message: delete from there and put this thread's files back. Asks first, as on the desktop. */
@@ -2913,7 +2905,7 @@ export function PhoneApp() {
             onMenu={() => { if (openChat) setChatSheet({ kind: "menu" }); else if (openWork) setChatSheet({ kind: "work-menu", hostId: openWork.hostId, id: openWork.id }); else if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
             pins={openRoom ? openRoom.pins : []}
             pinning={pinning}
-            onUnpin={(index) => { if (openPane) unpin(openPane.id, index); }}
+            onUnpin={(index) => { if (openPane) changePin(openPane.id, { kind: "unpin", index }); }}
             quotes={openKey ? quotes[openKey] ?? [] : []}
             onQuotes={(next) => { if (openKey) setQuotes((all) => ({ ...all, [openKey]: next })); }}
             actions={viewingPending || !openPane ? undefined : {
