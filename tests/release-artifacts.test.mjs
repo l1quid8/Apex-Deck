@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import {
   FIXED_PACKAGE_NAME,
@@ -37,7 +38,8 @@ test('the installable artifact has one fixed name, with one rollback beside it',
 test('the staging name is one the real package builder accepts', MAC_ONLY, () => {
   // package-mac-upgrade.mjs only writes inside release/ and only to *.pkg, so the
   // staged build has to satisfy that same validator rather than work around it.
-  const release = '/Users/tylercaldwell/Downloads/apex-deck/release';
+  const release = fileURLToPath(new URL('../release', import.meta.url));
+  fs.mkdirSync(release, { recursive: true });
   const staging = stagingPackage(release);
   assert.equal(path.extname(staging.pkg), '.pkg');
   assert.equal(path.dirname(staging.pkg), release);
@@ -145,7 +147,8 @@ test('cleanup removes leftovers, frees their size, and never follows a symlink',
 });
 
 test('only disk images backed by this release folder are detached', () => {
-  const release = '/Users/tylercaldwell/Downloads/apex-deck/release';
+  const release = fileURLToPath(new URL('../release', import.meta.url));
+  fs.mkdirSync(release, { recursive: true });
   const plist = {
     images: [
       { 'image-path': `${release}/.temp-abc.dmg`, 'dev-entry': '/dev/disk4' },

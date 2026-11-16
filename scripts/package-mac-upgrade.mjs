@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const release = '/Users/tylercaldwell/Downloads/apex-deck/release';
+const release = fileURLToPath(new URL('../release', import.meta.url));
 const verifier = fileURLToPath(new URL('./verify-protected-bundle.sh', import.meta.url));
 const transaction = fileURLToPath(new URL('./upgrade.py', import.meta.url));
 const EMPTY_MANIFEST = "MANIFEST_JSON = ''";
@@ -98,7 +98,7 @@ export function buildUpgrade(appPath, outputPath) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    if (args.length !== 4 || args[0] !== '--app' || args[2] !== '--output') throw new Error('Usage: node scripts/package-mac-upgrade.mjs --app /path/Apex\u0020Deck.app --output /Users/tylercaldwell/Downloads/apex-deck/release/Apex-Deck-upgrade.pkg');
+    if (args.length !== 4 || args[0] !== '--app' || args[2] !== '--output') throw new Error('Usage: node scripts/package-mac-upgrade.mjs --app /path/Apex\u0020Deck.app --output release/Apex-Deck-upgrade.pkg');
     console.log(JSON.stringify(buildUpgrade(args[1], args[3]), null, 2));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
