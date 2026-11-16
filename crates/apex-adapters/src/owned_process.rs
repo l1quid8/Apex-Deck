@@ -334,6 +334,14 @@ impl Group {
 }
 
 impl OwnedChild {
+    /// Stop an evicted worker immediately; its owner subsequently verifies cleanup.
+    pub(crate) fn signal_tree_kill(&mut self) {
+        #[cfg(unix)]
+        if !self.group.terminated.load(Ordering::SeqCst) { self.group.signal(libc::SIGKILL); }
+        #[cfg(windows)]
+        if !self.group.terminated.load(Ordering::SeqCst) { let _ = self.group.job.terminate(); }
+    }
+
     /// Terminate the owned process group/Job and clear its durable record.
     pub async fn terminate_tree(&mut self) -> Result<(), String> {
         terminate_groups(std::slice::from_ref(&self.group)).await?;
@@ -359,10 +367,7 @@ impl std::ops::DerefMut for OwnedChild {
 }
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if !self.group.terminated.load(Ordering::SeqCst) { self.group.signal(libc::SIGKILL); }
-        #[cfg(windows)]
-        if !self.group.terminated.load(Ordering::SeqCst) { let _ = self.group.job.terminate(); }
+        self.signal_tree_kill();
         if !self.group.manifest_pending.load(Ordering::SeqCst) {
             self.registry.active.lock().unwrap().retain(|group| group.id != self.group.id);
         }

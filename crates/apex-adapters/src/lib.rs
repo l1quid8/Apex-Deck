@@ -15,6 +15,7 @@ mod attachments;
 mod api_info;
 mod catalog;
 mod claude_session;
+mod live_session;
 mod claude_usage;
 mod cli;
 mod gemini_usage;
@@ -93,6 +94,8 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
 /// Where and how command-line participants run.
 #[derive(Debug, Clone, Default)]
 pub struct BuildContext {
+    /// Retain eligible room workers across clean turns.
+    pub live_sessions: bool,
     /// Host watchdog owns silence recovery for this delegated execution room.
     pub watchdog_managed: bool,
     /// Deck's own executable, which Codex runs as an approval hook before
@@ -128,6 +131,14 @@ pub struct BuildContext {
     pub data_dir: Option<PathBuf>,
     /// Observed public IP addresses of this host (e.g. from iroh).
     pub observed_addrs: Vec<std::net::IpAddr>,
+}
+
+impl BuildContext {
+    /// Discard idle workers for this room, and prevent an in-flight turn
+    /// from putting a discarded worker back into the cache.
+    pub fn retire_sessions(&self, bot: Option<&apex_core::ParticipantId>) {
+        if let Some(room) = &self.process_registry { live_session::clear_room(room, bot); }
+    }
 }
 
 /// Create the participant described by `config`. A bot reached through an
@@ -216,6 +227,7 @@ pub fn participant_for_room(
             config.access = Access::Read;
             config.media = None;
             let chat_context = BuildContext {
+                live_sessions: context.live_sessions,
                 watchdog_managed: false,
                 codex_hook: None,
                 cwd: None,
