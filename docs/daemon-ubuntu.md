@@ -135,12 +135,12 @@ account; configuration, candidates, backups and the transaction journal belong
 to root. HTTPS GitHub release metadata and Git fetch identify the release; this
 is a source-build updater, not a signed Linux binary download mechanism.
 
-It preserves the currently deployed Linux room-action workaround and runs a
-real new-thread/Allow/Always-allow regression test before installation. Unknown
-command-admission changes or a maintenance patch that no longer applies refuse
-the release. This deliberately keeps a working older build until its update
-compatibility is reviewed. It does not repair the workaround's existing trust
-boundary between a human and other processes under the same account.
+For releases with native maintenance, the updater verifies the Linux terminal
+and device admission code, then runs focused tests for jail enforcement, phone
+grants, browser access, OAuth renewal and maintenance. Linux CI runs the same
+candidate checks. Historical releases with recognized routing retain their
+reviewed Allow workaround and regression test. Unknown routing defers the
+update for review.
 
 The daemon must support `maintenance_v1`. The root updater creates a short-lived,
 boot-bound request under `/run/apex-deck-update/`; the local-only maintenance API

@@ -17,6 +17,19 @@ def load_updater():
     return module
 
 
+class CandidateAcceptanceTests(unittest.TestCase):
+    def test_native_checks_require_linux_cli_and_confined_device_cases_to_run(self):
+        updater = load_updater()
+        checks = updater.candidate_checks(native_maintenance=True)
+        exact = {argv[-4] for argv, expected in checks if expected == 1 and argv[-3] == "--"}
+        self.assertIn("command::tests::linux_local_cli_admission_saves_real_changes_only_after_the_probe", exact)
+        self.assertIn("protocol::tests::device_access_updates::linux_device_raise_refuses_failed_confinement_without_saving", exact)
+        self.assertNotIn("command::tests::vps_update_allow_compatibility", exact)
+        with self.assertRaisesRegex(RuntimeError, "did not execute"):
+            updater.verify_candidate_result("test result: ok. 0 passed; 0 failed;", 1)
+        self.assertEqual(updater.verify_candidate_result("test result: ok. 1 passed; 0 failed;", 1), 1)
+
+
 class FakeSystem:
     def __init__(self):
         self.events = []
