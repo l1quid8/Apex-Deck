@@ -23,7 +23,7 @@ use apex_core::{
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::ChildStdin;
+use tokio::process::{ChildStdin, ChildStdout};
 use crate::owned_process::OwnedChild;
 
 use crate::events::{EventReader, OutputFormat};
@@ -228,166 +228,196 @@ pub(crate) async fn run_with_images(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_with_computer(
-    mut child: OwnedChild, prompt: &str, cwd: Option<String>, on_progress: ProgressSink<'_>,
+    child: OwnedChild, prompt: &str, cwd: Option<String>, on_progress: ProgressSink<'_>,
     approver: &dyn Approver, after_plan: Option<Access>, tools_disabled: bool,
     images: &[crate::attachments::Image], trusted_computer: bool,
 ) -> std::io::Result<Finished> {
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    let errors = tokio::spawn(async move {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text).await;
-        text
-    });
+    let mut process = ClaudeProcess::new(child);
+    let (reader, gave_up) = process.drive(prompt, cwd, on_progress, approver, after_plan, tools_disabled, images, trusted_computer).await?;
+    process.finish(reader, gave_up).await
+}
 
-    // A prompt larger than the pipe can hold would block here if the
-    // program printed before reading it all; it reads its input first.
-    let mut message = user_message(prompt);
-    message["message"]["content"] = crate::attachments::claude_content(prompt, images);
-    send(&mut stdin, &message).await?;
+/// Own the buffered pipes for the entire process. Each Deck reply gets a new
+/// event reader and borrows the approver supplied for just that reply.
+struct ClaudeProcess {
+    child: OwnedChild,
+    stdin: ChildStdin,
+    lines: tokio::io::Lines<BufReader<ChildStdout>>,
+    errors: tokio::task::JoinHandle<String>,
+    previous_cost_micros: Option<u64>,
+}
 
-    let mut reader = EventReader::new(OutputFormat::ClaudeStream, cwd);
-    let mut lines = BufReader::new(stdout).lines();
-    // Set once the reply is written but helper agents it started are still
-    // working. Their results arrive as a follow-up turn, which only happens
-    // while the program's input stays open.
-    let mut waiting_since: Option<Instant> = None;
-    let mut gave_up = false;
-    loop {
-        if reader.turn_over() {
-            if reader.helpers() == 0 {
-                break;
-            }
-            let since = *waiting_since.get_or_insert_with(Instant::now);
-            reader.await_follow_up();
-            on_progress(Progress::Activity(&helpers_line(
-                reader.helpers(),
-                since.elapsed(),
-            )));
-        }
-        let next = match waiting_since {
-            None => lines.next_line().await?,
-            Some(since) => {
-                if since.elapsed() >= HELPER_LIMIT {
-                    gave_up = true;
+impl ClaudeProcess {
+    fn new(mut child: OwnedChild) -> Self {
+        let stdin = child.stdin.take().expect("stdin was piped");
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let mut stderr = child.stderr.take().expect("stderr was piped");
+        let errors = tokio::spawn(async move {
+            let mut text = String::new();
+            let _ = stderr.read_to_string(&mut text).await;
+            text
+        });
+        Self { child, stdin, lines: BufReader::new(stdout).lines(), errors, previous_cost_micros: Some(0) }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn drive(
+        &mut self, prompt: &str, cwd: Option<String>, on_progress: ProgressSink<'_>,
+        approver: &dyn Approver, after_plan: Option<Access>, tools_disabled: bool,
+        images: &[crate::attachments::Image], trusted_computer: bool,
+    ) -> std::io::Result<(EventReader, bool)> {
+        // A prompt larger than the pipe can hold would block here if the
+        // program printed before reading it all; it reads its input first.
+        let mut message = user_message(prompt);
+        message["message"]["content"] = crate::attachments::claude_content(prompt, images);
+        send(&mut self.stdin, &message).await?;
+
+        let mut reader = EventReader::new(OutputFormat::ClaudeStream, cwd);
+        // Set once the reply is written but helper agents it started are still
+        // working. Their results arrive as a follow-up turn, which only happens
+        // while the program's input stays open.
+        let mut waiting_since: Option<Instant> = None;
+        let mut gave_up = false;
+        loop {
+            if reader.turn_over() {
+                if reader.helpers() == 0 {
                     break;
                 }
-                let wait = HELPER_HEARTBEAT.min(HELPER_LIMIT.saturating_sub(since.elapsed()));
-                match tokio::time::timeout(wait, lines.next_line()).await {
-                    Ok(next) => next?,
-                    Err(_) => {
-                        on_progress(Progress::Activity(&helpers_line(
-                            reader.helpers(),
-                            since.elapsed(),
-                        )));
-                        continue;
+                let since = *waiting_since.get_or_insert_with(Instant::now);
+                reader.await_follow_up();
+                on_progress(Progress::Activity(&helpers_line(
+                    reader.helpers(),
+                    since.elapsed(),
+                )));
+            }
+            let next = match waiting_since {
+                None => self.lines.next_line().await?,
+                Some(since) => {
+                    if since.elapsed() >= HELPER_LIMIT {
+                        gave_up = true;
+                        break;
+                    }
+                    let wait = HELPER_HEARTBEAT.min(HELPER_LIMIT.saturating_sub(since.elapsed()));
+                    match tokio::time::timeout(wait, self.lines.next_line()).await {
+                        Ok(next) => next?,
+                        Err(_) => {
+                            on_progress(Progress::Activity(&helpers_line(
+                                reader.helpers(),
+                                since.elapsed(),
+                            )));
+                            continue;
+                        }
                     }
                 }
-            }
-        };
-        let Some(line) = next else { break };
-        if let Ok(message) = serde_json::from_str::<Value>(&line) {
-            if message["type"] == "system" && message["subtype"] == "init" {
-                if tools_disabled && !trusted_computer && ["mcp_servers", "tools"].iter().any(|key| message[*key].as_array().is_some_and(|items| !items.is_empty())) {
-                    child.terminate_tree().await.map_err(std::io::Error::other)?;
-                    return Err(std::io::Error::other("Model-only Claude advertised native tools or MCP connections; turn refused"));
+            };
+            let Some(line) = next else { break };
+            if let Ok(message) = serde_json::from_str::<Value>(&line) {
+                if message["type"] == "system" && message["subtype"] == "init" {
+                    if tools_disabled && !trusted_computer && ["mcp_servers", "tools"].iter().any(|key| message[*key].as_array().is_some_and(|items| !items.is_empty())) {
+                        self.child.terminate_tree().await.map_err(std::io::Error::other)?;
+                        return Err(std::io::Error::other("Model-only Claude advertised native tools or MCP connections; turn refused"));
+                    }
+                    on_progress(Progress::ToolServers(&crate::mcp::claude_init_servers(&message)));
                 }
-                on_progress(Progress::ToolServers(&crate::mcp::claude_init_servers(&message)));
-            }
-            if message["type"] == "control_request" {
-                let request = &message["request"];
-                // Claude asks the person with AskUserQuestion in every access
-                // mode, Full included (probed 2026-10-06). The questions go
-                // out raw; the room cleans them for display, and the answers
-                // come back matched by position.
-                // A trusted computer call is the one exception to a tool-free turn.
-                let computer_call = trusted_computer && request["subtype"] == "can_use_tool"
-                    && request["tool_name"].as_str().and_then(crate::mcp::claude_tool).is_some_and(|(server, _)| server == crate::computer::SERVER);
-                let reply = if tools_disabled && !computer_call && request["subtype"] == "can_use_tool" {
-                    json!({ "type": "control_response", "response": { "subtype": "success", "request_id": message["request_id"], "response": { "behavior": "deny", "message": "This turn is configured without tools." } } })
-                } else if tools_disabled && !computer_call {
-                    json!({ "type": "control_response", "response": { "subtype": "error", "request_id": message["request_id"], "error": "This turn is configured without tools or control requests." } })
-                } else if request["subtype"] == "can_use_tool"
-                    && request["tool_name"] == "AskUserQuestion"
-                {
-                    on_progress(Progress::Activity("Waiting for your answer"));
-                    let answer = approver.ask(ask_user_questions(&request["input"])).await;
-                    question_response(&message["request_id"], &request["input"], answer)
-                } else if let (true, Some(own)) = (
-                    request["subtype"] == "can_use_tool" && request["tool_name"] == "ExitPlanMode",
-                    after_plan,
-                ) {
-                    // Started by the Plan switch: Claude has a plan and asks
-                    // to start the work. A read-only bot is refused unasked.
-                    let answer = if own == Access::Read {
-                        PlanAnswer { decision: Decision::Reject, note: None }
+                if message["type"] == "control_request" {
+                    let request = &message["request"];
+                    // Claude asks the person with AskUserQuestion in every access
+                    // mode, Full included (probed 2026-10-06). The questions go
+                    // out raw; the room cleans them for display, and the answers
+                    // come back matched by position.
+                    // A trusted computer call is the one exception to a tool-free turn.
+                    let computer_call = trusted_computer && request["subtype"] == "can_use_tool"
+                        && request["tool_name"].as_str().and_then(crate::mcp::claude_tool).is_some_and(|(server, _)| server == crate::computer::SERVER);
+                    let reply = if tools_disabled && !computer_call && request["subtype"] == "can_use_tool" {
+                        json!({ "type": "control_response", "response": { "subtype": "success", "request_id": message["request_id"], "response": { "behavior": "deny", "message": "This turn is configured without tools." } } })
+                    } else if tools_disabled && !computer_call {
+                        json!({ "type": "control_response", "response": { "subtype": "error", "request_id": message["request_id"], "error": "This turn is configured without tools or control requests." } })
+                    } else if request["subtype"] == "can_use_tool"
+                        && request["tool_name"] == "AskUserQuestion"
+                    {
+                        on_progress(Progress::Activity("Waiting for your answer"));
+                        let answer = approver.ask(ask_user_questions(&request["input"])).await;
+                        question_response(&message["request_id"], &request["input"], answer)
+                    } else if let (true, Some(own)) = (
+                        request["subtype"] == "can_use_tool" && request["tool_name"] == "ExitPlanMode",
+                        after_plan,
+                    ) {
+                        // Started by the Plan switch: Claude has a plan and asks
+                        // to start the work. A read-only bot is refused unasked.
+                        let answer = if own == Access::Read {
+                            PlanAnswer { decision: Decision::Reject, note: None }
+                        } else {
+                            let plan = request["input"]["plan"].as_str().unwrap_or("").to_string();
+                            on_progress(Progress::Activity("Waiting for you: start the work?"));
+                            approver
+                                .decide_plan(ProposedAction {
+                                    kind: ActionKind::Plan,
+                                    title: "Start the work?".into(),
+                                    detail: plan,
+                                    expires_at: None,
+                                    risky: false,
+                                })
+                                .await
+                        };
+                        plan_exit_response(&message["request_id"], &request["input"], answer.decision, own, answer.note.as_deref())
+                    } else if request["subtype"] == "can_use_tool" {
+                        let tool = request["tool_name"].as_str().unwrap_or("a tool");
+                        let action = reader.claude_action(tool, &request["input"]);
+                        let decision = match crate::mcp::claude_tool(tool) {
+                            Some(("apex-computer", _)) if trusted_computer => Decision::Approve,
+                            Some((_, name)) if !crate::mcp::needs_approval(name) => Decision::Approve,
+                            _ => {
+                                on_progress(Progress::Activity(&format!(
+                                    "Waiting for approval: {}",
+                                    action.title
+                                )));
+                                approver.decide(action).await
+                            }
+                        };
+                        permission_response(&message["request_id"], &request["input"], decision)
                     } else {
-                        let plan = request["input"]["plan"].as_str().unwrap_or("").to_string();
-                        on_progress(Progress::Activity("Waiting for you: start the work?"));
-                        approver
-                            .decide_plan(ProposedAction {
-                                kind: ActionKind::Plan,
-                                title: "Start the work?".into(),
-                                detail: plan,
-                                expires_at: None,
-                                risky: false,
-                            })
-                            .await
+                        // Something else it wants from its host. Say so plainly
+                        // rather than leave it waiting.
+                        json!({ "type": "control_response", "response": {
+                            "subtype": "error", "request_id": message["request_id"], "error": "Apex Deck does not support this request"
+                        } })
                     };
-                    plan_exit_response(&message["request_id"], &request["input"], answer.decision, own, answer.note.as_deref())
-                } else if request["subtype"] == "can_use_tool" {
-                    let tool = request["tool_name"].as_str().unwrap_or("a tool");
-                    let action = reader.claude_action(tool, &request["input"]);
-                    let decision = match crate::mcp::claude_tool(tool) {
-                        Some(("apex-computer", _)) if trusted_computer => Decision::Approve,
-                        Some((_, name)) if !crate::mcp::needs_approval(name) => Decision::Approve,
-                        _ => {
-                            on_progress(Progress::Activity(&format!(
-                                "Waiting for approval: {}",
-                                action.title
-                            )));
-                            approver.decide(action).await
-                        }
-                    };
-                    permission_response(&message["request_id"], &request["input"], decision)
-                } else {
-                    // Something else it wants from its host. Say so plainly
-                    // rather than leave it waiting.
-                    json!({ "type": "control_response", "response": {
-                        "subtype": "error", "request_id": message["request_id"], "error": "Apex Deck does not support this request"
-                    } })
-                };
-                send(&mut stdin, &reply).await?;
-                continue;
+                    send(&mut self.stdin, &reply).await?;
+                    continue;
+                }
             }
+            report(reader.push(&format!("{line}\n")), on_progress);
         }
-        report(reader.push(&format!("{line}\n")), on_progress);
-    }
-    report(reader.finish(), on_progress);
-    if gave_up {
-        reader.add_note("(Helpers were still working after 30 minutes, so this reply was handed in without them.)");
+        report(reader.finish(), on_progress);
+        if gave_up {
+            reader.add_note("(Helpers were still working after 30 minutes, so this reply was handed in without them.)");
+        }
+
+        reader.settle_claude_cost(&mut self.previous_cost_micros);
+        Ok((reader, gave_up))
     }
 
-    // With its input closed and the turn over, the program exits by itself.
-    // Shutting down MCP servers, hooks or background shells can hold it
-    // past the grace period; a turn that already ended is still a reply.
-    drop(stdin);
-    let (status, killed) = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(status) => (status?, false),
-        Err(_) => {
-            let _ = child.kill().await;
-            (child.wait().await?, true)
-        }
-    };
-    let cleanup = child.terminate_tree().await.err();
-    Ok(Finished {
-        success: cleanup.is_none() && (status.success() || (killed && (reader.turn_over() || gave_up))),
-        status: status.to_string(),
-        stderr: errors.await.unwrap_or_default(),
-        cleanup_error: cleanup,
-        reader,
-    })
+    async fn finish(mut self, reader: EventReader, gave_up: bool) -> std::io::Result<Finished> {
+        // With its input closed and the turn over, the program exits by itself.
+        // Shutting down MCP servers, hooks or background shells can hold it
+        // past the grace period; a turn that already ended is still a reply.
+        drop(self.stdin);
+        let (status, killed) = match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
+            Ok(status) => (status?, false),
+            Err(_) => {
+                let _ = self.child.kill().await;
+                (self.child.wait().await?, true)
+            }
+        };
+        let cleanup = self.child.terminate_tree().await.err();
+        Ok(Finished {
+            success: cleanup.is_none() && (status.success() || (killed && (reader.turn_over() || gave_up))),
+            status: status.to_string(),
+            stderr: self.errors.await.unwrap_or_default(),
+            cleanup_error: cleanup,
+            reader,
+        })
+    }
 }
 
 /// Names of Claude's connected MCP servers and enabled plugins, without
@@ -646,6 +676,37 @@ mod tests {
             helpers_line(0, Duration::from_secs(0)),
             "Helpers finished, writing up"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn two_clean_replies_on_the_same_process_have_separate_text_and_cost() {
+        let script = r#"read -r first
+case "$first" in *first*) ;; *) exit 1 ;; esac
+echo '{"type":"result","result":"one","total_cost_usd":0.01}'
+read -r second
+case "$second" in *second*) ;; *) exit 1 ;; esac
+echo '{"type":"result","result":"two","total_cost_usd":0.013}'
+cat >/dev/null"#;
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let child = crate::owned_process::Registry::default().spawn(&mut command).unwrap();
+        let mut process = ClaudeProcess::new(child);
+        let (reader, gave_up) = process.drive("first", None, &|_| {}, &apex_core::NoApprover, None, true, &[], false).await.unwrap();
+        assert!(!gave_up);
+        let first = reader.outcome();
+        assert_eq!(first.text, "one");
+        assert_eq!(first.cost_micros, Some(10_000));
+        let (reader, gave_up) = process.drive("second", None, &|_| {}, &apex_core::NoApprover, None, true, &[], false).await.unwrap();
+        let finished = process.finish(reader, gave_up).await.unwrap();
+        assert!(finished.success);
+        let second = finished.reader.outcome();
+        assert_eq!(second.text, "two");
+        assert_eq!(second.cost_micros, Some(3_000));
     }
 
     /// A stand-in for Claude Code: the first turn starts a helper and ends,

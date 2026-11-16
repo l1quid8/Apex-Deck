@@ -238,6 +238,14 @@ impl EventReader {
         self.turn_over
     }
 
+    /// Convert Claude's latest session cost to the cost of this Deck reply.
+    /// A missing previous reading makes just this delta unknown.
+    pub(crate) fn settle_claude_cost(&mut self, previous: &mut Option<u64>) {
+        let current = self.cost_micros;
+        self.cost_micros = current.zip(*previous).and_then(|(end, start)| end.checked_sub(start));
+        *previous = current;
+    }
+
     /// True once the turn has failed, so nothing more will come of it.
     pub(crate) fn failed(&self) -> bool {
         self.failure.is_some()
@@ -479,14 +487,20 @@ impl EventReader {
                 }
                 let usage = &event["usage"];
                 let count = |key: &str| usage[key].as_u64();
-                if let Some(input) = count("input_tokens") {
-                    // Cached input is still input the model was given.
-                    let cached = count("cache_creation_input_tokens").unwrap_or(0)
-                        + count("cache_read_input_tokens").unwrap_or(0);
-                    self.input_tokens = Some(input + cached);
-                }
-                self.output_tokens = count("output_tokens").or(self.output_tokens);
-                self.cached_input_tokens = count("cache_read_input_tokens").or(self.cached_input_tokens);
+                // A helper can produce another CLI turn inside the same Deck reply.
+                // Token usage is per result, unlike the session cost below.
+                let add = |total: &mut Option<u64>, additional: Option<u64>| {
+                    if let Some(value) = additional {
+                        *total = Some(total.unwrap_or(0).saturating_add(value));
+                    }
+                };
+                let input = count("input_tokens").map(|input| {
+                    input.saturating_add(count("cache_creation_input_tokens").unwrap_or(0))
+                        .saturating_add(count("cache_read_input_tokens").unwrap_or(0))
+                });
+                add(&mut self.input_tokens, input);
+                add(&mut self.output_tokens, count("output_tokens"));
+                add(&mut self.cached_input_tokens, count("cache_read_input_tokens"));
                 // Each result reports the cumulative estimated cost for this CLI
                 // conversation. A helper follow-up may emit another result;
                 // retain its newer total rather than adding totals together.
@@ -1605,6 +1619,16 @@ mod tests {
             &[r#"{"type":"result","is_error":false,"result":"Done."}"#],
         );
         assert_eq!(absent.cost_micros, None);
+    }
+
+    #[test]
+    fn claude_background_reply_counts_each_turn_and_the_final_session_cost() {
+        let capture = include_str!("../tests/fixtures/work_steps/claude_background.jsonl");
+        let (_, outcome) = read(OutputFormat::ClaudeStream, &[capture]);
+        assert_eq!(outcome.input_tokens, Some(113_904));
+        assert_eq!(outcome.cached_input_tokens, Some(81_415));
+        assert_eq!(outcome.output_tokens, Some(689));
+        assert_eq!(outcome.cost_micros, Some(12_937));
     }
 
     #[test]
