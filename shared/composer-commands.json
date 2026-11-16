@@ -413,6 +413,16 @@
     "appCommand": null
   },
   {
+    "key": "progress",
+    "label": "/progress",
+    "detail": "Review this thread's live and saved turn progress",
+    "surfaces": ["cli"],
+    "handler": "progress",
+    "argumentMode": "none",
+    "scope": "thread",
+    "appCommand": null
+  },
+  {
     "key": "folder",
     "label": "/folder",
     "detail": "Change this Work thread folder without moving files",

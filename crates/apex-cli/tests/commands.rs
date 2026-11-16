@@ -7,6 +7,12 @@ fn shared_lifecycle_commands_parse_without_a_selected_thread() {
 }
 
 #[test]
+fn progress_command_is_cli_only_and_parses_as_a_read_view() {
+    assert!(catalog().unwrap().iter().any(|row| row.key == "progress"));
+    assert!(matches!(parse_input("/progress"), ParsedInput::Command{key,args} if key=="progress"&&args.is_empty()));
+}
+
+#[test]
 fn stale_session_rows_do_not_resurrect_deleted_remote_or_removed_project_threads() {
     use apex_cli::controller::merge_threads;
     use serde_json::json;

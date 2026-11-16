@@ -1,7 +1,7 @@
-import type { ReplySteps, RoomEvent, StepsIndex, StepsIndexEntry, TodoItem, WorkStep } from "./types.ts";
+import type { ReplySteps, RoomEvent, StepsIndex, StepsIndexEntry, TodoItem, TurnOutcome, TurnTimelineEntry, WorkStep } from "./types.ts";
 
 /** One bot's work so far in a turn. `structured` turns true on the first work_step event. */
-export interface TurnSteps { steps: WorkStep[]; todo: TodoItem[]; structured: boolean }
+export interface TurnSteps { steps: WorkStep[]; todo: TodoItem[]; structured: boolean; timeline?: TurnTimelineEntry[]; timeline_cut?: boolean; outcome?: TurnOutcome }
 
 export const emptyTurnSteps: TurnSteps = { steps: [], todo: [], structured: false };
 
@@ -14,13 +14,31 @@ const sameTodo = (a: readonly TodoItem[], b: readonly TodoItem[]) =>
 
 /** Upsert by key; `todo` replaces. `structured` turns true on the first work_step. Same object back when nothing changes. */
 export function applyStepEvent(turn: TurnSteps, event: RoomEvent): TurnSteps {
+  if (event.type === "delta") {
+    const timeline = turn.timeline ? [...turn.timeline] : [];
+    const encoder = new TextEncoder();
+    const used = timeline.reduce((size, entry) => size + (entry.kind === "text" ? encoder.encode(entry.text).length : 0), 0);
+    const bytes = encoder.encode(event.text);
+    let end = Math.min(bytes.length, Math.max(0, 256 * 1024 - used));
+    const cut = end < bytes.length;
+    if (cut) while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+    const text = cut ? new TextDecoder().decode(bytes.subarray(0, end)) : event.text;
+    if (!text) return cut ? { ...turn, timeline_cut: true } : turn;
+    const last = timeline[timeline.length - 1];
+    if (last?.kind === "text") timeline[timeline.length - 1] = { kind: "text", text: last.text + text };
+    else timeline.push({ kind: "text", text });
+    return { ...turn, timeline, ...(cut ? { timeline_cut: true } : {}) };
+  }
   if (event.type === "todo") {
     return sameTodo(turn.todo, event.items) ? turn : { ...turn, todo: event.items };
   }
   if (event.type !== "work_step") return turn;
   const at = turn.steps.findIndex((s) => s.key === event.step.key);
   let step = event.step;
-  if (at < 0) return { ...turn, steps: [...turn.steps, step], structured: true };
+  if (at < 0) {
+    const timeline = step.parent === null ? appendActivity(turn.timeline, step.key) : turn.timeline;
+    return { ...turn, steps: [...turn.steps, step], structured: true, ...(timeline ? { timeline } : {}) };
+  }
   const old = turn.steps[at];
   // A replacement without output keeps the earlier output, as the daemon's saved record does.
   if (!step.output && old.output) step = { ...step, output: old.output, ...(old.output_cut ? { output_cut: true } : {}) };
@@ -28,6 +46,15 @@ export function applyStepEvent(turn: TurnSteps, event: RoomEvent): TurnSteps {
   const steps = turn.steps.slice();
   steps[at] = step;
   return { ...turn, steps, structured: true };
+}
+
+function appendActivity(timeline: TurnTimelineEntry[] | undefined, key: string): TurnTimelineEntry[] {
+  const next = timeline ? [...timeline] : [];
+  const last = next[next.length - 1];
+  if (last?.kind === "activity") {
+    if (!last.keys.includes(key)) next[next.length - 1] = { kind: "activity", keys: [...last.keys, key] };
+  } else next.push({ kind: "activity", keys: [key] });
+  return next;
 }
 
 export interface StepNode { step: WorkStep; children: StepNode[] }
@@ -98,7 +125,9 @@ export function readStepsIndex(value: unknown): StepsIndex | null {
   for (const [seq, raw] of Object.entries(replies)) {
     const e = obj(raw);
     if (!e || !str(e.by) || !count(e.count) || !count(e.helpers) || !count(e.offset) || !count(e.len)) continue;
-    out[seq] = { by: e.by, count: e.count, helpers: e.helpers, offset: e.offset, len: e.len };
+    out[seq] = { by: e.by, count: e.count, helpers: e.helpers, offset: e.offset, len: e.len,
+      ...(count(e.todo_count) ? { todo_count: e.todo_count } : {}),
+      ...(count(e.todo_completed) ? { todo_completed: e.todo_completed } : {}) };
   }
   return { version: o.version, replies: out };
 }
@@ -113,7 +142,31 @@ export function readReplySteps(value: unknown): ReplySteps | null {
     steps: o.steps.map(readStep).filter((s): s is WorkStep => s !== null),
     todo: o.todo.map(readTodo).filter((t): t is TodoItem => t !== null),
     dropped: o.dropped,
+    ...(Array.isArray(o.timeline) ? { timeline: o.timeline.map(readTimelineEntry).filter((e): e is TurnTimelineEntry => e !== null) } : {}),
+    ...(o.timeline_cut === true ? { timeline_cut: true } : {}),
+    ...(o.outcome === "failed" || o.outcome === "stopped" || o.outcome === "passed" ? { outcome: o.outcome } : {}),
   };
+}
+
+/** Restore a host progress snapshot defensively. Older/partial snapshots become an empty legacy turn. */
+export function restoreTurnSteps(value: unknown): TurnSteps {
+  const reply = readReplySteps(value);
+  if (!reply) return emptyTurnSteps;
+  return {
+    steps: reply.steps,
+    todo: reply.todo,
+    structured: reply.steps.length > 0,
+    ...(reply.timeline ? { timeline: reply.timeline } : {}),
+    ...(reply.timeline_cut ? { timeline_cut: true } : {}),
+    ...(reply.outcome ? { outcome: reply.outcome } : {}),
+  };
+}
+
+function readTimelineEntry(value: unknown): TurnTimelineEntry | null {
+  const o = obj(value);
+  if (o?.kind === "text" && str(o.text)) return { kind: "text", text: o.text };
+  if (o?.kind === "activity" && Array.isArray(o.keys) && o.keys.every(str)) return { kind: "activity", keys: [...new Set(o.keys)] };
+  return null;
 }
 
 /**
@@ -163,7 +216,7 @@ export function dropStepsFrom(index: StepsIndex | null, cache: Map<number, Reply
 /** The index entry that earns a reply its "N steps" line; null shows no line. */
 export function savedEntry(index: StepsIndex | null, seq: number): StepsIndexEntry | null {
   const entry = index?.replies[String(seq)];
-  return entry && entry.count > 0 ? entry : null;
+  return entry && (entry.count > 0 || (entry.todo_count ?? 0) > 0) ? entry : null;
 }
 
 /** A reply that arrives after the person switched threads must not land in the new thread's cache. */

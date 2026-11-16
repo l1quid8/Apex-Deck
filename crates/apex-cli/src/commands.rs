@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +45,7 @@ pub enum HandlerId {
     Export,
     ExportJson,
     Image,
+    Progress,
 }
 pub fn catalog() -> Result<Vec<CatalogRow>, String> {
     let rows: Vec<CatalogRow> =

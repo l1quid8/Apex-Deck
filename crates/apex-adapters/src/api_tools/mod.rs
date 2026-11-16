@@ -254,6 +254,7 @@ impl<'a> Turn<'a> {
                 Access::Full => "You may edit files and run commands without asking. MCP tools that can spend money or publish still ask the person first.\n",
             }
         });
+        out.push_str("For multistep work, maintain a checklist with todo_write. Send the whole list before substantive work, mark the current item in_progress, and update completed items as you finish them. Never mark unfinished work completed or invent a plan that you cannot carry out. Simple answers and one-step tasks do not need a checklist. Follow the person's explicit directions about planning and checklists.\n");
         out.push_str("For a multi-file task, deck_code_mode can batch file calls and filter intermediate results before they enter your context. Write one short plan: a single forEach call covers any number of files. It runs up to four independent reads at a time, with ordered writes, per-child permissions and batch-only retention. Metrics are bytes, not tokens.\n");
         out
     }
@@ -1006,6 +1007,20 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn checklist_guidance_only_names_an_available_tool() {
+        let tools = toolbox(&std::env::temp_dir());
+        let progress = |_: Progress<'_>| {};
+        let turn = Turn::new(&tools, Access::Read, false, Access::Read, &NoApprover, &progress);
+        assert!(names(&turn).iter().any(|name| name == "todo_write"));
+        let instructions = turn.instructions();
+        assert!(instructions.contains("For multistep work, maintain a checklist with todo_write"));
+        assert!(instructions.contains("Simple answers and one-step tasks do not need a checklist"));
+        let tools = ToolBox { computer_only: true, ..tools };
+        let computer_turn = Turn::new(&tools, Access::Read, false, Access::Read, &NoApprover, &progress);
+        assert!(!computer_turn.instructions().contains("todo_write"));
+    }
+
     fn names(turn: &Turn<'_>) -> Vec<String> {
         turn.definitions().iter().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect()
     }
@@ -1130,7 +1145,7 @@ done
     #[tokio::test]
     async fn saved_history_has_no_screen_text() {
         let (_, steps, _, _) = computer_run("apex-computer", "read_screen", Decision::Approve).await;
-        let history = apex_core::work_steps::ReplySteps { by: apex_core::ParticipantId::new("bot"), seq: 0, steps, todo: vec![], dropped: 0 };
+        let history = apex_core::work_steps::ReplySteps { by: apex_core::ParticipantId::new("bot"), seq: 0, steps, todo: vec![], dropped: 0, timeline: vec![], outcome: None, timeline_cut: false };
         let saved = serde_json::to_string(&history).unwrap();
         assert!(!saved.contains("SECRET"), "private content reached serialized reply steps");
     }

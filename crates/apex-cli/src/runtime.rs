@@ -51,6 +51,9 @@ enum Update {
         agent: String,
         result: Result<Value, String>,
     },
+    Progress { generation: u64, request: u64, result: Result<Value, String> },
+    ProgressDetail { generation: u64, request: u64, result: Result<Value, String> },
+    SavedProgressIndex { generation: u64, result: Result<Value, String> },
 }
 async fn network(data: PathBuf, tx: mpsc::Sender<Update>) {
     let mut cursor: Option<Cursor> = None;
@@ -223,6 +226,15 @@ fn restore_pending_draft(s:&mut AppState) {
 }
 fn submit(s: &mut AppState, client: &Option<Client>, data: &Path, tx: &mpsc::Sender<Update>) {
     let ordinary = !s.workspace_prompt && s.agent_wizard.is_none() && !s.answering;
+    if ordinary && matches!(parse_input(&s.editor.text), ParsedInput::Command{key,..} if key=="progress") {
+        let Some(room)=s.selected.clone() else { s.notice="Open a thread first.".into(); return; };
+        let Some(client)=client.clone() else { s.notice="Not connected.".into(); return; };
+        let generation=s.generation; s.progress_request=s.progress_request.wrapping_add(1); let request=s.progress_request; let tx=tx.clone();
+        s.progress_detail_request=s.progress_detail_request.wrapping_add(1); s.progress_open=true; s.progress_rows.clear(); s.progress_selected=0; s.progress_scroll=0; s.progress_detail=None;
+        s.editor.take(); s.notice="Loading turn progress…".into();
+        tokio::spawn(async move { let result=client.request("room_steps",json!({"room":room})).await; let _=tx.send(Update::Progress{generation,request,result}).await; });
+        return;
+    }
     if ordinary && attachment_command(s, data, tx) { return; }
     if s.workspace_prompt {
         let folder=s.editor.text.trim().to_string();
@@ -721,6 +733,49 @@ mod request_tests {
         Event::Key(crossterm::event::KeyEvent::new(c, crossterm::event::KeyModifiers::NONE))
     }
     #[test]
+    fn progress_view_renders_checklist_and_enter_requests_saved_detail() {
+        let mut s=AppState::default();s.select("r".into());s.progress_open=true;
+        s.progress_rows=vec![json!({"seq":7,"by":"Null","count":2,"todo_count":2,"todo_completed":1})];
+        let rendered=screen(&s,64,12);assert!(rendered.contains("Turn 7"));assert!(rendered.contains("checklist 1 of 2 completed"));
+        assert_eq!(handle_event(&mut s,key(crossterm::event::KeyCode::Enter)),Intent::ProgressSelect(7));
+        assert!(s.progress_detail.is_some());
+        assert_eq!(handle_event(&mut s,key(crossterm::event::KeyCode::Esc)),Intent::None);
+        assert!(!s.progress_open);
+    }
+    #[test]
+    fn progress_view_explains_unavailable_history() {
+        let mut s = AppState::default();
+        s.progress_open = true;
+        s.notice = "Turn progress unavailable from this host".into();
+        assert!(screen(&s, 80, 12).contains("Turn progress unavailable"));
+    }
+    #[test]
+    fn progress_navigation_does_not_cancel_the_pending_index_load() {
+        let mut s = AppState::default();
+        s.progress_open = true;
+        s.progress_request = 7;
+        handle_event(&mut s, key(crossterm::event::KeyCode::Down));
+        assert_eq!(s.progress_request, 7);
+    }
+    #[test]
+    fn progress_selection_remains_highlighted_after_scrolling_the_turn_list() {
+        let mut s = AppState::default();
+        s.select("r".into());
+        s.progress_open = true;
+        s.progress_selected = 12;
+        s.progress_rows = (0..20).map(|seq| json!({"seq":seq,"by":"Agent","count":1})).collect();
+        let rendered = screen(&s, 100, 12);
+        assert!(rendered.contains("› Turn 12"), "{rendered}");
+    }
+    #[test]
+    fn progress_tool_details_expand_safely_and_scroll() {
+        let mut s=AppState::default();s.select("r".into());s.progress_open=true;s.progress_detail=Some(json!({"steps":[{"key":"k","parent":null,"kind":"command","label":"cargo test","detail":"cargo test -p x","output":"passed\u{1b}[31m RED","status":"done"}],"timeline":[{"kind":"activity","keys":["k"]}],"todo":[]}));
+        let collapsed=screen(&s,60,14);assert!(collapsed.contains("ran 1 command"));assert!(!collapsed.contains("passed"));
+        handle_event(&mut s,key(crossterm::event::KeyCode::Enter));
+        let expanded=screen(&s,60,14);assert!(expanded.contains("cargo test -p x"));assert!(expanded.contains("passed RED"));assert!(!expanded.contains('\u{1b}'));
+        handle_event(&mut s,key(crossterm::event::KeyCode::PageDown));assert!(s.progress_scroll>0);
+    }
+    #[test]
     fn a_message_completes_in_its_original_thread_after_switching() {
         let mut s=AppState::default();s.select("one".into());
         let draft=crate::input::Editor{text:"original draft".into(),cursor:4};
@@ -1035,7 +1090,7 @@ pub async fn run(args: Args) -> Result<(), String> {
                 },
                 Update::Loaded{generation,id,result}=>{
                     if generation!=s.generation{continue;}loading=false;
-                    match result{Ok((rows,state))=>{s.threads=rows;if let (Some(id),Some(state))=(&id,&state){if s.install_snapshot(id,generation,state.clone()){announce_request(&mut s,answer.is_some());}}else if id.is_some() && s.selected==id {s.selected=None;s.rooms.clear();s.streams.clear();s.menu=None;s.card=None;s.view=0;s.generation+=1;s.notice="Thread removed, archived, or in Trash. /threads lists available threads.".into();}s.connected=client.is_some()&&!s.overflowed;if s.notice=="Connected. Loading authoritative threads…"{s.notice.clear();}},Err(e)=>{
+                    match result{Ok((rows,state))=>{s.threads=rows;if let (Some(id),Some(state))=(&id,&state){if s.install_snapshot(id,generation,state.clone()){announce_request(&mut s,answer.is_some());}if let Some(client)=client.clone(){let tx=tx.clone();let room=id.clone();tokio::spawn(async move{let result=client.request("room_steps",json!({"room":room})).await;let _=tx.send(Update::SavedProgressIndex{generation,result}).await;});}}else if id.is_some() && s.selected==id {s.selected=None;s.rooms.clear();s.streams.clear();s.menu=None;s.card=None;s.view=0;s.generation+=1;s.notice="Thread removed, archived, or in Trash. /threads lists available threads.".into();}s.connected=client.is_some()&&!s.overflowed;if s.notice=="Connected. Loading authoritative threads…"{s.notice.clear();}},Err(e)=>{
                         s.notice=e;s.connected=client.is_some()&&!s.overflowed;s.threads.clear();
                         if s.selected.is_some(){s.selected=None;s.rooms.clear();s.streams.clear();s.view=0;s.generation+=1;}
                         dirty=false;
@@ -1053,6 +1108,23 @@ pub async fn run(args: Args) -> Result<(), String> {
                     let p=s.members().into_iter().find(|p|p["id"]==agent.as_str());
                     if let (Some(panel),Some(p))=(s.settings.as_mut(),p){match result{Ok(rows)=>{panel.models.insert(agent,crate::settings::parse_models(&p,&rows));},Err(_)=>{panel.requested.remove(&agent);}}}
                 }}
+                Update::Progress{generation,request,result}=>{if generation==s.generation&&s.progress_open&&request==s.progress_request { match result { Ok(index)=>{s.progress_rows=index["replies"].as_object().map(|m|m.iter().map(|(seq,row)|{let mut row=row.clone();row["seq"]=json!(seq.parse::<u64>().unwrap_or(0));row}).collect()).unwrap_or_default(); let live=s.current().and_then(|room|room["progress"].as_object()).map(|live|live.iter().map(|(id,reply)|{let active=s.current().is_some_and(|room|room["active"].as_array().is_some_and(|a|a.iter().any(|v|v.as_str()==Some(id))));let mut row=json!({"seq":reply["seq"].as_u64().unwrap_or(0),"by":reply["by"].as_str().unwrap_or(id),"count":reply["steps"].as_array().map_or(0,|steps|steps.iter().filter(|step|step["parent"].is_null()).count()),"helpers":0,"todo_count":reply["todo"].as_array().map_or(0,Vec::len),"todo_completed":crate::progress::completed(&reply["todo"]).0,"live":active,"outcome":reply["outcome"]});row["reply"]=reply.clone();row}).collect::<Vec<_>>()).unwrap_or_default(); for row in live.into_iter().rev(){s.progress_rows.push(row);} s.progress_rows.sort_by_key(|row|row["seq"].as_u64().unwrap_or(0));s.progress_selected=s.progress_selected.min(s.progress_rows.len().saturating_sub(1)); s.notice.clear();},Err(e)=>s.notice=format!("Turn progress unavailable: {e}") } }}
+                Update::ProgressDetail{generation,request,result}=>{
+                    if generation==s.generation && s.progress_open && request==s.progress_detail_request {
+                        match result {
+                            Ok(reply) if reply.is_object() => { s.progress_detail=Some(reply); s.notice.clear(); }
+                            Ok(_) => { s.progress_detail=None; s.notice="Steps are unavailable for this reply.".into(); }
+                            Err(error) => { s.progress_detail=None; s.notice=format!("Could not load progress: {error}"); }
+                        }
+                    }
+                }
+                Update::SavedProgressIndex{generation,result}=>{
+                    if generation==s.generation {
+                        if let Ok(index)=result {
+                            s.saved_progress=index["replies"].as_object().map(|rows| rows.iter().filter_map(|(seq,row)|seq.parse::<u64>().ok().map(|seq|(seq,row.clone()))).collect()).unwrap_or_default();
+                        }
+                    }
+                }
                 Update::Stopped{generation,result}=>{if generation==s.generation{s.notice=match result{Ok(_)=>"Stopped.".into(),Err(e)=>e};dirty=true;}}
             }},
             event=async {events.as_mut().expect("terminal reader restored").next().await}=>{
@@ -1087,6 +1159,7 @@ pub async fn run(args: Args) -> Result<(), String> {
                     Intent::Activate=>{let action=s.menu.as_ref().and_then(|m|m.choices.get(m.selected)).map(|c|c.action.clone());if let Some(action)=action{run_action(&mut s,action,&client,&args.data,&tx,&mut answer);}},
                     Intent::Welcome=>{s.view=0;s.menu=None;},Intent::Threads=>navigate(&mut s,"/threads",&client,&args.data,&tx),
                     Intent::Requests=>requests(&mut s),
+                    Intent::ProgressSelect(seq)=>{if let (Some(client),Some(room))=(client.clone(),s.selected.clone()){let tx=tx.clone();let generation=s.generation;let request=s.progress_detail_request;tokio::spawn(async move{let result=client.request("room_steps",json!({"room":room,"seq":seq})).await;let _=tx.send(Update::ProgressDetail{generation,request,result}).await;});}},
                     Intent::Card(CardIntent::Decide{request,approve})=>{
                         // The card already showed exactly this request; Y was the confirm.
                         let action=rpc("room_decide",json!({"id":s.selected,"request":request,"approve":approve}));

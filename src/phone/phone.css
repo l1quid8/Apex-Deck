@@ -1411,6 +1411,10 @@
 .ph-msg .work-steps-toggle { min-height: 32px; padding: 0 6px; border: 0; font-size: 13px; }
 .ph-msg .work-steps-saved { margin: 2px 0 0; }
 .ph-msg .work-steps-note { font-size: 12px; }
+.ph-msg .work-steps-activity > summary { min-height: 44px; padding: 12px 0; box-sizing: border-box; }
+.ph-msg .work-steps-toggle { min-height: 44px; }
+.ph-msg .work-steps-todo { padding: 12px; gap: 10px; }
+.ph-msg .work-steps-timeline-text { font-size: 15px; line-height: 1.5; }
 :root[data-deck-theme="glass"] .ph-msg :is(.work-steps-helper, .work-steps-detail) { border-color: var(--line); }
 :root[data-deck-theme="glass"] .ph-msg .work-steps-output { background: var(--panel-2); border: 0; }
 

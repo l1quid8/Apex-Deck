@@ -755,8 +755,62 @@ pub fn settings_lines(s: &AppState, width: u16) -> Vec<Line<'static>> {
     }
     out.into_iter().map(|line| line.style(Style::default().bg(PANEL))).collect()
 }
+fn progress_step_lines(lines: &mut Vec<Line<'static>>, detail: &serde_json::Value, step: &serde_json::Value, depth: usize, expanded: bool) {
+    if depth >= 32 { lines.push(Line::from("  Further nested activity omitted.")); return; }
+    let label = crate::progress::kind_label(step).unwrap_or("Work");
+    let status = safe(step["status"].as_str().unwrap_or("running"));
+    let prefix = "  ".repeat(depth + 1);
+    lines.push(Line::from(format!("{prefix}· {label} · {} · {status}", safe(step["label"].as_str().unwrap_or("")))));
+    if expanded && !step["detail"].as_str().unwrap_or("").is_empty() {
+        lines.push(Line::from(format!("{prefix}  {}", safe(step["detail"].as_str().unwrap_or("")))));
+    }
+    if expanded { if let Some(output) = step["output"].as_str() {
+        for line in safe(output).lines() { lines.push(Line::from(format!("{prefix}  {line}"))); }
+    } if step["output_cut"] == true { lines.push(Line::from(format!("{prefix}  Output shortened."))); } }
+    let key = step["key"].as_str().unwrap_or("");
+    if expanded { for child in detail["steps"].as_array().into_iter().flatten().filter(|child| child["parent"] == key) {
+        progress_step_lines(lines, detail, child, depth + 1, expanded);
+    } }
+}
+
 pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
     let area = f.area();
+    if s.progress_open {
+        let help=if s.progress_detail.is_some(){" Turn progress · Enter expand/collapse tool details · PgUp/PgDn scroll · Esc composer"}else{" Turn progress · ↑/↓ select · Enter details · Esc composer"};
+        let mut lines = vec![Line::from(Span::styled(help, Style::default().fg(CYAN)))];
+        if !s.notice.is_empty() {
+            for line in safe(&s.notice).lines() { lines.push(Line::from(line.to_owned())); }
+        }
+        let visible = usize::from(area.height.saturating_sub(5)).max(1);
+        let start = s.progress_selected.saturating_sub(visible.saturating_sub(1));
+        for (offset, row) in s.progress_rows.iter().enumerate().skip(start).take(visible) {
+            let i = offset;
+            let outcome = match row["outcome"].as_str() { Some("failed") => " · Failed", Some("stopped") => " · Interrupted", Some("passed") => " · Ended without reply", _ if row["live"] == true => " · In progress", _ => "" };
+            let count = row["count"].as_u64().unwrap_or(0).saturating_sub(row["helpers"].as_u64().unwrap_or(0));
+            lines.push(Line::from(Span::styled(format!(" {}Turn {} · {} · {} steps · checklist {} of {} completed{outcome}", if i == s.progress_selected { "› " } else { "  " }, row["seq"].as_u64().unwrap_or(0), safe(row["by"].as_str().unwrap_or("Agent")), count, row["todo_completed"].as_u64().unwrap_or(0), row["todo_count"].as_u64().unwrap_or(0)), Style::default().fg(if i == s.progress_selected { CYAN } else { GRAY }))));
+        }
+        if let Some(detail) = &s.progress_detail {
+            let timeline = crate::progress::timeline(&detail["timeline"]);
+            if timeline.is_empty() {
+                for step in detail["steps"].as_array().into_iter().flatten().filter(|step| step["parent"].is_null()) { progress_step_lines(&mut lines, detail, step, 0, s.progress_tools_expanded); }
+            } else {
+                for item in timeline { match item {
+                    crate::progress::TimelineItem::Text(text) => for line in safe(&text).lines() { lines.push(Line::from(line.to_owned())); },
+                    crate::progress::TimelineItem::Activity(keys) => {
+                        lines.push(Line::from(format!("  › {}", crate::progress::summary(detail, &keys))));
+                        if s.progress_tools_expanded {
+                            for step in crate::progress::referenced_steps(detail, &keys) { progress_step_lines(&mut lines, detail, step, 0, true); }
+                        }
+                    },
+                } }
+            }
+            if detail["timeline_cut"] == true { lines.push(Line::from("  Earlier progress was omitted.")); }
+            if detail["dropped"].as_u64().unwrap_or(0) > 0 { lines.push(Line::from(format!("  {} additional steps omitted", detail["dropped"]))); }
+            for item in detail["todo"].as_array().into_iter().flatten() { let status = item["status"].as_str().unwrap_or("pending"); let mark = if status == "completed" { "✓" } else if status == "in_progress" { "◌" } else { "○" }; lines.push(Line::from(format!(" {mark} {}", safe(item["text"].as_str().unwrap_or(""))))); }
+        }
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((s.progress_scroll, 0)), area);
+        return area;
+    }
     let width = area.width.saturating_sub(2).max(1);
     let (_, lines) = visual_position(&s.editor.text, width);
     let composer = (lines + 1)
@@ -896,21 +950,31 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
                     lines.extend(human_lines(text, screen.width));
                 } else {
                     lines.extend(reply_lines(&name, id, text, screen.width, false));
+                    if let Some(progress)=message["seq"].as_u64().and_then(|seq|s.saved_progress.get(&seq)) {
+                        let done=progress["todo_completed"].as_u64().unwrap_or(0);let total=progress["todo_count"].as_u64().unwrap_or(0);
+                        if progress["count"].as_u64().unwrap_or(0)>0||total>0 {lines.push(Line::from(format!("  Progress · {} steps · checklist {done} of {total} completed · /progress for details",progress["count"].as_u64().unwrap_or(0))));}
+                    }
                 }
             }
             let working = s.working();
             for p in s.members() {
                 let id = p["id"].as_str().unwrap_or("");
-                if let Some(stream) = s.streams.get(id) {
-                    lines.extend(reply_lines(
-                        p["display_name"].as_str().unwrap_or(id),
-                        id,
-                        stream,
-                        screen.width,
-                        working.iter().any(|w| w == id),
-                    ));
+                let busy=working.iter().any(|w|w==id);
+                let progress=s.current().and_then(|room|room["progress"].get(id));
+                let timeline=if busy {progress.map(|p|crate::progress::timeline(&p["timeline"])).unwrap_or_default()}else{vec![]};
+                let has_timeline=!timeline.is_empty();
+                if has_timeline {
+                    for item in timeline { match item {
+                        crate::progress::TimelineItem::Text(text)=>lines.extend(reply_lines(p["display_name"].as_str().unwrap_or(id),id,&text,screen.width,true)),
+                        crate::progress::TimelineItem::Activity(keys) => if let Some(detail) = progress {
+                            lines.extend(wrapped(vec![Span::styled(format!("  › {}", crate::progress::summary(detail, &keys)), Style::default().fg(AMBER))], usize::from(screen.width)));
+                        },
+                    }}
+                } else if let Some(stream) = s.streams.get(id) {
+                    lines.extend(reply_lines(p["display_name"].as_str().unwrap_or(id),id,stream,screen.width,busy));
                 }
-                if working.iter().any(|w| w == id) {
+                if busy {
+                    if !has_timeline {
                     let activity = s.activity.get(id).map(String::as_str).unwrap_or("working…");
                     let activity = vec![
                         Span::styled(" ◌ ", Style::default().fg(AMBER)),
@@ -924,6 +988,8 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
                         ),
                     ];
                     lines.extend(wrapped(activity, usize::from(screen.width)));
+                    }
+                    if let Some(progress)=progress { let todo=&progress["todo"];let (done,total)=crate::progress::completed(todo);if total>0{lines.push(Line::from(format!("   Checklist · {done} of {total} completed")));}for item in todo.as_array().into_iter().flatten(){let mark=if item["status"]=="completed"{"✓"}else if item["status"]=="in_progress"{"◌"}else{"○"};lines.push(Line::from(format!("   {mark} {}",safe(item["text"].as_str().unwrap_or("")))));}}
                 }
             }
             if lines.is_empty() {

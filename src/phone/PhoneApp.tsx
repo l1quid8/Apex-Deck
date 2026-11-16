@@ -46,7 +46,7 @@ import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
-import { SavedSteps, WorkSteps } from "../WorkSteps.tsx";
+import { SavedSteps, WorkSteps, InterruptedSteps } from "../WorkSteps.tsx";
 import { createStepsIndexLoader, dropStepsFrom, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
 import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
 import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
@@ -72,6 +72,7 @@ import { PhoneTerminal } from "./PhoneTerminal";
 import { phoneShell } from "../phoneShell";
 import { giveBack, queueHears, queueSync, queuedSticky, queuedViews, type QueuedView } from "../phoneQueue";
 import { ParticipantQueues, type ParticipantMessage } from "../turnQueue";
+import { applyProgressEvent, restoreProgress, type TurnProgress } from "../turnProgress.ts";
 import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom, type PhoneCuts, type PhoneWorking } from "../phoneWorking";
 import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
@@ -189,6 +190,7 @@ type Room = {
   id: string; hostId: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
   /** Each bot's turn in progress, with its reply so far. */
   working: PhoneWorking;
+  progress?: TurnProgress;
   /** The bots as saved in the thread, for what each runs on. */
   configs: ParticipantConfig[];
   /** Context each bot's latest request filled, and each provider's plan, as reported while the thread is open. */
@@ -1609,7 +1611,7 @@ export function PhoneApp() {
       setBusy((all) => ({ ...all, [at]: state.active }));
       const queue = queues.current.get(at);
       if (queue) queueSync(queue, state.active);
-      setCuts((all) => all[key] ? { ...all, [key]: resumeCut(all[key], state.active, state.snapshot.transcript) } : all);
+      setCuts((all) => all[key] ? { ...all, [key]: resumeCut(all[key], state.active, state.snapshot.transcript, state.streams, state.progress) } : all);
       const configs = (rosterHeard ?? state.snapshot.participants).map(config => settingsHeard.get(config.id) ?? config);
       setRoom({
         id: openPane.id,
@@ -1620,7 +1622,8 @@ export function PhoneApp() {
         asks: restoreQuestions({}, openPane.id, state, Date.now())[openPane.id] ?? NO_ASKS,
         plan: Boolean(state.plan ?? state.snapshot.plan),
         policy: state.snapshot.options.policy,
-        working: workingFrom(state.active, Date.now()),
+        working: workingFrom(state.active, Date.now(), state.progress, state.streams, state.activity),
+        progress: restoreProgress(state.progress, state.active),
         configs,
         fill: {},
         plans: {},
@@ -1673,7 +1676,8 @@ export function PhoneApp() {
         if (!current || current.id !== id) return current;
         const asks = applyQuestionEvent({ [id]: current.asks }, id, event, Date.now())[id] ?? NO_ASKS;
         const working = applyTurnEvent(current.working, event, Date.now());
-        return asks === current.asks && working === current.working ? current : { ...current, asks, working };
+        const progress = applyProgressEvent(current.progress ?? {}, event);
+        return asks === current.asks && working === current.working && progress === current.progress ? current : { ...current, asks, working, progress };
       });
     };
     const recovery = createRoomRecovery<RoomState, RoomEvent>({
@@ -2455,7 +2459,7 @@ export function PhoneApp() {
       if (request.chat) {
         setSavedSteps((saved) => saved && saved.id === paneId && saved.hostId === host.machine.id ? { ...saved, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
         refreshSteps.current();
-        setRoom((current) => current && current.id === paneId ? cutBack(current, message.seq) : current);
+        setRoom((current) => current && current.id === paneId ? { ...cutBack(current, message.seq), progress: {} } : current);
         // A reply that was cut off mid-way goes with the rest.
         setCuts((all) => { if (!all[paneId]) return all; const next = { ...all }; delete next[paneId]; return next; });
       }
@@ -2858,6 +2862,7 @@ export function PhoneApp() {
               ? recipientName({ targets: answerers.ids, roster: openRoom.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: openRoom.policy })
               : null}
             working={openRoom ? openRoom.working : {}}
+            progress={openRoom?.progress ?? {}}
             paneId={openPane?.id ?? ""}
             stepsIndex={openPane && savedSteps?.id === openPane.id && savedSteps.hostId === openHostId ? savedSteps.index : null}
             loadedSteps={loadedSteps.current}
@@ -3879,7 +3884,7 @@ function ThreadView(props: {
   onRetryLoad?(): void;
   /** Where /compact cut in, drawn as a line the person can open to read the summary. */
   compaction: Room["compaction"];
-  participants: Person[]; working: PhoneWorking; cut: PhoneCuts;
+  participants: Person[]; working: PhoneWorking; progress?: TurnProgress; cut: PhoneCuts;
   paneId: string; stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; gate: { enabled: boolean; reason: string };
   /** Who a message without an @name goes to: "Null", "everyone"; null while unknown. */
   to: string | null;
@@ -4384,14 +4389,14 @@ function ThreadView(props: {
             <div className="ph-msg">
               {by(message.speaker.id)}
               {message.lateReplyFrom && <p className="late-reply-label">Late reply from {message.lateReplyFrom}</p>}
-              <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
-                ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
-                : undefined)} /></div>
-              <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {(() => {
-                const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
-                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
+                const renderText = (text: string) => <div className="ph-md"><Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
+                ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
+                : undefined)} /></div>;
+                const saved = savedEntry(props.stepsIndex, message.seq);
+                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={message.text} renderText={renderText} /> : renderText(message.text);
               })()}
+              <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
                 <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} startCollapsed onStep={fillStep} />}
             </div>
@@ -4417,9 +4422,15 @@ function ThreadView(props: {
         ))}
         {lost.length > 0 && <p className="ph-cut" role="status">{cutLine(lost.map((id) => person(id).display_name), props.machine)}</p>}
         {ended.length > 0 && <p className="ph-cut" role="status">{endedLine(ended.map((id) => person(id).display_name))}</p>}
+        {Object.entries(props.progress ?? {}).filter(([, turn]) => turn.outcome).map(([id, turn]) => {
+          // A longer local partial survives host truncation; show its text once, above these retained tool details.
+          const displayed = props.cut[id]?.text ? { ...turn, timeline: turn.timeline?.filter((entry) => entry.kind !== "text") } : turn;
+          return <InterruptedSteps key={`ended-${id}`} name={person(id).display_name} turn={displayed} renderText={(text) => <Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />} />;
+        })}
         {/* Each bot's turn: one line with what it is doing and a Stop. Its chevron opens the steps and the reply so far. */}
         {working.map(([id, turn]) => {
           const name = person(id).display_name;
+          const structured = turn.work.structured || turn.work.todo.length > 0;
           const open = Boolean(watching[id]);
           const words = toolLine(turnWords(turn, asking(id), props.plan));
           // "Null is writing…", but a named step reads as itself: "Running: npm test".
@@ -4441,9 +4452,10 @@ function ThreadView(props: {
                 </button>
                 {!paused && <button type="button" className="ph-stop" aria-label={`Stop ${name}`} onClick={() => props.onStop(id)}>Stop</button>}
               </div>
+              {structured && <div className="ph-progress"><WorkSteps turn={turn.work} live maxShown={MAX_STEPS_SHOWN} renderText={(text) => <Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />} /></div>}
               {open && (
                 <div id={`ph-progress-${id}`} className="ph-progress">
-                  {turn.work.structured && <WorkSteps turn={turn.work} live maxShown={MAX_STEPS_SHOWN} />}
+
                   {!turn.work.structured && turn.steps.length > 0 && (
                     <ol className="ph-steps" aria-label={`${name}'s steps so far`}>
                       {earlier > 0 && <li className="ph-step done">{earlier === 1 ? "1 earlier step" : `${earlier} earlier steps`}</li>}
@@ -4452,7 +4464,7 @@ function ThreadView(props: {
                       ))}
                     </ol>
                   )}
-                  {turn.text
+                  {turn.text && !(structured && turn.work.timeline?.length)
                     ? <div className="ph-md ph-draft"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={name} /> : undefined)} /></div>
                     : turn.steps.length === 0 && !turn.work.structured && <p className="ph-progress-none">Nothing to show yet. Steps and the reply appear here as {name} works.</p>}
                 </div>

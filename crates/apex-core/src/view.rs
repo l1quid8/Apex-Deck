@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::mention::mention_for;
-use crate::types::{Access, Message, ParticipantConfig, ParticipantId, Speaker};
+use crate::types::{Access, AgentTool, Backend, Message, ParticipantConfig, ParticipantId, Speaker};
 
 /// A bot replies with exactly this when it has nothing to add. The room
 /// drops the reply instead of adding it to the transcript.
@@ -73,6 +73,34 @@ pub fn user_identity() -> String {
     USER_LINE.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| user_line("", ""))
 }
 
+/// Checklist tools confirmed by the native adapter event readers. Adapters
+/// without one get no tool names in their prompt.
+fn native_checklist_instructions(me: &ParticipantConfig) -> Option<&'static str> {
+    match &me.backend {
+        Backend::Agent { tool: AgentTool::ClaudeCode, .. } => Some(concat!(
+            "For work with multiple meaningful steps, make a short checklist before starting and keep it current with your native checklist tools. ",
+            "Use TodoWrite, or create tasks with TaskCreate and update them with TaskUpdate. Mark the current item in_progress and each finished item completed as you go; revise the list if the scope changes. ",
+            "Simple answers and one-step tasks do not need a checklist. The user's directions take precedence over this checklist guidance.\n"
+        )),
+        Backend::Agent { tool: AgentTool::Codex, .. } => Some(concat!(
+            "For work with multiple meaningful steps, make a short checklist before starting and keep it current with your native checklist tool. Use update_plan. ",
+            "Mark the current item in_progress and each finished item completed as you go; revise the list if the scope changes. ",
+            "Simple answers and one-step tasks do not need a checklist. The user's directions take precedence over this checklist guidance.\n"
+        )),
+        Backend::Agent { tool: AgentTool::Grok, .. } => Some(concat!(
+            "For work with multiple meaningful steps, make a short checklist before starting and keep it current with your native checklist tool. Use todo_write. ",
+            "Mark the current item in_progress and each finished item completed as you go; revise the list if the scope changes. ",
+            "Simple answers and one-step tasks do not need a checklist. The user's directions take precedence over this checklist guidance.\n"
+        )),
+        Backend::Agent { tool: AgentTool::Muse, .. } => Some(concat!(
+            "For work with multiple meaningful steps, make a short checklist before starting and keep it current with your native checklist tool. Use write_todos. ",
+            "Mark the current item in_progress and each finished item completed as you go; revise the list if the scope changes. ",
+            "Simple answers and one-step tasks do not need a checklist. The user's directions take precedence over this checklist guidance.\n"
+        )),
+        Backend::Agent { tool: AgentTool::Gemini, .. } | Backend::OpenAiCompatible { .. } | Backend::Cli { .. } | Backend::Scripted { .. } => None,
+    }
+}
+
 pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -107,6 +135,10 @@ pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> St
         Access::Edits => "You may edit files in the workspace.\n",
         Access::Full => "You may edit files and run commands in the workspace.\n",
     });
+
+    if let Some(instructions) = native_checklist_instructions(me) {
+        out.push_str(instructions);
+    }
 
     let persona = me.persona.trim();
     if !persona.is_empty() {
@@ -522,5 +554,41 @@ mod tests {
         assert!(prompt.contains("You are Atlas (@atlas)"), "{prompt}");
         assert!(prompt.contains("The other models are: Gwen (@gwen)."), "{prompt}");
         assert!(!prompt.contains("@jigga") && !prompt.contains("@qwen"), "{prompt}");
+    }
+
+    #[test]
+    fn supported_agents_get_native_multistep_checklist_guidance() {
+        let cases = [
+            (crate::AgentTool::ClaudeCode, "TodoWrite", "TaskUpdate"),
+            (crate::AgentTool::Codex, "update_plan", "completed"),
+            (crate::AgentTool::Grok, "todo_write", "in_progress"),
+            (crate::AgentTool::Muse, "write_todos", "in_progress"),
+        ];
+        for (tool, native, status) in cases {
+            let mut me = cfg("worker", "Worker");
+            me.backend = crate::Backend::Agent { tool, model: None };
+            let prompt = system_prompt(&me, &[me.clone()]);
+            assert!(prompt.contains(native), "{tool:?}: {prompt}");
+            assert!(prompt.contains(status), "{tool:?}: {prompt}");
+            assert!(prompt.contains("Simple answers and one-step tasks do not need a checklist"), "{tool:?}: {prompt}");
+            assert!(prompt.contains("The user's directions take precedence"), "{tool:?}: {prompt}");
+        }
+    }
+
+    #[test]
+    fn checklist_guidance_does_not_claim_unavailable_tools() {
+        let mut gemini = cfg("gemini", "Gemini");
+        gemini.backend = crate::Backend::Agent { tool: crate::AgentTool::Gemini, model: None };
+        let prompt = system_prompt(&gemini, &[gemini.clone()]);
+        for native in ["TodoWrite", "TaskCreate", "update_plan", "todo_write", "write_todos"] {
+            assert!(!prompt.contains(native), "{native}: {prompt}");
+        }
+
+        let mut custom = cfg("custom", "Custom");
+        custom.backend = crate::Backend::Cli { program: "custom-agent".into(), args: vec![] };
+        let prompt = system_prompt(&custom, &[custom.clone()]);
+        for native in ["TodoWrite", "TaskCreate", "update_plan", "todo_write", "write_todos"] {
+            assert!(!prompt.contains(native), "{native}: {prompt}");
+        }
     }
 }

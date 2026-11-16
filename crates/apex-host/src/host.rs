@@ -631,6 +631,7 @@ impl Host {
     }
 
     fn emit_room_event(&self, room: &str, event: RoomEvent, handle: Option<&RoomHandle>, recovery_seq: Option<u64>) {
+        let completed_steps = self.steps.observe(room, &event);
         // Approving a "Start the work?" card ends planning for the thread.
         let mut plan_off = false;
         if let Some(handle) = handle {
@@ -691,6 +692,25 @@ impl Host {
         }
         if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event, recovery_seq.unwrap_or(0)); }
         let (plan_changes, plan_save) = handle.map(|handle| track_plan_runs(handle, &event, plan_off)).unwrap_or_default();
+        match &event {
+            RoomEvent::TurnStarted { id } => {
+                if let Err(why) = self.store.clear_live_progress(room, Some(id.as_str())) { eprintln!("[apex-deck] could not clear prior turn progress: {why}"); }
+            }
+            RoomEvent::Failed { id, .. } | RoomEvent::Passed { id } | RoomEvent::ParticipantIdle { id } => {
+                if let Some(progress) = self.steps.get(room, id) { if progress.outcome.is_some() { if let Err(why) = self.store.save_live_progress(room, &progress) { eprintln!("[apex-deck] could not save terminal turn progress: {why}"); } } }
+            }
+            RoomEvent::Stopped => for progress in self.steps.snapshot(room).values().filter(|progress| progress.outcome.is_some()) {
+                if let Err(why) = self.store.save_live_progress(room, progress) { eprintln!("[apex-deck] could not save stopped turn progress: {why}"); }
+            },
+            RoomEvent::MessageAdded { message } => if let apex_core::Speaker::Bot(id) = &message.speaker {
+                if let Err(why) = self.store.clear_live_progress(room, Some(id.as_str())) { eprintln!("[apex-deck] could not clear replied turn progress: {why}"); }
+            },
+            _ => {}
+        }
+        if let Some(record) = completed_steps {
+            if let Some(handle) = handle { self.save_steps(room, handle, &record); }
+            else if let Err(why) = self.store.save_steps(room, &record) { eprintln!("[apex-deck] could not save reply steps: {why}"); }
+        }
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
         if let Some(handle) = handle { self.publish_plan_runs(room, handle, plan_changes, plan_save); }
         // The caller may hold this room's event lock, so the switch is set
@@ -1397,7 +1417,12 @@ impl Host {
         let live = handle.live.lock().unwrap();
         let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
         let runner = self.runner_service.lock().unwrap().state(&id).ok().flatten();
-        Ok(serde_json::json!({"untagged_responders":snapshot.untagged_responders,"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"streams":live.streams,"activity":live.activity,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
+        let mut progress = match self.store.live_progress(&id) {
+            Ok(progress) => progress,
+            Err(error) => { eprintln!("[apex-deck] ignoring unreadable optional turn progress for {id}: {error}"); Default::default() }
+        };
+        progress.extend(self.steps.snapshot(&id));
+        Ok(serde_json::json!({"untagged_responders":snapshot.untagged_responders,"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"streams":live.streams,"activity":live.activity,"progress":progress,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
 
     }
 
@@ -1478,7 +1503,6 @@ impl Host {
                 *servers = self.computer_tool_menu(id, agent, std::mem::take(servers));
                 self.tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
             }
-            let record = self.steps.observe(id, &event);
             if let Err(why) = self.persist_and_emit(id, handle, event) {
                 *error.lock().unwrap() = Some(why.clone());
                 handle.runtime.stop(None);
@@ -1486,7 +1510,6 @@ impl Host {
                 self.room_event(id, RoomEvent::Failed { id: ParticipantId::new("storage"), error: why });
                 return;
             }
-            if let Some(record) = record { self.save_steps(id, handle, &record); }
         }
     }
 
@@ -2559,6 +2582,8 @@ impl Host {
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
+        self.store.clear_live_progress(&id, None)?;
+        self.steps.clear(&id);
         {
             let room = self.room(&id)?;
             let mut room = room.lock().await;
@@ -2580,6 +2605,8 @@ impl Host {
         let _action = handle.lock_checkout().await?;
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
+        self.store.clear_live_progress(&id, None)?;
+        self.steps.clear(&id);
         {
             let room = self.room(&id)?;
             let mut room = room.lock().await;
@@ -2614,6 +2641,7 @@ impl Host {
         let room = self.room(&id)?;
         let mut room = room.lock().await;
         self.require_idle(&id)?;
+        if chat { self.store.clear_live_progress(&id, None)?; self.steps.clear(&id); }
         let mut failed = Vec::new();
         if let Some(cwd) = cwd.clone() {
             let (snaps, thread, bot, len) = (Arc::clone(&self.snapshots), id.clone(), bot.clone(), room.transcript().len());
@@ -5460,6 +5488,7 @@ done
         host.room_event("r", RoomEvent::Activity { id: muck.clone(), text: "Running cargo test".into() });
         let state = host.room_state("r".into()).unwrap();
         assert_eq!(state["streams"], serde_json::json!({"null":"Half done"}));
+        assert_eq!(state["progress"]["null"]["timeline"], serde_json::json!([{"kind":"text","text":"Half done"}]));
         assert_eq!(state["activity"], serde_json::json!({"muck":"Running cargo test"}));
         let seq = state["recovery_seq"].as_u64().unwrap();
         host.room_event("r", RoomEvent::ParticipantIdle { id: muck.clone() });
@@ -5475,6 +5504,28 @@ done
         let state = host.room_state("r".into()).unwrap();
         assert_eq!(state["streams"], serde_json::json!({}));
         assert_eq!(state["active"], serde_json::json!([]));
+        assert_eq!(state["progress"]["null"]["outcome"], "stopped");
+        host.shutdown();
+        let reopened = Host::new(HostPaths { data: data.clone(), downloads: None }, _runtime.handle().clone());
+        assert_eq!(reopened.room_state("r".into()).unwrap()["progress"]["null"]["outcome"], "stopped");
+        _runtime.block_on(reopened.room_clear("r".into())).unwrap();
+        assert_eq!(reopened.room_state("r".into()).unwrap()["progress"], serde_json::json!({}));
+        reopened.shutdown();
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn damaged_optional_progress_does_not_hide_saved_transcript() {
+        let (host, runtime, data) = host("bad-progress-file");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        runtime.block_on(host.room_post("r".into(), "kept transcript".into())).unwrap();
+        host.room_event("r", RoomEvent::Delta { id: ParticipantId::new("bot"), text: "partial".into() });
+        host.room_event("r", RoomEvent::Failed { id: ParticipantId::new("bot"), error: "stop".into() });
+        std::fs::create_dir_all(data.join("rooms")).unwrap();
+        std::fs::write(data.join("rooms").join("72.progress.json"), "not json").unwrap();
+        let state = host.room_state("r".into()).unwrap();
+        assert!(state["snapshot"]["transcript"].as_array().unwrap().iter().any(|message| message["text"] == "kept transcript"));
+        host.shutdown();
         let _ = std::fs::remove_dir_all(data);
     }
 

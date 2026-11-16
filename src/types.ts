@@ -281,6 +281,10 @@ export type CurateReply = { by: string; unchecked?: number } & (
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  /** Host checkpoint of in-flight and interrupted structured turn progress. */
+  progress?: Record<string, ReplySteps>;
+  streams?: Record<string, string>;
+  activity?: Record<string, string>;
   /** Effective responders from the same checkpoint as snapshot. */
   untagged_responders?: string[];
   roomRevision?: number;
@@ -608,10 +612,12 @@ export interface WorkStep {
 export interface TodoItem { text: string; status: TodoStatus }
 
 /** Everything recorded about the work behind one reply. */
-export interface ReplySteps { by: string; seq: number; steps: WorkStep[]; todo: TodoItem[]; dropped: number }
+export type TurnTimelineEntry = { kind: "text"; text: string } | { kind: "activity"; keys: string[] };
+export type TurnOutcome = "failed" | "stopped" | "passed";
+export interface ReplySteps { by: string; seq: number; steps: WorkStep[]; todo: TodoItem[]; dropped: number; timeline?: TurnTimelineEntry[]; timeline_cut?: boolean; outcome?: TurnOutcome }
 
 /** One reply's place in a thread's steps file. */
-export interface StepsIndexEntry { by: string; count: number; helpers: number; offset: number; len: number }
+export interface StepsIndexEntry { by: string; count: number; helpers: number; offset: number; len: number; todo_count?: number; todo_completed?: number }
 
 /** The replies a thread has saved steps for; keys are reply seq numbers as strings. */
 export interface StepsIndex { version: number; replies: Record<string, StepsIndexEntry> }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rememberSteps, applyStepEvent, emptyTurnSteps, isUnknownStepsCommand, readReplySteps, readStepsIndex, stepTree, stepsCountLabel } from '../src/workSteps.ts';
+import { rememberSteps, applyStepEvent, emptyTurnSteps, isUnknownStepsCommand, readReplySteps, readStepsIndex, restoreTurnSteps, savedEntry, stepTree, stepsCountLabel } from '../src/workSteps.ts';
 
 const step = (key, extra = {}) => ({ key, parent: null, kind: 'command', label: key, folder: null, detail: key, output: null, status: 'running', exit_code: null, duration_ms: null, ...extra });
 const ev = (s) => ({ type: 'work_step', id: 'null', step: s });
@@ -16,11 +16,20 @@ test('upsert keeps one entry per key and keeps output when the done event has no
   assert.equal(t.steps[0].status, 'done');
 });
 
-test('same object back when nothing changes or the event is another type', () => {
+test('events preserve ordered text and coalesce top-level activity without duplicate references', () => {
   const t = applyStepEvent(emptyTurnSteps, ev(step('a')));
   assert.equal(applyStepEvent(t, ev(step('a'))), t);
-  assert.equal(applyStepEvent(t, { type: 'delta', id: 'null', text: 'x' }), t);
-  assert.equal(applyStepEvent(emptyTurnSteps, { type: 'delta', id: 'null', text: 'x' }), emptyTurnSteps);
+  let next = applyStepEvent(t, { type: 'delta', id: 'null', text: 'Reading' });
+  next = applyStepEvent(next, { type: 'delta', id: 'null', text: ' files' });
+  next = applyStepEvent(next, ev(step('b', { kind: 'read' })));
+  next = applyStepEvent(next, ev(step('b', { kind: 'read', status: 'done' })));
+  assert.deepEqual(next.timeline, [
+    { kind: 'activity', keys: ['a'] },
+    { kind: 'text', text: 'Reading files' },
+    { kind: 'activity', keys: ['b'] },
+  ]);
+  const nested = applyStepEvent(next, ev(step('child', { parent: 'helper' })));
+  assert.deepEqual(nested.timeline.at(-1), { kind: 'activity', keys: ['b'] });
 });
 
 test('todo replaces wholesale and does not flip structured', () => {
@@ -44,8 +53,9 @@ test('count label', () => {
 
 test('readStepsIndex', () => {
   for (const bad of [null, {}, 'x', [], { version: 1 }, { version: 'a', replies: {} }]) assert.equal(readStepsIndex(bad), null);
-  const entry = { by: 'null', count: 3, helpers: 1, offset: 0, len: 40 };
+  const entry = { by: 'null', count: 3, helpers: 1, offset: 0, len: 40, todo_count: 2, todo_completed: 1 };
   assert.deepEqual(readStepsIndex({ version: 1, replies: { 7: entry, 8: { by: 1 } } }), { version: 1, replies: { 7: entry } });
+  assert.equal(savedEntry(readStepsIndex({ version: 1, replies: { 7: { ...entry, count: 0 } } }), 7)?.todo_count, 2);
 });
 
 test('readReplySteps drops damaged steps and rejects damaged records', () => {
@@ -56,6 +66,14 @@ test('readReplySteps drops damaged steps and rejects damaged records', () => {
   assert.deepEqual(r.steps.map((s) => s.key), ['a']);
   assert.equal(r.todo.length, 1);
   assert.equal(r.dropped, 2);
+});
+
+test('saved timelines are validated and can restore a live turn snapshot', () => {
+  const reply = readReplySteps({ by: 'bot', seq: 1, steps: [step('a')], todo: [{ text: 'Do it', status: 'pending' }], dropped: 0,
+    timeline: [{ kind: 'text', text: 'Hello' }, { kind: 'activity', keys: ['a', 9] }, { kind: 'wat' }] });
+  assert.deepEqual(reply.timeline, [{ kind: 'text', text: 'Hello' }]);
+  assert.deepEqual(restoreTurnSteps({ by: 'bot', seq: 1, steps: [step('a')], todo: [], dropped: 0 }).steps.map((s) => s.key), ['a']);
+  assert.equal(restoreTurnSteps({ broken: true }), emptyTurnSteps);
 });
 
 test('old-daemon rejection is recognised', () => {
@@ -72,4 +90,13 @@ test('rememberSteps only keeps a reply for the thread that is still open', () =>
   assert.equal(cache.size, 0);
   rememberSteps(cache, 'a', 'a', 3, reply);
   assert.equal(cache.get(3), reply);
+});
+
+test('long live commentary is bounded and truncation stays visible', () => {
+ let t=applyStepEvent(emptyTurnSteps,{type:'delta',id:'a',text:'x'.repeat(300_000)});
+ assert.ok(t.timeline[0].text.length<=256*1024);
+ assert.equal(t.timeline_cut,true);
+ const last=t.timeline[0].text;
+ t=applyStepEvent(t,{type:'delta',id:'a',text:'more'});
+ assert.equal(t.timeline[0].text,last);
 });

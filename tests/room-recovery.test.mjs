@@ -295,3 +295,13 @@ test('a missing room may be created and then read with live requests', async()=>
   const result = await mod.loadRoomState({roomState:async()=>{if(!created)throw Error('no group chat with id r');return state;},roomCreate:async()=>{created=true;return state.snapshot;}},'r',[],{},'');
   assert.deepEqual(result,{...state,live:true});
 });
+
+test('checkpointed streams and progress suppress represented live deltas and tools', () => {
+  const state={snapshot:{},active:['a'],approvals:[],recovery_seq:9,streams:{a:'Seen'},activity:{},progress:{}};
+  for (const event of [{type:'delta',id:'a',text:'Seen'},{type:'activity',id:'a',text:'Read'},{type:'todo',id:'a',items:[]},{type:'work_step',id:'a',step:{key:'tool'}}]) {
+    assert.equal(mod.representedRoomEvent(state,{...event,recovery_seq:8}),true,event.type);
+    assert.equal(mod.representedRoomEvent(state,{...event,recovery_seq:10}),false,event.type);
+  }
+  const older={snapshot:{},active:['a'],approvals:[],recovery_seq:9};
+  assert.equal(mod.representedRoomEvent(older,{type:'delta',id:'a',text:'Seen',recovery_seq:8}),false);
+});

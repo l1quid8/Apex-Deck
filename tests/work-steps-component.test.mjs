@@ -152,6 +152,23 @@ test('the to-do list sits above the steps with the current item marked', () => {
   assert.ok(flat.indexOf('Run the tests') < flat.indexOf('Ran step 1'));
 });
 
+test('ordered timeline interleaves text and collapsed summaries, with todo underneath', () => {
+  const steps = [step(1, { key: 'r1', kind: 'read', label: 'Read a.ts' }), step(2, { key: 'r2', kind: 'read', label: 'Read b.ts' }), step(3, { key: 'c1', kind: 'command', label: 'Run tests', status: 'failed' })];
+  const timeline = [
+    { kind: 'text', text: 'I will inspect the files.' },
+    { kind: 'activity', keys: ['r1', 'r2'] },
+    { kind: 'text', text: 'Now running tests.' },
+    { kind: 'activity', keys: ['c1'] },
+  ];
+  const tree = mount({ turn: { ...turn(steps, [{ text: 'Finish work', status: 'in_progress' }]), timeline }, live: true })();
+  const flat = text(tree);
+  assert.ok(flat.indexOf('I will inspect') < flat.indexOf('Read 2 files'));
+  assert.ok(flat.indexOf('Read 2 files') < flat.indexOf('Now running'));
+  assert.match(flat, /ran 1 command · 1 failed/);
+  assert.ok(flat.indexOf('Finish work') > flat.indexOf('Now running'));
+  assert.equal(all(tree, (n) => n.type === 'details').length, 2);
+});
+
 test('initiallyOpen shows every row', () => {
   const tree = mount({ turn: turn(Array.from({ length: 10 }, (_, i) => step(i + 1))), live: false, initiallyOpen: true })();
   assert.equal(rows(tree).length, 10);
@@ -239,6 +256,36 @@ test('dropped steps are counted quietly after the list', async () => {
   assert.ok(!text(none()).includes("weren't kept"));
 });
 
+test('saved ordered rendering shows the final text once and keeps preceding timeline text', async () => {
+  const timeline = [{ kind: 'text', text: 'Planning.' }, { kind: 'activity', keys: ['s1'] }, { kind: 'text', text: 'Done.' }];
+  const render = mountSaved({ count: 2, finalText: 'Done.', cached: reply({ timeline }), load: async () => null });
+  const tree = render();
+  assert.equal(all(tree, (n) => n.type === 'div' && n.props.className === 'work-steps-saved-final').length, 1);
+  button(tree, '2 steps').props.onClick();
+  const opened = render();
+  assert.equal(text(opened).split('Done.').length - 1, 1);
+  assert.match(text(opened), /Planning\./);
+});
+
+test('saved reconciliation keeps the last segment when it matches and drops ambiguous timeline text', async () => {
+  const combined = mountSaved({ count: 2, finalText: 'A B', cached: reply({ timeline: [{ kind: 'text', text: 'A ' }, { kind: 'activity', keys: ['s1'] }, { kind: 'text', text: 'B' }] }), load: async () => null });
+  button(combined(), '2 steps').props.onClick();
+  assert.equal(text(combined()).split('A ').length - 1, 1);
+  assert.equal(all(combined(), n => n.props.className === 'work-steps-saved-final').map(text).join(''), 'B');
+  assert.match(text(combined()), /A /);
+  const mismatch = mountSaved({ count: 2, finalText: 'Answer', cached: reply({ timeline: [{ kind: 'text', text: 'Answer draft' }, { kind: 'activity', keys: ['s1'] }] }), load: async () => null });
+  button(mismatch(), '2 steps').props.onClick();
+  assert.equal(text(mismatch()).split('Answer').length - 1, 1);
+});
+
+test('saved checklist-only progress uses the completed summary label', async () => {
+  const render = mountSaved({ count: 0, todoCount: 3, todoCompleted: 2, cached: reply({ steps: [], todo: [{ text: 'one', status: 'completed' }] }), load: async () => null });
+  const tree = render();
+  assert.equal(text(button(tree, '2 of 3 steps completed')), '2 of 3 steps completed');
+  button(tree, '2 of 3 steps completed').props.onClick();
+  assert.match(text(render()), /one/);
+});
+
 test('the index loader coalesces, shuts off for an unknown command, and retries after other errors', async () => {
   const indexOf = (n) => ({ version: 1, replies: { 3: { by: 'bot', count: n, helpers: 0, offset: 0, len: 1 } } });
   // Coalescing: three requests while one is in flight make exactly one more call.
@@ -299,4 +346,31 @@ test('dropStepsFrom forgets loaded steps and index entries from the cut seq up',
   assert.equal(model.dropStepsFrom(null, cleared, 0), null);
   assert.equal(cleared.size, 0);
   assert.deepEqual(model.dropStepsFrom(index, new Map(), 0).replies, {});
+});
+
+test('ordered activity renders each tool once and hides the legacy row list', () => {
+  const steps = [step(1), step(2)];
+  const tree = mount({turn: {...turn(steps), timeline: [{kind: 'activity', keys: ['s1', 's2']}]}, live: true})();
+  assert.equal(rows(tree).length, 2);
+  assert.equal(all(tree, n => n.props['aria-label'] === 'Steps so far').length, 0);
+});
+
+test('a running or stopped activity never claims it completed', () => {
+  for (const status of ['running', 'stopped']) {
+    const tree = mount({turn: {...turn([step(1, {kind: 'other', status})]), timeline: [{kind: 'activity', keys: ['s1']}]}, live: true})();
+    const summary = all(tree, n => n.type === 'summary').map(text).join('');
+    assert.ok(!summary.includes('Completed'));
+    assert.match(summary, new RegExp(status === 'running' ? 'working' : 'stopped', 'i'));
+  }
+});
+
+test('truncated records without a retained timeline still explain missing progress', () => {
+ const tree=mount({turn:{...turn([]),timeline_cut:true,outcome:'passed'},live:false})();
+ assert.match(text(tree),/Earlier progress was omitted/);
+ assert.match(text(tree),/No reply/);
+});
+
+test('an orphan or retained tool without an ordered reference is still inspectable', () => {
+ const tree=mount({turn:{...turn([step(1,{parent:'unknown'})]),timeline:[{kind:'text',text:'Working'}]},live:true})();
+ assert.equal(rows(tree).length,1);
 });
