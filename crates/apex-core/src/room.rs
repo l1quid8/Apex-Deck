@@ -1464,6 +1464,24 @@ impl Room {
         Some((participant, request))
     }
 
+    pub(crate) fn record_usage(&mut self, id: &ParticipantId, reply: &Reply, on_event: EventSink<'_>) {
+        if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cached_input_tokens.is_some() || reply.cost_micros.is_some() {
+            self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
+            if let Some(cached) = reply.cached_input_tokens {
+                let totals = self.usage.entry(id.clone()).or_default();
+                totals.cached_input = Some(totals.cached_input.unwrap_or(0).saturating_add(cached));
+            }
+            on_event(RoomEvent::Usage {
+                id: id.clone(),
+                input_tokens: reply.input_tokens,
+                output_tokens: reply.output_tokens,
+                cached_input_tokens: reply.cached_input_tokens,
+                cost_micros: reply.cost_micros,
+                cost_estimated: reply.cost_estimated,
+            });
+        }
+    }
+
     /// Record the outcome of one turn. Returns the ids this reply addressed.
     pub(crate) fn settle(
         &mut self,
@@ -1479,21 +1497,7 @@ impl Room {
                 Vec::new()
             }
             Ok(reply) => {
-                if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cached_input_tokens.is_some() || reply.cost_micros.is_some() {
-                    self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
-                    if let Some(cached) = reply.cached_input_tokens {
-                        let totals = self.usage.entry(id.clone()).or_default();
-                        totals.cached_input = Some(totals.cached_input.unwrap_or(0).saturating_add(cached));
-                    }
-                    on_event(RoomEvent::Usage {
-                        id: id.clone(),
-                        input_tokens: reply.input_tokens,
-                        output_tokens: reply.output_tokens,
-                        cached_input_tokens: reply.cached_input_tokens,
-                        cost_micros: reply.cost_micros,
-                        cost_estimated: reply.cost_estimated,
-                    });
-                }
+                self.record_usage(id, &reply, on_event);
                 let text = reply.text.trim();
                 if text.is_empty() || text.eq_ignore_ascii_case(PASS_TOKEN) {
                     on_event(RoomEvent::Passed { id: id.clone() });
