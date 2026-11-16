@@ -476,6 +476,7 @@ fn local_linux_cli_room(command: &Command) -> Option<&str> {
 
 /// Only the recorded boot verdict counts. `linux_jail::state()` can say Works
 /// just because bubblewrap is installed; that is not proof the jail holds.
+#[cfg(unix)]
 pub fn local_linux_cli_admitted() -> Result<(), String> {
     use apex_adapters::linux_jail::{recorded_probe_state, JailState};
     match recorded_probe_state() {
@@ -483,6 +484,13 @@ pub fn local_linux_cli_admitted() -> Result<(), String> {
         Some(JailState::Fails(why)) => Err(format!("The terminal app can't act on this Linux machine because the agent jail failed its startup check: {why}")),
         None => Err("The terminal app can't act on this Linux machine yet: the agent jail hasn't finished its startup check.".into()),
     }
+}
+
+/// The agent jail is a unix module; a same-user local caller is never admitted
+/// through it elsewhere.
+#[cfg(not(unix))]
+pub fn local_linux_cli_admitted() -> Result<(), String> {
+    Err("The terminal app can't act on this machine through the Linux agent jail: there is none here.".into())
 }
 
 fn reply<T: serde::Serialize>(value: T) -> Result<Value, String> {

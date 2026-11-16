@@ -102,6 +102,7 @@ mod device_access_updates {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn linux_local_update_cannot_bypass_raise_gate_with_a_forged_old_level() {
         use apex_adapters::linux_jail::{self, JailState};
