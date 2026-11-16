@@ -117,6 +117,49 @@ setTimeout(() => {
   }
 });
 
+test('a development build does not start a daemon on the installed app\'s own data folder', { skip: process.platform === 'win32' }, async () => {
+  // The fake's default data folder (no --data-dir) is `prod`, standing in for
+  // ~/Library/Application Support/dev.apexdeck.app; `other` is any other folder.
+  const root = fs.mkdtempSync('/tmp/deck-prod-guard-');
+  const prod = path.join(root, 'prod'), other = path.join(root, 'other');
+  fs.mkdirSync(prod); fs.mkdirSync(other);
+  const fixture = path.join(root, 'fake-daemon.cjs');
+  fs.writeFileSync(fixture, `#!/usr/bin/env node
+const net = require('node:net');
+const path = require('node:path');
+const fs = require('node:fs');
+const i = process.argv.indexOf('--data-dir');
+const folder = i >= 0 ? process.argv[i + 1] : ${JSON.stringify(prod)};
+if (process.argv[2] === 'data-dir') { console.log(folder); process.exit(0); }
+if (process.argv[2] === 'endpoint') { console.log(path.join(folder, 'daemon.sock')); process.exit(0); }
+const server = net.createServer(c => c.end());
+server.on('error', () => process.exit(1));
+server.listen(path.join(folder, 'daemon.sock'), () => fs.writeFileSync(path.join(folder, 'daemon.json'), JSON.stringify({ pid: process.pid })));
+`, { mode: 0o700 });
+  const started = [];
+  try {
+    await assert.rejects(localDaemon({ bin: fixture, dataDir: prod, development: true }), /installed app's own data folder[\s\S]*APEX_DECK_ALLOW_PRODUCTION_DAEMON=1/);
+    await assert.rejects(localDaemon({ bin: fixture, dataDir: undefined, development: true }), /installed app's own data folder/);
+    assert.ok(!fs.existsSync(path.join(prod, 'daemon.json')), 'nothing was started there');
+    // Told to, a development build may; another folder is fine; a packaged app always may.
+    for (const options of [{ dataDir: prod, development: true, allowProductionData: true }, { dataDir: other, development: true }]) {
+      const daemon = await localDaemon({ bin: fixture, ...options });
+      started.push(daemon);
+      assert.equal(daemon.owned, true, JSON.stringify(options));
+      daemon.child.kill('SIGKILL');
+      await new Promise(resolve => setTimeout(resolve, 50));
+      fs.rmSync(path.join(options.dataDir, 'daemon.sock'), { force: true });
+    }
+    const packaged = await localDaemon({ bin: fixture, dataDir: prod, development: false });
+    started.push(packaged);
+    assert.equal(packaged.owned, true);
+  } finally {
+    for (const daemon of started) daemon.child?.kill('SIGKILL');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('desktop exit leaves its shared daemon alive and simultaneous startup reuses the winner', { skip: process.platform === 'win32' }, async () => {
   const dir = fs.mkdtempSync('/tmp/deck-shared-');
   const fixture = path.join(dir, 'fake-daemon.cjs');

@@ -33,6 +33,13 @@ Set `APEX_DECK_DATA_DIR=/some/folder` to run on another data folder; the
 Electron app then keeps its own files (the browser profile, `hosts.json`) in
 `/some/folder-desktop` instead of `~/Library/Application Support/dev.apexdeck.desktop`.
 
+Pointing `APEX_DECK_DATA_DIR` at the installed app's own folder attaches the
+development window to the installed daemon, which is how to test against real
+threads and settings. If that daemon isn't answering, the development build
+stops with a message rather than starting a debug daemon on your real data;
+start the installed app (or its background service) first, or set
+`APEX_DECK_ALLOW_PRODUCTION_DAEMON=1` to do it anyway.
+
 ## Build the app
 
 ```sh

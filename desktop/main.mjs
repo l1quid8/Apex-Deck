@@ -114,6 +114,17 @@ const agentWanted = () => agentMode;
 const agentLogFile = () => path.join(app.getPath('logs'), 'apex-daemon.log');
 /** The daemon's connection address (`apex-daemon endpoint`), whichever way it was started. */
 const socketFile = async () => daemonEndpoint(bin, dataDir);
+/**
+ * Start or find this Mac's daemon as a child of this process. A development
+ * build never starts one on the installed app's data folder by itself; see
+ * `localDaemon`. `APEX_DECK_ALLOW_PRODUCTION_DAEMON=1` says to do it anyway.
+ */
+const startLocalDaemon = () => localDaemon({
+  bin, dataDir, remote: false,
+  development: !app.isPackaged,
+  allowProductionData: env.APEX_DECK_ALLOW_PRODUCTION_DAEMON === '1',
+  log: (text) => process.stderr.write(`[apex-daemon] ${text}`),
+});
 
 /** Install the LaunchAgent or Windows logon task (or leave it as it is) and attach to the daemon it runs. */
 async function startAgent() {
@@ -141,7 +152,7 @@ async function startAgent() {
       // The task's daemon may still be running: a second one would share its data folder.
       if (error?.fallback === false) throw error;
       console.warn(`apex-daemon: Windows logon task unavailable (${error instanceof Error ? error.message : error}); running daemon as child process.`);
-      return localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) });
+      return startLocalDaemon();
     }
   }
   const plistPath = agentPlistPath();
@@ -188,10 +199,10 @@ function ensureLocal() {
   // launchd keeps the agent's daemon up; windows reconnect to it by themselves.
   if (local?.agent && agentWanted()) return Promise.resolve(local);
   starting ??= (process.platform === 'linux' && app.isPackaged
-    ? linuxLocalDaemon({ plan, startPortable: () => localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }) })
+    ? linuxLocalDaemon({ plan, startPortable: () => startLocalDaemon() })
     : agentWanted()
     ? startAgent()
-    : localDaemon({ bin, dataDir, remote: false, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }))
+    : startLocalDaemon())
     .then(async (daemon) => {
       local = daemon;
       await migrateRemoteAccess(daemon.socket);

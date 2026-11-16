@@ -96,13 +96,21 @@ export async function waitForSocket(socket, { wanted = true, timeout = 15_000 } 
  * share its rooms, so closing the desktop must not interrupt it.
  * Rejects with the daemon's own words when it won't start.
  */
-export async function localDaemon({ bin, dataDir, remote = false, log = () => {} }) {
+export async function localDaemon({ bin, dataDir, remote = false, development = false, allowProductionData = false, log = () => {} }) {
   const socket = await daemonEndpoint(bin, dataDir);
   if (await answers(socket)) return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
 
+  const folder = await dataFolder(bin, dataDir);
+  // A development build may attach to the installed app's daemon, but never
+  // starts one of its own on that folder: a debug daemon would then run on
+  // the person's real threads, assistants and settings. (Before 2026-11-16 it
+  // did exactly that whenever the installed daemon happened not to answer.)
+  if (development && !allowProductionData && path.resolve(folder) === path.resolve(await dataFolder(bin))) {
+    throw new Error(`Nothing answers at ${folder}, which is the installed app's own data folder, and a development build does not start a daemon there. Start the installed Apex Deck (or its background service) first, or set APEX_DECK_ALLOW_PRODUCTION_DAEMON=1 to run a development daemon on your real data anyway.`);
+  }
+
   // A detached service cannot keep Electron's pipes open or receive SIGHUP
   // when the desktop exits. Keep diagnostics available without owning its life.
-  const folder = await dataFolder(bin, dataDir);
   const logPath = path.join(folder, 'desktop-daemon.log');
   fs.mkdirSync(folder, { recursive: true });
   const logFd = fs.openSync(logPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
