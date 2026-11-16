@@ -5,13 +5,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { parse } = require("sucrase/dist/parser");
 const { formatTokenType } = require("sucrase/dist/parser/tokenizer/types");
 
-const root = new URL("../src/", import.meta.url).pathname;
+const root = fileURLToPath(new URL("../src/", import.meta.url));
 const WORD = /(?<![\w-])bots?(?![\w-])/i;
 
 // Phrase-like text: has a space, or is a capitalised heading word ("Bots").

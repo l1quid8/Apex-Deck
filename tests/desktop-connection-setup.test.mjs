@@ -99,7 +99,7 @@ test('clearing an explicit port rechecks identity and removes the saved port', (
   const next = applyHostUpdate(state, host.id, fields, { before: host, probed: { host_id: 'identity-1' } });
   assert.equal(next.hosts[0].port, undefined);
 });
-test('real install shell replaces only checksum-verified downloads and cleans failed downloads', () => {
+test('real install shell replaces only checksum-verified downloads and cleans failed downloads', { skip: process.platform === 'win32' && 'Requires POSIX executable modes' }, () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-install-'));
   try {
     const source = '#!/bin/sh\necho apex-daemon 1.0.0\n';

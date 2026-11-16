@@ -39,12 +39,13 @@ export function assertTrustedStartup(packaged,argv,env,platform=process.platform
 }
 
 export function protectedPublicKey({platform=process.platform,files=fs}={}){
-  const file=path.join(authorityPaths(platform).root,'public-key');
-  for(let p=file;;p=path.dirname(p)){
+  const paths=platform==='win32'?path.win32:path.posix;
+  const file=paths.join(authorityPaths(platform).root,'public-key');
+  for(let p=file;;p=paths.dirname(p)){
     const st=files.lstatSync(p);
     if(st.isSymbolicLink() || st.uid!==0 || (st.mode&0o022)) throw new Error('Provenance key must be protected by root ownership.');
     if(p===file?!st.isFile():!st.isDirectory())throw new Error('Provenance key must be a protected regular file under directories.');
-    if(p==='/')break;
+    if(p===paths.dirname(p))break;
   }
   const bytes=files.readFileSync(file);
   if(bytes.length!==32)throw new Error('Invalid protected provenance public key.');

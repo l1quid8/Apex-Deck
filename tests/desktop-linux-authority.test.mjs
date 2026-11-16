@@ -10,7 +10,7 @@ const descriptor = () => ({schema:1,epoch:7,phase:'ready',active:{tree:'/opt/ape
 function filesFor(state=descriptor()) {
   const nodes=new Map();
   for (const file of [`${root}/public-key`,`${root}/installation.json`]) {
-    for(let at=path.dirname(file);;at=path.dirname(at)) {
+    for(let at=path.posix.dirname(file);;at=path.posix.dirname(at)) {
       nodes.set(at,{uid:0,mode:0o755,kind:'directory'});if(at==='/')break;
     }
     nodes.set(file,{uid:0,mode:file.endsWith('installation.json')?0o600:0o644,kind:'file'});

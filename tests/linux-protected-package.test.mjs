@@ -6,7 +6,7 @@ import path from 'node:path';
 import { generateKeyPairSync, verify, createHash } from 'node:crypto';
 import { packagePayload } from '../scripts/package-linux-protected.mjs';
 
-test('evaluation package signs exact manifest and inventories every payload file', () => {
+test('evaluation package signs exact manifest and inventories every payload file', { skip: process.platform === 'win32' && 'Requires POSIX executable modes' }, () => {
   const root = mkdtempSync(path.join(tmpdir(), 'apex-payload-'));
   try {
     const payload = path.join(root, 'payload'); mkdirSync(payload);
