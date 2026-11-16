@@ -1080,6 +1080,10 @@ impl Default for FoldQueue {
 }
 
 impl FoldQueue {
+    pub(crate) fn maintenance_busy(&self) -> bool {
+        let working = !self.workers.lock().unwrap().is_empty();
+        working || self.queues.lock().unwrap().values().any(|queue| !queue.is_empty())
+    }
     pub fn new(data: PathBuf) -> Self {
         Self {
             queues: Mutex::default(),

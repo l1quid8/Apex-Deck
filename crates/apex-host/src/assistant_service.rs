@@ -680,6 +680,7 @@ impl Host {
         if self.assistant_runs.lock().unwrap().contains_key(&task.id) {
             return child_id;
         }
+        let Ok(maintenance) = self.maintenance.enter() else { return child_id; };
         let run = Arc::new(AssistantRun::new());
         {
             use std::collections::hash_map::Entry;
@@ -696,6 +697,7 @@ impl Host {
         let owner = owner.clone();
         let child = child_id.clone();
         self.runtime().spawn(async move {
+            let _maintenance = maintenance;
             if let Err(error) = host
                 .dispatch_task(
                     task.clone(),
@@ -2630,9 +2632,11 @@ fn spawn_task_attempt(project_data: &std::path::Path,
     run: Arc<AssistantRun>,
     isolated_permit: Option<crate::assistant_isolation::IsolatedPermit>,
 ) {
+    let maintenance = host.maintenance.enter().expect("dispatch operation owns admission");
     let host_for_task = Arc::clone(&host);
     let project_data = project_data.to_path_buf();
     host.runtime().spawn(async move {
+        let _maintenance = maintenance;
         let _isolated_permit = isolated_permit;
         let run_result = host_for_task.run_batch(&execution_id, &handle, batch).await;
         let task_before = host_for_task.assistant_tasks.get(&task_id).ok().flatten();

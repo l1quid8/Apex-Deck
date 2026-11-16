@@ -180,6 +180,7 @@ pub struct HostPaths {
 mod runner_runtime;
 
 pub struct Host {
+    pub maintenance: Arc<crate::maintenance::MaintenanceGate>,
     paths: HostPaths,
     /// Protected primary and saved-chat ownership lasts as long as this host.
     _ownership: Option<apex_provenance::HostOwnership>,
@@ -329,8 +330,10 @@ impl Host {
         store.interrupt_client_messages()?;
         store.settle_promotes()?;
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
+        let maintenance = Arc::new(crate::maintenance::MaintenanceGate::default());
+        let compact_maintenance = maintenance.enter()?;
         let compacting = Arc::clone(&snapshots);
-        std::thread::spawn(move || compacting.compact());
+        std::thread::spawn(move || { let _maintenance = compact_maintenance; compacting.compact(); });
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
@@ -341,6 +344,7 @@ impl Host {
         apex_adapters::set_code_mode_enabled(&paths.data,
             store.settings().ok().flatten().as_ref().and_then(|s| s["apexCodeMode"].as_str()) != Some("off"));
         let host = Arc::new(Host {
+            maintenance,
             paths,
             computer,
             _ownership: ownership,
@@ -379,6 +383,7 @@ impl Host {
             let host_weak = host_for_reconcile.clone();
             Box::pin(async move {
                 let Some(host) = host_weak.upgrade() else { return Err("host shut down".into()); };
+                let _maintenance = host.maintenance.enter()?;
                 let handle = host.handle(&thread_id)?;
                 let error = Mutex::new(None);
                 let batch = handle.runtime.begin_post_with_speaker(
@@ -994,8 +999,10 @@ impl Host {
             }
         }
         for (tool, model) in reads {
+            let Ok(maintenance) = self.maintenance.enter() else { return; };
             let (host, room, context) = (Arc::clone(self), room.to_string(), context.clone());
             self.runtime.spawn(async move {
+                let _maintenance = maintenance;
                 let plan = if after_turn {
                     tokio::time::sleep(PLAN_READ_SETTLE).await;
                     apex_adapters::plan_usage_after_turn(tool, model.as_deref(), &context).await
@@ -1188,6 +1195,7 @@ impl Host {
         if self.store.room(&id)?.is_none() {return Err("Thread unavailable.".into())}
         if handle.as_ref().is_some_and(|h|h.runtime.busy() || h.has_pending_human_waits()) {return Err("Stop work and resolve outstanding requests before moving this thread to Trash.".into())}
         let meta = self.store.update_chat_meta(&id,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})?;
+        if trashed { if let Some(handle) = &handle { handle.context.retire_sessions(None); } }
         self.emit(HostEvent::ThreadCatalogChanged {});
         Ok(meta)
     }
@@ -1289,6 +1297,7 @@ impl Host {
             self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from))
         };
         let context = BuildContext {
+            live_sessions: std::env::var_os("APEX_DECK_ONE_SHOT_BOTS").as_deref() != Some(std::ffi::OsStr::new("1")),
             watchdog_managed: !kind.is_chat() && self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?
                 .and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten())
                 .is_some_and(|task|task.lineage.is_some() && task.execution_thread_id.as_deref()==Some(id.as_str())),
@@ -1342,7 +1351,8 @@ impl Host {
             // changed while the thread was closed isn't this thread's work.
             let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.clone(), snapshot.transcript.len());
             let retired = Arc::clone(&deleted);
-            std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
+            let maintenance = self.maintenance.enter()?;
+            std::thread::spawn(move || { let _maintenance = maintenance; let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
         let journal = if kind.is_chat() { None } else { Some(crate::journal::path_for(&self.paths.data.join("attachments"), &id)?) };
         if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
@@ -1593,6 +1603,7 @@ impl Host {
     }
 
     pub(crate) async fn run_batch(self: &Arc<Self>, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
+        let _maintenance = self.maintenance.enter()?;
         let _chain = Chain::start(&self.chains);
         let client_message_id = batch.client_message_id().map(str::to_owned);
         let error = Mutex::new(None);
@@ -2071,8 +2082,8 @@ impl Host {
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
     /// Apply a saved access change now: stop `participant` and run it again under
-    /// the new level. A tool takes its access when it starts and Deck keeps no session,
-    /// so the new run sees only the chat and the files, and is told so.
+    /// the new level. New access requires a fresh worker with the saved chat
+    /// and files as its context.
     pub async fn room_apply_access(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
         self.refuse_moved_chat(&id)?;
         if self.assistant_tasks.execution(&id).ok().flatten().is_some() {
@@ -2100,6 +2111,7 @@ impl Host {
         }
         if let Ok(handle) = self.handle(&id) {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+            handle.context.retire_sessions(participant.as_ref());
             handle.runtime.stop(participant.as_ref());
             // Compact/curate hold the transcript lock but do not reserve a
             // normal turn slot. Their bubble's Stop must reach the shared flag.
@@ -2124,6 +2136,7 @@ impl Host {
             return Err("Talk-only chat rooms do not use Plan mode.".into());
         }
         if self.store_plan(&id, &handle, on)? {
+            handle.context.retire_sessions(None);
             self.invalidate_room_runner(&id)?;
             self.room_event(&id, RoomEvent::PlanChanged { on });
         }
@@ -3267,7 +3280,8 @@ impl Host {
     /// it never holds `room_lifecycle` or a daemon worker meanwhile.
     fn forget_snapshots(&self, id: &str) {
         let (snapshots, thread) = (Arc::clone(&self.snapshots), id.to_string());
-        std::thread::spawn(move || snapshots.delete(&thread));
+        let Ok(maintenance) = self.maintenance.enter() else { return; };
+        std::thread::spawn(move || { let _maintenance = maintenance; snapshots.delete(&thread); });
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
@@ -3282,7 +3296,7 @@ impl Host {
             self.assistant_tasks.tombstone_execution(&id).map_err(|e|e.to_string())?;
         }
         self.forget_snapshots(&id);
-        if let Some(handle) = &handle { handle.runtime.stop(None); handle.stop.store(true, Ordering::SeqCst); handle.approvals.reject_all(); }
+        if let Some(handle) = &handle { handle.context.retire_sessions(None); handle.runtime.stop(None); handle.stop.store(true, Ordering::SeqCst); handle.approvals.reject_all(); }
         self.rooms.lock().unwrap().remove(&id);
         if let Ok(name) = export::safe_file_name(&id) {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
@@ -3791,8 +3805,27 @@ impl Host {
         self.quit.confirm();
     }
 
+    /// Called only after maintenance has sealed admission. Runtime reservations
+    /// include accepted turns that have not emitted TurnStarted yet.
+    pub fn maintenance_blockers(&self) -> Result<(), String> {
+        if crate::personal_worker::browser::maintenance_busy(self.data_dir()) { return Err("busy: a browser tab is active".into()); }
+        if !self.runner_workers.lock().unwrap().is_empty() { return Err("busy: a goal or loop worker is still active".into()); }
+        if self.chains.load(Ordering::SeqCst) != 0 { return Err("busy: reply chains are still saving".into()); }
+        for handle in self.rooms.lock().unwrap().values() {
+            if handle.busy() || handle.has_pending_human_waits() || handle.runtime.has_cleanup_holds() { return Err("busy: a room has unfinished work".into()); }
+        }
+        if self.assistant_runs.lock().unwrap().values().any(|run| !run.finished.load(Ordering::SeqCst)) {
+            return Err("busy: an assistant task is unfinished".into());
+        }
+        if !self.personal_stops.lock().unwrap().is_empty() { return Err("busy: a personal operation is unfinished".into()); }
+        if self.fold_queue.maintenance_busy() { return Err("busy: bot changes are being folded".into()); }
+        if self.ptys.list(None).iter().any(|pty| pty.state != "exited") { return Err("busy: a terminal is still running".into()); }
+        Ok(())
+    }
+
     /// End every terminal. Called on the way out.
     pub fn shutdown(&self) {
+        for handle in self.rooms.lock().unwrap().values() { handle.context.retire_sessions(None); }
         if let Some(clock) = self.monitor_clock.lock().unwrap().take() { clock.abort(); }
         self.ptys.kill_all();
     }
@@ -6634,6 +6667,7 @@ done
             ..Default::default()
         };
         let context = apex_adapters::BuildContext {
+            live_sessions: false,
             watchdog_managed: false,
             cwd: saved.cwd.as_ref().map(PathBuf::from),
             path: Some(format!("{}:/usr/bin:/bin", bin.display())),

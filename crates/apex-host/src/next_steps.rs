@@ -18,8 +18,10 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 /// message or another turn since then means there is nothing to suggest.
 /// `answers` is the finished chain's interactive-answers preference.
 pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
+    let Ok(maintenance) = host.maintenance.enter() else { return; };
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
+        let _maintenance = maintenance;
         // Suppress next-step suggestions while any unfinished runner owns the room
         {
             if let Ok(Some(runner)) = host.runner_service.lock().unwrap().state(&room) {

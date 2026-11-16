@@ -57,6 +57,8 @@ impl Drop for Active {
 /// so nothing the helper or a bot says can outlive the turn.
 #[cfg(unix)]
 struct BrowserLink {
+    // The reader and every detached call share this until their last reply is written.
+    _maintenance: crate::maintenance::Permit,
     computer: Weak<Computer>,
     thread: String,
     generation: u64,
@@ -391,6 +393,8 @@ impl TurnHook {
             }
             #[cfg(unix)]
             {
+                let maintenance = self.host.upgrade().ok_or(TurnStartFailure::AuthorityChanged)?
+                    .maintenance.enter().map_err(|_| TurnStartFailure::AuthorityChanged)?;
                 let generation = self.computer.generation(&self.thread);
                 let path = verified_bundle().await.map_err(|_| TurnStartFailure::Verification)?;
                 let mut stream = match connect().await {
@@ -465,6 +469,7 @@ impl TurnHook {
                 );
                 let (computer, assistant) = (Arc::downgrade(&self.computer), self.ended.is_some());
                 let link = Arc::new(BrowserLink {
+                    _maintenance: maintenance,
                     computer: Arc::downgrade(&self.computer),
                     thread: thread.clone(),
                     generation,
@@ -902,7 +907,8 @@ mod tests {
         let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         computer.active.lock().unwrap().insert("token".into(), Active { thread: "t".into(), participant: "p".into(), token: "token".into(), socket, ended: None });
         let (writer, reader) = tokio::net::UnixStream::pair().unwrap();
-        let link = BrowserLink { computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), participant: "p".into(), label: "Bot".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
+        let maintenance = Arc::new(crate::maintenance::MaintenanceGate::default());
+        let link = BrowserLink { _maintenance: maintenance.enter().unwrap(), computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), participant: "p".into(), label: "Bot".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
         let link = Arc::new(link);
         link.start("call-1".into(), "Runtime.evaluate".into(), json!({}));
         let mut line = String::new();
@@ -925,6 +931,15 @@ mod tests {
         assert!(link.live(&running), "another thread's revoke leaves this one alone");
         computer.revoke(Some("t"), None);
         assert!(!link.live(&running), "Stop or any revoke ends every step that follows");
+        // The task is scheduled on this thread. Drop the turn's reference
+        // before yielding so only the detached call still owns the permit.
+        link.start("late".into(), "read_screen".into(), json!({}));
+        drop(link);
+        let seal = || maintenance.try_begin("update".into(), 100, 0, || Ok(()));
+        assert!(seal().unwrap_err().starts_with("busy:"));
+        line.clear();
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.unwrap();
+        assert!(seal().is_ok());
         std::fs::remove_dir_all(data).unwrap();
     }
     #[cfg(unix)]

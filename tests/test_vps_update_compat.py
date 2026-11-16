@@ -1,9 +1,7 @@
 """Exercise the staging-only Linux compatibility carry against released source."""
 
 import importlib.util
-import subprocess
-import tarfile
-import io
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,14 +34,21 @@ class SourceCompatibilityTests(unittest.TestCase):
     def stage(self, commit=RELEASE):
         self.command.write_text(historical_source(commit))
 
-    def test_current_release_accepts_maintenance_patch_and_allow_routing(self):
-        archive = subprocess.check_output(["git", "archive", "HEAD", "crates"], cwd=ROOT)
-        with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
-            tree.extractall(self.source, filter="data")
-        self.compat.prepare_source(self.source)
-        result = subprocess.run(["git", "apply", "--check", str(ROOT / "scripts/vps-update-maintenance.patch")],
-                                cwd=self.source, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+    def test_native_release_preserves_current_admission(self):
+        shutil.copyfile(ROOT / COMMAND, self.command)
+        for name in ("apex-daemon", "apex-host"):
+            module = Path("crates") / name / "src/maintenance.rs"
+            (self.source / module).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / module, self.source / module)
+        before = self.command.read_bytes()
+        self.assertTrue(self.compat.prepare_source(self.source)["native_maintenance"])
+        self.assertEqual(self.command.read_bytes(), before)
+        modified = before.replace(b"local_linux_cli_admitted()?;", b"/* probe skipped */")
+        self.assertNotEqual(modified, before)
+        self.command.write_bytes(modified)
+        with self.assertRaises(self.compat.CompatibilityError):
+            self.compat.prepare_source(self.source)
+        self.assertEqual(self.command.read_bytes(), modified)
 
     def test_release_carries_fix_and_preserves_phone_folder_exception(self):
         self.stage()

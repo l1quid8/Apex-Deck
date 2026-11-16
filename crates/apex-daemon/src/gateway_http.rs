@@ -1074,6 +1074,7 @@ async fn handle_chat_completions(
     };
 
     let context = BuildContext {
+        live_sessions: false,
         watchdog_managed: false,
         codex_hook: None,
         cwd: Some(scratch.path().to_path_buf()),

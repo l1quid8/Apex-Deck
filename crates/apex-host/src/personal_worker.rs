@@ -561,6 +561,11 @@ impl Host {
             let mut watch_clock = crate::assistant_watchdog::WatchClock::new(now());
             loop {
                 let Some(host) = owner.upgrade() else { break };
+                let Ok(maintenance) = host.maintenance.enter() else {
+                    drop(host);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                };
                 let mut delay = Duration::from_secs(60);
                 let at = now();
                 if let Err(error) = host.watch_delegated_work(at, watch_clock.pass(at)) {
@@ -573,7 +578,8 @@ impl Host {
                         }
                         if !tick.pushes.is_empty() {
                             let host = host.clone();
-                            tokio::spawn(async move { host.personal_push(tick.pushes).await });
+                            let push_maintenance = host.maintenance.enter().expect("scheduler owns admission");
+                            tokio::spawn(async move { let _maintenance = push_maintenance; host.personal_push(tick.pushes).await });
                         }
                     }
                     Err(error) => eprintln!("Personal assistant clock: {error}"),
@@ -589,7 +595,11 @@ impl Host {
                     Ok(claimed) => {
                         for (keys, work) in claimed {
                             let (host, tools) = (host.clone(), tools.clone());
+                            // The scheduler's permit keeps admission open until
+                            // every claimed job owns its own permit.
+                            let job_maintenance = host.maintenance.enter().expect("scheduler owns admission");
                             let job = jobs.spawn(async move {
+                                let _maintenance = job_maintenance;
                                 if let Err(error) = host.personal_do(&tools, work).await {
                                     eprintln!("Personal assistant: {error}");
                                 }
@@ -602,6 +612,7 @@ impl Host {
                         delay = delay.min(Duration::from_secs(5));
                     }
                 }
+                drop(maintenance);
                 drop(host);
                 tokio::select! {
                     Some(done) = jobs.join_next_with_id(), if !jobs.is_empty() => {

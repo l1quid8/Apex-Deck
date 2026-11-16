@@ -1,7 +1,7 @@
-"""Carry the deployed 02f3a24 Linux workaround into supported release source.
+"""Select native Linux admission or carry the deployed fix into historical release source.
 
 This runs only in the updater's disposable, unprivileged build checkout. It is
-not a security fix: it preserves the deployed SSH/local room-action behavior.
+read-only for native releases, which keep their jail-gated local CLI route.
 Unknown admission or phone routing changes refuse preparation before writing.
 """
 
@@ -90,6 +90,15 @@ def _fixed_shape(text):
         raise CompatibilityError("Unsupported or partial Linux room-action allowlist")
 
 
+# Reviewed native routes include the recorded jail verdict, the confined phone
+# entry point and the raw socket receipt gate. Never inject the legacy bypass
+# into a release with this admission architecture.
+NATIVE_REGIONS = (
+    ("pub fn local_linux_cli_surface(", "fn reply<T:", "a3704e5a993f7614d5fd51420b2feb06d6cfd341870031bb66a24a6641aa2bf3"),
+    ("    pub async fn call_with_client_capability(", "    // Tests of downstream behavior", "527fd0f45c92aa4a6c39de64832278e4041601b78fd1074828021279dc7dacb8"),
+)
+
+
 def prepare_source(source_root: Path) -> dict:
     """Verify/carry the workaround and insert its real API regression test.
 
@@ -99,6 +108,16 @@ def prepare_source(source_root: Path) -> dict:
     """
     command = Path(source_root) / COMMAND
     original = command.read_text()
+    if "call_from_local_linux_cli" in original:
+        for begin, end, expected in NATIVE_REGIONS:
+            if _digest(original[_one(original, begin):_one(original, end)]) != expected:
+                raise CompatibilityError("Unsupported native Linux admission routing")
+        for module in ("apex-host", "apex-daemon"):
+            if not (Path(source_root) / "crates" / module / "src/maintenance.rs").is_file():
+                raise CompatibilityError("Native maintenance implementation missing")
+        return {"native_maintenance": True, "carried_hotfix": False, "test_added": False,
+                "command_sha256": hashlib.sha256(original.encode()).hexdigest()}
+
     text = original
     admission, device = _regions(text)
     carried = False

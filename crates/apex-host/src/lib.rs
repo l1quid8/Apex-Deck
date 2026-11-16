@@ -52,6 +52,7 @@ mod personal_voice;
 mod model_metrics;
 pub mod events;
 pub mod quit;
+pub mod maintenance;
 pub mod host;
 pub mod command;
 #[cfg(test)]

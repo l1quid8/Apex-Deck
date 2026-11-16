@@ -179,6 +179,7 @@ impl ConcurrentRoom {
     pub fn busy(&self) -> bool {
         self.pending.load(Ordering::SeqCst) != 0
     }
+    pub fn has_cleanup_holds(&self) -> bool { !self.cleanup_holds.lock().unwrap().is_empty() }
     /// Retire only between turns, with persistence under the admission lock.
     /// A stale handle cannot admit another post after this succeeds.
     pub fn retire_if_idle<T>(&self, persist: impl FnOnce(&Room) -> Result<T, String>) -> Result<T, String> {

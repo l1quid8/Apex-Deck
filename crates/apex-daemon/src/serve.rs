@@ -83,10 +83,15 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     #[cfg(target_os = "linux")]
     let _claude = StopOnDrop(tokio::spawn({
         let data = paths.data.clone();
+        let maintenance = daemon.host.maintenance.clone();
+        let path_permit = maintenance.enter()?;
         async move {
             // Reading the login shell's PATH can take a moment; startup doesn't wait for it.
-            let path = tokio::task::spawn_blocking(apex_host::agents::login_path).await.unwrap_or_default();
-            keep_claude_signed_in(data, path, std::time::Duration::from_secs(5 * 60)).await
+            let path = tokio::task::spawn_blocking(move || {
+                let _permit = path_permit;
+                apex_host::agents::login_path()
+            }).await.unwrap_or_default();
+            keep_claude_signed_in(maintenance, data, path, std::time::Duration::from_secs(5 * 60)).await
         }
     }));
 
@@ -259,8 +264,8 @@ async fn serve_local(daemon: Arc<Daemon>, stream: ipc::Stream) {
 /// Keeps Deck's own Claude login renewed ahead of time, every `every`, so no
 /// jailed bot or gateway request finds it stale. The log says when it renews,
 /// and once per reason when it can't.
-#[cfg(target_os = "linux")]
-async fn keep_claude_signed_in(data: PathBuf, path: Option<String>, every: std::time::Duration) {
+#[cfg(any(target_os = "linux", all(unix, test)))]
+async fn keep_claude_signed_in(maintenance: std::sync::Arc<apex_host::maintenance::MaintenanceGate>, data: PathBuf, path: Option<String>, every: std::time::Duration) {
     let search = path.as_deref().map(std::ffi::OsString::from).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
     let program = apex_adapters::executable_program("claude", path.as_deref());
     let registry = apex_adapters::OwnedProcessRegistry::default();
@@ -268,6 +273,7 @@ async fn keep_claude_signed_in(data: PathBuf, path: Option<String>, every: std::
     let mut ticks = tokio::time::interval(every);
     loop {
         ticks.tick().await;
+        let Ok(_permit) = maintenance.enter() else { continue; };
         match apex_adapters::linux_jail::refresh::keep_fresh(&registry, &data, &program, &search).await {
             Ok(renewed) => {
                 if renewed { tracing::info!(provider = "claude", "[apex-deck] Renewed Deck's Claude sign-in."); }
@@ -300,9 +306,9 @@ mod tests {
     }
 
     /// No jailed bot or gateway request has to ask for it first.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
-    async fn the_daemon_renews_decks_claude_login_on_its_own() {
+    async fn maintenance_defers_background_oauth_renewal_until_released() {
         use std::time::Duration;
         let root = std::env::temp_dir().join(format!("apex-serve-claude-{}", identity::random_hex(8)));
         let login = root.join("data/logins/claude/.claude/.credentials.json");
@@ -315,7 +321,13 @@ mod tests {
             "printf '{\"claudeAiOauth\":{\"accessToken\":\"renewed\",\"refreshToken\":\"r-renewed\",\"expiresAt\":%s}}' ",
             "$(( ($(date +%s) + 28800) * 1000 )) > \"$CLAUDE_CONFIG_DIR/.credentials.json\"\n")).unwrap();
         std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let renewer = tokio::spawn(keep_claude_signed_in(root.join("data"), Some(format!("{}:/usr/bin:/bin", bin.display())), Duration::from_millis(50)));
+        let gate = std::sync::Arc::new(apex_host::maintenance::MaintenanceGate::default());
+        let stamp = apex_host::maintenance::now_ms();
+        gate.try_begin("hold".into(), stamp + 60_000, stamp, || Ok(())).unwrap();
+        let renewer = tokio::spawn(keep_claude_signed_in(gate.clone(), root.join("data"), Some(format!("{}:/usr/bin:/bin", bin.display())), Duration::from_millis(50)));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!std::fs::read_to_string(&login).unwrap().contains("r-renewed"));
+        gate.cancel("hold").unwrap();
         let renewed = async {
             while !std::fs::read_to_string(&login).unwrap().contains("r-renewed") {
                 tokio::time::sleep(Duration::from_millis(20)).await;

@@ -41,7 +41,7 @@ pub const PROTOCOL: u64 = 1;
 /// runtime where the platform supports local voice (see `OPTIONAL_CAPABILITIES`).
 pub const CAPABILITIES: &[&str] = &["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1"];
 /// Capabilities a daemon lists only when it has them.
-pub const OPTIONAL_CAPABILITIES: &[&str] = &["voice_server_v1"];
+pub const OPTIONAL_CAPABILITIES: &[&str] = &["voice_server_v1", "maintenance_v1"];
 
 /// The answer to `hello`. `apex-protocol-schema` prints its schema and
 /// `scripts/gen-protocol-types.mjs` gives the clients the matching type.
@@ -494,6 +494,7 @@ where
     };
     let mut capabilities: Vec<&'static str> = CAPABILITIES.to_vec();
     if daemon.voice.status().supported { capabilities.push("voice_server_v1"); }
+    if cfg!(target_os = "linux") { capabilities.push("maintenance_v1"); }
     // A device also learns what it may do now (so the phone can hide what
     // it can't use; the host still checks everything) and the addresses
     // advertised for this machine, to refresh its saved hints.
@@ -560,12 +561,30 @@ where
     while reading || in_flight > 0 || !waiting.is_empty() {
         tokio::select! {
             frame = input.next(), if reading => match frame {
-                Some(Ok(text)) => match {
+                Some(Ok(text)) => {
                     if guard.as_ref().is_some_and(|g| g.device().is_none()) {
                         return Ended::Revoked;
                     }
-                    read_request(&text)
-                } {
+                    let request = read_request(&text);
+                    // Host requests transfer a permit to their worker in run().
+                    // Maintenance itself must remain callable while sealed.
+                    let request_admission = match &request {
+                        Ok((_, Request::Maintenance(_) | Request::InputClosed | Request::Host(..))) | Err(_) => None,
+                        Ok((id, _)) => match daemon.host.maintenance.enter() {
+                            Ok(permit) => Some(permit),
+                            Err(why) => {
+                                if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await { return stop.into(); }
+                                continue;
+                            }
+                        },
+                    };
+                    match request {
+                    Ok((id, Request::Maintenance(request))) => {
+                        let result = if trust == Trust::Local { crate::maintenance::run(&daemon, request) }
+                            else { Err("not allowed from a remote connection".into()) };
+                        let frame = match result { Ok(value) => json!({"id":id,"ok":value}), Err(why) => json!({"id":id,"err":why}) };
+                        if let Err(stop) = send(&mut output, &mut guard, frame.to_string()).await { return stop.into(); }
+                    }
                     Ok((id, Request::InputClosed)) => {
                         if trust != Trust::Local {
                             if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "not allowed from a remote connection")).await {
@@ -690,6 +709,7 @@ where
                                 let tx = voice_tx.clone();
                                 in_flight += 1;
                                 tokio::spawn(async move {
+                                    let _maintenance = request_admission;
                                     let result = if open {
                                         match server.acquire(owner).await {
                                             Ok(lease) => crate::voice::relay::Relay::connect(lease.running())
@@ -727,6 +747,7 @@ where
                             in_flight += 1;
                             let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
                             tokio::spawn(async move {
+                                let _maintenance = request_admission;
                                 let frame = match run_management_receipt(daemon, receipt).await {
                                     Ok(value) => json!({"id":id,"ok":value}),
                                     Err(refusal) => refusal.frame(id),
@@ -782,6 +803,7 @@ where
                             in_flight += 1;
                             let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
                             tokio::spawn(async move {
+                                let _maintenance = request_admission;
                                 let frame = match crate::pair_commands::run(daemon, request).await {
                                     Ok(value) => json!({ "id": id, "ok": value }),
                                     Err(refusal) => refusal.frame(id),
@@ -849,6 +871,7 @@ where
                             return stop.into();
                         }
                     }
+                }
                 },
                 Some(Err(why)) => {
                     let _ = send(&mut output, &mut guard, refusal(Value::Null, format!("closing the connection: a frame was too long or unreadable ({why})"))).await;
@@ -975,9 +998,11 @@ fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, 
     if let Some(room) = &context.room { span.record("room", room.as_str()); }
     let session = matches!(command, Command::SessionLoad {});
     let chat_list = matches!(command, Command::ChatList {});
+    let admission = host.maintenance.enter();
     let task = {
         let host = Arc::clone(&host);
         tokio::spawn(async move {
+            let _maintenance = admission?;
             match device_intent {
                 Some((endpoint, _session, intent)) if daemon.uses_linux_device_policy() => {
                     let check = Arc::new(move || daemon.authorize_linux_device(&endpoint, &command));
@@ -1035,9 +1060,9 @@ async fn execute_management_command(daemon: &Arc<Daemon>, mut command: Value) ->
 }
 
 /// Managing remote devices: only from this machine (`Trust::Local`).
-#[derive(Debug, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, serde::Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
-enum DevicesRequest {
+pub enum DevicesRequest {
     // The variants are named for the request and the wire command carries the
     // `devices_` prefix the CLI and the phone send.
     #[serde(rename = "devices_list")]
@@ -1070,6 +1095,7 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
 }
 
 enum Request {
+    Maintenance(crate::maintenance::Request),
     InputClosed,
     Voice(crate::voice::session::VoiceRequest),
     VoiceFrame(Value),
@@ -1116,6 +1142,10 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
         return serde_json::from_value(value)
             .map(|r| (id, Request::Voice(r)))
             .map_err(|e| refusal(json!(id), e.to_string()));
+    }
+    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("maintenance_")) {
+        return serde_json::from_value(value).map(|request| (id, Request::Maintenance(request)))
+            .map_err(|error| refusal(json!(id), error.to_string()));
     }
     if value["cmd"] == "hello" {
         return Err(refusal(json!(id), "already said hello"));
@@ -1285,6 +1315,35 @@ mod tests {
         let mut client = connect_to(&daemon, trust);
         client._data = Some(data);
         client
+    }
+
+    #[tokio::test]
+    async fn maintenance_blocks_new_commands_and_only_local_connections_can_cancel() {
+        let (daemon, _data) = daemon();
+        let mut local = connect_to(&daemon, Trust::Local); local.hello().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let now = apex_host::maintenance::now_ms();
+                if daemon.host.maintenance.try_begin("lease".into(), now+60_000, now, || daemon.host.maintenance_blockers()).is_ok() { break; }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }).await.unwrap();
+        local.send(json!({"id":1,"cmd":"session_save","args":{"session":{"version":1,"workspaces":[],"panes":[],"profiles":[]}}})).await;
+        assert!(local.until_reply(1).await.last().unwrap()["err"].as_str().unwrap().starts_with("maintenance:"));
+        assert!(daemon.host.session_load().unwrap().is_none());
+        let mut token = connect_to(&daemon, Trust::Token);
+        token.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret"}})).await;
+        assert!(token.next().await.unwrap().get("ok").is_some());
+        token.send(json!({"id":2,"cmd":"maintenance_cancel","args":{"lease":"lease"}})).await;
+        assert_eq!(token.until_reply(2).await.last().unwrap()["err"], "not allowed from a remote connection");
+        token.send(json!({"id":3,"cmd":"maintenance_begin","args":{"nonce":"a".repeat(64)}})).await;
+        assert_eq!(token.until_reply(3).await.last().unwrap()["err"], "not allowed from a remote connection");
+        local.send(json!({"id":4,"cmd":"maintenance_cancel","args":{"lease":"wrong"}})).await;
+        assert!(local.until_reply(4).await.last().unwrap().get("err").is_some());
+        local.send(json!({"id":5,"cmd":"maintenance_cancel","args":{"lease":"lease"}})).await;
+        assert_eq!(local.until_reply(5).await.last().unwrap()["ok"]["cancelled"], true);
+        local.send(json!({"id":6,"cmd":"session_load"})).await;
+        assert_eq!(local.until_reply(6).await.last().unwrap()["ok"], Value::Null);
     }
 
     #[tokio::test]
@@ -1462,6 +1521,7 @@ mod tests {
         if crate::voice::platform_support().is_ok() {
             caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
         }
+        if cfg!(target_os = "linux") { caps.as_array_mut().unwrap().push(json!("maintenance_v1")); }
         caps
     }
 
