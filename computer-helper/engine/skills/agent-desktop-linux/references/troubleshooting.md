@@ -27,7 +27,7 @@ Start with `agent-desktop status` and `agent-desktop list-apps`.
 | `ACTION_NOT_SUPPORTED`, `native_window_unproven` | The display server did not answer the native window read while the listing ran. `launch` reads again until its timeout before it answers this. Run `list-windows` again once the display has settled. A window of another process whose native surfaces cannot be classified stays listed and never refuses the listing |
 | `STALE_REF` with `kind: resolution_identity_unknown`, or a click timeout with that `last_report` | Strict resolution could not prove a menu ref's live identity. Do not infer a hung app from a readable menu; see the shell reference |
 | `APP_UNRESPONSIVE` | The app is stopped (`SIGSTOP`) or its main loop is blocked. Resume it; `close-app --force` ends it |
-| `STALE_REF` | The UI changed or the window closed. See `details.kind`: `resolve_no_candidate` means no live element matched and is retryable (an action waits its budget before it reports it); `resolve_target_destroyed` needs a replacement target; `menu_closed` needs its opener reopened before a fresh menu snapshot. The last two forbid retrying the old ref |
+| `STALE_REF` | The element is gone or no longer matches. `details.kind: saved_ref_absent` means no live element matched the stored role and stable fields, so take a fresh snapshot; `retained_object_stale` never appears on Linux. `menu_closed` needs its opener reopened before a fresh menu snapshot; `resolve_target_destroyed` needs a replacement target; a menu or tray `resolve_no_candidate` is retryable |
 | `ACTION_NOT_SUPPORTED`, `selection_index_unproven` | The toolkit's selection indices cannot identify accessible rows safely. A headless select cannot map the row and refreshing cannot help. On X11 run `--headed select` with the same ref; see "Toolkit limits" |
 | `INTERNAL` "private file parent is accessible by group or other users" | The state root is group-writable or world-accessible. `chmod 700` it; see `references/bus-and-permissions.md` |
 
@@ -184,7 +184,7 @@ D-Bus or X11 error.
   modifiers and `drag`.
 - `cursor-overlay` on Wayland: succeeds as a setting only. `enable` returns
   `data.rendered: false` and no overlay is drawn, so do not wait for one.
-- `open-system-surface --surface taskbar`: `PLATFORM_NOT_SUPPORTED`. Use the
+- `open-system-surface --surface taskbar`: `INVALID_ARGS`. Use the
   advertised GNOME surfaces; see `references/shell-tray-and-notifications.md`.
 - Ordinary app pointer commands and window screenshots on Wayland. Shell ref
   clicks also refuse on Wayland, and on X11 unless the shell's own tree proves the

@@ -80,6 +80,7 @@ impl ObservationOps for DoubleCheckAdapter {
     ) -> Result<crate::adapter::hit_test::HitTestResult, AdapterError> {
         Ok(crate::adapter::hit_test::HitTestResult::ReachesTarget)
     }
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for DoubleCheckAdapter {
@@ -245,6 +246,7 @@ impl ObservationOps for DisabledAfterLeaseAdapter {
         self.bounds_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Some(bounds()))
     }
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for DisabledAfterLeaseAdapter {}
@@ -288,7 +290,7 @@ fn a_disabled_element_fails_closed_without_sampling_even_with_a_stale_hash() {
             context: &CommandContext::default(),
         },
         ActionRequest::headed(Action::DoubleClick).with_timeout_ms(Some(5_000)),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .err()
     .unwrap();
@@ -311,7 +313,7 @@ fn run_with_entry(
             context: &CommandContext::default(),
         },
         request.with_timeout_ms(Some(timeout_ms)),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .unwrap()
 }
@@ -329,7 +331,7 @@ fn lease_acquisition_receives_the_exact_original_deadline() {
         },
         ActionRequest::headless(Action::Click),
         deadline,
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .err()
     .unwrap();

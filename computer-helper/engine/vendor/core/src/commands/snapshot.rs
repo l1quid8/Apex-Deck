@@ -135,18 +135,20 @@ pub(crate) fn format_snapshot_fields(
 
     let mut body = json!({
         "app": win.app,
-        "window": {
-            "id": win.id,
-            "title": win.title
-        },
         "ref_count": ref_count,
         "snapshot_id": result.snapshot_id,
         "complete": result.complete,
         "tree": tree
     });
+    if !win.is_process_owner() {
+        body["window"] = json!({ "id": win.id, "title": win.title });
+    }
     if !result.complete {
         body["truncated"] = json!(true);
         body["nodes_observed"] = json!(result.nodes_observed);
+    }
+    if result.identity_unproven.is_some() {
+        body["identity_unproven"] = json!(true);
     }
     if let Some(ms) = elapsed_ms {
         body["elapsed_ms"] = json!(ms);

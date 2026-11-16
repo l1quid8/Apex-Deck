@@ -135,6 +135,24 @@ pub trait ObservationOps: Send + Sync {
         Err(AdapterError::not_supported("resolve_element_strict"))
     }
 
+    /// Whether this adapter records an element token on observed nodes, so a
+    /// shallow capture can re-identify its refs without a whole-window read.
+    fn retains_element_tokens(&self) -> bool {
+        false
+    }
+
+    /// Checks platform-specific context that the saved ref's identity predicate
+    /// does not encode, against the token from the same observation that matched
+    /// it. This must not take a second live read: rooted finds and drills publish
+    /// refs from that observation. Adapters without extra context accept it.
+    fn validate_saved_ref_context(
+        &self,
+        _entry: &RefEntry,
+        _observed_token: Option<&str>,
+    ) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
     fn resolve_locator_anchor(
         &self,
         _entry: &RefEntry,
@@ -276,14 +294,16 @@ pub trait ObservationOps: Send + Sync {
 
     /// Strict receiver proof for a physical pointer move that has no element
     /// action to carry it. An adapter that can prove who receives the pointer
-    /// refuses with a `not_delivered` error when the target does not.
+    /// refuses with a `not_delivered` error when the target does not. `handle`
+    /// is the element the caller already resolved under the interaction lease,
+    /// so the adapter never re-identifies the ref by a rule of its own.
     fn confirm_pointer_receiver(
         &self,
-        entry: &RefEntry,
+        handle: &NativeHandle,
         point: crate::Point,
         deadline: Deadline,
     ) -> Result<(), AdapterError> {
-        let _ = (entry, point, deadline);
+        let _ = (handle, point, deadline);
         Ok(())
     }
 }

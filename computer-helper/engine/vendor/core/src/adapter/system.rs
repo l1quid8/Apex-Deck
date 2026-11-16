@@ -111,15 +111,7 @@ pub trait SystemOps: Send + Sync {
         if supported.contains(&requested) {
             return Ok(());
         }
-        Err(AdapterError::new(
-            crate::ErrorCode::PlatformNotSupported,
-            format!("Snapshot surface '{}' is not supported on this platform", requested.as_str()),
-        )
-        .with_details(serde_json::json!({
-            "requested_surface": requested.as_str(),
-            "supported_surfaces": supported.into_iter().map(crate::SnapshotSurface::as_str).collect::<Vec<_>>()
-        }))
-        .with_suggestion("Choose one of the supported snapshot surfaces"))
+        Err(requested.unavailable_error(&supported))
     }
 
     /// Registers caller-scoped wake hints before the initial predicate read.
@@ -137,9 +129,9 @@ pub trait SystemOps: Send + Sync {
     /// presents, in the same shape the window observation stack consumes. It
     /// takes the lease because it mutates OS chrome and takes the foreground;
     /// the policy travels separately because the lease carries no
-    /// focus-steal refusal. Implementations must refuse with `POLICY_DENIED`
-    /// before anything is raised when `policy.allow_focus_steal` is false,
-    /// must return an already-present surface without raising it again, and
+    /// focus-steal refusal. Implementations that raise anything must refuse with
+    /// `POLICY_DENIED` first when `policy.allow_focus_steal` is false, must
+    /// return an already-present surface without raising it again, and
     /// must answer a kind their platform does not expose with a refusal that
     /// names what a caller should ask for instead - never with this default.
     fn open_system_surface(

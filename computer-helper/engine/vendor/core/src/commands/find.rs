@@ -200,5 +200,9 @@ mod tests;
 mod test_support;
 
 #[cfg(test)]
+#[path = "find_rooted_tests.rs"]
+mod rooted_tests;
+
+#[cfg(test)]
 #[path = "find_live_tests.rs"]
 mod live_tests;

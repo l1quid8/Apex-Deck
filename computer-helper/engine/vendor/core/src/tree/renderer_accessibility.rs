@@ -13,10 +13,15 @@ use crate::{
 const INITIAL_ACTIVATION_RETRY: std::time::Duration = std::time::Duration::from_millis(25);
 const MAX_ACTIVATION_RETRY: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Observes through the adapter, settling a renderer that has not published
+/// its accessibility tree yet. `lease` is the interaction lease the caller
+/// already holds, if any: activation reuses it rather than queueing behind the
+/// same process's non-reentrant lease until the deadline expires.
 pub(crate) fn observe_tree(
     adapter: &dyn PlatformAdapter,
     root: ObservationRoot<'_>,
     request: &ObservationRequest,
+    lease: Option<&crate::InteractionLease>,
 ) -> Result<ObservedTree, AppError> {
     let mut request = *request;
     let mut activated = false;
@@ -26,7 +31,7 @@ pub(crate) fn observe_tree(
             Ok(tree) => return Ok(tree),
             Err(error) if error.requires_renderer_accessibility_activation() => {
                 if !activated {
-                    request.deadline = activate(adapter, root, request.deadline)?;
+                    request.deadline = activate(adapter, root, request.deadline, lease)?;
                     activated = true;
                 }
                 let remaining = request.deadline.remaining();
@@ -45,9 +50,10 @@ fn activate(
     adapter: &dyn PlatformAdapter,
     root: ObservationRoot<'_>,
     observing: crate::Deadline,
+    lease: Option<&crate::InteractionLease>,
 ) -> Result<crate::Deadline, AppError> {
     let started = std::time::Instant::now();
-    switch_on(adapter, root).map_err(|error| match error {
+    switch_on(adapter, root, lease).map_err(|error| match error {
         AppError::Adapter(ref adapter_error) if adapter_error.code == crate::ErrorCode::Timeout => {
             observing.timeout_error().into()
         }
@@ -56,9 +62,19 @@ fn activate(
     Ok(observing.extended_by(started.elapsed()))
 }
 
-fn switch_on(adapter: &dyn PlatformAdapter, root: ObservationRoot<'_>) -> Result<(), AppError> {
-    let acquired = adapter.acquire_interaction_lease(crate::Deadline::standard()?)?;
-    adapter.activate_renderer_accessibility(root_process(root)?, &acquired)?;
+fn switch_on(
+    adapter: &dyn PlatformAdapter,
+    root: ObservationRoot<'_>,
+    lease: Option<&crate::InteractionLease>,
+) -> Result<(), AppError> {
+    let process = root_process(root)?;
+    match lease {
+        Some(lease) => adapter.activate_renderer_accessibility(process, lease)?,
+        None => {
+            let acquired = adapter.acquire_interaction_lease(crate::Deadline::standard()?)?;
+            adapter.activate_renderer_accessibility(process, &acquired)?;
+        }
+    }
     Ok(())
 }
 

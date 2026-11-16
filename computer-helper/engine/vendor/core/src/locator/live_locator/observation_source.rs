@@ -10,6 +10,9 @@ pub enum ObservationSource {
         /// must record that, or re-resolving it later searches the window and
         /// reports the element missing.
         surface: crate::SnapshotSurface,
+        /// Whether the window was read with Chromium renderer accessibility
+        /// forced; a ref materialized from it records that for resolution.
+        renderer_accessibility_forced: bool,
     },
     Element {
         entry: Box<RefEntry>,
@@ -23,6 +26,7 @@ impl ObservationSource {
             ObservationRoot::Window(window) => Self::Window {
                 window: (*window).clone(),
                 surface,
+                renderer_accessibility_forced: false,
             },
             ObservationRoot::Element {
                 entry, root_ref, ..

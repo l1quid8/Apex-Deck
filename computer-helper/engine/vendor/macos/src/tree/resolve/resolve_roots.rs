@@ -1,21 +1,15 @@
 use agent_desktop_core::{AdapterError, RefEntry, SnapshotSurface};
 
 use super::resolve_read_context::ResolveReadContext;
-use crate::tree::AXElement;
 use crate::tree::element_dedupe::push_unique;
 use crate::tree::properties::element::element_for_pid;
-
-#[cfg(target_os = "macos")]
-pub(in crate::tree) struct CandidateRoots {
-    pub roots: Vec<AXElement>,
-    pub scope_verified: bool,
-}
+use crate::tree::{AXElement, shell_surface::extras_menu_bar};
 
 #[cfg(target_os = "macos")]
 pub(in crate::tree) fn candidate_roots(
     entry: &RefEntry,
     context: &mut ResolveReadContext,
-) -> Result<CandidateRoots, AdapterError> {
+) -> Result<Vec<AXElement>, AdapterError> {
     let deadline = context.deadline;
     crate::tree::locator_deadline::remaining(deadline)?;
     let pid = crate::system::process::process_identity::to_pid_t(entry.process.pid)?;
@@ -30,6 +24,9 @@ pub(in crate::tree) fn candidate_roots(
     super::resolve_source_app::verify_source_application(&application, entry, context)?;
     if source_window_scope_required(entry) {
         return source_window_scoped_roots(&application, entry, context);
+    }
+    if entry.source.is_process_rooted() {
+        return Ok(vec![application]);
     }
 
     let mut roots = Vec::new();
@@ -55,10 +52,7 @@ pub(in crate::tree) fn candidate_roots(
         read_root_array(&application, "AXChildren", context)?,
     );
     crate::tree::locator_deadline::remaining(deadline)?;
-    Ok(CandidateRoots {
-        roots,
-        scope_verified: false,
-    })
+    Ok(roots)
 }
 
 #[cfg(target_os = "macos")]
@@ -66,7 +60,7 @@ fn source_surface_scoped_roots(
     application: &AXElement,
     entry: &RefEntry,
     context: &mut ResolveReadContext,
-) -> Result<CandidateRoots, AdapterError> {
+) -> Result<Vec<AXElement>, AdapterError> {
     let deadline = context.deadline;
     let pid = crate::system::process::process_identity::to_pid_t(entry.process.pid)?;
     let root = match entry.source.source_surface {
@@ -91,14 +85,11 @@ fn source_surface_scoped_roots(
                         )
                     })?;
                     let root = surface_or_bridge_error(root, error)?;
-                    return Ok(CandidateRoots {
-                        scope_verified: true,
-                        roots: vec![root],
-                    });
+                    return Ok(vec![root]);
                 }
                 Err(error) => return Err(error),
             };
-            match scoped.roots.into_iter().next() {
+            match scoped.into_iter().next() {
                 Some(window) => crate::tree::surfaces::surface_in_window(
                     &window,
                     entry.source.source_surface,
@@ -113,7 +104,8 @@ fn source_surface_scoped_roots(
         SnapshotSurface::Sheet => crate::tree::surfaces::sheet_for_pid(pid, deadline)?,
         SnapshotSurface::Popover => crate::tree::surfaces::popover_for_pid(pid, deadline)?,
         SnapshotSurface::Alert => crate::tree::surfaces::alert_for_pid(pid, deadline)?,
-        SnapshotSurface::Window => None,
+        SnapshotSurface::Dock => Some(application.clone()),
+        SnapshotSurface::MenuBarExtras => extras_menu_bar(pid, deadline)?,
         _ => None,
     };
     let Some(root) = root else {
@@ -128,10 +120,7 @@ fn source_surface_scoped_roots(
             ),
         );
     };
-    Ok(CandidateRoots {
-        roots: vec![root],
-        scope_verified: true,
-    })
+    Ok(vec![root])
 }
 
 #[cfg(target_os = "macos")]
@@ -139,7 +128,7 @@ fn source_window_scoped_roots(
     application: &AXElement,
     entry: &RefEntry,
     context: &mut ResolveReadContext,
-) -> Result<CandidateRoots, AdapterError> {
+) -> Result<Vec<AXElement>, AdapterError> {
     let deadline = context.deadline;
     if let Some(id) = entry.source.source_window_id.as_deref() {
         if source_window_number(entry).is_none() {
@@ -176,19 +165,7 @@ fn source_window_scoped_roots(
             context,
         )?
     };
-    let scope_verified =
-        source_scope_verified(entry.source.source_window_id.as_deref(), window.is_some());
-    Ok(CandidateRoots {
-        scope_verified,
-        roots: window.into_iter().collect(),
-    })
-}
-
-pub(in crate::tree) fn source_scope_verified(
-    source_window_id: Option<&str>,
-    matched: bool,
-) -> bool {
-    source_window_id.is_some() && matched
+    Ok(window.into_iter().collect())
 }
 
 #[cfg(target_os = "macos")]

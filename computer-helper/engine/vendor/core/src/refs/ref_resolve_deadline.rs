@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::{
-    AdapterError, Deadline, ErrorCode, PlatformAdapter, RefEntry,
+    AdapterError, Deadline, ErrorCode, NativeHandle, PlatformAdapter, RefEntry,
     refs::resolve_attempt_outcome::ResolveAttemptOutcome,
 };
 
@@ -20,11 +20,34 @@ pub(crate) fn resolve_within_deadline(
     adapter: &dyn PlatformAdapter,
     entry: &RefEntry,
     deadline: Deadline,
+    lease: Option<&crate::InteractionLease>,
+) -> ResolveAttemptOutcome {
+    attempt_within_deadline(deadline, |slice| {
+        crate::refs::resolve_saved_ref::resolve_saved_ref(adapter, entry, slice, lease)
+    })
+}
+
+/// Runs one provisional landing attempt under the same slice as
+/// [`resolve_within_deadline`]. Its handle is fit only for a wait that a full
+/// resolution under the interaction lease follows before anything is sent.
+pub(crate) fn land_within_deadline(
+    adapter: &dyn PlatformAdapter,
+    entry: &RefEntry,
+    deadline: Deadline,
+) -> ResolveAttemptOutcome {
+    attempt_within_deadline(deadline, |slice| {
+        crate::refs::resolve_saved_ref::land_saved_ref(adapter, entry, slice)
+    })
+}
+
+fn attempt_within_deadline(
+    deadline: Deadline,
+    attempt: impl FnOnce(Deadline) -> Result<NativeHandle, AdapterError>,
 ) -> ResolveAttemptOutcome {
     if deadline.remaining_slice(RESOLVE_ATTEMPT).is_err() {
         return ResolveAttemptOutcome::DeadlinePassed;
     }
-    match adapter.resolve_element_strict(entry, deadline.capped(RESOLVE_ATTEMPT)) {
+    match attempt(deadline.capped(RESOLVE_ATTEMPT)) {
         Ok(_) if deadline.is_expired() => ResolveAttemptOutcome::DeadlinePassed,
         Ok(handle) => ResolveAttemptOutcome::Resolved(handle),
         Err(error) => classify_error(error, deadline),

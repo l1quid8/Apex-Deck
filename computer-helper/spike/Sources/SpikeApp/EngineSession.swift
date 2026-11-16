@@ -49,7 +49,7 @@ final class EngineSession {
   /// Tools whose action is one discrete press, so the app took it or it did not. Once the engine
   /// reports a delivery the action is finished. Typing is deliberately absent: half the text may
   /// have landed, so a failed one must stay an error a model can correct.
-  private static let pressTools: Set<String> = ["click", "click_point", "press_key", "reveal", "scroll", "navigate"]
+  private static let pressTools: Set<String> = ["click", "click_point", "press_key", "reveal", "scroll", "navigate", "control"]
 
   /// An action that finished must never read as a failure: a model would repeat it. That is true
   /// for a press whenever the engine says it was delivered, including the engine's own scope-less
@@ -112,7 +112,16 @@ final class EngineSession {
       output += "last_action: " + Self.actionSummary(action) + "\n"
     }
     lastAction = nil
-    guard output.utf8.count <= 24_000 else { current = nil; throw Refusal("engine_output_too_large") }
+    if output.utf8.count > 24_000 {
+      // Keep the snapshot and its controls; cut the text at a line boundary.
+      var kept = "", size = 0
+      for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
+        let bytes = line.utf8.count + 1
+        if size + bytes > 23_800 { break }
+        kept += line + "\n"; size += bytes
+      }
+      output = kept + "reading: truncated; reveal or read a smaller area for more\n"
+    }
     return Snapshot(id: captured.id, app: native.app, launch: native.launch,
       window: native.window, document: native.document, focus: native.focus,
       value: native.value, range: native.range, epoch: native.epoch,
@@ -154,6 +163,23 @@ final class EngineSession {
     } catch let error as Refusal where error.code.hasPrefix("engine_action_not_supported") {
       throw Refusal(error.code.replacingOccurrences(of: "engine_action_not_supported", with: "scroll_not_supported_use_reveal"))
     }
+  }
+
+  static let controlActions: Set<String> = ["toggle", "check", "uncheck", "expand", "collapse", "select", "set_value"]
+  @discardableResult
+  func control(element: Int, action: String, value: String?, s: Snapshot, id: String, latch: Latch, ax: Accessibility) throws -> [String: Any] {
+    guard Self.controlActions.contains(action), (value != nil) == (action == "select" || action == "set_value"),
+      (value?.utf8.count ?? 0) <= 16_384 else { throw Refusal("invalid_arguments") }
+    try latch.check(id, epoch: s.epoch)
+    let ref = try reference(element: element, snapshot: s.id)
+    try ax.validate(s)
+    current = nil
+    // Generic overlay label: a set value is never echoed.
+    let result = try engine.control(observation: s.id, ref: ref, action: action, value: value, overlayLabel: action.replacingOccurrences(of: "_", with: " ").capitalized) {
+      try self.checkContinuation(s, id: id, latch: latch)
+    }
+    lastAction = result
+    return result
   }
 
   @discardableResult

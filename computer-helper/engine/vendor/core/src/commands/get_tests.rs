@@ -53,6 +53,12 @@ impl ObservationOps for LiveBoundsAdapter {
         }
         Ok(*self.bounds.lock().unwrap())
     }
+    crate::adapter::saved_ref_scope!(nodes: &[
+        ("textfield", Some("text-input"), None),
+        ("textfield", Some("Search"), None),
+        ("cell", None, Some("42")),
+        ("button", Some("Close"), None),
+    ]);
 }
 
 impl ActionOps for LiveBoundsAdapter {}

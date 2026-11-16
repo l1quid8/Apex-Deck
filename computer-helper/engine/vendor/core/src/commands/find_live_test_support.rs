@@ -8,6 +8,8 @@ use crate::{
 };
 
 pub(crate) const FRAMED_LABEL: &str = "FramedLabel";
+pub(crate) const TOKEN_ROOT: &str = "axtok1:find-root";
+pub(crate) const TOKEN_ROOT_NAME: &str = "Root";
 
 pub(crate) fn framed_label_screen_bounds() -> crate::Rect {
     crate::Rect {
@@ -30,6 +32,10 @@ fn framed_label_window_bounds() -> crate::Rect {
 pub(crate) struct LiveFindAdapter {
     structurally_complete: bool,
     framed_label: bool,
+    token_root: bool,
+    token_matches: bool,
+    unread_member: bool,
+    window_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl LiveFindAdapter {
@@ -37,21 +43,64 @@ impl LiveFindAdapter {
         Self {
             structurally_complete: true,
             framed_label: false,
+            token_root: false,
+            token_matches: false,
+            unread_member: false,
+            window_reads: Default::default(),
         }
     }
 
     pub(crate) fn incomplete() -> Self {
         Self {
             structurally_complete: false,
-            framed_label: false,
+            ..Self::complete()
         }
     }
 
     pub(crate) fn with_framed_label() -> Self {
         Self {
-            structurally_complete: true,
             framed_label: true,
+            ..Self::complete()
         }
+    }
+
+    /// A window whose root element carries an element token while the elements
+    /// inside it carry none.
+    pub(crate) fn with_token_root() -> Self {
+        Self {
+            token_root: true,
+            ..Self::complete()
+        }
+    }
+
+    /// A token root whose inner elements carry tokens too.
+    pub(crate) fn with_token_root_and_matches() -> Self {
+        Self {
+            token_matches: true,
+            ..Self::with_token_root()
+        }
+    }
+
+    /// A token root whose matches carry tokens beside a tokenless member whose
+    /// actions are still unread, which hydration could make publishable.
+    pub(crate) fn with_token_root_and_unread_member() -> Self {
+        Self {
+            unread_member: true,
+            ..Self::with_token_root_and_matches()
+        }
+    }
+
+    pub(crate) fn window_reads(&self) -> usize {
+        self.window_reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn button(&self, name: &str) -> LocatorEvidence {
+        let mut evidence = Self::evidence("button", Some(name));
+        if self.token_matches {
+            evidence.identifiers =
+                IdentifierEvidence::absent().with_retained_object(format!("axtok1:{name}"));
+        }
+        evidence
     }
 
     fn evidence(role: &str, name: Option<&str>) -> LocatorEvidence {
@@ -85,11 +134,19 @@ impl ObservationOps for LiveFindAdapter {
         request: &ObservationRequest,
     ) -> Result<ObservedTree, AdapterError> {
         if let ObservationRoot::Element { entry, .. } = &root {
+            let own = Self::evidence(&entry.identity.role, entry.identity.name.as_deref());
+            let mut children = if self.token_root {
+                vec![self.node(self.button("OnlyInWindowTwo"), Vec::new())]
+            } else {
+                Vec::new()
+            };
+            if self.unread_member {
+                let mut member = Self::evidence("group", Some("Unread"));
+                member.ref_evidence.available_actions = LocatorField::Unknown;
+                children.push(self.node(member, Vec::new()));
+            }
             return ObservedTree::from_roots(
-                vec![self.node(
-                    Self::evidence(&entry.identity.role, entry.identity.name.as_deref()),
-                    Vec::new(),
-                )],
+                vec![self.node(own, children)],
                 ObservationSource::from_root(&root, request.surface),
                 LocatorStats::default(),
                 self.structurally_complete,
@@ -99,17 +156,25 @@ impl ObservationOps for LiveFindAdapter {
             return Err(AdapterError::internal("expected locator root"));
         };
         let window = *window;
+        self.window_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let marker = if window.id == "w-2" {
             "OnlyInWindowTwo"
         } else {
             "OnlyInWindowOne"
         };
-        let mut children = vec![self.node(Self::evidence("button", Some(marker)), Vec::new())];
+        let mut children = vec![self.node(self.button(marker), Vec::new())];
         if self.framed_label {
             let mut label = Self::evidence("statictext", Some(FRAMED_LABEL));
             label.ref_evidence.bounds = LocatorField::Known(framed_label_screen_bounds());
             label.ref_evidence.window_bounds = LocatorField::Known(framed_label_window_bounds());
             children.push(self.node(label, Vec::new()));
+        }
+        if self.token_root {
+            let mut token_root = Self::evidence("group", Some(TOKEN_ROOT_NAME));
+            token_root.identifiers =
+                IdentifierEvidence::absent().with_retained_object(TOKEN_ROOT.into());
+            children = vec![self.node(token_root, children)];
         }
         let root_node = self.node(Self::evidence("window", Some(&window.title)), children);
         ObservedTree::from_roots(
@@ -151,6 +216,14 @@ impl ObservationOps for LiveFindAdapter {
                 },
             },
         ])
+    }
+
+    fn resolve_element_strict(
+        &self,
+        _entry: &crate::refs::RefEntry,
+        _deadline: crate::Deadline,
+    ) -> Result<NativeHandle, AdapterError> {
+        Ok(NativeHandle::null())
     }
 
     fn resolve_locator_anchor(

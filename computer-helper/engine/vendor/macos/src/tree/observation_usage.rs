@@ -1,10 +1,13 @@
 use agent_desktop_core::ObservationBudget;
 
+use crate::tree::properties::selection_verdicts::SelectionVerdicts;
+
 pub(crate) struct ObservationUsage {
     limits: ObservationBudget,
     nodes: usize,
     edges: usize,
     text_bytes: usize,
+    pub(crate) selection_verdicts: SelectionVerdicts,
 }
 
 impl ObservationUsage {
@@ -18,6 +21,7 @@ impl ObservationUsage {
             nodes: 0,
             edges: 0,
             text_bytes: 0,
+            selection_verdicts: SelectionVerdicts::default(),
         }
     }
 

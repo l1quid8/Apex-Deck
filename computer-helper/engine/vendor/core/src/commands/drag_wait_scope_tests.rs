@@ -62,10 +62,10 @@ impl CrossAppWaitAdapter {
     }
 
     fn window_node(window: &WindowInfo) -> AccessibilityNode {
-        let children = (window.id == "w-2")
-            .then(Self::dropped_confirmation)
-            .into_iter()
-            .collect();
+        let mut children = vec![crate::adapter::minimal_accessibility_node("button", "Item")];
+        if window.id == "w-2" {
+            children.push(Self::dropped_confirmation());
+        }
         let mut node = crate::adapter::minimal_accessibility_node("window", &window.title);
         node.children = children;
         node
@@ -78,6 +78,12 @@ impl ObservationOps for CrossAppWaitAdapter {
         root: crate::locator::live_locator::ObservationRoot<'_>,
         _request: &crate::locator::live_locator::ObservationRequest,
     ) -> Result<crate::locator::live_locator::ObservedTree, AdapterError> {
+        if matches!(
+            root,
+            crate::locator::live_locator::ObservationRoot::Element { .. }
+        ) {
+            return crate::adapter::saved_ref_element_tree(root);
+        }
         let crate::locator::live_locator::ObservationRoot::Window(window) = root else {
             return Err(AdapterError::internal("expected window root"));
         };
@@ -127,6 +133,7 @@ impl ObservationOps for CrossAppWaitAdapter {
         "Item",
         [crate::actions::capability::CLICK]
     );
+    crate::adapter::saved_ref_anchor!();
 }
 
 impl ActionOps for CrossAppWaitAdapter {}
@@ -247,12 +254,18 @@ fn drag_wait_scoped_to_source_window_misses_destination_confirmation() {
     assert!(details["after_action"].get("dragged").is_none());
     let observed = adapter.observed.lock().unwrap();
     assert!(
-        observed.iter().all(|id| id == "w-1"),
-        "wait must only inspect the from window: {observed:?}",
+        observed.iter().filter(|id| *id == "w-1").count() > 1,
+        "the wait must keep polling the from window: {observed:?}",
     );
     assert!(
-        !observed.iter().any(|id| id == "w-2"),
-        "the drop-target window must never be inspected under from scope: {observed:?}",
+        observed.iter().filter(|id| *id == "w-2").count() <= 2,
+        "the drop-target window is observed once per endpoint resolution and never by the wait: \
+         {observed:?}",
+    );
+    assert!(
+        observed.iter().filter(|id| *id == "w-1").count()
+            > observed.iter().filter(|id| *id == "w-2").count(),
+        "the wait polls the from window, not the drop target: {observed:?}",
     );
     assert!(adapter.captured.lock().unwrap().is_some());
 }

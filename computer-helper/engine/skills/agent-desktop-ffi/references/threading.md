@@ -61,8 +61,9 @@ the owner adapter token no longer exists.
 
 ## Native-handle thread ownership
 
-`ad_resolve_element_exact` and `ad_find_exact` return an opaque
-`AdNativeHandle`. Native handles are adapter-bound and thread-affine:
+`ad_find_exact` returns an opaque `AdNativeHandle`. `ad_resolve_element_exact`
+never produces one: it fails with `AD_RESULT_ERR_ACTION_NOT_SUPPORTED`. Native handles
+are adapter-bound and thread-affine:
 
 - resolve, use, and release a handle on the same thread;
 - pass the same adapter that produced the handle;

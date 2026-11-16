@@ -3,12 +3,17 @@ use agent_desktop_core::{AdapterError, RefEntry};
 use crate::tree::AXElement;
 use crate::tree::resolve::resolve_read_context::ResolveReadContext;
 
+/// Window-owned sources are checked by application name. A process-owned source is already
+/// identified by its saved pid and process instance, which resolution verifies first.
 #[cfg(target_os = "macos")]
 pub(in crate::tree) fn verify_source_application(
     application: &AXElement,
     entry: &RefEntry,
     context: &mut ResolveReadContext,
 ) -> Result<(), AdapterError> {
+    if entry.source.is_process_owned() {
+        return Ok(());
+    }
     let Some(expected) = entry
         .source
         .source_app

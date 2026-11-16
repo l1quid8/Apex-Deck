@@ -15,6 +15,30 @@ The helper asks before a bot first uses an app. **Allow Once** ends with that bo
 
 The helper ships inside `Apex Deck.app/Contents/Resources/Unified Computer Use.app`. Approve the copy inside the installed Deck application, rather than an older prototype or a source-tree build. The macOS permission-list name is **Unified Computer Use**. Changing from the earlier Spike app requires new grants; the old app's grants do not establish permission for this one.
 
+## Untethered computer use
+
+For a bot you trust, open its settings and turn on **Untethered computer use**. It needs Full access and asks you to confirm once. An untethered bot:
+
+- opens and controls any Mac app without the helper's per-app approval card, in every Work thread it joins;
+- can send Cmd and Control shortcuts: the helper brings the app to the front first. Quit (Cmd-Q and variants) and Force Quit stay blocked.
+
+These still apply: protected apps (System Settings, Keychain, Passwords, sign-in and security windows), password fields, app identity checks, Stop (Deck and the menu bar), Plan staying read-only, and macOS's own Accessibility and Screen Recording permissions. Lowering the bot's access or turning the switch off ends the current authority at once. Personal assistants keep their own Full-trust setting.
+
+Every bot also benefits from two reliability changes: a call that arrives while another bot's action is running now waits up to eight seconds instead of failing with `action_busy`, and a screen reading that is too large is cut at a line boundary instead of failing with `engine_output_too_large`.
+
+## Keep working while I'm away
+
+Untethered bots normally stop when your Mac locks. To let them keep going while you step away, choose **Keep Working While I'm Away** from the Unified Computer Use menu bar icon and confirm. It can only be turned on there, on the Mac itself, never from Deck's settings, your phone or remote access. Deck's settings show whether it is on.
+
+While it is on and at least one untethered bot has a turn running:
+
+- the Mac does not lock or sleep its display when idle;
+- after 5 minutes with no keyboard or mouse input, a black shield covers every display (hidden from screen sharing and screenshots);
+- any keyboard or mouse input while the shield is up locks the Mac at once, the same way **Lock Screen** does. If macOS refuses the lock, the shield stays until you confirm with Touch ID or your password;
+- when the last untethered turn ends or you press Stop, the Mac locks if the shield was up, and normal idle locking resumes.
+
+Before the shield goes up, the desktop is unlocked as it would be before your normal idle lock. If you lock the Mac yourself (Control-Command-Q, the lid, the menu), bots stop as usual; resuming work on a locked Mac is a separate, later feature. Nothing is installed in macOS: there is no authorization plug-in or root service. Apps whose windows are covered may refresh web content more slowly, as with any covered window.
+
 ## Request it with !
 
 In a Work thread, type `!` and select **Unified Computer Use**, or send
@@ -26,7 +50,7 @@ The older `!apex-computer` spelling is also recognized.
 
 ## Models and apps
 
-The native engine is model-neutral. API models need reliable tool calling, and screenshot use needs image input. Claude Code and Codex receive the same tool server through their existing Deck adapters. Gemini, Grok, Muse and custom CLI bots do not receive the native capability in this release. Talk-only Chat rooms and personal-assistant text-only inference also do not receive it.
+The native engine is model-neutral. API models need reliable tool calling, and screenshot use needs image input. Claude Code and Codex receive the same tool server through their existing Deck adapters. Gemini, Grok and custom CLI bots do not receive the native capability in this release. Talk-only Chat rooms and personal-assistant text-only inference also do not receive it.
 
 `apex-computer` and `apex_computer` are reserved server names. An existing HTTP MCP server with either name can prevent Codex from starting; rename that external server if Codex reports a transport conflict. Deck does not fall back to trusting that server.
 
@@ -50,7 +74,7 @@ App content is still sent to the model you chose, including its cloud provider. 
 
 ## Dependency and optional decisions helper
 
-The embedded Agent Desktop core/macOS engine is pinned at `5261b5287b5208e7c4bf3713df6f66faaaf2c4cc`. Its Apache-2.0 license and provenance ship inside the helper. Deck retains its own capture, permissions, turn isolation, privacy and cancellation controls. See `computer-helper/engine/PROVENANCE.md` for adaptations.
+The embedded Agent Desktop core/macOS engine is pinned at `2b0a7334fc111730454b726e6800aa41cdafc093` (1.2.0). Since 1.1 a reference follows its own element: a removed row returns a stale reference instead of acting on its neighbour, Chromium and Electron apps expose their web content automatically, and the Dock, menu bar extras and system panels can be read. Bots also get a `control` tool for checkboxes, switches, disclosure triangles, pop-up menus, tabs and fields (toggle, check, uncheck, expand, collapse, select, set_value), which works without the pointer or keyboard and is more reliable than clicking. Its Apache-2.0 license and provenance ship inside the helper. Deck retains its own capture, permissions, turn isolation, privacy and cancellation controls. See `computer-helper/engine/PROVENANCE.md` for adaptations.
 
 Upstream JEV/CLEF decision automation is optional and is not enabled in this release. Its `scripts/jev/policy.mjs` accepts `TYPESAFE_BASE_URL` and `TYPESAFE_MODEL`, but sends a structured decisions protocol. A generic OpenAI-compatible chat endpoint does not imply compatibility. The normal Deck tools require no extra decisions connector or credentials.
 

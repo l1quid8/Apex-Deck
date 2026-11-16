@@ -14,6 +14,8 @@ pub(crate) fn supported_surfaces_impl() -> Vec<SnapshotSurface> {
         SnapshotSurface::Sheet,
         SnapshotSurface::Popover,
         SnapshotSurface::Alert,
+        SnapshotSurface::Dock,
+        SnapshotSurface::MenuBarExtras,
     ]
 }
 

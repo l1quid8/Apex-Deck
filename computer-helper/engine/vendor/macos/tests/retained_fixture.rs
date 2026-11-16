@@ -4,7 +4,7 @@ use agent_desktop_core::{
     Deadline, IdentityPredicate, LocatorMaterialization, LocatorQuery, LocatorResolveRequest,
     LocatorSelection, ObservationOps, ObservationRoot, RefEntry, WindowFilter, resolve_query,
 };
-use agent_desktop_macos::{MacOSAdapter, RetainedRefSession};
+use agent_desktop_macos::MacOSAdapter;
 use std::io::{BufRead, Write};
 
 fn capture(
@@ -70,7 +70,6 @@ fn read(
 #[ignore = "read-only Xcode identity diagnostic; requires stage labels on stdin"]
 fn retained_xcode_identity() {
     let window_id = std::env::var("AGENT_DESKTOP_TEST_WINDOW").unwrap();
-    let _owner = RetainedRefSession::start().unwrap();
     let adapter = MacOSAdapter::new();
     let windows = adapter
         .list_windows(
@@ -115,7 +114,6 @@ fn retained_xcode_identity() {
 #[ignore = "read-only adapter diagnostic; requires owned RefChurnView and stage labels on stdin"]
 fn retained_fixture_identity() {
     let window_id = std::env::var("AGENT_DESKTOP_TEST_WINDOW").unwrap();
-    let owner = RetainedRefSession::start().unwrap();
     let adapter = MacOSAdapter::new();
     let windows = adapter
         .list_windows(
@@ -160,10 +158,5 @@ fn retained_fixture_identity() {
     assert_eq!(
         stages,
         ["initial", "filtered", "restored", "edited", "cleared"]
-    );
-    drop(owner);
-    assert_eq!(
-        read(&adapter, &stable),
-        Err(agent_desktop_core::ErrorCode::StaleRef)
     );
 }

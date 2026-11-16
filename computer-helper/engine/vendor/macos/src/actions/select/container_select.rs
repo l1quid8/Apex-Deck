@@ -1,5 +1,13 @@
 pub(crate) const SELECTED: &str = "AXSelected";
 
+/// `AXOutline` and `AXTable` make `AXSelectedRows` writable; `AXList` and
+/// `AXBrowser` columns make `AXSelectedChildren` writable; a spreadsheet
+/// grid owns its cell selection through `AXSelectedCells` and refuses the
+/// other two. Most elements publish several of these names and accept
+/// writes to only one, so each write is verified by readback.
+pub(crate) const SELECTION_ATTRIBUTES: [&str; 3] =
+    ["AXSelectedRows", "AXSelectedChildren", "AXSelectedCells"];
+
 /// Kept narrow so the settability probe never runs on generic containers.
 pub(crate) fn role_activates_by_selection(role: &str) -> bool {
     matches!(
@@ -35,15 +43,8 @@ mod imp {
     use crate::actions::chain::chain_delivery::DeliveryOutcome;
     use crate::tree::AXElement;
 
-    use super::SELECTED;
+    use super::{SELECTED, SELECTION_ATTRIBUTES};
 
-    /// `AXOutline` and `AXTable` make `AXSelectedRows` writable; `AXList` and
-    /// `AXBrowser` columns make `AXSelectedChildren` writable; a spreadsheet
-    /// grid owns its cell selection through `AXSelectedCells` and refuses the
-    /// other two. Most elements publish several of these names and accept
-    /// writes to only one, so each write is verified by readback.
-    const SELECTION_ATTRIBUTES: [&str; 3] =
-        ["AXSelectedRows", "AXSelectedChildren", "AXSelectedCells"];
     const MAX_ANCESTOR_WALK: usize = 6;
     const MAX_SELECTION_READBACK: usize = 64;
     pub(crate) const SELECTION_SETTLE_MS: u64 = 300;
@@ -201,10 +202,11 @@ mod imp {
         attribute: &str,
         deadline: Deadline,
     ) -> bool {
+        let targets = selection_targets(container, member, deadline);
         let settle_end =
             std::time::Instant::now() + std::time::Duration::from_millis(SELECTION_SETTLE_MS);
         loop {
-            if selection_contains(container, member, attribute, deadline) {
+            if selection_contains(container, &targets, attribute, deadline) {
                 return true;
             }
             if deadline.is_expired() || std::time::Instant::now() >= settle_end {
@@ -218,9 +220,31 @@ mod imp {
         }
     }
 
-    fn selection_contains(
+    /// A container that selects rows reports the row around the cell that was
+    /// written, so the member and the ancestors between it and the container
+    /// all count as holding the selection.
+    fn selection_targets(
         container: &AXElement,
         member: &AXElement,
+        deadline: Deadline,
+    ) -> Vec<AXElement> {
+        let mut targets = vec![member.clone()];
+        for _ in 0..crate::tree::properties::selection_owner::MAX_SELECTION_OWNER_DEPTH {
+            match targets.last().and_then(|last| parent_of(last, deadline)) {
+                Some(parent)
+                    if !crate::tree::properties::capabilities::same_element(&parent, container) =>
+                {
+                    targets.push(parent)
+                }
+                _ => break,
+            }
+        }
+        targets
+    }
+
+    fn selection_contains(
+        container: &AXElement,
+        targets: &[AXElement],
         attribute: &str,
         deadline: Deadline,
     ) -> bool {
@@ -233,9 +257,11 @@ mod imp {
         .ok()
         .flatten()
         .is_some_and(|selected| {
-            selected
-                .iter()
-                .any(|entry| crate::tree::properties::capabilities::same_element(entry, member))
+            selected.iter().any(|entry| {
+                targets.iter().any(|target| {
+                    crate::tree::properties::capabilities::same_element(entry, target)
+                })
+            })
         })
     }
 }

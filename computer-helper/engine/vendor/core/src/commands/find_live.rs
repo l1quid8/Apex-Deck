@@ -5,9 +5,11 @@ use crate::{
     context::CommandContext,
     locator::live_locator::{
         LocatorMaterialization, LocatorResolution, LocatorResolveRequest, LocatorSelection,
-        ObservationRoot, resolve_query,
+        ObservationRequest, ObservationRoot, ObservedObservation, resolve_query,
+        selects_tokenless_entry,
     },
     refs::RefMap,
+    refs::ref_root_read::{RootRead, read_saved_root},
     refs::refs_store::RefStore,
     snapshot,
     trace::trace_artifacts,
@@ -37,21 +39,7 @@ pub(super) fn execute(
     let deadline = traversal_deadline(args)?;
     let request = resolve_request(args, deadline);
     let mut resolution = match args.root.as_deref() {
-        Some(root_ref) => {
-            let (_, local_root_ref) = crate::refs::ref_token::resolve_ref_target(root_ref)?;
-            let entry = crate::commands::helpers::load_ref_entry(root_ref, context)?;
-            let handle = adapter.resolve_element_strict(&entry, deadline)?;
-            resolve_query(
-                adapter,
-                query,
-                ObservationRoot::Element {
-                    handle: &handle,
-                    entry: &entry,
-                    root_ref: Some(&local_root_ref),
-                },
-                &request,
-            )?
-        }
+        Some(root_ref) => rooted_resolution(adapter, query, root_ref, &request, context)?,
         None => {
             let windows = snapshot::surface_windows(
                 adapter,
@@ -60,7 +48,7 @@ pub(super) fn execute(
                 args.surface,
                 deadline,
             )?;
-            snapshot::first_surface_owner(windows, |window| {
+            snapshot::window_capture::first_surface_owner(windows, |window| {
                 resolve_query(adapter, query, ObservationRoot::Window(window), &request)
             })?
             .1
@@ -84,6 +72,50 @@ pub(super) fn execute(
     }
     emit_resolution(context, &resolution, snapshot_id.as_deref(), ref_count)?;
     format_response(args, query, resolution, snapshot_id.as_deref())
+}
+
+/// A rooted find draws its matches from the root's own subtree. A root with an
+/// element token is read as its subtree alone when every ref that subtree could
+/// publish carries a token too, since a token re-identifies itself. Any other
+/// root is re-identified over one complete whole-window observation - through
+/// its predicate - and the query runs scoped to that node: the refs the find
+/// publishes are then proven by the one observation it took, never by counts
+/// joined from two reads.
+fn rooted_resolution(
+    adapter: &dyn PlatformAdapter,
+    query: &LocatorQuery,
+    root_ref: &str,
+    request: &LocatorResolveRequest,
+    context: &CommandContext,
+) -> Result<LocatorResolution, AppError> {
+    let (_, local_root_ref) = crate::refs::ref_token::resolve_ref_target(root_ref)?;
+    let entry = crate::commands::helpers::load_ref_entry(root_ref, context)?;
+    crate::locator::live_locator::resolve_query_from(adapter, query, request, |deadline| {
+        let read = read_saved_root(
+            adapter,
+            &entry,
+            deadline,
+            |_, handle| {
+                let root = ObservationRoot::Element {
+                    handle,
+                    entry: &entry,
+                    root_ref: Some(&local_root_ref),
+                };
+                let observation =
+                    ObservationRequest::locator_for_root(query, request, root, deadline)
+                        .validate()?;
+                crate::tree::renderer_accessibility::observe_tree(adapter, root, &observation, None)
+            },
+            |tree| !selects_tokenless_entry(tree),
+        )?;
+        match read {
+            RootRead::Subtree(tree) => Ok(ObservedObservation::whole(tree)),
+            RootRead::Window(window_read) => {
+                let (_, tree, index) = *window_read;
+                ObservedObservation::under(tree, index)
+            }
+        }
+    })
 }
 
 fn resolve_request(args: &FindArgs, deadline: crate::Deadline) -> LocatorResolveRequest {

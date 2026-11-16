@@ -1,6 +1,6 @@
 use super::{
     LocatorResolution, LocatorResolveRequest, LocatorStats, ObservationRequest, ObservationRoot,
-    evaluate_locator_tree, validate_query, validate_request,
+    ObservedObservation, validate_query, validate_request,
 };
 use crate::{AdapterError, AppError, ErrorCode, adapter::PlatformAdapter, locator::LocatorQuery};
 use serde_json::json;
@@ -11,6 +11,23 @@ pub fn resolve_query(
     query: &LocatorQuery,
     root: ObservationRoot<'_>,
     request: &LocatorResolveRequest,
+) -> Result<LocatorResolution, AppError> {
+    resolve_query_from(adapter, query, request, |deadline| {
+        let observation_request =
+            ObservationRequest::locator_for_root(query, request, root, deadline).validate()?;
+        crate::tree::renderer_accessibility::observe_tree(adapter, root, &observation_request, None)
+            .map(ObservedObservation::whole)
+    })
+}
+
+/// Resolves a query over trees the caller observes. A caller that already holds
+/// the read its root resolution took hands that same tree back here, so the refs
+/// it publishes are proven by one observation rather than by a second one.
+pub(crate) fn resolve_query_from(
+    adapter: &dyn PlatformAdapter,
+    query: &LocatorQuery,
+    request: &LocatorResolveRequest,
+    mut observe: impl FnMut(crate::Deadline) -> Result<ObservedObservation, AppError>,
 ) -> Result<LocatorResolution, AppError> {
     validate_query(query)?;
     validate_request(request)?;
@@ -24,8 +41,9 @@ pub fn resolve_query(
         if remaining.is_zero() {
             return Err(transient_incomplete_timeout(deadline, &aggregate, last_incomplete).into());
         }
-        let attempt_request = LocatorResolveRequest { ..*request };
-        match resolve_query_attempt(adapter, query, root, &attempt_request, &mut aggregate) {
+        match observe(observation_deadline(request)).and_then(|observed| {
+            resolve_observed_attempt(adapter, query, observed, request, &mut aggregate)
+        }) {
             Ok(mut resolution) => {
                 resolution.stats.reads.counts.observation_attempts =
                     resolution.stats.reads.counts.observation_attempts.max(1);
@@ -161,19 +179,14 @@ fn transient_incomplete_timeout(
         .with_disposition(crate::DeliverySemantics::not_delivered())
 }
 
-fn resolve_query_attempt(
+fn resolve_observed_attempt(
     adapter: &dyn PlatformAdapter,
     query: &LocatorQuery,
-    root: ObservationRoot<'_>,
+    observed: ObservedObservation,
     request: &LocatorResolveRequest,
     aggregate: &mut LocatorStats,
 ) -> Result<LocatorResolution, AppError> {
-    let observation_request =
-        ObservationRequest::locator_for_root(query, request, root, observation_deadline(request))
-            .validate()?;
-    let tree =
-        crate::tree::renderer_accessibility::observe_tree(adapter, root, &observation_request)?;
-    let mut tree = tree;
+    let ObservedObservation { mut tree, scope } = observed;
     tree.stats.reads.counts.observation_attempts =
         tree.stats.reads.counts.observation_attempts.max(1);
     let evaluation_request = LocatorResolveRequest {
@@ -183,10 +196,15 @@ fn resolve_query_attempt(
         },
         ..*request
     };
-    let mut resolution = evaluate_locator_tree(tree, query, &evaluation_request)?;
+    let (mut resolution, tree) = super::evaluate::evaluate_locator_tree_in(
+        tree,
+        scope.as_ref(),
+        query,
+        &evaluation_request,
+    )?;
     if request.materialization == super::LocatorMaterialization::SelectedMatches {
         if let Err(error) =
-            super::hydrate::selected_matches(adapter, query, request, &mut resolution)
+            super::hydrate::selected_matches(adapter, query, request, &mut resolution, &tree)
         {
             aggregate.merge_attempt(&resolution.stats);
             return Err(error);

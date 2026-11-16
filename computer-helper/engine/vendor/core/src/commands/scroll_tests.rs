@@ -34,6 +34,7 @@ impl ObservationOps for StaleThenOkAdapter {
         "Target",
         [crate::actions::capability::SCROLL]
     );
+    crate::adapter::saved_ref_scope!("scrollarea", Some("Target"));
 }
 
 impl ActionOps for StaleThenOkAdapter {

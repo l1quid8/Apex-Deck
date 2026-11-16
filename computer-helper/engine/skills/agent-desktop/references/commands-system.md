@@ -101,6 +101,7 @@ Commands: `list-notifications`, `dismiss-notification`, `dismiss-all-notificatio
 agent-desktop clipboard-get --format auto
 agent-desktop clipboard-get --format image --out /tmp/clip.png
 agent-desktop clipboard-set "Hello"
+printf '%s' 'Hello' | agent-desktop clipboard-set --stdin
 agent-desktop clipboard-set --image /tmp/a.png
 agent-desktop clipboard-set --file-url /tmp/a.txt --file-url /tmp/b.txt
 agent-desktop clipboard-clear
@@ -109,6 +110,9 @@ agent-desktop clipboard-clear
 - Formats: `text` (default), `auto` (file references, then image, then text), `image`, `file-urls`. Output is `{ "type": "text", "text": ... }`, `{ "type": "file_urls", ... }`, or `{ "type": "image", "path", "width", "height" }`. When the clipboard has nothing in that form: `{ "type": "<format>", "found": false }`.
 - Image bytes go to `--out`, or to a private file under the active session directory (or `~/.agent-desktop/tmp`).
 - `clipboard-set` writes one representation per call. `--file-url` and `--image` win over the positional text. Every `--file-url` path must exist, or `INVALID_ARGS`.
+- Use `clipboard-set --stdin` to read up to 128 KiB from a pipe or redirected file without putting it in process arguments. Terminal input is rejected. It cannot be combined with a command-line value, `--image`, or `--file-url`.
+- The command waits until the input ends. Empty input and all line breaks are kept, including a final newline. Use `printf '%s'` to avoid adding one. Input must be valid UTF-8 without NUL bytes (`\0`).
+- Batch uses the JSON `text` field, which puts the text in process arguments. Run secret steps as separate `--stdin` commands. To copy the text `--stdin`, use `agent-desktop clipboard-set -- --stdin`.
 - A write that loses clipboard ownership mid-way reports `delivered_unverified`, not a false success.
 
 ## wait
@@ -162,6 +166,8 @@ agent-desktop batch '[
 Batch runs entries in order in one process. It is not a transaction. Entries use the same typed commands, policy checks and dispatch as the CLI. Use `args`, not `params`. Unknown fields are rejected, and nested `batch` is rejected. Pass `--stop-on-error` to halt at the first failure. Each entry may carry `"session": "id"`, otherwise it inherits the top-level session. An entry whose session ended before dispatch is `not_started` with reason `session_ended`. An ended top-level session refuses the whole batch with `INVALID_ARGS` (`details.kind: session_ended`) before any entry runs. Snapshot args use `skeleton`, `root`, `interactive_only`.
 
 Wait entries use flat JSON keys matching the wait argument fields. For event waits, use `event` and optional `app`, `timeout` (milliseconds; defaults to 30000), `window`, and `window_id`. For example, the batch above waits up to five seconds for a new TextEdit window. `window` and `window_id` narrow only window lifecycle events (`window-opened`, `window-closed`, `focus-changed`); they do not scope text waits. In an action-then-event sequence, the batch captures the event baseline before the action, and does not start the action if that baseline read fails.
+
+Keys are the command's own field names, so a positional argument is named after itself rather than after its placeholder: `press COMBO` is `{"combo":"cmd+s"}`, `click REF` is `{"ref_id":"@s8f3k2p9:e1"}`, and `type REF TEXT` takes `ref_id` and `text`. A flag drops its leading `--` and writes `-` as `_`, so `--timeout-ms` is `timeout_ms`.
 
 ## Sessions and traces
 

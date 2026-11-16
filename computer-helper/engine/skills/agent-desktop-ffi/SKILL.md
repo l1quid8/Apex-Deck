@@ -15,7 +15,7 @@ description: >
 
 # agent-desktop-ffi
 
-Direct C-ABI access to PlatformAdapter operations. Build the cdylib with the
+Direct C-ABI access to the same operations as the CLI. Build the cdylib with the
 `release-ffi` profile:
 
 ```sh
@@ -88,7 +88,9 @@ are not exposed over the ABI. A bare `@eN` ref returns
   including `TypeText`, defaults to `headless`. Pass `AD_POLICY_KIND_FOCUS_FALLBACK`
   (1) to allow focus without cursor movement, or `AD_POLICY_KIND_HEADED` (2) to allow
   physical cursor and keyboard delivery. `ad_execute_ref_action_exact_with_policy`
-  runs the same preflight from an `AdExactRefEntry`.
+  always fails with `AD_RESULT_ERR_ACTION_NOT_SUPPORTED`: an exact entry has no
+  retained element token and no capture proof, so it cannot be re-identified.
+  Use `ad_execute_by_ref` instead.
 
 - **Generation-safe direct APIs.** Every direct targeting function takes
   process-generation evidence: `AdExactRefEntry`, `AdExactWindowInfo`,
@@ -100,9 +102,14 @@ are not exposed over the ABI. A bare `@eN` ref returns
   is null. A missing `sheet` or `menu` next to a listed kind is unknown, not
   absent. Only the Windows adapter fills it; macOS and Linux return null.
 
-- **Native handles.** `ad_resolve_element_exact` and `ad_find_exact` return an
-  `AdNativeHandle`. `ad_execute_action` (headless, no preflight) and
-  `ad_execute_action_with_policy` act on it directly, bypassing the ref-action
+- **Native handles.** `ad_find_exact` returns an `AdNativeHandle`. It re-identifies the
+  element before publishing it: it raises the landed handle against the selected entry's
+  recorded role, native id, name and description, and returns `AD_RESULT_ERR_STALE_REF`
+  instead of a handle when a different control occupies the anchored path.
+  `ad_resolve_element_exact` takes an exact ref entry and always fails with
+  `AD_RESULT_ERR_ACTION_NOT_SUPPORTED` for the same reason as the exact action call.
+  `ad_execute_action` (headless, no preflight) and
+  `ad_execute_action_with_policy` act on a handle directly, bypassing the ref-action
   pipeline. Release every handle with `ad_free_handle(adapter, &handle)` on the
   same adapter and thread, before `ad_adapter_destroy`, on every platform. It
   zeroes `handle.ptr`, so a second call is a no-op.

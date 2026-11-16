@@ -196,7 +196,7 @@ mod tests {
         ["opus", "sol-6.1", "Grok"]
             .iter()
             .map(|id| ParticipantConfig {
-                can_read_images: false,
+                can_read_images: false, untethered_computer: false,
                 id: ParticipantId::new(*id),
                 display_name: id.to_string(),
                 backend: Backend::Scripted { lines: vec![] },

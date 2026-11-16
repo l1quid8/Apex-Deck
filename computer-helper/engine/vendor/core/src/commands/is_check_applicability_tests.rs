@@ -15,6 +15,7 @@ fn action_availability_makes_toggle_and_expand_applicable() {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -31,6 +32,7 @@ fn action_availability_makes_toggle_and_expand_applicable() {
             source_window_title: None,
             source_window_bounds_hash: None,
             source_surface: crate::adapter::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,

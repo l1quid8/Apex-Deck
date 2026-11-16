@@ -27,6 +27,8 @@ impl ObservationOps for ScreenshotMutationAdapter {
         Ok(NativeHandle::null())
     }
 
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
+
     fn get_element_bounds(
         &self,
         _handle: &NativeHandle,

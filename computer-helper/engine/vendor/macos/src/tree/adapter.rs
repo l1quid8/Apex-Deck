@@ -35,6 +35,10 @@ impl ObservationOps for MacOSAdapter {
         crate::tree::resolve::resolve_element_with_deadline(entry, deadline)
     }
 
+    fn retains_element_tokens(&self) -> bool {
+        crate::tree::resolve::retained::tokens_available()
+    }
+
     fn resolve_locator_anchor(
         &self,
         entry: &RefEntry,
@@ -78,6 +82,17 @@ impl ObservationOps for MacOSAdapter {
         crate::system::app::app_inventory::list_apps_scoped_until(
             name,
             bundle_id,
+            crate::tree::locator_deadline::from_operation(deadline)?,
+        )
+    }
+
+    fn resolve_shell_surface(
+        &self,
+        surface: agent_desktop_core::SnapshotSurface,
+        deadline: Deadline,
+    ) -> Result<WindowInfo, AdapterError> {
+        crate::tree::shell_surface::resolve_surface(
+            surface,
             crate::tree::locator_deadline::from_operation(deadline)?,
         )
     }

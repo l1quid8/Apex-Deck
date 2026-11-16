@@ -12,6 +12,7 @@ use super::test_support::evidence;
 fn source() -> ObservationSource {
     ObservationSource::Window {
         surface: crate::SnapshotSurface::Window,
+        renderer_accessibility_forced: false,
         window: WindowInfo {
             id: "w-1".into(),
             title: "Fixture".into(),
@@ -127,6 +128,85 @@ fn core_builder_owns_preorder_paths_and_child_indices() {
     assert!(tree.nodes[0].path.is_empty());
     assert_eq!(tree.nodes[1].path.as_slice(), &[0]);
     assert_eq!(tree.nodes[2].path.as_slice(), &[1]);
+}
+
+#[test]
+fn a_shallow_presentation_cuts_at_the_logical_depth_of_the_walks() {
+    let wrapper = subtree(
+        "group",
+        "",
+        vec![subtree(
+            "group",
+            "Content",
+            vec![subtree("button", "Save", Vec::new())],
+        )],
+    )
+    .with_wrapper(true);
+    let mut tree = ObservedTree::from_roots(
+        vec![subtree(
+            "window",
+            "Fixture",
+            vec![subtree("group", "Sidebar", vec![wrapper])],
+        )],
+        source(),
+        Default::default(),
+        true,
+    )
+    .unwrap();
+
+    let (shallow, complete, nodes_observed) = tree.clone().project_window(3).unwrap();
+    assert!(complete);
+    assert_eq!(
+        nodes_observed, 5,
+        "the projection reports the whole observation"
+    );
+    let button = &shallow.children[0].children[0].children[0].children[0];
+    assert_eq!(
+        (button.role.as_str(), button.identity.name.as_deref()),
+        ("button", Some("Save")),
+        "a wrapper costs no logical depth, so the walk reaches past its path depth"
+    );
+
+    let (cut, _, _) = tree.project_window(2).unwrap();
+    let content = &cut.children[0].children[0].children[0];
+    assert_eq!(content.identity.name.as_deref(), Some("Content"));
+    assert_eq!(content.children_count, Some(1), "a cut keeps its count");
+    assert!(content.children.is_empty());
+    assert!(!content.subtree_truncated);
+}
+
+#[test]
+fn a_drilled_subtree_counts_its_depth_from_the_matched_node() {
+    let mut node = subtree("button", "Save", Vec::new());
+    for (role, name) in [
+        ("group", "C"),
+        ("group", "B"),
+        ("group", "A"),
+        ("window", "Fixture"),
+    ] {
+        node = subtree(role, name, vec![node]);
+    }
+    let mut tree =
+        ObservedTree::from_roots(vec![node], source(), Default::default(), true).unwrap();
+
+    let drilled = tree.clone().project_subtree(3, 1).unwrap();
+    assert_eq!(
+        drilled.identity.name.as_deref(),
+        Some("C"),
+        "the drilled node is the subtree root"
+    );
+    assert_eq!(
+        drilled
+            .children
+            .first()
+            .and_then(|child| child.identity.name.as_deref()),
+        Some("Save"),
+        "a limit of one reaches one level below a node at window depth 3"
+    );
+
+    let cut = tree.project_subtree(3, 0).unwrap();
+    assert_eq!(cut.children_count, Some(1), "a cut keeps its count");
+    assert!(cut.children.is_empty());
 }
 
 #[test]
@@ -260,7 +340,7 @@ fn snapshot_projection_and_find_share_the_same_observation() {
 fn partial_projection_returns_the_observed_subtree_instead_of_discarding_it() {
     let incomplete =
         ObservedSubtree::new(evidence("button", Some("Save")), Vec::new(), false, None);
-    let tree = ObservedTree::from_roots(
+    let mut tree = ObservedTree::from_roots(
         vec![subtree("window", "Fixture", vec![incomplete])],
         source(),
         Default::default(),
@@ -270,7 +350,7 @@ fn partial_projection_returns_the_observed_subtree_instead_of_discarding_it() {
 
     assert!(tree.clone().into_accessibility_tree().is_err());
 
-    let (projected, complete, _) = tree.into_accessibility_tree_partial().unwrap();
+    let (projected, complete, _) = tree.project_partial().unwrap();
 
     assert!(!complete);
     assert_eq!(projected.role, "window");
@@ -289,7 +369,7 @@ fn partial_projection_returns_the_observed_subtree_instead_of_discarding_it() {
 
 #[test]
 fn partial_projection_reports_completeness_when_the_walk_finished() {
-    let tree = ObservedTree::from_roots(
+    let mut tree = ObservedTree::from_roots(
         vec![subtree(
             "window",
             "Fixture",
@@ -302,7 +382,7 @@ fn partial_projection_reports_completeness_when_the_walk_finished() {
     .unwrap();
 
     let strict = tree.clone().into_accessibility_tree().unwrap();
-    let (projected, complete, nodes_observed) = tree.into_accessibility_tree_partial().unwrap();
+    let (projected, complete, nodes_observed) = tree.project_partial().unwrap();
 
     assert!(complete);
     assert_eq!(nodes_observed, 2);

@@ -34,6 +34,9 @@ mod imp {
     /// which the row accepts and reports back while the application never
     /// navigates.
     ///
+    /// A member that only its container can select is chosen, not pressed
+    /// through a control that happens to sit inside it.
+    ///
     /// Unverified delivery ends the search too: absence of an observed effect
     /// cannot authorize another mutation on the same child or a sibling.
     pub(crate) fn activate_descendant(
@@ -41,6 +44,13 @@ mod imp {
         deadline: Deadline,
     ) -> Result<DeliveryOutcome, AdapterError> {
         let instant = crate::tree::locator_deadline::from_operation(deadline)?;
+        if crate::actions::select::container_select::element_activates_by_selection(
+            element, deadline,
+        ) && crate::tree::properties::selection_owner::selects_only_through_container(
+            element, instant,
+        ) {
+            return Ok(DeliveryOutcome::NotDelivered);
+        }
         let children = crate::tree::properties::attributes::copy_ax_array_prefix_result(
             element,
             "AXChildren",

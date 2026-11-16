@@ -45,6 +45,7 @@ impl ObservationOps for MinimizedWindowAdapter {
             states,
         })
     }
+    crate::adapter::saved_ref_scope!("button", Some("Target"));
 }
 
 impl ActionOps for MinimizedWindowAdapter {

@@ -49,6 +49,10 @@ impl ObservationOps for RecordingAdapter {
             offscreen: Some(false),
         }
     );
+    crate::adapter::saved_ref_scope!(nodes: &[
+        ("button", Some("OK"), None),
+        ("textfield", Some("OK"), None),
+    ]);
 }
 
 impl ActionOps for RecordingAdapter {
@@ -97,6 +101,10 @@ impl ObservationOps for AmbiguousAdapter {
             ),
         )
     }
+    crate::adapter::saved_ref_scope!(nodes: &[
+        ("button", Some("OK"), None),
+        ("textfield", Some("OK"), None),
+    ]);
 }
 
 impl ActionOps for AmbiguousAdapter {

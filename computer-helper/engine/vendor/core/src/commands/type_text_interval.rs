@@ -4,12 +4,14 @@
 //! also focuses the target's window. The burst then keeps that element for the
 //! remaining units and takes the interaction lease only while each unit is
 //! delivered, so other callers act between keystrokes and per-keystroke
-//! resolution cannot make the rhythm uneven. Each unit still goes through the
+//! resolution cannot make the rhythm uneven. Each unit re-runs the live identity
+//! check under that lease. Each unit still goes through the
 //! adapter's own delivery checks, which for physical keystrokes confirm that the
 //! target's process and focused element are unchanged before a key is posted.
 //! The result is verified against the field as the last keystroke left it, and
 //! a `--wait-for` condition is waited on once, after the last keystroke.
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -18,7 +20,7 @@ use crate::{
     AdapterError, AppError, DeliverySemantics,
     actions::action::Action,
     adapter::PlatformAdapter,
-    commands::helpers::{RefArgs, execute_ref_action_with_context},
+    commands::helpers::{RefArgs, execute_ref_action_dispatching},
     commands::type_text::{TypeArgs, default_timeout_ms},
     context::CommandContext,
 };
@@ -47,11 +49,12 @@ pub(crate) fn execute(
     for (index, unit) in units.iter().enumerate() {
         let slot = clock.wait();
         let request = context.request_base(Action::TypeText(unit.clone()));
+        let mut landed = None;
         let delivered = match &burst {
             Some(burst) => deliver(adapter, burst, request, budget(unit)).map(|_| {
                 crate::ref_action::presentation::move_caret(adapter, context, &burst.handle);
             }),
-            None => execute_ref_action_with_context(
+            None => execute_landing(
                 RefArgs {
                     ref_id: args.ref_id.clone(),
                     timeout_ms: waits.then(|| budget(unit)),
@@ -60,13 +63,16 @@ pub(crate) fn execute(
                 request,
                 &per_keystroke,
             )
-            .map(|value| last = value),
+            .map(|(value, handle)| {
+                last = value;
+                landed = Some(handle);
+            }),
         };
         delivered.map_err(|error| after_partial_delivery(error, index, units.len()))?;
         clock.delivered(slot);
-        if burst.is_none() && index + 1 < units.len() {
+        if let Some(handle) = landed.filter(|_| index + 1 < units.len()) {
             burst = Some(
-                resolve_for_burst(adapter, &args.ref_id, context, budget(unit))
+                burst_around(handle, &args.ref_id, context)
                     .map_err(|error| after_partial_delivery(error, index + 1, units.len()))?,
             );
         }
@@ -133,29 +139,59 @@ fn next_due(slot: Instant, now: Instant, interval: Duration) -> Instant {
     (slot + interval).max(now + interval / 2)
 }
 
-/// The element the first keystroke resolved, and the process instance it
-/// belongs to, which every later keystroke must still reach.
+/// The saved ref, its resolved element and process instance, which every later
+/// keystroke must still reach.
 struct Burst {
+    entry: crate::RefEntry,
     handle: crate::NativeHandle,
     process: Option<crate::ProcessIdentity>,
 }
 
-fn resolve_for_burst(
+/// Runs the first unit as a full ref action and returns the element it landed
+/// on beside its result, so the burst keeps that element instead of resolving
+/// it again.
+fn execute_landing(
+    args: RefArgs,
     adapter: &dyn PlatformAdapter,
+    request: crate::ActionRequest,
+    context: &CommandContext,
+) -> Result<(Value, crate::NativeHandle), AppError> {
+    let landed = Cell::new(None);
+    let value = execute_ref_action_dispatching(
+        args,
+        adapter,
+        request,
+        context,
+        |target, request, lease| {
+            let (result, handle) =
+                crate::ref_action::dispatch_resolved_landing(target, request, lease)?;
+            landed.set(Some(handle));
+            Ok(result)
+        },
+    )?;
+    let handle = landed
+        .take()
+        .ok_or_else(|| AdapterError::internal("the ref action landed no element"))?;
+    Ok((value, handle))
+}
+
+fn burst_around(
+    handle: crate::NativeHandle,
     ref_id: &str,
     context: &CommandContext,
-    timeout_ms: u64,
 ) -> Result<Burst, AppError> {
     let entry = crate::commands::helpers::load_ref_entry(ref_id, context)?;
-    let deadline = crate::Deadline::after(timeout_ms)?;
-    let handle = adapter.resolve_element_strict(&entry, deadline)?;
     let process = entry
         .process
         .process_instance
         .as_deref()
         .filter(|instance| !instance.is_empty())
         .map(|instance| crate::ProcessIdentity::new(entry.process.pid, instance));
-    Ok(Burst { handle, process })
+    Ok(Burst {
+        entry,
+        handle,
+        process,
+    })
 }
 
 fn deliver(
@@ -164,13 +200,34 @@ fn deliver(
     request: crate::ActionRequest,
     timeout_ms: u64,
 ) -> Result<crate::ActionResult, AppError> {
+    let deadline = crate::Deadline::after(timeout_ms)?;
+    let lease = adapter.acquire_interaction_lease(deadline)?;
+    confirm_target(adapter, burst, &request, deadline)?;
     let request = match &burst.process {
         Some(process) => request.with_expected_process(process.clone()),
         None => request,
     };
-    let deadline = crate::Deadline::after(timeout_ms)?;
-    let lease = adapter.acquire_interaction_lease(deadline)?;
     Ok(adapter.execute_action(&burst.handle, request, &lease)?)
+}
+
+/// Re-runs the first keystroke's live check so a replacement element is refused.
+fn confirm_target(
+    adapter: &dyn PlatformAdapter,
+    burst: &Burst,
+    request: &crate::ActionRequest,
+    deadline: crate::Deadline,
+) -> Result<(), AppError> {
+    crate::actionability::check_live_with_stability(
+        &crate::actionability::LiveCheckTarget {
+            entry: &burst.entry,
+            handle: &burst.handle,
+            adapter,
+            deadline,
+        },
+        request,
+        crate::actionability::StabilityExpectation::permissive(burst.entry.geometry.bounds_hash),
+    )?;
+    Ok(())
 }
 
 /// Splits text into the units one keystroke produces: a character together

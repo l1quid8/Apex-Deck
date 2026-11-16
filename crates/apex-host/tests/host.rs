@@ -128,7 +128,7 @@ impl Running {
 
 fn scripted(id: &str, lines: &[&str]) -> Value {
     serde_json::to_value(ParticipantConfig {
-        can_read_images: false,
+        can_read_images: false, untethered_computer: false,
         id: ParticipantId::new(id),
         display_name: id.to_string(),
         backend: Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
@@ -275,7 +275,7 @@ fn winding_down_stops_running_agents_and_keeps_their_chat() {
     let pid_file = data.join("agent.pid");
     let options = serde_json::to_value(RoomOptions::default()).unwrap();
     let slow = serde_json::to_value(ParticipantConfig {
-        can_read_images: false,
+        can_read_images: false, untethered_computer: false,
         id: ParticipantId::new("slow"),
         display_name: "slow".into(),
         backend: Backend::Cli { program: "sh".into(), args: vec!["-c".into(), format!("echo $$ > {}; exec sleep 30", pid_file.display())] },
@@ -331,7 +331,7 @@ fn opening_a_room_again_mid_turn_keeps_the_running_room() {
     let pid_file = data.join("agent.pid");
     let options = serde_json::to_value(RoomOptions::default()).unwrap();
     let slow = serde_json::to_value(ParticipantConfig {
-        can_read_images: false,
+        can_read_images: false, untethered_computer: false,
         id: ParticipantId::new("slow"),
         display_name: "slow".into(),
         backend: Backend::Cli { program: "sh".into(), args: vec!["-c".into(), format!("echo $$ > {}; exec sleep 30", pid_file.display())] },
