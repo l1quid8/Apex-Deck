@@ -49,8 +49,8 @@ import { ArtifactsPanel, DEFAULT_VIEW, type ArtifactsHost, type PanelView } from
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, artifactAutoOpen, upsertFromFile, fromReply, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
-import { applyHistoryChange, planHistoryChange, retryBot } from "./threadHistoryActions";
-import { failedLine, goBackAlways, goBackAsks, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
+import { applyHistoryChange, historyConfirmation, planHistoryChange, retryBot } from "./threadHistoryActions";
+import { failedLine, goBackTitle, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { botIdentity, mentionable, mentionFor, slug } from "./slug";
@@ -1828,8 +1828,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if(profileMode || talkOnly)return;
     registerVoiceThread(scopeKey({hostId:voiceHost,roomId:pane.id}),{
       candidates:voiceCandidates,settings:voiceConfig,save:s=>voiceLive.current.onVoiceSettings?.(s),focus:()=>voiceLive.current.onVoiceFocus?.(pane.id),
-      realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args as any),
-      metaSession: (args) => backend.call<{ token: string; model: string }>("voice_meta_session", args as any),
+      realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args),
+      metaSession: (args) => backend.call<{ token: string; model: string }>("voice_meta_session", args),
       bridge:id=>{
         let bridge=voiceBridges.current.get(id);if(bridge)return bridge;
         bridge=createThreadVoiceBridge({backend,scope:{hostId:voiceHost,roomId:pane.id,participantId:id},
@@ -1988,8 +1988,9 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const origin = currentPlace.current;
     void planHistoryChange(backend, pane.id, message).then((plan) => {
       if (currentPlace.current !== origin) return;
-      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan), place: origin });
-      else runGoBack(kind, message, plan, "both", initialFiles(plan));
+      const { ask, scope, ticked } = historyConfirmation(kind, plan);
+      if (ask) setGoingBack({ kind, message, plan, scope, ticked, place: origin });
+      else runGoBack(kind, message, plan, scope, ticked);
     }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
   };
   const runGoBack = (kind: GoBack, message: Message, plan: RevertPlan, scope: RevertScope, ticked: string[]) => {

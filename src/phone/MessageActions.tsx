@@ -101,7 +101,7 @@ export function MessageActions(props: {
 }
 
 /** The Retry/Revert question waiting on a message, as on the desktop. */
-export type GoingBack = { paneId: string; kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[] };
+export type GoingBack = { hostId: string; paneId: string; kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[] };
 
 /** The Retry/Revert question under a message's actions: the desktop's words and choices, in the flow of the chat. */
 export function GoBackAsk(props: {

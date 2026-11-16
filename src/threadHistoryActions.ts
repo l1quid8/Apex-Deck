@@ -1,6 +1,6 @@
 import type { Backend } from "./backend";
 import type { Message, RevertPlan } from "./types";
-import { goBackRequest, type GoBack, type RevertScope } from "./revertConfirm";
+import { goBackAlways, goBackAsks, goBackRequest, initialFiles, type GoBack, type RevertScope } from "./revertConfirm";
 
 type HistoryBackend = Pick<Backend, "roomRevertPlan" | "roomRevert">;
 
@@ -11,6 +11,14 @@ export function retryBot(message: Message) {
 
 export function planHistoryChange(backend: HistoryBackend, room: string, message: Message) {
   return backend.roomRevertPlan(room, message.seq, retryBot(message));
+}
+
+export function historyConfirmation(kind: GoBack, plan: RevertPlan) {
+  return {
+    ask: goBackAsks(goBackAlways(kind), plan),
+    scope: "both" as const,
+    ticked: initialFiles(plan),
+  };
 }
 
 export async function applyHistoryChange(
