@@ -385,7 +385,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
         {untetheredConfirm
           ? <div role="group" aria-label="Confirm untethered computer use">
               <strong>Untether computer use?</strong>
-              <p className="muted">With Full access, this bot opens and controls any Mac app without asking first, including typing, shortcuts and clicks. Protected apps (System Settings, Keychain, Passwords, sign-in windows), password fields and Stop still apply. App content goes to this bot's model provider.</p>
+              <p className="muted">With Full access, this agent opens and controls any Mac app without asking first, including typing, shortcuts and clicks. Protected apps (System Settings, Keychain, Passwords, sign-in windows), password fields and Stop still apply. App content goes to this agent's model provider.</p>
               <div>
                 <button type="button" className="danger" disabled={access !== 'full'} onClick={() => { setUntetheredConfirm(false); void apply({ untethered_computer: true }); }}>Untether</button>
                 <button type="button" onClick={() => setUntetheredConfirm(false)}>Cancel</button>

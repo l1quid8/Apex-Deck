@@ -28,7 +28,7 @@ test('Code Mode controls acknowledge saves, show failures, sync host changes and
       connection:{get:()=>({status:{kind:f.kind}}),subscribe:cb=>{connections.add(cb);return()=>connections.delete(cb);}}};
     f.mount(false);window.ready=true;
   </script></body></html>`;
-  const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error', plugins: [{ name: 'code-mode-test', configureServer(server) { server.middlewares.use('/__code_mode_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__code_mode_test', html)); }); } }] });
+  const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error', plugins: [{ name: 'code-mode-test', configureServer(server) { server.middlewares.use('/__code_mode_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__code_mode_test', html)); }); } }] });
   await server.listen();
   const url = `http://127.0.0.1:${server.httpServer.address().port}/__code_mode_test`;
   const main = path.join(temp, 'main.cjs');

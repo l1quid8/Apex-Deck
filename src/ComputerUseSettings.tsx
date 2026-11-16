@@ -328,8 +328,8 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
 
     <div className="settings-card">
       {status?.available && status.awayMode && <div className="settings-row" id="ucu-away"><div className="settings-label"><strong>Keep working while I&rsquo;m away</strong><small>{status?.awayMode?.enabled
-        ? `On. While an untethered bot works, this Mac won't idle-lock. After ${Math.round((status.awayMode.shieldDelaySeconds || 300) / 60)} minutes without input a shield covers the screens, and any keyboard or mouse input locks the Mac.${status.awayMode.shielded ? ' Shield is up now.' : status.awayMode.holding ? ' Holding the Mac awake now.' : ''}`
-        : 'Off. Untethered bots stop when this Mac locks. Turn it on from the Unified Computer Use menu bar icon; it can’t be switched on remotely.'}</small></div></div>}
+        ? `On. While an untethered agent works, this Mac won't idle-lock. After ${Math.round((status.awayMode.shieldDelaySeconds || 300) / 60)} minutes without input a shield covers the screens, and any keyboard or mouse input locks the Mac.${status.awayMode.shielded ? ' Shield is up now.' : status.awayMode.holding ? ' Holding the Mac awake now.' : ''}`
+        : 'Off. Untethered agents stop when this Mac locks. Turn it on from the Unified Computer Use menu bar icon; it can’t be switched on remotely.'}</small></div></div>}
       <div className="settings-row">
         <div className="settings-label"><strong>Stop Unified Computer Use</strong><small>Cancels active input and revokes current turns. The helper also has an independent Stop control in the menu bar.</small></div>
         <button className="danger" disabled={busy || backend.demo || !status?.available} onClick={() => { void act('computer_stop'); }}>Stop</button>
