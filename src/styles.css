@@ -3402,7 +3402,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .bot-settings .bot-meters { display: flex; flex-direction: column; flex-wrap: nowrap; gap: 5px; width: 100%; }
 .bot-settings .bot-meter { display: grid; grid-template-columns: 32px minmax(60px, 1fr) 36px auto; align-items: center; width: 100%; }
 .bot-settings .bot-meter-track { width: 100%; height: 5px; }
-.bot-settings .bot-meter-timer { text-align: right; opacity: 0.75; white-space: nowrap; }
 .bot-settings .bot-meter-money > span { grid-column: 2 / -1; }
 .model-menu .model-manual { display: grid; gap: 6px; padding: 6px; }
 .model-menu .model-manual input { min-width: 0; width: 100%; box-sizing: border-box; }
@@ -4547,8 +4546,6 @@ button.mod-status:hover { color: var(--text); }
 .bot-settings .bot-meters { flex-direction: row; flex-wrap: wrap; gap: 3px 12px; margin-top: 2px; }
 .bot-settings .bot-meter { display: inline-flex; width: auto; gap: 5px; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 10.5px; }
 .bot-settings .bot-meter-track { width: 28px; height: 3px; }
-.bot-settings .bot-meter-timer { display: none; text-align: right; opacity: 0.6; white-space: nowrap; font-size: 10px; }
-.bot-settings .bot-meter:hover .bot-meter-timer { display: inline; }
 .bot-settings fieldset { gap: 8px; padding-top: 6px; }
 .quick-strip { display: flex; flex-wrap: wrap; gap: 2px; margin: 0 -6px; }
 .quick-cell { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: inherit; cursor: pointer; transition: background-color 140ms ease, color 140ms ease; }
