@@ -9,7 +9,7 @@ import { deckClipboard } from "../copyText";
 import { LOCAL_HOST_REFERENCE } from "../hostFacts.ts";
 
 /** A host command, through whichever backend the app runs on. */
-const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => (await getBackend()).call<T>(cmd, args);
+const invoke = async <T>(...request: import("../daemon/requests").HostCommandArgs): Promise<T> => (await getBackend()).call<T>(...request);
 
 export type Grant = "process" | "network" | "files" | "session";
 export const GRANTS: { id: Grant; label: string }[] = [

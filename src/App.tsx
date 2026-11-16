@@ -1,3 +1,4 @@
+import { completeCommand } from "./daemon/requests.ts";
 import { dockTarget } from "./composerTarget";
 import { useMultiDraft } from "./useMultiDraft";
 import { useSendApis, ownerRefusal, leaveRefusal } from './threadSendApi';
@@ -48,7 +49,7 @@ import { ApexAgentSources } from "./ApexAgentSources";
 import { assistantDisplayName } from "./assistantName.ts";
 import { ApexAgentTasks } from "./lazyViews";
 import { overviewOwner, overviewOwnerKey, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren } from "./apexAgentOverview.ts";
-import { ApexAgentAll } from "./ApexAgentAll";
+import { ApexAgentAll, type MonitorCommand, type MonitorMutation } from "./ApexAgentAll";
 import { usePersonalAssistants } from "./usePersonalAssistants";
 import { assistantViewContext } from "./assistantViewContext.ts";
 import { deriveCompanionCatalog, reconcileCompanionSelection, companionFloatContext, companionViewContext, companionNewThreadTarget, loadCompanionSelection, saveCompanionSelection, type CompanionCatalog, type CompanionSelection } from "./assistantCompanionContext.ts";
@@ -2187,7 +2188,7 @@ export function App() {
     return () => { live = false; clearInterval(timer); stops.forEach((stop) => stop()); };
   }, [backend, workspaces, hostList]);
   /** Source saves and bubble replies keep the assignment they began with, even while the widget switches projects. */
-  const mutateAssistant = async (workspaceId: string, command: string, args: Record<string, unknown>) => {
+  const mutateAssistant = async (workspaceId: string, ...request: MonitorMutation) => {
     const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
     if (!workspace) throw new Error("That project is no longer available.");
     const hostId = workspaceHost(workspace);
@@ -2195,9 +2196,9 @@ export function App() {
     const version = monitorOwnerVersion(workspaceId);
     const saved = Object.values(monitorAttention).find((entry) => entry.workspaceId === workspaceId && entry.hostId === hostId && entry.monitor.cwd === workspace.path)?.monitor;
     if (!saved) { openApexAgentProject(workspaceId); throw new Error("Give the assistant a responsibility before adding sources or replying."); }
-    const result = await route.call<ProjectMonitor>(command, {
-      workspaceId, cwd: workspace.path, hostId, conversationId: saved.conversationId, ...args,
-    });
+    const result = await route.call<ProjectMonitor>(...completeCommand<MonitorCommand, "workspaceId" | "cwd" | "hostId" | "conversationId">(request, {
+      workspaceId, cwd: workspace.path, hostId, conversationId: saved.conversationId,
+    }));
     const confirmed = await route.call<ProjectMonitor | null>('monitor_get', { workspaceId });
     const current = latest.current.workspaces.find((item) => item.id === workspaceId);
     if (!current || current.hidden || current.path !== workspace.path || workspaceHost(current) !== hostId || monitorOwnerVersion(workspaceId) !== version || hostBackend(hostId) !== route) {
@@ -3413,7 +3414,7 @@ export function App() {
                 const browserRoute = route;
                 const browserName = inAssistant ? selectedAssistant!.hostName : hostNameFor(browserHost);
                 const browserKey = inAssistant ? `assistant:${assistantHost?.routeHostId ?? browserName}` : browserHost;
-                return <SharedBrowser key={browserKey} call={(cmd, args) => browserRoute.call(cmd, args)} hostId={browserKey} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
+                return <SharedBrowser key={browserKey} call={browserRoute.call.bind(browserRoute)} hostId={browserKey} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
                   thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} onStopAll={() => { void browserRoute.call("computer_stop").catch(() => {}); }} />;
               },
               plan: () => { const feed = focusedPane ? planFeeds[focusedPane] : undefined; return feed?.runs.length

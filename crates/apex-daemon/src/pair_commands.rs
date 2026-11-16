@@ -15,7 +15,7 @@ use crate::devices::{Threads, Tier};
 use crate::protocol::Daemon;
 use crate::remote_config;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, serde::Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum PairRequest {
     PairStart {

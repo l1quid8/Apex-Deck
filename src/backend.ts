@@ -1,3 +1,4 @@
+import type { HostCommandArgs } from "./daemon/requests.ts";
 import type { AnswerSaveResult, AnswersFile, InputValues } from "./interactiveAnswers/contract.ts";
 import type { ToolServer } from "./types";
 // Everything the UI needs from the desktop shell goes through this
@@ -240,7 +241,7 @@ export interface Backend {
    *  machine, or a daemon this app didn't start. */
   quitStopsWork: boolean;
   /** Send any host command as it is, for mods. */
-  call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  call<T>(...request: HostCommandArgs): Promise<T>;
   /** The Electron app's menu items that the window carries out, such as "settings". */
   onMenu?(cb: (action: string) => void): Promise<Unlisten>;
   /** The machines this window can run on; the Electron app only. */
@@ -1155,7 +1156,7 @@ function demoBackend(): Backend {
     quitHeard: async () => {},
     quitApp: async () => { console.info("Preview: the desktop app would quit now."); },
     quitStopsWork: true,
-    call: async (cmd) => { throw new Error(`The preview has no host to run ${cmd}.`); },
+    call: async (...request) => { throw new Error(`The preview has no host to run ${request[0]}.`); },
   };
 }
 

@@ -21,7 +21,9 @@ export function fromBase64(text: string): Uint8Array {
 export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Partial<Pick<DaemonClient, "requireCapability" | "hasCapability">>): Transport {
   return {
     supports: capability => client.hasCapability?.(capability) === true,
-    call: (cmd, args) => {
+    call: (...request) => {
+      const [cmd] = request;
+      const args: Record<string, unknown> | undefined = request[1];
       if (cmd.startsWith("personal_handoff_") && client.hasCapability?.("assistant_conversation_handoff_v1") !== true)
         throw new Error("Update the assistant machine's service to use conversational handoffs.");
       if (cmd.startsWith("personal_avatar_") && client.hasCapability?.("assistant_avatar_generation_v1") !== true)
@@ -40,7 +42,7 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
       if (cmd.startsWith("assistant_") && needsWorkspaceV3) client.requireCapability?.("assistant_workspace_v3", "assistant read-only tasks, routing and spend controls");
       if (cmd === "monitor_profile_update") client.requireCapability?.("monitor_profile_update", "Changing the assistant profile");
       if (cmd === "monitor_connect" || cmd === "monitor_watch_save" || cmd === "monitor_watch_stop") client.requireCapability?.("monitor_watch_v1", "Connecting a project without paid checks");
-      return client.call(cmd, args);
+      return client.call(...request);
     },
     listen: async (event, cb) => client.on(event, cb),
     saveAttachment: (room, name, bytes) => client.call<string>("save_attachment", { room, name, data: toBase64(bytes) }),

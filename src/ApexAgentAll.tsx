@@ -45,6 +45,9 @@ import type { Command } from './commands.ts';
 import { parseComposer } from './commands.ts';
 import { assistantComposerDraftFor, useAssistantComposerDraftState } from './assistantComposerDrafts.ts';
 
+export type MonitorCommand = "monitor_react" | "monitor_resolve" | "monitor_pause" | "monitor_check_now";
+export type MonitorMutation = import("./daemon/requests").BoundCommandArgs<MonitorCommand, "workspaceId" | "cwd" | "hostId" | "conversationId">;
+
 export type ApexAgentTaskContext = { id: string; project: string; label: string; send: (text: string) => Promise<void> };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -117,7 +120,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   workspaces: Workspace[];
   monitors: ProjectMonitor[];
   onReply: (workspaceId: string, text: string) => Promise<void>;
-  onMutate: (workspaceId: string, command: string, args: Record<string, unknown>) => Promise<void>;
+  onMutate: (workspaceId: string, ...request: MonitorMutation) => Promise<void>;
   onSetUp: (workspaceId: string) => void;
   onClose: () => void;
   onHide?: () => void;
@@ -490,8 +493,8 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       </div>}
     </article>;
   };
-  const batch = async (items: ProjectMonitor[], command: string, args: Record<string, unknown>) => {
-    const results = await Promise.allSettled(items.map((monitor) => onMutate(monitor.workspaceId, command, args)));
+  const batch = async (items: ProjectMonitor[], ...request: MonitorMutation) => {
+    const results = await Promise.allSettled(items.map((monitor) => onMutate(monitor.workspaceId, ...request)));
     const errors = results.flatMap((result, index) => result.status === 'rejected' ? [`${names[items[index].workspaceId]}: ${String(result.reason)}`] : []);
     if (errors.length) throw new Error(errors.join(' · '));
   };

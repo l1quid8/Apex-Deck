@@ -25,7 +25,7 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_MONTH: u64 = 30 * SECONDS_PER_DAY;
 
 /// Backend family a gateway key may access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyScope {
     /// Subscription CLIs (`claude`, `codex`, `gemini`, `grok`, `muse`).

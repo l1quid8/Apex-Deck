@@ -170,7 +170,7 @@ export type PersonalLane = {
   browserTakeOver?(on: boolean): Promise<BrowserView>;
   browserInput?(input: BrowserInput): Promise<BrowserView>;
   /** The shared browser on this assistant's machine. */
-  browserCall?<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  browserCall?: import("./backend").Backend["call"];
 };
 export type ConnectorState = { kind: "github" | "gmail" | "drive" | "browser"; connected: boolean; keys: string[] };
 export type BrowserView = { url: string; title: string; image: string; width: number; height: number; takenOver: boolean; dialogOpen?: boolean };
@@ -188,7 +188,7 @@ export const MODE_LABEL: Record<ActionMode, string> = { auto: "Do it without ask
 export const requestId = (device: string) => `${device}:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 /** The Claude Code profile the slice runs on (D1). Tools stay off on the host. */
-export const ASSISTANT_PROFILE = { id: "personal-assistant", display_name: "Assistant", backend: { kind: "agent", tool: "claude_code" } };
+export const ASSISTANT_PROFILE = { id: "personal-assistant", display_name: "Assistant", backend: { kind: "agent", tool: "claude_code" } } as const;
 export const ASSISTANT_FOLDER = "~/apex-assistant-slice";
 
 type Allow = { hostId: string; assistantId: string; assistantHostId: string; folder: string };

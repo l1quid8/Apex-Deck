@@ -1,3 +1,4 @@
+import { completeCommand, type BoundCommandArgs } from "./daemon/requests.ts";
 import { useEffect, useMemo, useState } from 'react';
 import type { Backend } from './backend.ts';
 import type { Pane, ParticipantConfig } from './types.ts';
@@ -12,6 +13,10 @@ import { PersonalWorkspaceTaskDetail } from './PersonalWorkspaceTaskDetail';
 import { workspaceTaskHostMatches, guardWorkspaceTaskBackend, type WorkspaceTaskRow } from './workspaceTasks.ts';
 
 /** Both docked and popped-out details resolve the row's saved route and owner. */
+type RevisionCommand = "personal_task_lifecycle" | "personal_todo";
+type RequestIdCommand = "personal_cancel" | "personal_decide" | "personal_decide_always" | "personal_schedule_cancel" | "personal_send";
+type TaskMutation = BoundCommandArgs<RevisionCommand, "assistantId"> | BoundCommandArgs<RequestIdCommand, "assistantId" | "requestId">;
+
 export function WorkspaceTaskDetails({ row, backend, profiles, panes = [], onOpenThread, onKeepThread, onOpenProject, onOpenNotebook, onCreateWorkerThread }: { row: WorkspaceTaskRow; backend: Backend | null; profiles: ParticipantConfig[]; panes?: Pane[]; onOpenThread?: (id: string) => void; onKeepThread?: (project: ProjectRef, id: string) => void; onOpenProject?: (project: ProjectRef) => void; onOpenNotebook?: (project: ProjectRef) => void; onCreateWorkerThread?: (project: ProjectRef, profile: ParticipantConfig) => Promise<string> }) {
   const [record, setRecord] = useState<PersonalAssistantRecord | null>(null);
   const [focusHandled, setFocusHandled] = useState(false);
@@ -45,10 +50,14 @@ export function WorkspaceTaskDetails({ row, backend, profiles, panes = [], onOpe
   if (problem) return <p role="status">{problem}</p>;
   if (!record) return <p role="status">Loading the owning assistant…</p>;
   const assistant = row.assistant;
-  const act = async (command: string, args: Record<string, unknown>) => {
+  const act = async (...request: TaskMutation) => {
     const status = backend.host?.connection.get().status;
     if (status?.kind !== 'connected' || status.hostId !== assistant.hostId) throw new Error('The assistant machine owner changed. Reconnect before acting.');
-    const result = await ownerBackend!.call<{ assistant: PersonalAssistantRecord }>(command, { ...args, assistantId: assistant.assistantId, ...(['personal_task_lifecycle', 'personal_todo'].includes(command) ? {} : { requestId: requestId('workspace-tasks') }) });
+    const result = await ownerBackend!.call<{ assistant: PersonalAssistantRecord }>(...(
+      request[0] === 'personal_task_lifecycle' || request[0] === 'personal_todo'
+        ? completeCommand<RevisionCommand, "assistantId">(request, { assistantId: assistant.assistantId })
+        : completeCommand<RequestIdCommand, "assistantId" | "requestId">(request, { assistantId: assistant.assistantId, requestId: requestId('workspace-tasks') })
+    ));
     if (result.assistant.id !== assistant.assistantId || result.assistant.hostId !== assistant.hostId) throw new Error('The host returned a different assistant owner.');
     setRecord(result.assistant);
   };
@@ -77,7 +86,7 @@ export function WorkspaceTaskDetails({ row, backend, profiles, panes = [], onOpe
   }} />;
 }
 
-function WorkspaceTodoDetail({ row, record, act }: { row: WorkspaceTaskRow; record: PersonalAssistantRecord; act: (command: string, args: Record<string, unknown>) => Promise<void> }) {
+function WorkspaceTodoDetail({ row, record, act }: { row: WorkspaceTaskRow; record: PersonalAssistantRecord; act: (...request: TaskMutation) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const todo = record.taskManagerTodos?.find(todo => todo.id === row.taskId);
@@ -86,12 +95,12 @@ function WorkspaceTodoDetail({ row, record, act }: { row: WorkspaceTaskRow; reco
   return <article className="workspace-todo-detail"><h2>{todo.text}</h2><p className="muted">Your to-do · {todo.status === 'done' ? 'Done' : 'Open'}</p>{todo.dueAt != null && <p>Due {new Date(todo.dueAt).toLocaleString()}</p>}{todo.remindAt != null && <p>{todo.status === 'done' ? 'Reminder cancelled on completion' : `Reminder ${new Date(todo.remindAt).toLocaleString()}`}</p>}<div className="workspace-detail-actions"><button type="button" disabled={busy} onClick={() => void mutate(todo.status === 'done' ? 'reopen' : 'complete')}>{todo.status === 'done' ? 'Mark open' : 'Mark done'}</button><button type="button" disabled={busy} onClick={() => { setBusy(true); setError(''); void act('personal_send', { text: `Please help with this to-do: ${todo.text}` }).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }}>Ask Alfred to do this</button></div>{error && <p role="alert">{error}</p>}</article>;
 }
 
-function WorkspaceScheduleDetail({ row, record, act }: { row: WorkspaceTaskRow; record: PersonalAssistantRecord; act: (command: string, args: Record<string, unknown>) => Promise<void> }) {
+function WorkspaceScheduleDetail({ row, record, act }: { row: WorkspaceTaskRow; record: PersonalAssistantRecord; act: (...request: TaskMutation) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const schedule = record.schedules?.find(schedule => schedule.id === row.taskId);
   if (!schedule) return <p role="status">This schedule is no longer available.</p>;
-  const mutate = async (command: string, args: Record<string, unknown>) => { setBusy(true); setError(''); try { await act(command, args); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); } };
+  const mutate = async (...request: TaskMutation) => { setBusy(true); setError(''); try { await act(...request); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); } };
   const decision = schedule.decision?.status === 'open' ? schedule.decision : null;
   return <article className="workspace-todo-detail"><h2>{schedule.goal}</h2><p className="muted">Scheduled task · {schedule.status} · {schedule.runs} runs</p>{schedule.nextAt != null && <p>Next run {new Date(schedule.nextAt).toLocaleString()}</p>}{schedule.dailyAt && <p>Daily at {schedule.dailyAt}</p>}<div className="workspace-detail-actions">{decision && <section><h3>Confirm schedule</h3><p>{decision.prompt}</p><button type="button" disabled={busy} onClick={() => void mutate('personal_decide', { decisionId: decision.id, paramsHash: decision.paramsHash, approve: true })}>Confirm schedule</button><button type="button" disabled={busy} onClick={() => void mutate('personal_decide', { decisionId: decision.id, paramsHash: decision.paramsHash, approve: false })}>Decline</button></section>}{schedule.status !== 'cancelled' && <button type="button" disabled={busy} onClick={() => void mutate('personal_schedule_cancel', { scheduleId: schedule.id })}>Cancel schedule</button>}</div><p className="muted">This machine supports schedule confirmation and cancellation. Run now and pause are unavailable. Cancel a schedule before deleting its saved record permanently.</p>{error && <p role="alert">{error}</p>}</article>;
 }

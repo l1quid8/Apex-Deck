@@ -74,7 +74,7 @@ export function workThreadPlace(workspaces: Workspace[], panes: Pane[], hostId: 
   return { workspaces: list, pane: { id: work.id, workspaceId: ids[0], kind: "chat", title: work.title, ...(work.cwd !== root ? {mount:work.cwd} : {}) }, added: true, restored: hiddenId(ids[0]) };
 }
 
-type Call = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
+type Call = <T>(...request: import("./daemon/requests").HostCommandArgs<"chat_promote" | "chat_promote_abandon">) => Promise<T>;
 type Tickets = Pick<Storage, "getItem" | "setItem">;
 
 /** Drop one move's ticket, only if it is still that move: a late answer to an older one leaves its replacement alone. */
@@ -384,7 +384,7 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
       // No await between that check and sendPromote saving the ticket, which holds sends from here on.
       const fresh = () => ({ target: `pane-${crypto.randomUUID()}`, requestId: crypto.randomUUID() });
       try {
-        const { work, chat } = await sendPromote(storage, (command, args) => backend.call(command, args), row, cwd, access, fresh, machineName(row.hostId));
+        const { work, chat } = await sendPromote(storage, backend.call.bind(backend), row, cwd, access, fresh, machineName(row.hostId));
         const name = machineName(row.hostId);
         setCatalog((current) => withRoom(withRoom(current, row.hostId, name, chat ?? { ...row, promotedTo: work.id }), row.hostId, name, work));
         void refresh(row.hostId);
@@ -394,7 +394,7 @@ export function useDesktopChats({ machines, backendOf, connectionOf, onError, st
     async promoteOver(row) {
       const backend = need(row.hostId);
       try {
-        const done = await abandonPromote(storage, (command, args) => backend.call(command, args), row);
+        const done = await abandonPromote(storage, backend.call.bind(backend), row);
         if (!done) return null;
         const name = machineName(row.hostId);
         setCatalog((current) => [done.chat, done.work].reduce((next, item) => item ? withRoom(next, row.hostId, name, item) : next, current));

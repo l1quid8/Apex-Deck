@@ -15,7 +15,7 @@ const PROBLEMS: Record<string, string> = {
 type Frame = { seq: number; image?: string; width?: number; height?: number; tab?: BrowserTab };
 
 export interface SharedBrowserProps {
-  call: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+  call: import("./backend").Backend["call"];
   hostName: string;
   /** The machine's lasting identity, when its name might not be unique. Remount for a different one. */
   hostId?: string;
@@ -45,7 +45,8 @@ export function SharedBrowser({ call, hostName, hostId = hostName, visible, thre
   const area = useRef<HTMLDivElement>(null);
   const keys = useRef<HTMLTextAreaElement>(null);
   const addressBox = useRef<HTMLInputElement>(null);
-  const live = useRef({ call }); live.current = { call: browserCaller(hostId, call) };
+  const caller = browserCaller(hostId, call);
+  const live = useRef({ call: caller }); live.current = { call: caller };
   const current = chosenTab(tabs, wanted, assistantFirst);
   const tab = tabs.find((item) => item.id === current) ?? null;
   const currentRef = useRef(current); currentRef.current = current;
@@ -173,6 +174,7 @@ export function SharedBrowser({ call, hostName, hostId = hostName, visible, thre
     send({ kind: "navigate", url });
   };
   const upload = async (file: File) => {
+    if (!current) return;
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = "";
     for (let at = 0; at < bytes.length; at += 32768) binary += String.fromCharCode(...bytes.subarray(at, at + 32768));

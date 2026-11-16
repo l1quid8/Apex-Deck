@@ -117,8 +117,8 @@ import { PickedText } from "./PickedText";
 import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
 import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
-import { applyHistoryChange, planHistoryChange, retryBot } from "../threadHistoryActions";
-import { failedLine, goBackAlways, goBackAsks, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
+import { applyHistoryChange, historyConfirmation, planHistoryChange, retryBot } from "../threadHistoryActions";
+import { failedLine, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
 import { reconcileWorkPanes, workPresentation } from "../workThreadMetadata.ts";
 import { changeProject } from "../projectLifecycle.ts";
@@ -851,7 +851,7 @@ export function PhoneApp() {
     storage: localStorage,
     findHost: (id) => {
       const host = hostsRef.current.find((item) => item.machine.id === id);
-      return host ? { machine: { id: host.machine.id, name: host.machine.name }, backend: { call: (cmd, args) => host.backend.call(cmd, args), supports: (capability) => host.supports(capability) }, connection: host.connection } : undefined;
+      return host ? { machine: { id: host.machine.id, name: host.machine.name }, backend: { call: host.backend.call.bind(host.backend), supports: (capability) => host.supports(capability) }, connection: host.connection } : undefined;
     },
     onChange: () => setDeliveryTick((n) => n + 1),
     onError: (error) => setNotice(words(error)),
@@ -1765,7 +1765,7 @@ export function PhoneApp() {
   }, [room?.id, room?.hostId, room?.messages.length, openLink?.status, openHostId, typed, queued[room ? queueKey(room.hostId, room.id) : ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
-  useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId]);
+  useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId, openHostId]);
   // Steer now stops asking once its message has gone, been steered, or been taken back.
   const queuedIds = (openId ? queued[queueKey(openHostId, openId)]?.items ?? [] : []).map((item) => item.id).join(",");
   useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
@@ -2441,25 +2441,33 @@ export function PhoneApp() {
     if (!host) return;
     try {
       const plan = await planHistoryChange(host.backend, paneId, message);
-      const going: GoingBack = { paneId, kind, message, plan, scope: "both", ticked: initialFiles(plan) };
-      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack(going);
+      if (!showingHistoryOrigin(host.machine.id, paneId)) return;
+      const { ask, scope, ticked } = historyConfirmation(kind, plan);
+      const going: GoingBack = { hostId: host.machine.id, paneId, kind, message, plan, scope, ticked };
+      if (ask) setGoingBack(going);
       else await runGoBack(going);
     } catch (error) {
       setNotice(`Could not ${kind}: ${words(error)}`);
     }
   }
 
+  function showingHistoryOrigin(hostId: string, paneId: string) {
+    const screen = screenRef.current;
+    return screen.shown && screen.hostId === hostId && screen.roomId === paneId;
+  }
+
   async function runGoBack(going: GoingBack) {
     setGoingBack(null);
-    const { paneId, kind, message, plan, scope, ticked } = going;
+    const { hostId, paneId, kind, message, plan, scope, ticked } = going;
+    if (!showingHistoryOrigin(hostId, paneId)) return;
     const host = changeHost(kind === "retry" ? "Retry" : "Revert");
-    if (!host) return;
+    if (host?.machine.id !== hostId) return;
     try {
       const { failed, request, bot } = await applyHistoryChange(host.backend, paneId, message, kind, scope, plan, ticked);
       if (request.chat) {
         setSavedSteps((saved) => saved && saved.id === paneId && saved.hostId === host.machine.id ? { ...saved, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
         refreshSteps.current();
-        setRoom((current) => current && current.id === paneId ? { ...cutBack(current, message.seq), progress: {} } : current);
+        setRoom((current) => current && current.id === paneId && current.hostId === hostId ? { ...cutBack(current, message.seq), progress: {} } : current);
         // A reply that was cut off mid-way goes with the rest.
         setCuts((all) => { if (!all[paneId]) return all; const next = { ...all }; delete next[paneId]; return next; });
       }
@@ -2478,7 +2486,7 @@ export function PhoneApp() {
   }
 
   function answerGoBack(always: boolean) {
-    if (!goingBack) return;
+    if (!goingBack || !showingHistoryOrigin(goingBack.hostId, goingBack.paneId)) return;
     if (always) saveGoBackAlways(goingBack.kind, true);
     void runGoBack(goingBack);
   }

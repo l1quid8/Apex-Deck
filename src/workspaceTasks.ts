@@ -165,7 +165,9 @@ export function canPurgeWorkspaceTask(row: WorkspaceTaskRow): boolean {
 /** Confirmed rows are immutable deletion scope. All reads complete before any mutation. */
 export async function purgeWorkspaceTasks(rows: readonly WorkspaceTaskRow[], backendForRow: (row: WorkspaceTaskRow) => Backend | null): Promise<void> {
   const unique = [...new Map(rows.map(row => [row.key, row])).values()];
-  const operations: { backend: Backend; command: string; args: Record<string, unknown>; keys: string[] }[] = [];
+  type PurgeCommand = 'project_task_lifecycle' | 'personal_todo' | 'personal_task_lifecycle';
+  type Operation = { request: import('./daemon/requests').HostCommandArgs<PurgeCommand>; backend: Backend; keys: string[] };
+  const operations: Operation[] = [];
   const personalGroups = new Map<string, { backend: Backend; rows: WorkspaceTaskRow[] }>();
   for (const row of unique) {
     if (!canPurgeWorkspaceTask(row)) throw new Error('Reconnect offline tasks and stop active tasks or recover pending integration before deleting.');
@@ -180,8 +182,8 @@ export async function purgeWorkspaceTasks(rows: readonly WorkspaceTaskRow[], bac
     } else if (row.source === 'project' && row.owner) {
       const snapshot = await guarded.call<AssistantTaskSnapshot>('assistant_tasks_list', { owner: row.owner, includeDiffs: false });
       const current = collectWorkspaceTasks([], [{ project: row.project!, owner: row.owner, snapshot, name: row.projectName, offline: false, observedAt: Date.now(), authenticatedHostId: row.verifiedHostId ?? undefined }]).find(task => task.key === row.key);
-      if (!current || current.revision !== row.revision || current.updatedAt !== row.updatedAt || !canPurgeWorkspaceTask(current)) throw new Error('The task changed. Review it and confirm deletion again.');
-      operations.push({ keys: [row.key], backend: guarded, command: 'project_task_lifecycle', args: { taskId: row.taskId, revision: row.revision, owner: row.owner, action: 'purge' } });
+      if (!current || row.revision == null || current.revision !== row.revision || current.updatedAt !== row.updatedAt || !canPurgeWorkspaceTask(current)) throw new Error('The task changed. Review it and confirm deletion again.');
+      operations.push({ keys: [row.key], backend: guarded, request: ['project_task_lifecycle', { taskId: row.taskId, revision: row.revision, owner: row.owner, action: 'purge' }] });
     } else throw new Error('This task has no verified owner.');
   }
   for (const { backend, rows: group } of personalGroups.values()) {
@@ -203,21 +205,29 @@ export async function purgeWorkspaceTasks(rows: readonly WorkspaceTaskRow[], bac
       const task = personalTaskForRow(row, record);
       if (!task || task.updatedAt !== row.updatedAt || task.status !== row.status || row.assistantRevision != null && row.assistantRevision !== record.revision || task.receipts?.some(receipt => receipt.finishedAt == null)) throw new Error('The task changed. Review it and confirm deletion again.');
     }
-    for (const row of group.filter(row => row.source === 'todo')) operations.push({ keys: [row.key], backend, command: 'personal_todo', args: { assistantId: assistant.assistantId, expectedRevision: record.revision, action: 'purge', todoId: row.taskId } });
-    if (group.some(row => row.source === 'personal' || row.source === 'schedule')) operations.push({ keys: group.filter(row => row.source === 'personal' || row.source === 'schedule').map(row => row.key), backend, command: 'personal_task_lifecycle', args: { assistantId: assistant.assistantId, expectedRevision: record.revision, action: 'purge', tasks: group.filter(row => row.source === 'personal' || row.source === 'schedule').map(row => ({ source: row.source, taskId: row.taskId })) } });
+    for (const row of group.filter(row => row.source === 'todo')) operations.push({ keys: [row.key], backend, request: ['personal_todo', { assistantId: assistant.assistantId, expectedRevision: record.revision, action: 'purge', todoId: row.taskId }] });
+    if (group.some(row => row.source === 'personal' || row.source === 'schedule')) operations.push({ keys: group.filter(row => row.source === 'personal' || row.source === 'schedule').map(row => row.key), backend, request: ['personal_task_lifecycle', { assistantId: assistant.assistantId, expectedRevision: record.revision, action: 'purge', tasks: group.filter(row => row.source === 'personal' || row.source === 'schedule').map(row => ({ source: row.source, taskId: row.taskId })) }] });
   }
   const revisions = new Map<string, number>();
   const purgedKeys: string[] = [];
   for (const [index, operation] of operations.entries()) {
     try {
-      const key = operation.args.assistantId ? JSON.stringify([operation.backend.host?.connection.get().status, operation.args.assistantId]) : '';
-      const revision = revisions.get(key);
-      const args = revision == null ? operation.args : { ...operation.args, expectedRevision: revision };
-      const result = await operation.backend.call<{ assistant?: PersonalAssistantRecord }>(operation.command, args);
+      const request = operation.request;
+      if (request[0] === 'project_task_lifecycle') {
+        await operation.backend.call(...request);
+        purgedKeys.push(...operation.keys);
+        continue;
+      }
+      const { assistantId } = request[1];
+      const key = JSON.stringify([operation.backend.host?.connection.get().status, assistantId]);
+      const expectedRevision = revisions.get(key) ?? request[1].expectedRevision;
+      type Result = { assistant?: PersonalAssistantRecord };
+      request[1].expectedRevision = expectedRevision;
+      const result = await operation.backend.call<Result>(...request);
       purgedKeys.push(...operation.keys);
-      if (key && operations.slice(index + 1).some(next => next.args.assistantId === args.assistantId && next.backend.host === operation.backend.host)) {
+      if (operations.slice(index + 1).some(next => next.request[0] !== 'project_task_lifecycle' && next.request[1].assistantId === assistantId && next.backend.host === operation.backend.host)) {
         const status = operation.backend.host?.connection.get().status;
-        if (!result?.assistant || result.assistant.id !== args.assistantId || status?.kind !== 'connected' || result.assistant.hostId !== status.hostId || result.assistant.revision !== Number(args.expectedRevision) + 1) throw new Error('The assistant changed during deletion. Confirm the remaining tasks again.');
+        if (!result?.assistant || result.assistant.id !== assistantId || status?.kind !== 'connected' || result.assistant.hostId !== status.hostId || result.assistant.revision !== expectedRevision + 1) throw new Error('The assistant changed during deletion. Confirm the remaining tasks again.');
         revisions.set(key, result.assistant.revision);
       }
     } catch (cause) {

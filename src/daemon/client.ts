@@ -3,6 +3,7 @@
 // link carries it. It says hello, matches replies to calls, hands events to
 // listeners, and reconnects after a drop, resuming from the last event it
 // saw. No DOM and no Electron here, so the phone app can use it too.
+import type { HostCommandArgs } from "./requests.ts";
 import { PROTOCOL } from "../generated/protocol.ts";
 import type { VoiceFrame } from "../voice/types.ts";
 import type { ClientCapabilities } from '../../shared/generatedUiCapability.mjs';
@@ -26,27 +27,10 @@ export class FinalError extends Error {
 /** Open a new link. A rejection counts as a connection that closed at once; a `FinalError` rejection stops retrying. */
 export type Connect = () => Promise<Link>;
 
-/** What `hello` answers. */
-export interface Welcome {
-  host_id: string;
-  boot_id: string;
-  protocol: number;
-  last_seq: number;
-  resumed: boolean;
-  /** The apex-daemon version. Helpers older than 0.5.1 don't send it. */
-  version?: string;
-  /** The short commit hash the apex-daemon was built from, or "unknown"; absent on helpers older than this field. */
-  build_commit?: string;
-  /** Whether that build had uncommitted changes to tracked files; absent on helpers older than this field. */
-  build_dirty?: boolean;
-  /** Features implemented by this helper; absent on older protocol-v1 helpers. */
-  capabilities?: string[];
-  max_frame_bytes?: number;
-  /** Over iroh only: what this phone may do there. */
-  access?: { tier: "read_only" | "chat" | "full"; threads: "all" | string[] };
-  /** Over iroh only: the addresses the machine says it can be dialed on now. */
-  addrs?: string[];
-}
+/** Earlier protocol-v1 hosts sent only the core handshake fields. */
+type WireWelcome = import("../generated/protocol").Welcome;
+type CoreWelcomeField = "host_id" | "boot_id" | "protocol" | "last_seq" | "resumed";
+export type Welcome = Pick<WireWelcome, CoreWelcomeField> & Partial<Omit<WireWelcome, CoreWelcomeField>>;
 
 export type Status =
   | { kind: "connecting" }
@@ -162,7 +146,7 @@ export class DaemonClient {
     return this.started;
   }
 
-  call<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+  call<T>(...[cmd, args = {}]: HostCommandArgs): Promise<T> {
     const link = this.link;
     if (!link || !this.ready) return Promise.reject(new Error(NOT_CONNECTED));
     const id = this.nextId++;

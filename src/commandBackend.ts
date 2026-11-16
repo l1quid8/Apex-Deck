@@ -1,4 +1,4 @@
-import type { Commands, CommandName } from "./generated/protocol.ts";
+import type { HostCommandArgs } from "./daemon/requests.ts";
 import type { AnswerSaveResult } from "./interactiveAnswers/contract.ts";
 // The Backend as commands to a host plus a shell. The host (apex-daemon)
 // runs the commands; the shell does what belongs to the machine
@@ -8,18 +8,10 @@ import type { Backend, KeyState, LibraryItem } from "./backend";
 import { apiModelList } from "./models.ts";
 import type { AgentInfo, AppSession, CurationUndo, CurateReply, FilePreview, FileSearchResult, FolderListing, ModelChoice, ModelMetrics, PersonaDraftResult, PhoneStatus, PhoneView, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
 
-// A union of tuples preserves the relation between a literal command and its
-// fields even when a caller supplies an explicit result type.
-type HostCommandArgs = {
-  [K in CommandName]: {} extends Commands[K]
-    ? [cmd: K, args?: Commands[K]]
-    : [cmd: K, args: Commands[K]];
-}[CommandName];
-
 /** How commands reach the host and its events come back. */
 export interface Transport {
   supports?(capability: string): boolean;
-  call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  call<T>(...request: HostCommandArgs): Promise<T>;
   listen<T>(event: string, cb: (payload: T) => void): Promise<() => void>;
   saveAttachment(room: string, name: string, bytes: Uint8Array): Promise<string>;
   readAttachment(path: string): Promise<ArrayBuffer>;
@@ -31,7 +23,7 @@ export type Shell = Pick<Backend, "pickFolder" | "pickPath" | "startupFolders" |
   | "quitStopsWork">;
 
 export function commandBackend(transport: Transport, shell: Shell): Backend {
-  const call: <T>(...request: HostCommandArgs) => Promise<T> = transport.call.bind(transport);
+  const call = transport.call.bind(transport);
   return {
     demo: false,
     ...shell,

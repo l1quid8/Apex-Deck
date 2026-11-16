@@ -1,3 +1,4 @@
+import type { HostCommandArgs } from "./daemon/requests.ts";
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { Backend } from './backend';
@@ -171,17 +172,17 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
     return () => { alive = false; window.clearInterval(timer); };
   }, [backend, backend.host?.id, backend.host?.connection, workspace.id, workspace.path, workspace.hostId, connectionVersion]);
 
-  const mutate = async (command: string, args: Record<string, unknown>) => {
+  const mutate = async (...request: HostCommandArgs<"monitor_assign" | "monitor_sources_update">) => {
+    const [command] = request;
     const requestOwner = owner;
     const { workspaceId, routeHostId: hostId } = requestOwner;
     const epoch = requestEpoch.current;
     const version = ++requestVersion.current;
     const sourceVersionAtStart = sourceEditVersion.current;
-    const boundOwner = monitor ? { cwd: monitor.cwd, hostId: monitor.hostId, conversationId: monitor.conversationId } : {};
     mutationsPending.current++;
     setBusy(true); setError(''); setNotice('');
     try {
-      const result = await backend.call<SourcesReply>(command, { workspaceId, ...args, ...boundOwner });
+      const result = await backend.call<SourcesReply>(...request);
       if (!validSnapshot(result, requestOwner)) throw new Error('The assistant received a monitor for a different project folder or machine.');
       if (componentAlive.current && requestEpoch.current === epoch && ownsCurrentRequest(requestOwner) && requestVersion.current === version) {
         if (isOlderSnapshot(result)) return;
@@ -240,7 +241,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
     window.localStorage?.setItem('apex-agent-profile', profile.id);
     // The project's machine may not have this Mac's saved profiles, so send it.
     void mutate('monitor_assign', {
-      cwd: owner.cwd, hostId: owner.routeHostId,
+      workspaceId: owner.workspaceId, cwd: monitor?.cwd ?? owner.cwd, hostId: monitor?.hostId ?? owner.routeHostId,
       text, files: [], threads: recentThreadIds, profile,
       onlyIfAbsent: true,
     });
@@ -257,7 +258,7 @@ export function ApexAgentSources({ workspace, backend, profiles, panes, onBack, 
   const saveSources = () => {
     if (!monitor) return;
     void mutate('monitor_sources_update', {
-      cwd: owner.cwd, hostId: owner.routeHostId, conversationId: monitor.conversationId,
+      workspaceId: owner.workspaceId, cwd: monitor.cwd, hostId: monitor.hostId, conversationId: monitor.conversationId,
       files: selectedFiles, threads: selectedThreads, mode: 'replace',
     });
   };

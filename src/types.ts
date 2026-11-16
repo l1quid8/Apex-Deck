@@ -1,45 +1,17 @@
-export interface ToolServer { token: string; label: string; aliases: string[] }
-// Shared wire types keep their existing import paths for renderer callers.
-import type { Access, AgentTool, FileChange, MediaSettings, ProposedAction, Speed } from "./generated/protocol.ts";
-export type { Access, AgentTool, FileChange, MediaSettings, ProposedAction, Speed };
+import type * as Wire from "./generated/protocol.ts";
+import type { NextStep, ProposedAction, TodoItem } from "./generated/protocol.ts";
+export type {
+  Access, AgentTool, ChangeRecord, Compaction, FileChange, Geometry as PhoneGeometry, Key as PhoneKey,
+  MediaSettings, NextStep, PlanRunState, PlanRunStep, PlanStepState, ProposedAction, QuestionEnd,
+  QuestionOption, Speaker, Speed, StepKind, StepStatus, TodoItem, TodoStatus, ToolServer, TurnPolicy,
+} from "./generated/protocol.ts";
 
-export type ParticipantBackend =
-  | { kind: "open_ai_compatible"; base_url: string; model: string; api_key_env: string | null }
-  | { kind: "agent"; tool: AgentTool; model: string | null }
-  | { kind: "cli"; program: string; args: string[] }
-  | { kind: "scripted"; lines: string[] };
-
-/** A machine-owned saved profile plus the settings a phone may override. */
-export interface ChatBotRequest {
-  profile: string;
-  id?: string;
-  display_name?: string;
-  model?: string | null;
-  effort?: string | null;
-  speed?: Speed | null;
-}
-
-export interface ParticipantConfig {
-  id: string;
-  display_name: string;
-  backend: ParticipantBackend;
-  persona: string;
-  access: Access;
-  /** Explicitly allow screenshots from Unified Computer Use for this model. */
-  can_read_images?: boolean;
-  /** Untethered Unified Computer Use: with Full access, no per-app prompts in the helper. */
-  untethered_computer?: boolean;
-  /** How hard the model should think, in the backend's own words. Null leaves its default. */
-  effort: string | null;
-  /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
-  /** Standard or fast output (Codex, Claude Code, and the direct OpenAI API). Missing follows the tool's own setting. */
-  speed?: Speed | null;
-  appearance?: { seed: string; color: string } | null;
-  /** Choices for a bot whose model makes pictures or videos (see media.ts). */
-  media?: MediaSettings | null;
-  /** The voice it speaks with on calls. Missing uses the default voice from Settings. */
-  voice?: string | null;
-}
+/** The renderer uses deserialized defaults on these response objects. Request fields can be omitted. */
+type RequiredFields<T, K extends keyof T> = T & Required<Pick<T, K>>;
+type OmitNull<T> = { [K in keyof T]: Exclude<T[K], null> };
+export type ParticipantBackend = Required<Wire.Backend>;
+export type ChatBotRequest = Wire.ChatBotRequest & { id?: string; display_name?: string };
+export type ParticipantConfig = RequiredFields<Wire.ParticipantConfig, "persona" | "access" | "effort"> & { backend: ParticipantBackend };
 
 /** A name and persona an AI wrote for a new agent from a short description (persona_draft). Nothing is saved until the person saves the form. */
 export interface PersonaDraftResult {
@@ -141,99 +113,28 @@ export interface PillValue {
   from_level: string;
 }
 
-export type TurnPolicy = "mention" | "everyone" | "round_robin";
+export type RoomOptions = Required<Wire.RoomOptions>;
 
-export interface RoomOptions {
-  policy: TurnPolicy;
-  /** Rounds of bots answering each other after one of your messages. Null means unlimited: they keep going until nothing new is addressed, or you press Stop. */
-  max_bot_hops: number | null;
-}
-
-export interface ChangeRecord {
-  by: string;
-  path: string;
-  added: number;
-  removed: number;
-  seq: number;
-}
 export interface DiffFile { path: string; added: number; removed: number; patch: string; by: string[] }
 export interface RevertFile { path: string; delete: boolean; conflict: boolean }
 export interface SideEffect { seq: number; by: string; command: string }
 /** What going back to a message would do to the folder. */
 export interface RevertPlan { available: boolean; note: string | null; files: RevertFile[]; skipped: string[]; effects: SideEffect[] }
 export interface ThreadDiff { files: DiffFile[]; note: string | null }
-export interface RoomSnapshot {
-  kind?: "work" | "chat";
-  /** Durable delivery receipts. Interrupted turns only resume with a new message ID. */
-  clientMessages?: Record<string, { state: "running" | "done" | "fenced" | "interrupted"; replySeqs: number[]; humanSeq?: number }>;
-  changes?: ChangeRecord[];
-  baseline?: string | null;
-  /** Facts every model sees on every turn; kept by /clear and /compact. */
-  pins?: string[];
+export type RoomSnapshot = Omit<Wire.RoomSnapshot, "participants" | "options" | "transcript" | "clientMessages" | "curations" | "plan_runs" | "allowed" | "usage"> & {
   participants: ParticipantConfig[];
   options: RoomOptions;
   transcript: Message[];
-  /** The summary the models see in place of the first `upto` messages, after `/compact`. */
-  compaction?: Compaction | null;
-  /** Visibility changes leave every original transcript message intact. */
+  clientMessages?: Record<string, RequiredFields<OmitNull<Wire.ClientMessageRecord>, "replySeqs">>;
   curations?: Curation[];
   plan_runs?: PlanRun[];
-  /** What the person chose "Always allow" for. */
   allowed?: AllowedRule[];
-  /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
   usage?: Record<string, TokenTotals>;
-  /** The effective untagged responders at the time the snapshot was taken.
-   *  Missing means unavailable; never locally guessed stars. */
-  untagged_responders?: string[];
-  /** The thread's Plan switch: every bot plans and changes nothing. */
-  plan?: boolean;
-}
+};
+export type AllowedRule = OmitNull<Wire.AllowedRule>;
+export type TokenTotals = OmitNull<Wire.TokenTotals>;
+export type Curation = OmitNull<Wire.Curation>;
 
-/** Something a bot may do without asking, because the person chose "Always allow". */
-export interface AllowedRule {
-  /** The bot it applies to. */
-  by: string;
-  kind: ProposedAction["kind"];
-  /** The card's title when it was allowed. */
-  title: string;
-  /** What it covers: a tool's title, a command, a file's edit title, or a permission question. */
-  what: string;
-  /** When it was allowed, in Unix seconds. 0 or missing for rules saved before Deck recorded it. */
-  allowed_at?: number;
-  /** The card it came from could spend money or publish. */
-  risky?: boolean;
-}
-
-/** Tokens a bot has used in one thread, over the turns that reported a count. */
-export interface TokenTotals {
-  input_reported_turns?: number;
-  output_reported_turns?: number;
-  cached_input?: number;
-  input: number;
-  output: number;
-  turns: number;
-  /** What those turns cost in millionths of a US dollar, when the provider says. */
-  cost_micros?: number;
-  /** Turns whose cost wasn't reported. Their cost is unknown, not zero. */
-  unknown_cost_turns?: number;
-  /** Estimated costs (such as a media quote), in millionths of a US dollar. Not provider-reported. */
-  estimated_cost_micros?: number;
-}
-
-export interface Compaction {
-  summary: string;
-  upto: number;
-}
-
-export interface Curation {
-  by: string;
-  at: number;
-  /** Inclusive message-number ranges. */
-  hidden: [number, number][];
-  reason: string;
-  when: number;
-  undone?: number;
-}
 export interface CurationUndo { restored: number; sealed: number }
 export type CurateReply = { by: string; unchecked?: number } & (
   | { status: "hidden"; count: number }
@@ -301,127 +202,31 @@ export interface AppSession {
   hostIds?: Record<string, string>;
 }
 
-export type Speaker = { kind: "human" } | { kind: "bot"; id: string };
+export type Message = OmitNull<Wire.Message>;
+export type Question = Required<Wire.Question>;
+export type PlanRun = Required<Wire.PlanRun>;
 
-export interface Message {
-  /** Immutable source position, independent of the visible index after clear/rewind. */
-  originSeq?: number;
-  origin?: { machine: string; room: string; seq: number };
-  clientMessageId?: string;
-  replyToClientMessageId?: string;
-  /** Source machine name for a reply appended after a chat moved. */
-  lateReplyFrom?: string;
-  servers?: string[];
-  seq: number;
-  speaker: Speaker;
-  text: string;
-  /** When it was added, in ms since the epoch. Older saved messages have none. */
-  at?: number;
-}
-
-export interface QuestionOption { label: string; description?: string }
-export interface Question { header: string; question: string; options: QuestionOption[]; multi_select: boolean }
-export interface NextStep { label: string; prompt: string }
-export type QuestionEnd = "answered" | "skipped" | "dropped";
-
-export type PlanStepState = "open" | "active" | "done" | "skipped" | "cancelled";
-export type PlanRunState = "waiting" | "revising" | "running" | "stopped" | "done" | "expired";
-export interface PlanRunStep { id: string; text: string; state: PlanStepState; off_plan: boolean }
-export interface PlanRun {
-  request: string;
-  by: string;
-  detail: string;
-  version: number;
-  state: PlanRunState;
-  steps: PlanRunStep[];
-  reporting: boolean;
-  started_seq: number;
-}
-
-export type RoomEvent = { recovery_seq?: number } & (
-  | { type: "state_changed" }
-  | { type: "voice_event"; client_turn_id: string; id:string; event:RoomEvent }
+/** These event payloads carry populated response fields or recursively annotated events. */
+type RendererEvent =
+  | { type: "voice_event"; client_turn_id: string; id: string; event: RoomEvent }
   | { type: "participant_changed"; participant: ParticipantConfig }
   | { type: "participants_changed"; participants: ParticipantConfig[] }
   | { type: "message_added"; message: Message }
-  | { type: "turn_started"; id: string }
-  | { type: "participant_idle"; id: string }
-  | { type: "editor_changed"; id: string | null }
-  | { type: "read_only_turn"; id: string; editor: string; reason: string; line: string }
-  | { type: "tool_servers"; id: string; servers: ToolServer[] }
-  | { type: "delta"; id: string; text: string }
-  /** What a participant is doing mid-turn, such as reading a file. */
-  | { type: "activity"; id: string; text: string }
-  /** A step of the work behind a reply, new or updated (same `step.key`). */
   | { type: "work_step"; id: string; step: WorkStep }
-  /** A participant's whole to-do list. */
-  | { type: "todo"; id: string; items: TodoItem[] }
-  /** A bot wants to do something. Its turn waits for `roomDecide` with this `request`. */
-  | { type: "approval_requested"; id: string; request: string; action: ProposedAction }
-  | { type: "approval_resolved"; id: string; request: string; approved: boolean }
-  /** A bot asked the person something. Its turn waits for `roomAnswer` with this `request`. */
   | { type: "question_requested"; id: string; request: string; questions: Question[] }
-  | { type: "question_resolved"; id: string; request: string; end: QuestionEnd; answers: string[][] }
-  /** Suggested next prompts after `id`'s reply; `pending` while worked out; empty and settled clears them. */
-  | { type: "next_steps"; id: string; steps: NextStep[]; pending: boolean }
-  /** The thread's Plan switch was turned on or off. */
-  | { type: "plan_changed"; on: boolean }
-  /** A bot's access was changed while it was working. */
-  | { type: "access_changed"; id: string; access: Access }
-  /** A plan run was created or changed. Holds the whole run. */
   | { type: "plan_run"; run: PlanRun }
-  /** Plan runs were removed by `/clear` or a rewind. Holds the whole list. */
   | { type: "plan_runs_reset"; runs: PlanRun[] }
-  /** The thread's whole "Always allow" list, after it changed. */
   | { type: "allowed_changed"; allowed: AllowedRule[] }
-  /** A bot changed a file. */
-  | { type: "changed"; id: string; change: FileChange }
-  /** Tokens a finished turn used, when the backend reports them. */
-  | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cached_input_tokens?: number | null; cost_micros?: number | null; cost_estimated?: boolean }
-  /** How full a participant's context window was on its latest request. */
-  | { type: "context_usage"; estimated?: boolean; id: string; used_tokens: number; window_tokens: number }
-  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value.
-   *  `model` names the model whose own quota group this is, when the provider reads one apart from the account. */
-  | { type: "plan_usage"; provider: AgentTool; model?: string | null; windows: PlanWindow[]; partial: boolean; reset_credits?: ResetCredits }
-  | { type: "passed"; id: string }
-  | { type: "failed"; id: string; error: string }
-  /** Retrieval warning; does not fail or stop a participant's turn. */
-  | { type: "journal_warning"; error: string }
-  /** The room cut off bots answering each other; `next` is who the last replies asked. */
-  | { type: "hop_limit_reached"; limit: number; next: string[] }
-  /** The models now see `summary` in place of the first `upto` messages. */
-  | { type: "compacted"; id: string; summary: string; upto: number }
   | { type: "curations_changed"; curations: Curation[] }
-  | { type: "stopped" }
-  | { type: "idle" });
+  | (Omit<Extract<Wire.RoomEvent, { type: "plan_usage" }>, "windows" | "reset_credits"> & { windows: PlanWindow[]; reset_credits?: ResetCredits })
+  | Required<Extract<Wire.RoomEvent, { type: "editor_changed" | "question_resolved" | "next_steps" | "hop_limit_reached" }>>
+  | RequiredFields<Extract<Wire.RoomEvent, { type: "usage" }>, "input_tokens" | "output_tokens">;
 
-/** One rate-limit window of a provider plan. */
-export interface PlanWindow {
-  /** The tool's own name, such as "five_hour" or "primary". */
-  name: string;
-  /** 0 to 100. */
-  used_percent: number;
-  window_minutes: number | null;
-  /** Unix seconds. */
-  resets_at: number | null;
-}
+export type RoomEvent = { recovery_seq?: number } & (RendererEvent | Exclude<Wire.RoomEvent, { type: RendererEvent["type"] }>);
 
-/** Usage resets a provider granted. Using one empties the plan's windows. */
-export interface ResetCredits {
-  /** How many are available. The provider may list fewer. */
-  available: number;
-  credits: ResetCredit[];
-}
-
-export interface ResetCredit {
-  id: string;
-  title?: string;
-  description?: string;
-  /** Unix seconds. */
-  granted_at: number;
-  /** Unix seconds; missing when it never expires. */
-  expires_at?: number;
-}
+export type PlanWindow = Required<Wire.PlanWindow>;
+export type ResetCredit = OmitNull<Wire.ResetCredit>;
+export type ResetCredits = Omit<Wire.ResetCredits, "credits"> & { credits: ResetCredit[] };
 
 export interface AgentInfo {
   key: string;
@@ -550,28 +355,8 @@ export type Layout = "top" | "left";
 export type PaneStatus = "working" | "idle" | "exited" | "needs_input" | "failed" | "done";
 
 /** Mirrors crates/apex-core/src/work_steps.rs. */
-export type StepKind = "command" | "read" | "search" | "list" | "edit" | "web" | "tool" | "helper" | "thinking" | "other";
-export type StepStatus = "running" | "done" | "failed" | "stopped";
-export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
-/** One thing a bot did while writing a reply. */
-export interface WorkStep {
-  key: string;
-  /** Key of the helper step this step ran under. */
-  parent: string | null;
-  kind: StepKind;
-  label: string;
-  folder: string | null;
-  detail: string;
-  output: string | null;
-  status: StepStatus;
-  exit_code: number | null;
-  duration_ms: number | null;
-  /** Omitted by the daemon when false. */
-  output_cut?: boolean;
-}
-
-export interface TodoItem { text: string; status: TodoStatus }
+export type WorkStep = RequiredFields<Wire.WorkStep, "parent" | "folder" | "output" | "exit_code" | "duration_ms">;
 
 /** Everything recorded about the work behind one reply. */
 export type TurnTimelineEntry = { kind: "text"; text: string } | { kind: "activity"; keys: string[] };
@@ -583,35 +368,17 @@ export interface StepsIndexEntry { by: string; count: number; helpers: number; o
 
 /** The replies a thread has saved steps for; keys are reply seq numbers as strings. */
 export interface StepsIndex { version: number; replies: Record<string, StepsIndexEntry> }
-/** A key the phone's keyboard understands beyond typed characters. */
-export type PhoneKey = "enter" | "backspace" | "tab" | "escape" | "space" | "up" | "down" | "left" | "right";
 /** Who has the shared simulated iPhone. */
 export type PhoneHolder = { kind: "free" } | { kind: "human"; secondsLeft: number } | { kind: "bot"; name: string };
-export interface PhoneGeometry { generation: number; display: number; orientation: number; width: number; height: number }
 export interface PhoneDevice { runtime: string; deviceType: string; model: string; version: string }
-export type PhoneControl =
-  | { kind: "selectDevice"; runtime: string; deviceType: string }
-  | { kind: "fold"; folded: boolean }
-  | { kind: "rotate"; orientation: number }
-  | { kind: "appearance" | "textSize"; value: string }
-  | { kind: "contrast"; enabled: boolean }
-  | { kind: "statusBar"; clean: boolean }
-  | { kind: "screenshot" }
-  | { kind: "recording"; active: boolean }
-  | { kind: "volume"; direction: "up" | "down" }
-  | { kind: "biometric"; matched: boolean }
-  | { kind: "location"; latitude: number | null; longitude: number | null }
-  | { kind: "stop" };
+export type PhoneControl = Exclude<Wire.Control, { kind: "volume" | "location" }>
+  | (Extract<Wire.Control, { kind: "volume" }> & { direction: "up" | "down" })
+  | Required<Extract<Wire.Control, { kind: "location" }>>;
 export interface PhoneControlReply { status: PhoneStatus; message: string; path: string | null }
-export interface PhoneStatus { orientation?: number | null; pixelWidth?: number; pixelHeight?: number; pointWidth?: number; pointHeight?: number; transitioning?: boolean; inputReady?: boolean; geometry?: PhoneGeometry; displays?: number; model?: string | null; runtime?: string | null; appearance?: string | null; textSize?: string | null; contrast?: boolean | null; recording?: string | null; lastCapture?: string | null; on: boolean; starting: boolean; device: string | null; udid: string | null; holder: PhoneHolder; width: number; height: number; problem: string | null }
+export interface PhoneStatus { orientation?: number | null; pixelWidth?: number; pixelHeight?: number; pointWidth?: number; pointHeight?: number; transitioning?: boolean; inputReady?: boolean; geometry?: Wire.Geometry; displays?: number; model?: string | null; runtime?: string | null; appearance?: string | null; textSize?: string | null; contrast?: boolean | null; recording?: string | null; lastCapture?: string | null; on: boolean; starting: boolean; device: string | null; udid: string | null; holder: PhoneHolder; width: number; height: number; problem: string | null }
 /** One picture of the phone's screen: a base64 JPEG. */
 export interface PhoneFrame { seq: number; image: string; width: number; height: number }
 export interface PhoneView { status: PhoneStatus; frame: PhoneFrame | null }
-export type PhoneInput =
-  | { kind: "tap"; x: number; y: number }
-  | { kind: "swipe"; x1: number; y1: number; x2: number; y2: number; ms: number }
-  | { kind: "type"; text: string }
-  | { kind: "key"; key: PhoneKey }
-  | { kind: "button"; button: "home" | "lock" };
+export type PhoneInput = Required<Wire.Input>;
 
 export type { MainView, AssistantSection } from "./assistantWorkspaceModel";

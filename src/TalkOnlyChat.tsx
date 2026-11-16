@@ -64,7 +64,7 @@ export function TalkOnlyChat(props: Props) {
     const id = `chat-${crypto.randomUUID()}`;
     // chat_import gives the copy its own chat metadata and profile mappings. Never create a Work room.
     const result = await raw.call<{id:string;room:RoomSnapshot;skipped:unknown[]}>('chat_import', {
-      id,move_id:crypto.randomUUID(),title,
+      id,moveId:crypto.randomUUID(),title,
       participants:state.snapshot.participants.map(bot=>{
         const profile = row.profiles[bot.id];
         if (!profile) throw Error(`The saved profile for ${bot.display_name} is unknown. Refresh the original chat before copying it.`);

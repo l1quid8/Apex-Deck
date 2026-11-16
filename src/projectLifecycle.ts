@@ -6,7 +6,16 @@ import type { Workspace } from './types';
 export async function changeProject(backend: Backend, workspace: Workspace, action: 'add' | 'rename' | 'remove', name?: string): Promise<Workspace> {
   if (!workspace.path || backend.demo) return {...workspace,...(name === undefined ? {} : {name:name.trim()}),hidden:action === 'remove'};
   if (backend.supports?.('project_lifecycle_v1') === false) throw new Error('Update Deck on the project machine to change projects from both interfaces.');
-  const row = await backend.call<ProjectEntry>(`project_${action}`,{path:workspace.path,...(name === undefined ? {} : {name})});
+  const path = workspace.path;
+  let row: ProjectEntry;
+  if (action === 'rename') {
+    if (name === undefined) throw new Error('Enter a project name.');
+    row = await backend.call<ProjectEntry>('project_rename', { path, name });
+  } else if (action === 'add') {
+    row = await backend.call<ProjectEntry>('project_add', { path, name });
+  } else {
+    row = await backend.call<ProjectEntry>('project_remove', { path });
+  }
   if (!row || typeof row.path !== 'string' || !row.path || typeof row.name !== 'string' || !row.name.trim() || typeof row.removed !== 'boolean' || !Number.isSafeInteger(row.revision) || row.revision < 0) throw new Error('The project machine did not confirm this change. Refresh before retrying.');
   return {...workspace,path:row.path,name:row.name,hidden:row.removed,hostProjectRevision:row.revision};
 }

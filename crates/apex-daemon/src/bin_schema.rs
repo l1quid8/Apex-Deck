@@ -12,6 +12,12 @@ fn main() {
             "Command": schemars::schema_for!(apex_host::Command),
             "RoomEvent": schemars::schema_for!(apex_core::RoomEvent),
             "HostEvent": schemars::schema_for!(apex_host::events::HostEvent),
+            "DevicesRequest": schemars::schema_for!(apex_daemon::protocol::DevicesRequest),
+            "GatewayAdminRequest": schemars::schema_for!(apex_daemon::gateway_admin::Request),
+            "KeysRequest": schemars::schema_for!(apex_daemon::gateway_cli::KeysRequest),
+            "MaintenanceRequest": schemars::schema_for!(apex_daemon::maintenance::Request),
+            "PairRequest": schemars::schema_for!(apex_daemon::pair_commands::PairRequest),
+            "VoiceRequest": schemars::schema_for!(apex_daemon::voice::session::VoiceRequest),
             "Welcome": schemars::schema_for!(apex_daemon::protocol::Welcome),
         }
     });

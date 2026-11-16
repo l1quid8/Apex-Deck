@@ -102,8 +102,11 @@ export function WorkspaceTasks({ rows, problems = [], renderDetail, backendForRo
       const guarded = guardWorkspaceTaskBackend(addRow, addBackend);
       const record = await guarded.call<PersonalAssistantRecord>('personal_get', { assistantId: target.assistant.assistantId });
       if (record.id !== target.assistant.assistantId || record.hostId !== target.assistant.hostId) throw new Error('The assistant owner changed.');
-      const handoff = command.kind === 'assistant';
-      await guarded.call(handoff ? 'personal_send' : 'personal_todo', { assistantId: record.id, ...(handoff ? { requestId: crypto.randomUUID(), text: command.text } : { expectedRevision: record.revision, action: 'add', text: addText.trim(), ...(dueAt ? { dueAt: new Date(dueAt).getTime() } : {}), ...(remindAt ? { remindAt: new Date(remindAt).getTime() } : {}) }) });
+      if (command.kind === 'assistant') {
+        await guarded.call('personal_send', { assistantId: record.id, requestId: crypto.randomUUID(), text: command.text });
+      } else {
+        await guarded.call('personal_todo', { assistantId: record.id, expectedRevision: record.revision, action: 'add', text: addText.trim(), ...(dueAt ? { dueAt: new Date(dueAt).getTime() } : {}), ...(remindAt ? { remindAt: new Date(remindAt).getTime() } : {}) });
+      }
       const updated = await guarded.call<PersonalAssistantRecord>('personal_get', { assistantId: record.id });
       if (updated.id !== record.id || updated.hostId !== record.hostId) throw new Error('The assistant owner changed.');
       setAddedRows(before => [...before.filter(row => !row.assistant || assistantIdentityKey(row.assistant) !== assistantIdentityKey(target.assistant)), ...collectWorkspaceTasks([{ ...target, tasks: updated.tasks, todos: updated.taskManagerTodos, revision: updated.revision }], [])]);
