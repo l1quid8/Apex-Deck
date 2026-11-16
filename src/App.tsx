@@ -969,6 +969,11 @@ export function App() {
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
   const listed = useMemo(() => listedPanes(viewPanes, workspaces), [viewPanes, workspaces]);
+  // Do not hydrate closed history at startup. Once opened in this session, keep
+  // the pane alive across closes so drafts, queues and live calls stay intact.
+  const openedPaneIds = useRef(new Set<string>());
+  for (const pane of listed) if (!pane.closed) openedPaneIds.current.add(pane.id);
+  const mountedPanes = listed.filter(pane => openedPaneIds.current.has(pane.id));
   useEffect(() => {
     let stopped = false;
     for (const pane of listed) {
@@ -3205,10 +3210,10 @@ export function App() {
             ? <HostAgents backend={creationBackend} agents={agents}>{picker}</HostAgents>
             : <div className="picker"><p>This workspace's machine is unavailable.</p></div>)}
 
-          {/* Every pane of every workspace stays mounted so its session keeps
-              running. Panes outside the current view are only hidden. */}
+          {/* Hydrated panes stay mounted across workspace switches and closes.
+              Historical closed panes wait until they are opened. */}
           <div className={`grid ${resizing ? "resizing-sidebar" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
-            <PaneMap arrangement={arrangement} mounted={listed.map(pane => pane.id)} borrowed={composerBorrowed} onArrangement={setArrangement} active={targetOnly ? [targetOnly] : multiOn && multiDraft.selected.length ? multiDraft.selected : focusedPane ? [focusedPane] : []}
+            <PaneMap arrangement={arrangement} mounted={mountedPanes.map(pane => pane.id)} borrowed={composerBorrowed} onArrangement={setArrangement} active={targetOnly ? [targetOnly] : multiOn && multiDraft.selected.length ? multiDraft.selected : focusedPane ? [focusedPane] : []}
               maximized={maximized && visiblePanes.some(pane => pane.id === maximized) ? maximized : null} onRestore={() => setMaximized(null)} onVisiblePanes={onVisiblePanes} onTargetOnly={setMapTargetOnly} handle={paneMap}
               onPopOut={(id, x, y) => { void popOutPane(id, { x: Math.round(x - 380), y: Math.round(y - 60), width: 760, height: 560 }); }}
               renderPane={(id, rect, onScreen) => {
