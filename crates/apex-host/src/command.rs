@@ -918,7 +918,8 @@ impl Host {
                 // Work would bypass durable chat acceptance and mutate memory.
                 // Work sends retain task continuation, Revert snapshots, and
                 // requested-server validation in the existing post handlers.
-                Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
+                // Chat delivery acknowledges durable acceptance while replies stream.
+                Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, None, request_id, false, true, None, interactive_answers, capability).await?),
                 _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
