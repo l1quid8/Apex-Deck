@@ -29,6 +29,12 @@ final class Delegate: NSObject, NSApplicationDelegate {
     menu.addItem(withTitle: "Quit Unified Computer Use", action: #selector(quit), keyEquivalent: "").target = self
     item.menu = menu
     server.showSetup = { [weak self] in self?.setup() }
+    AwayMode.shared.onTakeover = { [weak self] in self?.server.stopIsolatedRun() }
+    DistributedNotificationCenter.default().addObserver(self, selector: #selector(sessionEnded(_:)),
+      name: Notification.Name("com.apple.screenIsLocked"), object: nil)
+    for event in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification] {
+      NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(sessionEnded(_:)), name: event, object: nil)
+    }
     server.start()
     AwayMode.shared.untetheredActive = { [weak self] in self?.server.turns.hasActiveUntethered() ?? false }
     AwayMode.shared.start()
@@ -56,6 +62,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     awayItem.state = AwayMode.shared.enabled ? .on : .off
   }
   func application(_ sender: NSApplication, openFiles filenames: [String]) {}
+  @objc func sessionEnded(_ notification: Notification) { server.stopIsolatedRun() }
   @objc func stop() { server.stopIsolatedRun() }
   @objc func setup() {
     if setupPanel == nil { setupPanel = SetupPanel(refreshTap: { [weak self] in

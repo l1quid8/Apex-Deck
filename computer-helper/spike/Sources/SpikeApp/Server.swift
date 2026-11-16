@@ -15,7 +15,13 @@ final class ClientSession {
 final class Server {
   let ax = Accessibility()
   var latch: Latch { activeState.latch }
-  let turns = TurnRegistry()
+  static func sessionAvailable() -> Bool {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+      session[kCGSessionOnConsoleKey as String] as? Bool == true,
+      session[kCGSessionLoginDoneKey as String] as? Bool == true else { return false }
+    return session["CGSSessionScreenIsLocked"] as? Bool != true
+  }
+  let turns = TurnRegistry(sessionAvailable: Server.sessionAvailable)
   let browser = BrowserBroker()
   lazy var activity = ActivityTap(latch)
   var input: Input { Input(ax: ax, latch: latch) }
@@ -219,6 +225,7 @@ final class Server {
       }
       if method == "unified/resume" {
         guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        guard Self.sessionAvailable() else { self.fail(id, "session_locked_or_unavailable", client); return }
         self.turns.resume(); self.response(id, ["resumed": true], client); return
       }
       if method == "unified/stop-all" {

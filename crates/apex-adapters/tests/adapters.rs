@@ -1761,6 +1761,26 @@ async fn computer_use_app_permission_is_separate_from_an_outer_tool_approval() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_upload_permission_delivers_the_humans_decision() {
+    use apex_core::AgentTool;
+    let script = FAKE_MCP_CODEX.replace(
+        r#""_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{"quantity":"0.001"}}"#,
+        r#""mode":"form","message":"Allow upload to https://app.fieldwire.com?","requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call","connector_id":"browser-use","tool_name":"upload_browser_files","file_transfer":"upload","origin":"https://app.fieldwire.com","tool_params":{"origin":"https://app.fieldwire.com"}}"#);
+    let dir = fake_tool("codex-upload-permission", "codex", &script);
+    for decision in [Decision::Approve, Decision::Reject] {
+        let approver = Fixed::new(decision);
+        let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context_in(&dir));
+        let (result, _, _) = work_asking(bot.as_ref(), &approver).await;
+        assert_eq!(result.unwrap().text, if decision.approved() { "allowed=3 denied=0" } else { "allowed=0 denied=3" });
+        let asked = approver.asked.lock().unwrap();
+        assert_eq!(asked.len(), 3, "each upload asks separately from the outer tool call");
+        assert!(asked.iter().all(|a| a.kind == ActionKind::Other && a.risky && a.detail.contains("Upload destination: https://app.fieldwire.com")));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A stand-in for Claude Code asking two questions with AskUserQuestion.
 #[cfg(unix)]
 const FAKE_CLAUDE_QUESTION: &str = r#"#!/bin/sh
@@ -3036,4 +3056,63 @@ async fn live_claude_plan_skip_note_keeps_the_step_out() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(a, "the kept step was done");
     assert!(!b, "the skipped step was left out");
+}
+
+/// Drive the room entry point twice. The CLI fixture records the PID and
+/// exact payload, so a rebuilt full prompt cannot masquerade as a cache hit.
+#[cfg(unix)]
+#[tokio::test]
+async fn ordinary_room_turns_reuse_claude_and_codex_and_stop_rebuilds_the_full_view() {
+    use apex_core::AgentTool;
+    let script = r#"#!/usr/bin/python3
+import json, os, sys
+def send(value):
+    print(json.dumps(value), flush=True)
+def record(text):
+    with open("room-turns.jsonl", "a") as log:
+        print(json.dumps([os.getpid(), text]), file=log)
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("type") == "user":
+        record(frame["message"]["content"])
+        send({"type":"result","subtype":"success","is_error":False,"result":"noted"})
+        continue
+    method = frame.get("method")
+    if "id" not in frame: continue
+    result = {}
+    if method == "thread/start": result = {"thread":{"id":"thread"}}
+    if method == "mcpServerStatus/list": result = {"data":[],"nextCursor":None}
+    if method == "plugin/list": result = {"marketplaces":[]}
+    if method == "turn/start":
+        turn = "turn-" + str(frame["id"])
+        record(frame["params"]["input"][0]["text"])
+        result = {"turn":{"id":turn,"status":"inProgress"}}
+    send({"id":frame["id"],"result":result})
+    if method == "turn/start":
+        send({"method":"item/completed","params":{"threadId":"thread","turnId":turn,"item":{"type":"agentMessage","id":"i","text":"noted"}}})
+        send({"method":"turn/completed","params":{"threadId":"thread","turn":{"id":turn,"status":"completed"}}})
+"#;
+    for (tool, name) in [(AgentTool::ClaudeCode, "claude"), (AgentTool::Codex, "codex")] {
+        let dir = fake_tool(&format!("room-live-{name}"), name, script);
+        let log = dir.join("room-turns.jsonl");
+        let _ = std::fs::remove_file(&log);
+        let context = BuildContext { live_sessions: true, ..context_in(&dir) };
+        let bot = build(config("bot", Backend::Agent {tool, model:None}), &context);
+        let mut room = Room::new(vec![bot.clone()], RoomOptions {policy:TurnPolicy::Everyone,max_bot_hops:Some(0)});
+        for (index, message) in ["first message","second message","third message"].into_iter().enumerate() {
+            if index == 2 { bot.cancel_active_turn().await.unwrap(); }
+            tokio::time::timeout(Duration::from_secs(15), room.post_human(message, &|_| {})).await.unwrap();
+            assert_eq!(room.transcript().last().unwrap().text, "noted", "{tool:?}");
+        }
+        let turns: Vec<serde_json::Value> = std::fs::read_to_string(log).unwrap().lines()
+            .map(|line|serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0][0], turns[1][0], "{tool:?}");
+        assert_ne!(turns[1][0], turns[2][0]);
+        let second = turns[1][1].to_string();
+        assert!(second.contains("second message") && !second.contains("first message"), "{second}");
+        assert!(turns[2][1].to_string().contains("first message"));
+        bot.cancel_active_turn().await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

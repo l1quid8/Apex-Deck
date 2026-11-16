@@ -4,6 +4,20 @@ import SpikeCore
 @testable import SpikeApp
 
 final class TurnRegistryTests: XCTestCase {
+  func testLockedSessionRejectsReadBindAndRegistration() throws {
+    var unlocked = true
+    let registry = TurnRegistry(sessionAvailable: { unlocked })
+    let token = String(repeating: "a", count: 64)
+    let args: [String: Any] = ["threadId": "t", "participantId": "p", "turnToken": token,
+      "effectiveAccess": "full", "enabled": true, "untethered": true, "grantScope": "s"]
+    _ = try registry.register(args, control: -1)
+    unlocked = false
+    for operation in [{ _ = try registry.bind(args) }, { try registry.check(token) },
+                      { _ = try registry.register(args, control: -1) }] {
+      XCTAssertThrowsError(try operation()) { XCTAssertEqual(($0 as? Refusal)?.code, "session_locked_or_unavailable") }
+    }
+  }
+
   func testTrustedAssistantFullSkipsNativeConsentWithoutGrantingTheNextTurn() throws {
     let registry = TurnRegistry()
     let app = AppIdentity(bundle: "com.example.app", path: "/Applications/Example.app", executable: "/x", signature: Data([1]))

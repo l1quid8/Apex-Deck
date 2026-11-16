@@ -28,8 +28,9 @@ const UNCERTAIN: &str = "delivery_uncertain; do not repeat it. Read the screen f
 // Page scripts are fixed here. Neither text nor names from a bot ever become code.
 const HIT: &str = "function(x,y){if(this.disabled||this.getAttribute('aria-disabled')==='true')return'disabled';const r=this.getRootNode();const e=(r.elementFromPoint?r:document).elementFromPoint(x,y);return e&&(this===e||this.contains(e))?'ok':'obscured'}";
 const FIELD: &str = "function(){const t=(this.type||'').toLowerCase(),a=(this.autocomplete||'').toLowerCase(),n=this.tagName;const editable=!this.disabled&&!this.readOnly&&(this.isContentEditable||n==='TEXTAREA'||(n==='INPUT'&&!['button','checkbox','color','file','hidden','image','radio','range','reset','submit'].includes(t)));return{tag:n,editable,secure:t==='password'||a.includes('password')||a==='one-time-code'||a.startsWith('cc-')}}";
-const FOCUS: &str = "function(){this.focus();if(this.setSelectionRange){try{const n=this.value.length;this.setSelectionRange(n,n)}catch(e){}}}";
+const FOCUS: &str = "function(){this.focus()}";
 const VALUE: &str = "function(){return this.value===undefined?this.innerText:this.value}";
+const INSERTED_VALUE: &str = "function(text){const value=this.value,start=this.selectionStart,end=this.selectionEnd;if(typeof value!=='string'||!Number.isInteger(start)||!Number.isInteger(end))return null;const expected=value.slice(0,start)+text+value.slice(end);return expected===value?null:expected}";
 const ACTIVE: &str = "(()=>{let e=document.activeElement;while(e&&e.shadowRoot&&e.shadowRoot.activeElement)e=e.shadowRoot.activeElement;return e})()";
 
 pub(crate) struct Call<'a> {
@@ -231,15 +232,30 @@ impl Page {
         Ok(result["result"]["value"].clone())
     }
 
-    /// The element's middle in page pixels, brought into view if needed.
+    /// A point in the element's visible bounds, brought into view if needed.
     async fn middle(&mut self, call: &Bound<'_>, backend: i64) -> Result<(f64, f64), String> {
         self.send(call, "DOM.scrollIntoViewIfNeeded", json!({ "backendNodeId": backend })).await?;
         let quads = self.call("DOM.getContentQuads", json!({ "backendNodeId": backend })).await.map_err(|_| "element_not_visible")?;
-        let points: Vec<f64> = quads["quads"][0].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
-        if points.len() != 8 {
-            return Err("element_not_visible".into());
+        for quad in quads["quads"].as_array().into_iter().flatten() {
+            let points: Vec<f64> = quad.as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+            if points.len() != 8 { continue; }
+            let center = ((points[0] + points[2] + points[4] + points[6]) / 4.0, (points[1] + points[3] + points[5] + points[7]) / 4.0);
+            if (0.0..self.width as f64).contains(&center.0) && (0.0..self.height as f64).contains(&center.1) {
+                return Ok(center);
+            }
+            // An oversized control can keep its true center outside the viewport.
+            // Use the visible portion; click still hit-tests this point before input.
+            let xs = [points[0], points[2], points[4], points[6]];
+            let ys = [points[1], points[3], points[5], points[7]];
+            let left = xs.into_iter().fold(f64::INFINITY, f64::min).max(0.0);
+            let right = xs.into_iter().fold(f64::NEG_INFINITY, f64::max).min(self.width as f64);
+            let top = ys.into_iter().fold(f64::INFINITY, f64::min).max(0.0);
+            let bottom = ys.into_iter().fold(f64::NEG_INFINITY, f64::max).min(self.height as f64);
+            if right > left && bottom > top {
+                return Ok(((left + right) / 2.0, (top + bottom) / 2.0));
+            }
         }
-        Ok(((points[0] + points[2] + points[4] + points[6]) / 4.0, (points[1] + points[3] + points[5] + points[7]) / 4.0))
+        Err("element_not_visible".into())
     }
 
     /// The same control the reading named, still where a click would land.
@@ -547,9 +563,12 @@ async fn act(page: &mut Page, call: &Bound<'_>, tool: &str, args: &Value, held: 
             let focused = page.on(&object, "function(){let a=this.ownerDocument.activeElement;while(a&&a.shadowRoot&&a.shadowRoot.activeElement)a=a.shadowRoot.activeElement;return a===this}", json!([])).await?;
             if focused != true { return Err("focused_element_changed".into()); }
             page.field(&object).await?;
+            // Preserve the field's selection, and verify the whole requested insertion.
+            // An old occurrence or an unchanged value does not prove this edit landed.
+            let expected = page.on(&object, INSERTED_VALUE, json!([{ "value": text }])).await?;
             page.send(call, "Input.insertText", json!({ "text": text })).await?;
             let value = page.on(&object, VALUE, json!([])).await.unwrap_or_default();
-            Ok(if value.as_str().is_some_and(|value| value.contains(text)) { "delivery=delivered_verified verification_scope=element_value" } else { "delivery=delivered_unverified" })
+            Ok(if expected.as_str().is_some_and(|expected| value.as_str() == Some(expected)) { "delivery=delivered_verified verification_scope=element_value" } else { "delivery=delivered_unverified" })
         }
         "press_key" => {
             let key = args["key"].as_str().ok_or("invalid_arguments")?;

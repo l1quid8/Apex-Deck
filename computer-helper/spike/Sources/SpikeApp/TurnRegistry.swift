@@ -25,6 +25,10 @@ final class TurnRegistry {
   /// changes on every revoke, so a missed message still cannot keep a grant.
   private struct ThreadGrant { let identity: AppIdentity; let control: Bool }
   private struct ThreadGrants { let scope: String; var apps = [String: ThreadGrant]() }
+  private let sessionAvailable: () -> Bool
+  init(sessionAvailable: @escaping () -> Bool = { true }) {
+    self.sessionAvailable = sessionAvailable
+  }
   private let lock = NSLock()
   private var turns = [String: Turn]()
   private var globallyStopped = false
@@ -40,6 +44,7 @@ final class TurnRegistry {
     return (thread, participant, token)
   }
   func register(_ args: [String: Any], control: Int32) throws -> String {
+    guard sessionAvailable() else { throw Refusal("session_locked_or_unavailable") }
     let (thread, participant, token) = try Self.fields(args)
     guard args["enabled"] as? Bool == true, let access = args["effectiveAccess"] as? String, ["read", "ask", "edits", "full"].contains(access) else { throw Refusal("computer_use_disabled_or_access_denied") }
     guard let grantScope = args["grantScope"] as? String, (1...128).contains(grantScope.utf8.count) else { throw Refusal("turn_binding_invalid") }
@@ -58,6 +63,7 @@ final class TurnRegistry {
     return token
   }
   func bind(_ args: [String: Any], latch: Latch? = nil) throws -> String {
+    guard sessionAvailable() else { throw Refusal("session_locked_or_unavailable") }
     let (thread, participant, token) = try Self.fields(args)
     lock.lock(); defer { lock.unlock() }
     guard let turn = turns[token], !turn.stopped, turn.thread == thread, turn.participant == participant else { throw Refusal("turn_unregistered_or_ended") }
@@ -65,6 +71,7 @@ final class TurnRegistry {
     return token
   }
   func check(_ token: String?) throws {
+    guard sessionAvailable() else { throw Refusal("session_locked_or_unavailable") }
     lock.lock(); defer { lock.unlock() }
     guard let token = token, let turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
   }
