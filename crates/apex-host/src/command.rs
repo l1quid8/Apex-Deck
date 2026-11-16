@@ -322,10 +322,120 @@ pub enum Command {
     ModEnvGet { name: String },
 }
 
+/// What `Command::policy` answers for one command. Both bits are decided
+/// per variant, so adding a command means writing them down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    /// Needs a provenance receipt from the installed UI before the host runs it.
+    pub provenance: bool,
+    /// May be submitted by the Linux terminal app over the local socket
+    /// (after the jail's boot probe passed; see `local_linux_cli_admitted`).
+    pub linux_cli: bool,
+}
+
+impl Policy {
+    pub const OPEN: Policy = Policy { provenance: false, linux_cli: false };
+    pub const PROTECTED: Policy = Policy { provenance: true, linux_cli: false };
+    pub const OPEN_TERMINAL: Policy = Policy { provenance: false, linux_cli: true };
+    pub const PROTECTED_TERMINAL: Policy = Policy { provenance: true, linux_cli: true };
+}
+
 impl Command {
+    /// How the host admits this command. Every variant is named here on
+    /// purpose, with no catch-all arm: a new command does not compile until
+    /// someone has decided both answers for it. "Open" is a decision, never
+    /// a default. (The device tier lives in `apex-daemon`'s `authority.rs`,
+    /// which is exhaustive in the same way.)
+    pub fn policy(&self) -> Policy {
+        use Command::*;
+        match self {
+            // Protected, and the Linux terminal app may submit them (room-scoped,
+            // see `local_linux_cli_room`).
+            ProviderSetupBegin { .. } | AgentProfileSave { .. } | RoomImport { .. } | RoomCreate { .. } | RoomSetTrashed { .. } | RoomDecide { .. }
+            | RoomSetPlan { .. } | RoomAnswer { .. } | RoomSetOptions { .. } | RoomAddParticipant { .. } | RoomUpdateParticipant { .. }
+            | RoomRemoveParticipant { .. } | RoomRunnerStart { .. } | RoomRunnerAction { .. } => Policy::PROTECTED_TERMINAL,
+            // The terminal app may send these without a receipt: a plain post, and
+            // bounded attachment bytes into one thread.
+            SaveAttachment { .. } | RoomPost { .. } => Policy::OPEN_TERMINAL,
+            // Protected: changes what a bot may do, acts for the person, spends,
+            // or rewrites a ledger. Needs a receipt from the installed UI (or the
+            // broker's device path); a bare same-user socket is refused.
+            BackendStop { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } | ProjectTaskLifecycle { .. } | LegacyImportApply { .. }
+            | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. } | PersonalCreate { .. }
+            | PersonalProjectDelegate { .. } | PersonalProjectDelegateUi { .. } | PersonalProjectProposeUi { .. } | PersonalSend { .. }
+            | PersonalDecideAlways { .. } | PersonalDecide { .. } | PersonalArchive { .. } | PersonalTaskLifecycle { .. } | PersonalTodo { .. }
+            | PersonalReplyCancel { .. } | PersonalCancel { .. } | PersonalPause { .. } | PersonalScheduleCancel { .. } | PersonalHandoffSelect { .. }
+            | PersonalHandoffControl { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarCancel { .. } | PersonalWorkspaceConfigure { .. }
+            | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. } | PersonalMemoryAdd { .. }
+            | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
+            | PersonalMachineAllow { .. } | PersonalBrowserSession { .. } | ComputerSetup { .. } | ComputerSetEnabled { .. } | ComputerSetActionLabels { .. }
+            | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
+            // Open: reads, this Mac's own desktop plumbing, chat-room posts and
+            // anything the device tier alone governs.
+            // Provenance
+            ProvenanceExecute { .. } => Policy::OPEN,
+            // Session
+            SessionLoad { .. } | SessionSave { .. } | SettingsLoad { .. } | SettingsSave { .. } => Policy::OPEN,
+            // Agent
+            AgentProfileList { .. } | AgentsDetect { .. } | PersonaDraft { .. } | ModelMetrics { .. } | AgentModels { .. } | AgentBotModels { .. } => Policy::OPEN,
+            // Artifacts
+            ArtifactsLoad { .. } | ArtifactsSave { .. } | AnswersLoad { .. } | AnswerSave { .. } | ArtifactExport { .. } => Policy::OPEN,
+            // Room
+            RoomSteps { .. } | RoomDelete { .. } | ListToolServers { .. } | RoomDiff { .. } | RoomGitStatus { .. } | RoomGitAction { .. } | RoomState { .. }
+            | RoomTargets { .. } | RoomRefreshPlans { .. } | RoomApplyAccess { .. } | RoomPostTo { .. } | PostCapabilities { .. } | VoiceCapabilities { .. }
+            | RoomStopRequest { .. } | RoomTurn { .. } | RoomStop { .. } | RoomClear { .. } | RoomRewind { .. } | RoomRevertPlan { .. } | RoomRevert { .. }
+            | RoomPin { .. } | RoomUnpin { .. } | RoomCompact { .. } | RoomCurate { .. } | RoomCurateUndo { .. } | RoomClose { .. } | RoomBotModels { .. }
+            | RoomBotBalance { .. } | RoomPlanReset { .. } | RoomRunnerState { .. } => Policy::OPEN,
+            // Monitor
+            MonitorList { .. } | MonitorGet { .. } | MonitorSuggestSources { .. } | MonitorAssign { .. } | MonitorSourcesUpdate { .. }
+            | MonitorProfileUpdate { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorConnect { .. } | MonitorWatchSave { .. } | MonitorWatchStop { .. }
+            | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => Policy::OPEN,
+            // Assistant
+            AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantTasksList { .. } => Policy::OPEN,
+            // Legacy
+            LegacyImportPreview { .. } | LegacyImportHistory { .. } => Policy::OPEN,
+            // Project
+            ProjectMemoryList { .. } | ProjectList { .. } | ProjectAdd { .. } | ProjectRename { .. } | ProjectRemove { .. } => Policy::OPEN,
+            // Personal
+            PersonalList { .. } | PersonalGet { .. } | PersonalReact { .. } | PersonalApprovalOptions { .. } | PersonalConversationNew { .. }
+            | PersonalHandoffOptions { .. } | PersonalHandoffQuestion { .. } | PersonalAvatarOptions { .. } | PersonalAvatarStatus { .. }
+            | PersonalAvatarAsset { .. } | PersonalNoticesSeen { .. } | PersonalPushRegister { .. } | PersonalMachineResult { .. } | PersonalMachineAllowed { .. }
+            | PersonalExecuteLocal { .. } | PersonalConnectors { .. } | PersonalBrowserView { .. } | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. } => Policy::OPEN,
+            // Browser
+            BrowserTabs { .. } | BrowserTabOpen { .. } | BrowserTabClose { .. } | BrowserTabControl { .. } | BrowserTabShare { .. } | BrowserTabFrame { .. }
+            | BrowserTabInput { .. } | BrowserTabResize { .. } | BrowserTabUpload { .. } | BrowserTabStop { .. } => Policy::OPEN,
+            // Computer
+            ComputerStatus { .. } | ComputerSetCursorOverlay { .. } | ComputerSetCursorImage { .. } | ComputerResetCursorOverlay { .. } | ComputerStop { .. } => Policy::OPEN,
+            // Phone
+            PhoneStatus { .. } | PhoneStart { .. } | PhoneStop { .. } | PhoneView { .. } | PhoneHuman { .. } | PhoneDevices { .. } | PhoneControl { .. }
+            | PhoneGiveBack { .. } | PhoneBot { .. } | PhoneChatQueued { .. } => Policy::OPEN,
+            // Local
+            PreviewProbe { .. } | TrustStatus { .. } | OpenTarget { .. } => Policy::OPEN,
+            // Api
+            DataFolder { .. } | EnvPresent { .. } | ApiKeyStatus { .. } | ApiKeySave { .. } | ApiKeyRemove { .. } | ApiModels { .. } | ApiBalance { .. }
+            | ApiQuote { .. } => Policy::OPEN,
+            // File
+            StartupFolders { .. } | FolderAccept { .. } | FolderWithdraw { .. } | WorkspaceRead { .. } | PathsExist { .. } | FolderList { .. } | FileRead { .. }
+            | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileWrite { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. }
+            | WorktreeList { .. } | BotCopiesSetCheck { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreeForget { .. } | WorktreePrune { .. } => Policy::OPEN,
+            // Pty
+            PtySpawn { .. } | PtyList { .. } | PtyRename { .. } | PtyAttach { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => Policy::OPEN,
+            // Library
+            ExportThread { .. } | CopyAttachment { .. } | GenerateImage { .. } | ReadAttachment { .. } | ImportReplyImage { .. } | LibraryList { .. }
+            | LibraryRemove { .. } | LibraryRename { .. } => Policy::OPEN,
+            // Chat
+            ChatProfiles { .. } | ChatList { .. } | ChatCreate { .. } | ChatUpdateMeta { .. } | ChatAddParticipant { .. } | ChatUpdateParticipant { .. }
+            | ChatRemoveParticipant { .. } | ChatImport { .. } | ChatMessageClaim { .. } | ChatMergeHistory { .. } | ChatPromoteAbandon { .. } => Policy::OPEN,
+            // Quit
+            QuitHeard { .. } | QuitApp { .. } => Policy::OPEN,
+            // Mod
+            ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Policy::OPEN,
+        }
+    }
+
+    /// Whether this command needs a provenance receipt before it runs.
     pub fn requires_provenance(&self) -> bool {
-        if matches!(self, Self::AgentProfileSave { .. } | Self::ProviderSetupBegin { .. } | Self::BackendStop { .. }) { return true; }
-        matches!(self, Self::PersonalBrowserSession { .. } | Self::ComputerSetEnabled { .. } | Self::ComputerSetActionLabels { .. } | Self::ComputerSetup { .. } | Self::AssistantMessage { .. } | Self::AssistantTaskAction { .. } | Self::PersonalSend { .. } | Self::PersonalDecideAlways { .. } | Self::PersonalDecide { .. } | Self::RoomDecide { .. } | Self::RoomAnswer { .. } | Self::PersonalCreate { .. } | Self::PersonalProjectDelegate { .. } | Self::PersonalProjectDelegateUi { .. } | Self::PersonalProjectProposeUi { .. } | Self::PersonalConfigure { .. } | Self::PersonalWorkspaceConfigure { .. } | Self::PersonalAvatarGenerate { .. } | Self::PersonalAvatarCancel { .. } | Self::PersonalPermissionSet { .. } | Self::PersonalRuleAdd { .. } | Self::PersonalRuleRemove { .. } | Self::PersonalMachineLink { .. } | Self::PersonalMachineUnlink { .. } | Self::PersonalMachineClaim { .. } | Self::PersonalMachineAllow { .. } | Self::PersonalPause { .. } | Self::PersonalCancel { .. } | Self::PersonalTaskLifecycle { .. } | Self::PersonalTodo { .. } | Self::ProjectTaskLifecycle { .. } | Self::PersonalArchive { .. } | Self::PersonalReplyCancel { .. } | Self::PersonalScheduleCancel { .. } | Self::RoomSetTrashed { .. } | Self::RoomCreate { .. } | Self::RoomImport { .. } | Self::RoomFork { .. } | Self::ChatPromote { .. } | Self::RoomUpdateParticipant { .. } | Self::RoomAddParticipant { .. } | Self::RoomRemoveParticipant { .. } | Self::RoomSetOptions { .. } | Self::RoomForgetAllowed { .. } | Self::RoomRunnerStart { .. } | Self::RoomRunnerAction { .. } | Self::RoomSetPlan { .. } | Self::RoomMount { .. } | Self::PersonalMemoryAdd { .. } | Self::PersonalMemoryCorrect { .. } | Self::PersonalMemoryForget { .. } | Self::ProjectMemorySave { .. } | Self::ProjectMemoryForget { .. } | Self::ProjectMemoryStage { .. } | Self::ProjectMemoryPromote { .. } | Self::LegacyImportApply { .. } | Self::PersonalHandoffSelect { .. } | Self::PersonalHandoffControl { .. })
+        self.policy().provenance
     }
 
     /// Read a command from `{ "cmd", "args" }`. A command without arguments
@@ -344,12 +454,9 @@ impl Command {
 /// The terminal app's typed actions: protected submissions plus bounded
 /// thread-scoped attachment bytes. No arbitrary host-path copying or reads.
 /// Never broker admin, device grants, pairing, personal assistant or updates.
+/// Decided per variant in `Command::policy`.
 pub fn local_linux_cli_surface(command: &Command) -> bool {
-    matches!(command, Command::RoomPost { .. } | Command::RoomDecide { .. } | Command::RoomAnswer { .. }
-        | Command::RoomSetPlan { .. } | Command::RoomRunnerStart { .. } | Command::RoomRunnerAction { .. }
-        | Command::RoomAddParticipant { .. } | Command::RoomUpdateParticipant { .. } | Command::RoomRemoveParticipant { .. }
-        | Command::RoomSetOptions { .. } | Command::RoomCreate { .. } | Command::RoomSetTrashed { .. } | Command::RoomImport { .. } | Command::AgentProfileSave { .. } | Command::ProviderSetupBegin { .. }
-        | Command::SaveAttachment { .. })
+    command.policy().linux_cli
 }
 
 /// The room a terminal-surface command targets. Keep in step with
@@ -903,6 +1010,25 @@ mod tests {
         assert!(matches!(curate, Command::RoomCurate { id } if id == "r"));
         let undo = Command::from_json(json!({"cmd":"room_curate_undo","args":{"id":"r"}})).unwrap();
         assert!(matches!(undo, Command::RoomCurateUndo { id } if id == "r"));
+    }
+
+    #[test]
+    fn the_policy_table_agrees_with_the_wrappers_the_daemon_and_cli_call() {
+        let probe = |cmd: &str, args: serde_json::Value| Command::from_json(json!({"cmd": cmd, "args": args})).unwrap();
+        let cases = [
+            (probe("room_post", json!({"id":"r","text":"hi"})), Policy::OPEN_TERMINAL),
+            (probe("save_attachment", json!({"room":"r","name":"n.txt","data":"aGk="})), Policy::OPEN_TERMINAL),
+            (probe("room_decide", json!({"id":"r","request":"q","approve":true})), Policy::PROTECTED_TERMINAL),
+            (probe("room_set_plan", json!({"id":"r","on":true})), Policy::PROTECTED_TERMINAL),
+            (probe("personal_send", json!({"assistantId":"p","requestId":"q","text":"hi"})), Policy::PROTECTED),
+            (probe("file_read", json!({"root":"/tmp","path":"x"})), Policy::OPEN),
+            (probe("room_state", json!({"id":"r"})), Policy::OPEN),
+        ];
+        for (command, want) in &cases {
+            assert_eq!(command.policy(), *want, "{command:?}");
+            assert_eq!(command.requires_provenance(), want.provenance);
+            assert_eq!(local_linux_cli_surface(command), want.linux_cli);
+        }
     }
 
     #[test]
