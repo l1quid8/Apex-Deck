@@ -54,8 +54,8 @@ pub fn save(data: &Path, on: bool) -> Result<(), String> {
         &format!("{}\n", json!({ "enabled": on })),
         |folder| {
             if let Err(error) = sync_folder(folder) {
-                eprintln!(
-                    "apex-daemon: {FILE} is saved, but its folder could not be synced: {error}"
+                tracing::warn!(
+                    "{FILE} is saved, but its folder could not be synced: {error}"
                 );
             }
             Ok(())

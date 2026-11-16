@@ -17,6 +17,7 @@
 //! frame sent to it, so a revoke or a narrower tier takes effect at once.
 
 use std::sync::Arc;
+use tracing::Instrument;
 use std::time::Duration;
 
 use apex_host::events::Envelope;
@@ -794,7 +795,7 @@ where
                             }
                         }
                     },
-                    Ok((id, Request::Host(command))) => {
+                    Ok((id, Request::Host(command, context))) => {
                         let local_linux_cli = trust == Trust::Local && guard.is_none() && daemon.uses_linux_device_policy();
                         let confinement = if guard.is_some() && daemon.uses_linux_device_policy() {
                             daemon.require_confinement().await
@@ -834,7 +835,7 @@ where
                                     let frame: Value = serde_json::from_str(&text).expect("request already parsed");
                                     (g.id.clone(), phone_session.clone(), json!({"cmd":frame["cmd"],"args":frame.get("args").cloned().unwrap_or(json!({}))}))
                                 });
-                                run(Arc::clone(&daemon), id, *command, need, replies_tx.clone(), hello.client_capability, device_intent, local_linux_cli);
+                                run(Arc::clone(&daemon), id, *command, context, need, replies_tx.clone(), hello.client_capability, device_intent, local_linux_cli);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -967,8 +968,11 @@ where
 /// Run `command` on its own task and send its result to `replies`, with
 /// what a device needed to run it (`need`), to be checked again on delivery.
 #[allow(clippy::too_many_arguments)]
-fn run(daemon: Arc<Daemon>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>, local_linux_cli: bool) {
+fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>, local_linux_cli: bool) {
     let host = Arc::clone(&daemon.host);
+    // Every log line written while the command runs ends in `cmd=… room=…`.
+    let span = tracing::info_span!("cmd", cmd = %context.cmd, room = tracing::field::Empty);
+    if let Some(room) = &context.room { span.record("room", room.as_str()); }
     let session = matches!(command, Command::SessionLoad {});
     let chat_list = matches!(command, Command::ChatList {});
     let task = {
@@ -983,7 +987,7 @@ fn run(daemon: Arc<Daemon>, id: u64, command: Command, need: Option<authority::N
                 None if local_linux_cli => host.call_from_local_linux_cli(command, client_capability).await,
                 None => host.call_with_client_capability(command, client_capability).await,
             }
-        })
+        }.instrument(span))
     };
     tokio::spawn(async move {
         let result = match task.await {
@@ -1070,8 +1074,9 @@ enum Request {
     Voice(crate::voice::session::VoiceRequest),
     VoiceFrame(Value),
     // Boxed: `Command` carries every field of every host request, and this
-    // enum is built for each frame the daemon reads.
-    Host(Box<Command>),
+    // enum is built for each frame the daemon reads. The context names the
+    // command and its thread for the log lines written while it runs.
+    Host(Box<Command>, CommandContext),
     Devices(DevicesRequest),
     ManagementReceipt(apex_provenance::Signed),
     Gateway(crate::gateway_cli::KeysRequest),
@@ -1162,8 +1167,26 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
         })?;
         return Ok((id, Request::Pairing(request)));
     }
+    let context = CommandContext::from_frame(&value);
     let command = Command::from_json(value).map_err(|why| refusal(json!(id), why))?;
-    Ok((id, Request::Host(Box::new(command))))
+    Ok((id, Request::Host(Box::new(command), context)))
+}
+
+/// What a frame says about the command it carries, for the log.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommandContext {
+    /// The `cmd` name as sent.
+    pub cmd: String,
+    /// The thread it concerns (`args.id` or `args.room`), when the frame names one.
+    pub room: Option<String>,
+}
+
+impl CommandContext {
+    pub fn from_frame(value: &Value) -> Self {
+        let args = &value["args"];
+        let room = args["id"].as_str().or_else(|| args["room"].as_str()).map(str::to_string);
+        CommandContext { cmd: value["cmd"].as_str().unwrap_or("?").to_string(), room }
+    }
 }
 
 struct Hello {

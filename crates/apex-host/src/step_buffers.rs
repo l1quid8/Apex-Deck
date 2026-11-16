@@ -7,21 +7,53 @@ use apex_core::work_steps::{ReplySteps, StepStatus, TurnOutcome};
 use apex_core::{ParticipantId, RoomEvent, Speaker};
 
 #[derive(Default)]
-pub(crate) struct StepBuffers(Mutex<HashMap<(String, ParticipantId), ReplySteps>>);
+pub(crate) struct StepBuffers {
+    records: Mutex<HashMap<(String, ParticipantId), ReplySteps>>,
+    /// The last transcript position seen per room, so a turn that ends without
+    /// a reply can be filed at the position its reply would have had.
+    last_seq: Mutex<HashMap<String, usize>>,
+}
 
 impl StepBuffers {
     pub(crate) fn snapshot(&self, room: &str) -> std::collections::BTreeMap<String, ReplySteps> {
-        self.0.lock().unwrap().iter().filter(|((r, _), _)| r == room)
+        self.records.lock().unwrap().iter().filter(|((r, _), _)| r == room)
             .map(|((_, id), progress)| (id.to_string(), progress.clone())).collect()
     }
     pub(crate) fn get(&self, room: &str, id: &ParticipantId) -> Option<ReplySteps> {
-        self.0.lock().unwrap().get(&(room.to_string(), id.clone())).cloned()
+        self.records.lock().unwrap().get(&(room.to_string(), id.clone())).cloned()
     }
-    pub(crate) fn clear(&self, room: &str) { self.0.lock().unwrap().retain(|(r, _), _| r != room); }
+    pub(crate) fn clear(&self, room: &str) { self.records.lock().unwrap().retain(|(r, _), _| r != room); }
+    /// The turns that `event` ended without a reply, and that reported work:
+    /// a bot that failed, or one stopped (an idle bot that never answered
+    /// counts as stopped). Each record is handed out once, with `seq` set to
+    /// the transcript position its reply would have taken, so it can be saved
+    /// beside the replies' steps. A pass reports no work and is not kept.
+    pub(crate) fn take_ended(&self, room: &str, event: &RoomEvent) -> Vec<ReplySteps> {
+        let mut records = self.records.lock().unwrap();
+        let ids: Vec<ParticipantId> = match event {
+            RoomEvent::Failed { id, .. } | RoomEvent::ParticipantIdle { id } => vec![id.clone()],
+            RoomEvent::Stopped => records.keys().filter(|(r, _)| r == room).map(|(_, id)| id.clone()).collect(),
+            _ => return Vec::new(),
+        };
+        let next = self.last_seq.lock().unwrap().get(room).map_or(0, |seq| seq + 1);
+        let mut out = Vec::new();
+        for id in ids {
+            let key = (room.to_string(), id);
+            let ended = records.get(&key).is_some_and(|record| {
+                matches!(record.outcome, Some(TurnOutcome::Failed | TurnOutcome::Stopped)) && (!record.steps.is_empty() || !record.todo.is_empty())
+            });
+            if !ended { continue; }
+            let mut record = records.remove(&key).expect("checked just above");
+            record.seq = next;
+            record.fit();
+            out.push(record);
+        }
+        out
+    }
     /// Follow one room event. Returns the record to save when `event` is a
     /// bot's reply and that bot reported steps or a to-do list for it.
     pub(crate) fn observe(&self, room: &str, event: &RoomEvent) -> Option<ReplySteps> {
-        let mut buffers = self.0.lock().unwrap();
+        let mut buffers = self.records.lock().unwrap();
         let key = |id: &ParticipantId| (room.to_string(), id.clone());
         match event {
             // A new turn starts from nothing, whatever an earlier one left.
@@ -34,6 +66,7 @@ impl StepBuffers {
             }
             RoomEvent::Todo { id, items } => buffers.entry(key(id)).or_insert_with(|| empty(id)).todo = items.clone(),
             RoomEvent::MessageAdded { message } => {
+                self.last_seq.lock().unwrap().insert(room.to_string(), message.seq);
                 let Speaker::Bot(id) = &message.speaker else { return None };
                 let mut record = buffers.remove(&key(id))?;
                 record.seq = message.seq;
@@ -73,6 +106,33 @@ mod tests {
 
     fn step(key: &str, status: StepStatus) -> WorkStep {
         WorkStep { key: key.into(), parent: None, kind: StepKind::Command, label: key.into(), folder: None, detail: String::new(), output: None, status, exit_code: None, duration_ms: None, output_cut: false }
+    }
+
+    #[test]
+    fn a_failed_or_stopped_turn_with_work_is_handed_out_once_at_the_next_transcript_position() {
+        let buffers = StepBuffers::default();
+        let ada = ParticipantId::new("ada");
+        let bob = ParticipantId::new("bob");
+        // The human's message is at seq 4; the bots' replies would have been 5.
+        buffers.observe("r", &RoomEvent::MessageAdded { message: Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, servers: vec![], seq: 4, speaker: Speaker::Human, text: "go".into(), at: None } });
+        buffers.observe("r", &RoomEvent::WorkStep { id: ada.clone(), step: step("ls", StepStatus::Running) });
+        buffers.observe("r", &RoomEvent::WorkStep { id: bob.clone(), step: step("cat", StepStatus::Running) });
+        buffers.observe("r", &RoomEvent::TurnStarted { id: ParticipantId::new("cy") });
+        // Failed: handed out once, running steps marked stopped, filed at seq 5.
+        buffers.observe("r", &RoomEvent::Failed { id: ada.clone(), error: "boom".into() });
+        let ended = buffers.take_ended("r", &RoomEvent::Failed { id: ada.clone(), error: "boom".into() });
+        assert_eq!(ended.len(), 1);
+        assert_eq!((ended[0].seq, ended[0].outcome, ended[0].steps[0].status), (5, Some(TurnOutcome::Failed), StepStatus::Stopped));
+        assert!(buffers.take_ended("r", &RoomEvent::ParticipantIdle { id: ada.clone() }).is_empty(), "the idle that follows a failure hands out nothing more");
+        // Stop: every remaining turn with work, once; a bot with no work (cy) is not kept.
+        buffers.observe("r", &RoomEvent::Stopped);
+        let stopped = buffers.take_ended("r", &RoomEvent::Stopped);
+        assert_eq!(stopped.iter().map(|r| (r.by.to_string(), r.outcome)).collect::<Vec<_>>(), vec![("bob".to_string(), Some(TurnOutcome::Stopped))]);
+        assert!(buffers.take_ended("r", &RoomEvent::Stopped).is_empty());
+        // A pass reports no work and is never kept.
+        buffers.observe("r", &RoomEvent::WorkStep { id: ada.clone(), step: step("ls", StepStatus::Done) });
+        buffers.observe("r", &RoomEvent::Passed { id: ada.clone() });
+        assert!(buffers.take_ended("r", &RoomEvent::ParticipantIdle { id: ada.clone() }).is_empty());
     }
 
     fn reply(by: &str, seq: usize) -> RoomEvent {

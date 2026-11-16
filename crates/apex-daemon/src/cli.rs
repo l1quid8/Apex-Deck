@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub const USAGE: &str = "\
 usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-stdin-close] [--remote [--remote-port N]] [--gateway-port N [--gateway-bind ADDR]] [--data-dir PATH]
        apex-daemon --stdio [--attach] [--data-dir PATH]
+       apex-daemon doctor [--data-dir PATH]
        apex-daemon data-dir [--data-dir PATH]
        apex-daemon endpoint [--data-dir PATH]
        apex-daemon devices list|add|tier|threads|revoke … [--data-dir PATH]
@@ -31,6 +32,8 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
                    requests authenticated with `apx_sk_...` bearer keys
   --gateway-bind ADDR
                    with --gateway-port: address for the HTTP gateway (default 127.0.0.1)
+  doctor           print the version, protocol, data folder, whether a daemon runs there,
+                   and the last lines of its log; the first thing to run when something is off
   data-dir         print the data folder the daemon would use, and exit
   endpoint         print the local socket path or Windows pipe name, and exit
   devices          list, add, retier or revoke phones allowed to connect from outside;
@@ -52,6 +55,8 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
 pub enum Action {
     Serve(ServeOptions),
     Stdio { attach: bool },
+    /// `doctor`: what this daemon is, where its data is, whether it runs, and its last log lines.
+    Doctor,
     /// Print the data folder.
     DataDir,
     /// Print the local transport address, resolved by the daemon on every platform.
@@ -158,6 +163,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut attach = false;
     let mut help = false;
     let mut version = false;
+    let mut doctor = false;
     let mut data_dir = None;
     let mut options = ServeOptions::default();
     let mut serve_flag = None;
@@ -168,6 +174,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         match arg.as_str() {
             "serve" => serve = true,
             "--stdio" => stdio = true,
+            "doctor" => doctor = true,
             "data-dir" => print_data_dir = true,
             "endpoint" => print_endpoint = true,
             "--attach" => attach = true,
@@ -223,16 +230,16 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         Action::Help
     } else if version {
         Action::Version
-    } else if usize::from(serve) + usize::from(stdio) + usize::from(print_data_dir) + usize::from(print_endpoint) != 1 {
+    } else if usize::from(serve) + usize::from(stdio) + usize::from(print_data_dir) + usize::from(print_endpoint) + usize::from(doctor) != 1 {
         return Err(format!("say serve or --stdio, or data-dir or endpoint\n\n{USAGE}"));
-    } else if print_data_dir || print_endpoint {
+    } else if print_data_dir || print_endpoint || doctor {
         if attach {
             return Err("--attach goes with --stdio".into());
         }
         if let Some(flag) = serve_flag {
             return Err(format!("{flag} goes with serve"));
         }
-        if print_endpoint { Action::Endpoint } else { Action::DataDir }
+        if doctor { Action::Doctor } else if print_endpoint { Action::Endpoint } else { Action::DataDir }
     } else if serve {
         if options.local_only && (options.remote || options.gateway_port.is_some() || options.port != 0 || !options.bind.is_loopback()) {
             return Err("--local-only cannot enable network listeners".into());

@@ -31,6 +31,7 @@ pub fn run() {
         std::process::exit(crate::phone_cli::main(&args));
     }
     crate::log_time::start();
+    crate::logging::init();
     #[cfg(windows)]
     if let Err(error) = apex_provenance::windows::protect_process(std::process::id()) {
         eprintln!("apex-daemon: process protection unavailable: {error}");
@@ -48,6 +49,7 @@ pub fn run() {
         Action::Help => println!("{}", cli::USAGE),
         Action::PairHelp => println!("{}", pair_cli::USAGE),
         Action::Version => println!("{}", crate::build_info::version_line()),
+        Action::Doctor => exit(crate::doctor::run(cli.data_dir)),
         Action::DataDir => exit(crate::paths::host_paths(cli.data_dir).map(|paths| println!("{}", paths.data.display()))),
         Action::Endpoint => exit(crate::paths::host_paths(cli.data_dir).and_then(|paths| {
             crate::ipc::endpoint(&paths.data)

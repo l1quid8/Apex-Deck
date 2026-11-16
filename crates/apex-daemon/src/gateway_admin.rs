@@ -86,7 +86,7 @@ pub async fn start(daemon: &Arc<Daemon>, port: Option<u16>, bind: IpAddr) -> Res
         match restored {
             Ok(config) => config,
             Err(error) => {
-                eprintln!("apex-daemon: {error}");
+                tracing::warn!("{error}");
                 let mut runtime = daemon.gateway.lock().await;
                 runtime.error = Some(error);
                 return Ok(snapshot(&runtime));
@@ -98,7 +98,7 @@ pub async fn start(daemon: &Arc<Daemon>, port: Option<u16>, bind: IpAddr) -> Res
         Err(error) if port.is_none() => {
             // A moved LAN address or port conflict must not disable the local
             // owner socket used to repair these saved settings.
-            eprintln!("apex-daemon: saved model gateway could not start: {error}");
+            tracing::warn!("saved model gateway could not start: {error}");
             let mut runtime = daemon.gateway.lock().await;
             runtime.config = config;
             runtime.error = Some(error);

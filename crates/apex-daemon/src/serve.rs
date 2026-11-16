@@ -78,7 +78,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     files::write_private(&paths.data.join("daemon-token"), &format!("{token}\n"))?;
     let daemon = Daemon::start(&paths, Some(token))?;
     if let Err(why) = daemon.require_confinement().await {
-        eprintln!("apex-daemon: Linux device access is unavailable: {why}");
+        tracing::warn!("Linux device access is unavailable: {why}");
     }
     #[cfg(target_os = "linux")]
     let _claude = StopOnDrop(tokio::spawn({
@@ -116,12 +116,12 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     });
     let info_path = paths.data.join("daemon.json");
     files::write_private(&info_path, &info.to_string())?;
-    eprintln!("apex-daemon: listening on {} (network port: {port:?})", socket.display());
+    tracing::info!(socket = %socket.display(), port = ?port, "listening on {} (network port: {port:?})", socket.display());
     if !remote.is_null() {
-        eprintln!("apex-daemon: remote access on as endpoint {} (UDP port {})", remote["endpoint_id"].as_str().unwrap_or_default(), remote["port"]);
+        tracing::info!("remote access on as endpoint {} (UDP port {})", remote["endpoint_id"].as_str().unwrap_or_default(), remote["port"]);
     }
     if gateway["enabled"] == true {
-        eprintln!("apex-daemon: model gateway on http://{}:{}/v1", gateway["bind"].as_str().unwrap_or_default(), gateway["port"]);
+        tracing::info!("model gateway on http://{}:{}/v1", gateway["bind"].as_str().unwrap_or_default(), gateway["port"]);
     }
 
     loop {
@@ -161,7 +161,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
             },
         }
     }
-    eprintln!("apex-daemon: stopping");
+    tracing::info!("stopping");
     crate::gateway_admin::stop(&daemon).await;
     drop((listener, local, control));
     #[cfg(unix)]
@@ -189,7 +189,7 @@ async fn start_remote(daemon: &Arc<Daemon>, data: &Path, options: &ServeOptions)
         // and every bot under it, from starting. It stays saved as on, so the
         // next boot or a Turn on from Settings tries again.
         Err(error) => {
-            eprintln!("apex-daemon: phone connections stayed off: {error}");
+            tracing::warn!("phone connections stayed off: {error}");
             Ok(serde_json::Value::Null)
         }
     }
@@ -244,7 +244,7 @@ fn quiet_stderr() {
 /// Log a failed accept and pause, so an error that repeats (out of file
 /// descriptors, say) doesn't spin.
 async fn accept_failed(what: &str, e: std::io::Error) {
-    eprintln!("apex-daemon: could not accept {what}: {e}");
+    tracing::warn!("could not accept {what}: {e}");
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
 
@@ -270,11 +270,11 @@ async fn keep_claude_signed_in(data: PathBuf, path: Option<String>, every: std::
         ticks.tick().await;
         match apex_adapters::linux_jail::refresh::keep_fresh(&registry, &data, &program, &search).await {
             Ok(renewed) => {
-                if renewed { eprintln!("[apex-deck] Renewed Deck's Claude sign-in."); }
+                if renewed { tracing::info!(provider = "claude", "[apex-deck] Renewed Deck's Claude sign-in."); }
                 said = None;
             }
             Err(reason) => {
-                if said.as_ref() != Some(&reason) { eprintln!("[apex-deck] Couldn't renew Deck's Claude sign-in: {reason}"); }
+                if said.as_ref() != Some(&reason) { tracing::warn!(provider = "claude", "[apex-deck] Couldn't renew Deck's Claude sign-in: {reason}"); }
                 said = Some(reason);
             }
         }

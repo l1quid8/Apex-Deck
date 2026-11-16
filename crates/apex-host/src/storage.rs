@@ -233,11 +233,25 @@ pub struct StepsIndexEntry {
     pub len: u64,
 }
 
-/// The replies a thread has saved steps for, by reply seq.
+/// The replies a thread has saved steps for, by reply seq, and the turns that
+/// ended without a reply (failed or stopped) but reported work, in the order
+/// they ended.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepsIndex {
     pub version: u32,
     pub replies: std::collections::BTreeMap<usize, StepsIndexEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended: Vec<EndedStepsEntry>,
+}
+
+/// A turn that ended without a reply. `seq` is the transcript position its
+/// reply would have had; `room_steps` with `ended: n` reads the nth record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EndedStepsEntry {
+    pub seq: usize,
+    pub outcome: apex_core::work_steps::TurnOutcome,
+    #[serde(flatten)]
+    pub entry: StepsIndexEntry,
 }
 
 /// The most cards one thread keeps settings for.
@@ -772,10 +786,42 @@ impl Store {
     /// saved again at the same seq replaces the earlier record. An index
     /// that can't be read is never written over.
     pub fn save_steps(&self, id: &str, record: &ReplySteps) -> Result<(), String> {
-        use std::io::Write;
         let _guard = self.writes.lock().unwrap();
+        let (mut index, index_path) = self.steps_index_held(id)?;
+        let (offset, len) = self.append_steps_line_held(id, record)?;
+        index.replies.insert(record.seq, steps_entry(record, offset, len));
+        self.write_held(&index_path, &index)
+    }
+
+    /// Save the steps of a turn that ended without a reply (failed or
+    /// stopped), so what went wrong can still be read back. Appended in the
+    /// order turns end; `ended_steps(id, n)` reads one back.
+    pub fn save_ended_steps(&self, id: &str, record: &ReplySteps) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let (mut index, index_path) = self.steps_index_held(id)?;
+        let (offset, len) = self.append_steps_line_held(id, record)?;
+        let outcome = record.outcome.unwrap_or(apex_core::work_steps::TurnOutcome::Stopped);
+        index.ended.push(EndedStepsEntry { seq: record.seq, outcome, entry: steps_entry(record, offset, len) });
+        self.write_held(&index_path, &index)
+    }
+
+    /// The nth turn saved by `save_ended_steps`, oldest first.
+    pub fn ended_steps(&self, id: &str, n: usize) -> Result<Option<ReplySteps>, String> {
+        let Some(index) = self.steps_index(id)? else { return Ok(None); };
+        let Some(entry) = index.ended.get(n) else { return Ok(None); };
+        let record: ReplySteps = serde_json::from_slice(&self.steps_line(id, &entry.entry)?).map_err(|e| format!("Could not read saved steps: {e}"))?;
+        Ok(Some(record))
+    }
+
+    fn steps_index_held(&self, id: &str) -> Result<(StepsIndex, PathBuf), String> {
         let index_path = self.steps_index_path(id);
-        let mut index: StepsIndex = self.read(&index_path)?.unwrap_or(StepsIndex { version: 1, replies: Default::default() });
+        let index: StepsIndex = self.read(&index_path)?.unwrap_or(StepsIndex { version: 1, replies: Default::default(), ended: Vec::new() });
+        Ok((index, index_path))
+    }
+
+    /// Append one record to "<hex id>.steps.jsonl"; its offset and length.
+    fn append_steps_line_held(&self, id: &str, record: &ReplySteps) -> Result<(u64, u64), String> {
+        use std::io::Write;
         let mut line = serde_json::to_vec(record).map_err(|e| e.to_string())?;
         let len = line.len() as u64;
         line.push(b'\n');
@@ -794,16 +840,21 @@ impl Store {
             file.sync_all()?;
             Ok(offset)
         })().map_err(|e| format!("Could not save steps: {e}"))?;
-        index.replies.insert(record.seq, steps_entry(record, offset, len));
-        self.write_held(&index_path, &index)
+        Ok((offset, len))
     }
 
     /// Save `source`'s steps for replies before `upto` as `target`'s,
     /// rewriting both files. With no reply left, both files are removed.
+    #[cfg(test)]
+    pub(crate) fn fork_room_steps_for_test(&self, source: &str, target: &str, upto: usize) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        self.copy_steps_held(source, target, upto)
+    }
+
     fn copy_steps_held(&self, source: &str, target: &str, upto: usize) -> Result<(), String> {
         let Some(index) = self.steps_index(source)? else { return Ok(()); };
-        if source == target && index.replies.keys().all(|seq| *seq < upto) { return Ok(()); }
-        let mut kept = StepsIndex { version: 1, replies: Default::default() };
+        if source == target && index.replies.keys().all(|seq| *seq < upto) && index.ended.iter().all(|e| e.seq < upto) { return Ok(()); }
+        let mut kept = StepsIndex { version: 1, replies: Default::default(), ended: Vec::new() };
         let mut lines = Vec::new();
         for (seq, entry) in index.replies.range(..upto) {
             let line = self.steps_line(source, entry)?;
@@ -811,7 +862,13 @@ impl Store {
             lines.extend_from_slice(&line);
             lines.push(b'\n');
         }
-        if kept.replies.is_empty() {
+        for ended in index.ended.iter().filter(|e| e.seq < upto) {
+            let line = self.steps_line(source, &ended.entry)?;
+            kept.ended.push(EndedStepsEntry { entry: StepsIndexEntry { offset: lines.len() as u64, len: line.len() as u64, ..ended.entry.clone() }, ..ended.clone() });
+            lines.extend_from_slice(&line);
+            lines.push(b'\n');
+        }
+        if kept.replies.is_empty() && kept.ended.is_empty() {
             for path in [self.steps_index_path(target), self.steps_path(target)] {
                 match std::fs::remove_file(path) {
                     Ok(()) => {}
@@ -1985,6 +2042,36 @@ mod tests {
         assert!(store.import_room("leftover", &saved).is_err(), "a leftover steps file keeps the id taken");
         assert!(store.room("leftover").unwrap().is_none());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ended_turns_are_saved_beside_replies_read_back_by_position_and_cut_like_replies_on_a_fork() {
+        let root = std::env::temp_dir().join(format!("apex-ended-steps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::new(root.clone());
+        store.save_steps("t", &reply_steps("null", 1, &["a"])).unwrap();
+        let mut failed = reply_steps("jigga", 3, &["b"]);
+        failed.outcome = Some(apex_core::work_steps::TurnOutcome::Failed);
+        let mut stopped = reply_steps("null", 6, &["c", "d"]);
+        stopped.outcome = Some(apex_core::work_steps::TurnOutcome::Stopped);
+        store.save_ended_steps("t", &failed).unwrap();
+        store.save_ended_steps("t", &stopped).unwrap();
+        let index = store.steps_index("t").unwrap().unwrap();
+        assert_eq!(index.replies.len(), 1, "replies are untouched");
+        assert_eq!(index.ended.iter().map(|e| (e.seq, e.outcome, e.entry.count)).collect::<Vec<_>>(), vec![(3, apex_core::work_steps::TurnOutcome::Failed, 1), (6, apex_core::work_steps::TurnOutcome::Stopped, 2)]);
+        assert_eq!(store.ended_steps("t", 0).unwrap().unwrap(), failed);
+        assert_eq!(store.ended_steps("t", 1).unwrap().unwrap(), stopped);
+        assert_eq!(store.ended_steps("t", 2).unwrap(), None);
+        // An index saved before ended turns existed still loads.
+        let old: StepsIndex = serde_json::from_str(r#"{"version":1,"replies":{}}"#).unwrap();
+        assert!(old.ended.is_empty());
+        // A fork cut at seq 5 keeps the failed turn (3) and drops the stopped one (6), with offsets rewritten.
+        store.fork_room_steps_for_test("t", "fork", 5).unwrap();
+        let forked = store.steps_index("fork").unwrap().unwrap();
+        assert_eq!(forked.ended.len(), 1);
+        assert_eq!(store.ended_steps("fork", 0).unwrap().unwrap(), failed);
+        assert_eq!(store.steps("fork", 1).unwrap().unwrap().by.to_string(), "null");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
