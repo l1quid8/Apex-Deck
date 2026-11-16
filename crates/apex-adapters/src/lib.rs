@@ -30,6 +30,8 @@ mod grok_images;
 mod grok_usage;
 pub mod keys;
 mod mcp;
+mod code_mode_mcp;
+pub use code_mode_mcp::{relay_main as code_mode_mcp_main, RELAY_ARG as CODE_MODE_MCP_ARG};
 mod computer;
 pub mod media;
 pub mod model_metrics;

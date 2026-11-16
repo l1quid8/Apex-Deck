@@ -121,11 +121,13 @@ pub struct CliParticipant {
     computer: Option<apex_core::ComputerTurn>,
     /// A tool-free turn may still carry the host-issued computer server, and nothing else.
     computer_only: bool,
+    code_mode: Option<crate::code_mode_mcp::Launch>,
+    code_mode_cancel: std::sync::Arc<crate::code_mode_mcp::Cancellation>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false }
+        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false, code_mode: None, code_mode_cancel: Default::default() }
     }
 
     /// Start a conversation turn with tools disabled at both the CLI and
@@ -151,6 +153,16 @@ impl CliParticipant {
     /// through their tools; a tool-free turn only through `computer_only`.
     fn computer_on(&self) -> bool {
         self.computer.is_some() && (self.computer_only || (!self.mcp_disabled && !self.tools_disabled))
+    }
+
+    fn code_mode_on(&self) -> bool {
+        // The Linux jail has its own network namespace and helper channel;
+        // a host-loopback relay must never be advertised inside that jail.
+        #[cfg(unix)]
+        if crate::linux_jail::should_jail(self.config.access) { return false; }
+        !self.tools_disabled && !self.mcp_disabled && self.isolation.is_none()
+            && self.codex_hook.as_ref().is_some_and(|p| p.is_file())
+            && matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })
     }
 
     /// Disable personal MCP servers for a gateway turn. Unsupported backends
@@ -316,6 +328,9 @@ impl CliParticipant {
             command
         };
         command.envs(env.iter().map(|(name, value)| (*name, value)));
+        command.env_remove("APEX_CODE_MODE_ENDPOINT");
+        command.env_remove("APEX_CODE_MODE_TOKEN");
+        if let Some(launch) = &self.code_mode { command.envs(launch.env()); }
         for key in crate::computer::ENV_KEYS { command.env_remove(key); }
         if self.computer_on() {
             if let Some(computer)=&self.computer {command.envs(crate::computer::env(computer));}
@@ -497,6 +512,9 @@ fn random_token() -> String {
         // Disable inherited servers first, then install the host-issued replacement.
         // An existing reserved-name entry must not disable this turn's tools.
         if let Some(computer)=self.computer.as_ref().filter(|_|self.computer_on()) {args.extend(crate::computer::codex_flags(computer));}
+        if let (Some(launch), Some(helper)) = (&self.code_mode, &self.codex_hook) {
+            args.extend(launch.codex_flags(helper));
+        }
         // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
         // has gone would make Codex run every tool unasked, so check first.
         let hook = self.codex_hook.as_deref().filter(|helper| !self.mcp_disabled && helper.is_file()).and_then(|helper| {
@@ -713,7 +731,20 @@ fn random_token() -> String {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
-        let child = self.start(program, args)?;
+        let mut args = args.to_vec();
+        if let (Some(launch), Some(helper)) = (&self.code_mode, &self.codex_hook) {
+            let mut config = launch.claude_config(helper);
+            // Preserve the host-issued computer server in the same override;
+            // do not depend on the CLI's repeated-option merge semantics.
+            if let Some(computer) = self.computer.as_ref().filter(|_| self.computer_on()) {
+                config["mcpServers"][crate::computer::SERVER] = crate::computer::claude_config(computer)["mcpServers"][crate::computer::SERVER].clone();
+                if let Some(index) = args.iter().position(|arg| arg == "--mcp-config") {
+                    args.drain(index..index + 2);
+                }
+            }
+            args.extend(["--mcp-config".into(), config.to_string()]);
+        }
+        let child = self.start(program, &args)?;
         let cwd = self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned());
         let finished = claude_session::run_with_computer(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled, images, self.computer_on())
             .await
@@ -1084,16 +1115,26 @@ impl Participant for CliParticipant {
             on_progress(update);
         };
         let on_progress: ProgressSink<'_> = &heard;
+        let bridge = if self.code_mode_on() {
+            self.code_mode_cancel.reset();
+            Some(crate::code_mode_mcp::Bridge::bind().await.map_err(|e| ParticipantError::Failed(format!("Code Mode setup failed: {e}")))?)
+        } else { None };
+        let mut runner = self.clone();
+        if let Some(bridge) = &bridge {
+            runner.code_mode = Some(bridge.launch.clone());
+            prompt.push_str(crate::code_mode_mcp::HINT);
+        }
+
         let turn = async {
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
-                return self.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await;
+                return runner.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await;
             }
             if let Backend::Agent { tool: AgentTool::Muse, model } = &self.config.backend {
                 return self.run_muse_server(program, &args, model.as_deref(), &prompt, &images, on_progress, &approver).await;
             }
             if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
-                return self.run_claude_asking(program, &args, &prompt, &images, on_progress, &approver).await;
+                return runner.run_claude_asking(program, &args, &prompt, &images, on_progress, &approver).await;
             }
             // Grok's pictures are saved to disk, so the ones this turn made
             // are found by comparing the folder before and after.
@@ -1111,6 +1152,23 @@ impl Participant for CliParticipant {
                 return self.run(program, &args, format, crate::presets::agy_stdin_line(&prompt), on_progress).await;
             }
             self.run(program, &args, format, prompt, on_progress).await
+        };
+        let turn = async {
+            if let Some(bridge) = &bridge {
+                let context = BuildContext {cwd:self.cwd.clone(),path:self.path.clone(),temp:self.temp.clone(),
+                    cargo_target_dir:self.cargo_target_dir.clone(),attachment_roots:self.attachment_roots.clone(),
+                    data_dir:self.data_dir.clone(),observed_addrs:self.observed_addrs.clone(),..Default::default()};
+                let tools = crate::api_tools::ToolBox::new_with_bot(&context, self.config.id.to_string());
+                let mut batch = crate::api_tools::Turn::new(&tools,self.config.access,self.plan.is_some(),self.plan.unwrap_or(self.config.access),&approver,on_progress);
+                tokio::select! {
+                    biased;
+                    result = bridge.serve(&mut batch,&self.code_mode_cancel) => {
+                        self.processes.terminate_all().await.map_err(ParticipantError::CleanupIncomplete)?;
+                        Err(ParticipantError::Failed(match result {Ok(())=>"Code Mode turn cancelled".into(),Err(e)=>format!("Code Mode connection failed: {e}")}))
+                    },
+                    result = turn => result,
+                }
+            } else { turn.await }
         };
         // The time limit is on silence, not on the whole turn. Time spent
         // waiting for the person to answer does not count against it.
@@ -1148,6 +1206,7 @@ impl Participant for CliParticipant {
     }
 
     async fn cancel_active_turn(&self) -> Result<bool, String> {
+        self.code_mode_cancel.stop();
         self.processes.terminate_all().await
     }
 }
@@ -1155,6 +1214,21 @@ impl Participant for CliParticipant {
 #[cfg(test)]
 mod tests {
     use apex_core::AgentTool;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn code_mode_registration_is_automatic_only_for_worker_claude_and_codex() {
+        for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Gemini] {
+            let config = serde_json::from_value(serde_json::json!({"id":"test","display_name":"Test","backend":{"kind":"agent","tool":tool}})).unwrap();
+            let bot = super::CliParticipant::new(config).with_context(&crate::BuildContext {
+                codex_hook: Some(std::env::current_exe().unwrap()), ..Default::default()
+            });
+            assert_eq!(bot.code_mode_on(), tool != AgentTool::Gemini);
+            assert!(!bot.clone().with_tools_disabled().code_mode_on());
+            assert!(!bot.clone().with_mcp_disabled().code_mode_on());
+            assert!(!bot.with_computer_tools_only().code_mode_on());
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
