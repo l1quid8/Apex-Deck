@@ -38,6 +38,7 @@ final class AwayMode {
   private var timer: Timer?
   private var shields: [NSWindow] = []
   private var lastIdle: TimeInterval = 0
+  private var waitingForLock = false
   private var unlocking = false
   private(set) var shielded = false
   var holding: Bool { assertion != 0 }
@@ -64,7 +65,7 @@ final class AwayMode {
     let idle = Self.hardwareIdle()
     defer { lastIdle = idle }
     if shielded {
-      if unlocking { return }
+      if waitingForLock || unlocking { return }
       // Idle time going backwards means a key or the mouse moved.
       if idle + 0.05 < lastIdle { takeover(); return }
       if !active { end(lock: true) }
@@ -129,13 +130,21 @@ final class AwayMode {
   /// it cannot lock, the shield stays until the owner authenticates.
   private func end(lock: Bool) {
     release()
-    guard shielded else { return }
-    if lock && !Self.lockScreen() {
+    guard shielded, !waitingForLock, !unlocking else { return }
+    guard lock else { lowerShields(); return }
+    waitingForLock = true
+    guard Self.lockScreen() else {
+      waitingForLock = false
       requireOwner()
       return
     }
-    // The lock screen is already over everything; give it a moment to draw.
-    DispatchQueue.main.asyncAfter(deadline: .now() + (lock ? 0.8 : 0)) { self.lowerShields() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+      self.waitingForLock = false
+      // A successful request alone does not establish that the screen locked.
+      let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+      if session?["CGSSessionScreenIsLocked"] as? Bool == true { self.lowerShields() }
+      else { self.requireOwner() }
+    }
   }
 
   private func lowerShields() {
@@ -156,10 +165,10 @@ final class AwayMode {
   /// Locks the session the way the menu bar's Lock Screen item does.
   static func lockScreen() -> Bool {
     let path = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
-    if let handle = dlopen(path, RTLD_NOW), let symbol = dlsym(handle, "SACLockScreenImmediate") {
-      typealias Lock = @convention(c) () -> Int32
-      if unsafeBitCast(symbol, to: Lock.self)() == 0 { return true }
-    }
-    return false
+    guard let handle = dlopen(path, RTLD_NOW) else { return false }
+    defer { dlclose(handle) }
+    guard let symbol = dlsym(handle, "SACLockScreenImmediate") else { return false }
+    typealias Lock = @convention(c) () -> Int32
+    return unsafeBitCast(symbol, to: Lock.self)() == 0
   }
 }
