@@ -1470,3 +1470,64 @@ fn lifecycle_receives_read_scope_for_planning_turns_without_a_workspace() {
         assert_eq!(probe.finishes.load(Ordering::SeqCst),1);
     });
 }
+
+#[test]
+fn shared_folder_notice_is_said_once_per_agent_in_a_thread() {
+    struct NotGit;
+    impl apex_core::CopyProvider for NotGit {
+        fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
+            Box::pin(async move { Err("The folder is not a Git repository.".into()) })
+        }
+        fn turn_finished<'a>(&'a self, _: &'a ParticipantId, _: bool) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {})
+        }
+    }
+
+    block_on(async {
+        let make_writer = |id: &str| {
+            let mut config = ScriptedParticipant::new(id, &["done", "done"]).config().clone();
+            config.access = apex_core::Access::Full;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let room = Room::new(
+            vec![make_writer("A"), make_writer("B")],
+            RoomOptions { policy: apex_core::TurnPolicy::Mention, max_bot_hops: Some(0) },
+        );
+        let concurrent = ConcurrentRoom::new(room).with_copies(Arc::new(NotGit));
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+
+        // Two turns for A in the same folder: the reason has not changed, so
+        // the thread is told once, not once per turn.
+        for text in ["@A hi", "@A again"] {
+            let batch = concurrent.begin_post(text, None, &sink).await.unwrap();
+            concurrent.run(batch, &sink).await;
+        }
+        let deck = apex_core::Speaker::Bot(ParticipantId::new("deck"));
+        let transcript = concurrent.room().lock().await.transcript().to_vec();
+        let notices: Vec<_> = transcript.iter().filter(|m| m.speaker == deck).collect();
+        assert_eq!(notices.len(), 1, "one notice for A, not one per turn: {transcript:?}");
+        assert_eq!(notices[0].text, apex_core::shared_folder_line("A", "The folder is not a Git repository."));
+
+        // B's first turn is B's own news: the earlier line named A.
+        let batch = concurrent.begin_post("@B hi", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+        let transcript = concurrent.room().lock().await.transcript().to_vec();
+        let notices: Vec<_> = transcript.iter().filter(|m| m.speaker == deck).map(|m| m.text.clone()).collect();
+        assert_eq!(notices, vec![
+            apex_core::shared_folder_line("A", "The folder is not a Git repository."),
+            apex_core::shared_folder_line("B", "The folder is not a Git repository."),
+        ]);
+
+        // Still one unbroken sequence, and every announced message is in it.
+        let seqs: Vec<usize> = transcript.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, (0..transcript.len()).collect::<Vec<_>>());
+        let added: Vec<apex_core::Message> = events.lock().unwrap().iter().filter_map(|e| match e {
+            RoomEvent::MessageAdded { message } => Some(message.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(added, transcript);
+    });
+}

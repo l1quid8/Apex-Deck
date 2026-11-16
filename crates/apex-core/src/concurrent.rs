@@ -734,9 +734,17 @@ impl ConcurrentRoom {
                 // agent's turn could clash with the others'.
                 // A real message, numbered under the room's lock, so it is saved
                 // with the rest of the thread instead of shown once and dropped.
+                // Said once: a folder that is not a Git checkout stays that way,
+                // so the same line for the same agent is not repeated on every
+                // turn. A new reason, or another agent, is still news.
                 let mut room = self.room.lock().await;
                 let name = room.configs().iter().find(|c| c.id == ticket.id).map(|c| c.display_name.clone()).unwrap_or_else(|| ticket.id.to_string());
-                room.append_deck_note(shared_folder_line(&name, &reason), sink);
+                let line = shared_folder_line(&name, &reason);
+                let deck = Speaker::Bot(ParticipantId::new("deck"));
+                let already_said = room.transcript().iter().any(|m| m.speaker == deck && m.text == line);
+                if !already_said {
+                    room.append_deck_note(line, sink);
+                }
             }
         }
         if let Some(held_by) = held_by {
