@@ -124,6 +124,7 @@ dependencies = [
  "apex-adapters",
  "apex-core",
  "apex-host",
+ "apex-iroh-mobile",
  "apex-pairing",
  "apex-provenance",
  "async-trait",
@@ -143,6 +144,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

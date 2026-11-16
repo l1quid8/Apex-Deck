@@ -207,6 +207,7 @@ dependencies = [
  "apex-core",
  "apex-daemon",
  "apex-host",
+ "apex-iroh-mobile",
  "apex-pairing",
  "apex-provenance",
  "async-trait",
@@ -229,6 +230,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -276,6 +278,21 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "apex-iroh-mobile"
+version = "0.0.0"
+dependencies = [
+ "apex-pairing",
+ "base64 0.22.1",
+ "futures",
+ "iroh",
+ "libc",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "zeroize",
 ]
 
 [[package]]

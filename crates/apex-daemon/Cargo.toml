@@ -44,6 +44,8 @@ tokio-tungstenite = "0.28"
 # default since pairing shipped; `--no-default-features` builds a daemon without it.
 iroh = { version = "1.3", optional = true }
 apex-pairing = { path = "../apex-pairing", optional = true }
+apex-iroh-mobile = { path = "../iroh-mobile", optional = true }
+zeroize = "1"
 base64 = "0.22"
 reqwest = { version = "0.13", features = ["stream"] }
 async-trait.workspace = true
@@ -65,7 +67,7 @@ default = ["remote"]
 # Test builds only (enabled by the self dev-dependency below). Compiling it opts
 # nothing in: only the apex-daemon-fixture binary's own main does.
 test-support = ["apex-host/test-support"]
-remote = ["dep:iroh", "dep:apex-pairing", "dep:qrcode"]
+remote = ["dep:iroh", "dep:apex-pairing", "dep:qrcode", "dep:apex-iroh-mobile"]
 
 [dev-dependencies]
 apex-daemon = { path = ".", features = ["test-support"] }
