@@ -175,24 +175,11 @@ pub fn merged_agent_model_ids(tool: AgentTool, reported: &[ModelChoice]) -> Vec<
 }
 
 pub fn tool_prefix(tool: AgentTool) -> &'static str {
-    match tool {
-        AgentTool::ClaudeCode => "claude",
-        AgentTool::Codex => "codex",
-        AgentTool::Gemini => "gemini",
-        AgentTool::Grok => "grok",
-        AgentTool::Muse => "muse",
-    }
+    tool.prefix()
 }
 
 pub fn parse_agent_prefix(prefix: &str) -> Option<AgentTool> {
-    match prefix.trim().to_ascii_lowercase().as_str() {
-        "claude" | "claude_code" | "claudecode" => Some(AgentTool::ClaudeCode),
-        "codex" => Some(AgentTool::Codex),
-        "gemini" | "agy" | "antigravity" => Some(AgentTool::Gemini),
-        "grok" => Some(AgentTool::Grok),
-        "muse" => Some(AgentTool::Muse),
-        _ => None,
-    }
+    prefix.parse().ok()
 }
 
 /// Shared state for the HTTP gateway listener.

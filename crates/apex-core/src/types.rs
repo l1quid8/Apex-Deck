@@ -52,6 +52,40 @@ pub enum AgentTool {
     Muse,
 }
 
+impl AgentTool {
+    /// Prefix used in gateway model IDs.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude",
+            Self::Codex => "codex",
+            Self::Gemini => "gemini",
+            Self::Grok => "grok",
+            Self::Muse => "muse",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.prefix())
+    }
+}
+
+impl std::str::FromStr for AgentTool {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "claude" | "claude_code" | "claudecode" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
+            "gemini" | "agy" | "antigravity" => Ok(Self::Gemini),
+            "grok" => Ok(Self::Grok),
+            "muse" => Ok(Self::Muse),
+            _ => Err("unknown agent tool"),
+        }
+    }
+}
+
 /// How a participant is reached.
 #[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

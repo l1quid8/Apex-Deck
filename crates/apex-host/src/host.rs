@@ -1035,15 +1035,7 @@ impl Host {
                 if !info.found {
                     continue;
                 }
-                let tool = match info.key.as_str() {
-                    "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
-                    "codex" => Some(AgentTool::Codex),
-                    "gemini" => Some(AgentTool::Gemini),
-                    "grok" => Some(AgentTool::Grok),
-                    "muse" => Some(AgentTool::Muse),
-                    _ => None,
-                };
-                if let Some(tool) = tool {
+                if let Ok(tool) = info.key.parse::<AgentTool>() {
                     raw_profiles.push(ParticipantConfig {
                         can_read_images: false,
                         id: ParticipantId::new(info.key.clone()),
@@ -1101,15 +1093,7 @@ impl Host {
             .into_iter()
             .map(|mut info| {
                 if info.found {
-                    let tool = match info.key.as_str() {
-                        "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
-                        "codex" => Some(AgentTool::Codex),
-                        "gemini" => Some(AgentTool::Gemini),
-                        "grok" => Some(AgentTool::Grok),
-                        "muse" => Some(AgentTool::Muse),
-                        _ => None,
-                    };
-                    if let Some(tool) = tool {
+                    if let Ok(tool) = info.key.parse::<AgentTool>() {
                         if apex_adapters::chat_tool_ok(tool, path.as_deref()).is_err() {
                             info.found = false;
                         }
