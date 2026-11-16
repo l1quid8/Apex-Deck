@@ -2,7 +2,19 @@
 
 **Date:** 2026-11-16
 **From:** the session that ran the architecture review and built items 1, 2, 5, 6, 8
-**Review:** `docs/reviews/2026-11-15-architecture-review.md` (untracked, never committed; commit it with this file)
+**Review:** `docs/reviews/2026-11-15-architecture-review.md` (included with this handoff)
+
+## Astra follow-through on PR #24
+
+The sections below record the original handoff at `8041bdb4`. The integration branch includes both review documents and the live-session plan with its cache measurement script.
+
+- CI run 43895564142 finished with three Windows Rust failures and thirteen Windows app-test failures. The macOS job never acquired a runner. Four Windows app-test cases received fixes on main in `f00b6934`. This branch addresses stale Windows path, ended-step and UI wording expectations and scopes two POSIX executable-mode fixtures to platforms that can exercise them. The Linux gateway test now distinguishes a missing fixture executable from a missing confinement runtime. The desktop invitation integration still needs the remote-client CLI dispatch and build dependencies owned by another change.
+- The three oversized replies match the base64 sizes of three Library videos. Updated clients request 3 MiB attachment pages from daemons advertising `attachment_chunks_v1`. Older clients can still request a whole attachment. Gallery tiles defer large video downloads until opened.
+- Live sessions have passed the original two-turn probe. Task 2 separates turn-specific instructions from stable context, with regression coverage for private retries and non-room requests. Reusing provider processes between normal Deck turns still needs per-turn Code Mode and approval rebinding, provider drivers, invalidation, idle cleanup and live cost measurement.
+- The shared command backend checks named request arguments against the generated schema. A file-search argument mismatch was corrected. Dynamic commands, result types and the remaining handwritten UI types still need separate migration. The protocol evolution and refusal policy is in `docs/desktop.md`.
+- The host and gateway share agent name parsing. The desktop and phone share history-change preparation and execution. Four protected stores use a common versioned document reader, and host source-text assertions have behavioral replacements. These are incremental changes within items 3, 4, 7 and 10.
+- The installed daemon's log prefix and responsive socket were verified. At inspection time none of 39 production step indexes contained an ended turn. Failed-turn persistence passed a host integration test.
+- The VPS carry patch conflicts with current admission rules and does not account for OAuth renewal or detached browser work during maintenance. The updater's candidate compatibility test still refuses the port. Main branch protection, notarization and a new installer remain open.
 
 ## Where main stands
 
