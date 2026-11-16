@@ -1,5 +1,30 @@
 use apex_cli::state::AppState;
 use serde_json::json;
+
+#[test]
+fn work_step_and_todo_events_build_live_progress_in_order() {
+    let mut s=AppState::default(); s.select("r".into());
+    s.install_snapshot("r",s.generation,json!({"recovery_seq":0,"snapshot":{"transcript":[]},"active":[]}));
+    s.apply_event(json!({"seq":1,"payload":{"room":"r","recovery_seq":1,"event":{"type":"turn_started","id":"a"}}}));
+    s.apply_event(json!({"seq":2,"payload":{"room":"r","recovery_seq":2,"event":{"type":"delta","id":"a","text":"Inspecting."}}}));
+    s.apply_event(json!({"seq":3,"payload":{"room":"r","recovery_seq":3,"event":{"type":"work_step","id":"a","step":{"key":"k","parent":null,"kind":"command","label":"cargo test","status":"running"}}}}));
+    s.apply_event(json!({"seq":4,"payload":{"room":"r","recovery_seq":4,"event":{"type":"todo","id":"a","items":[{"text":"Verify output","status":"in_progress"}]}}}));
+    let p=&s.current().unwrap()["progress"]["a"];
+    assert_eq!(p["timeline"][0]["text"],"Inspecting.");
+    assert_eq!(p["timeline"][1]["keys"][0],"k");
+    assert_eq!(p["todo"][0]["text"],"Verify output");
+}
+
+#[test]
+fn legacy_progress_snapshot_without_timeline_accepts_new_events() {
+    let mut s=AppState::default();s.select("r".into());
+    assert!(s.install_snapshot("r",s.generation,json!({"recovery_seq":0,"progress":{"a":{"by":"a","seq":0,"steps":[],"todo":[{"text":"one","status":"pending"}],"dropped":0}},"snapshot":{"transcript":[]},"active":["a"]})));
+    s.apply_event(json!({"seq":1,"payload":{"room":"r","recovery_seq":1,"event":{"type":"delta","id":"a","text":"hello"}}}));
+    s.apply_event(json!({"seq":2,"payload":{"room":"r","recovery_seq":2,"event":{"type":"work_step","id":"a","step":{"key":"k","parent":null,"kind":"other","label":"work","status":"done"}}}}));
+    let p=&s.current().unwrap()["progress"]["a"];
+    assert_eq!(p["timeline"][0]["text"],"hello");
+    assert_eq!(p["timeline"][1]["keys"][0],"k");
+}
 #[test]
 fn older_snapshot_is_ignored_and_new_boot_discards_old_room_events() {
     let mut s = AppState::default();
@@ -278,4 +303,48 @@ fn replying_to_a_waiting_agent_is_never_blocked_by_a_pending_message() {
     // Ordinary thread changes still wait their turn.
     assert!(!apex_cli::controller::rpc("room_set_plan", json!({"id":"w","on":true})).replies_to_agent());
     assert!(!Action::Dismiss.replies_to_agent());
+}
+
+#[test]
+fn interrupted_progress_preserves_the_checklist_without_leaving_tools_running() {
+    let mut s = AppState::default();
+    s.select("r".into());
+    s.install_snapshot("r", s.generation, json!({"recovery_seq":0,"snapshot":{"transcript":[]},"active":[]}));
+    for (seq,event) in [
+        json!({"type":"turn_started","id":"a"}),
+        json!({"type":"work_step","id":"a","step":{"key":"k","kind":"command","parent":null,"status":"running"}}),
+        json!({"type":"todo","id":"a","items":[{"text":"Verify","status":"in_progress"}]}),
+        json!({"type":"failed","id":"a","error":"lost"}),
+    ].into_iter().enumerate() {
+        s.apply_event(json!({"seq":seq+1,"payload":{"room":"r","recovery_seq":seq+1,"event":event}}));
+    }
+    let progress = &s.current().unwrap()["progress"]["a"];
+    assert_eq!(progress["outcome"], "failed");
+    assert_eq!(progress["steps"][0]["status"], "stopped");
+    assert_eq!(progress["todo"][0]["status"], "in_progress");
+}
+
+#[test]
+fn reconnect_discards_the_previous_hosts_progress_view_and_index() {
+    let mut s=AppState::default();
+    s.progress_open=true;
+    s.progress_rows.push(json!({"seq":4}));
+    s.progress_detail=Some(json!({"seq":4}));
+    s.saved_progress.insert(4,json!({"count":99}));
+    s.reset_connection_state();
+    assert!(!s.progress_open);
+    assert!(s.progress_rows.is_empty());
+    assert!(s.progress_detail.is_none());
+    assert!(s.saved_progress.is_empty());
+}
+
+#[test]
+fn late_helper_progress_does_not_recreate_a_completed_turn() {
+    let mut s=AppState::default(); s.select("r".into());
+    s.install_snapshot("r",s.generation,json!({"recovery_seq":0,"active":["a"],"snapshot":{"transcript":[]}}));
+    s.apply_event(json!({"seq":1,"payload":{"room":"r","recovery_seq":1,"event":{"type":"work_step","id":"a","step":{"key":"k","parent":null,"kind":"tool","status":"done"}}}}));
+    assert_eq!(s.current().unwrap()["progress"]["a"]["steps"][0]["key"],"k");
+    s.apply_event(json!({"seq":2,"payload":{"room":"r","recovery_seq":2,"event":{"type":"message_added","message":{"seq":1,"speaker":{"kind":"bot","id":"a"},"text":"Done"}}}}));
+    s.apply_event(json!({"seq":3,"payload":{"room":"r","recovery_seq":3,"event":{"type":"work_step","id":"a","step":{"key":"late","parent":"k","kind":"read","status":"done"}}}}));
+    assert!(s.current().unwrap()["progress"]["a"].is_null());
 }

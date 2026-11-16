@@ -4,7 +4,7 @@
 // turn until its reply lands or the turn ends some other way.
 
 import type { RoomEvent } from "./types";
-import { applyStepEvent, emptyTurnSteps, type TurnSteps } from "./workSteps.ts";
+import { applyStepEvent, emptyTurnSteps, restoreTurnSteps, type TurnSteps } from "./workSteps.ts";
 
 export interface PhoneTurn {
   startedAt: number;
@@ -27,8 +27,13 @@ const fresh = (now: number): PhoneTurn => ({ startedAt: now, phase: "thinking", 
 export const MAX_STEPS = 50;
 
 /** Bots already working when the thread was opened. */
-export function workingFrom(active: readonly string[], now: number): PhoneWorking {
-  return Object.fromEntries(active.map((id) => [id, fresh(now)]));
+export function workingFrom(active: readonly string[], now: number, progress: Record<string, unknown> = {}, streams: Record<string, string> = {}, activity: Record<string, string> = {}): PhoneWorking {
+  return Object.fromEntries(active.map((id) => {
+    const work = restoreTurnSteps(progress[id]);
+    const text = streams[id] ?? work.timeline?.filter((entry) => entry.kind === "text").map((entry) => entry.text).join("") ?? "";
+    const step = activity[id] ?? "";
+    return [id, { ...fresh(now), work, text, step, steps: step ? [step] : [], phase: step ? "tool" : text ? "writing" : "thinking" }];
+  }));
 }
 
 function without(working: PhoneWorking, id: string): PhoneWorking {
@@ -44,7 +49,7 @@ export function applyTurnEvent(working: PhoneWorking, event: RoomEvent, now: num
       return { ...working, [event.id]: fresh(now) };
     case "delta": {
       const turn = working[event.id] ?? fresh(now);
-      return { ...working, [event.id]: { ...turn, phase: "writing", text: turn.text + event.text } };
+      return { ...working, [event.id]: { ...turn, phase: "writing", text: turn.text + event.text, work: applyStepEvent(turn.work, event) } };
     }
     case "activity": {
       const turn = working[event.id] ?? fresh(now);
@@ -143,10 +148,13 @@ const replied = (transcript: readonly Said[], id: string, after: number) =>
 /** The machine is back and the thread reloaded. A cut reply stays until that
  *  bot's reply lands; a bot still working keeps it above its live turn; a bot
  *  that ended without a reply keeps it, marked as ended. */
-export function resumeCut(cut: PhoneCuts, active: readonly string[], transcript: readonly Said[]): PhoneCuts {
+export function resumeCut(cut: PhoneCuts, active: readonly string[], transcript: readonly Said[], streams?: Record<string, string>, progress?: Record<string, unknown>): PhoneCuts {
   const next: PhoneCuts = {};
   for (const [id, part] of Object.entries(cut)) {
     if (replied(transcript, id, part.after)) continue;
+    if (active.includes(id) && streams && Object.prototype.hasOwnProperty.call(streams, id)) continue;
+    const terminal = restoreTurnSteps(progress?.[id]);
+    if (terminal.outcome && !terminal.timeline_cut && terminal.timeline?.some((entry) => entry.kind === "text" && entry.text.length > 0)) continue;
     next[id] = { ...part, ended: !active.includes(id) };
   }
   return next;

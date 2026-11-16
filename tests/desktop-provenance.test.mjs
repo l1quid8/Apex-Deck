@@ -6,9 +6,16 @@ const mod=await import('../desktop/provenance.mjs').catch(()=>({}));
 
 test('every host command requiring provenance enters desktop attestation',()=>{
   const source=readFileSync(new URL('../crates/apex-host/src/command.rs',import.meta.url),'utf8');
-  const body=source.match(/pub fn requires_provenance\(&self\) -> bool \{([\s\S]*?)\n    \}/)?.[1];
-  assert.ok(body,'locate the host provenance boundary');
-  const commands=[...body.matchAll(/Self::([A-Za-z0-9_]+)/g)].map(([,variant])=>variant.replace(/[A-Z]/g,(letter,index)=>(index?'_':'')+letter.toLowerCase()));
+  const body=source.match(/pub fn policy\(&self\) -> Policy \{([\s\S]*?)\n    \}/)?.[1];
+  assert.ok(body,'locate the exhaustive host policy boundary');
+  const policies=new Map([...source.matchAll(/pub const ([A-Z_]+): Policy = Policy \{ provenance: (true|false),/g)].map(([,name,flag])=>[name,flag==='true']));
+  assert.ok([...policies.values()].includes(true),'locate protected policy constants');
+  const variants=[];
+  for(const [,pattern,policy] of body.replace(/\/\/[^\n]*/g,'').matchAll(/([^,]+)=>\s*Policy::([A-Z_]+)/g)){
+    assert.ok(policies.has(policy),`known provenance policy ${policy}`);
+    if(policies.get(policy)) variants.push(...[...pattern.matchAll(/\b([A-Z][A-Za-z0-9_]*)\s*\{/g)].map(([,variant])=>variant));
+  }
+  const commands=variants.map(variant=>variant.replace(/[A-Z]/g,(letter,index)=>(index?'_':'')+letter.toLowerCase()));
   assert.ok(commands.length>0,'extract the protected host variants');
   assert.deepEqual(commands.filter(cmd=>!mod.needsAttestation(cmd,false)),[],'host-protected commands must receive installed UI receipts');
   const broker=readFileSync(new URL('../crates/apex-provenance/src/lib.rs',import.meta.url),'utf8');

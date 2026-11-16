@@ -223,6 +223,11 @@ pub struct StepsIndexEntry {
     /// Every step, helpers' own steps included.
     pub count: usize,
     pub helpers: usize,
+    /// Checklist lines kept even when no tool steps were reported.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub todo_count: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub todo_completed: usize,
     /// Where the reply's line starts in "<hex id>.steps.jsonl", and its length without the newline.
     pub offset: u64,
     pub len: u64,
@@ -284,9 +289,11 @@ impl Store {
         self.room_path(id).with_extension("steps.index.json")
     }
 
+    fn live_progress_path(&self, id: &str) -> PathBuf { self.room_path(id).with_extension("progress.json") }
+
     /// Every file that belongs to a thread.
-    fn thread_paths(&self, id: &str) -> [PathBuf; 5] {
-        [self.room_path(id), self.artifacts_path(id), self.answers_path(id), self.steps_path(id), self.steps_index_path(id)]
+    fn thread_paths(&self, id: &str) -> [PathBuf; 6] {
+        [self.room_path(id), self.artifacts_path(id), self.answers_path(id), self.steps_path(id), self.steps_index_path(id), self.live_progress_path(id)]
     }
 
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>, String> {
@@ -724,6 +731,33 @@ impl Store {
         let record: ReplySteps = serde_json::from_slice(&self.steps_line(id, entry)?).map_err(|e| format!("Could not read saved steps: {e}"))?;
         if record.seq != seq { return Err("Could not read saved steps: the steps file and its index disagree".into()); }
         Ok(Some(record))
+    }
+
+    /// Terminal turns without a transcript reply, keyed by participant id.
+    pub fn live_progress(&self, id: &str) -> Result<std::collections::BTreeMap<String, ReplySteps>, String> {
+        Ok(self.read(&self.live_progress_path(id))?.unwrap_or_default())
+    }
+
+    pub fn save_live_progress(&self, id: &str, record: &ReplySteps) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let path = self.live_progress_path(id);
+        let mut records: std::collections::BTreeMap<String, ReplySteps> = self.read(&path)?.unwrap_or_default();
+        let mut record = record.clone();
+        record.fit();
+        records.insert(record.by.to_string(), record);
+        self.write_held(&path, &records)
+    }
+
+    /// Clear one participant's terminal progress, or all progress when `by` is absent.
+    pub fn clear_live_progress(&self, id: &str, by: Option<&str>) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let path = self.live_progress_path(id);
+        let mut records: std::collections::BTreeMap<String, ReplySteps> = self.read(&path)?.unwrap_or_default();
+        if let Some(by) = by { records.remove(by); } else { records.clear(); }
+        if records.is_empty() {
+            match std::fs::remove_file(path) { Ok(()) => {}, Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}, Err(error) => return Err(error.to_string()) }
+            Ok(())
+        } else { self.write_held(&path, &records) }
     }
 
     fn steps_line(&self, id: &str, entry: &StepsIndexEntry) -> Result<Vec<u8>, String> {
@@ -1332,10 +1366,14 @@ fn steps_entry(record: &ReplySteps, offset: u64, len: u64) -> StepsIndexEntry {
         by: record.by.clone(),
         count: record.steps.len(),
         helpers: record.steps.iter().filter(|step| step.kind == StepKind::Helper).count(),
+        todo_count: record.todo.len(),
+        todo_completed: record.todo.iter().filter(|item| item.status == apex_core::work_steps::TodoStatus::Completed).count(),
         offset,
         len,
     }
 }
+
+fn is_zero_usize(value: &usize) -> bool { *value == 0 }
 
 /// Create the host-owned data directory and remove group/other access.
 pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
@@ -1829,7 +1867,7 @@ mod tests {
             label: key.to_string(), folder: None, detail: String::new(), output: Some(format!("{key} output")),
             status: StepStatus::Done, exit_code: Some(0), duration_ms: Some(5), output_cut: false,
         }).collect();
-        apex_core::work_steps::ReplySteps { by: apex_core::ParticipantId::new(by), seq, steps, todo: vec![], dropped: 0 }
+        apex_core::work_steps::ReplySteps { by: apex_core::ParticipantId::new(by), seq, steps, todo: vec![], dropped: 0, timeline: vec![], outcome: None, timeline_cut: false }
     }
 
     async fn saved_room_with(store: &Store, id: &str, messages: usize) -> Room {
@@ -1864,6 +1902,40 @@ mod tests {
                 assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
             }
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checklist_only_reply_has_index_counts_and_legacy_entry_loads() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut record = reply_steps("bot", 1, &[]);
+        record.todo = vec![
+            apex_core::work_steps::TodoItem { text: "done".into(), status: apex_core::work_steps::TodoStatus::Completed },
+            apex_core::work_steps::TodoItem { text: "next".into(), status: apex_core::work_steps::TodoStatus::Pending },
+        ];
+        store.save_steps("checklist", &record).unwrap();
+        let entry = &store.steps_index("checklist").unwrap().unwrap().replies[&1];
+        assert_eq!((entry.todo_count, entry.todo_completed), (2, 1));
+        let old: StepsIndexEntry = serde_json::from_value(serde_json::json!({"by":"bot","count":0,"helpers":0,"offset":0,"len":1})).unwrap();
+        assert_eq!((old.todo_count, old.todo_completed), (0, 0));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_progress_is_separate_from_reply_seq_and_clearable() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut record = reply_steps("bot", 0, &["compile"]);
+        record.outcome = Some(apex_core::work_steps::TurnOutcome::Failed);
+        store.save_live_progress("thread", &record).unwrap();
+        let reopened = Store::new(root.clone());
+        let loaded = reopened.live_progress("thread").unwrap();
+        assert_eq!(loaded["bot"].seq, 0);
+        assert_eq!(loaded["bot"].outcome, Some(apex_core::work_steps::TurnOutcome::Failed));
+        assert!(reopened.steps_index("thread").unwrap().is_none(), "terminal progress has no invented reply index");
+        reopened.clear_live_progress("thread", Some("bot")).unwrap();
+        assert!(reopened.live_progress("thread").unwrap().is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

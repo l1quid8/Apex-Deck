@@ -104,8 +104,9 @@ export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown
 import { DiffPanel } from "./DiffPanel";
 import { ChangedFilesStrip } from "./ChangedFilesStrip";
 import { GitChangesMenu, type GitMenuRequest } from "./GitChangesMenu";
-import { MAX_STEPS_SHOWN, SavedSteps, WorkSteps } from "./WorkSteps.tsx";
-import { applyStepEvent, createStepsIndexLoader, dropStepsFrom, emptyTurnSteps, readReplySteps, savedEntry, type TurnSteps } from "./workSteps.ts";
+import { MAX_STEPS_SHOWN, SavedSteps, WorkSteps, InterruptedSteps } from "./WorkSteps.tsx";
+import { applyStepEvent, createStepsIndexLoader, dropStepsFrom, emptyTurnSteps, restoreTurnSteps, readReplySteps, savedEntry, type TurnSteps } from "./workSteps.ts";
+import { applyProgressEvent, restoreProgress, type TurnProgress as TurnProgressMap } from "./turnProgress.ts";
 import { turnFilesFor } from "./turnChanges";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
@@ -623,6 +624,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [entries, setEntries] = useState<Entry[]>([]);
   // Saved steps per finished reply: the index says which replies have them; a reply's own steps load when its line is opened.
   const [stepsIndex, setStepsIndex] = useState<import("./types").StepsIndex | null>(null);
+  const [turnProgress, setTurnProgress] = useState<TurnProgressMap>({});
   const loadedSteps = useRef(new Map<number, import("./types").ReplySteps>());
   const refreshSteps = useRef<() => void>(() => {});
   const entriesRef = useRef(entries);
@@ -1115,7 +1117,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()) ?? questionSignal(questionSnapshot()[pane.id], namesRef.current));
     let recoveredState: import("./types").RoomState | null = null;
     setLegacy(undefined);
-    loadedSteps.current.clear();
+    setTurnProgress({});
+    loadedSteps.current = new Map();
     const stepsLoader = createStepsIndexLoader(
       () => backend.roomSteps(pane.id, null),
       (index) => {
@@ -1142,6 +1145,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       if (event.type === "message_added") {
         if (!messageNumbers.accept(event.message)) return;
       }
+      setTurnProgress((progress) => applyProgressEvent(progress, event));
       recordApproval(pane.id, event, backend.host?.id);
       recordQuestion(pane.id, event);
       if (event.type === "question_requested") reportApprovals();
@@ -1212,7 +1216,11 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           break;
         case "delta":
           setDrafts((d) => ({ ...d, [event.id]: (d[event.id] ?? "") + event.text }));
-          setWorking((w) => (w[event.id] && w[event.id].phase !== "writing" ? { ...w, [event.id]: { ...w[event.id], phase: "writing" } } : w));
+          setWorking((w) => {
+            const turn = w[event.id];
+            if (!turn) return w;
+            return { ...w, [event.id]: { ...turn, work: applyStepEvent(turn.work, event), phase: "writing" } };
+          });
           break;
         case "activity":
           setWorking((w) => {
@@ -1363,6 +1371,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
         closeGitCard();
         recoveredState = state;
+        setTurnProgress(restoreProgress(state.progress, state.active));
         refreshSteps.current();
         messageNumbers.restore(saved.transcript);
         forgetRoom(pane.id);
@@ -1377,11 +1386,15 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           flashForm(`${nameOf(before.ask.id)}'s question was dropped when Deck restarted`);
         }
         reportApprovals();
-        setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], work: emptyTurnSteps, phase: "thinking" as const }])));
+        setWorking(Object.fromEntries(state.active.map(id => {
+          const text = state.streams?.[id] ?? "";
+          const activity = state.activity?.[id];
+          return [id, { startedAt: Date.now(), steps: activity ? [activity] : [], work: restoreTurnSteps(state.progress?.[id]), phase: activity ? "tool" as const : text ? "writing" as const : "thinking" as const }];
+        })));
         // A bot that finished while this pane was away sent no event it could hear, so this releases its queue too.
         queueSync(turnQueue, state.active);
         setBusy(state.active.length > 0 || turnQueue.active);
-        setDrafts(Object.fromEntries(state.active.map(id => [id, ""])));
+        setDrafts(Object.fromEntries(state.active.map(id => [id, state.streams?.[id] ?? ""])));
         setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
         setParticipants(saved.participants);
         setOptions(saved.options);
@@ -1685,7 +1698,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         turnQueue.items.forEach(item => turnQueue.remove(item.id));
         discardAnswerSettingsAfter(answerCurrent.current, 0);
         messageNumbers.truncate(0);
-        loadedSteps.current.clear();
+        setTurnProgress({});
+        loadedSteps.current = new Map();
         setStepsIndex(null);
         refreshSteps.current();
         setEntries([]);
@@ -1990,6 +2004,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       if (request.chat) messageNumbers.truncate(message.seq);
       if (request.chat) {
         setStepsIndex((index) => dropStepsFrom(index, loadedSteps.current, message.seq));
+        loadedSteps.current = new Map(loadedSteps.current);
+        setTurnProgress({});
         refreshSteps.current();
       }
       if (request.chat) setPins(list => list.filter(pin => { const seq = pinSource(pin); return seq === null || seq < message.seq; }));
@@ -3986,24 +4002,26 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 {entry.message.lateReplyFrom && <p className="late-reply-label">Late reply from {entry.message.lateReplyFrom}</p>}
-                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}{terminalOpenAction(code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />
+                {(() => {
+                  const renderText = (text: string) => <Markdown text={text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}{terminalOpenAction(code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />;
+                  const seq = entry.message.seq;
+                  const saved = savedEntry(stepsIndex, seq);
+                  if (!saved) return renderText(entry.message.text);
+                  const load = async () => {
+                    const cache = loadedSteps.current;
+                    const reply = readReplySteps(await backend.roomSteps(pane.id, seq));
+                    if (cache !== loadedSteps.current) return null;
+                    if (reply) cache.set(seq, reply);
+                    return reply;
+                  };
+                  return <SavedSteps key={`${pane.id}:${seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={loadedSteps.current.get(seq) ?? null} load={load} finalText={entry.message.text} renderText={renderText} />;
+                })()}
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 {(() => {
                   const files = turnFiles.get(entry.message.seq);
                   if (!files?.length) return null;
                   return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
-                })()}
-                {(() => {
-                  const seq = entry.message.seq;
-                  const saved = savedEntry(stepsIndex, seq);
-                  if (!saved) return null;
-                  const load = async () => {
-                    const reply = readReplySteps(await backend.roomSteps(pane.id, seq));
-                    if (reply) loadedSteps.current.set(seq, reply);
-                    return reply;
-                  };
-                  return <SavedSteps count={saved.count} cached={loadedSteps.current.get(seq) ?? null} load={load} />;
                 })()}
                 {form.kind === "steps" && form.offer.by === entry.message.speaker.id && newestReply.get(entry.message.speaker.id) === entry.message.seq &&
                   <ReplyNextSteps key={formKeyId} offer={form.offer} onStep={sendStep} />}
@@ -4027,6 +4045,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item, ...after]
             : [item, ...after];
         })}
+        {Object.entries(turnProgress).filter(([, turn]) => turn.outcome).map(([id, turn]) => <InterruptedSteps key={`ended-${id}`} name={names.get(id) ?? id} turn={turn} renderText={(text) => <Markdown text={text} onOpen={openTarget} />} />)}
         {transcriptMounted.current && Object.entries(drafts).map(([id, partial]) => {
           const turn = working[id];
           const steps = turn?.steps ?? [];
@@ -4043,8 +4062,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 <span className="speaker">
                   {names.get(id) ?? id}
                 </span>
-                {turn?.work.structured ? (
-                  <WorkSteps turn={turn.work} live />
+                {turn && (turn.work.structured || turn.work.todo.length > 0) ? (
+                  <WorkSteps turn={turn.work} live renderText={(text) => <Markdown text={text} onOpen={openTarget} />} />
                 ) : steps.length > 0 && !curating && (
                   <ul className="steps" aria-label="Steps so far">
                     {hidden > 0 && <li className="step done">{hidden === 1 ? "1 earlier step" : `${hidden} earlier steps`}</li>}
@@ -4055,7 +4074,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                     ))}
                   </ul>
                 )}
-                {partial && (
+                {partial && !(turn && (turn.work.structured || turn.work.todo.length > 0) && turn.work.timeline?.length) && (
                   <div className="draft-text">
                     <Markdown text={partial} onOpen={openTarget} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={names.get(id) ?? id} /> : undefined)} />
                   </div>

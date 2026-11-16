@@ -18,6 +18,7 @@ async function openBigThread(t, answer) {
   const { createRoomRecovery, representedRoomEvent } = await import(new URL('../src/roomRecovery.ts', import.meta.url).href);
   const { createStepsIndexLoader } = await import(new URL('../src/workSteps.ts', import.meta.url).href);
   const helpers = await import(new URL('../src/phone/threadCopies.ts', import.meta.url).href);
+  const progress = await import(new URL('../src/turnProgress.ts', import.meta.url).href);
   const seen = { requests: 0, checks: [], loads: [] };
   const host = {
     machine: { id: 'mac', name: 'Mac' },
@@ -27,7 +28,7 @@ async function openBigThread(t, answer) {
     backend: { roomSteps: async () => null, onRoomEvent: async () => () => {} },
   };
   const env = {
-    ...helpers,
+    ...helpers, ...progress,
     openPane: { id: 'big', workspaceId: 'ws', title: 'Big thread' }, openWorkspace: { id: 'ws' }, openHostId: 'mac', openLink: { id: 'mac', status: 'online' }, openPath: '/p', viewingPending: false,
     room: null, roomRef: { current: null },
     setRoom: (next) => { env.room = typeof next === 'function' ? next(env.room) : next; env.roomRef.current = env.room; },

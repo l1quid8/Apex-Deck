@@ -143,3 +143,30 @@ test('work events for a bot with no running turn are ignored, and the old step l
   assert.equal(w.null.steps.length, MAX_STEPS);
   assert.equal(w.null.work.steps.length, MAX_STEPS + 5);
 });
+
+
+test('phone records commentary order and restores only active participants from shared progress', () => {
+  const todo = [{text: 'Check', status: 'in_progress'}];
+  const progress = { a: { by: 'a', seq: 0, steps: [], todo, dropped: 0, timeline: [{kind: 'text', text: 'Looking.'}] }, b: { by: 'b', seq: 0, steps: [], todo, dropped: 0 } };
+  let w = workingFrom(['a'], 10, progress, {a: 'Looking.'}, {a: 'Reading'});
+  assert.deepEqual(Object.keys(w), ['a']);
+  assert.equal(w.a.text, 'Looking.');
+  assert.deepEqual(w.a.work.todo, todo);
+  assert.equal(w.a.work.timeline[0].text, 'Looking.');
+  w = applyTurnEvent(w, {type: 'delta', id: 'a', text: ' Found it.'}, 11);
+  assert.equal(w.a.work.timeline[0].text, 'Looking. Found it.');
+  assert.equal(w.a.text, 'Looking. Found it.');
+});
+
+test('a checkpointed active stream replaces the disconnected partial instead of showing it twice', () => {
+ const cut={a:{text:'Partial',after:2}};
+ assert.deepEqual(resumeCut(cut,['a'],[],{a:'Partial reply'}),{});
+ assert.deepEqual(resumeCut(cut,['a'],[]),{a:{...cut.a,ended:false}});
+});
+
+test('terminal progress replaces a disconnected cut unless the host timeline was truncated', () => {
+ const cut={a:{text:'Partial',after:2}};
+ const reply={by:'a',seq:0,steps:[],todo:[],dropped:0,outcome:'stopped',timeline:[{kind:'text',text:'Partial reply'}]};
+ assert.deepEqual(resumeCut(cut,[],[],{}, {a:reply}),{});
+ assert.equal(resumeCut(cut,[],[],{}, {a:{...reply,timeline_cut:true}}).a.text,'Partial');
+});

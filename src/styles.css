@@ -1335,19 +1335,35 @@ html[data-platform="windows"] .titlebar {
 }
 .work-steps-helper > .work-steps-list { margin: 2px 0 0 4px; }
 .work-steps-todo {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  gap: 8px;
   list-style: none;
-  margin: 0 0 4px;
-  padding: 0;
+  margin: 8px 0 4px;
   display: flex;
   flex-direction: column;
 }
-.work-steps-todo-item { color: var(--muted); overflow-wrap: anywhere; }
+.work-steps-todo-item { font-family: var(--deck-font-reading, system-ui, sans-serif); color: var(--muted); overflow-wrap: anywhere; }
 .work-steps-todo-mark { display: inline-block; width: 1.4em; text-align: center; color: var(--accent); }
 .work-steps-todo-in_progress { color: var(--text); font-weight: 600; }
 .work-steps-todo-completed { opacity: 0.7; }
 .work-steps-todo-pending .work-steps-todo-mark { color: var(--muted); }
 .work-steps-todo-cancelled { text-decoration: line-through; opacity: 0.6; }
 .work-steps-todo-cancelled .work-steps-todo-mark { color: var(--muted); text-decoration: none; }
+.work-steps-timeline { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.work-steps-timeline-text { font-family: var(--deck-font-reading, system-ui, sans-serif); min-width: 0; overflow-wrap: anywhere; }
+.work-steps-activity { min-width: 0; }
+.work-steps-activity > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.work-steps-activity[open] > summary { color: var(--text); }
+.work-steps-activity > summary:focus-visible, .work-steps-interrupted > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.work-steps-interrupted { color: var(--muted); margin: 10px 0; font-size: 13px; overflow-wrap: anywhere; }
+.work-steps-interrupted > summary { cursor: pointer; padding: 8px 0; }
+.work-steps-activity > .work-steps-list { margin: 4px 0 2px 12px; }
+.work-steps-saved-final { min-width: 0; }
+.work-steps-note { color: var(--muted); font-size: 11px; }
+.work-steps-outcome { font-size: 11px; color: var(--muted); }
+.work-steps-outcome-failed { color: var(--danger); }
 
 .working-line {
   display: flex;

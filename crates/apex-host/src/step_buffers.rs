@@ -3,13 +3,21 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use apex_core::work_steps::{ReplySteps, StepStatus};
+use apex_core::work_steps::{ReplySteps, StepStatus, TurnOutcome};
 use apex_core::{ParticipantId, RoomEvent, Speaker};
 
 #[derive(Default)]
 pub(crate) struct StepBuffers(Mutex<HashMap<(String, ParticipantId), ReplySteps>>);
 
 impl StepBuffers {
+    pub(crate) fn snapshot(&self, room: &str) -> std::collections::BTreeMap<String, ReplySteps> {
+        self.0.lock().unwrap().iter().filter(|((r, _), _)| r == room)
+            .map(|((_, id), progress)| (id.to_string(), progress.clone())).collect()
+    }
+    pub(crate) fn get(&self, room: &str, id: &ParticipantId) -> Option<ReplySteps> {
+        self.0.lock().unwrap().get(&(room.to_string(), id.clone())).cloned()
+    }
+    pub(crate) fn clear(&self, room: &str) { self.0.lock().unwrap().retain(|(r, _), _| r != room); }
     /// Follow one room event. Returns the record to save when `event` is a
     /// bot's reply and that bot reported steps or a to-do list for it.
     pub(crate) fn observe(&self, room: &str, event: &RoomEvent) -> Option<ReplySteps> {
@@ -18,7 +26,12 @@ impl StepBuffers {
         match event {
             // A new turn starts from nothing, whatever an earlier one left.
             RoomEvent::TurnStarted { id } => { buffers.remove(&key(id)); }
-            RoomEvent::WorkStep { id, step } => buffers.entry(key(id)).or_insert_with(|| empty(id)).push(step.clone()),
+            RoomEvent::Delta { id, text } => buffers.entry(key(id)).or_insert_with(|| empty(id)).append_text(text),
+            RoomEvent::WorkStep { id, step } => {
+                let record = buffers.entry(key(id)).or_insert_with(|| empty(id));
+                if step.parent.is_none() && !record.has_activity(&step.key) { record.note_activity(&step.key); }
+                record.push(step.clone());
+            }
             RoomEvent::Todo { id, items } => buffers.entry(key(id)).or_insert_with(|| empty(id)).todo = items.clone(),
             RoomEvent::MessageAdded { message } => {
                 let Speaker::Bot(id) = &message.speaker else { return None };
@@ -28,11 +41,16 @@ impl StepBuffers {
                 for step in record.steps.iter_mut().filter(|step| step.status == StepStatus::Running) {
                     step.status = StepStatus::Stopped;
                 }
+                // Transcript text is already stored by the room. A steps row
+                // exists only when there is tool or checklist progress to show.
+                if record.steps.is_empty() && record.todo.is_empty() { return None; }
                 record.fit();
                 return Some(record);
             }
-            RoomEvent::Failed { id, .. } | RoomEvent::Passed { id } | RoomEvent::ParticipantIdle { id } => { buffers.remove(&key(id)); }
-            RoomEvent::Stopped => buffers.retain(|(r, _), _| r != room),
+            RoomEvent::Failed { id, .. } => { if let Some(record) = buffers.get_mut(&key(id)) { record.outcome = Some(TurnOutcome::Failed); stop_running(record, StepStatus::Stopped); } }
+            RoomEvent::Passed { id } => { if let Some(record) = buffers.get_mut(&key(id)) { record.outcome = Some(TurnOutcome::Passed); stop_running(record, StepStatus::Stopped); } }
+            RoomEvent::ParticipantIdle { id } => { if let Some(record) = buffers.get_mut(&key(id)) { record.outcome.get_or_insert(TurnOutcome::Stopped); stop_running(record, StepStatus::Stopped); } }
+            RoomEvent::Stopped => for ((r, _), record) in buffers.iter_mut() { if r == room { record.outcome.get_or_insert(TurnOutcome::Stopped); stop_running(record, StepStatus::Stopped); } },
             _ => {}
         }
         None
@@ -40,7 +58,11 @@ impl StepBuffers {
 }
 
 fn empty(id: &ParticipantId) -> ReplySteps {
-    ReplySteps { by: id.clone(), seq: 0, steps: Vec::new(), todo: Vec::new(), dropped: 0 }
+    ReplySteps { by: id.clone(), seq: 0, steps: Vec::new(), todo: Vec::new(), dropped: 0, timeline: Vec::new(), outcome: None, timeline_cut: false }
+}
+
+fn stop_running(record: &mut ReplySteps, status: StepStatus) {
+    for step in record.steps.iter_mut().filter(|step| step.status == StepStatus::Running) { step.status = status; }
 }
 
 #[cfg(test)]
@@ -76,17 +98,41 @@ mod tests {
     }
 
     #[test]
+    fn failed_turn_keeps_progress_and_marks_running_step_failed() {
+        let buffers = StepBuffers::default();
+        buffers.observe("r", &work("bot", step("a", StepStatus::Running)));
+        buffers.observe("r", &RoomEvent::Delta { id: ParticipantId::new("bot"), text: "partial".into() });
+        buffers.observe("r", &RoomEvent::Failed { id: ParticipantId::new("bot"), error: "oops".into() });
+        let progress = buffers.snapshot("r");
+        assert_eq!(progress["bot"].outcome, Some(TurnOutcome::Failed));
+        assert_eq!(progress["bot"].steps[0].status, StepStatus::Stopped, "generic turn failure does not claim the tool itself failed");
+        assert_eq!(progress["bot"].timeline[1], apex_core::work_steps::TurnSegment::Text { text: "partial".into() });
+        buffers.observe("r", &RoomEvent::Stopped);
+        assert_eq!(buffers.snapshot("r")["bot"].outcome, Some(TurnOutcome::Failed), "global stop does not overwrite a prior failure");
+    }
+
+    #[test]
+    fn text_only_reply_does_not_create_a_saved_steps_record() {
+        let buffers = StepBuffers::default();
+        buffers.observe("r", &RoomEvent::Delta { id: ParticipantId::new("bot"), text: "hello".into() });
+        assert!(buffers.observe("r", &reply("bot", 1)).is_none());
+        assert!(buffers.snapshot("r").is_empty());
+    }
+
+    #[test]
     fn rooms_bots_and_ended_turns_are_kept_apart() {
         let buffers = StepBuffers::default();
         buffers.observe("r", &work("ada", step("a", StepStatus::Done)));
         buffers.observe("other", &work("ada", step("x", StepStatus::Done)));
         buffers.observe("r", &work("bob", step("b", StepStatus::Done)));
         buffers.observe("r", &RoomEvent::Passed { id: ParticipantId::new("bob") });
-        assert!(buffers.observe("r", &reply("bob", 2)).is_none(), "a pass drops the steps");
+        let passed = buffers.snapshot("r");
+        assert_eq!(passed["bob"].steps[0].key, "b");
+        assert_eq!(passed["bob"].outcome, Some(TurnOutcome::Passed));
         assert_eq!(buffers.observe("r", &reply("ada", 3)).unwrap().steps[0].key, "a");
         buffers.observe("r", &work("ada", step("c", StepStatus::Done)));
         buffers.observe("r", &RoomEvent::Stopped);
-        assert!(buffers.observe("r", &reply("ada", 4)).is_none(), "Stop drops every bot's steps in the room");
+        assert_eq!(buffers.snapshot("r")["ada"].outcome, Some(TurnOutcome::Stopped));
         assert_eq!(buffers.observe("other", &reply("ada", 1)).unwrap().steps[0].key, "x");
     }
 

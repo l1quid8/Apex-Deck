@@ -16,3 +16,4 @@ pub mod settings;
 pub mod state;
 pub mod terminal;
 pub mod ui;
+pub mod progress;

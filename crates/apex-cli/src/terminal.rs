@@ -58,6 +58,7 @@ pub enum Intent {
     Welcome,
     Threads,
     Requests,
+    ProgressSelect(u64),
     WelcomeUp,
     WelcomeDown,
     WelcomeOpen,
@@ -76,6 +77,17 @@ pub fn handle_event(s: &mut AppState, event: Event) -> Intent {
             Intent::None
         }
         Event::Key(key) if key.kind != KeyEventKind::Release => {
+            if s.progress_open {
+                match key.code {
+                    KeyCode::Esc => { s.progress_request=s.progress_request.wrapping_add(1);s.progress_open=false; s.progress_detail=None; return Intent::None; },
+                    KeyCode::Up => { s.progress_selected=s.progress_selected.saturating_sub(1);s.progress_detail_request=s.progress_detail_request.wrapping_add(1);s.progress_detail=None;s.progress_scroll=0; return Intent::None; },
+                    KeyCode::Down => { s.progress_selected=(s.progress_selected+1).min(s.progress_rows.len().saturating_sub(1));s.progress_detail_request=s.progress_detail_request.wrapping_add(1);s.progress_detail=None;s.progress_scroll=0; return Intent::None; },
+                    KeyCode::PageUp => { s.progress_scroll=s.progress_scroll.saturating_sub(8); return Intent::None; },
+                    KeyCode::PageDown => { s.progress_scroll=s.progress_scroll.saturating_add(8); return Intent::None; },
+                    KeyCode::Enter => { if s.progress_detail.is_some() { s.progress_tools_expanded=!s.progress_tools_expanded; return Intent::None; } if let Some(row)=s.progress_rows.get(s.progress_selected) { s.progress_detail_request=s.progress_detail_request.wrapping_add(1);s.progress_tools_expanded=false; if row["reply"].is_object() { s.progress_detail=Some(row["reply"].clone()); return Intent::None; } s.progress_detail=Some(row.clone()); return Intent::ProgressSelect(row["seq"].as_u64().unwrap_or(0)); } return Intent::None; },
+                    _ => return Intent::None,
+                }
+            }
             // Capture ownership before a settings handler can close itself.
             let composer_context = s.menu.is_none()
                 && s.settings.is_none()

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { createRoomRecovery, representedRoomEvent } from '../src/roomRecovery.ts';
+import { applyProgressEvent } from '../src/turnProgress.ts';
 import { applyQuestionEvent } from '../src/questions.ts';
 import { applyCutEvent, applyTurnEvent, workingFrom } from '../src/phoneWorking.ts';
 
@@ -25,7 +26,7 @@ test('a phone replays a journal warning after loading without ending an active t
     setNotice: text => notices.push(text),
     setCuts: update => { cuts = update(cuts); },
     setRoom: update => { room = update(room); },
-    applyQuestionEvent, applyCutEvent, applyTurnEvent,
+    applyQuestionEvent, applyCutEvent, applyTurnEvent, applyProgressEvent,
   };
   const applyEvent = new Function('env', `with(env) { ${code}; return applyEvent; }`)(env);
   const recovery = createRoomRecovery({

@@ -17,6 +17,20 @@ pub const STEPS_PER_REPLY_MAX: usize = 2_000;
 pub const STEP_DETAIL_CUT: usize = 512;
 /// Largest serialized size of one reply's steps before outputs are removed.
 pub const REPLY_STEPS_BYTES_MAX: usize = 1_048_576;
+/// Maximum text kept in the ordered turn timeline.
+pub const TURN_TEXT_MAX: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOutcome { Failed, Stopped, Passed }
+
+/// Ordered text and top-level work references emitted during one turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnSegment {
+    Text { text: String },
+    Activity { keys: Vec<String> },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +108,15 @@ pub struct ReplySteps {
     pub todo: Vec<TodoItem>,
     /// Steps past `STEPS_PER_REPLY_MAX` that were not kept.
     pub dropped: usize,
+    /// Ordered reply text and work references. Empty for legacy records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timeline: Vec<TurnSegment>,
+    /// Present for turns that ended without a reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<TurnOutcome>,
+    /// True when streamed text exceeded `TURN_TEXT_MAX`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub timeline_cut: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -141,6 +164,28 @@ fn json_len<T: Serialize>(value: &T) -> usize {
 }
 
 impl ReplySteps {
+    pub fn append_text(&mut self, text: &str) {
+        let already: usize = self.timeline.iter().filter_map(|s| match s { TurnSegment::Text { text } => Some(text.len()), _ => None }).sum();
+        let room = TURN_TEXT_MAX.saturating_sub(already);
+        let end = floor_boundary(text, room.min(text.len()));
+        if end < text.len() { self.timeline_cut = true; }
+        if end == 0 { return; }
+        if let Some(TurnSegment::Text { text: prior }) = self.timeline.last_mut() { prior.push_str(&text[..end]); }
+        else { self.timeline.push(TurnSegment::Text { text: text[..end].to_string() }); }
+    }
+
+    pub fn note_activity(&mut self, key: &str) {
+        if self.timeline.iter().any(|s| matches!(s, TurnSegment::Activity { keys } if keys.iter().any(|k| k == key))) { return; }
+        let count = self.timeline.iter().map(|s| match s { TurnSegment::Activity { keys } => keys.len(), _ => 0 }).sum::<usize>();
+        if count >= STEPS_PER_REPLY_MAX { self.timeline_cut = true; return; }
+        if let Some(TurnSegment::Activity { keys }) = self.timeline.last_mut() { keys.push(key.to_string()); }
+        else { self.timeline.push(TurnSegment::Activity { keys: vec![key.to_string()] }); }
+    }
+
+    pub fn has_activity(&self, key: &str) -> bool {
+        self.timeline.iter().any(|s| matches!(s, TurnSegment::Activity { keys } if keys.iter().any(|k| k == key)))
+    }
+
     /// Adds a step, or replaces the one with the same key. A replacement
     /// without output keeps the earlier output.
     pub fn push(&mut self, mut step: WorkStep) {
@@ -158,8 +203,8 @@ impl ReplySteps {
     }
 
     /// Removes outputs, oldest first, until the serialized size fits
-    /// `REPLY_STEPS_BYTES_MAX`. If it still does not fit with every output
-    /// gone, cuts details to `STEP_DETAIL_CUT` bytes, oldest first.
+    /// `REPLY_STEPS_BYTES_MAX`: remove oldest outputs, cut details, then trim
+    /// timeline and oldest steps as needed, marking every truncation.
     pub fn fit(&mut self) {
         let mut total = json_len(self);
         for step in self.steps.iter_mut() {
@@ -186,6 +231,21 @@ impl ReplySteps {
             step.detail = format!("{}…", &step.detail[..end]);
             total = total - before + json_len(step);
         }
+        while total > REPLY_STEPS_BYTES_MAX && !self.timeline.is_empty() {
+            self.timeline.remove(0);
+            self.timeline_cut = true;
+            total = json_len(self);
+        }
+        while total > REPLY_STEPS_BYTES_MAX && !self.steps.is_empty() {
+            let removed = self.steps.remove(0);
+            self.dropped += 1;
+            for segment in &mut self.timeline {
+                if let TurnSegment::Activity { keys } = segment { keys.retain(|key| key != &removed.key); }
+            }
+            self.timeline.retain(|segment| !matches!(segment, TurnSegment::Activity { keys } if keys.is_empty()));
+            self.timeline_cut = true;
+            total = json_len(self);
+        }
     }
 }
 
@@ -210,7 +270,7 @@ mod tests {
     }
 
     fn empty() -> ReplySteps {
-        ReplySteps { by: ParticipantId::new("a"), seq: 0, steps: vec![], todo: vec![], dropped: 0 }
+        ReplySteps { by: ParticipantId::new("a"), seq: 0, steps: vec![], todo: vec![], dropped: 0, timeline: vec![], outcome: None, timeline_cut: false }
     }
 
     #[test]
@@ -242,6 +302,31 @@ mod tests {
         assert_eq!(r.steps[0].output.as_deref(), Some("ok"));
         r.push(step("a", None, StepStatus::Done));
         assert_eq!(r.steps[0].output.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn timeline_coalesces_text_and_unique_activity_keys() {
+        let mut r = empty();
+        r.append_text("a"); r.append_text("b");
+        r.note_activity("one"); r.note_activity("one"); r.note_activity("two");
+        r.append_text("c");
+        assert_eq!(r.timeline, vec![TurnSegment::Text { text: "ab".into() }, TurnSegment::Activity { keys: vec!["one".into(), "two".into()] }, TurnSegment::Text { text: "c".into() }]);
+        let mut old = serde_json::to_value(empty()).unwrap();
+        old.as_object_mut().unwrap().remove("timeline");
+        old.as_object_mut().unwrap().remove("outcome");
+        old.as_object_mut().unwrap().remove("timeline_cut");
+        let loaded: ReplySteps = serde_json::from_value(old).unwrap();
+        assert!(loaded.timeline.is_empty());
+    }
+
+    #[test]
+    fn timeline_text_limit_is_visible_and_utf8_safe() {
+        let mut r = empty();
+        r.append_text(&"é".repeat(TURN_TEXT_MAX));
+        assert!(r.timeline_cut);
+        let TurnSegment::Text { text } = &r.timeline[0] else { panic!("text segment") };
+        assert!(text.len() <= TURN_TEXT_MAX);
+        assert!(text.is_char_boundary(text.len()));
     }
 
     #[test]
@@ -282,5 +367,20 @@ mod tests {
         assert!(r.steps[0].detail.len() <= STEP_DETAIL_CUT);
         assert!(r.steps[0].detail.ends_with('…'));
         assert_eq!(r.steps.last().unwrap().detail.len(), STEP_DETAIL_MAX);
+    }
+
+    #[test]
+    fn fit_drops_oldest_steps_if_all_other_cuts_do_not_fit() {
+        let mut r = empty();
+        for n in 0..STEPS_PER_REPLY_MAX {
+            let mut s = step(&n.to_string(), None, StepStatus::Done);
+            s.detail = "x".repeat(STEP_DETAIL_MAX);
+            r.push(s);
+        }
+        r.fit();
+        assert!(json_len(&r) <= REPLY_STEPS_BYTES_MAX);
+        assert!(r.dropped > 0);
+        assert!(r.steps.last().unwrap().key == (STEPS_PER_REPLY_MAX - 1).to_string());
+        assert!(r.timeline_cut);
     }
 }

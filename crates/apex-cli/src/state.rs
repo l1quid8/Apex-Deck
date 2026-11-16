@@ -108,6 +108,15 @@ pub struct AppState {
     pub activity: HashMap<String, String>,
     pub pending_messages: HashMap<String, (String, String)>,
     pub view: u8,
+    pub progress_open: bool,
+    pub progress_rows: Vec<Value>,
+    pub progress_selected: usize,
+    pub progress_scroll: u16,
+    pub progress_request: u64,
+    pub progress_detail_request: u64,
+    pub saved_progress: HashMap<u64, Value>,
+    pub progress_detail: Option<Value>,
+    pub progress_tools_expanded: bool,
     pub overflowed: bool,
     pub settings: Option<crate::settings::Panel>,
     pub saves: crate::settings::Saves,
@@ -121,6 +130,15 @@ pub struct AppState {
 }
 impl AppState {
     pub fn reset_connection_state(&mut self) {
+        self.progress_open = false;
+        self.progress_rows.clear();
+        self.progress_detail = None;
+        self.progress_selected = 0;
+        self.progress_scroll = 0;
+        self.progress_tools_expanded = false;
+        self.saved_progress.clear();
+        self.progress_request = self.progress_request.wrapping_add(1);
+        self.progress_detail_request = self.progress_detail_request.wrapping_add(1);
         self.rooms.clear();
         self.streams.clear();
         self.activity.clear();
@@ -152,6 +170,13 @@ impl AppState {
         self.settings = None;
         self.card = None;
         self.selected = Some(id);
+        self.progress_open = false;
+        self.progress_rows.clear();
+        self.progress_selected = 0;
+        self.progress_scroll = 0;
+        self.progress_detail = None;
+        self.progress_tools_expanded = false;
+        self.saved_progress.clear();
         self.generation += 1;
         self.busy = false;
         self.streams.clear();
@@ -209,7 +234,7 @@ impl AppState {
             .cloned()
             .unwrap_or_default()
     }
-    pub fn install_snapshot(&mut self, id: &str, generation: u64, state: Value) -> bool {
+    pub fn install_snapshot(&mut self, id: &str, generation: u64, mut state: Value) -> bool {
         if generation != self.generation || self.selected.as_deref() != Some(id) {
             return false;
         }
@@ -227,6 +252,8 @@ impl AppState {
         // Hosts that report partial replies are the authority for them: take
         // their copy, then replay only newer events so no text is doubled.
         let live = state["streams"].is_object();
+        let active = state["active"].as_array().cloned().unwrap_or_default();
+        crate::progress::restore(&mut state["progress"], &active);
         if live {
             self.streams = text_map(&state["streams"]);
             self.activity = text_map(&state["activity"]);
@@ -299,6 +326,7 @@ impl AppState {
         };
         let event = &payload["event"];
         let id = &event["id"];
+        crate::progress::reduce(&mut room["progress"], event);
         match event["type"].as_str().unwrap_or("") {
             "message_added" => {
                 if let Some(messages) = room["snapshot"]["transcript"].as_array_mut() {

@@ -116,7 +116,7 @@ export function createRoomRecovery<T, E = never>({ load, apply, fail, event, rep
   };
 }
 
-/** The snapshot covers durable events and live requests, but not streaming text. */
+/** Checkpoint-aware snapshots cover streams and progress when those fields are present. */
 export function representedRoomEvent(state: RoomState, event: RoomEvent): boolean {
   if (state.recovery_seq == null || event.recovery_seq == null || event.recovery_seq > state.recovery_seq) return false;
   switch (event.type) {
@@ -124,7 +124,9 @@ export function representedRoomEvent(state: RoomState, event: RoomEvent): boolea
     case "turn_started": case "participant_idle": case "approval_requested": case "approval_resolved": case "idle": case "stopped":
     case "question_requested": case "question_resolved": case "next_steps": case "plan_changed": case "plan_run": case "plan_runs_reset": case "participant_changed": case "participants_changed":
       return true;
-    case "delta": case "activity": return !state.active.includes(event.id);
+    case "delta": return state.streams !== undefined || !state.active.includes(event.id);
+    case "activity": return state.activity !== undefined || !state.active.includes(event.id);
+    case "work_step": case "todo": return state.progress !== undefined;
     default: return false;
   }
 }
