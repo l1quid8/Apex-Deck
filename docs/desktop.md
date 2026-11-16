@@ -166,3 +166,8 @@ node desktop/run-smoke.mjs --ssh vps \
 it go again, network included; the phase-3 run used `docker pause` on a
 stand-in Ubuntu server in Docker. `--ssh-config FILE` makes `ssh` read FILE
 instead of `~/.ssh/config`.
+
+
+### Notarizing the native upgrade package
+
+For a public macOS upgrade package, set `APEX_DECK_INSTALLER_IDENTITY` to the Developer ID Installer identity and `APEX_DECK_NOTARY_PROFILE` to an existing notarytool Keychain profile before running `scripts/package-mac-upgrade.mjs`. The script signs the package, waits for Apple to accept it, staples the ticket and validates it before publishing the package in `release/`. With both variables unset, the existing local upgrade packaging flow is available.
