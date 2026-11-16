@@ -43,6 +43,7 @@ const MCP_DEFAULT: Duration = Duration::from_secs(120);
 /// What a bot's tools work with. Lives as long as the bot: its MCP servers
 /// keep running between replies.
 pub(crate) struct ToolBox {
+    pub code_mode_policy: std::sync::Arc<crate::code_mode_policy::Policy>,
     pub bot: String,
     pub roots: files::Roots,
     pub env: shell::Env,
@@ -67,6 +68,7 @@ impl ToolBox {
             readable.push(PathBuf::from(dir));
         }
         Self {
+            code_mode_policy: crate::code_mode_policy::policy(context.data_dir.as_deref()),
             bot: bot.into(),
             roots: files::Roots::new(context.cwd.as_deref(), &readable),
             env: shell::Env {
@@ -255,13 +257,18 @@ impl<'a> Turn<'a> {
             }
         });
         out.push_str("For multistep work, maintain a checklist with todo_write. Send the whole list before substantive work, mark the current item in_progress, and update completed items as you finish them. Never mark unfinished work completed or invent a plan that you cannot carry out. Simple answers and one-step tasks do not need a checklist. Follow the person's explicit directions about planning and checklists.\n");
-        out.push_str("For a multi-file task, deck_code_mode can batch file calls and filter intermediate results before they enter your context. Write one short plan: a single forEach call covers any number of files. It runs up to four independent reads at a time, with ordered writes, per-child permissions and batch-only retention. Metrics are bytes, not tokens.\n");
+        if self.tools.code_mode_policy.enabled() {
+            out.push_str("For a multi-file task, deck_code_mode can batch file calls and filter intermediate results before they enter your context. Write one short plan: a single forEach call covers any number of files. It runs up to four independent reads at a time, with ordered writes, per-child permissions and batch-only retention. Metrics are bytes, not tokens.\n");
+        }
         out
     }
 
     /// The tools offered now, as the API's `tools` list.
     pub fn definitions(&self) -> Vec<Value> {
         let mut definitions = self.all_definitions();
+        if !self.tools.code_mode_policy.enabled() {
+            definitions.retain(|t| t["function"]["name"] != "deck_code_mode");
+        }
         if self.tools.computer_only {
             definitions.retain(|t| matches!(t["function"]["name"].as_str(), Some("mcp_list_tools" | "mcp_call")));
         }
@@ -502,8 +509,16 @@ impl<'a> Turn<'a> {
         match call.name.as_str() {
             "deck_code_mode" => {
                 let step = self.step(call, StepKind::Tool, "Run Code Mode batch", "Bounded file-tool plan");
+                let policy = self.tools.code_mode_policy.clone();
+                let mut stopped = policy.subscribe();
+                let disabled = "Apex Code Mode is Off in Settings → General. No further batch operations will run; completed writes are unchanged.";
+                if !policy.enabled() { return (step, Err(disabled.into())); }
                 (self.progress)(Progress::Work(&step));
-                let outcome = self.code_mode(call, args).await;
+                let outcome = tokio::select! {
+                    biased;
+                    _ = stopped.changed() => Err(disabled.into()),
+                    result = self.code_mode(call, args) => result,
+                };
                 (step, outcome)
             }
             "read_file" | "list_dir" | "glob" | "grep" => {

@@ -57,6 +57,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     onThreadCatalogChanged: (cb) => transport.listen("thread-catalog-changed", cb),
     settingsLoad: () => call<unknown>("settings_load"),
     settingsSave: (settings) => call("settings_save", { settings }),
+    onSettingsChanged: (cb) => transport.listen("settings-changed", cb),
     artifactsLoad: (room) => call<unknown>("artifacts_load", { room }),
     artifactsSave: (room, artifacts) => call("artifacts_save", { room, artifacts }),
     answersLoad: (room) => call<unknown>("answers_load", { room }),

@@ -140,9 +140,12 @@ async fn dispatch(turn: &mut Turn<'_>, request: Value, prefix: &str, serial: u64
             let definition = turn
                 .definitions()
                 .into_iter()
-                .find(|d| d["function"]["name"] == "deck_code_mode")?;
-            let f = &definition["function"];
-            json!({"tools":[{"name":f["name"],"description":f["description"],"inputSchema":f["parameters"]}]})
+                .find(|d| d["function"]["name"] == "deck_code_mode");
+            let tools: Vec<Value> = definition.into_iter().map(|d| {
+                let f = &d["function"];
+                json!({"name":f["name"],"description":f["description"],"inputSchema":f["parameters"]})
+            }).collect();
+            json!({"tools":tools})
         }
         Some("tools/call") if request["params"]["name"] == "deck_code_mode" => {
             let call = ToolCall {
@@ -226,6 +229,27 @@ mod tests {
     use crate::api_tools::ToolBox;
     use apex_core::{Access, NoApprover};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn global_off_updates_mcp_catalog_and_rejects_a_cached_tool_call() {
+        let dir = std::env::temp_dir().join(format!("mcp-global-off-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tools = ToolBox::new(&crate::BuildContext { cwd: Some(dir.clone()), data_dir: Some(dir.clone()), ..Default::default() });
+        let progress = |_: apex_core::Progress<'_>| {};
+        let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &progress);
+        crate::set_code_mode_enabled(&dir, false);
+        let list = dispatch(&mut turn, json!({"id":1,"method":"tools/list"}), "off", 1).await.unwrap();
+        assert_eq!(list["result"]["tools"], json!([]));
+        let reply = dispatch(&mut turn, json!({"id":2,"method":"tools/call","params":{"name":"deck_code_mode","arguments":{
+            "stages":[[{"id":"w","tool":"write_file","args":{"path":"no.txt","content":"no"}}]],"output":null
+        }}}), "off", 2).await.unwrap();
+        assert!(reply["result"]["content"][0]["text"].as_str().unwrap().contains("Off"));
+        assert!(!dir.join("no.txt").exists());
+        crate::set_code_mode_enabled(&dir, true);
+        let list = dispatch(&mut turn, json!({"id":3,"method":"tools/list"}), "on", 3).await.unwrap();
+        assert_eq!(list["result"]["tools"][0]["name"], "deck_code_mode");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[tokio::test]
     async fn mcp_batch_uses_deck_permissions_and_preserves_partial_results() {

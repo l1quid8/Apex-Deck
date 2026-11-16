@@ -24,6 +24,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import { botChangeGate, botSendGate } from "../phoneBots";
 import { AppearanceSettings } from "../AppearanceSettings";
+import { CodeModeSettings } from "./CodeModeSettings";
 import { defaultAppearanceSettings, type AppearanceSettings as AppearanceState } from "../themes";
 import { applyPhoneTheme, loadPhoneAppearance, savePhoneAppearance, loadPhoneChipStyle, savePhoneChipStyle } from "./appearance";
 import { ChipStylePicker } from "../ChipStylePicker";
@@ -169,7 +170,7 @@ const CREW_KEY = "apex-deck.phone.crew.v1";
 const OPEN_KEY = "apex-deck.phone.openThreads.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
-type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance" | "log";
+type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "settings" | "general" | "appearance" | "log";
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
 type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
@@ -2667,7 +2668,7 @@ export function PhoneApp() {
   const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null || worktreesOpen;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
   const shownTab = tab === "machines" ? machinesReturn.current : tab;
-  const litTab = shownTab === "settings" || shownTab === "appearance" || shownTab === "log" ? settingsReturn.current : shownTab;
+  const litTab = shownTab === "settings" || shownTab === "general" || shownTab === "appearance" || shownTab === "log" ? settingsReturn.current : shownTab;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots" || menu.kind === "artifacts" || menu.kind === "delete") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -2807,7 +2808,7 @@ export function PhoneApp() {
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
-            {tab === "appearance" || tab === "log"
+            {tab === "general" || tab === "appearance" || tab === "log"
               ? <BackButton label="Settings" onClick={() => setTab("settings")} />
               : tab === "settings"
               ? <BackButton label={tabName(settingsReturn.current)} onClick={() => setTab(settingsReturn.current)} />
@@ -2819,7 +2820,7 @@ export function PhoneApp() {
             <span className="ph-head-actions">
               {tab === "threads" && (newAllowed || chatMachines.some((item) => item.chats)) && <button type="button" className="ph-icon" aria-label="New chat or thread" onClick={() => { setQuery(""); setChatSheet({ kind: "new" }); }}><Plus size={22} /></button>}
               {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
-              {tab !== "settings" && tab !== "appearance" && tab !== "log" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
+              {tab !== "settings" && tab !== "general" && tab !== "appearance" && tab !== "log" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
@@ -3007,11 +3008,18 @@ export function PhoneApp() {
             <h2>Settings</h2>
             <p className="ph-intro">Preferences for this phone.</p>
             <div className="ph-list">
+              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("general")}><span className="ph-grow"><strong>General</strong><small>Machine settings · Apex Code Mode</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
               <LockRow />
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("log")}><span className="ph-grow"><strong>Connection log</strong><small>Leaving and coming back, and thread load times</small></span><ChevronRight size={15} /></button>
             </div>
+          </main>
+        ) : tab === "general" ? (
+          <main className="ph-content" inert={covered}>
+            <h2>General</h2>
+            <p className="ph-intro">Global preferences on the selected machine.</p>
+            <CodeModeSettings hosts={hosts} />
           </main>
         ) : tab === "log" ? (
           <ConnectionLog covered={covered} />

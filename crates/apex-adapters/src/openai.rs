@@ -399,6 +399,9 @@ impl Participant for OpenAiCompatParticipant {
                 break;
             }
             let response = loop {
+                if let Some(turn) = &turn {
+                    messages[0]["content"] = json!(format!("{system}{}", turn.instructions()));
+                }
                 computer_content |= messages_have_computer_content(&messages);
                 let mut body = base.clone();
                 body["messages"] = json!(messages);

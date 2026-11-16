@@ -1102,6 +1102,11 @@ export type Command = {
   cmd: "settings_save";
 } | {
   args: {
+    enabled: boolean;
+  };
+  cmd: "settings_code_mode_set";
+} | {
+  args: {
     room: string;
   };
   cmd: "artifacts_load";
@@ -4064,6 +4069,9 @@ export interface Commands {
   session_load: Record<string, never>;
   session_save: {
     session: unknown;
+  };
+  settings_code_mode_set: {
+    enabled: boolean;
   };
   settings_load: Record<string, never>;
   settings_save: {

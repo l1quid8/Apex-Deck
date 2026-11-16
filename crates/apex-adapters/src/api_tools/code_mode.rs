@@ -53,6 +53,44 @@ impl Turn<'_> {
         parent: &ToolCall,
         value: &Value,
     ) -> Result<Done, String> {
+        // Off/Stop drops this future. Settle child rows as well as dropping
+        // their approval futures, so the UI cannot retain a running batch child.
+        struct ActiveSteps<'a> {
+            steps: std::sync::Mutex<std::collections::BTreeMap<String, WorkStep>>,
+            progress: ProgressSink<'a>,
+        }
+        impl Drop for ActiveSteps<'_> {
+            fn drop(&mut self) {
+                for (_, mut step) in std::mem::take(self.steps.get_mut().unwrap()) {
+                    step.status = StepStatus::Stopped;
+                    (self.progress)(Progress::Work(&step));
+                }
+            }
+        }
+        let active = ActiveSteps { steps: Default::default(), progress: self.progress };
+        let progress = |update: Progress<'_>| {
+            if let Progress::Work(step) = &update {
+                let mut steps = active.steps.lock().unwrap();
+                if step.status == StepStatus::Running { steps.insert(step.key.clone(), (*step).clone()); }
+                else { steps.remove(&step.key); }
+            }
+            (self.progress)(update);
+        };
+        let mut batch = Turn {
+            tools: self.tools, access: self.access, plan: self.plan, own: self.own,
+            can_read_images: self.can_read_images, trusted_computer: self.trusted_computer,
+            approver: self.approver, progress: &progress, jobs: shell::Jobs::default(),
+            servers: self.servers.clone(), cwd: self.cwd.clone(), roots: self.roots.clone(),
+            refused: AtomicBool::new(false),
+        };
+        batch.execute_code_mode(parent, value).await
+    }
+
+    async fn execute_code_mode(
+        &mut self,
+        parent: &ToolCall,
+        value: &Value,
+    ) -> Result<Done, String> {
         // A plan wrapped the way the API wraps a call is still that plan.
         let value = match value.as_object() {
             Some(only) if only.len() == 1 && only.get("arguments").is_some_and(Value::is_object) => {

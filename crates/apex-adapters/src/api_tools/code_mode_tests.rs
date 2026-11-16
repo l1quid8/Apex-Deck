@@ -4,6 +4,73 @@ fn plan(stages: Value, output: Value) -> Value {
     json!({"stages":stages,"output":output})
 }
 
+#[tokio::test]
+async fn global_off_hides_code_mode_and_refuses_stale_calls_without_affecting_reads() {
+    let dir = scratch("code-mode-global-off");
+    std::fs::create_dir_all(dir.join("saved-chats-v1")).unwrap();
+    std::fs::write(dir.join("saved-chats-v1/settings.json"), r#"{"apexCodeMode":"off"}"#).unwrap();
+    std::fs::write(dir.join("read.txt"), "ordinary read").unwrap();
+    let tools = ToolBox::new(&crate::BuildContext { cwd: Some(dir.clone()), data_dir: Some(dir.clone()), ..Default::default() });
+    let answers = approver(Decision::Approve);
+    let progress = |_: Progress<'_>| {};
+    let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &answers, &progress);
+    assert!(!turn.definitions().iter().any(|t| t["function"]["name"] == "deck_code_mode"));
+    assert!(!turn.instructions().contains("deck_code_mode"));
+    let (reply, ok) = turn.run_checked(&call("deck_code_mode", plan(json!([[{"id":"w","tool":"write_file","args":{"path":"must-not-exist","content":"no"}}]]), json!(null)))).await;
+    assert!(!ok);
+    assert!(reply.text.contains("Off"), "{}", reply.text);
+    assert!(!dir.join("must-not-exist").exists());
+    let (reply, ok) = turn.run_checked(&call("read_file", json!({"path":"read.txt"}))).await;
+    assert!(ok && reply.text.contains("ordinary read"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn global_off_drops_pending_approval_even_if_auto_is_restored() {
+    struct Waiting(std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    struct Active(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for Active {
+        fn drop(&mut self) { self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst); }
+    }
+    #[async_trait::async_trait]
+    impl Approver for Waiting {
+        async fn decide(&self, _: ProposedAction) -> Decision {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _active = Active(self.1.clone());
+            self.0.notify_one();
+            futures::future::pending().await
+        }
+    }
+    let dir = scratch("global-off-approval");
+    let tools = ToolBox::new(&crate::BuildContext { cwd: Some(dir.clone()), data_dir: Some(dir.clone()), ..Default::default() });
+    let notified = std::sync::Arc::new(tokio::sync::Notify::new());
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let answers = Waiting(notified.clone(), active.clone());
+    let rows = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let progress = |update: Progress<'_>| {
+        if let Progress::Work(step) = update { rows.lock().unwrap().insert(step.key.clone(), step.status); }
+    };
+    let mut turn = Turn::new(&tools, Access::Ask, false, Access::Ask, &answers, &progress);
+    let batch = call("deck_code_mode", plan(json!([
+        [{"id":"w","tool":"write_file","args":{"path":"first","content":"no"}}],
+        [{"id":"w2","tool":"write_file","args":{"path":"second","content":"no"}}]
+    ]), json!(null)));
+    let change = async {
+        notified.notified().await;
+        crate::set_code_mode_enabled(&dir, false);
+        crate::set_code_mode_enabled(&dir, true);
+    };
+    let ((reply, ok), ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(turn.run_checked(&batch), change)
+    }).await.expect("Off must interrupt a pending approval");
+    assert!(!ok && reply.text.contains("Off"));
+    assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(rows.lock().unwrap().values().all(|status| *status != StepStatus::Running));
+    assert!(!dir.join("first").exists() && !dir.join("second").exists());
+    assert!(turn.definitions().iter().any(|t| t["function"]["name"] == "deck_code_mode"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 // Empty fan-outs still occupy plan/trace slots, even though they do no I/O.
 #[tokio::test]
 async fn code_mode_empty_fanouts_cannot_bypass_plan_limits() {

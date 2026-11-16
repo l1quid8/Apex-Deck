@@ -52,6 +52,7 @@ export interface Backend {
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;
+  onSettingsChanged?(cb: (settings: unknown) => void): Promise<Unlisten>;
   /** A thread's artifacts file, beside the thread; artifacts.ts reads it. Null when there is none. */
   artifactsLoad(room: string): Promise<unknown>;
   artifactsSave(room: string, artifacts: unknown): Promise<void>;

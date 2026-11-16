@@ -622,6 +622,7 @@ fn failed_turn_steps_are_saved_separately_from_reply_steps() {
     assert_eq!(step_keys(&ended), ["a", "b"]);
     // The failed turn's steps don't leak into the next reply.
     host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot again"}})).unwrap();
+    assert!(idle(&host, "r"));
     let state = host.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
     let seq = state["snapshot"]["transcript"].as_array().unwrap().iter().rposition(|m| m["text"] == "ok").unwrap();
     let record = host.call(json!({"cmd":"room_steps","args":{"room":"r","seq":seq}})).unwrap();

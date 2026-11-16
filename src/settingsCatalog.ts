@@ -54,6 +54,7 @@ const SCOPE_LABEL: Record<SettingsScope, string> = {
 
 // Full control coverage — every existing feature mapped to location + keywords
 export const CATALOG_ENTRIES: CatalogEntry[] = [
+  { id: 'apex-code-mode', section: 'general', label: 'Apex Code Mode', keywords: ['batch','tools','context','auto','off','claude','codex'], scope: 'host', scopeLabel: LOCAL_HOST_NAME, anchorId: 'apex-code-mode' },
   // Appearance - full coverage from mockup README
   { id: 'mode', section: 'appearance', label: 'Appearance mode - Light, Dark, System', keywords: ['dark','light','theme','mode','system','appearance'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'mode' },
   { id: 'skin', section: 'appearance', label: 'Current preset', keywords: ['skin','preset','theme','classic','gallery'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'skin' },
