@@ -2,6 +2,7 @@
 //! drive it; neither owns any logic of its own.
 
 mod authority_file;
+mod authority_reads;
 mod computer;
 pub mod cursor_overlay;
 mod journal;

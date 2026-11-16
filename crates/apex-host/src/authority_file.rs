@@ -171,19 +171,22 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(target_os = "linux")]
     if plain(path) { return plain_read(path); }
     let (folder, name) = scope(path)?;
-    let doc = apex_provenance::io::document(&folder, &name, None).map_err(error)?;
-    REVISIONS
-        .get_or_init(Default::default)
-        .lock()
-        .map_err(|_| error("Ledger lock poisoned".into()))?
-        .insert(folder.join(name), doc.revision);
-    if doc.value.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "No protected ledger exists. Legacy user JSON has not been certified.",
-        ));
-    }
-    serde_json::to_vec(&doc.value).map_err(|e| error(e.to_string()))
+    let gate = crate::authority_reads::for_document(&folder.join(&name))?;
+    gate.read(|| {
+        let doc = apex_provenance::io::document(&folder, &name, None).map_err(error)?;
+        REVISIONS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| error("Ledger lock poisoned".into()))?
+            .insert(folder.join(name), doc.revision);
+        if doc.value.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No protected ledger exists. Legacy user JSON has not been certified.",
+            ));
+        }
+        serde_json::to_vec(&doc.value).map_err(|e| error(e.to_string()))
+    })
 }
 #[cfg(not(test))]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -194,6 +197,8 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     if plain(path) { return plain_write(path, bytes); }
     let (folder, name) = scope(path)?;
+    let gate = crate::authority_reads::for_document(&folder.join(&name))?;
+    let _exclusive = gate.write()?;
     // Protected host ownership holds stable root-owned kernel locks across the
     // host lifetime. The broker also rejects writes from a stale revision.
     let mut revisions = REVISIONS
