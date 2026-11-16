@@ -409,6 +409,18 @@ mod tests {
     }
     #[test]
     fn readonly_descriptors_conflict_and_are_close_on_exec() {
+        // Parallel tests spawn subprocesses. Between fork and exec those
+        // children can briefly hold our lock even when FD_CLOEXEC is set.
+        const CHILD: &str = "APEX_UNIT_TEST_READONLY_LOCK";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "ownership::tests::readonly_descriptors_conflict_and_are_close_on_exec"])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let fixture = Fixture::new();
         let first = fixture.prepare(fixture.data.to_str().unwrap()).unwrap();
         let second = fixture.prepare(fixture.data.to_str().unwrap()).unwrap();
