@@ -17,7 +17,7 @@
 3. Each continued turn sends only the messages added since that bot last spoke, in the same `[Name]: text` format the full prompt uses.
 4. A program closes after 20 minutes without a turn (Claude programs with a known cache lifetime: when that cache expires, Task 9), when its settings change, when its room/bot is removed, on Stop, on the silence timeout, and when Deck quits.
 5. Claude and Codex ship in the same build. No Claude-first release.
-6. Claude bots stop writing session files (`--no-session-persistence`), on both the live and one-shot paths. Codex threads stay ephemeral, so Codex writes none either.
+6. Dropped 2026-11-16 by the Human. Claude bots keep writing session files (one per bot per room with live sessions, instead of one per turn). Codex threads stay ephemeral. Task 4 is removed from this build.
 7. Venice, Muse, Antigravity/Gemini, Grok and custom-command bots are unchanged (one program per turn).
 8. Deleting the old Claude session files (2,137 on 2026-10-14, 2,722 on 2026-11-08) is a separate manual step that needs the Human's explicit OK (Task 8).
 9. Long idle threads (Task 9): Claude programs stay open for their whole cache lifetime. Then, behind a setting that ships off, each long idle Claude bot's session is compacted with Claude's own `/compact` in a fork just before its cache expires, and the fork is used only after that. Deck's room and transcript never change; typed `/compact` and `/curate` stay manual tools. The default is decided from measured costs after a recall check. Added 2026-11-08 at the Human's request: returning to long idle threads is a main use case.
@@ -111,6 +111,8 @@ One rule covers all of them: **the live program is a cache of Deck's transcript.
 
 ## Open question for the Human before building: Decision 6
 
+**Resolved 2026-11-16: dropped. Task 4 removed.** The text below is kept as the reasoning behind that call.
+
 Decision 6 (`--no-session-persistence`) turns off the Claude session files. Since 2026-10-16 we know those files are the only full record of a bot's steps (Deck keeps only the last 4 and saves none), and they are what this measurement was read from. The cost saving does not depend on Decision 6. **Recommendation: drop Decision 6 and Task 4 from this build**, keep the files until Deck saves steps itself, and keep the old-file cleanup (Task 8 Step 5) on hold. The live program still writes one session file per bot per room instead of one per turn, so the pile grows far more slowly. **Task 9's idle compaction also needs these files:** it forks the bot's saved session, so Task 9 Steps 5–9 can't be built if Decision 6 stays. (Deck-started session files in this project: 2,722 on 2026-11-08, up from 2,137 on 2026-10-14.)
 
 ---
@@ -123,7 +125,6 @@ Decision 6 (`--no-session-persistence`) turns off the Claude session files. Sinc
 | `crates/apex-core/src/view.rs` | Modify | `render_conversation`, `render_follow_up`; `render_prompt` uses them. |
 | `crates/apex-core/src/room.rs` | Modify | Move the MCP-request section into `notes`; mark next-steps and compaction requests `one_shot`. |
 | `crates/apex-adapters/src/live_session.rs` | Create | Pure pieces: `SessionKey`, `Sent`, `continuation()`, the global pool (cap + idle), kill switch. |
-| `crates/apex-adapters/src/presets.rs` | Modify | `--no-session-persistence` for Claude. |
 | `crates/apex-adapters/src/claude_session.rs` | Modify | Turn loop that leaves the program open; `ClaudeLive`. |
 | `crates/apex-adapters/src/codex_server.rs` | Modify | Setup split from turn; request-id counter; `CodexLive`. |
 | `crates/apex-adapters/src/events.rs` | Modify | Codex usage measured from a per-turn baseline. |
@@ -151,7 +152,7 @@ mkdir -p /tmp/live-probe && cd /tmp/live-probe
   sleep 25
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"What word did I ask you to remember?"}}'
   sleep 25; } | claude -p --input-format stream-json --output-format stream-json --verbose \
-    --permission-prompt-tool stdio --permission-mode default --no-session-persistence --model haiku > claude.jsonl
+    --permission-prompt-tool stdio --permission-mode default --model haiku > claude.jsonl
 grep -c '"type":"result"' claude.jsonl          # expect 2
 grep '"type":"result"' claude.jsonl | tail -1   # expect PINEAPPLE in "result"
 grep -c '"subtype":"init"' claude.jsonl         # 1 or 2? record it
@@ -159,14 +160,16 @@ grep -c '"subtype":"init"' claude.jsonl         # 1 or 2? record it
 
 Record: two `result` events (yes/no); whether `system/init` repeats per turn; whether `total_cost_usd` and `usage` in the second `result` are per-turn or cumulative (compare to the first).
 
-- [ ] **Step 2: Claude writes no session file with the flag**
+- [ ] **Step 2: one two-turn process writes exactly one session file** (revised 2026-11-16, Decision 6 dropped)
 
 ```bash
-before=$(find ~/.claude/projects -name '*.jsonl' -newer /tmp/live-probe/claude.jsonl | wc -l)
-echo '{"type":"user","message":{"role":"user","content":"Say hi"}}' | claude -p --input-format stream-json --output-format stream-json --verbose --no-session-persistence --model haiku >/dev/null
-after=$(find ~/.claude/projects -name '*.jsonl' -newer /tmp/live-probe/claude.jsonl | wc -l)
-echo "$before -> $after"   # expect no change
+touch /tmp/live-probe/marker; sleep 1
+# run Step 1 again (or count against a marker made before Step 1)
+find ~/.claude/projects -name '*.jsonl' -newer /tmp/live-probe/marker   # expect exactly one file
+grep -c '"type":"user"' <that file>                                        # expect both turns in it
 ```
+
+Task 9's fork reads this file, so this is the fact it needs.
 
 - [ ] **Step 3: Claude interrupt and idle output**
 
@@ -569,7 +572,9 @@ git commit -m "feat: live-session continuation and pool logic"
 
 ---
 
-### Task 4: Claude bots stop saving session files
+### Task 4: Claude bots stop saving session files (removed 2026-11-16; Decision 6 dropped)
+
+Not built. Kept for history so Tasks 5–9 keep their numbers.
 
 **Files:**
 - Modify: `crates/apex-adapters/src/presets.rs:150-190`
