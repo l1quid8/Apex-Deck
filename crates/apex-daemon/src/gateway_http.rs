@@ -1109,6 +1109,7 @@ async fn handle_chat_completions(
         unseen: Vec::new(),
         plan: false,
         cwd: None,
+        ..Default::default()
     };
 
     let completion_id = format!("chatcmpl-{}", identity::random_hex(12));
@@ -1515,12 +1516,21 @@ done
         assert!(!requests.contains("thread/start"), "must reject before creating a model session");
         assert!(!requests.contains("turn/start"), "must never send the client's prompt");
         assert_eq!(keys.list()[0].turns_today, 0, "refused turns must be refunded");
-        for family in ["gemini", "grok", "muse"] {
+        for (family, tool) in [("gemini", AgentTool::Gemini), ("grok", AgentTool::Grok), ("muse", AgentTool::Muse)] {
             let body = json!({"model":format!("{family}/default"), "messages":[{
                 "role":"user", "content":"Use x_mcp and hl_mcp"
             }]}).to_string();
             let (status, response) = raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body)).await;
-            assert_eq!(status, if cfg!(target_os = "macos") { 502 } else { 409 }, "{family}: {response}");
+            // With a usable sandbox the gateway reaches CLI lookup. The
+            // fixture provides only Codex. Without isolation it rejects earlier.
+            let error: Value = serde_json::from_str(&response).unwrap();
+            if let Some(reason) = gateway_isolation_error(&agent(tool)) {
+                assert_eq!(status, 409, "{family}: {response}");
+                assert_eq!(error["error"]["message"], reason, "{family}: {response}");
+            } else {
+                assert_eq!(status, 502, "{family}: {response}");
+                assert_eq!(error["error"]["type"], "upstream_error", "{family}: {response}");
+            }
         }
         server.abort();
         let _ = server.await;

@@ -74,6 +74,7 @@ async fn live_code_mode_off_on_timing() {
                     unseen: vec![],
                     plan: false,
                     cwd: None,
+                    ..Default::default()
                 },
                 &|p| match p {
                     Progress::Work(step) => steps

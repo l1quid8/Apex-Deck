@@ -108,6 +108,7 @@ async fn selected_api_model_receives_filtered_batch_results() {
         unseen: vec![],
         plan: false,
         cwd: None,
+        ..Default::default()
     };
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(30),

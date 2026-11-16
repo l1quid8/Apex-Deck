@@ -216,68 +216,29 @@ mod tests {
         Tmp(p)
     }
 
-    #[test]
-    fn source_scan_no_raw_git_spawn_outside_wrapper() {
-        // Strict: every file that spawns git or project code must go through project_process wrapper.
-        // Catches: Command::new("git"), Command::new("sh"), Command::new("cmd"),
-        // tokio::process::Command::new("git/sh/cmd") and raw project spawns like
-        // Command::new(&check.argv[0]) used for runner checks.
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-        let exempt = ["project_process.rs", "folder_trust.rs"];
-        let mut raw_git = Vec::new();
-        let mut raw_sh = Vec::new();
-        let mut raw_check = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if exempt.contains(&name) { continue; }
-                if name == "personal" { continue; }
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.contains("Command::new(\"git\")") || (name != "checkpoints.rs" && content.contains("project_process::isolated_git_command(")) {
-                        raw_git.push(name.to_string());
-                    }
-                    // Direct sh/cmd spawn that runs project code outside wrapper
-                    // Exempt git_changes.rs Windows junction helper (cmd mklink /J) — not project code
-                    if name != "git_changes.rs" && (content.contains("Command::new(\"sh\")") || content.contains("Command::new(\"cmd\")")) {
-                        raw_sh.push(name.to_string());
-                    }
-                    // tokio::process::Command::new(&check.argv[0]) pattern for runner checks
-                    if content.contains("tokio::process::Command::new(&check.argv") {
-                        raw_check.push(name.to_string());
-                    }
-                }
-            }
-        }
-        // Check subdirs too (runner/checks.rs lives in runner/)
-        let subdirs = ["runner", "assistant_delegation", "personal_worker"];
-        for sub in subdirs {
-            let sub_root = root.join(sub);
-            if let Ok(entries) = std::fs::read_dir(&sub_root) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
-                    let name = format!("{}/{}", sub, path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if content.contains("Command::new(\"git\")") {
-                            raw_git.push(name.clone());
-                        }
-                        if content.contains("tokio::process::Command::new(&check.argv") {
-                            raw_check.push(name.clone());
-                        }
-                        // Also check for generic tokio::process::Command::new that still has current_dir on project
-                        // but bypasses project_process: look for pattern in checks.rs
-                        if name.contains("checks.rs") && content.contains("tokio::process::Command::new(") && !content.contains("project_process::tokio_command_in") {
-                            raw_check.push(name.clone());
-                        }
-                    }
-                }
-            }
-        }
-        assert!(raw_git.is_empty(), "raw Command::new(\"git\") still present in: {raw_git:?} - migrate to project_process::git_command()");
-        assert!(raw_sh.is_empty(), "raw Command::new(\"sh\"/\"cmd\") still present in: {raw_sh:?} - migrate to project_process::tokio_command_in");
-        assert!(raw_check.is_empty(), "raw runner check spawn still present in: {raw_check:?} - migrate to project_process");
+    #[tokio::test]
+    async fn project_operations_propagate_unreadable_trust_before_launch() {
+        let t = tmp();
+        let data = t.0.join("data");
+        let project = t.0.join("project");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(data.join("folder-trust.json"), "invalid").unwrap();
+
+        let expected = check_project(&data, &project).unwrap_err();
+        assert_eq!(crate::git_changes::status(&data, &project).unwrap_err(), expected);
+
+        let shell = crate::project_check::run_check(&data, &project, "echo ok").await;
+        assert_eq!(shell, crate::project_check::CheckResult::Fail { output_tail: expected.clone() });
+
+        let check = crate::runner::checks::ConfiguredCheck {
+            id: "verify".into(), argv: vec!["missing-check-program".into()], timeout_ms: None,
+        };
+        let process_dir = data.join("processes");
+        let error = crate::runner::checks::prepare_check(&data, &check, &project, &process_dir)
+            .err().expect("runner must consult folder trust before spawning");
+        assert_eq!(error, expected);
+        assert!(!process_dir.exists());
     }
 
     #[test]

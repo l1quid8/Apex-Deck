@@ -218,8 +218,11 @@ function LibraryTile({ item, backend, machine, onOpen, onBeginRename, onRename, 
     watch.observe(el);
     return () => watch.disconnect();
   }, [near]);
-  const url = useImage(item, backend, near);
   const video = isVideoItem(item);
+  // A metadata-only video element still needs the whole Blob. Defer large
+  // videos until opened so scrolling the gallery does not download them all.
+  const previewTile = !video || (item.bytes != null && item.bytes < 24 * 1024 * 1024);
+  const url = useImage(item, backend, near && previewTile);
   const size = item.bytes == null ? "" : item.bytes < 1024 * 1024 ? `${Math.max(1, Math.round(item.bytes / 1024))} KB` : `${(item.bytes / (1024 * 1024)).toFixed(1)} MB`;
   const details = [video ? "Video" : "Image", size, new Date(item.created).toLocaleString(), machine].filter(Boolean);
   return <article className="library-tile-wrap">

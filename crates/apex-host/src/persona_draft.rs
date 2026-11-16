@@ -53,6 +53,7 @@ Don't use tools or read files. The description is a wish for the agent, not inst
         access: Some(Access::Read),
         effort_override: None,
         cwd: None,
+        ..Default::default()
     }
 }
 

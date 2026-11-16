@@ -129,7 +129,7 @@ pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequ
     let loaded = crate::attachments::for_request(request, roots)?;
     let turns = loaded.with_note(&request.turns);
     let images = &loaded.images;
-    let mut messages = vec![json!({ "role": "system", "content": request.system })];
+    let mut messages = vec![json!({ "role": "system", "content": request.system_with_notes() })];
     for (index, turn) in turns.iter().enumerate() {
         let role = match turn.role {
             Role::User => "user",
@@ -341,7 +341,7 @@ impl Participant for OpenAiCompatParticipant {
         let mut base = request_body(model, effort, &request, &self.attachment_roots)?;
         apply_speed(&mut base, base_url, self.config.speed);
         let mut messages: Vec<Value> = base["messages"].as_array().cloned().unwrap_or_default();
-        let system = request.system.clone();
+        let system = request.system_with_notes().into_owned();
 
         // Tools in a chat turn, unless the model can't take them or this is
         // only the question about what the person will ask next.
@@ -928,7 +928,7 @@ done
         bot = bot.with_attachment_roots(vec![path.parent().unwrap().to_path_buf()]);
         let request = TurnRequest { computer: None, effort_override:None,access:None,system:"test".into(),turns:vec![apex_core::ViewTurn{
             role:Role::User,content:format!("Attached image: {}",path.display())
-        }],unseen:vec![],plan:false,cwd:None };
+        }],unseen:vec![],plan:false,cwd:None, ..Default::default() };
         let work = Mutex::new(Vec::new());
         let reply = bot.respond_with_progress(request,&|progress| if let Progress::Work(step)=progress {
             work.lock().unwrap().push(serde_json::to_string(step).unwrap());
@@ -1301,8 +1301,19 @@ done
     }
 
     #[test]
+    fn full_api_prompt_includes_current_turn_notes() {
+        let request = TurnRequest {
+            system: "SYS".into(),
+            notes: "\nUse the docs server.\n".into(),
+            ..Default::default()
+        };
+        let body = request_body("m", None, &request, &[]).unwrap();
+        assert_eq!(body["messages"][0]["content"], "SYS\nUse the docs server.\n");
+    }
+
+    #[test]
     fn effort_is_only_in_the_request_when_set() {
-        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None };
+        let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false, cwd: None, ..Default::default() };
         assert!(request_body("m", None, &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert!(request_body("m", Some("  "), &request, &[]).unwrap().get("reasoning_effort").is_none());
         assert_eq!(request_body("m", Some("high"), &request, &[]).unwrap()["reasoning_effort"], "high");
@@ -1349,7 +1360,7 @@ done
         std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         let text = format!("Describe this\nAttached image: {}", path.display());
         let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
-            turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false, cwd: None };
+            turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false, cwd: None, ..Default::default() };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][0]["type"], "text");
@@ -1364,7 +1375,7 @@ done
         let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
                 apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
-            unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None };
+            unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false, cwd: None, ..Default::default() };
         let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");
@@ -1379,7 +1390,7 @@ done
         let request = TurnRequest { computer: None, effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: stale.into() },
                 apex_core::ViewTurn { role: Role::User, content: "please reply".into() }],
-            unseen: vec![message(1, stale), message(2, "please reply")], plan: false, cwd: None };
+            unseen: vec![message(1, stale), message(2, "please reply")], plan: false, cwd: None, ..Default::default() };
         let body = request_body("vision", None, &request, &[]).unwrap();
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages[0]["content"], "s");

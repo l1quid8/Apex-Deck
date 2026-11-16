@@ -20,6 +20,51 @@ use std::{
 #[cfg(not(test))]
 static REVISIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
 
+pub(crate) type Migration = fn(&[u8]) -> serde_json::Result<Vec<u8>>;
+
+#[derive(serde::Deserialize)]
+struct DocumentHeader {
+    #[serde(default)]
+    version: u32,
+}
+
+/// Protected JSON documents keep their existing top-level fields. Each migration
+/// maps one stored version to the next. A missing version denotes version zero.
+/// Reads migrate in memory so an inspection never rewrites the ledger. The
+/// owning store persists the current schema with its next successful mutation.
+pub(crate) trait VersionedDocument: serde::Serialize + serde::de::DeserializeOwned {
+    const FIRST_VERSION: u32 = 1;
+    const MIGRATIONS: &'static [Migration] = &[];
+    const PRETTY: bool = false;
+
+    fn read_from(path: &Path) -> io::Result<Self> {
+        let mut bytes = read(path)?;
+        let mut version = serde_json::from_slice::<DocumentHeader>(&bytes)?.version;
+        let migrations = version.checked_sub(Self::FIRST_VERSION)
+            .and_then(|index| Self::MIGRATIONS.get(index as usize..))
+            .ok_or_else(|| io::Error::new(
+                io::ErrorKind::InvalidData, format!("Unsupported document version {version}"),
+            ))?;
+        for migrate in migrations {
+            bytes = migrate(&bytes)?;
+            version += 1;
+            if serde_json::from_slice::<DocumentHeader>(&bytes)?.version != version {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid document migration"));
+            }
+        }
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    fn write_to(&self, path: &Path) -> io::Result<()> {
+        let bytes = if Self::PRETTY {
+            serde_json::to_vec_pretty(self)?
+        } else {
+            serde_json::to_vec(self)?
+        };
+        write(path, &bytes)
+    }
+}
+
 /// Where the local fixture keeps a protected document. Production keeps it in
 /// the root broker, never at the user-owned path, and legacy user JSON stays at
 /// that path untouched. The fixture models the same separation so tests can

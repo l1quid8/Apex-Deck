@@ -6,6 +6,7 @@
 mod conversation_progress;
 pub use conversation_progress::{TaskConversationProgress, TaskConversationEvent};
 
+use crate::authority_file::VersionedDocument;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -334,6 +335,10 @@ struct Document {
     legacy_import: Option<crate::legacy_import::LedgerImport>,
 }
 
+impl VersionedDocument for Document {
+    const PRETTY: bool = true;
+}
+
 struct Inner {
     path: PathBuf,
     document: Mutex<Document>,
@@ -348,13 +353,8 @@ pub struct AssistantTasks {
 impl AssistantTasks {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskError> {
         let path = path.as_ref().to_path_buf();
-        let document = match crate::authority_file::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<Document>(&bytes).map_err(|e| {
-                TaskError::new(
-                    TaskErrorKind::Storage,
-                    format!("Could not read assistant tasks: {e}"),
-                )
-            })?,
+        let document = match Document::read_from(&path) {
+            Ok(document) => document,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Document {
                 version: 1,
                 ..Document::default()
@@ -366,12 +366,7 @@ impl AssistantTasks {
                 ));
             }
         };
-        if document.version != 1 {
-            return Err(TaskError::new(
-                TaskErrorKind::Storage,
-                "Unsupported assistant task document version.",
-            ));
-        }
+
         let store = Self {
             inner: std::sync::Arc::new(Inner {
                 path,
@@ -1737,13 +1732,8 @@ fn save_mutation(
 }
 
 fn write_document(path: &Path, document: &Document) -> Result<(), TaskError> {
-    let bytes = serde_json::to_vec_pretty(document).map_err(|e| {
-        TaskError::new(
-            TaskErrorKind::Storage,
-            format!("Could not encode assistant tasks: {e}"),
-        )
-    })?;
-    crate::authority_file::write(path,&bytes).map_err(|e|TaskError::new(TaskErrorKind::Storage,format!("Could not save protected assistant tasks: {e}")))
+    document.write_to(path)
+        .map_err(|e| TaskError::new(TaskErrorKind::Storage, format!("Could not save protected assistant tasks: {e}")))
 }
 
 fn ensure_purge_settled(task: &AssistantTask) -> Result<(), TaskError> {

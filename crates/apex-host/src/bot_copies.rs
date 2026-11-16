@@ -2521,7 +2521,7 @@ mod tests {
         assert_eq!(copy.root, fs::canonicalize(&root).unwrap(), "the copy is of the whole project");
         assert_eq!(dir, copy.work.join("crates").join("app"), "the agent starts in the thread's folder");
         assert_eq!(
-            copy.work,
+            fs::canonicalize(&copy.work).unwrap(),
             fs::canonicalize(&root).unwrap().parent().unwrap().join("repo-worktrees").join("agent-bot1-thread-sub"),
             "the copy sits beside the user's worktrees"
         );

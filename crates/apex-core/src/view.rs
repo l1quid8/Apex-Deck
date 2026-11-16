@@ -385,17 +385,35 @@ pub fn render_view_hiding(
 /// Flatten a system prompt and a view into one block of text, for backends
 /// that take a single prompt (command-line tools).
 pub fn render_prompt(system: &str, turns: &[ViewTurn]) -> String {
-    let mut out = String::new();
-    out.push_str(system.trim_end());
+    let mut out = String::from(system.trim_end());
     out.push_str("\n\n--- Conversation so far ---\n");
+    append_conversation(&mut out, turns);
+    out.push_str("--- Your reply ---\n");
+    out
+}
+
+/// Render just the speaker-labelled history, with a blank line after each turn.
+pub fn render_conversation(turns: &[ViewTurn]) -> String {
+    let mut out = String::new();
+    append_conversation(&mut out, turns);
+    out
+}
+
+fn append_conversation(out: &mut String, turns: &[ViewTurn]) {
     for turn in turns {
-        match turn.role {
-            Role::User => out.push_str(&turn.content),
-            Role::Assistant => {
-                out.push_str("[You]: ");
-                out.push_str(&turn.content);
-            }
+        if turn.role == Role::Assistant {
+            out.push_str("[You]: ");
         }
+        out.push_str(&turn.content);
+        out.push_str("\n\n");
+    }
+}
+
+/// Render the new history and current turn's instructions for a continuing session.
+pub fn render_follow_up(new: &str, notes: &str) -> String {
+    let mut out = format!("--- New in the conversation since your last reply ---\n{new}");
+    if !notes.trim().is_empty() {
+        out.push_str(notes.trim());
         out.push_str("\n\n");
     }
     out.push_str("--- Your reply ---\n");
@@ -406,6 +424,19 @@ pub fn render_prompt(system: &str, turns: &[ViewTurn]) -> String {
 mod tests {
     use super::*;
     use crate::types::Backend;
+
+    #[test]
+    fn full_and_follow_up_prompts_preserve_speaker_labels_and_turn_boundaries() {
+        let turns = [
+            ViewTurn { role: Role::User, content: "[User]: hello".into() },
+            ViewTurn { role: Role::Assistant, content: "hi".into() },
+        ];
+        assert_eq!(render_conversation(&turns), "[User]: hello\n\n[You]: hi\n\n");
+        assert_eq!(render_prompt("SYS\n", &turns), "SYS\n\n--- Conversation so far ---\n[User]: hello\n\n[You]: hi\n\n--- Your reply ---\n");
+        let new = "[User]: next\n\n";
+        assert_eq!(render_follow_up(new, "\n"), "--- New in the conversation since your last reply ---\n[User]: next\n\n--- Your reply ---\n");
+        assert_eq!(render_follow_up(new, "\nUse docs.\n"), "--- New in the conversation since your last reply ---\n[User]: next\n\nUse docs.\n\n--- Your reply ---\n");
+    }
 
     #[test]
     fn capability_accepts_only_an_exact_reviewed_policy_and_runtime_tuple() {

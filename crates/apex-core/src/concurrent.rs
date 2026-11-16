@@ -882,6 +882,8 @@ impl ConcurrentRoom {
                 if current {
                     room.record_usage(&ticket.id, first, sink);
                     drop(room);
+                    // The private continuation is never saved in the room transcript.
+                    retry.room_reply = false;
                     retry.turns.push(crate::ViewTurn { role: crate::Role::Assistant, content: first.text.clone() });
                     retry.turns.push(crate::ViewTurn { role: crate::Role::User, content: format!(
                         "[Apex continuation] Carry out only the already requested step ({step}) using the original request's exact arguments and restrictions. Report the result or the blocker. Do not repeat completed work."

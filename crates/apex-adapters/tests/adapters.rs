@@ -35,6 +35,7 @@ fn request(text: &str) -> TurnRequest {
         unseen: vec![],
         plan: false,
         cwd: None,
+        ..Default::default()
     }
 }
 
@@ -74,8 +75,10 @@ async fn cli_reply_is_the_programs_output_and_is_streamed() {
 #[tokio::test]
 async fn cli_receives_the_system_prompt_and_conversation_on_stdin() {
     let bot = CliParticipant::new(config("cli", sh("cat")));
-    let (result, _) = ask(&bot, "what is 2+2?").await;
-    let echoed = result.unwrap().text;
+    let mut turn = request("what is 2+2?");
+    turn.notes = "\nUse the docs server.\n".into();
+    let echoed = bot.respond(turn, &|_| {}).await.unwrap().text;
+    assert!(echoed.contains("Use the docs server."));
     assert!(echoed.starts_with("You are a test bot."));
     assert!(echoed.contains("[User]: what is 2+2?"));
     assert!(echoed.ends_with("--- Your reply ---"));
@@ -1152,6 +1155,7 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
                 unseen: vec![],
                 plan: false,
                 cwd: None,
+                ..Default::default()
             },
             &|piece| streamed.lock().unwrap().push_str(piece),
         )
@@ -2866,6 +2870,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}'
         effort_override: None,
         plan: false,
         cwd: None,
+        ..Default::default()
     };
     let res_nodir = bot_nodir.respond(req_nodir, &|_| {}).await;
     assert_eq!(res_nodir.unwrap().text, "ok");

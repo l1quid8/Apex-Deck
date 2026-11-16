@@ -92,6 +92,26 @@ test('attachments travel as base64 over the daemon', async () => {
   assert.deepEqual(calls, [['save_attachment', { room: 't', name: 'a.bin', data: 'AQID' }], ['read_attachment', { path: '/att/a.bin' }]]);
 });
 
+test('paged attachment reads advance by decoded bytes and reject a changed or truncated file', async () => {
+  const offsets = [];
+  let last = { data: 'AwQ=', total: 4 };
+  const transport = daemonTransport({
+    hasCapability: (capability) => capability === 'attachment_chunks_v1',
+    call: async (cmd, { offset }) => {
+      assert.equal(cmd, 'read_attachment');
+      offsets.push(offset);
+      return offset === 0 ? { data: 'AQI=', total: 4 } : last;
+    },
+    on: () => () => {},
+  });
+  assert.deepEqual(new Uint8Array(await transport.readAttachment('/movie')), new Uint8Array([1, 2, 3, 4]));
+  assert.deepEqual(offsets, [0, 2]);
+  last = { data: '', total: 4 };
+  await assert.rejects(transport.readAttachment('/movie'), /changed during read/);
+  last = { data: 'Aw==', total: 3 };
+  await assert.rejects(transport.readAttachment('/movie'), /changed during read/);
+});
+
 test('isolated requests require the isolation capability before sending work', async () => {
   const calls = [];
   const available = new Set(['assistant_delegation']);

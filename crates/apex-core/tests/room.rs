@@ -471,6 +471,7 @@ fn compacting_shows_the_models_a_summary_instead_of_the_older_messages() {
     assert!(events.contains(&RoomEvent::Compacted { id: ParticipantId::new("opus"), summary: "Chose sqlite.".into(), upto: 2 }));
     // The summarizer is shown every message, labelled, and then the ask.
     let asked = &writer.requests()[0];
+    assert!(!asked.room_reply);
     assert!(asked.turns[0].content.contains("[User]: which database?"));
     assert!(asked.turns[0].content.contains("[opus]: sqlite it is"));
     assert!(asked.turns.last().unwrap().content.contains("summary"));
@@ -807,14 +808,17 @@ fn server_requests_reach_prompt_and_survive_fork_and_restore() {
     let null = bot("null", &["ok", "ok"]);
     let mut chat = room(&[&null], TurnPolicy::Mention, 0);
     say(&mut chat, "@null !x-mcp read posts");
-    assert!(null.requests()[0].system.contains("The user asked you to use these MCP servers, apps, or installed plugins: x-mcp."));
+    assert!(null.requests()[0].room_reply);
+    assert!(null.requests()[0].notes.contains("x-mcp"));
+    assert!(!null.requests()[0].system.contains("The user asked"));
+    assert!(null.requests()[0].system_with_notes().contains("The user asked you to use these MCP servers, apps, or installed plugins: x-mcp."));
     assert_eq!(chat.transcript()[0].servers, vec!["x-mcp"]);
     let snapshot = chat.snapshot().fork(1);
     let json = serde_json::to_string(&snapshot).unwrap();
     let restored = Room::restore(vec![null.clone()], serde_json::from_str(&json).unwrap());
     assert_eq!(restored.transcript()[0].servers, vec!["x-mcp"]);
     say(&mut chat, "wow! good work");
-    assert!(!null.requests()[1].system.contains("The user asked you to use these MCP servers, apps, or installed plugins:"));
+    assert!(!null.requests()[1].system_with_notes().contains("The user asked you to use these MCP servers, apps, or installed plugins:"));
 }
 
 #[test]

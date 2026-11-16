@@ -292,6 +292,7 @@ fn curate_hides_picks_without_streaming_or_mutating_the_transcript() {
         .iter()
         .any(|e| matches!(e, RoomEvent::ParticipantIdle { .. })));
     let req = &writer.requests()[0];
+    assert!(!req.room_reply);
     assert_eq!(req.access, Some(Access::Read));
     assert!(!req.plan);
     assert!(req.cwd.is_none());

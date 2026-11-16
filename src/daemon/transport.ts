@@ -45,6 +45,22 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
     listen: async (event, cb) => client.on(event, cb),
     saveAttachment: (room, name, bytes) => client.call<string>("save_attachment", { room, name, data: toBase64(bytes) }),
     readAttachment: async (path) => {
+      if (client.hasCapability?.("attachment_chunks_v1")) {
+        let offset = 0;
+        let output: Uint8Array<ArrayBuffer> | undefined;
+        do {
+          const page = await client.call<{ data: string; total: number }>("read_attachment", { path, offset });
+          if (!Number.isSafeInteger(page.total) || page.total < 0 || page.total > 200 * 1024 * 1024)
+            throw new Error("Invalid attachment length.");
+          output ??= new Uint8Array(page.total);
+          const bytes = fromBase64(page.data);
+          if (page.total !== output.length || bytes.length > output.length - offset || (!bytes.length && offset < output.length))
+            throw new Error("Attachment changed during read.");
+          output.set(bytes, offset);
+          offset += bytes.length;
+        } while (offset < output.length);
+        return output.buffer;
+      }
       const bytes = fromBase64(await client.call<string>("read_attachment", { path }));
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     },

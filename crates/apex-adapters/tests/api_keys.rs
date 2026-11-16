@@ -52,6 +52,7 @@ fn request(text: &str) -> TurnRequest {
         unseen: vec![],
         plan: false,
         cwd: None,
+        ..Default::default()
     }
 }
 

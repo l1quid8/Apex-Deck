@@ -69,6 +69,7 @@ fn request(turns: Vec<ViewTurn>) -> TurnRequest {
         unseen: vec![],
         plan: false,
         cwd: None,
+        ..Default::default()
     }
 }
 

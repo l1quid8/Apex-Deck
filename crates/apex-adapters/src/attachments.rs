@@ -272,7 +272,7 @@ mod tests {
         let path = fixture("outside.png", PNG);
         let request = TurnRequest { computer: None, system: String::new(), turns: vec![apex_core::ViewTurn {
             role: Role::User, content: format!("Attached image: {}", path.display())
-        }], unseen: vec![], effort_override: None, access: None, plan: false, cwd: None };
+        }], unseen: vec![], effort_override: None, access: None, plan: false, cwd: None, ..Default::default() };
         let result = for_request(&request, &[]);
         std::fs::remove_file(path).unwrap();
         assert!(result.is_err(), "transcript text alone must not authorize reading a file");
@@ -313,7 +313,7 @@ mod tests {
                 let request = TurnRequest { computer: None, system: String::new(), turns: vec![], unseen: vec![apex_core::Message { late_reply_from: None, origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
                     seq: 1, speaker: speaker.clone(), text: format!("Attached image: {}", folder.join("picture.png").display()),
                     servers: vec![], at: None,
-                }], effort_override: None, access: None, plan: false, cwd: None };
+                }], effort_override: None, access: None, plan: false, cwd: None, ..Default::default() };
                 assert_eq!(for_request(&request, &roots).is_ok(), folder == &own, "{speaker:?}: {}", folder.display());
             }
         }
@@ -324,7 +324,7 @@ mod tests {
             seq, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }
     }
     fn queue(messages: Vec<apex_core::Message>) -> TurnRequest {
-        TurnRequest { computer: None, system: String::new(), turns: vec![], unseen: messages, effort_override: None, access: None, plan: false, cwd: None }
+        TurnRequest { computer: None, system: String::new(), turns: vec![], unseen: messages, effort_override: None, access: None, plan: false, cwd: None, ..Default::default() }
     }
     #[test]
     fn an_older_unreadable_image_is_skipped_so_the_newest_message_still_gets_a_reply() {
@@ -610,6 +610,7 @@ mod tests {
             access: None,
             plan: false,
             cwd: None,
+            ..Default::default()
         };
         assert_eq!(for_request(&request, &[path.parent().unwrap().to_owned()]).unwrap().images.len(), 1);
         std::fs::remove_file(path).unwrap();

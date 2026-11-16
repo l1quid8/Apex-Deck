@@ -3402,17 +3402,35 @@ impl Host {
     /// The bytes of a saved attachment, so the chat can show pictures. Only
     /// files in the attachments folder and the Library are read.
     pub fn read_attachment(&self, path: String) -> Result<Vec<u8>, String> {
+        let (bytes, _) = self.read_attachment_range(&path, None)?;
+        Ok(bytes)
+    }
+
+    /// An offset selects a bounded page that fits even the paired-device frame limit.
+    pub(crate) fn read_attachment_range(&self, path: &str, offset: Option<u64>) -> Result<(Vec<u8>, u64), String> {
+        use std::io::{Read, Seek, SeekFrom};
+        const CHUNK_BYTES: u64 = 3 * 1024 * 1024;
+        const MAX_SHOWN: u64 = 200 * 1024 * 1024;
         let data = self.paths.data.canonicalize().map_err(|e| e.to_string())?;
-        let file = Path::new(&path).canonicalize().map_err(|e| format!("Could not read {path}: {e}"))?;
+        let file = Path::new(path).canonicalize().map_err(|e| format!("Could not read {path}: {e}"))?;
         if !file.starts_with(data.join("attachments")) && !file.starts_with(data.join("library")) {
             return Err(format!("{path} is not an attachment"));
         }
-        // Videos are larger than the 20 MB attachment limit, so reads allow 200 MB.
-        const MAX_SHOWN: u64 = 200 * 1024 * 1024;
-        if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > MAX_SHOWN {
+        let mut file = std::fs::File::open(file).map_err(|e| format!("Could not read {path}: {e}"))?;
+        let total = file.metadata().map_err(|e| e.to_string())?.len();
+        if total > MAX_SHOWN {
             return Err("too big to show".into());
         }
-        std::fs::read(&file).map_err(|e| format!("Could not read {path}: {e}"))
+        let len = if let Some(offset) = offset {
+            let remaining = total.checked_sub(offset).ok_or("Attachment changed during read")?;
+            file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+            remaining.min(CHUNK_BYTES)
+        } else {
+            total
+        };
+        let mut bytes = vec![0; len as usize];
+        file.read_exact(&mut bytes).map_err(|e| format!("Could not read {path}: {e}"))?;
+        Ok((bytes, total))
     }
 
     pub fn mod_read(&self, dir: String) -> Result<mods::ModSource, String> {
@@ -6565,6 +6583,7 @@ done
             unseen: vec![],
             plan: false,
             cwd: None,
+            ..Default::default()
         };
         let context = apex_adapters::BuildContext {
             watchdog_managed: false,
@@ -6854,13 +6873,25 @@ done
 
 
     #[test]
-    fn host_never_calls_apex_adapters_build_directly_for_room_participants() {
-        let source = include_str!("host.rs");
-        let code_only = source.split("#[cfg(test)]").next().unwrap_or(source);
-        assert!(
-            !code_only.contains("apex_adapters::build("),
-            "host.rs must build room participants through apex_adapters::participant_for_room"
-        );
+    fn chat_participant_refuses_workspace_access_when_a_turn_requests_it() {
+        let (host, runtime, data) = host("chat-participant-tools");
+        host.session_save(serde_json::json!({"version":1, "profiles":[{
+            "id":"bot", "display_name":"Bot", "access":"full",
+            "backend":{"kind":"agent", "tool":"claude_code", "model":"test"}
+        }]})).unwrap();
+        let chat = "aaaaaaaa-4444-4444-8444-aaaaaaaaaaaa";
+        let request = serde_json::from_value(serde_json::json!({"profile":"bot"})).unwrap();
+        host.chat_create(chat.into(), None, vec![request], RoomOptions::default()).unwrap();
+        let room = host.room(chat).unwrap();
+        let bot = runtime.block_on(async { room.lock().await.participant(&ParticipantId::new("bot")).unwrap() });
+        assert_eq!(bot.config().access, Access::Read);
+        let error = runtime.block_on(bot.respond(apex_core::TurnRequest {
+            access: Some(Access::Full), cwd: Some(data.join("nonexistent-workspace")), ..Default::default()
+        }, &|_| {})).unwrap_err();
+        assert!(error.to_string().contains("Text-only turns cannot request workspace access"), "{error}");
+        host.shutdown();
+        drop(host);
+        std::fs::remove_dir_all(data).unwrap();
     }
 }
 

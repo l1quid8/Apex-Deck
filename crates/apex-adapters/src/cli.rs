@@ -1079,7 +1079,7 @@ impl Participant for CliParticipant {
         }
         let program = program.as_str();
         let loaded = crate::attachments::for_request(&request, &self.attachment_roots)?;
-        let mut prompt = render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &loaded.with_note(&request.turns));
+        let mut prompt = render_prompt(&phone_env::with_hint(&request.system_with_notes(), self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &loaded.with_note(&request.turns));
         let images = loaded.images;
         let mut staged = None;
         if !images.is_empty() {
@@ -1242,7 +1242,7 @@ mod tests {
         use apex_core::Participant;
         use std::time::Duration;
         let config = || serde_json::from_value(serde_json::json!({"id":"quiet","display_name":"Quiet","backend":{"kind":"cli","program":"/bin/sh","args":["-c","sleep 0.25; printf recovered"]}})).unwrap();
-        let request = || apex_core::TurnRequest { computer:None, system:"test".into(), turns:vec![], unseen:vec![], access:None, effort_override:None, plan:false, cwd:None };
+        let request = || apex_core::TurnRequest { computer:None, system:"test".into(), turns:vec![], unseen:vec![], access:None, effort_override:None, plan:false, cwd:None, ..Default::default() };
         let ordinary = super::CliParticipant::new(config()).with_timeout(Duration::from_millis(50));
         assert!(ordinary.respond(request(), &|_| {}).await.unwrap_err().to_string().contains("without any output"));
         let delegated = super::CliParticipant::new(config()).with_context(&crate::BuildContext { watchdog_managed:true, ..Default::default() }).with_timeout(Duration::from_millis(50));
@@ -1260,7 +1260,7 @@ mod tests {
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"}})).unwrap();
         let mut bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:folder.dir.to_str().map(str::to_owned),..Default::default()}).with_tools_disabled();
         bot.isolation=Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&apex_core::Backend::Scripted{lines:vec![]}).unwrap()));
-        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None};
+        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None, ..Default::default() };
         let call=bot.respond(request,&|_|{});tokio::pin!(call);
         let mut owned=false;
         for _ in 0..100 {
@@ -1304,7 +1304,7 @@ exit 1
         use apex_core::Participant;
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"},"access":"full"})).unwrap();
         let bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:Some("/no-assistant-executables".into()),..Default::default()}).with_tools_disabled();
-        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
+        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None, ..Default::default() };
         let result=bot.respond(request,&|_|{}).await;
         assert!(matches!(result,Err(ref why) if why.to_string().contains("Text-only turns cannot")),"workspace escalation must refuse before launching any provider");
     }
