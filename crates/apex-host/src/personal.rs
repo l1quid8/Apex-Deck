@@ -60,7 +60,7 @@ pub struct PersonalDocument {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Counters {
     pub message: u64,
@@ -79,7 +79,7 @@ pub struct Counters {
 
 /// What kind of action something is. The assistant's rule for the class
 /// decides whether it runs, asks or is handed to the user.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolClass {
     #[default]
@@ -90,7 +90,7 @@ pub enum ToolClass {
 }
 
 /// Dot's four rule choices, from least to most careful.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionMode {
     /// Do it without asking.
@@ -103,7 +103,7 @@ pub enum ActionMode {
     HandOff,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionModes {
     pub read: ActionMode,
@@ -128,7 +128,7 @@ impl ActionModes {
 
 /// A standing rule ("show me drafts before sending"). Rules can only make
 /// the assistant more careful, never less.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StandingRule {
     pub id: String,
@@ -138,7 +138,7 @@ pub struct StandingRule {
     pub created_at: u64,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Budget {
     /// Most it may spend per day, in millionths of a dollar.
@@ -149,7 +149,7 @@ pub struct Budget {
     pub unknown_cost_ok: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Privacy {
     /// No cloud model and no network tools.
@@ -160,7 +160,7 @@ pub struct Privacy {
     pub allowed_endpoints: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QuietHours {
     /// "22:00" local time.
@@ -168,7 +168,7 @@ pub struct QuietHours {
     pub end: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Look {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,7 +185,7 @@ pub struct Look {
     pub shape: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum FactKind {
     Preference,
@@ -195,7 +195,7 @@ pub enum FactKind {
 }
 
 /// Something worth remembering across conversations, with where it came from.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Fact {
     pub id: String,
@@ -224,7 +224,7 @@ impl Fact {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FactSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,7 +233,7 @@ pub struct FactSource {
     pub task_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ScheduleStatus {
     /// Waiting for the user to confirm it.
@@ -243,7 +243,7 @@ pub enum ScheduleStatus {
 }
 
 /// A set-time job the user confirmed. Each firing makes one task.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Schedule {
     pub id: String,
@@ -270,7 +270,7 @@ pub struct Schedule {
 }
 
 /// Something the assistant brings to the user's attention.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Notice {
     pub id: String,
@@ -289,7 +289,7 @@ pub struct Notice {
     pub fingerprint: String,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CostSource {
     Reported,
@@ -298,7 +298,7 @@ pub enum CostSource {
 }
 
 /// One outbound call and what it cost, as far as anyone knows.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CostEntry {
     pub at: u64,
@@ -321,7 +321,7 @@ pub struct CostEntry {
 fn utc() -> String { "UTC".into() }
 fn default_context_budget() -> u64 { 24_000 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalAssistant {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,7 +397,7 @@ pub struct PersonalAssistant {
     pub pending_handoffs: Vec<crate::personal_handoff::PendingHandoff>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PushDevice {
     pub token: String,
@@ -406,7 +406,7 @@ pub struct PushDevice {
 
 /// A machine besides the host that may run this assistant's operations,
 /// only while it's connected. Nothing fails over to another machine.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineLink {
     pub host_id: String,
@@ -417,7 +417,7 @@ pub struct MachineLink {
 }
 
 /// Where a reply's outside words came from.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum OutsideSource {
     /// A reply that used the computer tools.
@@ -426,7 +426,7 @@ pub enum OutsideSource {
     Report,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalMessage {
     pub id: String,
@@ -451,7 +451,7 @@ pub struct PersonalMessage {
     pub legacy: Option<crate::legacy_import::LegacyMarker>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalViewContext {
     pub host_id: String,
@@ -463,7 +463,7 @@ pub struct PersonalViewContext {
     pub followed_thread_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum EventSource {
     /// Text the user typed in a client. The only source that can start a task.
@@ -481,7 +481,7 @@ pub enum EventSource {
     Internal { what: String },
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum EventState {
     Received,
@@ -492,14 +492,14 @@ pub enum EventState {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AnnouncementReceipt {
     pub task_id: String,
     pub message_id: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrozenDelegation {
     pub delegation_id: String,
@@ -518,7 +518,7 @@ pub struct FrozenDelegation {
     pub standing_allowed: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedPersonalReply {
     pub reply: String,
@@ -543,7 +543,7 @@ pub struct PreparedPersonalReply {
     pub delegated_request_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalEvent {
     pub id: String,
@@ -567,7 +567,7 @@ pub struct PersonalEvent {
     pub saved_reply: Option<PreparedPersonalReply>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskStatus {
     /// Waiting for the user: an approval or a question (`wait` says which).
@@ -590,7 +590,7 @@ impl TaskStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationSpec {
     pub tool: String,
@@ -603,7 +603,7 @@ pub struct OperationSpec {
     pub plan: Option<RunPlan>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -624,7 +624,7 @@ pub struct RunPlan {
 }
 
 /// When a repeating check is finished. Checked in code against each run.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StopCondition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -649,7 +649,7 @@ impl StopCondition {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum TaskWait {
     Timer { at: u64 },
@@ -657,7 +657,7 @@ pub enum TaskWait {
     Machine { host_id: String },
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskKind {
     #[default]
@@ -676,7 +676,7 @@ impl OperationSpec {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DecisionKind {
     /// Run this exact operation?
@@ -691,7 +691,7 @@ pub enum DecisionKind {
     Schedule,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DecisionStatus {
     Open,
@@ -700,7 +700,7 @@ pub enum DecisionStatus {
     Superseded,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingDecision {
     pub id: String,
@@ -715,7 +715,7 @@ pub struct PendingDecision {
     pub decided_by_event: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum OpPhase {
     /// Saved just before the operation ran. Left alone, it means "may have happened".
@@ -726,7 +726,7 @@ pub enum OpPhase {
     Uncertain,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationReceipt {
     pub op_id: String,
@@ -754,7 +754,7 @@ pub struct OperationReceipt {
 
 /// Which process group a command ran in, and when its leader started. The
 /// start time tells our group apart from a later one that reused the id.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessMark {
     pub pgid: u32,
@@ -765,7 +765,7 @@ pub struct ProcessMark {
     pub boot: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1154,7 +1154,7 @@ pub struct Accepted {
     pub assistant: PersonalAssistantView,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInput {
     pub name: String,

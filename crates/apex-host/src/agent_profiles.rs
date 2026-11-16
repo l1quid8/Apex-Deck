@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::Host;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 pub struct SaveProfile {
     pub handle: String,

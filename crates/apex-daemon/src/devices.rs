@@ -23,7 +23,7 @@ pub const FILE: &str = "devices.json";
 pub const REVOKE_CAPACITY: usize = 16;
 
 /// What a device may do, least first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     ReadOnly,
@@ -38,7 +38,7 @@ impl Tier {
 }
 
 /// Which threads (room IDs) a device may reach.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Threads {
     /// `"all"`.
@@ -47,7 +47,7 @@ pub enum Threads {
 }
 
 /// The string `"all"`, and nothing else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AllThreads {
     All,

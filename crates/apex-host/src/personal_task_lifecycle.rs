@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LifecycleInput {
     pub assistant_id: String,
@@ -14,11 +14,11 @@ pub struct LifecycleInput {
     #[serde(default)] pub expected_deleted: Vec<String>,
     #[serde(default)] pub tasks: Vec<TaskRef>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskRef { pub source: String, pub task_id: String, #[serde(default)] pub revision: Option<u64> }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectLifecycleInput {
     pub task_id: String,

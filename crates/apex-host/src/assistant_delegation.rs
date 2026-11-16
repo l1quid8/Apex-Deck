@@ -22,7 +22,7 @@ const MAX_CRITERIA: usize = 20;
 const MAX_CRITERION: usize = 2_000;
 const MAX_ID: usize = 200;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DelegationInput {
     pub assistant_id: String,

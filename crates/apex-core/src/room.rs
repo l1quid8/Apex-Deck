@@ -17,7 +17,7 @@ use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWin
 use crate::view::{answers_system_for_capability, GeneratedUiCapability, pinned_section, render_view_hiding, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnPolicy {
     /// Whoever was addressed last keeps answering. In a new room that is the
@@ -36,7 +36,7 @@ fn default_bot_hops() -> Option<usize> {
     Some(3)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomOptions {
     pub policy: TurnPolicy,
     /// How many rounds of bots answering other bots are allowed after one
@@ -59,7 +59,7 @@ files or run anything that changes the project. Ask the person anything only the
 clear, step-by-step plan.";
 
 /// Things that happen while a room works through a human message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomEvent {
     /// A full checkpoint is available. Clients should reload room_state.
@@ -395,7 +395,7 @@ impl Drop for Card<'_, '_> {
 
 /// A summary the models see in place of the older part of the transcript.
 /// The person still sees every message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Compaction {
     pub summary: String,
     /// The summary covers the messages before this index.
@@ -403,7 +403,7 @@ pub struct Compaction {
 }
 
 /// A file a participant changed, kept with the chat for attribution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeRecord {
     pub by: ParticipantId,
     pub path: String,
@@ -414,7 +414,7 @@ pub struct ChangeRecord {
 }
 
 /// The latest provider-reported checklist and the transcript position that produced it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct Checklist {
     pub seq: usize,
     pub items: Vec<crate::work_steps::TodoItem>,
@@ -429,7 +429,7 @@ pub(crate) fn remember_checklist(lists: &Checklists, id: &ParticipantId, seq: us
 }
 
 /// Whether a room is a folder-backed Work thread or a folderless, talk-only chat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RoomKind {
     #[default]
@@ -448,11 +448,11 @@ impl RoomKind {
 }
 
 /// Durable chat data. Running turns and provider processes are never resumed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientMessageState { Fenced, Running, Done, Interrupted }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientMessageRecord {
     pub state: ClientMessageState,
@@ -465,7 +465,7 @@ pub struct ClientMessageRecord {
     pub request: Option<ClientMessageRequest>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClientMessageRequest {
     #[serde(rename = "textSha256")]
     pub text_sha256: String,
@@ -511,7 +511,7 @@ impl<'de> Deserialize<'de> for ClientMessageRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
     #[serde(default, rename = "nextOriginSeq", skip_serializing_if = "is_zero")]
     pub next_origin_seq: usize,

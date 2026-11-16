@@ -30,14 +30,14 @@ use tokio::{
     sync::{watch, Notify},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadLabel {
     pub id: String,
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessageInput {
     pub workspace_id: String,
@@ -65,7 +65,7 @@ fn default_mode() -> TaskMode {
     TaskMode::InPlace
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantActionInput {
     pub task_id: String,

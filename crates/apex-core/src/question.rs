@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::next_steps::clean;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     /// A short tag such as "Database". May be empty.
     #[serde(default)]
@@ -28,14 +28,14 @@ pub struct Question {
 
 /// The person's reply to one ask: for each question in order, the labels
 /// picked or the one typed answer. `Skipped` when they declined.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Answered(Vec<Vec<String>>),
     Skipped,
 }
 
 /// How a question left the screen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionEnd {
     Answered,

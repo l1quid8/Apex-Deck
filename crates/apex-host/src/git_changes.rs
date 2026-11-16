@@ -7,7 +7,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub root: String,
@@ -22,7 +22,7 @@ pub struct State {
     pub checks_passed: bool,
     pub clean: bool,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct File {
     pub path: String,
@@ -31,7 +31,7 @@ pub struct File {
     pub patch: String,
     pub staged_only: bool,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Action {
     Commit {

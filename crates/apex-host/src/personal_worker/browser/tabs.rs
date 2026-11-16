@@ -12,7 +12,7 @@ pub(super) const WIDTH: u32 = 1280;
 pub(super) const HEIGHT: u32 = 800;
 
 /// Who may reach a tab. The user reaches every tab; seeing one grants nobody else anything.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Scope {
     pub rooms: BTreeSet<String>,
@@ -122,7 +122,7 @@ pub fn dialog_question(params: &Value) -> Value {
 }
 
 /// One tab on disk. Reopened at its address on demand, and never with a holder.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedTab {
     pub id: String,
@@ -131,7 +131,7 @@ pub struct SavedTab {
     pub scope: Scope,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Saved {
     pub primary: Option<String>,

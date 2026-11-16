@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Stable identifier for a participant inside one room. Also used as the
 /// `@handle` people and bots type to address it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ParticipantId(pub String);
 
@@ -23,7 +23,7 @@ impl std::fmt::Display for ParticipantId {
 }
 
 /// What a participant is allowed to do to the workspace it runs in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
     /// May read files but not change them.
@@ -40,7 +40,7 @@ pub enum Access {
 
 /// A coding agent Apex Deck knows how to run without being told the
 /// command. The adapter builds the right command line for each one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTool {
     ClaudeCode,
@@ -53,7 +53,7 @@ pub enum AgentTool {
 }
 
 /// How a participant is reached.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Backend {
     /// An HTTP API that speaks the OpenAI-style chat completions format.
@@ -87,7 +87,7 @@ pub enum Backend {
 }
 
 /// Everything needed to put one bot in a room.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParticipantConfig {
     pub id: ParticipantId,
     pub display_name: String,
@@ -121,7 +121,7 @@ pub struct ParticipantConfig {
 }
 
 /// How fast a bot's tool answers. Fast costs more on both Codex and Claude.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Speed {
     Standard,
@@ -130,7 +130,7 @@ pub enum Speed {
 
 /// What an image or video bot makes, as the person set it. Each choice is
 /// sent only when the model lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MediaSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aspect_ratio: Option<String>,
@@ -164,7 +164,7 @@ pub struct ModelChoice {
 }
 
 /// Who wrote a message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum Speaker {
     Human,
@@ -172,14 +172,14 @@ pub enum Speaker {
 }
 
 /// One entry in the shared transcript.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageOrigin {
     pub machine: String,
     pub room: String,
     pub seq: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     /// Stable source position, independent of the editable transcript index.
     #[serde(default, rename = "originSeq", skip_serializing_if = "Option::is_none")]
@@ -216,7 +216,7 @@ pub struct ContextUse {
 }
 
 /// One rate-limit window of a provider plan, as the tool reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanWindow {
     /// The tool's own name for the window, such as "five_hour" or "primary".
     pub name: String,
@@ -232,7 +232,7 @@ pub struct PlanWindow {
 
 /// How much of a provider account's plan is used. The plan belongs to the
 /// account, so every agent on that provider shares it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanUsage {
     pub provider: AgentTool,
     pub windows: Vec<PlanWindow>,
@@ -248,7 +248,7 @@ pub struct PlanUsage {
 }
 
 /// The usage resets an account can use, as its provider lists them.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ResetCredits {
     /// How many are available. The provider may list fewer than this.
     pub available: u64,
@@ -257,7 +257,7 @@ pub struct ResetCredits {
 }
 
 /// One usage reset a provider granted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetCredit {
     /// The provider's own id, given back to use it.
     pub id: String,
@@ -274,7 +274,7 @@ pub struct ResetCredit {
 
 /// Tokens a participant has used in one thread, over the turns that
 /// reported a count. Saved with the thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct TokenTotals {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_reported_turns: Option<u64>,
@@ -367,7 +367,7 @@ mod token_totals_tests {
 }
 
 /// Saved visual identity; has no effect on model behavior.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAppearance {
     pub seed: String,
     pub color: String,

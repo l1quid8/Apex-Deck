@@ -17,7 +17,7 @@ use tokio::sync::broadcast;
 
 /// Something that happened on the host. The serialized `name` is the event
 /// name the desktop UI listens for, and `payload` is what it receives.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "name", content = "payload")]
 // Each event is cloned into every listening queue, and the room variant
 // carries a whole RoomEvent. Boxing it would put an allocation in front of

@@ -12,7 +12,7 @@ use crate::personal::{
 use crate::personal_worker::{browser, connectors};
 
 /// Only what's given changes.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub name: Option<String>,
@@ -38,7 +38,7 @@ fn hhmm(text: &str) -> bool {
 }
 
 /// What a settings command answers: the assistant as it is now.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 pub struct Changed {
     #[serde(serialize_with="serialize_assistant_view")]
     pub assistant: PersonalAssistant,

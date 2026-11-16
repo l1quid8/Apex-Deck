@@ -1,7 +1,7 @@
 //! Display geometry for simulators with more than one integrated screen.
 use image::{DynamicImage, GenericImageView};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq)]
 pub struct Screen {
     pub pixel_width: u32,
     pub pixel_height: u32,

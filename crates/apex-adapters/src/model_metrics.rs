@@ -256,7 +256,7 @@ const OVERRIDES: &[(&str, &str, bool)] = &[("qwen3.5-9b", "qwen3.5-9b", true), (
 /// The row for a model with no reasoning setting.
 const NO_LEVELS: &str = "default";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LevelState {
     Measured,
@@ -264,7 +264,7 @@ pub enum LevelState {
 }
 
 /// One reasoning level the bot offers, with each test's score there.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LevelRow {
     pub effort: String,
     pub state: LevelState,
@@ -274,7 +274,7 @@ pub struct LevelRow {
 
 /// A pill's number and the level it was measured at, which can differ
 /// from the bot's own level when that one was never tested.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PillValue {
     pub value: f64,
     pub from_level: String,
@@ -282,14 +282,14 @@ pub struct PillValue {
 
 /// The best score on a test across every model Epoch lists, for the
 /// coloured dot on each pill.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Top {
     pub value: f64,
     /// Such as "GPT-6.1 Sol max".
     pub model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelMetrics {
     /// Epoch's name for the model, such as "Claude Opus 5.5".
     pub name: String,

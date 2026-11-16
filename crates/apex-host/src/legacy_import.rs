@@ -41,7 +41,7 @@ const MACHINE_GRANTS: &str = "Kept in the snapshot. Machine grants from before t
 
 /// On every imported record. Legacy content was never confirmed through the
 /// protected UI path, so `verified` is always false.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyMarker {
     pub source_sha256: String,

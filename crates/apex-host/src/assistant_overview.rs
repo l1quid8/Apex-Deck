@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::{assistant_tasks::TaskOwner, Host};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverviewInput {
     pub owner: TaskOwner,

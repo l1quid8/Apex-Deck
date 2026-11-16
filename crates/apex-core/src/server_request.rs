@@ -1,6 +1,6 @@
 //! Explicit server requests; never changes which servers are enabled.
 /// One addressable server, plugin, or app. Aliases are shared by the menu and validation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolServer {
  pub token: String,
  pub label: String,

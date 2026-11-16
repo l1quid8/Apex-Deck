@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ConfiguredCheck {
     pub id: String,

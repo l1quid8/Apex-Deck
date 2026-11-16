@@ -8,7 +8,7 @@ use apex_core::{Access, Backend, ParticipantConfig, ParticipantId, Speed};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// One bot a phone asks for in `chat_create`, `chat_add_participant` or `chat_import`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatBotRequest {
     /// A profile id from this machine's `chat_profiles`.
@@ -30,7 +30,7 @@ pub struct ChatBotRequest {
 /// The settings `chat_update_participant` may change. A missing field keeps
 /// its value; `null` puts `model`, `effort` or `speed` back to the default.
 /// Any other field, such as `access`, `plan` or `backend`, is refused.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatBotPatch {
     #[serde(default)]

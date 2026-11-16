@@ -111,6 +111,7 @@ Agents can't drive this browser yet; that's phase 3b.
 
 ```sh
 npm test                    # unit tests, including desktop/*.mjs
+node scripts/gen-protocol-types.mjs --check   # src/generated/protocol.ts still matches the Rust wire types
 npm run test:e2e            # the protocol client against a real apex-daemon
 npm run desktop:smoke       # the real app, hidden, on a temporary data folder
 node desktop/run-smoke.mjs --packaged   # the same against the built .app

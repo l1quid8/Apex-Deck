@@ -16,7 +16,7 @@ pub const PROMPT_MAX: usize = 600;
 pub const MIN_REPLY_CHARS: usize = 80;
 
 /// One suggestion: a short label for the button and the prompt it sends.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NextStep {
     pub label: String,
     pub prompt: String,

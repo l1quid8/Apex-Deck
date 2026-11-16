@@ -2,7 +2,7 @@
 use super::lock::HolderView;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Key {
     Enter,
@@ -30,7 +30,7 @@ impl Key {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HwButton {
     Home,
@@ -40,7 +40,7 @@ pub enum HwButton {
 fn default_swipe_ms() -> u32 {
     300
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Input {
     Tap {
@@ -65,7 +65,7 @@ pub enum Input {
         button: HwButton,
     },
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -121,7 +121,7 @@ impl BotReply {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub on: bool,
@@ -151,7 +151,7 @@ pub struct Status {
     pub last_capture: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Geometry {
     pub generation: u64,
@@ -161,7 +161,7 @@ pub struct Geometry {
     pub height: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Control {
     SelectDevice { runtime: String, device_type: String },

@@ -16,7 +16,7 @@ pub enum Busy { Human, Bot { name: String } }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitOutcome { pub human_seconds: Option<u64>, pub queued: u32 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum HolderView { Free, Human { seconds_left: u64 }, Bot { name: String } }
 

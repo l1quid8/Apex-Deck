@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+schemars.workspace = true
 apex-provenance = { path = "../apex-provenance" }
 apex-core = { path = "../apex-core" }
 apex-adapters = { path = "../apex-adapters" }

@@ -869,7 +869,8 @@ pub async fn view() -> Result<View, String> {
     view_of(&primary()).await
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
+#[schemars(rename = "BrowserInput")]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum Input {
     Click { x: f64, y: f64 },
@@ -1036,7 +1037,7 @@ pub async fn tab_frame(id: &str, after: u64) -> Result<Value, String> {
 }
 
 /// The person's own input, as it happened.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum Event {
     Mouse { action: String, x: f64, y: f64, #[serde(default)] button: String, #[serde(default)] buttons: u32, #[serde(default)] clicks: u32, #[serde(default)] modifiers: u32 },

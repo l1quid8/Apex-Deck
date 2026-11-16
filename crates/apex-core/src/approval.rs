@@ -23,7 +23,7 @@ use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 
 /// What kind of thing a participant wants to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     /// Create or change a file. The detail is the change, as a diff.
@@ -50,7 +50,7 @@ impl ActionKind {
 }
 
 /// Something a participant wants to do and is waiting for permission for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProposedAction {
     pub kind: ActionKind,
     /// One line, such as "Edit src/main.rs" or "Run a command".
@@ -71,7 +71,7 @@ pub struct ProposedAction {
 }
 
 /// Something the person chose "Always allow" for. Saved with the thread.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "SavedRule")]
 pub struct AllowedRule {
     /// The bot it applies to.
@@ -93,7 +93,7 @@ pub struct AllowedRule {
 
 /// A rule as it is read from a saved thread. Rules saved before this
 /// version have no `allowed_at` or `risky`.
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 struct SavedRule {
     by: ParticipantId,
     kind: ActionKind,
@@ -146,7 +146,7 @@ impl AllowedRule {
 }
 
 /// The person's answer to a proposed action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Approve,
     /// Approve, and don't ask again about the same thing in this thread. The
@@ -354,7 +354,7 @@ impl ApprovalDesk {
 }
 
 /// An edit a participant made to a file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChange {
     /// The file, relative to the workspace folder when it is inside it.
     pub path: String,

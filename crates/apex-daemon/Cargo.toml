@@ -16,7 +16,14 @@ name = "apex-daemon-fixture"
 path = "src/bin_fixture.rs"
 required-features = ["test-support"]
 
+# Prints the wire types as JSON Schema; `scripts/gen-protocol-types.mjs` turns
+# that into src/generated/protocol.ts for the desktop, phone and CLI clients.
+[[bin]]
+name = "apex-protocol-schema"
+path = "src/bin_schema.rs"
+
 [dependencies]
+schemars.workspace = true
 apex-adapters = { path = "../apex-adapters" }
 apex-core = { path = "../apex-core" }
 apex-host = { path = "../apex-host" }

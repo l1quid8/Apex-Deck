@@ -19,7 +19,7 @@ pub struct RemoteOp {
     pub operation: OperationSpec,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteResult {
     pub task_id: String,

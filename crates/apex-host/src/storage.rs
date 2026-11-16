@@ -53,7 +53,7 @@ struct RoomAuthority {
 }
 
 /// Destination when a chat room is moved to another paired machine.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMovedTo {
     pub host: String,
@@ -192,7 +192,7 @@ pub struct MountBoundary {
 }
 
 /// One card's saved settings: src/interactiveAnswers/contract.ts `AnswerEntry`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnswerEntry {
     pub fingerprint: String,
     pub inputs: serde_json::Map<String, serde_json::Value>,
@@ -208,7 +208,7 @@ pub struct AnswersFile {
 }
 
 /// What saving one card's settings did. Serialized as {"saved": …} or {"conflict": …}.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnswerSave {
     Saved(AnswerEntry),

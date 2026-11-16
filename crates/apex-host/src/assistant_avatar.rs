@@ -14,7 +14,7 @@ use std::{
 };
 static GATE: Mutex<()> = Mutex::new(());
 static ACTIVE: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Owner {
     Assistant {
@@ -41,7 +41,7 @@ pub struct Job {
     pub created_at: u64,
     pub cost: Option<crate::personal::CostEntry>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Generate {
     pub owner: Owner,
@@ -51,7 +51,7 @@ pub struct Generate {
     pub model_id: String,
     pub prompt: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Selection {
     Image {

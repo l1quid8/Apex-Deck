@@ -9,7 +9,7 @@ pub const DEFAULT_MAX_INVOCATIONS: u32 = 120;
 pub const DEFAULT_LIFETIME_MS: u64 = 2 * 3600 * 1000;
 pub const DEFAULT_MAX_COST_MICROS: Option<u64> = Some(5_000_000);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RunnerKind {
     #[serde(rename = "goal")]
@@ -18,7 +18,7 @@ pub enum RunnerKind {
     Loop,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RunnerPhase {
     #[serde(rename = "running")]
@@ -35,7 +35,7 @@ pub enum RunnerPhase {
     Ended,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RunnerReason {
     #[serde(rename = "human")]
@@ -66,7 +66,7 @@ pub enum RunnerReason {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerLimits {
     pub schema_version: u32,
@@ -111,7 +111,7 @@ impl RunnerLimits {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerUsage {
     pub turns: u32,
@@ -129,7 +129,7 @@ impl Default for RunnerUsage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerCriteria {
     pub id: String,
@@ -137,7 +137,7 @@ pub struct RunnerCriteria {
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerCheckpoint {
     pub done: String,
@@ -148,11 +148,11 @@ pub struct RunnerCheckpoint {
     pub criteria: Vec<RunnerCriteria>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct RunnerCheckResult {pub id:String,pub attempt_id:String,pub passed:bool,pub output:String}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerSnapshot {
     pub schema_version: u32,

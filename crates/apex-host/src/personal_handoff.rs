@@ -16,7 +16,7 @@ use crate::personal::PersonalAssistant;
 pub use crate::assistant_handoff_reply::{classify_plain_reply, PlainReply};
 
 /// Which piece is still missing from a pending handoff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffSlot {
     Project,
@@ -25,7 +25,7 @@ pub enum HandoffSlot {
 }
 
 /// Draft that remembers original request while asking for the next missing item.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingHandoff {
     pub id: String,
@@ -81,7 +81,7 @@ pub struct WorkerChoice {pub id:String, pub name:String}
 pub struct HandoffQuestion {pub question_id:String,pub question_revision:u64,pub run_id:String,pub worker_name:String,pub text:String,pub can_continue:bool}
 
 /// Selection payload for personal_handoff_select.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HandoffSelection {
     Project { project: ProjectRef },
@@ -91,7 +91,7 @@ pub enum HandoffSelection {
     Back,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandoffSelectInput {
     pub assistant_id: String,
@@ -114,7 +114,7 @@ pub struct HandoffSelectReceipt {
 }
 
 /// Control actions for Round 1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffControlAction {
     Stop,
@@ -122,7 +122,7 @@ pub enum HandoffControlAction {
     Retry,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandoffControlInput {
     pub assistant_id: String,
@@ -140,7 +140,7 @@ pub struct HandoffControlInput {
     pub confirmation: Option<ControlConfirmation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlConfirmation {
     pub assistant_id: String,

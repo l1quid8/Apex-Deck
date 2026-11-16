@@ -2,18 +2,19 @@
 use serde::{Deserialize, Serialize};
 use super::{ActionMode, OperationSpec};
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[schemars(rename = "PersonalCapability")]
 #[serde(rename_all="camelCase")]
 pub enum Capability {
     ConversationRead, FileRead, StatusRead, ThreadCreate, ThreadOrganize, ThreadArchive,
     ThreadTrash, ThreadDelete, ParticipantAdd, ParticipantRemove, AgentAssign, AgentMessage,
     WorkPause, WorkResume, FileEdit, CommandRun, BrowserUse, ComputerUse, Spend, Publish, ApprovalDelegate,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="camelCase")]
 pub enum GrantMode { Ask, OnRequest, Always }
 impl GrantMode { pub fn action(self)->ActionMode { match self { Self::Ask=>ActionMode::Ask, Self::OnRequest=>ActionMode::OnRequest, Self::Always=>ActionMode::Auto } } }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag="kind",rename_all="camelCase")]
 pub enum Scope { AllProjects, Project { host:String,cwd:String }, Thread { host:String,cwd:String,thread:String } }
 impl Scope {
@@ -25,16 +26,16 @@ impl Scope {
     } }
     fn rank(&self)->u8 { match self { Self::AllProjects=>0,Self::Project{..}=>1,Self::Thread{..}=>2 } }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="camelCase")]
 pub struct Grant { pub id:String,pub capability:Capability,pub scope:Scope,pub mode:GrantMode,pub delegate:bool,pub revoked:bool }
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="camelCase")]
 pub struct PermissionPolicy { pub revision:u64, pub grants:Vec<Grant>, #[serde(default)] pub audit:Vec<PermissionAudit> }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="camelCase")]
 pub struct Authorization { pub revision:u64,pub grant_id:Option<String>,pub operation_hash:String,pub human_once:bool }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="camelCase")]
 pub struct PermissionAudit { pub actor:String,pub thread:String,pub request:String,pub operation_hash:String,pub capability:Capability,pub grant_ids:Vec<String>,pub revision:u64,pub at:u64,pub result:String }
 fn bulk_threads(op:&OperationSpec)->Option<Vec<String>> {

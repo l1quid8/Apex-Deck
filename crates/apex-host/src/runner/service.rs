@@ -3,7 +3,7 @@ use crate::runner::store::{RunnerStore, CommitResult};
 use crate::runner::model::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerStartInput {
     pub id: String, // room id
@@ -12,7 +12,7 @@ pub struct RunnerStartInput {
     pub runner: RunnerStartPayload,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerStartPayload {
     pub schema_version: u32,
@@ -27,7 +27,7 @@ pub struct RunnerStartPayload {
     pub checks: Vec<super::checks::ConfiguredCheck>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerActionInput {
     pub id: String, // room id
@@ -37,7 +37,7 @@ pub struct RunnerActionInput {
     pub action: RunnerActionPayload,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerActionPayload {
     pub action: String, // pause|resume|end|update_limits|dismiss

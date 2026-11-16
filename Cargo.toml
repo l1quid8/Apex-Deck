@@ -11,6 +11,8 @@ license = "MIT"
 repository = "https://github.com/l1quid8/apex-deck"
 
 [workspace.dependencies]
+# JSON Schema for the wire types; `scripts/gen-protocol-types.mjs` turns it into src/generated/protocol.ts.
+schemars = "1.2"
 async-trait = "0.1"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }

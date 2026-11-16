@@ -23,6 +23,22 @@ jobs:
       - run: node scripts/check-versions.mjs
       - run: node --experimental-strip-types --test tests/version-scripts.test.mjs
 
+  # src/generated/protocol.ts is written from the Rust wire types (Command,
+  # RoomEvent, HostEvent, Welcome). A type changed in Rust without regenerating
+  # fails here; fix with `node scripts/gen-protocol-types.mjs` and commit.
+  protocol-types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --experimental-strip-types --test tests/gen-protocol-types.test.mjs
+      - run: node scripts/gen-protocol-types.mjs --check
+
   # Exercise the production IPC, privacy, and lock source independently.
   test-windows-ipc:
     runs-on: windows-latest

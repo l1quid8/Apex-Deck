@@ -15,13 +15,13 @@ use apex_core::ParticipantConfig;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReadNotes {
     pub assistant: AssistantRef,
     pub project: ProjectRef,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveNotes {
     pub assistant: AssistantRef,
@@ -32,7 +32,7 @@ pub struct SaveNotes {
     pub kind: FactKind,
     pub expires_at: Option<u64>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForgetNote {
     pub assistant: AssistantRef,
@@ -40,7 +40,7 @@ pub struct ForgetNote {
     pub id: String,
     pub expected_version: u64,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StageNote {
     pub assistant: AssistantRef,
@@ -52,7 +52,7 @@ pub struct StageNote {
     pub text: String,
     pub kind: FactKind,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromoteNote {
     pub assistant: AssistantRef,

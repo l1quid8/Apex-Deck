@@ -89,7 +89,7 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_epoch: Option<u64>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Signed {
     pub payload: String,

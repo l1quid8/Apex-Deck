@@ -3,7 +3,7 @@ use crate::{Host, personal::{PersonalAssistant, now}};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 pub struct TodoInput {
     pub assistant_id: String,

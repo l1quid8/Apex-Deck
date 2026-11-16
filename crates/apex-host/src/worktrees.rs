@@ -4,7 +4,7 @@ use std::{
     process::Stdio,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Worktree {
     pub path: String,
@@ -18,7 +18,7 @@ pub struct Worktree {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy: Option<CopyInfo>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CopyInfo {
     pub bot: String,
@@ -27,7 +27,7 @@ pub struct CopyInfo {
     pub state: String,
     pub reason: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeList {
     pub root: String,

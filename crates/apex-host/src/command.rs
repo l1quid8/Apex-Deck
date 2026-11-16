@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::Host;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
 // Commands arrive one at a time from the UI and are matched once, so the
 // largest payload stays inline: a box would add an indirection to every

@@ -8,6 +8,7 @@ license.workspace = true
 linux-evaluation-verifier = []
 
 [dependencies]
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ring = "0.17"

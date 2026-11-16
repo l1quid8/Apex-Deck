@@ -34,6 +34,51 @@ use crate::gateway_keys::GatewayKeys;
 /// The protocol version `hello` must name.
 pub const PROTOCOL: u64 = 1;
 
+/// What every daemon of this version can do. Clients gate features on these
+/// names rather than on the version, so an older server degrades a feature at a
+/// time. Append-only within a protocol number; `voice_server_v1` is added at
+/// runtime where the platform supports local voice (see `OPTIONAL_CAPABILITIES`).
+pub const CAPABILITIES: &[&str] = &["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"];
+/// Capabilities a daemon lists only when it has them.
+pub const OPTIONAL_CAPABILITIES: &[&str] = &["voice_server_v1"];
+
+/// The answer to `hello`. `apex-protocol-schema` prints its schema and
+/// `scripts/gen-protocol-types.mjs` gives the clients the matching type.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct Welcome {
+    /// The largest frame this connection accepts, in bytes.
+    pub max_frame_bytes: usize,
+    pub host_id: String,
+    /// Changes every time the daemon starts; a resume from another boot is refused.
+    pub boot_id: String,
+    /// Always `PROTOCOL`; a hello with another number never gets this far.
+    pub protocol: u64,
+    /// The event number the client is at once the replay that follows is done.
+    pub last_seq: u64,
+    /// Whether the client's `since` was honoured, so missed events follow.
+    pub resumed: bool,
+    /// Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
+    pub version: &'static str,
+    /// What this daemon can do; clients gate features on these names.
+    pub capabilities: Vec<&'static str>,
+    /// The exact build, so a UI can tell two builds of the same version apart.
+    pub build_commit: &'static str,
+    pub build_dirty: bool,
+    /// What a paired device may do now, so the phone can hide what it can't use; the host still checks everything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<DeviceAccess>,
+    /// The addresses advertised for this machine, for a paired device to refresh its saved hints.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addrs: Option<Vec<String>>,
+}
+
+/// A paired device's current grant, as the welcome states it.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct DeviceAccess {
+    pub tier: crate::devices::Tier,
+    pub threads: crate::devices::Threads,
+}
+
 /// A frame longer than this closes the connection.
 pub const MAX_FRAME: usize = 32 * 1024 * 1024;
 
@@ -446,22 +491,21 @@ where
         }
         None => (Vec::new(), bus.last_seq()),
     };
-    let mut welcome = json!({ "id": hello.id, "ok": {
-        "max_frame_bytes": if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME },
-        "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
-        // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
-        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"],
-        // The exact build, so a UI can tell two builds of the same version apart.
-        "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
-    } });
-    if daemon.voice.status().supported { welcome["ok"]["capabilities"].as_array_mut().unwrap().push(json!("voice_server_v1")); }
+    let mut capabilities: Vec<&'static str> = CAPABILITIES.to_vec();
+    if daemon.voice.status().supported { capabilities.push("voice_server_v1"); }
     // A device also learns what it may do now (so the phone can hide what
     // it can't use; the host still checks everything) and the addresses
     // advertised for this machine, to refresh its saved hints.
-    if let Some(device) = guard.as_ref().and_then(Guard::device) {
-        welcome["ok"]["access"] = json!({ "tier": device.tier, "threads": device.threads });
-        welcome["ok"]["addrs"] = json!(crate::remote_config::advertised(&daemon.data));
-    }
+    let device = guard.as_ref().and_then(Guard::device);
+    let welcome = Welcome {
+        max_frame_bytes: if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME },
+        host_id: daemon.host_id.clone(), boot_id: daemon.boot_id.clone(), protocol: PROTOCOL, last_seq: written, resumed,
+        version: env!("CARGO_PKG_VERSION"), capabilities,
+        build_commit: crate::build_info::commit(), build_dirty: crate::build_info::dirty(),
+        access: device.as_ref().map(|d| DeviceAccess { tier: d.tier, threads: d.threads.clone() }),
+        addrs: device.is_some().then(|| crate::remote_config::advertised(&daemon.data)),
+    };
+    let welcome = json!({ "id": hello.id, "ok": welcome });
     if let Err(stop) = send(&mut output, &mut guard, welcome.to_string()).await {
         return stop.into();
     }
@@ -1391,7 +1435,7 @@ mod tests {
 
     /// What a welcome lists; phone voice calls only where this daemon can run the helper.
     fn hello_capabilities() -> Value {
-        let mut caps = json!(["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1"]);
+        let mut caps = json!(super::CAPABILITIES);
         if crate::voice::platform_support().is_ok() {
             caps.as_array_mut().unwrap().push(json!("voice_server_v1"));
         }
