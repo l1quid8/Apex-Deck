@@ -10,3 +10,7 @@
 - After an authorized merge, delete the merged task branch.
 
 These instructions apply to every bot.
+
+## Host architecture
+
+Give each new host subsystem its own module and state. Keep command admission and subsystem wiring in Host. Put event reduction and persistence alongside the subsystem that owns them.
