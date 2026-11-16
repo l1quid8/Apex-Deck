@@ -401,7 +401,13 @@ impl ClaudeProcess {
             while let Some(line) = self.lines.next_line().await? {
                 let event: Value = serde_json::from_str(&line)
                     .map_err(|_| std::io::Error::other("Invalid response during MCP setup"))?;
-                if event["type"] == "system" && (!self.retained || event["subtype"] != "init") {
+                // Only catalogue notifications are benign on a previously
+                // used worker. A compact boundary or background notification
+                // means its history may have changed since the prior reply.
+                if event["type"] == "system" && (!self.retained || matches!(
+                    event["subtype"].as_str(),
+                    Some("commands_changed" | "mcp_server_status" | "mcp_server_status_changed")
+                )) {
                     continue;
                 }
                 let reply = &event["response"];
@@ -1104,6 +1110,15 @@ cat >/dev/null"#;
         ).await.unwrap();
         assert!(done.success);
         next.unwrap().close().await.unwrap();
+
+        let after_compaction = format!(
+            "echo '{{\"type\":\"system\",\"subtype\":\"compact_boundary\"}}'\n{script}"
+        );
+        let mut process = fake_process(&after_compaction);
+        process.retained = true;
+        assert!(process.set_servers(&servers).await.is_err());
+        process.terminate_now();
+        process.close().await.unwrap();
 
         let mut process = fake_process(&script.replace(r#"$id"#, "wrong"));
         assert!(process.set_servers(&servers).await.is_err());
