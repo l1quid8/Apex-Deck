@@ -5,7 +5,7 @@ Reads ~/.claude/projects/<project>/*.jsonl (no API calls, nothing is sent).
 Usage rows are de-duplicated by message.id (Claude logs one line per content
 block, each carrying the same usage).
 
-Deck turns:   one session file = one Deck turn (Deck never resumes).
+Deck turns:   each Deck-written prompt starts a turn within the session.
               Select with --deck-match (substring that must appear in the
               session's first prompt) and --speaker (e.g. "You are Jigga").
               Sessions whose prompt ends with the suggested-replies schema are
@@ -110,7 +110,7 @@ def main():
             if entry != "sdk-cli" or not first.startswith(p.speaker) or p.deck_match not in first:
                 continue
             kind = "suggest" if first.rstrip().endswith(SUGGEST_TAIL + "\n\n--- Your reply ---") or SUGGEST_TAIL in first[-400:] else "deck"
-            groups = [[c for t in turns for c in t]]  # whole session = one Deck turn
+            groups = turns
         for i, calls in enumerate(groups, 1):
             tot, fst = summarize(calls)
             rows.append(dict(session=sid[:8], kind=kind, turn=i, calls=len(calls),
@@ -126,7 +126,7 @@ def main():
     w.writerows(rows)
     if p.csv:
         with open(p.csv, "w", newline="") as fh:
-            cw = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            cw = csv.DictWriter(fh, fieldnames=w.fieldnames)
             cw.writeheader()
             cw.writerows(rows)
 
