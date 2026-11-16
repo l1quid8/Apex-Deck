@@ -52,6 +52,8 @@ export function effectiveLandingTexture(landing: LandingTextureSettings, appeara
 }
 
 export interface AppSettings {
+  /** Host-wide tool batching policy; independent of ordinary tool access. */
+  apexCodeMode: "auto" | "off";
   voice?: VoiceSettings;
   /** Saved only after a user changes Appearance; older settings files omit it. */
   appearance?: AppearanceSettings;
@@ -85,6 +87,7 @@ export const FONT_SIZES = { min: 10, max: 20 };
 export const MAX_ROUNDS = 10;
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  apexCodeMode: "auto",
   version: 1,
   disabledProviders: [],
   newThread: { policy: "mention", max_bot_hops: 3 },
@@ -132,6 +135,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
   const appearanceDraft = readAppearanceDraft(saved.appearanceDraft, appearance?.saved ?? []);
   return {
     ...(saved.voice ? {voice: readVoiceSettings(saved.voice)} : {}),
+    apexCodeMode: saved.apexCodeMode === "off" ? "off" : "auto",
     version: 1,
     disabledProviders: strings(saved.disabledProviders) ?? strings(legacyDisabled) ?? [],
     newThread: {

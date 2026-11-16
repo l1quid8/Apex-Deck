@@ -33,6 +33,7 @@ pub enum Command {
     SessionSave { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
+    SettingsCodeModeSet { enabled: bool },
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
     AnswersLoad { room: String },
@@ -376,7 +377,7 @@ impl Command {
             // Provenance
             ProvenanceExecute { .. } => Policy::OPEN,
             // Session
-            SessionLoad { .. } | SessionSave { .. } | SettingsLoad { .. } | SettingsSave { .. } => Policy::OPEN,
+            SessionLoad { .. } | SessionSave { .. } | SettingsLoad { .. } | SettingsSave { .. } | SettingsCodeModeSet { .. } => Policy::OPEN,
             // Agent
             AgentProfileList { .. } | AgentsDetect { .. } | PersonaDraft { .. } | ModelMetrics { .. } | AgentModels { .. } | AgentBotModels { .. } => Policy::OPEN,
             // Artifacts
@@ -663,6 +664,7 @@ impl Host {
             AgentProfileSave { input } => self.agent_profile_save(input),
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
+            SettingsCodeModeSet { enabled } => reply(self.settings_code_mode_set(enabled)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
             AnswersLoad { room } => reply(self.answers_load(room)?),
@@ -1332,7 +1334,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 243);
+        assert_eq!(names.len(), 244);
         for name in [
             "personal_handoff_select",
             "personal_handoff_control",

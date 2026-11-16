@@ -160,6 +160,7 @@ pub fn command_needs(command: &Command) -> Need {
         MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorConnect { .. } | MonitorWatchSave { .. } | MonitorWatchStop { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
         SettingsLoad {} => full(Global),
         SettingsSave { .. } => full(Global),
+        SettingsCodeModeSet { .. } => full(Global),
         ReadAttachment { .. } => full(Global),
         CopyAttachment { .. } => full(Global),
         ImportReplyImage { .. } => full(Global),
@@ -366,6 +367,7 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         SessionSave { .. } => Raises,
         AgentProfileSave { .. } => Raises,
         SettingsSave { .. } => Raises,
+        SettingsCodeModeSet { .. } => Raises,
         // Watch settings carry a provider profile, including its access field.
         MonitorWatchSave { .. } => Raises,
         // Proven NOT to raise (see comments above)
@@ -850,6 +852,7 @@ pub(crate) mod tests {
             ("session_save", Some((Full, "global")), json!({ "session": {} })),
             ("settings_load", Some((Full, "global")), json!({})),
             ("settings_save", Some((Full, "global")), json!({ "settings": {} })),
+            ("settings_code_mode_set", Some((Full, "global")), json!({ "enabled": false })),
             ("read_attachment", Some((Full, "global")), json!({ "path": "/etc/passwd" })),
             ("copy_attachment", Some((Full, "global")), json!({ "room": "mine", "path": "/etc/passwd" })),
             ("import_reply_image", Some((Full, "global")), json!({ "room": "mine", "path": "/x.png" })),
@@ -1081,6 +1084,7 @@ pub(crate) mod tests {
             ("folder_accept", AccessEffect::Raises, "lets Full bot run lower code, same as raise"),
             ("session_save", AccessEffect::Raises, "session JSON can carry profiles with Full access"),
             ("settings_save", AccessEffect::Raises, "settings could carry defaults affecting access"),
+            ("settings_code_mode_set", AccessEffect::Raises, "global Code Mode is a user control"),
             ("monitor_watch_save", AccessEffect::Raises, "watch settings persist a provider profile with an access field"),
             // Proven NOT to raise:
             ("chat_create", AccessEffect::None, "chat enforces Read-only: ChatBotPatch refuses access field, host forces Read (host.rs:1082,5435)"),

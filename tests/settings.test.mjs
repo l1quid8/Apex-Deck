@@ -10,7 +10,16 @@ test("no settings file gives the defaults", () => {
 
 test("saved values are kept", () => {
   const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", userName: "Tyler", userNickname: "Ty", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, codeRunButtons: false, botChips: { tool: false, effort: true, usage: false } };
-  assert.deepEqual(readSettings(saved), saved);
+  assert.deepEqual(readSettings(saved), { ...saved, apexCodeMode: "auto" });
+});
+
+test("Apex Code Mode defaults to Auto and preserves only Auto or Off", () => {
+  assert.equal(readSettings(null).apexCodeMode, "auto");
+  assert.equal(readSettings({ apexCodeMode: "off" }).apexCodeMode, "off");
+  assert.equal(readSettings({ apexCodeMode: "auto" }).apexCodeMode, "auto");
+  for (const apexCodeMode of [false, "prefer", null, 0]) {
+    assert.equal(readSettings({ apexCodeMode }).apexCodeMode, "auto");
+  }
 });
 
 test("values that make no sense fall back one by one", () => {

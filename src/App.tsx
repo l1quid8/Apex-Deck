@@ -864,7 +864,10 @@ export function App() {
     const seq = nextSettingsSaveSequence();
     try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'settings' } })); } catch {}
     settingsQueue.current = settingsQueue.current.catch(() => {}).then(async () => {
-      await backend.settingsSave(settings);
+      // Code Mode is patched through its own acknowledged control. Whole-file
+      // preference saves must not overwrite a newer phone/device decision.
+      const { apexCodeMode: _codeMode, ...preferences } = settings;
+      await backend.settingsSave(preferences);
       try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'settings' } })); } catch {}
     });
     settingsQueue.current.catch((error) => {

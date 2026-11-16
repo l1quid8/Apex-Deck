@@ -1,6 +1,7 @@
 // Settings: reorganized for usability - grouped nav, search, true black palette, explicit Light/Dark/System
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
 import { AppearanceStudio } from "./AppearanceStudio";
+import { CodeModeControl } from "./CodeModeControl";
 import type { AppearanceStudioState } from "./useAppearanceDraft";
 import { useSystemDark } from "./useAppearance";
 import { CATALOG_SECTIONS, CATALOG_ENTRIES, groupSections, searchSettings as catalogSearch, resolveSectionId, type SettingsSectionId, type CatalogEntry } from "./settingsCatalog";
@@ -453,6 +454,11 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
       </Row>
       <Row id="run-buttons" label="Run buttons on code blocks" note="Shell blocks in an agent's reply get a Run button. Clicking it runs the block in the thread's folder on the thread's host.">
         <input type="checkbox" aria-label="Run buttons on code blocks" checked={settings.codeRunButtons} onChange={e=>onChange({ ...settings, codeRunButtons: e.target.checked })} />
+      </Row>
+    </div>
+    <div className="settings-card">
+      <Row id="apex-code-mode" label="Apex Code Mode" note="Let supported API models, Claude Code and Codex batch tool calls and filter results to reduce context use. Off stops active batches and pending batch approvals; completed writes stay in place. Ordinary tools remain available.">
+        <CodeModeControl backend={_backend} />
       </Row>
     </div>
     {isWindows && <div className="settings-card">

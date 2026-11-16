@@ -156,6 +156,7 @@ impl CliParticipant {
     }
 
     fn code_mode_on(&self) -> bool {
+        if !crate::code_mode_policy::policy(self.data_dir.as_deref()).enabled() { return false; }
         // The Linux jail has its own network namespace and helper channel;
         // a host-loopback relay must never be advertised inside that jail.
         #[cfg(unix)]
@@ -1229,6 +1230,12 @@ mod tests {
             let bot = super::CliParticipant::new(config).with_context(&crate::BuildContext {
                 codex_hook: Some(std::env::current_exe().unwrap()), ..Default::default()
             });
+            assert_eq!(bot.code_mode_on(), tool != AgentTool::Gemini);
+            let data = std::env::temp_dir().join(format!("cli-code-mode-policy-{}-{tool:?}", std::process::id()));
+            let bot = bot.with_context(&crate::BuildContext { data_dir: Some(data.clone()), codex_hook: Some(std::env::current_exe().unwrap()), ..Default::default() });
+            crate::set_code_mode_enabled(&data, false);
+            assert!(!bot.code_mode_on(), "Off must disable automatic MCP setup for {tool:?}");
+            crate::set_code_mode_enabled(&data, true);
             assert_eq!(bot.code_mode_on(), tool != AgentTool::Gemini);
             assert!(!bot.clone().with_tools_disabled().code_mode_on());
             assert!(!bot.clone().with_mcp_disabled().code_mode_on());

@@ -187,6 +187,7 @@ pub struct Host {
     runtime: tokio::runtime::Handle,
     events: Bus,
     store: Store,
+    settings_write: Mutex<()>,
     snapshots: Arc<checkpoints::Snapshots>,
     quit: QuitGate,
     tool_servers: Mutex<HashMap<String, Vec<apex_core::server_request::ToolServer>>>,
@@ -337,6 +338,8 @@ impl Host {
         let runner_service = Arc::new(Mutex::new(crate::runner::service::RunnerService::new(paths.data.clone())));
         let computer = crate::computer::Computer::new(&paths.data);
         apply_user_identity(&store.settings().ok().flatten().unwrap_or_default());
+        apex_adapters::set_code_mode_enabled(&paths.data,
+            store.settings().ok().flatten().as_ref().and_then(|s| s["apexCodeMode"].as_str()) != Some("off"));
         let host = Arc::new(Host {
             paths,
             computer,
@@ -344,6 +347,7 @@ impl Host {
             runtime,
             events: Bus::default(),
             store,
+            settings_write: Mutex::new(()),
             snapshots,
             quit: QuitGate::default(),
             tool_servers: Mutex::default(),
@@ -3153,10 +3157,31 @@ impl Host {
     }
 
     /// Replace all the settings and tell every client.
-    pub fn settings_save(&self, settings: serde_json::Value) -> Result<(), String> {
+    pub fn settings_save(&self, mut settings: serde_json::Value) -> Result<(), String> {
+        let _write = self.settings_write.lock().unwrap();
+        if settings.is_object() && settings.get("apexCodeMode").is_none() {
+            if let Some(mode) = self.settings_load()?.and_then(|s| s.get("apexCodeMode").cloned()) {
+                settings["apexCodeMode"] = mode;
+            }
+        }
+        self.save_settings_locked(settings)
+    }
+
+    /// Patch this one machine preference without overwriting other clients' settings.
+    pub fn settings_code_mode_set(&self, enabled: bool) -> Result<serde_json::Value, String> {
+        let _write = self.settings_write.lock().unwrap();
+        let mut settings = self.settings_load()?.unwrap_or_else(|| serde_json::json!({}));
+        let mode = if enabled { "auto" } else { "off" };
+        settings["apexCodeMode"] = serde_json::json!(mode);
+        self.save_settings_locked(settings)?;
+        Ok(serde_json::json!({ "mode": mode }))
+    }
+
+    fn save_settings_locked(&self, settings: serde_json::Value) -> Result<(), String> {
         let settings = Settings::from_value(settings)?;
         let settings = settings.to_value();
         self.store.save_settings(&settings)?;
+        apex_adapters::set_code_mode_enabled(&self.paths.data, settings["apexCodeMode"].as_str() != Some("off"));
         apply_user_identity(&settings);
         // Card guidance stays on across settings saves.
         for handle in self.rooms.lock().unwrap().values() {
@@ -6185,6 +6210,24 @@ done
         assert_eq!(host.session_load().unwrap(), Some(json!({ "version": 1, "section": "code" })));
         assert!(host.session_save(json!("not a session")).is_err());
         assert_eq!(seen.lock().unwrap().len(), 2, "a refused save tells no one");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn code_mode_patch_preserves_other_settings_and_old_client_saves_preserve_it() {
+        let (host, _runtime, data) = host("code-mode-settings");
+        host.settings_save(serde_json::json!({"userName":"Example","unknown":{"kept":true}})).unwrap();
+        let reply = host.settings_code_mode_set(false).unwrap();
+        assert_eq!(reply["mode"], "off");
+        let saved = host.settings_load().unwrap().unwrap();
+        assert_eq!(saved["userName"], "Example");
+        assert_eq!(saved["unknown"]["kept"], true);
+        assert_eq!(saved["apexCodeMode"], "off");
+        host.settings_save(serde_json::json!({"userName":"Changed"})).unwrap();
+        assert_eq!(host.settings_load().unwrap().unwrap()["apexCodeMode"], "off");
+        assert_eq!(host.settings_code_mode_set(true).unwrap()["mode"], "auto");
+        assert!(host.settings_save(serde_json::json!(null)).is_err());
+        assert_eq!(host.settings_load().unwrap().unwrap()["apexCodeMode"], "auto");
         let _ = std::fs::remove_dir_all(data);
     }
 

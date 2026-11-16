@@ -282,9 +282,20 @@ test('phone methods send the phone commands', async () => {
   ]);
 });
 
+test('settings changes reach subscribers without altering their payload', async () => {
+  const transport = recording();
+  const backend = commandBackend(transport, stubShell());
+  const heard = [];
+  const off = await backend.onSettingsChanged(value => heard.push(value));
+  assert.equal(transport.listens[0].event, 'settings-changed');
+  transport.listens[0].cb({ apexCodeMode: 'off', unknown: true });
+  assert.deepEqual(heard, [{ apexCodeMode: 'off', unknown: true }]);
+  assert.equal(typeof off, 'function');
+});
+
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
-  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onRoomRunnerChanged', 'onSessionChanged', 'onThreadCatalogChanged', 'onAssistantTasksChanged',
+  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onRoomRunnerChanged', 'onSessionChanged', 'onSettingsChanged', 'onThreadCatalogChanged', 'onAssistantTasksChanged',
     'saveAttachment', 'readAttachment', 'call', 'demo', 'supports', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'modelMetrics', 'roomBotModels', 'agentBotModels', 'roomBotBalance', 'roomPlanReset', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

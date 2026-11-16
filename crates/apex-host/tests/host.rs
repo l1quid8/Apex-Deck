@@ -609,14 +609,20 @@ fn steps_saved_under_the_reply_seq() {
 }
 
 #[test]
-fn steps_without_a_reply_are_not_saved() {
+fn failed_turn_steps_are_saved_separately_from_reply_steps() {
     let (host, data) = steps_host("failed");
     host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["!work a,b !fail boom", "!work c ok"])],"options":RoomOptions::default()}})).unwrap();
     host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot go"}})).unwrap();
     assert!(idle(&host, "r"));
-    assert_eq!(host.call(json!({"cmd":"room_steps","args":{"room":"r"}})).unwrap(), Value::Null);
+    let index = host.call(json!({"cmd":"room_steps","args":{"room":"r"}})).unwrap();
+    assert_eq!(index["replies"], json!({}));
+    assert_eq!(index["ended"].as_array().unwrap().len(), 1);
+    assert_eq!(index["ended"][0]["outcome"], "failed");
+    let ended = host.call(json!({"cmd":"room_steps","args":{"room":"r","ended":0}})).unwrap();
+    assert_eq!(step_keys(&ended), ["a", "b"]);
     // The failed turn's steps don't leak into the next reply.
     host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot again"}})).unwrap();
+    assert!(idle(&host, "r"));
     let state = host.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
     let seq = state["snapshot"]["transcript"].as_array().unwrap().iter().rposition(|m| m["text"] == "ok").unwrap();
     let record = host.call(json!({"cmd":"room_steps","args":{"room":"r","seq":seq}})).unwrap();
