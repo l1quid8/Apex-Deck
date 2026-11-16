@@ -3,6 +3,7 @@
 // link carries it. It says hello, matches replies to calls, hands events to
 // listeners, and reconnects after a drop, resuming from the last event it
 // saw. No DOM and no Electron here, so the phone app can use it too.
+import { PROTOCOL } from "../generated/protocol.ts";
 import type { VoiceFrame } from "../voice/types.ts";
 import type { ClientCapabilities } from '../../shared/generatedUiCapability.mjs';
 
@@ -62,7 +63,7 @@ export interface Timers {
   now(): number;
 }
 
-export const PROTOCOL = 1;
+export { PROTOCOL };
 export const LOST = "The connection to the host was lost, so this may not have finished.";
 export const NOT_CONNECTED = "Not connected to the host.";
 

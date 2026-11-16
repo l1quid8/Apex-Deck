@@ -1,3 +1,4 @@
+import type { Commands, CommandName } from "./generated/protocol.ts";
 import type { AnswerSaveResult } from "./interactiveAnswers/contract.ts";
 // The Backend as commands to a host plus a shell. The host (apex-daemon)
 // runs the commands; the shell does what belongs to the machine
@@ -6,6 +7,14 @@ import type { AnswerSaveResult } from "./interactiveAnswers/contract.ts";
 import type { Backend, KeyState, LibraryItem } from "./backend";
 import { apiModelList } from "./models.ts";
 import type { AgentInfo, AppSession, CurationUndo, CurateReply, FilePreview, FileSearchResult, FolderListing, ModelChoice, ModelMetrics, PersonaDraftResult, PhoneStatus, PhoneView, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
+
+// A union of tuples preserves the relation between a literal command and its
+// fields even when a caller supplies an explicit result type.
+type HostCommandArgs = {
+  [K in CommandName]: {} extends Commands[K]
+    ? [cmd: K, args?: Commands[K]]
+    : [cmd: K, args: Commands[K]];
+}[CommandName];
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
@@ -22,12 +31,12 @@ export type Shell = Pick<Backend, "pickFolder" | "pickPath" | "startupFolders" |
   | "quitStopsWork">;
 
 export function commandBackend(transport: Transport, shell: Shell): Backend {
-  const call = transport.call.bind(transport);
+  const call: <T>(...request: HostCommandArgs) => Promise<T> = transport.call.bind(transport);
   return {
     demo: false,
     ...shell,
     supports: capability => transport.supports?.(capability) === true,
-    call,
+    call: transport.call.bind(transport),
     phone: {
       status: () => call<PhoneStatus>("phone_status"),
       start: () => call<PhoneStatus>("phone_start"),
@@ -100,7 +109,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     listFolder: (path) => call<FolderListing>("folder_list", { path }),
     fileRead: (root, path) => call<FilePreview>("file_read", { root, path }),
     fileFind: (root, query) => call<string[]>("file_find", { root, query }),
-    fileSearch: (root, query, caseSensitive, folder) => call<FileSearchResult>("file_search", { root, query, case_sensitive: caseSensitive, folder }),
+    fileSearch: (root, query, caseSensitive, folder) => call<FileSearchResult>("file_search", { root, query, caseSensitive, folder }),
     fileCreate: (root, parent, name, folder) => call<string>("file_create", { root, parent, name, folder }),
     fileWrite: (root, path, text, expected) => call<string>("file_write", { root, path, text, expected }),
     fileRename: (root, path, name) => call<string>("file_rename", { root, path, name }),
@@ -120,7 +129,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomTurn: (id, participants, hops, interactiveAnswers) => call("room_turn", { id, participants, hops, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }) }),
     voiceCapabilities: () => call("voice_capabilities", {}),
     postCapabilities: () => call("post_capabilities", {}),
-    roomStopRequest: (id, participant, client_turn_id) => call("room_stop_request", {id,participant,client_turn_id}),
+    roomStopRequest: (id, participant, client_turn_id) => call("room_stop_request", { id, participant, clientTurnId: client_turn_id }),
     roomStop: (id, participant) => call("room_stop", { id, participant: participant ?? null }),
     roomDecide: (id, request, approve, always = false, skip) => call("room_decide", { id, request, approve, always, ...(skip ? { skip } : {}) }),
     roomAnswer: (id, request, answers) => call("room_answer", { id, request, answers }),
@@ -155,8 +164,8 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomDelete: (id) => call("room_delete", { id }),
     onRoomRunnerChanged: (cb) => transport.listen<{room: string; snapshot: import("./runner/types.ts").RunnerSnapshot | null}>("room-runner-changed", p => cb(p.room,p.snapshot)),
     roomRunnerState: (id) => call("room_runner_state", { id }),
-    roomRunnerStart: (roomId, _runnerId, revision, requestId, payload) => call("room_runner_start", { id: roomId, requestId, expectedRoomRevision:revision, runner: payload } as any),
-    roomRunnerAction: (roomId, runnerId, revision, requestId, action) => call("room_runner_action", { id: roomId, runnerId, expectedRevision: revision, requestId, action } as any),
+    roomRunnerStart: (roomId, _runnerId, revision, requestId, payload) => call("room_runner_start", { id: roomId, requestId, expectedRoomRevision:revision, runner: payload }),
+    roomRunnerAction: (roomId, runnerId, revision, requestId, action) => call("room_runner_action", { id: roomId, runnerId, expectedRevision: revision, requestId, action }),
     onRoomEvent: (cb) => transport.listen<{ room: string; event: RoomEvent; recovery_seq?: number }>("room-event", (p) => cb(p.room, p.recovery_seq == null ? p.event : { ...p.event, recovery_seq: p.recovery_seq })),
   };
 }

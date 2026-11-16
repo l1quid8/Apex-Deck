@@ -1,41 +1,13 @@
 export interface ToolServer { token: string; label: string; aliases: string[] }
-// These shapes mirror the Rust types in crates/apex-core. The test file
-// crates/apex-core/tests/wire_format.rs pins the JSON on the Rust side.
-
-/** "ask" lets a bot edit and run commands, but only after you approve each one. */
-export type Access = "read" | "ask" | "edits" | "full";
-
-/** Something a bot wants to do and is waiting for a yes or no on. */
-export interface ProposedAction {
-  kind: "edit" | "command" | "tool" | "other" | "plan" | "spend";
-  /** One line, such as "Edit src/main.rs". */
-  title: string;
-  /** The diff, the command, or the tool's arguments. */
-  detail: string;
-  /** When Codex's hook denies it if nobody answers, in milliseconds since the epoch. Only MCP calls checked by Deck's hook have one. */
-  expires_at?: number | null;
-  /** It can spend money or publish. Missing means no. */
-  risky?: boolean;
-}
-
-/** An edit a bot made to a file. */
-export interface FileChange {
-  path: string;
-  /** Lines starting with + were added and lines starting with - removed. Empty if not reported. */
-  diff: string;
-  added: number;
-  removed: number;
-}
-
-export type AgentTool = "claude_code" | "codex" | "gemini" | "grok" | "muse";
+// Shared wire types keep their existing import paths for renderer callers.
+import type { Access, AgentTool, FileChange, MediaSettings, ProposedAction, Speed } from "./generated/protocol.ts";
+export type { Access, AgentTool, FileChange, MediaSettings, ProposedAction, Speed };
 
 export type ParticipantBackend =
   | { kind: "open_ai_compatible"; base_url: string; model: string; api_key_env: string | null }
   | { kind: "agent"; tool: AgentTool; model: string | null }
   | { kind: "cli"; program: string; args: string[] }
   | { kind: "scripted"; lines: string[] };
-
-export type Speed = "standard" | "fast";
 
 /** A machine-owned saved profile plus the settings a phone may override. */
 export interface ChatBotRequest {
@@ -71,18 +43,6 @@ export interface ParticipantConfig {
 export interface PersonaDraftResult {
   name: string;
   persona: string;
-}
-
-/** What an image or video bot makes. Unset choices use the defaults in media.ts. */
-export interface MediaSettings {
-  aspect_ratio?: string | null;
-  resolution?: string | null;
-  quality?: string | null;
-  /** Video length such as "5s". */
-  duration?: string | null;
-  audio?: boolean | null;
-  /** Send the last description with each new message. On when unset. */
-  build_on_last?: boolean | null;
 }
 
 /** What a provider's image or video model takes and costs. Empty lists = not offered. */
