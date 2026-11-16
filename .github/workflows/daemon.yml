@@ -9,6 +9,20 @@ on:
   pull_request:
 
 jobs:
+  # One release version everywhere it is written: Cargo workspace, both
+  # lockfiles, package.json, package-lock.json and the npm CLI packages.
+  # Fix a failure with `node scripts/bump-version.mjs <x.y.z>`.
+  versions-agree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/check-versions.mjs
+      - run: node --experimental-strip-types --test tests/version-scripts.test.mjs
+
   # Exercise the production IPC, privacy, and lock source independently.
   test-windows-ipc:
     runs-on: windows-latest
