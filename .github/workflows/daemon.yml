@@ -36,6 +36,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+      # The generator tests type-check their output with the project's TypeScript.
+      - run: npm ci
       - run: node --experimental-strip-types --test tests/gen-protocol-types.test.mjs
       - run: node scripts/gen-protocol-types.mjs --check
 
