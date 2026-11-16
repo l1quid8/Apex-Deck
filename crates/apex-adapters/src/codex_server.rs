@@ -55,6 +55,12 @@ const LIMITS_TIMEOUT: Duration = Duration::from_secs(5);
 /// without it Codex sends no `turn/plan/updated`, so no to-do list.
 pub(crate) const ARGS: &[&str] = &["app-server", "-c", "tools.update_plan.enabled=true"];
 
+/// Codex 0.166 accepts MCP configuration at launch or thread start. Its
+/// turn/start protocol cannot replace a relay environment or hook socket.
+pub(crate) fn can_retain(has_hook: bool, has_code_mode: bool) -> bool {
+    !has_hook && !has_code_mode
+}
+
 /// What a turn needs besides the prompt.
 pub(crate) struct Turn<'a> {
     pub model: Option<&'a str>,
@@ -280,8 +286,6 @@ fn call_action(call: &McpCall, params: &Value) -> ProposedAction {
     action
 }
 
-/// The id of `plugin/list`, which is sent alongside the MCP inventory.
-const PLUGINS: u64 = 110;
 /// Request ids for the hook check, clear of the others.
 const HOOKS_LIST: u64 = 120;
 const TRUST_WRITE: u64 = 121;
@@ -354,6 +358,7 @@ async fn mcp_inventory(
     stdin: &mut ChildStdin,
     lines: &mut Lines<BufReader<ChildStdout>>,
     full_inventory: bool,
+    refresh: Option<(&str, u64)>,
 ) -> Result<
     (
         Value,
@@ -362,9 +367,11 @@ async fn mcp_inventory(
     ),
     String,
 > {
+    let first = refresh.map_or(10, |(_, first)| first);
+    let plugins_id = first + 100;
     send(
         stdin,
-        &json!({"id":PLUGINS,"method":"plugin/list","params":{}}),
+        &json!({"id":plugins_id,"method":"plugin/list","params":{}}),
     )
     .await
     .map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
@@ -373,7 +380,7 @@ async fn mcp_inventory(
     let mut cursor = Value::Null;
     let mut cursors = std::collections::HashSet::new();
     for page in 0..100u64 {
-        let id = 10 + page;
+        let id = first + page;
         let mut params = json!({"limit":100, "cursor":cursor});
         if !full_inventory { params["detail"] = json!("toolsAndAuthOnly"); }
         send(
@@ -382,7 +389,7 @@ async fn mcp_inventory(
         )
         .await
         .map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
-        let with_plugins = [id, PLUGINS];
+        let with_plugins = [id, plugins_id];
         let mut replies = answers(
             lines,
             if page == 0 {
@@ -391,6 +398,7 @@ async fn mcp_inventory(
                 &with_plugins[..1]
             },
             SETUP_TIMEOUT,
+            refresh.map(|(thread, _)| thread),
         )
         .await;
         if page == 0 {
@@ -572,7 +580,7 @@ async fn answer_within(
     id: u64,
     limit: Duration,
 ) -> Result<Value, String> {
-    answers(lines, &[id], limit)
+    answers(lines, &[id], limit, None)
         .await
         .pop()
         .expect("one answer per request")
@@ -585,12 +593,18 @@ async fn answers(
     lines: &mut Lines<BufReader<ChildStdout>>,
     ids: &[u64],
     limit: Duration,
+    idle_thread: Option<&str>,
 ) -> Vec<Result<Value, String>> {
     let mut got: Vec<Option<Result<Value, String>>> = vec![None; ids.len()];
     let wait = async {
         while got.iter().any(Option::is_none) {
             match lines.next_line().await {
                 Ok(Some(line)) => {
+                    if idle_thread.is_some_and(|thread| idle_invalidates(&line, thread)) {
+                        // Invalidate even slots filled before this notification.
+                        got.fill(None);
+                        return Err("Codex changed while idle".to_string());
+                    }
                     let Ok(message) = serde_json::from_str::<Value>(&line) else {
                         continue;
                     };
@@ -680,7 +694,6 @@ impl Approver for TurnApprover<'_> {
 
 /// Thread totals are cumulative across turns; a missing observation makes
 /// just that counter's next delta unknown.
-#[derive(Default)]
 struct UsageBaseline {
     input: Option<u64>,
     output: Option<u64>,
@@ -739,7 +752,7 @@ impl CodexLive {
             crate::mcp::base_policy()
         } else {
             on_progress(Progress::Activity("Checking MCP tool approval policies"));
-            let (policy, menu, catalog) = mcp_inventory(stdin, lines, turn.mcp_disabled)
+            let (policy, menu, catalog) = mcp_inventory(stdin, lines, turn.mcp_disabled, None)
                 .await
                 .map_err(TurnError::Failed)?;
             if turn.mcp_disabled && !isolated_mcp_inventory(&catalog, turn.trusted_computer) {
@@ -819,6 +832,11 @@ impl CodexLive {
         false
     }
 
+    pub(crate) fn terminate_now(&mut self) {
+        self.reusable = false;
+        self.io.child.signal_tree_kill();
+    }
+
     pub(crate) async fn close(self) -> Result<(), TurnError> {
         self.io
             .finish()
@@ -836,7 +854,9 @@ impl CodexLive {
         images: &[crate::attachments::Image],
     ) -> Result<Reply, TurnError> {
         let continued = self.next_id != 2;
-        if !self.is_alive() || (continued && next_call(hook).now_or_never().is_some()) {
+        if !self.reusable
+            || (continued && (!self.is_alive() || next_call(hook).now_or_never().is_some()))
+        {
             self.reusable = false;
             return Err(TurnError::Unavailable(
                 "Codex thread is no longer reusable".into(),
@@ -852,6 +872,25 @@ impl CodexLive {
         let stdin = &mut self.io.stdin;
         let lines = &mut self.io.lines;
         let thread = self.thread.as_str();
+        if continued {
+            // The thread's approval policy was compiled from its startup
+            // inventory. Recheck the provider's actual catalog before sending
+            // the tail, including when a formerly empty server gained tools.
+            let first = self.next_id.max(123);
+            self.next_id = first + 101;
+            let (_, menu, catalog) =
+                mcp_inventory(stdin, lines, turn.mcp_disabled, Some((thread, first)))
+                    .await
+                    .map_err(TurnError::Unavailable)?;
+            if catalog != self.tool_catalog {
+                return Err(TurnError::Unavailable(
+                    "Codex MCP catalog changed since the previous turn".into(),
+                ));
+            }
+            if let Ok(menu) = menu {
+                self.menu = Some(menu);
+            }
+        }
         let tool_catalog = &self.tool_catalog;
         if let Some(menu) = &self.menu {
             on_progress(Progress::ToolServers(menu));
@@ -958,6 +997,23 @@ impl CodexLive {
             if let Ok(message) = serde_json::from_str::<Value>(&line) {
                 let params = &message["params"];
                 let own_thread = params["threadId"].as_str().is_none_or(|id| id == thread);
+                if continued
+                    && message.get("id").is_some()
+                    && message.get("method").is_some()
+                    && !request_for_turn(params, thread, active_turn_id.as_deref())
+                {
+                    return Err(TurnError::Failed(
+                        "Codex requested approval outside the active turn".into(),
+                    ));
+                }
+                if continued
+                    && message.get("id").is_none()
+                    && message["method"].as_str().is_some_and(inventory_changed)
+                {
+                    return Err(TurnError::Failed(
+                        "Codex MCP configuration changed during the active turn".into(),
+                    ));
+                }
                 if own_thread {
                     let event_turn = params["turnId"]
                         .as_str()
@@ -968,8 +1024,7 @@ impl CodexLive {
                         ));
                     }
                     if let Some(id) = event_turn {
-                        if active_turn_id.as_deref().is_some_and(|active| active != id)
-                        {
+                        if active_turn_id.as_deref().is_some_and(|active| active != id) {
                             return Err(TurnError::Failed(
                                 "Codex emitted activity outside the requested turn".into(),
                             ));
@@ -1219,6 +1274,18 @@ fn take_turn_id(next: &mut u64) -> u64 {
     id
 }
 
+fn request_for_turn(params: &Value, thread: &str, active: Option<&str>) -> bool {
+    params["threadId"] == thread && active.is_some_and(|turn| params["turnId"] == turn)
+}
+
+fn inventory_changed(method: &str) -> bool {
+    method.starts_with("mcpServer/")
+        || method.starts_with("config/")
+        || method.starts_with("externalAgentConfig/")
+        || method.starts_with("plugin/")
+        || method == "configWarning"
+}
+
 fn idle_invalidates(line: &str, thread: &str) -> bool {
     let Ok(message) = serde_json::from_str::<Value>(line) else {
         return true;
@@ -1233,7 +1300,8 @@ fn idle_invalidates(line: &str, thread: &str) -> bool {
     if method == "thread/status/changed" && message["params"]["status"]["type"] == "idle" {
         return false;
     }
-    method.starts_with("item/")
+    inventory_changed(method)
+        || method.starts_with("item/")
         || method.starts_with("turn/")
         || message["params"]["threadId"] == thread
 }
@@ -1431,7 +1499,7 @@ pub async fn list_servers(
             let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
             let result = async {
                 initialize(&mut stdin, &mut lines).await?;
-                mcp_inventory(&mut stdin, &mut lines, false)
+                mcp_inventory(&mut stdin, &mut lines, false, None)
                     .await
                     .and_then(|(_, names, _)| names)
             }
@@ -1464,7 +1532,7 @@ pub async fn list_servers(
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let result = async {
         initialize(&mut stdin, &mut lines).await?;
-        mcp_inventory(&mut stdin, &mut lines, false)
+        mcp_inventory(&mut stdin, &mut lines, false, None)
             .await
             .and_then(|(_, names, _)| names)
     }
@@ -1971,8 +2039,13 @@ while IFS= read -r line; do
   id=$(echo "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
   case "$line" in
     *'"initialize"'*) echo '{"id":0,"result":{}}' ;;
-    *'"plugin/list"'*) echo '{"id":110,"result":{}}' ;;
-    *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[]}}' ;;
+    *'"plugin/list"'*) echo "{\"id\":$id,\"result\":{}}" ;;
+    *'"mcpServerStatus/list"'*)
+      catalog='[]'
+      if [ "$n" = 1 ] && [ "$SCENARIO" = changed ]; then
+        catalog='[{"name":"new-server","tools":{}}]'
+      fi
+      echo "{\"id\":$id,\"result\":{\"data\":$catalog}}" ;;
     *'"thread/start"'*)
       case "$line" in *'"ephemeral":true'*) ;; *) exit 1 ;; esac
       [ -z "$started" ] || exit 2
@@ -1983,6 +2056,11 @@ while IFS= read -r line; do
       n=$((n+1))
       echo "{\"id\":$id,\"result\":{\"turn\":{\"id\":\"u$n\"}}}"
       if [ "$n" = 2 ]; then
+        if [ "$SCENARIO" = foreign ]; then
+          echo '{"id":"old","method":"item/commandExecution/requestApproval","params":{"threadId":"old","turnId":"u1","command":"pwd"}}'
+          IFS= read -r unexpected
+          exit 5
+        fi
         echo '{"id":"approval","method":"item/commandExecution/requestApproval","params":{"threadId":"T","turnId":"u2","command":"pwd"}}'
         IFS= read -r result
         case "$result" in *'"accept"'*) ;; *) exit 4 ;; esac
@@ -1994,51 +2072,73 @@ while IFS= read -r line; do
       echo "{\"id\":$id,\"result\":{}}" ;;
   esac
 done"#;
-        let mut command = tokio::process::Command::new("sh");
-        command
-            .args(["-c", program])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let child = Registry::default().spawn(&mut command).unwrap();
-        let turn = Turn {
-            model: None,
-            effort: None,
-            service_tier: None,
-            access: Access::Ask,
-            external_sandbox: false,
-            cwd: None,
-            plan: false,
-            trusted_computer: false,
-            mcp_disabled: false,
-            tools_disabled: false,
-        };
-        let mut session = CodexLive::start(child, &turn, None, &|_| {})
-            .await
-            .ok()
-            .unwrap();
-        for n in 1..=2 {
-            assert!(session.is_alive());
-            let reply = session
-                .turn(&turn, "next", &|_| {}, &Always, None, &[])
+        for scenario in ["ordinary", "foreign", "changed"] {
+            let mut command = tokio::process::Command::new("sh");
+            command.env("SCENARIO", scenario);
+            command
+                .args(["-c", program])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let child = Registry::default().spawn(&mut command).unwrap();
+            let turn = Turn {
+                model: None,
+                effort: None,
+                service_tier: None,
+                access: Access::Ask,
+                external_sandbox: false,
+                cwd: None,
+                plan: false,
+                trusted_computer: false,
+                mcp_disabled: false,
+                tools_disabled: false,
+            };
+            let mut session = CodexLive::start(child, &turn, None, &|_| {})
                 .await
                 .ok()
                 .unwrap();
-            assert_eq!(reply.text, format!("response {n}"));
-            assert_eq!(
-                (
-                    reply.input_tokens,
-                    reply.output_tokens,
-                    reply.cached_input_tokens
-                ),
-                (Some(30), Some(5), Some(2))
+            for n in 1..=2 {
+                assert!(session.is_alive());
+                let result = session
+                    .turn(&turn, "next", &|_| {}, &Always, None, &[])
+                    .await;
+                if n == 2 && scenario == "foreign" {
+                    assert!(matches!(result, Err(TurnError::Failed(_))));
+                    break;
+                }
+                if n == 2 && scenario == "changed" {
+                    assert!(matches!(result, Err(TurnError::Unavailable(_))));
+                    break;
+                }
+                let reply = result.ok().unwrap();
+                assert_eq!(reply.text, format!("response {n}"));
+                assert_eq!(
+                    (
+                        reply.input_tokens,
+                        reply.output_tokens,
+                        reply.cached_input_tokens
+                    ),
+                    (Some(30), Some(5), Some(2))
+                );
+            }
+            assert!(
+                !session.is_alive(),
+                "the session must retire after {scenario}"
             );
+            session.close().await.ok().unwrap();
         }
-        assert!(
-            !session.is_alive(),
-            "Always allow must retire the underlying program"
-        );
-        session.close().await.ok().unwrap();
+    }
+
+    #[test]
+    fn resumed_approval_requires_proven_turn_and_thread() {
+        let request = json!({"threadId":"T","turnId":"u2"});
+        assert!(request_for_turn(&request, "T", Some("u2")));
+        assert!(!request_for_turn(&request, "H", Some("u2")));
+        assert!(!request_for_turn(&request, "T", Some("u1")));
+        assert!(!request_for_turn(&request, "T", None));
+        assert!(!request_for_turn(&json!({"threadId":"T","turnId":null}), "T", Some("u2")));
+        assert!(!request_for_turn(&json!({"turnId":"u2"}), "T", Some("u2")));
+        assert!(idle_invalidates(r#"{"method":"mcpServer/startupStatus/updated","params":{}}"#, "T"));
     }
 
     #[test]
@@ -2048,6 +2148,14 @@ done"#;
         assert_eq!(UsageBaseline::delta(&mut baseline, Some(100)), None);
         assert_eq!(UsageBaseline::delta(&mut baseline, Some(121)), Some(21));
         assert_eq!(UsageBaseline::delta(&mut baseline, Some(7)), None);
+    }
+
+    #[test]
+    fn launch_bound_capabilities_require_a_fresh_program() {
+        assert!(can_retain(false, false));
+        assert!(!can_retain(true, false), "turning Code Mode off keeps the approval hook");
+        assert!(!can_retain(true, true), "a Unix Work room needs fresh approval and relay endpoints");
+        assert!(!can_retain(false, true), "a relay cannot retain a previous turn's credentials");
     }
 
     #[test]

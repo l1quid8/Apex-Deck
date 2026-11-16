@@ -1469,6 +1469,21 @@ Record every run with `scripts/measure-claude-cache.py` (after Task 8 Step 0) in
 - Phone and desktop clients get different interactive-answer instructions, so switching between them restarts a bot's program once.
 - If Task 9 Step 9 shows most of the saving is in the middle row (returns between the two expiries), a plain cache-refresh call with no summary may buy it for less than a fork. Measure that then.
 
+## Codex room eligibility verified on 2026-11-16
+
+Deck retains an ephemeral Codex thread only while its original app server remains alive. The room must have an exact transcript prefix, matching settings, and no launch-scoped authority to replace.
+
+| Host path | Behavior on the next ordinary reply |
+| --- | --- |
+| macOS or Linux Work room with the Deck approval helper | Start a new app server and send the full room view. Turning Code Mode off still leaves the catch-all MCP approval hook enabled. |
+| Windows Work room, or an embedded Work room without the Unix helper | Reuse the process and send the new tail when ordinary session checks pass and the turn carries no computer capability or isolation. |
+| Talk-only Codex room | Start fresh inside the per-turn tool-free sandbox. |
+| Any turn with a computer capability or Code Mode MCP relay | Start fresh with that turn's scoped credentials. |
+
+The installed Codex 0.166.0 experimental protocol accepts MCP configuration at thread creation. Its `turn/start` request has no field for a new MCP environment or approval-hook socket. `config/mcpServer/reload` accepts no parameters. The native `dynamicTools` interface could route an individual tool call through the app server but does not rotate the catch-all external approval hook. Deck requires that helper for Code Mode registration.
+
+In the same process, `thread/resume` can rejoin a running thread. In a fresh process, resume by ID or path requires a saved rollout. Deck keeps these threads ephemeral. The separately documented `history` input accepts a full raw history and is labeled for Codex Cloud only. Fork by ID or path also reads from disk. Deck starts fresh when it must replace the process. The protocol types can be inspected with `codex app-server generate-ts --experimental --out <directory>` (`ThreadResumeParams`, `ThreadForkParams` and `TurnStartParams`). The sandbox denied real app-server startup before the cross-process resume probe reached initialization.
+
 ## Probe results
 
 ### Task 1, run 2026-11-16 (Claude Code 2.1.325 at `~/.local/bin/claude`, codex-cli 0.166.0, macOS 27.2, `--model haiku`, cwd a scratch folder)

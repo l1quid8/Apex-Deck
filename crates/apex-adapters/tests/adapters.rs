@@ -3064,8 +3064,23 @@ async fn live_claude_plan_skip_note_keeps_the_step_out() {
 #[tokio::test]
 async fn ordinary_room_turns_reuse_claude_and_codex_and_stop_rebuilds_the_full_view() {
     use apex_core::AgentTool;
+    exercise_room_session(AgentTool::ClaudeCode, "claude", false, false).await;
+    exercise_room_session(AgentTool::Codex, "codex", false, false).await;
+    exercise_room_session(AgentTool::Codex, "codex", true, false).await;
+    exercise_room_session(AgentTool::Codex, "codex", true, true).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retained_claude_room_turns_rotate_the_code_mode_relay() {
+    exercise_room_session(apex_core::AgentTool::ClaudeCode, "claude", true, true).await;
+}
+
+#[cfg(unix)]
+async fn exercise_room_session(tool: apex_core::AgentTool, name: &str, with_hook: bool, code_mode: bool) {
     let script = r#"#!/usr/bin/python3
-import json, os, sys
+import json, os, socket, sys
+last = None
 def send(value):
     print(json.dumps(value), flush=True)
 def record(text):
@@ -3073,14 +3088,33 @@ def record(text):
         print(json.dumps([os.getpid(), text]), file=log)
 for line in sys.stdin:
     frame = json.loads(line)
+    if frame.get("type") == "control_request":
+        env = frame["request"]["servers"]["apex-code-mode"]["env"]
+        assert "APEX_CODE_MODE_TOKEN" not in os.environ
+        assert last != env["APEX_CODE_MODE_TOKEN"]
+        last = env["APEX_CODE_MODE_TOKEN"]
+        host, port = env["APEX_CODE_MODE_ENDPOINT"].split(":")
+        with socket.create_connection((host,int(port)), timeout=2) as sock:
+            with sock.makefile("rw") as relay:
+                print(last, file=relay)
+                print(json.dumps({"id":1,"method":"tools/list"}), file=relay, flush=True)
+                tools = json.loads(relay.readline())["result"]["tools"]
+                assert [tool["name"] for tool in tools] == ["deck_code_mode"]
+        send({"type":"control_response","response":{"request_id":frame["request_id"],"subtype":"success",
+            "response":{"added":["apex-code-mode"],"errors":{}}}})
+        continue
     if frame.get("type") == "user":
+        assert (last is not None) == EXPECT_CODE_MODE
         record(frame["message"]["content"])
         send({"type":"result","subtype":"success","is_error":False,"result":"noted"})
         continue
     method = frame.get("method")
     if "id" not in frame: continue
     result = {}
-    if method == "thread/start": result = {"thread":{"id":"thread"}}
+    if method == "thread/start":
+        assert frame["params"]["ephemeral"] is True
+        assert ("APEX_CODE_MODE_TOKEN" in os.environ) == EXPECT_CODE_MODE
+        result = {"thread":{"id":"thread"}}
     if method == "mcpServerStatus/list": result = {"data":[],"nextCursor":None}
     if method == "plugin/list": result = {"marketplaces":[]}
     if method == "turn/start":
@@ -3092,27 +3126,38 @@ for line in sys.stdin:
         send({"method":"item/completed","params":{"threadId":"thread","turnId":turn,"item":{"type":"agentMessage","id":"i","text":"noted"}}})
         send({"method":"turn/completed","params":{"threadId":"thread","turn":{"id":turn,"status":"completed"}}})
 "#;
-    for (tool, name) in [(AgentTool::ClaudeCode, "claude"), (AgentTool::Codex, "codex")] {
-        let dir = fake_tool(&format!("room-live-{name}"), name, script);
-        let log = dir.join("room-turns.jsonl");
-        let _ = std::fs::remove_file(&log);
-        let context = BuildContext { live_sessions: true, ..context_in(&dir) };
-        let bot = build(config("bot", Backend::Agent {tool, model:None}), &context);
-        let mut room = Room::new(vec![bot.clone()], RoomOptions {policy:TurnPolicy::Everyone,max_bot_hops:Some(0)});
-        for (index, message) in ["first message","second message","third message"].into_iter().enumerate() {
-            if index == 2 { bot.cancel_active_turn().await.unwrap(); }
-            tokio::time::timeout(Duration::from_secs(15), room.post_human(message, &|_| {})).await.unwrap();
-            assert_eq!(room.transcript().last().unwrap().text, "noted", "{tool:?}");
-        }
-        let turns: Vec<serde_json::Value> = std::fs::read_to_string(log).unwrap().lines()
-            .map(|line|serde_json::from_str(line).unwrap()).collect();
-        assert_eq!(turns.len(), 3);
-        assert_eq!(turns[0][0], turns[1][0], "{tool:?}");
-        assert_ne!(turns[1][0], turns[2][0]);
-        let second = turns[1][1].to_string();
-        assert!(second.contains("second message") && !second.contains("first message"), "{second}");
-        assert!(turns[2][1].to_string().contains("first message"));
-        bot.cancel_active_turn().await.unwrap();
-        std::fs::remove_dir_all(dir).unwrap();
+    let script = script.replace("EXPECT_CODE_MODE", if code_mode { "True" } else { "False" });
+    let dir = fake_tool(&format!("room-live-{name}-{with_hook}-{code_mode}"), name, &script);
+    let log = dir.join("room-turns.jsonl");
+    let _ = std::fs::remove_file(&log);
+    let context = BuildContext {
+        live_sessions: true,
+        codex_hook: with_hook.then(|| dir.join(name)),
+        data_dir: Some(dir.clone()),
+        ..context_in(&dir)
+    };
+    apex_adapters::set_code_mode_enabled(&dir, code_mode);
+    let fresh = with_hook && tool == apex_core::AgentTool::Codex;
+    let bot = build(config("bot", Backend::Agent {tool, model:None}), &context);
+    let mut room = Room::new(vec![bot.clone()], RoomOptions {policy:TurnPolicy::Everyone,max_bot_hops:Some(0)});
+    for (index, message) in ["first message","second message","third message"].into_iter().enumerate() {
+        if index == 2 { bot.cancel_active_turn().await.unwrap(); }
+        tokio::time::timeout(Duration::from_secs(15), room.post_human(message, &|_| {})).await.unwrap();
+        assert_eq!(room.transcript().last().unwrap().text, "noted", "{tool:?}");
     }
+    let turns: Vec<serde_json::Value> = std::fs::read_to_string(log).unwrap().lines()
+        .map(|line|serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(turns.len(), 3);
+    if fresh {
+        assert_ne!(turns[0][0], turns[1][0], "the approval helper gets a new launch");
+    } else {
+        assert_eq!(turns[0][0], turns[1][0], "{tool:?}");
+    }
+    assert_ne!(turns[1][0], turns[2][0]);
+    let second = turns[1][1].to_string();
+    assert!(second.contains("second message"), "{second}");
+    assert_eq!(second.contains("first message"), fresh, "{second}");
+    assert!(turns[2][1].to_string().contains("first message"));
+    bot.cancel_active_turn().await.unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
 }
