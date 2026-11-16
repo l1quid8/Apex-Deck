@@ -28,6 +28,25 @@ struct DocumentHeader {
     version: u32,
 }
 
+pub(crate) fn decode_versioned<T: serde::de::DeserializeOwned>(
+    mut bytes: Vec<u8>, first_version: u32, migrations: &[Migration],
+) -> io::Result<T> {
+    let mut version = serde_json::from_slice::<DocumentHeader>(&bytes)?.version;
+    let migrations = version.checked_sub(first_version)
+        .and_then(|index| migrations.get(index as usize..))
+        .ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidData, format!("Unsupported document version {version}"),
+        ))?;
+    for migrate in migrations {
+        bytes = migrate(&bytes)?;
+        version += 1;
+        if serde_json::from_slice::<DocumentHeader>(&bytes)?.version != version {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid document migration"));
+        }
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 /// Protected JSON documents keep their existing top-level fields. Each migration
 /// maps one stored version to the next. A missing version denotes version zero.
 /// Reads migrate in memory so an inspection never rewrites the ledger. The
@@ -38,21 +57,8 @@ pub(crate) trait VersionedDocument: serde::Serialize + serde::de::DeserializeOwn
     const PRETTY: bool = false;
 
     fn read_from(path: &Path) -> io::Result<Self> {
-        let mut bytes = read(path)?;
-        let mut version = serde_json::from_slice::<DocumentHeader>(&bytes)?.version;
-        let migrations = version.checked_sub(Self::FIRST_VERSION)
-            .and_then(|index| Self::MIGRATIONS.get(index as usize..))
-            .ok_or_else(|| io::Error::new(
-                io::ErrorKind::InvalidData, format!("Unsupported document version {version}"),
-            ))?;
-        for migrate in migrations {
-            bytes = migrate(&bytes)?;
-            version += 1;
-            if serde_json::from_slice::<DocumentHeader>(&bytes)?.version != version {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid document migration"));
-            }
-        }
-        Ok(serde_json::from_slice(&bytes)?)
+        let bytes = read(path)?;
+        decode_versioned(bytes, Self::FIRST_VERSION, Self::MIGRATIONS)
     }
 
     fn read_optional(path: &Path) -> io::Result<Option<Self>> {

@@ -29,41 +29,54 @@ pub fn guess_check(root: &Path) -> Option<String> {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct ProjectChecks {
+    version: u32,
+    checks: HashMap<String, Option<String>>,
+}
+
+impl ProjectChecks {
+    fn read(path: &Path) -> std::io::Result<Self> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self { version: 1, checks: HashMap::new() });
+            }
+            Err(e) => return Err(e),
+        };
+        crate::authority_file::decode_versioned(bytes, 0, &[|legacy| {
+            let checks = serde_json::from_slice(legacy)?;
+            serde_json::to_vec(&Self { version: 1, checks })
+        }])
+    }
+}
+
+fn project_key(root: &Path) -> String {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()).to_string_lossy().into_owned()
+}
+
 pub fn saved_check(data: &Path, root: &Path) -> Option<Option<String>> {
     let path = data.join("bot-copies").join("checks.json");
-    let bytes = std::fs::read(&path).ok()?;
-    let map: HashMap<String, Option<String>> = serde_json::from_slice(&bytes).ok()?;
-    let key = std::fs::canonicalize(root)
-        .unwrap_or_else(|_| root.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-    map.get(&key).cloned()
+    match ProjectChecks::read(&path) {
+        Ok(document) => document.checks.get(&project_key(root)).cloned(),
+        Err(_) => Some(None),
+    }
 }
 
 pub fn save_check(data: &Path, root: &Path, cmd: Option<String>) -> Result<(), String> {
+    static WRITER: Mutex<()> = Mutex::new(());
+    let _writer = WRITER.lock().map_err(|e| e.to_string())?;
     let dir = data.join("bot-copies");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create directory {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("checks.json");
-    let mut map: HashMap<String, Option<String>> = if path.exists() {
-        let bytes = std::fs::read(&path).map_err(|e| format!("Could not read checks.json: {e}"))?;
-        serde_json::from_slice(&bytes).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
-    let key = std::fs::canonicalize(root)
-        .unwrap_or_else(|_| root.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-    map.insert(key, cmd);
+    let mut document = ProjectChecks::read(&path).map_err(|e| format!("Could not read checks.json: {e}"))?;
+    document.checks.insert(project_key(root), cmd);
+    let bytes = serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?;
     let tmp = dir.join(format!("checks.json.tmp-{}", std::process::id()));
-    let serialized = serde_json::to_string_pretty(&map)
-        .map_err(|e| format!("Could not serialize checks.json: {e}"))?;
-    std::fs::write(&tmp, serialized)
-        .map_err(|e| format!("Could not write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .map_err(|e| format!("Could not rename {} to {}: {e}", tmp.display(), path.display()))?;
-    Ok(())
+    crate::storage::write_synced(&tmp, &bytes)
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .and_then(|()| crate::storage::sync_directory(&dir))
+        .map_err(|e| format!("Could not save checks.json: {e}"))
 }
 
 pub fn resolve_check(data: &Path, root: &Path) -> Option<String> {
@@ -311,6 +324,24 @@ mod tests {
         let temp = TempDir::new("none");
         fs::write(temp.path().join("README.md"), "# Hello").unwrap();
         assert_eq!(guess_check(temp.path()), None);
+    }
+
+    #[test]
+    fn migrates_legacy_project_checks_and_preserves_newer_documents() {
+        let temp = TempDir::new("checks-migration");
+        let data = temp.path();
+        let dir = data.join("bot-copies");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("checks.json");
+        let key = project_key(data);
+        fs::write(&path, serde_json::to_vec(&HashMap::from([(key, "old-check")])).unwrap()).unwrap();
+        assert_eq!(saved_check(data, data), Some(Some("old-check".into())));
+        save_check(data, data, None).unwrap();
+        assert_eq!(ProjectChecks::read(&path).unwrap().version, 1);
+        let future = br#"{"version":8,"checks":{}}"#;
+        fs::write(&path, future).unwrap();
+        assert!(save_check(data, data, Some("replacement".into())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), future);
     }
 
     #[test]
