@@ -55,6 +55,14 @@ pub(crate) trait VersionedDocument: serde::Serialize + serde::de::DeserializeOwn
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    fn read_optional(path: &Path) -> io::Result<Option<Self>> {
+        match Self::read_from(path) {
+            Ok(doc) => Ok(Some(doc)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     fn write_to(&self, path: &Path) -> io::Result<()> {
         let bytes = if Self::PRETTY {
             serde_json::to_vec_pretty(self)?

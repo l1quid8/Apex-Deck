@@ -1,9 +1,34 @@
+use crate::authority_file::VersionedDocument;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use apex_core::work_steps::{ReplySteps, StepKind};
 use apex_core::{ParticipantId, RoomSnapshot};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct MachineGrantsDocument {
+    version: u32,
+    #[serde(flatten)]
+    grants: crate::personal_settings::MachineAllows,
+}
+
+impl VersionedDocument for MachineGrantsDocument {
+    const FIRST_VERSION: u32 = 0;
+    const MIGRATIONS: &'static [crate::authority_file::Migration] = &[|bytes| {
+        let grants = serde_json::from_slice(bytes)?;
+        serde_json::to_vec(&Self { version: 1, grants })
+    }];
+}
+
+impl VersionedDocument for crate::personal::PersonalDocument {
+    const FIRST_VERSION: u32 = 0;
+    const MIGRATIONS: &'static [crate::authority_file::Migration] = &[|bytes| {
+        let mut document: Self = serde_json::from_slice(bytes)?;
+        document.version = 1;
+        serde_json::to_vec(&document)
+    }];
+}
 
 /// Flush through the writable handle that produced the replacement. Windows
 /// requires write access for `sync_all`; reopening with `File::open` is read-only.
@@ -448,29 +473,23 @@ impl Store {
 
     /// Personal assistants: their conversations, events, tasks and receipts.
     pub fn personal(&self) -> Result<Option<crate::personal::PersonalDocument>, String> {
-        let path=self.root.join("personal-assistants.json");
-        match crate::authority_file::read(&path){
-            Ok(bytes)=>serde_json::from_slice(&bytes).map(Some).map_err(|e|e.to_string()),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),
-            Err(e)=>Err(e.to_string()),
-        }
+        crate::personal::PersonalDocument::read_optional(&self.root.join("personal-assistants.json"))
+            .map_err(|e| e.to_string())
     }
 
     pub fn save_personal(&self, document: &crate::personal::PersonalDocument) -> Result<(), String> {
-        let bytes=serde_json::to_vec(document).map_err(|e|e.to_string())?;
-        crate::authority_file::write(&self.root.join("personal-assistants.json"),&bytes).map_err(|e|e.to_string())
+        document.write_to(&self.root.join("personal-assistants.json")).map_err(|e| e.to_string())
     }
 
     /// Which remote assistants may run commands on this machine, and where.
     pub fn personal_machine(&self) -> Result<Option<crate::personal_settings::MachineAllows>, String> {
-        match crate::authority_file::read(&self.root.join("personal-machine.json")) {
-            Ok(bytes)=>serde_json::from_slice(&bytes).map(Some).map_err(|e|e.to_string()),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(e)=>Err(e.to_string()),
-        }
+        MachineGrantsDocument::read_optional(&self.root.join("personal-machine.json"))
+            .map(|doc| doc.map(|d| d.grants)).map_err(|e| e.to_string())
     }
 
     pub fn save_personal_machine(&self, allows: &crate::personal_settings::MachineAllows) -> Result<(), String> {
-        crate::authority_file::write(&self.root.join("personal-machine.json"),&serde_json::to_vec(allows).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+        MachineGrantsDocument { version: 1, grants: allows.clone() }
+            .write_to(&self.root.join("personal-machine.json")).map_err(|e| e.to_string())
     }
 
     /// The folder every saved file lives in.
@@ -1502,6 +1521,25 @@ mod tests {
         std::env::temp_dir().join(format!("apex-deck-storage-{}-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+
+    #[test]
+    fn machine_grants_migrate_only_when_saved_and_refuse_future_versions() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let path = root.join("personal-machine.json");
+        let legacy = br#"{"allows":[]}"#;
+        crate::authority_file::write(&path, legacy).unwrap();
+        let grants = store.personal_machine().unwrap().unwrap();
+        assert!(grants.allows.is_empty());
+        assert_eq!(crate::authority_file::read(&path).unwrap(), legacy);
+        store.save_personal_machine(&grants).unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&crate::authority_file::read(&path).unwrap()).unwrap();
+        assert_eq!(document, serde_json::json!({"version": 1, "allows": []}));
+        crate::authority_file::write(&path, br#"{"version":2,"allows":[]}"#).unwrap();
+        assert!(store.personal_machine().is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
