@@ -56,9 +56,12 @@ pub(crate) trait VersionedDocument: serde::Serialize + serde::de::DeserializeOwn
     const MIGRATIONS: &'static [Migration] = &[];
     const PRETTY: bool = false;
 
-    fn read_from(path: &Path) -> io::Result<Self> {
-        let bytes = read(path)?;
+    fn decode(bytes: Vec<u8>) -> io::Result<Self> {
         decode_versioned(bytes, Self::FIRST_VERSION, Self::MIGRATIONS)
+    }
+
+    fn read_from(path: &Path) -> io::Result<Self> {
+        Self::decode(read(path)?)
     }
 
     fn read_optional(path: &Path) -> io::Result<Option<Self>> {
@@ -70,11 +73,16 @@ pub(crate) trait VersionedDocument: serde::Serialize + serde::de::DeserializeOwn
     }
 
     fn write_to(&self, path: &Path) -> io::Result<()> {
+        self.write_checked(path, |_| Ok(()))
+    }
+
+    fn write_checked(&self, path: &Path, check: impl FnOnce(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let bytes = if Self::PRETTY {
             serde_json::to_vec_pretty(self)?
         } else {
             serde_json::to_vec(self)?
         };
+        check(&bytes)?;
         write(path, &bytes)
     }
 }
