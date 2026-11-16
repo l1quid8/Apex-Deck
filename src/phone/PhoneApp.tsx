@@ -116,7 +116,8 @@ import { PickedText } from "./PickedText";
 import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
 import { pinSource, pinText, responsePin } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
-import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
+import { applyHistoryChange, planHistoryChange, retryBot } from "../threadHistoryActions";
+import { failedLine, goBackAlways, goBackAsks, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
 import { reconcileWorkPanes, workPresentation } from "../workThreadMetadata.ts";
 import { changeProject } from "../projectLifecycle.ts";
@@ -2433,12 +2434,12 @@ export function PhoneApp() {
     if (!shown || shown.id !== paneId) return;
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     if (Object.keys(shown.working).length > 0) { setNotice("Stop the agents first."); return; }
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    const bot = retryBot(message);
     if (kind === "retry" && !shown.participants.some((p) => p.id === bot)) { setNotice(`${bot} isn't in this thread any more, so it can't answer again.`); return; }
     const host = changeHost(kind === "retry" ? "Retry" : "Revert");
     if (!host) return;
     try {
-      const plan = await host.backend.roomRevertPlan(paneId, message.seq, bot);
+      const plan = await planHistoryChange(host.backend, paneId, message);
       const going: GoingBack = { paneId, kind, message, plan, scope: "both", ticked: initialFiles(plan) };
       if (goBackAsks(goBackAlways(kind), plan)) setGoingBack(going);
       else await runGoBack(going);
@@ -2452,10 +2453,8 @@ export function PhoneApp() {
     const { paneId, kind, message, plan, scope, ticked } = going;
     const host = changeHost(kind === "retry" ? "Retry" : "Revert");
     if (!host) return;
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
-    const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     try {
-      const failed = await host.backend.roomRevert(paneId, message.seq, bot, request.chat, request.files);
+      const { failed, request, bot } = await applyHistoryChange(host.backend, paneId, message, kind, scope, plan, ticked);
       if (request.chat) {
         setSavedSteps((saved) => saved && saved.id === paneId && saved.hostId === host.machine.id ? { ...saved, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
         refreshSteps.current();

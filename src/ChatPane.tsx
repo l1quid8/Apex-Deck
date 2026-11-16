@@ -31,7 +31,7 @@ import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaiti
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
-import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
+import { responsePin, pinSource, pinText, pinsBefore, pinsAfterClear } from "./messagePins";
 import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
@@ -49,7 +49,8 @@ import { ArtifactsPanel, DEFAULT_VIEW, type ArtifactsHost, type PanelView } from
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, artifactAutoOpen, upsertFromFile, fromReply, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
-import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
+import { applyHistoryChange, planHistoryChange, retryBot } from "./threadHistoryActions";
+import { failedLine, goBackAlways, goBackAsks, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { botIdentity, mentionable, mentionFor, slug } from "./slug";
@@ -1982,10 +1983,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if (!ready || chatReadOnly) return;
     if (busy) return notify("Stop the agents first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    const bot = retryBot(message);
     if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
     const origin = currentPlace.current;
-    void backend.roomRevertPlan(pane.id, message.seq, bot).then((plan) => {
+    void planHistoryChange(backend, pane.id, message).then((plan) => {
       if (currentPlace.current !== origin) return;
       if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan), place: origin });
       else runGoBack(kind, message, plan, "both", initialFiles(plan));
@@ -1994,11 +1995,9 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const runGoBack = (kind: GoBack, message: Message, plan: RevertPlan, scope: RevertScope, ticked: string[]) => {
     if (!ready || currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) return;
     setGoingBack(null);
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
-    const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     setGoneBack((n) => n + 1);
     const origin = currentPlace.current;
-    void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+    void applyHistoryChange(backend, pane.id, message, kind, scope, plan, ticked).then(({ failed, request, bot }) => {
       if (currentPlace.current !== origin) return;
       if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
@@ -2008,7 +2007,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         setTurnProgress({});
         refreshSteps.current();
       }
-      if (request.chat) setPins(list => list.filter(pin => { const seq = pinSource(pin); return seq === null || seq < message.seq; }));
+      if (request.chat) setPins(list => pinsBefore(list, message.seq));
       if (request.chat) setEntries((list) => {
         const first = list.findIndex((e) => e.kind === "message" && e.message.seq >= message.seq);
         return first < 0 ? list : list.slice(0, first);
