@@ -16,6 +16,7 @@
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const KEEP = new Set(['.cargo-lock', 'CACHEDIR.TAG', '.rustc_info.json']);
 /** Folders cargo makes inside a profile folder; they stay even when emptied. */
@@ -96,7 +97,8 @@ function main(argv) {
   return r.errors.length ? 1 : 0;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+// A URL pathname is /D:/a/... on Windows and percent-encodes spaces, so compare file paths.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { process.exit(main(process.argv.slice(2))); }
   catch (e) { console.error(`clean-target: ${e.message}`); process.exit(1); }
 }

@@ -15,6 +15,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const OUTPUT = 'src/generated/protocol.ts';
 
@@ -169,7 +170,7 @@ function schemaFromCargo(repo) {
 }
 
 function main(argv) {
-  const repo = resolve(dirname(new URL(import.meta.url).pathname), '..');
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   let from, out = resolve(repo, OUTPUT), check = false, schemaOut;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -195,7 +196,8 @@ function main(argv) {
   return 0;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+// A URL pathname is /D:/a/... on Windows and percent-encodes spaces, so compare file paths.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { process.exit(main(process.argv.slice(2))); }
   catch (e) { console.error(`gen-protocol-types: ${e.message}`); process.exit(1); }
 }

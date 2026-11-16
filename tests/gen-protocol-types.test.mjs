@@ -127,7 +127,9 @@ test('the rendered fixture is valid TypeScript', () => {
   try {
     writeFileSync(join(dir, 'protocol.ts'), render(fixture) + '\n');
     writeFileSync(join(dir, 'use.ts'), `import { Commands, HostEvents, PROTOCOL, type Capability } from './protocol';\nconst args: Commands['room_post'] = { id: 'r', text: 'hi' };\nconst code: HostEvents['pty-exit']['code'] = null;\nconst cap: Capability = 'monitor';\nexport const ok = [args, code, cap, PROTOCOL] as const;\n`);
-    const r = spawnSync('npx', ['tsc', '--ignoreConfig', '--noEmit', '--strict', '--target', 'es2022', '--moduleResolution', 'bundler', '--module', 'esnext', join(dir, 'protocol.ts'), join(dir, 'use.ts')], { encoding: 'utf8', cwd: process.cwd() });
+    // Run the local compiler through node: Windows has npx.cmd, which spawning without a shell can't find.
+    const tsc = join(process.cwd(), 'node_modules', 'typescript', 'bin', 'tsc');
+    const r = spawnSync(process.execPath, [tsc, '--ignoreConfig', '--noEmit', '--strict', '--target', 'es2022', '--moduleResolution', 'bundler', '--module', 'esnext', join(dir, 'protocol.ts'), join(dir, 'use.ts')], { encoding: 'utf8', cwd: process.cwd() });
     assert.equal(r.status, 0, r.stdout + r.stderr);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
