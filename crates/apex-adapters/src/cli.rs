@@ -592,6 +592,7 @@ fn random_token() -> String {
                         // No turn/start was delivered. Retire before retrying, and use
                         // the full transcript with a fresh worker in this same turn.
                         process.close().await.map_err(|_| ParticipantError::CleanupIncomplete("Codex session cleanup failed".into()))?;
+                        live.tail = None;
                         let (child, hook) = self.start_codex().await?;
                         return codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await.map_err(|error| match error {
                             TurnError::CleanupIncomplete(why) => ParticipantError::CleanupIncomplete(why),
@@ -823,6 +824,7 @@ fn random_token() -> String {
                 process.set_servers(&launch.claude_dynamic_servers(helper)).await.is_ok()
             } else { true };
             if !rebound {
+                live.tail = None;
                 process.terminate_now();
                 process.close().await.map_err(ParticipantError::CleanupIncomplete)?;
                 one_shot().await?
@@ -832,7 +834,10 @@ fn random_token() -> String {
                         live.process = process.map(Process::Claude);
                         finished
                     }
-                    Err(error) if follow_up.is_some() && claude_session::definitely_unsent(&error) => one_shot().await?,
+                    Err(error) if follow_up.is_some() && claude_session::definitely_unsent(&error) => {
+                        live.tail = None;
+                        one_shot().await?
+                    }
                     Err(error) => return Err(ParticipantError::Failed(format!("talking to `{program}` failed: {error}"))),
                 }
             }
@@ -1248,6 +1253,19 @@ impl Participant for CliParticipant {
             prompt
         });
         let turn = async {
+            let finish = |live: Option<LiveTurn>, reply: &Reply| {
+                if request.room_reply {
+                    let continued = live.as_ref().is_some_and(|turn| turn.tail.is_some());
+                    let (kind, sent) = match follow_up.as_deref().filter(|_| continued) {
+                        Some(tail) => ("continued", tail),
+                        None => ("fresh", prompt.as_str()),
+                    };
+                    eprintln!("[apex-deck] live {program} turn: {kind}, prompt_chars={}", sent.chars().count());
+                }
+                if let Some(live) = live.filter(|_| !approver.retire_session.load(Ordering::Relaxed)) {
+                    live.finish(&reply.text);
+                }
+            };
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
                 let reply = if live.is_some() {
@@ -1255,7 +1273,7 @@ impl Participant for CliParticipant {
                 } else {
                     runner.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await
                 }?;
-                if let Some(live) = live.filter(|_| !approver.retire_session.load(Ordering::Relaxed)) { live.finish(&reply.text); }
+                finish(live, &reply);
                 return Ok(reply);
             }
             if let Backend::Agent { tool: AgentTool::Muse, model } = &self.config.backend {
@@ -1263,7 +1281,7 @@ impl Participant for CliParticipant {
             }
             if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
                 let reply = runner.run_claude_asking(program, &args, &prompt, follow_up.as_deref(), &images, on_progress, &approver, live.as_mut()).await?;
-                if let Some(live) = live.filter(|_| !approver.retire_session.load(Ordering::Relaxed)) { live.finish(&reply.text); }
+                finish(live, &reply);
                 return Ok(reply);
             }
             // Grok's pictures are saved to disk, so the ones this turn made

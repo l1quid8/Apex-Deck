@@ -20,20 +20,22 @@ impl Process {
             Self::Codex(p, _) => p.is_alive(),
         }
     }
-    fn retire(mut self) {
+    fn retire(self) {
+        self.retire_on(tokio::runtime::Handle::try_current().ok());
+    }
+    fn retire_on(mut self, runtime: Option<tokio::runtime::Handle>) {
         match &mut self {
             Self::Claude(p) => p.terminate_now(),
             Self::Codex(p, _) => p.terminate_now(),
         }
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        if let Some(runtime) = runtime {
             runtime.spawn(async move {
-                match self {
-                    Self::Claude(p) => {
-                        let _ = p.close().await;
-                    }
-                    Self::Codex(p, _hook) => {
-                        let _ = p.close().await;
-                    }
+                let verified = match self {
+                    Self::Claude(p) => p.close().await.is_ok(),
+                    Self::Codex(p, _hook) => p.close().await.is_ok(),
+                };
+                if !verified {
+                    eprintln!("[apex-deck] Could not verify retired room worker cleanup");
                 }
             });
         }
@@ -41,6 +43,7 @@ impl Process {
 }
 
 struct Cached {
+    runtime: tokio::runtime::Handle,
     key: Key,
     history: Vec<ViewTurn>,
     process: Process,
@@ -87,7 +90,7 @@ fn id() -> u64 {
 }
 fn retire(entry: Option<Entry>) {
     if let Some(Entry::Idle(_, _, cached, _timer)) = entry {
-        cached.process.retire();
+        cached.process.retire_on(Some(cached.runtime));
     }
 }
 
@@ -160,7 +163,7 @@ impl Slot {
                     return Some(result);
                 }
             }
-            cache.process.retire();
+            cache.process.retire_on(Some(cache.runtime));
         }
         Some(result)
     }
@@ -220,6 +223,7 @@ impl LiveTurn {
             Process::Codex(..) => IDLE,
         };
         let cached = Cached {
+            runtime: tokio::runtime::Handle::current(),
             timeout,
             key: self.key.take().unwrap(),
             history: std::mem::take(&mut self.history),
@@ -229,7 +233,7 @@ impl LiveTurn {
         let generation = self.generation;
         let mut entries = pool().lock().unwrap();
         if !matches!(entries.get(&slot_id), Some(Entry::Running(g)) if *g == generation) {
-            cached.process.retire();
+            cached.process.retire_on(Some(cached.runtime));
             return;
         }
         let owner = slot_id.clone();
@@ -330,15 +334,18 @@ mod tests {
             .map(|slot| slot.begin(key(), &[]).unwrap())
             .collect();
         assert!(slots[CAP].begin(key(), &[]).is_none());
+        let data =
+            std::env::temp_dir().join(format!("deck-live-pool-{}-{}", std::process::id(), id()));
+        std::fs::create_dir(&data).unwrap();
+        let records = data.join("worker-processes").join("room");
+        let registry = crate::owned_process::Registry::new(Some(records.clone()));
         let park = |mut turn: LiveTurn| {
             let mut command = tokio::process::Command::new("cat");
             command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            let child = crate::owned_process::Registry::default()
-                .spawn(&mut command)
-                .unwrap();
+            let child = registry.spawn(&mut command).unwrap();
             turn.process = Some(Process::Claude(ClaudeProcess::new(child)));
             turn.finish("saved");
         };
@@ -355,5 +362,17 @@ mod tests {
         drop(final_turn);
         assert!(slots[CAP].begin(key(), &[]).is_none());
         drop(replacement);
+        // Synchronous shutdown can originate on a thread outside Tokio. It
+        // must still reap both evicted workers and clear their durable records.
+        let slot = slots[1].clone();
+        std::thread::spawn(move || slot.clear()).join().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while std::fs::read_dir(&records).unwrap().next().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("retired workers were not reaped");
+        std::fs::remove_dir_all(data).unwrap();
     }
 }

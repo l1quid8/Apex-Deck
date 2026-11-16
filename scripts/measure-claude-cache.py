@@ -24,6 +24,9 @@ Example:
 import argparse, csv, glob, json, os, sys
 
 SUGGEST_TAIL = '"prompt": "<full prompt text>"}]'
+FULL_VIEW = "\n\n--- Conversation so far ---\n"
+FOLLOW_UP = "--- New in the conversation since your last reply ---\n"
+REPLY = "--- Your reply ---"
 KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 
@@ -35,7 +38,7 @@ def text_of(content):
     return ""
 
 
-def load(path):
+def load(path, *, plain=False):
     """Return (entrypoint, first_prompt, turns) where turns is a list of lists of usage dicts."""
     entry, first, turns, seen = None, None, [], {}
     for line in open(path, encoding="utf-8"):
@@ -48,10 +51,19 @@ def load(path):
             continue
         if d.get("type") == "user":
             txt = text_of(d.get("message", {}).get("content"))
-            if txt.strip():  # typed message (tool results carry no text block)
-                if first is None:
-                    first = txt
-                turns.append([])
+            if not txt.strip():
+                continue
+            if not plain:
+                # Claude records helper completions and synthetic text as user
+                # messages too. Identify the exact Deck prompt envelope, including
+                # when the first actual prompt follows an internal user event.
+                if d.get("isMeta") or REPLY not in txt.splitlines():
+                    continue
+                if (first is None and FULL_VIEW not in txt) or (first is not None and not txt.startswith(FOLLOW_UP)):
+                    continue
+            if first is None:
+                first = txt
+            turns.append([])
         elif d.get("type") == "assistant":
             m = d.get("message", {})
             u, mid = m.get("usage"), m.get("id")
@@ -103,7 +115,7 @@ def main():
             with open(f, encoding="utf-8") as fh:
                 if p.deck_match not in fh.read():
                     continue
-        entry, first, turns = load(f)
+        entry, first, turns = load(f, plain=is_plain)
         if is_plain:
             kind, groups = "plain", turns
         else:
