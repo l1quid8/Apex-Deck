@@ -197,7 +197,7 @@ fn read(path: &Path) -> Result<Registry, String> {
         Err(e) => Err(format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
     };
     if let Err(why) = &state {
-        eprintln!("apex-daemon: {why}");
+        tracing::warn!("{why}");
     }
     state
 }

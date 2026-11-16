@@ -148,7 +148,7 @@ fn fall_back_if_unreachable(endpoint: &Endpoint, primary: &str, fallback: &str, 
             if endpoint.is_closed() {
                 return;
             }
-            eprintln!("apex-daemon: relay {current} not connected for {after:?}; switching to {other}");
+            tracing::warn!(relay = %current, "relay {current} not connected for {after:?}; switching to {other}");
             // No QUIC address discovery: the relay's QUIC certificate names
             // only the primary host, so that probe would always fail here.
             endpoint.insert_relay(other.clone(), Arc::new(RelayConfig::new(other.clone(), None))).await;
@@ -167,8 +167,8 @@ pub async fn accept(daemon: Arc<Daemon>, endpoint: Endpoint) {
             match tokio::time::timeout(HELLO_WAIT, incoming).await {
                 Ok(Ok(connection)) if connection.alpn() == PAIR_ALPN => pair_serve(daemon, connection, host).await,
                 Ok(Ok(connection)) => serve(daemon, connection).await,
-                Ok(Err(e)) => eprintln!("apex-daemon: a remote connection failed to set up: {e}"),
-                Err(_) => eprintln!("apex-daemon: a remote connection took too long to set up"),
+                Ok(Err(e)) => tracing::warn!("a remote connection failed to set up: {e}"),
+                Err(_) => tracing::warn!("a remote connection took too long to set up"),
             }
         });
     }

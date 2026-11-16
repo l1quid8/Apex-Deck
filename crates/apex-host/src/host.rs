@@ -711,6 +711,13 @@ impl Host {
             if let Some(handle) = handle { self.save_steps(room, handle, &record); }
             else if let Err(why) = self.store.save_steps(room, &record) { eprintln!("[apex-deck] could not save reply steps: {why}"); }
         }
+        // A turn that failed or was stopped keeps its steps too: those are the
+        // turns that get debugged, and the live progress above is gone at the
+        // next turn.
+        for record in self.steps.take_ended(room, &event) {
+            if let Some(handle) = handle { self.save_ended_steps(room, handle, &record); }
+            else if let Err(why) = self.store.save_ended_steps(room, &record) { eprintln!("[apex-deck] could not save the steps of a turn that ended without a reply: {why}"); }
+        }
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
         if let Some(handle) = handle { self.publish_plan_runs(room, handle, plan_changes, plan_save); }
         // The caller may hold this room's event lock, so the switch is set
@@ -1521,6 +1528,15 @@ impl Host {
         if handle.deleted.load(Ordering::SeqCst) { return; }
         if let Err(why) = self.store.save_steps(id, record) {
             eprintln!("[apex-deck] could not save the steps behind reply {} in {id}: {why}", record.seq);
+        }
+    }
+
+    /// `save_steps` for a turn that ended without a reply.
+    fn save_ended_steps(&self, id: &str, handle: &RoomHandle, record: &apex_core::work_steps::ReplySteps) {
+        let _checkpoint = handle.checkpoint.lock().unwrap();
+        if handle.deleted.load(Ordering::SeqCst) { return; }
+        if let Err(why) = self.store.save_ended_steps(id, record) {
+            eprintln!("[apex-deck] could not save the steps of {}'s turn that ended without a reply in {id}: {why}", record.by);
         }
     }
 
@@ -3166,10 +3182,13 @@ impl Host {
     /// The steps saved with a thread's replies. Without `seq`, the index of
     /// replies that have steps; with it, that reply's steps. Null when
     /// there are none, the thread included.
-    pub fn steps_load(&self, room: String, seq: Option<usize>) -> Result<serde_json::Value, String> {
-        let value = match seq {
-            None => serde_json::to_value(self.store.steps_index(&room)?),
-            Some(seq) => serde_json::to_value(self.store.steps(&room, seq)?),
+    /// The thread's steps index, one reply's steps (`seq`), or one turn that
+    /// ended without a reply (`ended`: its position in the index's `ended` list).
+    pub fn steps_load(&self, room: String, seq: Option<usize>, ended: Option<usize>) -> Result<serde_json::Value, String> {
+        let value = match (seq, ended) {
+            (None, None) => serde_json::to_value(self.store.steps_index(&room)?),
+            (Some(seq), _) => serde_json::to_value(self.store.steps(&room, seq)?),
+            (None, Some(n)) => serde_json::to_value(self.store.ended_steps(&room, n)?),
         };
         value.map_err(|e| e.to_string())
     }

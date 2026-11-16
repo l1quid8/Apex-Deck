@@ -23,6 +23,9 @@ name = "apex-protocol-schema"
 path = "src/bin_schema.rs"
 
 [dependencies]
+# Log lines: `apex-daemon: <message> key=value…` on stderr; see logging.rs.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 schemars.workspace = true
 apex-adapters = { path = "../apex-adapters" }
 apex-core = { path = "../apex-core" }

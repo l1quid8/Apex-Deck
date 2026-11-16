@@ -65,6 +65,9 @@ pub struct TurnBatch {
     answers: bool,
     generated_ui: GeneratedUiCapability,
     runner_context: Option<(String, bool)>,
+    /// A sole human request may get one private follow-up if the reply
+    /// explicitly leaves work unfinished. Kept separate from runner context.
+    direct_request: Option<(ParticipantId, String, usize)>,
 }
 impl TurnBatch {
     /// A client capability belongs to this chain, including queued turns and
@@ -289,6 +292,9 @@ impl ConcurrentRoom {
         let record = room.client_message(&request_id).unwrap().clone();
         let mut batch = self.batch(unique.clone(), !voice && room.options().policy == TurnPolicy::RoundRobin, if voice { Some(0) } else { hops.or(room.options().max_bot_hops) }, room.configs().into_iter().map(|c| c.id).collect(), !voice && room.answers_handle().load(Ordering::SeqCst));
         batch.client_message_id = Some(request_id.clone());
+        if room.kind().is_work() && !voice && unique.len() == 1 {
+            batch.direct_request = Some((unique[0].clone(), text.to_string(), message.seq));
+        }
         if voice {
             let stop = Arc::new(AtomicBool::new(false));
             self.voice_requests.lock().unwrap().insert(request_id.clone(), (unique[0].clone(), text.into(), stop.clone(), Arc::new(AtomicBool::new(false))));
@@ -335,15 +341,21 @@ impl ConcurrentRoom {
         let mut unique = Vec::new();
         for id in targets { if !unique.contains(&id) { unique.push(id); } }
         let targets = unique;
+        let is_human = speaker == Speaker::Human;
         let message = room.accept_post(speaker, text, targets.clone(), keep_default, commit)?;
+        let human_seq = message.seq;
         sink(RoomEvent::MessageAdded { message });
-        Ok(self.batch(
+        let mut batch = self.batch(
             targets,
             room.options().policy == TurnPolicy::RoundRobin,
             room.options().max_bot_hops,
             room.configs().into_iter().map(|c| c.id).collect(),
             room.answers_handle().load(Ordering::SeqCst),
-        ))
+        );
+        if room.kind().is_work() && is_human && batch.tickets.len() == 1 {
+            batch.direct_request = Some((batch.tickets[0].id.clone(), text.to_string(), human_seq));
+        }
+        Ok(batch)
     }
     /// Reservation, transcript append, correlation and deduplication are atomic
     /// under the room lock. IDs are retained for this process lifetime (bounded).
@@ -446,6 +458,7 @@ impl ConcurrentRoom {
             answers,
             generated_ui: GeneratedUiCapability::Unsupported,
             runner_context: None,
+            direct_request: None,
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
@@ -470,7 +483,7 @@ impl ConcurrentRoom {
             if batch.sequential {
                 for ticket in tickets {
                     let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, None).await;
-                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone()).await);
+                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -502,14 +515,14 @@ impl ConcurrentRoom {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
                             let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, prepared).await;
-                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone()).await));
+                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await));
                         }
                         ids
                     };
                     let read_turns = futures::future::join_all(readers.into_iter().map(|(index, (ticket, prepared))| {
                         let batch = &batch;
                         async move {
-                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone()).await)
+                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await)
                         }
                     }));
                     let (mut results, readers) = futures::join!(write_turns, read_turns);
@@ -522,7 +535,7 @@ impl ConcurrentRoom {
                         tickets
                             .into_iter()
                             .zip(prepared)
-                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.client_message_id.clone())),
+                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone())),
                     )
                     .await
                     {
@@ -530,6 +543,7 @@ impl ConcurrentRoom {
                     }
                 }
             }
+            batch.direct_request = None;
             let mut unique = Vec::new();
             for id in next {
                 if !unique.contains(&id) {
@@ -618,6 +632,7 @@ impl ConcurrentRoom {
         answers: bool,
         generated_ui: GeneratedUiCapability,
         runner_context: Option<&(String, bool)>,
+        direct_request: Option<&(ParticipantId, String, usize)>,
         client_message_id: Option<String>,
     ) -> Vec<ParticipantId> {
         let request_stop = ticket.origin.as_ref().map(|(_, stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
@@ -809,13 +824,21 @@ impl ConcurrentRoom {
             return Vec::new();
         }
         if ticket.origin.is_some() { request.system.push_str("\nThis is a voice call. Begin with a concise speakable sentence. End with a short plain-language result. Keep code in the thread.\n"); }
+        let direct = direct_request.filter(|(id, _, _)| {
+            id == &ticket.id && !request.plan && runner_context.is_none() && participant.config().media.is_none()
+        });
+        let retry_request = direct.map(|_| request.clone());
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),
         });
         let checklists = self.room.lock().await.checklists_handle();
         let changes = Mutex::new(Vec::new());
+        // An opaque tool or command may already have performed the promised operation.
+        let saw_operation = AtomicBool::new(false);
+        let saw_edit = AtomicBool::new(false);
         let progress = |update: Progress<'_>| {
             if let Progress::Change(change) = update {
+                saw_edit.store(true, Ordering::Relaxed);
                 changes.lock().unwrap().push(ChangeRecord {
                     by: ticket.id.clone(),
                     path: change.path.clone(),
@@ -824,22 +847,55 @@ impl ConcurrentRoom {
                     seq: shown,
                 });
             }
+            if let Progress::Work(step) = update {
+                use crate::work_steps::{StepKind, StepStatus};
+                match (step.kind, step.status) {
+                    (StepKind::Thinking, _) => {}
+                    (_, StepStatus::Running | StepStatus::Failed | StepStatus::Stopped) |
+                    (StepKind::Command | StepKind::Tool | StepKind::Helper | StepKind::Other | StepKind::Web, _) => saw_operation.store(true, Ordering::Relaxed),
+                    (StepKind::Edit, _) => saw_edit.store(true, Ordering::Relaxed),
+                    _ => {}
+                }
+            }
             crate::room::remember_checklist(&checklists, &ticket.id, shown, update);
             sink(progress_event(&ticket.id, update));
         };
-        let approver = RoomApprover {
-            desk: &desk,
-            id: &ticket.id,
-            on_event: sink,
+        let interacted = AtomicBool::new(false);
+        let approval_events = |event| {
+            interacted.store(true, Ordering::Relaxed);
+            sink(event);
         };
-        let outcome = Room::interruptible(
-            participant.as_ref(),
-            request,
-            request_stop.clone(),
-            &progress,
-            &approver,
-        )
-        .await;
+        let approver = RoomApprover { desk: &desk, id: &ticket.id, on_event: &approval_events };
+        let mut outcome = Room::interruptible(participant.as_ref(), request, request_stop.clone(), &progress, &approver).await;
+        if let (Some((_, original, source_seq)), Some(mut retry), Ok(first)) = (direct, retry_request, &outcome) {
+            let step = crate::continuation::unfinished_step(original, &first.text);
+            if let Some(step) = step.filter(|step| {
+                !saw_operation.load(Ordering::Relaxed)
+                    && (!saw_edit.load(Ordering::Relaxed) || step.to_ascii_lowercase().starts_with("run "))
+                    && !interacted.load(Ordering::Relaxed)
+            }) {
+                let mut room = self.room.lock().await;
+                let current = !room.plan_handle().load(Ordering::SeqCst)
+                    && !request_stop.load(Ordering::SeqCst)
+                    && !room.transcript().iter().rev().take_while(|m| m.seq > *source_seq).any(|m| m.speaker == Speaker::Human)
+                    && desk.waiting() == 0 && desk.questions_waiting() == 0;
+                if current {
+                    room.record_usage(&ticket.id, first, sink);
+                    drop(room);
+                    retry.turns.push(crate::ViewTurn { role: crate::Role::Assistant, content: first.text.clone() });
+                    retry.turns.push(crate::ViewTurn { role: crate::Role::User, content: format!(
+                        "[Apex continuation] Carry out only the already requested step ({step}) using the original request's exact arguments and restrictions. Report the result or the blocker. Do not repeat completed work."
+                    ) });
+                    sink(RoomEvent::Activity { id: ticket.id.clone(), text: format!("Continuing: {step}") });
+                    outcome = Room::interruptible(participant.as_ref(), retry, request_stop.clone(), &progress, &approver).await;
+                    if let Ok(reply) = &mut outcome {
+                        if let Some(remaining) = crate::continuation::unfinished_step(original, &reply.text) {
+                            reply.text.push_str(&format!("\n\nApex stopped after one continuation. Still outstanding: {remaining}."));
+                        }
+                    }
+                }
+            }
+        }
         drop(_turn_lease);
         let cleanup_error = match &outcome {
             Err(crate::ParticipantError::CleanupIncomplete(error)) => Some(error.clone()),

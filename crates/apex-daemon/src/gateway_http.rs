@@ -230,7 +230,7 @@ pub async fn serve(listener: TcpListener, state: Arc<GatewayHttpState>) {
                 });
             }
             Err(e) => {
-                eprintln!("apex-daemon: could not accept a gateway HTTP connection: {e}");
+                tracing::warn!("could not accept a gateway HTTP connection: {e}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             }

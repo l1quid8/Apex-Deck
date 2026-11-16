@@ -1118,6 +1118,7 @@ export type Command = {
   cmd: "answers_load";
 } | {
   args: {
+    ended?: number | null;
     room: string;
     seq?: number | null;
   };
@@ -4019,6 +4020,7 @@ export interface Commands {
     id: string;
   };
   room_steps: {
+    ended?: number | null;
     room: string;
     seq?: number | null;
   };

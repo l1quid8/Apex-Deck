@@ -226,6 +226,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 

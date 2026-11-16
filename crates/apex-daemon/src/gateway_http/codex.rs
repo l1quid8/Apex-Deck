@@ -159,7 +159,7 @@ impl Proxy {
                     continue;
                 }
                 if let Err(why) = forward(&mut socket, request, &conversation, &upstream).await {
-                    eprintln!("[model-gateway] {why}");
+                    tracing::warn!(provider = "codex", "[model-gateway] {why}");
                 }
             }
         });
@@ -321,7 +321,7 @@ async fn forward(
         .map_err(|_| "Codex model request failed")?;
     let status = response.status().as_u16();
     if status != 200 {
-        eprintln!("[model-gateway] Codex model upstream HTTP {status}");
+        tracing::warn!(provider = "codex", status = %status, "[model-gateway] Codex model upstream HTTP {status}");
         let bytes = response
             .bytes()
             .await

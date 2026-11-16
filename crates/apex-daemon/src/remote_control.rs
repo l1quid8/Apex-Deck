@@ -108,7 +108,7 @@ impl RemoteController {
         }
         // Advertised addresses are saved beside the port, so keep it once on.
         if let Err(error) = remote_config::save_port(&daemon.data, port) {
-            eprintln!("apex-daemon: could not remember UDP port {port}: {error}");
+            tracing::warn!(port, "could not remember UDP port {port}: {error}");
         }
         let accept = spawn_accept(Arc::clone(daemon), endpoint.clone());
         let running = Running { endpoint, accept, port, started_at: Instant::now() };
