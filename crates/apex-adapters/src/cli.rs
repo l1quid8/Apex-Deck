@@ -545,11 +545,17 @@ fn random_token() -> String {
         }
         let child = self.start_with_hook(program, &args, &env, hook.as_ref())?;
         let effort = clean_effort(self.config.effort.as_deref());
+        // Only the Linux jail counts as an external sandbox. A `cfg!` test alone
+        // would still make the compiler resolve `linux_jail`, which Windows lacks.
+        #[cfg(target_os = "linux")]
+        let external_sandbox = crate::linux_jail::should_jail(self.config.access);
+        #[cfg(not(target_os = "linux"))]
+        let external_sandbox = false;
         let turn = codex_server::Turn {
             model: clean_model(model),
             effort: effort.as_deref(),
             service_tier: self.config.speed.map(codex_service_tier),
-            external_sandbox: cfg!(target_os = "linux") && crate::linux_jail::should_jail(self.config.access),
+            external_sandbox,
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
             plan: self.plan.is_some(),
