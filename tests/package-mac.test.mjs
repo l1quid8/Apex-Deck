@@ -47,6 +47,7 @@ test('electron-builder notarizes only when the plan says so', () => {
 });
 
 test('only this build\'s disk images are notarized', () => {
-  assert.deepEqual(builtDmgs(['Apex-Deck_0.9.9_arm64.dmg', 'Apex-Deck-upgrade.pkg', 'mac-arm64', 'Apex-Deck_0.9.9_arm64.dmg.blockmap', 'Other.dmg']),
-    ['Apex-Deck_0.9.9_arm64.dmg']);
+  const before = new Map([['old.dmg', '1'], ['rebuilt.dmg', '2']]);
+  const after = new Map([...before, ['rebuilt.dmg', '3'], ['new.dmg', '4']]);
+  assert.deepEqual(builtDmgs(before, after), ['new.dmg', 'rebuilt.dmg']);
 });

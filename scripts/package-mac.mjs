@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve, join } from 'node:path';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, lstatSync, renameSync, rmSync } from 'node:fs';
 import { notarizeFile, notarizeMessage, notarizePlan } from './notarize-mac.mjs';
 
 export function pickIdentity(output, env) {
@@ -45,9 +45,19 @@ export function builderArgs(identity, plan, extra = []) {
   return args;
 }
 
-/// The disk images this run produced (none for a --dir build).
-export function builtDmgs(names) {
-  return names.filter(name => /^Apex-Deck_.+\.dmg$/.test(name)).sort();
+function imageSnapshot(folder) {
+  const images = new Map();
+  if (!existsSync(folder)) return images;
+  for (const name of readdirSync(folder)) {
+    if (!/^Apex-Deck_.+\.dmg$/.test(name)) continue;
+    const file = lstatSync(join(folder, name), { bigint: true });
+    if (file.isFile()) images.set(name, [file.ino, file.size, file.mtimeNs, file.ctimeNs].join('/'));
+  }
+  return images;
+}
+
+export function builtDmgs(before, after) {
+  return [...after.keys()].filter(name => before.get(name) !== after.get(name)).sort();
 }
 
 function buildRelease() {
@@ -91,14 +101,16 @@ function main() {
     renameSync(staged, output);
   } finally { rmSync(staging, { recursive: true, force: true }); }
   const args = builderArgs(identity, plan, process.argv.slice(2));
+  const release = resolve('release');
+  const submitImages = plan.notarize && !args.includes('--dir');
+  const before = submitImages ? imageSnapshot(release) : null;
   const result = spawnSync(resolve('node_modules/.bin/electron-builder'), args, { stdio: 'inherit' });
   if (result.error) throw result.error;
   if (result.status !== 0) { process.exitCode = result.status ?? 1; return; }
   // electron-builder notarized and stapled the app before making the image.
   // The image is notarized too, so a downloaded copy opens without a prompt.
-  const release = resolve('release');
-  if (plan.notarize && existsSync(release)) {
-    for (const dmg of builtDmgs(readdirSync(release))) notarizeFile(join(release, dmg), plan, { staple: true });
+  if (before) {
+    for (const dmg of builtDmgs(before, imageSnapshot(release))) notarizeFile(join(release, dmg), plan, { staple: true });
   }
   process.exitCode = 0;
 }
