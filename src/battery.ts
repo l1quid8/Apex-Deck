@@ -221,3 +221,8 @@ export function resetDate(resetsAt: number): string {
   const at = new Date(resetsAt * 1000);
   return `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
+
+/** The timestamp and time remaining refer to the same provider reset. */
+export function resetTooltip(resetsAt: number, nowSeconds: number): string {
+  return `resets ${resetDate(resetsAt)} (in ${countdown(resetsAt, nowSeconds)})`;
+}
