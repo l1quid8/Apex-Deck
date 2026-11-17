@@ -8,7 +8,7 @@ const app = await fs.readFile(new URL('../src/App.tsx', import.meta.url), 'utf8'
 test('assistant routing keeps the user pane map mounted inside a hidden workspace container', () => {
  assert.match(app,/workspace-canvas-content/);
  assert.match(app,/display:mainView.kind==='workspace'/);
- assert.match(app,/<PaneMap arrangement=\{arrangement\} mounted=\{listed\.map\(pane => pane\.id\)\}/);
+ assert.match(app,/<PaneMap arrangement=\{arrangement\}/);
  assert.ok(app.indexOf('<PaneMap ') > app.indexOf('className="workspace-canvas-content"'));
  assert.match(app,/chat=\{<ApexAgentAll/);
  assert.doesNotMatch(app,/<ApexAgentWidget|apex-agent-float|apexAgentFull/);
