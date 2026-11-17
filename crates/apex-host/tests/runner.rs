@@ -25,6 +25,20 @@ impl Running {
         let command = Command::from_json(cmd).unwrap();
         self.runtime.block_on(self.host.call(command))
     }
+    fn action(&self, mut command: serde_json::Value) -> serde_json::Value {
+        // The real scheduler can advance revisions between these manual actions.
+        // A conflict applies nothing; repeat the same action at its returned revision.
+        let mut last = serde_json::Value::Null;
+        for _ in 0..16 {
+            last = self.call(command.clone()).unwrap();
+            if last.get("applied").is_some() { return last; }
+            let current = last.get("conflict").unwrap_or_else(|| panic!("unexpected action receipt: {last}"));
+            assert_eq!(current["id"], command["args"]["runnerId"], "runner changed: {last}");
+            let revision = current["revision"].as_u64().unwrap_or_else(|| panic!("missing conflict revision: {last}"));
+            command["args"]["expectedRevision"] = json!(revision);
+        }
+        panic!("runner revision did not settle: {last}");
+    }
 }
 
 fn default_limits() -> RunnerLimits {
@@ -81,7 +95,7 @@ fn round_trip_all_phases() {
             "action":{"action":"pause"}
         }
     });
-    let paused = running.call(pause).unwrap()["applied"].clone();
+    let paused = running.action(pause)["applied"].clone();
     assert_eq!(paused["phase"], "paused");
 
     let rev2 = paused["revision"].as_u64().unwrap();
@@ -96,7 +110,7 @@ fn round_trip_all_phases() {
             "action":{"action":"resume"}
         }
     });
-    let resumed = running.call(resume).unwrap()["applied"].clone();
+    let resumed = running.action(resume)["applied"].clone();
     assert_eq!(resumed["phase"], "running");
 
     let rev3 = resumed["revision"].as_u64().unwrap();
@@ -111,8 +125,9 @@ fn round_trip_all_phases() {
             "action":{"action":"end"}
         }
     });
-    let ended = running.call(end).unwrap()["applied"].clone();
-    assert_eq!(ended["phase"], "ended");
+    let end_receipt = running.action(end);
+    let ended = end_receipt["applied"].clone();
+    assert_eq!(ended["phase"], "ended", "unexpected end receipt: {end_receipt}");
 
     // State should be ended
     let state = running.call(json!({"cmd":"room_runner_state","args":{"id":"room1"}})).unwrap();

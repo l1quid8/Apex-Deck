@@ -27,7 +27,7 @@ fn git(project_data: &Path, cwd: &Path, index: Option<&Path>, args: &[&str]) -> 
 }
 
 #[cfg(any(windows, test))]
-fn retry_snapshot_write<T>(mut write: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+pub(crate) fn retry_snapshot_write<T>(mut write: impl FnMut() -> Result<T, String>) -> Result<T, String> {
     // Concurrent writers of the same Git object can briefly fail on Windows.
     // Retry only that diagnostic: six attempts with 775 ms of total delay.
     for delay_ms in [25, 50, 100, 200, 400] {

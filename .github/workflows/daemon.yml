@@ -108,6 +108,14 @@ jobs:
           cache-on-failure: true
       - name: Check every crate and list all errors
         run: cargo check --locked --keep-going --all-targets -p apex-core -p apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote
+      - name: Stress concurrent checkpoint writes on Windows
+        shell: pwsh
+        run: |
+          1..20 | ForEach-Object {
+            Write-Host "Checkpoint contention attempt $_/20"
+            cargo test --locked -p apex-host --lib checkpoints::tests::concurrent_store_rebuild_is_serialized_and_rebuilds_once -- --exact --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Test apex-core, apex-adapters and apex-host
         if: ${{ !cancelled() }}
         run: cargo test --locked --no-fail-fast -p apex-core -p apex-adapters -p apex-host

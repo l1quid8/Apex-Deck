@@ -379,7 +379,14 @@ impl Snapshots {
             let forget: Vec<&str> = forget.iter().map(String::as_str).collect();
             let _ = self.git(&store, cwd, Some(&index), &forget, None);
         }
-        let tree = text(self.git(&store, cwd, Some(&index), &["write-tree"], None)?);
+        let write = || self.git(&store, cwd, Some(&index), &["write-tree"], None);
+        // Windows Git can briefly deny a concurrent write of the same object.
+        // Reuse the bounded handling used by the other snapshot path.
+        #[cfg(windows)]
+        let written = crate::changes::retry_snapshot_write(write);
+        #[cfg(not(windows))]
+        let written = write();
+        let tree = text(written?);
         Ok((tree, skipped))
     }
 
