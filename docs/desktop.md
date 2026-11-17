@@ -61,8 +61,11 @@ inside it at `Contents/Resources/bin/apex-daemon`, and Codex's approval hook
 runs that same copy. Builds use a Developer ID certificate when the build
 Mac’s keychain has one, so macOS keeps permissions such as Full Disk Access
 across rebuilds. Otherwise they are signed ad hoc;
-`APEX_DECK_SIGN_IDENTITY=-` forces ad hoc. Neither mode is notarized. If macOS
-blocks the app, use System Settings → Privacy & Security → **Open Anyway**.
+`APEX_DECK_SIGN_IDENTITY=-` forces ad hoc. A Developer ID build is also
+notarized and stapled when Apple credentials are set; see
+[notarization.md](notarization.md). Ad hoc builds are never notarized. If macOS
+blocks an un-notarized app, use System Settings → Privacy & Security →
+**Open Anyway**.
 
 ## Run on another machine over SSH
 
@@ -107,6 +110,34 @@ can't reach the Deck window, and only web addresses load in a pane.
 
 Agents can't drive this browser yet; that's phase 3b.
 
+## Daemon protocol compatibility
+
+Desktop, phone, and CLI clients can update independently of the host. Choose a
+wire change by considering both an older client on the new host and a new client
+on an older host.
+
+| Change | Compatibility rule |
+| --- | --- |
+| Optional response or event field | Keep the protocol number when older readers can ignore the field and newer readers handle its absence. An optional request field also needs an omission default that preserves existing behavior. |
+| Optional command or behavior that callers rely on | Advertise a capability in the daemon welcome. Check the capability on the current connection before sending the command or relying on the behavior. An absent capability list means no advertised features. Keep the old path when it is valid, or explain which host needs an update. |
+| Incompatible change to an optional feature | Add a new capability name and keep the older contract under its existing name while advertising it. For example, a host implementing a new request option must let the client distinguish support when an older host could silently ignore it. |
+| Incompatible change to the baseline contract | Bump the Rust daemon’s `PROTOCOL` when the two versions cannot safely share the handshake, framing, or existing baseline command semantics. This includes removing a required field or changing its meaning without a compatible path. Update the hello senders, regenerate the TypeScript contract, and release matching clients and hosts. |
+
+The first request must be `hello` with the exact integer `args.protocol`.
+On a mismatch the daemon sends an `{id, err}` reply giving the protocol numbers
+and closes the connection before dispatching commands. The desktop and phone
+client also checks the welcome’s protocol. A refused hello or mismatched welcome
+puts that client in the failed state until the user retries. After updating the
+incompatible client or host, reconnect to obtain its current capabilities.
+Feature checks use the welcome for that connection. The daemon still enforces
+the command’s authorization policy.
+
+Change the Rust definitions first and run `node scripts/gen-protocol-types.mjs`.
+For a capability, cover a welcome with and without the flag. For a baseline
+bump, cover refusal of the previous protocol and successful hello at the new
+number. The daemon implementation is in `crates/apex-daemon/src/protocol.rs`
+and the desktop and phone handshake tests are in `tests/daemon-client.test.mjs`.
+
 ## Checks
 
 ```sh
@@ -138,3 +169,8 @@ node desktop/run-smoke.mjs --ssh vps \
 it go again, network included; the phase-3 run used `docker pause` on a
 stand-in Ubuntu server in Docker. `--ssh-config FILE` makes `ssh` read FILE
 instead of `~/.ssh/config`.
+
+
+### Notarizing the native upgrade package
+
+For a public macOS upgrade package, set `APEX_DECK_INSTALLER_IDENTITY` to the Developer ID Installer identity and `APEX_DECK_NOTARY_PROFILE` to an existing notarytool Keychain profile before running `scripts/package-mac-upgrade.mjs`. The script signs the package, waits for Apple to accept it, staples the ticket and validates it before publishing the package in `release/`. With both variables unset, the existing local upgrade packaging flow is available.

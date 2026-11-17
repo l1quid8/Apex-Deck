@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BLANK, GHOST, TINT, batteryCells, bindingWindow, contextLevel, contextLine, hasReset, isCritical, isLow,
-  mergePlan, planLevel, planLine, refillDelay, rowFill, shellState, tokenLine, windowLabel,
+  mergePlan, planLevel, planLine, refillDelay, resetDate, resetTooltip, rowFill, shellState, tokenLine, windowLabel,
 } from '../src/battery.ts';
 
 /** A pattern with every cell lit, so each cell shows its fill. */
@@ -138,4 +138,10 @@ test('token totals say they are for this thread', () => {
   assert.equal(tokenLine({ input: 0, output: 0, turns: 0 }), 'Not reported');
   assert.match(tokenLine({ input: 1840, output: 26, turns: 1 }), /^1\D?840 in, 26 out over 1 turn in this thread\. Input includes the conversation/);
   assert.match(tokenLine({ input: 3680, output: 52, turns: 2 }), /over 2 turns in this thread\./);
+});
+
+test('a reset tooltip places the remaining duration after the local timestamp', () => {
+  const resets = 1_800_000_000;
+  assert.equal(resetTooltip(resets, resets - 29 * 3600), `resets ${resetDate(resets)} (in 1d5h)`);
+  assert.equal(resetTooltip(resets, resets - 12 * 60), `resets ${resetDate(resets)} (in 12m)`);
 });

@@ -60,6 +60,7 @@ impl ObservationOps for ScrollRecoveryAdapter {
             available_actions: vec![capability::EXPAND.into()],
         })
     }
+    crate::adapter::saved_ref_scope!("menuitem", Some("File"));
 }
 
 impl ActionOps for ScrollRecoveryAdapter {
@@ -121,6 +122,7 @@ fn entry() -> RefEntry {
         source_window_title: Some("Notepad".into()),
         source_window_bounds_hash: None,
         source_surface: SnapshotSurface::Window,
+        renderer_accessibility_forced: false,
     };
     entry
 }

@@ -260,31 +260,23 @@ fn test_root_with_window_surface_does_not_short_circuit_validation() {
 
 #[test]
 fn unsupported_surface_fails_before_adapter_traversal() {
-    let args = SnapshotArgs {
+    let sheet = || SnapshotArgs {
         surface: SnapshotSurface::Sheet,
         ..base_args()
     };
-
-    let err = execute(args, &DefaultSurfaceAdapter, &CommandContext::default()).unwrap_err();
+    assert!(matches!(
+        execute(sheet(), &NoopAdapter, &CommandContext::default()),
+        Err(AppError::Adapter(error)) if error.code == ErrorCode::InvalidArgs
+    ));
+    let err = execute(sheet(), &DefaultSurfaceAdapter, &CommandContext::default()).unwrap_err();
     let AppError::Adapter(adapter_error) = err else {
         panic!("expected adapter error")
     };
 
     assert_eq!(adapter_error.code, ErrorCode::PlatformNotSupported);
     assert_eq!(
-        adapter_error
-            .details
-            .as_ref()
-            .and_then(|details| details.get("requested_surface")),
-        Some(&serde_json::json!("sheet"))
-    );
-    assert!(
-        adapter_error
-            .details
-            .as_ref()
-            .and_then(|details| details.get("supported_surfaces"))
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(Vec::is_empty)
+        adapter_error.details,
+        Some(serde_json::json!({ "requested_surface": "sheet", "supported_surfaces": [] }))
     );
 }
 
@@ -360,4 +352,40 @@ fn root_and_wait_for_are_mutually_exclusive() {
         }
         other => panic!("expected InvalidArgs, got {other:?}"),
     }
+}
+
+#[test]
+fn an_unproven_capture_is_flagged_in_the_payload() {
+    let mut result = crate::snapshot::SnapshotResult {
+        tree: crate::adapter::minimal_accessibility_node("window", "Fixture"),
+        refmap: crate::RefMap::new(),
+        window: WindowInfo {
+            id: "w-1".into(),
+            title: "Fixture".into(),
+            app: "Fixture".into(),
+            pid: crate::ProcessId::new(1),
+            process_instance: None,
+            bounds: None,
+            state: crate::WindowState::default(),
+        },
+        snapshot_id: None,
+        complete: true,
+        nodes_observed: 1,
+        identity_unproven: None,
+    };
+    let proven = format_snapshot_fields(&result, None, None).unwrap();
+    assert!(proven.get("identity_unproven").is_none());
+    assert_eq!(proven["window"]["id"], "w-1");
+    result.window.id.clear();
+    assert!(
+        format_snapshot_fields(&result, None, None)
+            .unwrap()
+            .get("window")
+            .is_none()
+    );
+
+    result.identity_unproven = Some("the whole-window read was cut short".into());
+    let unproven = format_snapshot_fields(&result, None, None).unwrap();
+    assert_eq!(unproven["identity_unproven"], true);
+    assert_eq!(unproven["complete"], true);
 }

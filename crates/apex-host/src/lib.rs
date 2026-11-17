@@ -2,6 +2,7 @@
 //! drive it; neither owns any logic of its own.
 
 mod authority_file;
+mod authority_reads;
 mod computer;
 pub mod cursor_overlay;
 mod journal;
@@ -52,6 +53,7 @@ mod personal_voice;
 mod model_metrics;
 pub mod events;
 pub mod quit;
+pub mod maintenance;
 pub mod host;
 pub mod command;
 #[cfg(test)]

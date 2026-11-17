@@ -130,7 +130,7 @@ fn finish<T>(
     result.map_err(|error| map_error(attribute, error))
 }
 
-fn map_error(attribute: &str, error: i32) -> AdapterError {
+pub(crate) fn map_error(attribute: &str, error: i32) -> AdapterError {
     use accessibility_sys::{
         kAXErrorAPIDisabled, kAXErrorCannotComplete, kAXErrorInvalidUIElement,
     };
@@ -152,6 +152,7 @@ fn map_error(attribute: &str, error: i32) -> AdapterError {
         "attribute": attribute,
         "ax_error": error,
         "kind": "surface_read",
+        "retryable": error == kAXErrorCannotComplete,
     }))
     .with_suggestion("Retry after the application finishes updating its accessibility surfaces")
 }
@@ -181,6 +182,12 @@ mod tests {
             map_error("AXRole", kAXErrorInvalidUIElement).code,
             ErrorCode::ElementNotFound
         );
+    }
+
+    #[test]
+    fn a_busy_read_is_retryable_while_a_terminal_one_is_not() {
+        assert!(map_error("AXRole", kAXErrorCannotComplete).is_transient_incomplete_read());
+        assert!(!map_error("AXRole", kAXErrorAPIDisabled).is_transient_incomplete_read());
     }
 
     #[test]

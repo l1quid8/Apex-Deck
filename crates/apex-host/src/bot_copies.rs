@@ -1080,6 +1080,10 @@ impl Default for FoldQueue {
 }
 
 impl FoldQueue {
+    pub(crate) fn maintenance_busy(&self) -> bool {
+        let working = !self.workers.lock().unwrap().is_empty();
+        working || self.queues.lock().unwrap().values().any(|queue| !queue.is_empty())
+    }
     pub fn new(data: PathBuf) -> Self {
         Self {
             queues: Mutex::default(),
@@ -2521,7 +2525,7 @@ mod tests {
         assert_eq!(copy.root, fs::canonicalize(&root).unwrap(), "the copy is of the whole project");
         assert_eq!(dir, copy.work.join("crates").join("app"), "the agent starts in the thread's folder");
         assert_eq!(
-            copy.work,
+            fs::canonicalize(&copy.work).unwrap(),
             fs::canonicalize(&root).unwrap().parent().unwrap().join("repo-worktrees").join("agent-bot1-thread-sub"),
             "the copy sits beside the user's worktrees"
         );
@@ -2661,7 +2665,7 @@ mod tests {
         impl apex_core::Participant for FileWriterBot {
             fn config(&self) -> &apex_core::ParticipantConfig {
                 Box::leak(Box::new(apex_core::ParticipantConfig {
-                    can_read_images: false,
+                    can_read_images: false, untethered_computer: false,
                     id: self.id.clone(),
                     display_name: self.id.as_str().to_string(),
                     backend: apex_core::Backend::Scripted { lines: vec![] },
@@ -2779,7 +2783,7 @@ mod tests {
         impl apex_core::Participant for WaitingBotA {
             fn config(&self) -> &apex_core::ParticipantConfig {
                 Box::leak(Box::new(apex_core::ParticipantConfig {
-                    can_read_images: false,
+                    can_read_images: false, untethered_computer: false,
                     id: ParticipantId::new("A"),
                     display_name: "A".into(),
                     backend: apex_core::Backend::Scripted { lines: vec![] },
@@ -2814,7 +2818,7 @@ mod tests {
         impl apex_core::Participant for FastBotB {
             fn config(&self) -> &apex_core::ParticipantConfig {
                 Box::leak(Box::new(apex_core::ParticipantConfig {
-                    can_read_images: false,
+                    can_read_images: false, untethered_computer: false,
                     id: ParticipantId::new("B"),
                     display_name: "B".into(),
                     backend: apex_core::Backend::Scripted { lines: vec![] },

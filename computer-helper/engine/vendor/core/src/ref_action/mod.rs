@@ -5,6 +5,7 @@ use crate::context::CommandContext;
 use crate::ref_action::ref_action_context::RefActionContext;
 use crate::ref_action::ref_action_wait_support::{after_scroll, trace_scroll_error};
 use crate::refs::RefEntry;
+use crate::refs::resolve_saved_ref::resolve_saved_ref;
 use crate::{AdapterError, AppError, actionability};
 use serde_json::json;
 
@@ -57,11 +58,12 @@ pub(crate) fn preflight_resolved(
     check_actionability_with_trace(target, request, stability)
 }
 
-pub(crate) fn dispatch_resolved(
+/// Dispatches the action and also returns the handle it landed on.
+pub(crate) fn dispatch_resolved_landing(
     target: RefActionContext<'_>,
     mut request: ActionRequest,
     lease: &crate::InteractionLease,
-) -> Result<ActionResult, AppError> {
+) -> Result<(ActionResult, NativeHandle), AppError> {
     let process_instance = target
         .entry
         .process
@@ -70,9 +72,7 @@ pub(crate) fn dispatch_resolved(
         .filter(|instance| !instance.is_empty())
         .ok_or_else(|| AdapterError::stale_ref_because("target process instance is unavailable"))?;
     let expected_process = crate::ProcessIdentity::new(target.entry.process.pid, process_instance);
-    let mut handle = target
-        .adapter
-        .resolve_element_strict(target.entry, target.deadline)
+    let mut handle = resolve_saved_ref(target.adapter, target.entry, target.deadline, Some(lease))
         .map_err(mark_pre_dispatch_resolution_failure)
         .inspect_err(|error| {
             crate::ref_action::ref_action_wait_support::trace_resolve_error(
@@ -110,10 +110,10 @@ pub(crate) fn dispatch_resolved(
             };
             handle = match recovered {
                 Some(handle) => handle,
-                None => target
-                    .adapter
-                    .resolve_element_strict(target.entry, target.deadline)
-                    .map_err(after_scroll)?,
+                None => {
+                    resolve_saved_ref(target.adapter, target.entry, target.deadline, Some(lease))
+                        .map_err(after_scroll)?
+                }
             };
             let scrolled_target = ResolvedRefAction::new(target, &handle);
             stable_preflight(&scrolled_target, &request)
@@ -163,7 +163,7 @@ pub(crate) fn dispatch_resolved(
             || json!({ "ref": final_target.ref_id, "action": action_name, "result": &result }),
         )
         .map_err(trace_error_after_delivery)?;
-    Ok(result)
+    Ok((result, handle))
 }
 
 /// An action that opens a sheet, menu, or alert leaves the caller staring at a
@@ -313,7 +313,7 @@ pub(crate) fn execute_resolved(
     let stability =
         actionability::StabilityExpectation::permissive(target.entry.geometry.bounds_hash);
     preflight_resolved(&target, &request, stability)?;
-    let result = dispatch_resolved(target.target, request, lease);
+    let result = ref_action_single::dispatch_resolved(target.target, request, lease);
     finish_artifacts(target.target, &pre);
     result
 }
@@ -368,7 +368,7 @@ pub fn execute_entry_with_context(
             context,
         },
         request,
-        dispatch_resolved,
+        ref_action_single::dispatch_resolved,
     )
 }
 

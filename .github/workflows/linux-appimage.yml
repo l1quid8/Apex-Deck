@@ -64,19 +64,31 @@ jobs:
         shell: bash
         run: |
           export APEX_DECK_DATA_DIR="$(mktemp -d /tmp/apex-image.XXXXXX)"
-          timeout 60s xvfb-run -a bash -euo pipefail -c '
+          timeout 80s xvfb-run -a bash -euo pipefail -c '
             release/squashfs-root/AppRun >release/linux-startup.log 2>&1 &
             pid=$!
             trap "kill $pid 2>/dev/null || true" EXIT
+            # A portable first launch explains the missing installed authority.
+            # Acknowledge only that named notice, then require the actual UI.
             for attempt in {1..30}; do
               kill -0 "$pid"
-              if xdotool search --onlyvisible --name "Apex Deck" >release/linux-window.txt; then
+              notice=$(xdotool search --onlyvisible --name "^Protected Linux approvals are unavailable$" | head -1) || true
+              if [[ -n "$notice" ]]; then
+                xdotool windowfocus --sync "$notice" key Return
+                break
+              fi
+              sleep 1
+            done
+            for attempt in {1..30}; do
+              kill -0 "$pid"
+              if xdotool search --onlyvisible --name "^Apex Deck$" >release/linux-window.txt; then
                 sleep 5
                 kill -0 "$pid"
                 exit 0
               fi
               sleep 1
             done
+            xwininfo -root -tree || true
             cat release/linux-startup.log
             exit 1
           '

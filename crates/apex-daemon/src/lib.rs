@@ -17,6 +17,7 @@ pub mod identity;
 pub mod ipc;
 pub mod local_call;
 pub mod log_time;
+pub mod maintenance;
 pub mod logging;
 pub mod doctor;
 pub mod pair_cli;

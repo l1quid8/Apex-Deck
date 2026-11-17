@@ -21,6 +21,13 @@ fn assistant_full_access(assistant: &crate::personal::PersonalAssistant, thread:
         && crate::personal::permissions::full_access(assistant)
 }
 
+/// Untethered turns skip the helper's app prompt. Only a Work-room bot whose
+/// saved config says so, at Full access for this very turn, gets the stamp;
+/// Plan and Read turns never do, and assistant replies use their own stamp.
+fn untethered_turn(access: Access, assistant_reply: bool, saved: impl FnOnce() -> bool) -> bool {
+    access == Access::Full && !assistant_reply && saved()
+}
+
 fn instance_id() -> String {
     use ring::rand::{SecureRandom, SystemRandom};
     let mut random = [0u8; 16];
@@ -50,6 +57,8 @@ impl Drop for Active {
 /// so nothing the helper or a bot says can outlive the turn.
 #[cfg(unix)]
 struct BrowserLink {
+    // The reader and every detached call share this until their last reply is written.
+    _maintenance: crate::maintenance::Permit,
     computer: Weak<Computer>,
     thread: String,
     generation: u64,
@@ -384,6 +393,8 @@ impl TurnHook {
             }
             #[cfg(unix)]
             {
+                let maintenance = self.host.upgrade().ok_or(TurnStartFailure::AuthorityChanged)?
+                    .maintenance.enter().map_err(|_| TurnStartFailure::AuthorityChanged)?;
                 let generation = self.computer.generation(&self.thread);
                 let path = verified_bundle().await.map_err(|_| TurnStartFailure::Verification)?;
                 let mut stream = match connect().await {
@@ -420,7 +431,8 @@ impl TurnHook {
                     let assistant = crate::personal_worker::computer_thread_assistant(&self.thread)?;
                     host.personal_get(assistant).ok()
                 }).is_some_and(|assistant| assistant_full_access(&assistant, &self.thread, id, access, self.ended.is_some()));
-                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
+                let untethered = untethered_turn(access, self.ended.is_some(), || self.host.upgrade().is_some_and(|host| host.computer_participant_untethered(&self.thread, id)));
+                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"untethered":untethered,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
                 if !self.computer.ready(&self.thread, generation) { return Err(TurnStartFailure::AuthorityChanged); }
                 let shutdown = duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?;
                 let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?).map_err(|_| TurnStartFailure::Session)?;
@@ -457,6 +469,7 @@ impl TurnHook {
                 );
                 let (computer, assistant) = (Arc::downgrade(&self.computer), self.ended.is_some());
                 let link = Arc::new(BrowserLink {
+                    _maintenance: maintenance,
                     computer: Arc::downgrade(&self.computer),
                     thread: thread.clone(),
                     generation,
@@ -564,6 +577,7 @@ impl Host {
                         "screenCaptureAccess",
                         "tapHealthy",
                         "cursorOverlayLabelsEnabled",
+                        "awayMode",
                     ] {
                         if !helper[key].is_null() {
                             status[key] = helper[key].clone();
@@ -775,6 +789,11 @@ mod tests {
     #[test]
     fn trusted_full_stamp_requires_the_saved_assistant_owner_and_current_profile() {
         let mut assistant: crate::personal::PersonalAssistant = serde_json::from_value(json!({"id":"a","name":"A","style":"","hostId":"h","profile":{"id":"p","display_name":"P","backend":{"kind":"agent","tool":"claude_code"},"access":"full"},"workspaceConfigVersion":4,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
+        assert!(untethered_turn(Access::Full, false, || true));
+        assert!(!untethered_turn(Access::Edits, false, || true), "only Full access carries the stamp");
+        assert!(!untethered_turn(Access::Read, false, || true), "Plan and Read turns never carry it");
+        assert!(!untethered_turn(Access::Full, false, || false), "an unsaved bot never carries it");
+        assert!(!untethered_turn(Access::Full, true, || true), "assistant replies keep their own stamp");
         assert!(assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, true));
         assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, false), "an ordinary room never receives the stamp, even if its ID resembles the assistant namespace");
         assert!(!assistant_full_access(&assistant, "work-room", &ParticipantId::new("p"), Access::Full, true));
@@ -888,7 +907,8 @@ mod tests {
         let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         computer.active.lock().unwrap().insert("token".into(), Active { thread: "t".into(), participant: "p".into(), token: "token".into(), socket, ended: None });
         let (writer, reader) = tokio::net::UnixStream::pair().unwrap();
-        let link = BrowserLink { computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), participant: "p".into(), label: "Bot".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
+        let maintenance = Arc::new(crate::maintenance::MaintenanceGate::default());
+        let link = BrowserLink { _maintenance: maintenance.enter().unwrap(), computer: Arc::downgrade(&computer), thread: "t".into(), generation: computer.generation("t"), token: "token".into(), participant: "p".into(), label: "Bot".into(), control: true, writer: tokio::sync::Mutex::new(writer), calls: Mutex::default() };
         let link = Arc::new(link);
         link.start("call-1".into(), "Runtime.evaluate".into(), json!({}));
         let mut line = String::new();
@@ -911,6 +931,15 @@ mod tests {
         assert!(link.live(&running), "another thread's revoke leaves this one alone");
         computer.revoke(Some("t"), None);
         assert!(!link.live(&running), "Stop or any revoke ends every step that follows");
+        // The task is scheduled on this thread. Drop the turn's reference
+        // before yielding so only the detached call still owns the permit.
+        link.start("late".into(), "read_screen".into(), json!({}));
+        drop(link);
+        let seal = || maintenance.try_begin("update".into(), 100, 0, || Ok(()));
+        assert!(seal().unwrap_err().starts_with("busy:"));
+        line.clear();
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.unwrap();
+        assert!(seal().is_ok());
         std::fs::remove_dir_all(data).unwrap();
     }
     #[cfg(unix)]

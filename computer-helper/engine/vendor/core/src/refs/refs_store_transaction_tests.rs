@@ -14,6 +14,7 @@ fn entry(name: &str, root_ref: Option<&str>) -> crate::RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: RefGeometry {
             bounds_space: None,
@@ -30,6 +31,7 @@ fn entry(name: &str, root_ref: Option<&str>) -> crate::RefEntry {
             source_window_title: Some("Fixture".into()),
             source_window_bounds_hash: None,
             source_surface: crate::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: RefScope {
             root_ref: root_ref.map(str::to_string),

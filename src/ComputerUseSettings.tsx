@@ -30,6 +30,8 @@ type ComputerStatus = {
   screenCaptureAccess?: boolean;
   stopped?: boolean;
   cursorOverlayLabelsEnabled?: boolean;
+  /** Keep working while I'm away. Switched only from the helper's menu bar menu. */
+  awayMode?: { enabled: boolean; holding: boolean; shielded: boolean; shieldDelaySeconds: number };
   cursorOverlay?: CursorOverlayPrefs;
   cursorOverlayFromHelper?: any;
   reason?: string;
@@ -102,12 +104,12 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     return () => window.removeEventListener('focus', focus);
   }, [backend.demo, refresh]);
 
-  const act = async (command: string, args?: Record<string, unknown>) => {
+  const act = async (...request: import("./daemon/requests").HostCommandArgs<Extract<import("./generated/protocol").CommandName, `computer_${string}`>>) => {
     const seq = nextSettingsSaveSequence();
     try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'cursor' } })); } catch {}
     setBusy(true); setError('');
     try {
-      const s = await backend.call<ComputerStatus>(command, args);
+      const s = await backend.call<ComputerStatus>(...request);
       setStatus(s);
       const p = s.cursorOverlay ?? (s.cursorOverlayFromHelper as CursorOverlayPrefs) ?? DEFAULT_PREFS;
       setPrefs({
@@ -325,6 +327,9 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     </div>
 
     <div className="settings-card">
+      {status?.available && status.awayMode && <div className="settings-row" id="ucu-away"><div className="settings-label"><strong>Keep working while I&rsquo;m away</strong><small>{status?.awayMode?.enabled
+        ? `On. While an untethered agent works, this Mac won't idle-lock. After ${Math.round((status.awayMode.shieldDelaySeconds || 300) / 60)} minutes without input a shield covers the screens, and any keyboard or mouse input locks the Mac.${status.awayMode.shielded ? ' Shield is up now.' : status.awayMode.holding ? ' Holding the Mac awake now.' : ''}`
+        : 'Off. Untethered agents stop when this Mac locks. Turn it on from the Unified Computer Use menu bar icon; it can’t be switched on remotely.'}</small></div></div>}
       <div className="settings-row">
         <div className="settings-label"><strong>Stop Unified Computer Use</strong><small>Cancels active input and revokes current turns. The helper also has an independent Stop control in the menu bar.</small></div>
         <button className="danger" disabled={busy || backend.demo || !status?.available} onClick={() => { void act('computer_stop'); }}>Stop</button>

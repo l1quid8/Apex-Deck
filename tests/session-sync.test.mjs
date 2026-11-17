@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mergePhoneSessionChange, remoteProfileEdit, remoteSessionEdit } from "../src/sessionSync.ts";
+import { normalizeWorkspaces } from "../src/hostSession.ts";
 
 const ws = [{ id: "w", name: "apex-deck", path: "/p" }];
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
@@ -24,6 +25,18 @@ test("an older phone build that copies the Mac's latest tag still comes through"
 test("the echo of our own save, in any key order, changes nothing", () => {
   const remote = { savedBy: "mac:3", panes: [{ title: "a", kind: "chat", workspaceId: "w", id: "a" }], workspaces: ws, version: 1 };
   assert.equal(remoteSessionEdit({ workspaces: ws, panes: [chat("a")] }, remote, ours), null);
+});
+
+test("host-normalized workspace echoes do not start another save and project refresh", () => {
+  const remoteWorkspaces = [{ ...ws[0], hidden: false, hostId: "local", hostProjectRevision: 4 }];
+  const local = { workspaces: normalizeWorkspaces(remoteWorkspaces), panes: [chat("a")] };
+  const remote = { ...session(local.panes, "mac:3"), workspaces: remoteWorkspaces };
+  assert.equal(remoteSessionEdit(local, remote, ours), null, "the same visible project survives the UI's normalizer without another edit");
+  // A phone may preserve our save tag. Real host changes must still arrive.
+  for (const change of [{ hidden: true }, { name: "Renamed" }, { path: "/moved" }, { hostProjectRevision: 5 }]) {
+    const edit = remoteSessionEdit(local, { ...remote, workspaces: [{ ...remoteWorkspaces[0], ...change }] }, ours);
+    assert.ok(edit, JSON.stringify(change));
+  }
 });
 
 test("an older save of ours arriving late does not undo newer edits", () => {

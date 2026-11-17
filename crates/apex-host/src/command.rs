@@ -192,8 +192,8 @@ pub enum Command {
     GenerateImage { room: String, provider: String, prompt: String },
     /// One of the person's AIs writes a name and persona for a new agent. Nothing is saved.
     PersonaDraft { writer: ParticipantConfig, idea: String, #[serde(default)] taken: Vec<String> },
-    /// Answers with the file's bytes as base64.
-    ReadAttachment { path: String },
+    /// Without an offset, returns base64. With one, returns a bounded page { data, total }.
+    ReadAttachment { path: String, #[serde(default)] offset: Option<u64> },
     /// `by` is the bot that made it, for the Library.
     ImportReplyImage { room: String, path: String, by: Option<String> },
     LibraryList {},
@@ -884,7 +884,11 @@ impl Host {
             CopyAttachment { room, path } => reply(self.copy_attachment(room, path)?),
             GenerateImage { room, provider, prompt } => reply(self.generate_image(room, provider, prompt).await?),
             PersonaDraft { writer, idea, taken } => reply(crate::persona_draft::write(writer, idea, taken).await?),
-            ReadAttachment { path } => reply(base64::engine::general_purpose::STANDARD.encode(self.read_attachment(path)?)),
+            ReadAttachment { path, offset } => {
+                let (bytes, total) = self.read_attachment_range(&path, offset)?;
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                if offset.is_some() { reply(serde_json::json!({ "data": data, "total": total })) } else { reply(data) }
+            }
             ImportReplyImage { room, path, by } => reply(self.import_reply_image(room, path, by)?),
             LibraryList {} => reply(self.library_list()),
             LibraryRemove { file } => reply(self.library_remove(file)?),
@@ -914,7 +918,8 @@ impl Host {
                 // Work would bypass durable chat acceptance and mutate memory.
                 // Work sends retain task continuation, Revert snapshots, and
                 // requested-server validation in the existing post handlers.
-                Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, None, request_id, false, false, None, interactive_answers, capability).await?),
+                // Chat delivery acknowledges durable acceptance while replies stream.
+                Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post(id, text, None, request_id, false, true, None, interactive_answers, capability).await?),
                 _ => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             },
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
@@ -1460,6 +1465,19 @@ mod tests {
         assert_eq!(call(json!({ "cmd": "session_load" })), Ok(json!({ "version": 1 })));
         let saved = call(json!({ "cmd": "save_attachment", "args": { "room": "r", "name": "a.txt", "data": "aGk=" } })).unwrap();
         assert_eq!(call(json!({ "cmd": "read_attachment", "args": { "path": saved } })), Ok(json!("aGk=")));
+        // A supported large file spans multiple pages, each below the smallest
+        // transport frame. The final page starts exactly at its raw byte offset.
+        let movie = data.join("library").join("large.mp4");
+        std::fs::create_dir_all(movie.parent().unwrap()).unwrap();
+        let mut contents = vec![0; 3 * 1024 * 1024];
+        contents.extend_from_slice(b"hi");
+        std::fs::write(&movie, &contents).unwrap();
+        let page = |offset: u64| call(json!({ "cmd": "read_attachment", "args": { "path": movie, "offset": offset } }));
+        let first = page(0).unwrap();
+        assert_eq!(first["total"], contents.len());
+        assert_eq!(first["data"].as_str().unwrap().len(), 4 * 1024 * 1024);
+        assert_eq!(page(3 * 1024 * 1024), Ok(json!({"data": "aGk=", "total": contents.len()})));
+        assert!(page(contents.len() as u64 + 1).is_err());
         let picture = call(json!({ "cmd": "save_attachment", "args": { "room": "r", "name": "a.png", "data": "iVBORw0KGgo=" } })).unwrap();
         let kept = call(json!({ "cmd": "import_reply_image", "args": { "room": "r", "path": picture, "by": "Null" } }));
         assert!(kept.is_ok(), "{kept:?}");

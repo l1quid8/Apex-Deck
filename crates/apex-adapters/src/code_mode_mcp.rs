@@ -176,6 +176,13 @@ impl Launch {
     pub fn claude_config(&self, helper: &Path) -> Value {
         json!({"mcpServers":{SERVER:{"type":"stdio","command":helper,"args":[RELAY_ARG]}}})
     }
+    /// Sent on Claude's private control stream before submitting the current turn.
+    /// A fresh relay process receives only this turn's bridge credentials.
+    pub fn claude_dynamic_servers(&self, helper: &Path) -> Value {
+        let env: std::collections::BTreeMap<_, _> = self.env().into_iter().collect();
+        json!({SERVER:{"type":"stdio","command":helper,"args":[RELAY_ARG],"env":env}})
+    }
+
     pub fn codex_flags(&self, helper: &Path) -> Vec<String> {
         vec![
             "-c".into(),

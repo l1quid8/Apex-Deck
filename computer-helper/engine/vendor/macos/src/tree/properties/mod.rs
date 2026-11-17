@@ -21,5 +21,8 @@ pub(crate) mod node_control_states;
 pub(crate) mod node_identifiers;
 pub(crate) mod node_semantic_states;
 pub(crate) mod readonly;
+#[cfg(target_os = "macos")]
+pub(crate) mod selection_owner;
+pub(crate) mod selection_verdicts;
 pub(crate) mod text_attributes;
 pub(crate) mod text_insertion;

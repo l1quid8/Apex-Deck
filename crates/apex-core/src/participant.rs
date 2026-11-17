@@ -16,6 +16,10 @@ pub struct TurnRequest {
     pub effort_override: Option<String>,
     /// Instructions that tell the model who it is and who else is present.
     pub system: String,
+    /// Instructions derived from this turn alone, such as an explicit MCP request.
+    pub notes: String,
+    /// Only a normal room reply may contribute to a retained conversation.
+    pub room_reply: bool,
     /// The whole transcript from this participant's point of view.
     pub turns: Vec<ViewTurn>,
     /// Messages from other speakers added since this participant last spoke.
@@ -28,6 +32,17 @@ pub struct TurnRequest {
     /// Working folder override for this turn. When absent, adapters use the
     /// room's default workspace folder.
     pub cwd: Option<std::path::PathBuf>,
+}
+
+impl TurnRequest {
+    /// Instructions for a backend receiving the full prompt in a single turn.
+    pub fn system_with_notes(&self) -> std::borrow::Cow<'_, str> {
+        if self.notes.is_empty() {
+            std::borrow::Cow::Borrowed(&self.system)
+        } else {
+            std::borrow::Cow::Owned(format!("{}{}", self.system, self.notes))
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]

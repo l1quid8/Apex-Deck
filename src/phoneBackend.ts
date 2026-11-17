@@ -65,7 +65,7 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
     close: () => client.close(),
     personaDrafter: (profiles, editingId, disabledProviders) =>
       createPersonaDrafter({
-        call: (cmd, args) => backend.call(cmd, args),
+        call: backend.call.bind(backend),
         personaDraft: (writer, idea, taken) => backend.personaDraft(writer, idea, taken),
         profiles,
         disabledProviders: disabledProviders ?? (() => []),

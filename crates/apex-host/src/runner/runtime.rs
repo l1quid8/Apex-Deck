@@ -66,6 +66,9 @@ impl Host {
     }
 
     async fn runner_tick(&self, room: &str, time: u64) -> Result<bool, String> {
+        // Sleeping workers retry after maintenance; admitted ticks retain their
+        // permit through provider work, state writes and cancellation cleanup.
+        let Ok(_maintenance) = self.maintenance.enter() else { return Ok(true); };
         let gate = self.runner_gate(room);
         let guard = gate.lock().await;
         let Some(mut snapshot) = self.runner_service.lock().unwrap().state(room)? else { return Ok(false); };
@@ -255,4 +258,35 @@ impl Host {
 
 fn runner_context(s: &RunnerSnapshot) -> String {
     format!("You are working on a bounded {} owned by Deck. Objective: {}\nLatest checkpoint: {}\nWork on the next concrete step. Do not start another autonomous runner or prompt other bots. Respect the room's permissions and the user's instructions. End your final reply with exactly one top-level fenced apex-runner JSON report, version 1. Required fields: version (1), disposition (working|done|blocked), done (string), next (string), blocker (string or null), criteria (array of {{id, status (pending|done|failed), evidence (string array)}}). Use real evidence; completion without independent checks is reported completion only. Example:\n```apex-runner\n{{\"version\":1,\"disposition\":\"working\",\"done\":\"one concrete result\",\"next\":\"next step\",\"blocker\":null,\"criteria\":[{{\"id\":\"objective\",\"status\":\"pending\",\"evidence\":[]}}]}}\n```", if s.kind == RunnerKind::Goal { "goal" } else { "loop run" }, s.objective.as_deref().or(s.prompt.as_deref()).unwrap_or(""), serde_json::to_string(&s.checkpoint).unwrap_or_default())
+}
+
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn maintenance_defers_runner_ticks_and_detects_sleeping_workers() {
+        let data = std::env::temp_dir().join(format!("apex-runner-maintenance-{}-{}", std::process::id(), now()));
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, tokio::runtime::Handle::current());
+        let stamp = crate::maintenance::now_ms();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host.maintenance.try_begin("test-lease".into(), stamp + 60_000, stamp, || Ok(())).is_ok() { break; }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.expect("maintenance should acquire once startup finishes");
+        // A missing room would return false normally. A sealed tick must defer
+        // before reading or changing any runner state.
+        assert!(host.runner_tick("missing", now()).await.unwrap());
+        host.maintenance.cancel("test-lease").unwrap();
+        assert!(!host.runner_tick("missing", now()).await.unwrap());
+        host.runner_workers.lock().unwrap().insert("sleeping-loop".into());
+        assert!(host.maintenance_blockers().unwrap_err().contains("goal or loop"));
+        host.runner_workers.lock().unwrap().clear();
+        assert!(host.maintenance_blockers().is_ok());
+        host.shutdown();
+        drop(host);
+        std::fs::remove_dir_all(data).unwrap();
+    }
 }

@@ -54,6 +54,18 @@ async fn call(host: &Arc<Host>, mut value: Value) -> Result<Value, String> {
     host.call_assuming_verified_ui_for_test(serde_json::from_value(json!({"cmd":command,"args":value})).map_err(|e| e.to_string())?).await
 }
 
+async fn wait_for_chat_reply(host: &Host, room: &str, message: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let saved = host.store.room(room).unwrap().unwrap().snapshot;
+            if saved.client_messages[message].state == apex_core::ClientMessageState::Done {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("the chat reply should finish");
+}
+
 #[test]
 fn one_send_picks_keep_the_default_for_legacy_and_client_message_posts() {
     for client in [false, true] {
@@ -118,6 +130,7 @@ fn duplicate_group_posts_including_bot_hops_never_run_twice() {
         let post = json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"m"});
         let (one, two) = futures::join!(call(&host, post.clone()), call(&host, post.clone()));
         one.unwrap(); two.unwrap();
+        wait_for_chat_reply(&host, "r", "m").await;
         let saved = host.store.room("r").unwrap().unwrap().snapshot;
         assert_eq!(saved.transcript.iter().filter(|m| matches!(m.speaker, apex_core::Speaker::Human)).count(), 1);
         assert!(saved.transcript.iter().any(|m| m.text == "second"));
@@ -179,6 +192,7 @@ fn assert_recovered_boundary(runtime: &tokio::runtime::Runtime, saved: SavedRoom
         assert_eq!(claim["state"], expected_state);
         assert_eq!(recovered.store.room("r").unwrap().unwrap().snapshot.transcript, disk.transcript);
         call(&recovered, json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"retry-new-id"})).await.unwrap();
+        wait_for_chat_reply(&recovered, "r", "retry-new-id").await;
         let retry = recovered.store.room("r").unwrap().unwrap().snapshot;
         assert_eq!(retry.transcript.iter().filter(|message| matches!(message.speaker, apex_core::Speaker::Human)).count(), 2);
         assert_eq!(retry.client_messages["retry-new-id"].state, apex_core::ClientMessageState::Done);
@@ -249,6 +263,7 @@ fn failed_claim_write_leaves_no_human_message_and_can_be_retried_once() {
     std::fs::remove_dir(&pending).unwrap();
     runtime.block_on(async {
         call(&host, json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"m"})).await.unwrap();
+        wait_for_chat_reply(&host, "r", "m").await;
         assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.transcript.iter().filter(|message| matches!(message.speaker, apex_core::Speaker::Human)).count(), 1);
     });
     drop(host);
@@ -294,12 +309,14 @@ fn local_origin_sequence_never_reuses_cleared_or_rewound_history() {
     runtime.block_on(async {
         let post = |id: &str| json!({"command":"room_post","id":"r","text":"hello","clientMessageId":id});
         call(&host, post("first")).await.unwrap();
+        wait_for_chat_reply(&host, "r", "first").await;
         let old = host.store.room("r").unwrap().unwrap().snapshot;
         let old_json = serde_json::to_value(&old).unwrap();
         let high = old_json["transcript"].as_array().unwrap().iter().map(|message| message["originSeq"].as_u64().expect("native messages have stable origin sequence")).max().unwrap();
         host.handle("r").unwrap().room.lock().await.clear();
         host.save_room("r").await.unwrap();
         call(&host, post("second")).await.unwrap();
+        wait_for_chat_reply(&host, "r", "second").await;
         let next = serde_json::to_value(host.store.room("r").unwrap().unwrap().snapshot).unwrap();
         assert!(next["transcript"][0]["originSeq"].as_u64().unwrap() > high);
         let second_high = next["transcript"].as_array().unwrap().iter().map(|message| message["originSeq"].as_u64().unwrap()).max().unwrap();
@@ -407,6 +424,7 @@ fn import_is_folderless_idempotent_and_merge_preserves_new_history() {
         assert_eq!(created["skipped"], json!([]));
         assert_eq!(created["room"]["options"], json!({"policy":"round_robin","max_bot_hops":null}));
         call(&host, json!({"command":"room_post","id":"destination","text":"new on B","clientMessageId":"new"})).await.unwrap();
+        wait_for_chat_reply(&host, "destination", "new").await;
         let before = host.store.room("destination").unwrap().unwrap().snapshot.transcript.len();
         let merge = json!({"command":"chat_merge_history","id":"destination","entries":[entry.clone(),entry]});
         assert_eq!(call(&host, merge.clone()).await.unwrap()["added"], 1);
@@ -485,6 +503,7 @@ fn closed_handle_cannot_fence_or_post_after_reopening_the_same_room() {
         let stale_post = detached.runtime.begin_client_post("hello", None, "stale-post".into(), false, Some(0), &|snapshot| host.commit_client_snapshot("r", &detached, snapshot), &|_| {}).await;
         assert!(stale_post.is_err(), "a detached room mutex must not publish a post after reopening");
         call(&host, json!({"command":"room_post","id":"r","text":"hello","clientMessageId":"m"})).await.unwrap();
+        wait_for_chat_reply(&host, "r", "m").await;
         let saved = host.store.room("r").unwrap().unwrap().snapshot;
         assert_eq!(saved.transcript.iter().filter(|message| message.client_message_id.as_deref() == Some("m")).count(), 1);
         assert!(!saved.client_messages.contains_key("stale-post"));
@@ -598,5 +617,42 @@ fn voice_requests_use_the_same_durable_ledger_and_retain_content_binding() {
         assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.transcript, before);
     });
     drop(host);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+
+#[test]
+fn chat_post_receipt_returns_while_the_agent_is_still_running() {
+    let (runtime, host, path) = fixture("early-receipt");
+    runtime.block_on(async {
+        let held = hold_bot(&host, "a").await;
+        let post = json!({"command":"room_post","id":"r","text":"@a hello","clientMessageId":"early"});
+        let receipt = tokio::time::timeout(Duration::from_secs(2), call(&host, post.clone()))
+            .await.expect("a saved chat message must be acknowledged before the agent finishes").unwrap();
+        assert_eq!(receipt["state"], "running");
+        assert_eq!(receipt["replySeqs"], json!([]));
+        tokio::time::timeout(Duration::from_secs(2), held.started.notified()).await.unwrap();
+        let saved = host.store.room("r").unwrap().unwrap().snapshot;
+        assert_eq!(saved.transcript.len(), 1);
+        assert_eq!(saved.client_messages["early"].state, apex_core::ClientMessageState::Running);
+        assert_eq!(call(&host, post.clone()).await.unwrap()["state"], "running");
+        assert_eq!(held.calls.load(Ordering::SeqCst), 1);
+        held.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host.store.room("r").unwrap().unwrap().snapshot.client_messages["early"].state == apex_core::ClientMessageState::Done {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        assert_eq!(call(&host, post).await.unwrap()["state"], "done");
+        let saved = host.store.room("r").unwrap().unwrap().snapshot;
+        assert_eq!(saved.transcript.len(), 2);
+        assert_eq!(saved.transcript[1].text, "held reply");
+        assert_eq!(held.calls.load(Ordering::SeqCst), 1);
+    });
+    drop(host);
+    drop(runtime);
     std::fs::remove_dir_all(path).unwrap();
 }

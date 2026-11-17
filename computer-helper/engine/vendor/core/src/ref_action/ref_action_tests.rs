@@ -44,6 +44,7 @@ impl ObservationOps for SuccessfulAdapter {
     }
 
     crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for SuccessfulAdapter {
@@ -82,6 +83,7 @@ impl ObservationOps for FailingAdapter {
     }
 
     crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for FailingAdapter {
@@ -113,6 +115,7 @@ impl ObservationOps for ProcessReplacingAdapter {
     }
 
     crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for ProcessReplacingAdapter {
@@ -158,6 +161,7 @@ impl ObservationOps for TraceFailureAdapter {
     }
 
     crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for TraceFailureAdapter {
@@ -204,6 +208,7 @@ fn entry() -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -216,10 +221,11 @@ fn entry() -> RefEntry {
         },
         source: crate::RefSource {
             source_app: Some("Fixture".into()),
-            source_window_id: Some("w-42".into()),
+            source_window_id: Some("w-1".into()),
             source_window_title: Some("Fixture".into()),
             source_window_bounds_hash: None,
             source_surface: SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,

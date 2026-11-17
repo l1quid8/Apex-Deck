@@ -5,11 +5,14 @@ use super::{
     stability::StabilityExpectation,
 };
 use crate::{
-    AdapterError, DeliverySemantics, ErrorCode, IdentityMatch, LocatorField,
+    AdapterError, DeliverySemantics, ErrorCode, IdentityMatch, LocatorEvidence, LocatorField,
     actions::action_request::ActionRequest,
     adapter::{LiveElement, NativeHandle, PlatformAdapter},
+    locator::live_locator::LocatorRefEvidence,
     refs::RefEntry,
-    refs::ref_identity::{has_meaningful_identity, identity_match},
+    refs::ref_full_predicate::FullPredicate,
+    refs::ref_identity::{element_token, identity_match},
+    refs::ref_live_predicate::LivePredicate,
 };
 
 /// Groups the read-only coordinates of a live element check: which element,
@@ -115,22 +118,7 @@ fn validate_live_identity(entry: &RefEntry, live: &LiveElement) -> Result<(), Ad
             "Resolved element changed role before dispatch",
         ));
     }
-    if !has_meaningful_identity(entry) {
-        return Ok(());
-    }
-    let value = live
-        .state
-        .value
-        .clone()
-        .map(LocatorField::Known)
-        .unwrap_or(LocatorField::Absent);
-    match identity_match(
-        entry,
-        &live.identity.name,
-        &value,
-        &live.identity.description,
-        &live.identity.identifiers,
-    ) {
+    match recorded_identity_match(entry, &live_evidence(live)) {
         IdentityMatch::Match => Ok(()),
         IdentityMatch::NoMatch => Err(stale_live_element(
             "Resolved element changed identity before dispatch",
@@ -147,6 +135,49 @@ fn validate_live_identity(entry: &RefEntry, live: &LiveElement) -> Result<(), Ad
             "complete": false,
             "retryable": true,
         }))),
+    }
+}
+
+/// The identity rule the capture recorded. An entry carrying an element token
+/// re-identifies itself through that token; every other entry is held to the
+/// whole predicate - role, identifier and stable text - that resolution
+/// compares, because an identifier alone still matches after the element it
+/// named was replaced by one that kept the identifier and changed its text.
+fn recorded_identity_match(entry: &RefEntry, live: &LocatorEvidence) -> IdentityMatch {
+    if element_token(entry).is_some() {
+        return identity_match(
+            entry,
+            &live.name,
+            &live.value,
+            &live.description,
+            &live.identifiers,
+        );
+    }
+    FullPredicate::of_entry(entry).compare(&LivePredicate::observed(live))
+}
+
+/// The live read as the evidence a predicate compares: the identity slots it
+/// holds, with the geometry and state slots of a snapshot observation left
+/// unread because no identity rule reads them.
+fn live_evidence(live: &LiveElement) -> LocatorEvidence {
+    LocatorEvidence {
+        role: LocatorField::Known(live.state.role.clone()),
+        name: live.identity.name.clone(),
+        description: live.identity.description.clone(),
+        value: live
+            .state
+            .value
+            .clone()
+            .map(LocatorField::Known)
+            .unwrap_or(LocatorField::Absent),
+        identifiers: live.identity.identifiers.clone(),
+        states: LocatorField::Absent,
+        ref_evidence: LocatorRefEvidence {
+            bounds: LocatorField::Absent,
+            window_bounds: LocatorField::Absent,
+            available_actions: LocatorField::Known(live.available_actions.clone()),
+            descriptors: Default::default(),
+        },
     }
 }
 

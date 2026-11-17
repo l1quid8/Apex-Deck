@@ -32,7 +32,7 @@ pub enum KeysAction {
 ///
 /// The tag mirror [`request`], so a request built here and sent through a
 /// socket lands on the same variant the offline path would run.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, serde::Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum KeysRequest {
     GatewayKeysList {},

@@ -31,7 +31,7 @@ fn tool() -> AgentTool {
 
 fn bot(access: Access, cwd: &Path) -> Arc<dyn Participant> {
     let config = ParticipantConfig {
-        can_read_images: false,
+        can_read_images: false, untethered_computer: false,
         id: ParticipantId::new("live"),
         display_name: "Live".into(),
         backend: Backend::Agent { tool: tool(), model: std::env::var("LIVE_MODEL").ok() },
@@ -69,6 +69,7 @@ fn request(turns: Vec<ViewTurn>) -> TurnRequest {
         unseen: vec![],
         plan: false,
         cwd: None,
+        ..Default::default()
     }
 }
 

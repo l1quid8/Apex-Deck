@@ -1,3 +1,4 @@
+import { completeCommand, type BoundCommandArgs, type HostCommandArgs } from "./daemon/requests.ts";
 import { useEffect, useRef, useState } from "react";
 import { browserCaller } from "./browserTabs.ts";
 import { subscribeToImports } from "./legacyImportRefresh.ts";
@@ -12,6 +13,15 @@ import { createProjectMemoryClient, PROJECT_MEMORY_CAPABILITY } from "./projectM
 import { LOCAL_HOST_NAME } from "./hostFacts.ts";
 
 import type { PersonalViewContext } from "./assistantViewContext.ts";
+type AssistantMutation =
+  | "personal_archive" | "personal_cancel" | "personal_configure"
+  | "personal_conversation_new" | "personal_decide" | "personal_decide_always"
+  | "personal_machine_unlink" | "personal_memory_add" | "personal_memory_correct"
+  | "personal_memory_forget" | "personal_notices_seen" | "personal_pause"
+  | "personal_permission_set" | "personal_react" | "personal_reply_cancel"
+  | "personal_rule_add" | "personal_rule_remove" | "personal_schedule_cancel"
+  | "personal_send" | "personal_task_lifecycle" | "personal_workspace_configure";
+
 export type PersonalAssistantsOptions = {
   hosts: Pick<HostEntry, "id" | "name" | "remote">[];
   hostBackend: (routeHostId: string) => Backend;
@@ -177,9 +187,9 @@ export class PersonalAssistantsCollection {
       if (this.options.hostBackend(row.routeHostId) !== route || this.owner(route) !== row.ref.hostId) throw new Error("This assistant's machine identity changed. Refresh before trying again.");
       return row.ref.assistantId;
     };
-    const afterResult = async (cmd: string, args: Record<string, unknown>) => {
+    const afterResult = async (...request: BoundCommandArgs<AssistantMutation, "assistantId">) => {
       const assistantId = need();
-      const result = await route.call<{ assistant: PersonalAssistantRecord; eventId?: string }>(cmd, { ...args, assistantId });
+      const result = await route.call<{ assistant: PersonalAssistantRecord; eventId?: string }>(...completeCommand<AssistantMutation, "assistantId">(request, { assistantId }));
       this.validate(result?.assistant, row.ref.hostId);
       if (result.assistant.id !== assistantId) throw new Error("The host returned a different assistant owner.");
       const current = this.rows.get(key);
@@ -188,14 +198,14 @@ export class PersonalAssistantsCollection {
       }
       return result;
     };
-    const after = async (cmd: string, args: Record<string, unknown>) => { await afterResult(cmd, args); };
+    const after = async (...request: BoundCommandArgs<AssistantMutation, "assistantId">) => { await afterResult(...request); };
     return { key, row, route, need, after, afterResult, epoch };
   }
   lane = (ref: AssistantRef): PersonalLane | null => {
     const bound = this.captured(ref); if (!bound) return null;
     const { key, row, route, need, after, afterResult, epoch } = bound;
     const request = () => requestId(this.options.device ?? "mac");
-    const call = <T,>(cmd: string, args: Record<string, unknown> = {}): Promise<T> => { need(); return route.call<T>(cmd, args); };
+    const call = <T,>(...request: HostCommandArgs): Promise<T> => { need(); return route.call<T>(...request); };
     const attachment = async (work: () => Promise<string>) => { need(); const result = await work(); if (this.rows.get(key)?.epoch !== epoch) throw new Error("The attachment's assistant was removed while saving."); return result; };
     const expectedMemoryRevision = row.assistant.revision;
     const memoryRevision = () => route.supports?.(PROJECT_MEMORY_CAPABILITY) === true ? { expectedRevision: expectedMemoryRevision } : {};
@@ -296,8 +306,8 @@ export class PersonalAssistantsCollection {
       removeKey: async name => { await call("api_key_remove", { name }); },
       browserView: () => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_view"),
       browserTakeOver: on => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_take_over", { on }),
-      browserInput: (input: BrowserInput) => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_input", { input }),
-      browserCall: call as NonNullable<PersonalLane["browserCall"]>,
+      browserInput: (input: BrowserInput) => browserCaller(row.routeHostId, call)<BrowserView>("personal_browser_input", { input: input.kind === "scroll" ? { kind: "scroll", delta_y: input.deltaY } : input }),
+      browserCall: call,
     };
   };
   /** Legacy configure denies unknown fields. V4 runtime/projects require negotiated support and its separate API. */
@@ -311,7 +321,7 @@ export class PersonalAssistantsCollection {
     if (this.options.offlineHost(routeHostId)) throw new Error("This machine is offline.");
     const route = this.options.hostBackend(routeHostId), hostId = this.owner(route);
     if (route.supports?.('assistant_workspace_v4') !== true) throw new Error("Update this machine’s service to create workspace assistants.");
-    const assistant = await route.call<PersonalAssistantRecord>('personal_create', input);
+    const assistant = await route.call<PersonalAssistantRecord>('personal_create', { ...input, look: { ...input.look } });
     if (this.options.hostBackend(routeHostId) !== route || this.owner(route) !== hostId) throw new Error("The machine identity changed during creation. Refresh this machine before continuing.");
     this.validate(assistant, hostId);
     const ref = {hostId, assistantId:assistant.id}, key = assistantIdentityKey(ref);

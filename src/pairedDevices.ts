@@ -26,7 +26,7 @@ export const TIERS: { id: Tier; label: string; note: string }[] = [
   { id: "full", label: "Full", note: "Everything Chat can do, plus new threads, terminals, files and settings." },
 ];
 
-export function devicesApi(backend: { call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> }) {
+export function devicesApi(backend: Pick<import("./backend").Backend, "call">) {
   return {
     list: () => backend.call<DeviceRegistry>("devices_list", {}),
     setTier: (id: string, tier: Tier) => backend.call<PairedDevice>("devices_set_tier", { id, tier }),

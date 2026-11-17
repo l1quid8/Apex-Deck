@@ -5,7 +5,7 @@ mod tests {
 
     fn profile(id: &str, media: bool) -> ParticipantConfig {
         ParticipantConfig {
-            can_read_images: false,
+            can_read_images: false, untethered_computer: false,
             id: ParticipantId::new(id),
             display_name: id.into(),
             backend: Backend::Scripted { lines: vec![] },
@@ -793,6 +793,7 @@ mod tests {
 use crate::assistant_tasks::{TaskDestination, TaskOwner};
 use crate::storage::SavedRoom;
 use apex_core::{parse_mentions, Access, ParticipantConfig, RoomSnapshot, Speaker, TurnRequest};
+use crate::authority_file::VersionedDocument;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -907,6 +908,8 @@ struct ConversationDocument {
     legacy_import: Option<crate::legacy_import::LedgerImport>,
 }
 
+impl VersionedDocument for ConversationDocument {}
+
 struct StoreInner {
     path: PathBuf,
     document: Mutex<ConversationDocument>,
@@ -978,10 +981,8 @@ impl Drop for InterruptIfUnfinished {
 impl ConversationStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ConversationError> {
         let path = path.as_ref().to_path_buf();
-        let mut document = match crate::authority_file::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                ConversationError::Storage(format!("Could not read ApexAgent conversations: {e}"))
-            })?,
+        let mut document = match ConversationDocument::read_from(&path) {
+            Ok(document) => document,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => ConversationDocument {
                 version: 1,
                 ..Default::default()
@@ -992,11 +993,7 @@ impl ConversationStore {
                 )))
             }
         };
-        if document.version != 1 {
-            return Err(ConversationError::Storage(
-                "Unsupported ApexAgent conversation document version.".into(),
-            ));
-        }
+
         let mut recovered = false;
         for record in document.records.values_mut() {
             if record.status == ConversationStatus::Pending {
@@ -1182,10 +1179,8 @@ impl ConversationStore {
     }
 
     fn save_locked(&self, document: &ConversationDocument) -> Result<(), ConversationError> {
-        let bytes = serde_json::to_vec(document).map_err(|e| {
-            ConversationError::Storage(format!("Could not save ApexAgent conversations: {e}"))
-        })?;
-        crate::authority_file::write(&self.inner.path,&bytes).map_err(|e|ConversationError::Storage(format!("Could not save protected conversations: {e}")))
+        document.write_to(&self.inner.path)
+            .map_err(|e| ConversationError::Storage(format!("Could not save protected conversations: {e}")))
     }
 }
 
@@ -1390,6 +1385,7 @@ pub fn prompt(request: &ConversationRequest) -> TurnRequest {
         access: Some(Access::Read),
         effort_override: None,
         cwd: None,
+        ..Default::default()
     }
 }
 

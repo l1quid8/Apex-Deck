@@ -124,6 +124,8 @@ fn direct_work_promise_gets_one_private_follow_up_and_only_the_result_is_added()
             2,
             "the promised work should run once more automatically"
         );
+        assert!(requests[0].room_reply);
+        assert!(!requests[1].room_reply);
         assert_eq!(
             requests[1].turns[0], requests[0].turns[0],
             "the follow-up retains the original request"

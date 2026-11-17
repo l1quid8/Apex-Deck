@@ -32,6 +32,25 @@ pub enum SnapshotSurface {
 }
 
 impl SnapshotSurface {
+    /// The refusal for a surface an adapter does not root: a wrong argument
+    /// when the platform roots other kinds, a platform limit when it roots none.
+    pub fn unavailable_error(self, supported: &[Self]) -> crate::AdapterError {
+        crate::AdapterError::new(
+            if supported.is_empty() {
+                crate::ErrorCode::PlatformNotSupported
+            } else {
+                crate::ErrorCode::InvalidArgs
+            },
+            format!("Snapshot surface '{}' is not available on this platform", self.as_str()),
+        )
+        .with_details(serde_json::json!({
+            "requested_surface": self.as_str(),
+            "supported_surfaces": supported.iter().map(|surface| surface.as_str()).collect::<Vec<_>>()
+        }))
+        .with_suggestion("Choose one of the supported snapshot surfaces")
+        .with_disposition(crate::DeliverySemantics::not_delivered())
+    }
+
     pub fn is_window(surface: &Self) -> bool {
         matches!(surface, Self::Window)
     }

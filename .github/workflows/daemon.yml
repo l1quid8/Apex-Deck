@@ -74,6 +74,11 @@ jobs:
         run: |
           cargo build --locked -p apex-daemon --features remote --bin apex-daemon
           echo "APEX_JAIL_INIT=$GITHUB_WORKSPACE/target/debug/apex-daemon" >> "$GITHUB_ENV"
+      - name: Verify native VPS updater candidates
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m unittest discover -s tests -p 'test_vps_update*.py'
+          python3 scripts/check-vps-candidate.py
       - run: cargo test --locked -p apex-core -p apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote
       - name: Test provenance platform boundary
         run: cargo test --locked -p apex-provenance --lib

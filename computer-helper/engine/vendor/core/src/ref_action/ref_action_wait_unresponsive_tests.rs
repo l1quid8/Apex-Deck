@@ -19,6 +19,7 @@ impl ObservationOps for TransientUnresponsiveAdapter {
     }
 
     crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for TransientUnresponsiveAdapter {
@@ -51,7 +52,7 @@ fn auto_wait_retries_a_transiently_unresponsive_accessibility_service() {
             context: &CommandContext::default(),
         },
         ActionRequest::headless(Action::Click).with_timeout_ms(Some(5_000)),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .unwrap();
 

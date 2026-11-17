@@ -30,6 +30,37 @@ class MaintenanceRefused(RuntimeError):
     """No service mutation happened: the reserved idle moment is no longer valid."""
 
 
+def candidate_checks(native_maintenance):
+    if native_maintenance:
+        exact_tests = [
+            ("apex-host", "command::tests::linux_local_cli_admission_saves_real_changes_only_after_the_probe"),
+            ("apex-host", "command::tests::a_raw_local_caller_cannot_reach_the_persons_browser"),
+            ("apex-host", "computer::tests::browser_calls_die_with_the_turn_and_with_cancel"),
+            ("apex-daemon", "serve::tests::maintenance_defers_background_oauth_renewal_until_released"),
+            ("apex-daemon", "protocol::tests::linux_local_cli_surface_follows_the_recorded_jail_probe"),
+            ("apex-daemon", "protocol::tests::device_access_updates::linux_device_raise_refuses_failed_confinement_without_saving"),
+            ("apex-daemon", "protocol::tests::device_access_updates::current_confined_linux_device_can_raise_with_bound_old_level_and_folder"),
+        ]
+    else:
+        exact_tests = [("apex-host", "command::tests::vps_update_allow_compatibility")]
+    checks = []
+    for crate, test in exact_tests:
+        features = ["--features", "remote"] if crate == "apex-daemon" else []
+        checks.append((["cargo", "test", "--locked", "-p", crate, "--lib", *features, test, "--", "--exact", "--nocapture"], 1))
+    checks.extend([
+        (["cargo", "test", "--locked", "-p", "apex-host", "--lib", "maintenance::tests::", "--", "--nocapture"], None),
+        (["cargo", "test", "--locked", "-p", "apex-daemon", "--lib", "--features", "remote", "maintenance", "--", "--nocapture"], None),
+    ])
+    return checks
+
+
+def verify_candidate_result(output, expected):
+    match = re.search(r"test result: ok\. (\d+) passed; 0 failed;", output)
+    if not match or int(match[1]) < 1 or (expected is not None and int(match[1]) != expected):
+        raise RuntimeError("Required focused regression test did not execute: " + output[-4000:])
+    return int(match[1])
+
+
 def version(text):
     if not isinstance(text, str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", text):
         raise ValueError(f"Not a stable numeric version: {text!r}")
@@ -284,21 +315,18 @@ class System:
             "import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from vps_update_compat import prepare_source; print(json.dumps(prepare_source(Path(sys.argv[2]))))",
             HERE, self.source,
         ], user=True))
-        self.command(["git", "apply", "--check", HERE / "vps-update-maintenance.patch"], user=True, cwd=self.source)
-        self.command(["git", "apply", HERE / "vps-update-maintenance.patch"], user=True, cwd=self.source)
+        if not compatibility.get("native_maintenance"):
+            self.command(["git", "apply", "--check", HERE / "vps-update-maintenance.patch"], user=True, cwd=self.source)
+            self.command(["git", "apply", HERE / "vps-update-maintenance.patch"], user=True, cwd=self.source)
         stage.mkdir(parents=True, exist_ok=True)
-        build_env = {"CARGO_TARGET_DIR": str(self.work / "target"), "APEX_BUILD_COMMIT": commit[:12], "APEX_BUILD_DIRTY": "true", "CARGO_BUILD_JOBS": "2"}
-        checks = [(["cargo", "test", "--locked", "-p", "apex-host", "--lib", "command::tests::vps_update_allow_compatibility", "--", "--exact", "--nocapture"], 1),
-                  (["cargo", "test", "--locked", "-p", "apex-host", "--lib", "maintenance::tests::", "--", "--nocapture"], None),
-                  (["cargo", "test", "--locked", "-p", "apex-daemon", "--lib", "--features", "remote", "maintenance", "--", "--nocapture"], None)]
+        build_dirty = bool(self.command(["git", "status", "--porcelain"], user=True, cwd=self.source))
+        build_env = {"CARGO_TARGET_DIR": str(self.work / "target"), "APEX_BUILD_COMMIT": commit[:12], "APEX_BUILD_DIRTY": str(build_dirty).lower(), "CARGO_BUILD_JOBS": "2"}
         test_results = []
-        for number, (argv, expected) in enumerate(checks, 1):
+        for number, (argv, expected) in enumerate(candidate_checks(compatibility.get("native_maintenance")), 1):
             output = self.command(argv, user=True, cwd=self.source, timeout=3600, env=build_env)
             (stage / f"focused-{number}.log").write_text(output + "\n")
-            match = re.search(r"test result: ok\. (\d+) passed; 0 failed;", output)
-            if not match or int(match[1]) < 1 or (expected is not None and int(match[1]) != expected):
-                raise RuntimeError("Required focused regression test did not execute: " + output[-4000:])
-            test_results.append({"command": argv, "passed": int(match[1])})
+            passed = verify_candidate_result(output, expected)
+            test_results.append({"command": argv, "passed": passed})
         output = self.command(["cargo", "build", "--release", "--locked", "-p", "apex-daemon", "--features", "remote"], user=True, cwd=self.source, timeout=3600, env=build_env)
         (stage / "build.log").write_text(output + "\n")
         target = stage / "apex-daemon"
@@ -311,7 +339,7 @@ class System:
         reported = self.command([target, "--version"], user=True)
         if not re.fullmatch(r"apex-daemon " + re.escape(tag[1:]) + r" \(" + commit[:12] + r"(?:-dirty)?\)", reported):
             raise RuntimeError("Candidate identity does not match tagged source: " + reported)
-        metadata = {"version": tag[1:], "commit": commit, "sha256": digest(target), "path": str(target), "recipe_sha256": recipe, "compatibility": compatibility, "tests": test_results, "build_dirty": True}
+        metadata = {"version": tag[1:], "commit": commit, "sha256": digest(target), "path": str(target), "recipe_sha256": recipe, "compatibility": compatibility, "tests": test_results, "build_dirty": build_dirty}
         write_json(stage / "candidate.json", metadata)
         return metadata
 

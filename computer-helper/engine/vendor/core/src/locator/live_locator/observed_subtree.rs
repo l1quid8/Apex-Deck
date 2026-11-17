@@ -6,6 +6,7 @@ pub struct ObservedSubtree {
     pub(crate) completeness: ObservationCompleteness,
     pub(crate) children_count: Option<u32>,
     pub(crate) source_child_index: Option<usize>,
+    pub(crate) wrapper: bool,
 }
 
 impl ObservedSubtree {
@@ -21,6 +22,7 @@ impl ObservedSubtree {
             completeness: ObservationCompleteness::new(subtree_complete),
             children_count,
             source_child_index: None,
+            wrapper: false,
         }
     }
 
@@ -32,6 +34,13 @@ impl ObservedSubtree {
 
     pub fn with_predecessors_complete(mut self, predecessors_complete: bool) -> Self {
         self.completeness.predecessors_complete = predecessors_complete;
+        self
+    }
+
+    /// Marks a layout wrapper: the platform's walks charge it raw depth and no
+    /// logical depth, so a shallow presentation keeps what a walk would.
+    pub fn with_wrapper(mut self, wrapper: bool) -> Self {
+        self.wrapper = wrapper;
         self
     }
 

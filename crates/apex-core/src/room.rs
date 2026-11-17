@@ -975,7 +975,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_hiding(self.summary(), &self.transcript[self.compacted_upto()..], &self.hidden_ranges(), &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { computer: None, effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None };
+        let request = TurnRequest { computer: None, effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false, cwd: None, ..Default::default() };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -1407,8 +1407,6 @@ impl Room {
         let mut system = system_prompt(config, &self.configs()) + &pinned_section(&self.pins)
             + &if curation::stands(&self.curations) { curation::journal_section(self.journal_path.lock().unwrap().as_deref()) } else { String::new() }
             + &self.checklist_section(&config.id)
-            + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human)
-                .map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
             // Before Plan mode's text: next_steps_request cuts that off the end.
             + if answers { answers_system_for_capability(capability) } else { "" };
         if plan { system.push_str(PLAN_SYSTEM); }
@@ -1432,6 +1430,9 @@ impl Room {
             computer: None,
             effort_override: None,
             access: Some(participant.config().access),
+            notes: self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human)
+                .map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default(),
+            room_reply: true,
             system: self.turn_system(participant.config(), answers, capability, plan),
             turns: render_view_hiding(self.summary(), &self.transcript[start..], &hidden, id, &configs),
             unseen,
@@ -1453,6 +1454,7 @@ impl Room {
     /// As `next_steps_request`, keeping the answers preference of the chain that just replied.
     pub fn next_steps_request_with_answers(&self, id: &ParticipantId, answers: bool) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let (participant, mut request) = self.request_for_capability(id, answers, GeneratedUiCapability::Unsupported)?;
+        request.room_reply = false;
         // Suggesting is not planning, even while the thread plans.
         if request.plan {
             request.plan = false;
@@ -1713,6 +1715,7 @@ mod approver_tests {
         assert!(request.system.contains(ANSWERS_SYSTEM));
         assert!(request.system.ends_with(PLAN_SYSTEM), "Plan mode's text stays last");
         let (_, steps) = room.next_steps_request(&id).unwrap();
+        assert!(!steps.room_reply);
         assert!(steps.system.ends_with(ANSWERS_SYSTEM), "next steps drop only Plan mode's text");
         let (_, off) = room.next_steps_request_with_answers(&id, false).unwrap();
         assert!(!off.system.contains("apex-ui"), "next steps keep a chain's answers-off preference");
@@ -1812,7 +1815,7 @@ mod approver_tests {
             }
         };
         let approver = RoomApprover { desk: &desk, id: &bot.config.id, on_event: &sink };
-        let request = TurnRequest { computer:None, effort_override:None, access:None, system:String::new(), turns:vec![], unseen:vec![], plan:false, cwd:None };
+        let request = TurnRequest { computer:None, effort_override:None, access:None, system:String::new(), turns:vec![], unseen:vec![], plan:false, cwd:None, ..Default::default() };
         let reply = futures::executor::block_on(Room::interruptible(&bot, request, stop.clone(), &|_| {}, &approver)).unwrap();
         assert_eq!(*requested.lock().unwrap(), ["first"]);
         assert!(reply.text.contains("Interrupted"));

@@ -51,6 +51,7 @@ pub struct SideEffect { pub seq: usize, pub by: ParticipantId, pub command: Stri
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct ThreadFile {
+    version: u32,
     #[serde(default)]
     cwd: String,
     #[serde(default)]
@@ -320,16 +321,30 @@ impl Snapshots {
 
     fn thread_path(&self, thread: &str) -> PathBuf { self.root.join("threads").join(format!("{}.json", safe(thread))) }
 
-    fn load(&self, thread: &str) -> ThreadFile {
-        std::fs::read(self.thread_path(thread)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    fn load(&self, thread: &str) -> Result<ThreadFile, String> {
+        let bytes = match std::fs::read(self.thread_path(thread)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+                return Ok(ThreadFile { version: 1, ..ThreadFile::default() }),
+            Err(error) => return Err(error.to_string()),
+        };
+        crate::authority_file::decode_versioned(bytes, 0, &[|legacy| {
+            let mut fields: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(legacy)?;
+            fields.insert("version".into(), 1.into());
+            serde_json::to_vec(&fields)
+        }]).map_err(|e| e.to_string())
     }
 
     fn save(&self, thread: &str, file: &ThreadFile) -> Result<(), String> {
         let path = self.thread_path(thread);
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        let parent = path.parent().unwrap();
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, serde_json::to_vec(file).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, &path).map_err(|e| e.to_string())
+        let bytes = serde_json::to_vec(file).map_err(|e| e.to_string())?;
+        crate::storage::write_synced(&temp, &bytes)
+            .and_then(|()| std::fs::rename(&temp, &path))
+            .and_then(|()| crate::storage::sync_directory(parent))
+            .map_err(|e| e.to_string())
     }
 
     /// The folder's bare store, made on first use.
@@ -381,7 +396,7 @@ impl Snapshots {
         if retired.load(std::sync::atomic::Ordering::SeqCst) { return Err("The chat folder changed; discard the old snapshot.".into()); }
         let (tree, skipped) = self.write_tree(cwd, thread)?;
         let list = self.list_lock(thread); let _list = list.lock().unwrap();
-        let mut file = self.load(thread);
+        let mut file = self.load(thread)?;
         file.cwd = cwd.to_string_lossy().into_owned();
         // Two idle checkpoints in a row with the same tree say nothing new.
         if let Some(last) = file.checkpoints.last() {
@@ -398,7 +413,7 @@ impl Snapshots {
         if !irreversible(command) { return; }
         // Not the thread lock: the bot is mid-turn, and a snapshot can take minutes.
         let lock = self.list_lock(thread); let _guard = lock.lock().unwrap();
-        let mut file = self.load(thread);
+        let Ok(mut file) = self.load(thread) else { return };
         file.effects.push(SideEffect { seq, by: by.clone(), command: command.to_string() });
         let _ = self.save(thread, &file);
     }
@@ -414,7 +429,10 @@ impl Snapshots {
 
     /// What going back to message `at` would restore. `bot` is set for a retry.
     pub fn plan(&self, thread: &str, cwd: &Path, at: usize, bot: Option<&ParticipantId>) -> RevertPlan {
-        let file = self.load(thread);
+        let file = match self.load(thread) {
+            Ok(file) => file,
+            Err(error) => return RevertPlan::unavailable(&format!("Couldn't read the snapshots ({error}), so only the chat can go back.")),
+        };
         let Some(k) = Self::point(&file.checkpoints, at, bot) else {
             return RevertPlan::unavailable("There's no file snapshot from that point, so only the chat can go back.");
         };
@@ -463,7 +481,7 @@ impl Snapshots {
     /// Put `paths` back as they were at message `at`, deleting the ones that
     /// didn't exist then. Returns the paths it couldn't restore.
     pub fn restore(&self, thread: &str, cwd: &Path, at: usize, bot: Option<&ParticipantId>, paths: &[String]) -> Result<Vec<String>, String> {
-        let file = self.load(thread);
+        let file = self.load(thread)?;
         let k = Self::point(&file.checkpoints, at, bot).ok_or("there's no file snapshot from that point")?;
         if !file.checkpoints[k].raw {
             return Err("This snapshot is from an older Deck, so only the chat can go back.".into());
@@ -500,7 +518,7 @@ impl Snapshots {
         {
             let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
             let list = self.list_lock(thread); let _list = list.lock().unwrap();
-            let mut file = self.load(thread);
+            let mut file = self.load(thread)?;
             if let Some(k) = Self::point(&file.checkpoints, at, bot) {
                 // Keep the point itself only if it was taken before anything at `at` happened.
                 let keep = if file.checkpoints[k].kind.working() { k } else { k + 1 };
@@ -525,8 +543,9 @@ impl Snapshots {
     pub fn delete(&self, thread: &str) {
         let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
         let list = self.list_lock(thread); let _list = list.lock().unwrap();
-        let file = self.load(thread);
-        if !file.cwd.is_empty() { let _ = std::fs::remove_file(self.index(Path::new(&file.cwd), thread)); }
+        if let Ok(file) = self.load(thread) {
+            if !file.cwd.is_empty() { let _ = std::fs::remove_file(self.index(Path::new(&file.cwd), thread)); }
+        }
         let _ = std::fs::remove_file(self.thread_path(thread));
     }
 
@@ -537,7 +556,8 @@ impl Snapshots {
         let (first, second) = (self.thread_lock(first), self.thread_lock(second));
         let _first = first.lock().unwrap();
         let _second = (!Arc::ptr_eq(&first, &second)).then(|| second.lock().unwrap());
-        let mut file = { let list = self.list_lock(source); let _list = list.lock().unwrap(); self.load(source) };
+        let source_file = { let list = self.list_lock(source); let _list = list.lock().unwrap(); self.load(source) };
+        let Ok(mut file) = source_file else { return };
         if let Some(upto) = upto {
             file.checkpoints.retain(|c| c.seq < upto || (c.seq == upto && !c.kind.working()));
             file.effects.retain(|e| e.seq < upto);
@@ -548,7 +568,8 @@ impl Snapshots {
 
     /// The diff panel: what changed since the thread's first checkpoint.
     pub fn diff_since_start(&self, thread: &str, cwd: &Path) -> Option<Result<String, String>> {
-        let first = self.load(thread).checkpoints.first()?.tree.clone();
+        let file = match self.load(thread) { Ok(file) => file, Err(error) => return Some(Err(error)) };
+        let first = file.checkpoints.first()?.tree.clone();
         Some(self.store(cwd).and_then(|store| {
             let (now, _) = { let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap(); self.write_tree(cwd, thread)? };
             self.git(&store, cwd, None, &["diff", "--no-color", "--no-ext-diff", "--no-renames", &first, &now], None).map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -626,6 +647,19 @@ mod tests {
     fn bot() -> Option<ParticipantId> { Some(ParticipantId::new("jigga")) }
 
     #[test]
+    fn newer_checkpoint_document_is_preserved_during_mutation() {
+        let (cwd, snaps) = folder("future-document");
+        let path = snaps.thread_path("r");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let future = br#"{"version":2,"effects":[],"newField":"retained"}"#;
+        std::fs::write(&path, future).unwrap();
+        snaps.note_command("r", 0, &ParticipantId::new("bot"), "npm i -g pnpm");
+        assert!(!snaps.plan("r", &cwd, 0, None).available);
+        assert_eq!(std::fs::read(&path).unwrap(), future);
+        std::fs::remove_dir_all(cwd.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn retired_room_snapshot_cannot_replace_new_checkouts_history() {
         let root = std::env::temp_dir().join(format!("apex-snapshot-retired-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -638,8 +672,8 @@ mod tests {
         let retired = std::sync::atomic::AtomicBool::new(true);
         let late = snapshots.take_if_live("r", &old, 0, Kind::Open, None, &retired);
         assert!(late.is_err(), "a queued job from the retired room must be discarded");
-        assert_eq!(snapshots.load("r").cwd, new.to_string_lossy());
-        assert_eq!(snapshots.load("r").checkpoints.len(), 1);
+        assert_eq!(snapshots.load("r").unwrap().cwd, new.to_string_lossy());
+        assert_eq!(snapshots.load("r").unwrap().checkpoints.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

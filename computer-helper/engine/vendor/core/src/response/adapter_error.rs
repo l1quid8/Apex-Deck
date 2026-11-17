@@ -184,6 +184,15 @@ impl AdapterError {
         .with_disposition(DeliverySemantics::not_delivered())
     }
 
+    /// A named app is running but presents no window this command can read.
+    pub fn app_has_no_window(app: &str) -> Self {
+        Self::new(
+            ErrorCode::WindowNotFound,
+            format!("Application '{app}' is running but has no matching window"),
+        )
+        .with_suggestion("Wait for the app to present a window, or run 'list-windows --app'.")
+    }
+
     pub fn timeout(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Timeout, message)
             .with_suggestion("The target application may be busy or unresponsive")

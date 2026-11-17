@@ -85,6 +85,7 @@ impl ObservationOps for FocusAdapter {
             },
         )
     }
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for FocusAdapter {
@@ -131,7 +132,8 @@ fn execute_within(
     let _clock = crate::wait::deadline::VirtualClock::freeze();
     let entry: RefEntry = serde_json::from_value(serde_json::json!({
         "pid": 1, "process_instance": "test-instance", "role": "button", "name": "Run",
-        "source_window_id": "w-test", "source_surface": "window", "path": [0],
+        "source_window_id": "w-1", "source_surface": "window", "path": [0],
+        "unique_at_capture": true,
         "bounds": bounds(), "bounds_hash": bounds().bounds_hash(), "available_actions": ["Click"], "states": []
     })).unwrap();
     let request = if headed {

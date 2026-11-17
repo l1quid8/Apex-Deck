@@ -18,6 +18,10 @@ impl ObservationOps for LiveValue {
     ) -> Result<Option<String>, AdapterError> {
         Ok(self.0.clone())
     }
+    crate::adapter::saved_ref_scope!(nodes: &[
+        ("checkbox", Some("Target"), None),
+        ("textfield", Some("Target"), None),
+    ]);
 }
 
 impl ActionOps for LiveValue {}

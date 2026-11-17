@@ -20,6 +20,73 @@ use std::{
 #[cfg(not(test))]
 static REVISIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
 
+pub(crate) type Migration = fn(&[u8]) -> serde_json::Result<Vec<u8>>;
+
+#[derive(serde::Deserialize)]
+struct DocumentHeader {
+    #[serde(default)]
+    version: u32,
+}
+
+pub(crate) fn decode_versioned<T: serde::de::DeserializeOwned>(
+    mut bytes: Vec<u8>, first_version: u32, migrations: &[Migration],
+) -> io::Result<T> {
+    let mut version = serde_json::from_slice::<DocumentHeader>(&bytes)?.version;
+    let migrations = version.checked_sub(first_version)
+        .and_then(|index| migrations.get(index as usize..))
+        .ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidData, format!("Unsupported document version {version}"),
+        ))?;
+    for migrate in migrations {
+        bytes = migrate(&bytes)?;
+        version += 1;
+        if serde_json::from_slice::<DocumentHeader>(&bytes)?.version != version {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid document migration"));
+        }
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Protected JSON documents keep their existing top-level fields. Each migration
+/// maps one stored version to the next. A missing version denotes version zero.
+/// Reads migrate in memory so an inspection never rewrites the ledger. The
+/// owning store persists the current schema with its next successful mutation.
+pub(crate) trait VersionedDocument: serde::Serialize + serde::de::DeserializeOwned {
+    const FIRST_VERSION: u32 = 1;
+    const MIGRATIONS: &'static [Migration] = &[];
+    const PRETTY: bool = false;
+
+    fn decode(bytes: Vec<u8>) -> io::Result<Self> {
+        decode_versioned(bytes, Self::FIRST_VERSION, Self::MIGRATIONS)
+    }
+
+    fn read_from(path: &Path) -> io::Result<Self> {
+        Self::decode(read(path)?)
+    }
+
+    fn read_optional(path: &Path) -> io::Result<Option<Self>> {
+        match Self::read_from(path) {
+            Ok(doc) => Ok(Some(doc)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn write_to(&self, path: &Path) -> io::Result<()> {
+        self.write_checked(path, |_| Ok(()))
+    }
+
+    fn write_checked(&self, path: &Path, check: impl FnOnce(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        let bytes = if Self::PRETTY {
+            serde_json::to_vec_pretty(self)?
+        } else {
+            serde_json::to_vec(self)?
+        };
+        check(&bytes)?;
+        write(path, &bytes)
+    }
+}
+
 /// Where the local fixture keeps a protected document. Production keeps it in
 /// the root broker, never at the user-owned path, and legacy user JSON stays at
 /// that path untouched. The fixture models the same separation so tests can
@@ -104,19 +171,22 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(target_os = "linux")]
     if plain(path) { return plain_read(path); }
     let (folder, name) = scope(path)?;
-    let doc = apex_provenance::io::document(&folder, &name, None).map_err(error)?;
-    REVISIONS
-        .get_or_init(Default::default)
-        .lock()
-        .map_err(|_| error("Ledger lock poisoned".into()))?
-        .insert(folder.join(name), doc.revision);
-    if doc.value.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "No protected ledger exists. Legacy user JSON has not been certified.",
-        ));
-    }
-    serde_json::to_vec(&doc.value).map_err(|e| error(e.to_string()))
+    let gate = crate::authority_reads::for_document(&folder.join(&name))?;
+    gate.read(|| {
+        let doc = apex_provenance::io::document(&folder, &name, None).map_err(error)?;
+        REVISIONS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| error("Ledger lock poisoned".into()))?
+            .insert(folder.join(name), doc.revision);
+        if doc.value.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No protected ledger exists. Legacy user JSON has not been certified.",
+            ));
+        }
+        serde_json::to_vec(&doc.value).map_err(|e| error(e.to_string()))
+    })
 }
 #[cfg(not(test))]
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -127,6 +197,8 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     if plain(path) { return plain_write(path, bytes); }
     let (folder, name) = scope(path)?;
+    let gate = crate::authority_reads::for_document(&folder.join(&name))?;
+    let _exclusive = gate.write()?;
     // Protected host ownership holds stable root-owned kernel locks across the
     // host lifetime. The broker also rejects writes from a stale revision.
     let mut revisions = REVISIONS

@@ -94,6 +94,7 @@ impl ObservationOps for CountingPipelineAdapter {
     ) -> Result<crate::adapter::hit_test::HitTestResult, AdapterError> {
         Ok(crate::adapter::hit_test::HitTestResult::ReachesTarget)
     }
+    crate::adapter::saved_ref_scope!("button", Some("OK"));
 }
 
 impl ActionOps for CountingPipelineAdapter {

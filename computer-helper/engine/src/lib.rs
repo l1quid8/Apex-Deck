@@ -3,7 +3,7 @@ use agent_desktop_core::{
     Action, ActionRequest, AdapterError, CommandContext, Deadline, DeliverySemantics, Direction,
     ObservationBudget, ObservationOps, RefMap, TreeOptions, WindowFilter,
 };
-use agent_desktop_macos::{MacOSAdapter, RetainedRefSession};
+use agent_desktop_macos::MacOSAdapter;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -48,6 +48,33 @@ enum Request {
         observation: String,
         r#ref: String,
     },
+    /// Headless semantic control: toggle, check, uncheck, expand, collapse,
+    /// select (an option by its label) and set_value (replace a field's text).
+    Control {
+        pid: i32,
+        observation: String,
+        r#ref: String,
+        action: String,
+        #[serde(default)]
+        value: Option<String>,
+    },
+}
+
+const MAX_CONTROL_VALUE_BYTES: usize = 16 * 1024;
+
+/// Only actions that need no physical pointer or keyboard are offered.
+fn control_action(action: &str, value: Option<String>) -> Option<Action> {
+    let value = value.filter(|v| v.len() <= MAX_CONTROL_VALUE_BYTES);
+    Some(match (action, value) {
+        ("toggle", None) => Action::Toggle,
+        ("check", None) => Action::Check,
+        ("uncheck", None) => Action::Uncheck,
+        ("expand", None) => Action::Expand,
+        ("collapse", None) => Action::Collapse,
+        ("select", Some(v)) if !v.is_empty() => Action::Select(v),
+        ("set_value", Some(v)) => Action::SetValue(v),
+        _ => return None,
+    })
 }
 fn parse_request(raw: &str) -> Result<Request, ()> {
     if raw.len() > MAX_REQUEST_BYTES {
@@ -59,10 +86,16 @@ fn parse_request(raw: &str) -> Result<Request, ()> {
         | Request::Click { pid, .. }
         | Request::Focus { pid, .. }
         | Request::Reveal { pid, .. }
+        | Request::Control { pid, .. }
         | Request::Scroll { pid, .. } => *pid,
     };
     if pid <= 0 {
         return Err(());
+    }
+    if let Request::Control { action, value, .. } = &request {
+        if control_action(action, value.clone()).is_none() {
+            return Err(());
+        }
     }
     if let Request::Capture { app, .. } = &request {
         if app.is_empty()
@@ -125,7 +158,6 @@ struct Observation {
 #[derive(Default)]
 struct EngineState {
     observation: Option<Observation>,
-    retained: Option<RetainedRefSession>,
 }
 impl EngineState {
     fn execute(&mut self, request: Request) -> Value {
@@ -169,13 +201,25 @@ impl EngineState {
                 observation,
                 r#ref,
             } => self.action(pid, &observation, &r#ref, Action::ScrollTo),
+            Request::Control {
+                pid,
+                observation,
+                r#ref,
+                action,
+                value,
+            } => match control_action(&action, value) {
+                Some(action) => self.action(pid, &observation, &r#ref, action),
+                None => {
+                    self.clear();
+                    failure("invalid_request", DeliverySemantics::not_delivered())
+                }
+            },
         }
     }
     fn clear(&mut self) {
+        // Refs carry their own accessibility token since agent-desktop 1.1;
+        // dropping the observation drops every native identity this bridge held.
         self.observation = None;
-        if let Some(retained) = &self.retained {
-            retained.retain(&HashSet::new());
-        }
     }
     fn capture(&mut self, pid: i32, app: &str, window_id: Option<String>) -> Value {
         self.clear();
@@ -235,12 +279,6 @@ impl EngineState {
                 _ => AdapterError::internal("snapshot_failed"),
             })
         };
-        if self.retained.is_none() {
-            match RetainedRefSession::start() {
-                Ok(session) => self.retained = Some(session),
-                Err(error) => return adapter_failure(error),
-            }
-        }
         // A page can retitle its window between the engine's listing and its resolve.
         let mut attempt = work();
         for _ in 0..2 {
@@ -282,18 +320,6 @@ impl EngineState {
         );
         if let Some(ref focused) = focused {
             text.push_str(&format!("focused_ref: {focused}\n"));
-        }
-        let live: HashSet<String> = refs
-            .iter()
-            .filter_map(|id| {
-                result
-                    .refmap
-                    .get(id)
-                    .and_then(|entry| entry.identity.retained_object.clone())
-            })
-            .collect();
-        if let Some(retained) = &self.retained {
-            retained.retain(&live)
         }
         self.observation = Some(Observation {
             id: id.clone(),
@@ -615,6 +641,27 @@ mod tests {
         );
         assert!(text.len() <= MAX_OUTPUT_BYTES);
         assert!(text.contains("[truncated]"));
+    }
+
+    #[test]
+    fn control_accepts_only_headless_actions_with_the_right_value() {
+        let ok = |a: &str, v: Option<&str>| control_action(a, v.map(String::from)).is_some();
+        for a in ["toggle", "check", "uncheck", "expand", "collapse"] {
+            assert!(ok(a, None));
+            assert!(!ok(a, Some("x")), "{a} takes no value");
+        }
+        assert!(ok("select", Some("Large")));
+        assert!(!ok("select", Some("")));
+        assert!(!ok("select", None));
+        assert!(ok("set_value", Some("")), "clearing a field is allowed");
+        assert!(!ok("set_value", Some(&"x".repeat(MAX_CONTROL_VALUE_BYTES + 1))));
+        for a in ["click", "double_click", "drag", "hover", "type_text", "press_key", ""] {
+            assert!(!ok(a, None) && !ok(a, Some("x")), "{a} is not a control action");
+        }
+        let parsed = |raw: &str| parse_request(raw).is_ok();
+        assert!(parsed(r#"{"op":"control","pid":1,"observation":"o","ref":"r","action":"toggle"}"#));
+        assert!(!parsed(r#"{"op":"control","pid":1,"observation":"o","ref":"r","action":"hover"}"#));
+        assert!(!parsed(r#"{"op":"control","pid":1,"observation":"o","ref":"r","action":"toggle","extra":1}"#));
     }
 
     #[test]

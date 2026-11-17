@@ -28,7 +28,7 @@ impl ObservationOps for DisabledBelowTheFold {
     ) -> Result<crate::LiveElement, AdapterError> {
         let scrolled = self.scroll_calls.load(Ordering::SeqCst) > 0;
         Ok(crate::LiveElement {
-            identity: crate::adapter::live_identity(""),
+            identity: crate::adapter::live_identity("Field"),
             state: ElementState {
                 role: "textfield".into(),
                 states: Vec::new(),
@@ -42,6 +42,7 @@ impl ObservationOps for DisabledBelowTheFold {
             available_actions: vec![capability::SET_VALUE.into()],
         })
     }
+    crate::adapter::saved_ref_scope!("textfield", Some("Field"));
 }
 
 impl ActionOps for DisabledBelowTheFold {
@@ -81,7 +82,7 @@ fn bounds() -> crate::Rect {
 
 fn entry() -> RefEntry {
     let bounds = bounds();
-    let mut entry = crate::adapter::minimal_ref_entry("textfield", None);
+    let mut entry = crate::adapter::minimal_ref_entry("textfield", Some("Field"));
     entry.identity.value = Some("4".into());
     entry.geometry = crate::RefGeometry {
         bounds_space: None,

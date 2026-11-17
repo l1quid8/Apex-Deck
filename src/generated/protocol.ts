@@ -6,7 +6,7 @@
 export const PROTOCOL = 1 as const;
 
 /** What a daemon may list in its welcome; clients gate features on these. */
-export const CAPABILITIES = ["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "voice_server_v1"] as const;
+export const CAPABILITIES = ["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1", "voice_server_v1", "maintenance_v1"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** What a participant is allowed to do to the workspace it runs in. */
@@ -315,7 +315,7 @@ export type ControlConfirmation = {
 export type Curation = {
   at: number;
   by: ParticipantId;
-  hidden: Array<Array<number>>;
+  hidden: Array<[number, number]>;
   reason: string;
   undone?: number | null;
   when: number;
@@ -402,6 +402,12 @@ export type FileChange = {
   removed: number;
 };
 
+export type GatewayConfig = {
+  bind: string;
+  enabled: boolean;
+  port: number;
+};
+
 export type Geometry = {
   display: number;
   generation: number;
@@ -462,6 +468,9 @@ export type Input = {
 };
 
 export type Key = "enter" | "backspace" | "tab" | "escape" | "space" | "up" | "down" | "left" | "right";
+
+/** Backend family a gateway key may access. */
+export type KeyScope = "sub" | "api" | "cli";
 
 export type Look = {
   color?: string | null;
@@ -569,6 +578,12 @@ export type ParticipantConfig = {
    * the tool's own setting (Codex's `service_tier`, for example).
    */
   speed?: Speed | null;
+  /**
+   * Untethered Unified Computer Use: with Full access, this bot uses Mac
+   * apps without the helper's per-app approval prompt and with relaxed
+   * reliability guards. Protected apps, password fields and Stop still apply.
+   */
+  untethered_computer?: boolean;
   /**
    * The voice this bot speaks with on calls (a Kokoro voice id such as
    * "bf_emma"). `None` uses the app's default voice.
@@ -2094,6 +2109,7 @@ export type Command = {
   cmd: "persona_draft";
 } | {
   args: {
+    offset?: number | null;
     path: string;
   };
   cmd: "read_attachment";
@@ -2703,6 +2719,49 @@ export type Command = {
   cmd: "mod_env_get";
 };
 
+/** Managing remote devices: only from this machine (`Trust::Local`). */
+export type DevicesRequest = {
+  args: Record<string, never>;
+  cmd: "devices_list";
+} | {
+  args: {
+    id: string;
+    label: string;
+    restore?: boolean;
+    threads?: Threads | null;
+    tier: Tier;
+  };
+  cmd: "devices_add";
+} | {
+  args: {
+    id: string;
+    tier: Tier;
+  };
+  cmd: "devices_set_tier";
+} | {
+  args: {
+    id: string;
+    threads: Threads;
+  };
+  cmd: "devices_set_threads";
+} | {
+  args: {
+    id: string;
+  };
+  cmd: "devices_revoke";
+};
+
+export type GatewayAdminRequest = {
+  args: Record<string, never>;
+  cmd: "gateway_status";
+} | {
+  args: Record<string, never>;
+  cmd: "gateway_providers";
+} | {
+  args: GatewayConfig;
+  cmd: "gateway_configure";
+};
+
 /**
  * Something that happened on the host. The serialized `name` is the event
  * name the desktop UI listens for, and `payload` is what it receives.
@@ -2763,6 +2822,81 @@ export type HostEvent = {
 } | {
   name: "settings-changed";
   payload: unknown;
+};
+
+/**
+ * A `gateway_keys_*` request as it arrives over `daemon.sock`.
+ *
+ * The tag mirror [`request`], so a request built here and sent through a
+ * socket lands on the same variant the offline path would run.
+ */
+export type KeysRequest = {
+  args: Record<string, never>;
+  cmd: "gateway_keys_list";
+} | {
+  args: {
+    allowMcp?: boolean;
+    label: string;
+    maxTurnsPerDay?: number | null;
+    maxUsdMicrosPerMonth?: number | null;
+    scopes?: Array<KeyScope> | null;
+  };
+  cmd: "gateway_keys_issue";
+} | {
+  args: {
+    id: string;
+  };
+  cmd: "gateway_keys_revoke";
+};
+
+export type MaintenanceRequest = {
+  args: {
+    nonce: string;
+  };
+  cmd: "maintenance_begin";
+} | {
+  args: {
+    lease: string;
+  };
+  cmd: "maintenance_cancel";
+};
+
+export type PairRequest = {
+  args: {
+    threads?: Threads | null;
+    tier?: Tier;
+  };
+  cmd: "pair_start";
+} | {
+  args: {
+    invitation: string;
+  };
+  cmd: "pair_wait";
+} | {
+  args: {
+    claim_id: string;
+    invitation: string;
+  };
+  cmd: "pair_approve";
+} | {
+  args: {
+    invitation: string;
+  };
+  cmd: "pair_cancel";
+} | {
+  args: Record<string, never>;
+  cmd: "remote_info";
+} | {
+  args: {
+    addrs: Array<string>;
+  };
+  cmd: "remote_advertise";
+} | {
+  args: {
+    enabled: boolean;
+    import?: boolean;
+  };
+  cmd: "remote_set";
 };
 
 /** Things that happen while a room works through a human message. */
@@ -2912,6 +3046,50 @@ export type RoomEvent = {
 } | {
   id: ParticipantId;
   type: "participant_idle";
+};
+
+export type VoiceRequest = {
+  args: Record<string, never>;
+  cmd: "voice_server_status";
+} | {
+  args: Record<string, never>;
+  cmd: "voice_server_install";
+} | {
+  args: Record<string, never>;
+  cmd: "voice_server_install_cancel";
+} | {
+  args: {
+    room: string;
+  };
+  cmd: "voice_server_warm";
+} | {
+  args: {
+    room: string;
+  };
+  cmd: "voice_server_open";
+} | {
+  args: {
+    channel: number;
+    reason?: string;
+  };
+  cmd: "voice_server_close";
+} | {
+  args: {
+    instructions?: string | null;
+    model?: string | null;
+    participant?: string | null;
+    room: string;
+    tools?: Array<unknown> | null;
+    voice?: string | null;
+  };
+  cmd: "voice_realtime_session";
+} | {
+  args: {
+    model?: string | null;
+    participant?: string | null;
+    room: string;
+  };
+  cmd: "voice_meta_session";
 };
 
 /**
@@ -3217,6 +3395,25 @@ export interface Commands {
     room: string;
   };
   data_folder: Record<string, never>;
+  devices_add: {
+    id: string;
+    label: string;
+    restore?: boolean;
+    threads?: Threads | null;
+    tier: Tier;
+  };
+  devices_list: Record<string, never>;
+  devices_revoke: {
+    id: string;
+  };
+  devices_set_threads: {
+    id: string;
+    threads: Threads;
+  };
+  devices_set_tier: {
+    id: string;
+    tier: Tier;
+  };
   env_present: {
     names: Array<string>;
   };
@@ -3273,6 +3470,20 @@ export interface Commands {
   folder_withdraw: {
     path: string;
   };
+  gateway_configure: GatewayConfig;
+  gateway_keys_issue: {
+    allowMcp?: boolean;
+    label: string;
+    maxTurnsPerDay?: number | null;
+    maxUsdMicrosPerMonth?: number | null;
+    scopes?: Array<KeyScope> | null;
+  };
+  gateway_keys_list: Record<string, never>;
+  gateway_keys_revoke: {
+    id: string;
+  };
+  gateway_providers: Record<string, never>;
+  gateway_status: Record<string, never>;
   generate_image: {
     prompt: string;
     provider: string;
@@ -3303,6 +3514,12 @@ export interface Commands {
   list_tool_servers: {
     agent: string;
     room: string;
+  };
+  maintenance_begin: {
+    nonce: string;
+  };
+  maintenance_cancel: {
+    lease: string;
   };
   mod_env_get: {
     name: string;
@@ -3438,6 +3655,20 @@ export interface Commands {
     cwd?: string | null;
     reveal?: boolean | null;
     target: string;
+  };
+  pair_approve: {
+    claim_id: string;
+    invitation: string;
+  };
+  pair_cancel: {
+    invitation: string;
+  };
+  pair_start: {
+    threads?: Threads | null;
+    tier?: Tier;
+  };
+  pair_wait: {
+    invitation: string;
   };
   paths_exist: {
     cwd?: string | null;
@@ -3860,7 +4091,16 @@ export interface Commands {
     request: number;
   };
   read_attachment: {
+    offset?: number | null;
     path: string;
+  };
+  remote_advertise: {
+    addrs: Array<string>;
+  };
+  remote_info: Record<string, never>;
+  remote_set: {
+    enabled: boolean;
+    import?: boolean;
   };
   room_add_participant: {
     id: string;
@@ -4078,6 +4318,32 @@ export interface Commands {
   startup_folders: Record<string, never>;
   trust_status: Record<string, never>;
   voice_capabilities: Record<string, never>;
+  voice_meta_session: {
+    model?: string | null;
+    participant?: string | null;
+    room: string;
+  };
+  voice_realtime_session: {
+    instructions?: string | null;
+    model?: string | null;
+    participant?: string | null;
+    room: string;
+    tools?: Array<unknown> | null;
+    voice?: string | null;
+  };
+  voice_server_close: {
+    channel: number;
+    reason?: string;
+  };
+  voice_server_install: Record<string, never>;
+  voice_server_install_cancel: Record<string, never>;
+  voice_server_open: {
+    room: string;
+  };
+  voice_server_status: Record<string, never>;
+  voice_server_warm: {
+    room: string;
+  };
   workspace_read: {
     cwd?: string | null;
     target: string;

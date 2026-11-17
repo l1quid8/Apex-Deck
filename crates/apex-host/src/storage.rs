@@ -1,9 +1,47 @@
+use crate::authority_file::VersionedDocument;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use apex_core::work_steps::{ReplySteps, StepKind};
 use apex_core::{ParticipantId, RoomSnapshot};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+// The broker and legacy import use the filename to select v1. Every top-level
+// key is a room ID, including "version". Entries remain raw until their owning
+// room is read so an unrelated save preserves unknown fields in other entries.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(transparent)]
+struct RoomAuthorityDocument(serde_json::Map<String, serde_json::Value>);
+
+impl VersionedDocument for RoomAuthorityDocument {
+    fn decode(bytes: Vec<u8>) -> std::io::Result<Self> {
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct MachineGrantsDocument {
+    version: u32,
+    #[serde(flatten)]
+    grants: crate::personal_settings::MachineAllows,
+}
+
+impl VersionedDocument for MachineGrantsDocument {
+    const FIRST_VERSION: u32 = 0;
+    const MIGRATIONS: &'static [crate::authority_file::Migration] = &[|bytes| {
+        let grants = serde_json::from_slice(bytes)?;
+        serde_json::to_vec(&Self { version: 1, grants })
+    }];
+}
+
+impl VersionedDocument for crate::personal::PersonalDocument {
+    const FIRST_VERSION: u32 = 0;
+    const MIGRATIONS: &'static [crate::authority_file::Migration] = &[|bytes| {
+        let mut document: Self = serde_json::from_slice(bytes)?;
+        document.version = 1;
+        serde_json::to_vec(&document)
+    }];
+}
 
 /// Flush through the writable handle that produced the replacement. Windows
 /// requires write access for `sync_all`; reopening with `File::open` is read-only.
@@ -448,29 +486,23 @@ impl Store {
 
     /// Personal assistants: their conversations, events, tasks and receipts.
     pub fn personal(&self) -> Result<Option<crate::personal::PersonalDocument>, String> {
-        let path=self.root.join("personal-assistants.json");
-        match crate::authority_file::read(&path){
-            Ok(bytes)=>serde_json::from_slice(&bytes).map(Some).map_err(|e|e.to_string()),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),
-            Err(e)=>Err(e.to_string()),
-        }
+        crate::personal::PersonalDocument::read_optional(&self.root.join("personal-assistants.json"))
+            .map_err(|e| e.to_string())
     }
 
     pub fn save_personal(&self, document: &crate::personal::PersonalDocument) -> Result<(), String> {
-        let bytes=serde_json::to_vec(document).map_err(|e|e.to_string())?;
-        crate::authority_file::write(&self.root.join("personal-assistants.json"),&bytes).map_err(|e|e.to_string())
+        document.write_to(&self.root.join("personal-assistants.json")).map_err(|e| e.to_string())
     }
 
     /// Which remote assistants may run commands on this machine, and where.
     pub fn personal_machine(&self) -> Result<Option<crate::personal_settings::MachineAllows>, String> {
-        match crate::authority_file::read(&self.root.join("personal-machine.json")) {
-            Ok(bytes)=>serde_json::from_slice(&bytes).map(Some).map_err(|e|e.to_string()),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(e)=>Err(e.to_string()),
-        }
+        MachineGrantsDocument::read_optional(&self.root.join("personal-machine.json"))
+            .map(|doc| doc.map(|d| d.grants)).map_err(|e| e.to_string())
     }
 
     pub fn save_personal_machine(&self, allows: &crate::personal_settings::MachineAllows) -> Result<(), String> {
-        crate::authority_file::write(&self.root.join("personal-machine.json"),&serde_json::to_vec(allows).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+        MachineGrantsDocument { version: 1, grants: allows.clone() }
+            .write_to(&self.root.join("personal-machine.json")).map_err(|e| e.to_string())
     }
 
     /// The folder every saved file lives in.
@@ -550,13 +582,17 @@ impl Store {
         Ok(None)
     }
     fn room_authorities(&self)->Result<serde_json::Map<String,serde_json::Value>,String>{
-        let path=self.root.join("room-authority-v1.json");
-        match crate::authority_file::read(&path){
-            Ok(bytes)=>serde_json::from_slice(&bytes).map_err(|e|e.to_string()),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(Default::default()),
-            Err(e)=>Err(e.to_string()),
-        }
+        let path = self.root.join(crate::legacy_import::ROOMS);
+        RoomAuthorityDocument::read_optional(&path)
+            .map(|doc| doc.unwrap_or_default().0)
+            .map_err(|error| error.to_string())
     }
+
+    fn write_room_authorities(&self, entries: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+        RoomAuthorityDocument(entries).write_to(&self.root.join(crate::legacy_import::ROOMS))
+            .map_err(|error| error.to_string())
+    }
+
     fn save_room_authority(&self,id:&str,room:&SavedRoom)->Result<(),String>{
         self.save_room_authority_held(id, room, self.room_authorities()?)
     }
@@ -575,7 +611,7 @@ impl Store {
         // rewriting the entire protected ledger on every streamed checkpoint.
         if authorities.get(id) == Some(&manifest) { return Ok(()); }
         authorities.insert(id.into(),manifest);
-        crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+        self.write_room_authorities(authorities)
     }
 
     /// A room's import label comes only from its protected authority manifest.
@@ -615,11 +651,13 @@ impl Store {
             }
         }
         if outcome.imported.is_empty() { return Ok(outcome); }
-        let bytes = serde_json::to_vec(&authorities).map_err(|e| e.to_string())?;
-        if bytes.len() > crate::legacy_import::DOCUMENT_BUDGET {
-            return Err("Importing these rooms would exceed the protected document limit. Nothing was written.".into());
-        }
-        crate::authority_file::write(&self.root.join("room-authority-v1.json"), &bytes).map_err(|e| e.to_string())?;
+        RoomAuthorityDocument(authorities).write_checked(&self.root.join(crate::legacy_import::ROOMS), |bytes| {
+            if bytes.len() > crate::legacy_import::DOCUMENT_BUDGET {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                    "Importing these rooms would exceed the protected document limit. Nothing was written."));
+            }
+            Ok(())
+        }).map_err(|error| error.to_string())?;
         Ok(outcome)
     }
 
@@ -1118,11 +1156,7 @@ impl Store {
     fn forget_authority_held(&self, id: &str) -> Result<(), String> {
         let mut authorities = self.room_authorities()?;
         if authorities.remove(id).is_some() {
-            crate::authority_file::write(
-                &self.root.join("room-authority-v1.json"),
-                &serde_json::to_vec(&authorities).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
+            self.write_room_authorities(authorities)?;
         }
         Ok(())
     }
@@ -1184,7 +1218,7 @@ impl Store {
         self.tombstone_room_held(id)?;
         let mut authorities=self.room_authorities()?;
         authorities.remove(id);
-        crate::authority_file::write(&self.root.join("room-authority-v1.json"),&serde_json::to_vec(&authorities).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        self.write_room_authorities(authorities)?;
         let mut metas = self.chat_metas_held()?;
         if metas.remove(id).is_some() {
             self.write_held(&self.root.join("chat-meta-v1.json"), &metas)?;
@@ -1502,6 +1536,67 @@ mod tests {
         std::env::temp_dir().join(format!("apex-deck-storage-{}-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+
+    #[test]
+    fn room_authority_v1_keeps_bare_room_ids_and_untouched_entries() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let path = root.join(crate::legacy_import::ROOMS);
+        let original = br#"{ "version": {"legacy":null,"unknown":["v1",1]}, "removed": {} }"#;
+        crate::authority_file::write(&path, original).unwrap();
+        assert!(store.room_authorities().unwrap().contains_key("version"));
+        assert_eq!(crate::authority_file::read(&path).unwrap(), original);
+        store.forget_authority_held("removed").unwrap();
+        assert_eq!(crate::authority_file::read(&path).unwrap(),
+            br#"{"version":{"legacy":null,"unknown":["v1",1]}}"#);
+        crate::authority_file::write(&path, b"[]").unwrap();
+        assert!(store.forget_authority_held("version").is_err());
+        assert_eq!(crate::authority_file::read(&path).unwrap(), b"[]");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_room_import_preserves_previous_protected_bytes() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let path = root.join(crate::legacy_import::ROOMS);
+        let original = br#"{ "existing": {} }"#;
+        crate::authority_file::write(&path, original).unwrap();
+        let room = LegacyRoom {
+            id: "new".into(),
+            authority: RoomAuthority {
+                kind: apex_core::RoomKind::Work,
+                cwd: Some("x".repeat(crate::legacy_import::DOCUMENT_BUDGET)),
+                participants: vec![], options: Default::default(), allowed: vec![],
+                plan: false, mounts: vec![], legacy: None,
+            },
+            omitted_commands: vec![],
+        };
+        let marker = crate::legacy_import::LegacyMarker::new("digest", 1, None, None);
+        let result = store.import_legacy_room_authorities(vec![room], &marker);
+        assert!(matches!(result, Err(error) if error.contains("protected document limit")));
+        assert_eq!(crate::authority_file::read(&path).unwrap(), original);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn machine_grants_migrate_only_when_saved_and_refuse_future_versions() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let path = root.join("personal-machine.json");
+        let legacy = br#"{"allows":[]}"#;
+        crate::authority_file::write(&path, legacy).unwrap();
+        let grants = store.personal_machine().unwrap().unwrap();
+        assert!(grants.allows.is_empty());
+        assert_eq!(crate::authority_file::read(&path).unwrap(), legacy);
+        store.save_personal_machine(&grants).unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&crate::authority_file::read(&path).unwrap()).unwrap();
+        assert_eq!(document, serde_json::json!({"version": 1, "allows": []}));
+        crate::authority_file::write(&path, br#"{"version":2,"allows":[]}"#).unwrap();
+        assert!(store.personal_machine().is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

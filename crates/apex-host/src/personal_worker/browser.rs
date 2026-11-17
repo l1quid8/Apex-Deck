@@ -34,6 +34,20 @@ static LIFECYCLE: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 static SESSIONS: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
 const SESSION_LIMIT: usize = 16;
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
+// Tab observers can persist navigations after their initiating command has returned.
+// Count the task itself, including the interval between abort() and task destruction.
+static LIVE_OBSERVERS: AtomicU64 = AtomicU64::new(0);
+struct Observer;
+impl Observer {
+    fn start() -> Self { LIVE_OBSERVERS.fetch_add(1, Ordering::SeqCst); Self }
+}
+impl Drop for Observer {
+    fn drop(&mut self) { LIVE_OBSERVERS.fetch_sub(1, Ordering::SeqCst); }
+}
+pub(crate) fn maintenance_busy(data: &std::path::Path) -> bool {
+    LIVE_OBSERVERS.load(Ordering::SeqCst) != 0 && PROFILE.get().is_some_and(|dir| dir == &data.join("assistant-browser"))
+}
+
 const VIEWER_IDLE: Duration = Duration::from_secs(5);
 const UPLOAD_LIMIT: usize = 6 * 1024 * 1024;
 
@@ -454,7 +468,9 @@ impl Tab {
         let (orders, mut commands) = tokio::sync::mpsc::channel::<Order>(16);
         let tab = Arc::downgrade(self);
         let dialog = self.dialog.clone();
+        let observer = Observer::start();
         let task = tokio::spawn(async move {
+            let _observer = observer;
             let mut ready = Some(ready);
             let mut next = 10u64;
             let mut seq = 0u64;

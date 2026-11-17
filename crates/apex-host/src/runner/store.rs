@@ -1,3 +1,4 @@
+use crate::authority_file::VersionedDocument;
 use crate::runner::model::{RunnerSnapshot, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -7,9 +8,20 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RunnerDocument {
     #[serde(default)]
+    version: u32,
+    #[serde(default)]
     runners: HashMap<String, RunnerSnapshot>,
     #[serde(default)]
     receipts: HashMap<String, RunnerSnapshot>, // requestId -> snapshot result
+}
+
+impl VersionedDocument for RunnerDocument {
+    const FIRST_VERSION: u32 = 0;
+    const MIGRATIONS: &'static [crate::authority_file::Migration] = &[|bytes| {
+        let mut document: RunnerDocument = serde_json::from_slice(bytes)?;
+        document.version = 1;
+        serde_json::to_vec(&document)
+    }];
 }
 
 pub struct RunnerStore {
@@ -49,9 +61,9 @@ impl RunnerStore {
         }
         let mut cached = self.document.lock().map_err(|e| e.to_string())?;
         if cached.is_none() {
-            *cached = Some(match crate::authority_file::read(&self.path) {
-                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => RunnerDocument::default(),
+            *cached = Some(match RunnerDocument::read_from(&self.path) {
+                Ok(document) => document,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => RunnerDocument { version: 1, ..Default::default() },
                 Err(e) => return Err(e.to_string()),
             });
         }
@@ -66,8 +78,7 @@ impl RunnerStore {
     }
 
     fn write_doc(&self, doc: &RunnerDocument) -> Result<(), String> {
-        let bytes = serde_json::to_vec(doc).map_err(|e| e.to_string())?;
-        crate::authority_file::write(&self.path, &bytes).map_err(|e| e.to_string())
+        doc.write_to(&self.path).map_err(|e| e.to_string())
     }
 
     pub fn load(&self, room_id: &str) -> Result<Option<RunnerSnapshot>, String> {
@@ -181,6 +192,45 @@ pub enum CommitResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unversioned_runner_and_receipt_survive_upgrade_and_restart() {
+        let root = crate::project_process::TestDataDir::new();
+        let store = RunnerStore::new(root.path().to_owned());
+        let snapshot = serde_json::json!({
+            "schemaVersion":1,"id":"r","roomId":"room","revision":2,"generation":2,
+            "kind":"loop","phase":"ended","reason":"human",
+            "limits":crate::runner::RunnerLimits::default_limits(),
+            "usage":crate::runner::RunnerUsage::default(),"startedAt":1000,"deadlineAt":10000
+        });
+        let old = serde_json::to_vec(&serde_json::json!({
+            "runners": {"room": snapshot}, "receipts": {"request": snapshot}
+        })).unwrap();
+        crate::authority_file::write(&store.path, &old).unwrap();
+        let receipt = store.receipt("request").unwrap().unwrap();
+        assert_eq!(store.load("room").unwrap().unwrap(), receipt);
+        assert_eq!(crate::authority_file::read(&store.path).unwrap(), old);
+
+        let mut updated = receipt.clone();
+        updated.revision += 1;
+        assert!(matches!(store.commit(updated.clone(), Some(2), None).unwrap(), CommitResult::Applied(_)));
+        let saved: serde_json::Value = serde_json::from_slice(&crate::authority_file::read(&store.path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 1);
+        let reopened = RunnerStore::new(root.path().to_owned());
+        assert_eq!(reopened.receipt("request").unwrap().unwrap(), receipt);
+        assert_eq!(reopened.load("room").unwrap().unwrap(), updated);
+    }
+
+    #[test]
+    fn unsupported_runner_document_stays_untouched() {
+        let root = crate::project_process::TestDataDir::new();
+        let store = RunnerStore::new(root.path().to_owned());
+        for bytes in [br#"{"version":2}"#.as_slice(), br#"{"version":null}"#, br#"{"runners":false}"#] {
+            crate::authority_file::write(&store.path, bytes).unwrap();
+            assert!(store.remove("room").is_err());
+            assert_eq!(crate::authority_file::read(&store.path).unwrap(), bytes);
+        }
+    }
 
     #[test]
     fn uncertain_write_reloads_durable_state_before_serving_or_changing_it() {

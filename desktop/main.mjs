@@ -1258,6 +1258,7 @@ handle('popout:close', async (entry, token) => {
 function showProtectedInstallNotice({ message, detail }) {
   dialog.showMessageBoxSync({
     type: 'warning',
+    title: message,
     message,
     detail,
     buttons: ['Continue'],

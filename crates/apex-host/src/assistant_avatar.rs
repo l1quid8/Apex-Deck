@@ -385,6 +385,7 @@ impl Host {
         self: &Arc<Self>,
         input: Generate,
     ) -> Result<Job, String> {
+        let maintenance = self.maintenance.enter()?;
         self.avatar_owner(&input.owner)?;
         if !valid(&input.generation_id)
             || !valid(&input.editor_token)
@@ -442,6 +443,7 @@ impl Host {
             if dispatch {
                 let host = Arc::clone(self);
                 tokio::spawn(async move {
+                    let _maintenance = maintenance;
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                     let result = adapter
                         .generate(&input.owner, &input.generation_id, &input.prompt)
@@ -466,6 +468,7 @@ impl Host {
             if dispatch {
                 let host = Arc::clone(self);
                 tokio::spawn(async move {
+                    let _maintenance = maintenance;
                     // This generated directory contains no user project or conversation context.
                     let workdir = host.data_dir().join("assistant-avatars/codex").join(digest(&serde_json::to_vec(&(&input.owner, &input.generation_id)).unwrap()));
                     let prepare = (|| -> Result<(), String> {
@@ -530,6 +533,7 @@ impl Host {
         let base_url = base_url.clone();
         let key_env = api_key_env.clone();
         tokio::spawn(async move {
+            let _maintenance = maintenance;
             let result = apex_adapters::media::generate_image_bytes(
                 &base_url,
                 key_env.as_deref(),

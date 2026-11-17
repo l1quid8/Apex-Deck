@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve, join } from 'node:path';
-import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, lstatSync, renameSync, rmSync } from 'node:fs';
+import { notarizeFile, notarizeMessage, notarizePlan } from './notarize-mac.mjs';
 
 export function pickIdentity(output, env) {
   const override = env.APEX_DECK_SIGN_IDENTITY;
@@ -35,6 +36,30 @@ export function releaseBuildCommands() {
 export function cliSigningArgs(identity) {
   return ['--force', '--sign', identity, '--identifier', 'dev.apexdeck.cli', '--options', 'runtime', ...(identity === '-' ? [] : ['--timestamp']), resolve('target/release/apex')];
 }
+// electron-builder.yml keeps `notarize: false` so a bare electron-builder run
+// never notarizes by surprise; this turns its notarize-and-staple step on.
+export function builderArgs(identity, plan, extra = []) {
+  const args = ['--mac', ...extra];
+  if (identity !== '-') args.push(`-c.mac.identity=${identity}`);
+  if (plan.notarize) args.push('-c.mac.notarize=true');
+  return args;
+}
+
+function imageSnapshot(folder) {
+  const images = new Map();
+  if (!existsSync(folder)) return images;
+  for (const name of readdirSync(folder)) {
+    if (!/^Apex-Deck_.+\.dmg$/.test(name)) continue;
+    const file = lstatSync(join(folder, name), { bigint: true });
+    if (file.isFile()) images.set(name, [file.ino, file.size, file.mtimeNs, file.ctimeNs].join('/'));
+  }
+  return images;
+}
+
+export function builtDmgs(before, after) {
+  return [...after.keys()].filter(name => before.get(name) !== after.get(name)).sort();
+}
+
 function buildRelease() {
   for (const [command, args] of releaseBuildCommands()) {
     const built = spawnSync(command, args, { stdio: 'inherit' });
@@ -49,6 +74,9 @@ function main() {
     ? null : spawnSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
   const identity = pickIdentity(discovery?.status === 0 ? discovery.stdout : '', process.env);
   console.log(signingMessage(identity));
+  // Decided before anything builds, so a half-set credential fails in seconds.
+  const plan = notarizePlan(identity, process.env);
+  console.log(notarizeMessage(plan));
   // Establish a separate CLI identity before electron-builder signs the outer
   // bundle. codesign re-signing preserves this explicit binary identifier.
   const cliSigned = spawnSync('/usr/bin/codesign', cliSigningArgs(identity), { stdio: 'inherit' });
@@ -72,11 +100,19 @@ function main() {
     rmSync(output, { recursive: true, force: true });
     renameSync(staged, output);
   } finally { rmSync(staging, { recursive: true, force: true }); }
-  const args = ['--mac', ...process.argv.slice(2)];
-  if (identity !== '-') args.push(`-c.mac.identity=${identity}`);
+  const args = builderArgs(identity, plan, process.argv.slice(2));
+  const release = resolve('release');
+  const submitImages = plan.notarize && !args.includes('--dir');
+  const before = submitImages ? imageSnapshot(release) : null;
   const result = spawnSync(resolve('node_modules/.bin/electron-builder'), args, { stdio: 'inherit' });
   if (result.error) throw result.error;
-  process.exitCode = result.status ?? 1;
+  if (result.status !== 0) { process.exitCode = result.status ?? 1; return; }
+  // electron-builder notarized and stapled the app before making the image.
+  // The image is notarized too, so a downloaded copy opens without a prompt.
+  if (before) {
+    for (const dmg of builtDmgs(before, imageSnapshot(release))) notarizeFile(join(release, dmg), plan, { staple: true });
+  }
+  process.exitCode = 0;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

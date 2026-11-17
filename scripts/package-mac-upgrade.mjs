@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const release = '/Users/tylercaldwell/Downloads/apex-deck/release';
+const release = fileURLToPath(new URL('../release', import.meta.url));
 const verifier = fileURLToPath(new URL('./verify-protected-bundle.sh', import.meta.url));
 const transaction = fileURLToPath(new URL('./upgrade.py', import.meta.url));
 const EMPTY_MANIFEST = "MANIFEST_JSON = ''";
@@ -43,6 +43,9 @@ export function upgradeScripts(input) {
 }
 export function buildUpgrade(appPath, outputPath) {
   const output = validateOutput(outputPath);
+  const installerIdentity = process.env.APEX_DECK_INSTALLER_IDENTITY;
+  const notaryProfile = process.env.APEX_DECK_NOTARY_PROFILE;
+  if (notaryProfile && !installerIdentity) throw new Error('Notarizing requires APEX_DECK_INSTALLER_IDENTITY');
   const app = path.resolve(appPath);
   if (fs.lstatSync(app).isSymbolicLink() || path.basename(app) !== 'Apex Deck.app') throw new Error('Expected an unlinked Apex Deck.app bundle');
   const cdhash = image => {
@@ -72,15 +75,30 @@ export function buildUpgrade(appPath, outputPath) {
     fs.writeFileSync(components, JSON.stringify(componentRows));
     run('/usr/bin/plutil', ['-convert', 'xml1', components]);
     // No live protected directory is touched by pkgbuild; this is package metadata only.
-    run('/usr/bin/pkgbuild', ['--root', payload, '--component-plist', components, '--scripts', scripts, '--identifier', `dev.apexdeck.upgrade.${manifest.id}`, '--version', manifest.version, '--ownership', 'recommended', '--install-location', `/Library/Application Support/Apex Deck Upgrade/${manifest.id}`, output]);
-    fs.writeFileSync(`${output}.json`, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
+    const candidate = path.join(work, path.basename(output));
+    const signing = installerIdentity ? ['--sign', installerIdentity, '--timestamp'] : [];
+    run('/usr/bin/pkgbuild', [...signing, '--root', payload, '--component-plist', components, '--scripts', scripts, '--identifier', `dev.apexdeck.upgrade.${manifest.id}`, '--version', manifest.version, '--ownership', 'recommended', '--install-location', `/Library/Application Support/Apex Deck Upgrade/${manifest.id}`, candidate]);
+    if (notaryProfile) {
+      const submission = JSON.parse(run('/usr/bin/xcrun', ['notarytool', 'submit', candidate, '--keychain-profile', notaryProfile, '--wait', '--output-format', 'json']));
+      if (submission.status !== 'Accepted') throw new Error(`Notarization ${submission.status} (submission ${submission.id})`);
+      run('/usr/bin/xcrun', ['stapler', 'staple', candidate]);
+      run('/usr/bin/xcrun', ['stapler', 'validate', candidate]);
+    }
+    // Both paths are on the same volume. Publish only a completed candidate.
+    fs.linkSync(candidate, output);
+    try {
+      fs.writeFileSync(`${output}.json`, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
+    } catch (error) {
+      fs.unlinkSync(output);
+      throw error;
+    }
     return { output, manifest };
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    if (args.length !== 4 || args[0] !== '--app' || args[2] !== '--output') throw new Error('Usage: node scripts/package-mac-upgrade.mjs --app /path/Apex\u0020Deck.app --output /Users/tylercaldwell/Downloads/apex-deck/release/Apex-Deck-upgrade.pkg');
+    if (args.length !== 4 || args[0] !== '--app' || args[2] !== '--output') throw new Error('Usage: node scripts/package-mac-upgrade.mjs --app /path/Apex\u0020Deck.app --output release/Apex-Deck-upgrade.pkg');
     console.log(JSON.stringify(buildUpgrade(args[1], args[3]), null, 2));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

@@ -14,8 +14,8 @@
 //! 3. `turn/start` with the prompt. From here the server sends
 //!    notifications until `turn/completed`.
 //!
-//! The server is started fresh for each turn and stopped when the turn
-//! ends, the same as every other command-line participant.
+//! Room participants can keep their app server and ephemeral thread for
+//! compatible turns. Other callers close both after a single reply.
 //!
 //! MCP approvals require this two-way path. If it cannot be started, the
 //! turn is refused rather than falling back to an unprotected exec turn.
@@ -31,8 +31,9 @@ use apex_core::{
     Access, ActionKind, Answer, Approver, Decision, PlanUsage, Progress, ProgressSink,
     ProposedAction, Question, QuestionOption, Reply,
 };
+use futures::FutureExt;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{ChildStdin, ChildStdout};
 use crate::owned_process::{OwnedChild, Registry};
 
@@ -53,6 +54,12 @@ const LIMITS_TIMEOUT: Duration = Duration::from_secs(5);
 /// How Deck starts the server. The plan tool is off unless asked for, and
 /// without it Codex sends no `turn/plan/updated`, so no to-do list.
 pub(crate) const ARGS: &[&str] = &["app-server", "-c", "tools.update_plan.enabled=true"];
+
+/// Codex 0.166 accepts MCP configuration at launch or thread start. Its
+/// turn/start protocol cannot replace a relay environment or hook socket.
+pub(crate) fn can_retain(has_hook: bool, has_code_mode: bool) -> bool {
+    !has_hook && !has_code_mode
+}
 
 /// What a turn needs besides the prompt.
 pub(crate) struct Turn<'a> {
@@ -168,9 +175,8 @@ pub(crate) fn approval_response(id: &Value, decision: Decision) -> Value {
 }
 
 /// MCP approval is an elicitation, not a command approval. "Always allow"
-/// tells Codex to remember the choice for its session only. Each turn is a
-/// fresh session, so the thread's saved list stays the one lasting record
-/// and Remove in thread details really takes it back.
+/// tells Codex to remember the choice for its session only. A live session
+/// retires after this turn, leaving Deck in charge of future approvals.
 fn mcp_response(id: &Value, decision: Decision) -> Value {
     let mut result = json!({"action": if decision.approved() {"accept"} else {"decline"},
         "content": if decision.approved() {json!({})} else {Value::Null}});
@@ -208,18 +214,30 @@ fn mcp_call(params: &Value, pending: &HashMap<String, Value>) -> Option<McpCall>
 /// a bare accept: a form that asks for nothing required. Computer Use tags
 /// its nested app permission as a tool call, but its app arguments differ
 /// from the enclosing JavaScript call. It must get a separate human decision,
-/// never reuse the hook's decision. Other unmatched tool approvals reject.
+/// never reuse the hook's decision. Browser uploads likewise need their own
+/// origin-scoped human decision. Other unmatched tool approvals reject.
 fn mcp_question(params: &Value) -> Option<ProposedAction> {
     let meta = &params["_meta"];
-    let app = if meta["codex_approval_kind"] == "mcp_tool_call" {
-        if meta["connector_id"] != "computer-use" {
-            return None;
+    let mut upload = false;
+    let target = if meta["codex_approval_kind"] == "mcp_tool_call" {
+        match meta["connector_id"].as_str()? {
+            "computer-use" => Some(format!("App: {}", meta["tool_params"]["app"]
+                .as_str().filter(|app| !app.trim().is_empty())?)),
+            "browser-use" if meta["tool_name"] == "upload_browser_files"
+                && meta["file_transfer"] == "upload" => {
+                let origin = meta["tool_params"]["origin"].as_str()?;
+                let url = reqwest::Url::parse(origin).ok()?;
+                // Accept only a canonical web origin, bound to both metadata fields.
+                if !matches!(url.scheme(), "https" | "http")
+                    || url.origin().ascii_serialization() != origin
+                    || meta["origin"] != origin {
+                    return None;
+                }
+                upload = true;
+                Some(format!("Upload destination: {origin}"))
+            }
+            _ => return None,
         }
-        Some(
-            meta["tool_params"]["app"]
-                .as_str()
-                .filter(|app| !app.trim().is_empty())?,
-        )
     } else {
         None
     };
@@ -239,11 +257,11 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
     let message = params["message"]
         .as_str()
         .filter(|text| !text.trim().is_empty())?;
-    if crate::mcp::is_computer_server(server) {
+    if !upload && crate::mcp::is_computer_server(server) {
         return Some(ProposedAction {kind:ActionKind::Other,title:"Unified Computer Use asks permission".into(),detail:String::new(),expires_at:None,risky:high_risk(params)});
     }
-    let detail = match app {
-        Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
+    let detail = match target {
+        Some(target) => format!("{message}\n\n{target}\nRequested by: {server}"),
         None => message.to_string(),
     };
     Some(ProposedAction {
@@ -251,7 +269,7 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
         title: format!("{server} asks permission"),
         detail,
         expires_at: None,
-        risky: high_risk(params),
+        risky: upload || high_risk(params),
     })
 }
 
@@ -268,8 +286,6 @@ fn call_action(call: &McpCall, params: &Value) -> ProposedAction {
     action
 }
 
-/// The id of `plugin/list`, which is sent alongside the MCP inventory.
-const PLUGINS: u64 = 110;
 /// Request ids for the hook check, clear of the others.
 const HOOKS_LIST: u64 = 120;
 const TRUST_WRITE: u64 = 121;
@@ -342,6 +358,7 @@ async fn mcp_inventory(
     stdin: &mut ChildStdin,
     lines: &mut Lines<BufReader<ChildStdout>>,
     full_inventory: bool,
+    refresh: Option<(&str, u64)>,
 ) -> Result<
     (
         Value,
@@ -350,9 +367,11 @@ async fn mcp_inventory(
     ),
     String,
 > {
+    let first = refresh.map_or(10, |(_, first)| first);
+    let plugins_id = first + 100;
     send(
         stdin,
-        &json!({"id":PLUGINS,"method":"plugin/list","params":{}}),
+        &json!({"id":plugins_id,"method":"plugin/list","params":{}}),
     )
     .await
     .map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
@@ -361,7 +380,7 @@ async fn mcp_inventory(
     let mut cursor = Value::Null;
     let mut cursors = std::collections::HashSet::new();
     for page in 0..100u64 {
-        let id = 10 + page;
+        let id = first + page;
         let mut params = json!({"limit":100, "cursor":cursor});
         if !full_inventory { params["detail"] = json!("toolsAndAuthOnly"); }
         send(
@@ -370,7 +389,7 @@ async fn mcp_inventory(
         )
         .await
         .map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
-        let with_plugins = [id, PLUGINS];
+        let with_plugins = [id, plugins_id];
         let mut replies = answers(
             lines,
             if page == 0 {
@@ -379,6 +398,7 @@ async fn mcp_inventory(
                 &with_plugins[..1]
             },
             SETUP_TIMEOUT,
+            refresh.map(|(thread, _)| thread),
         )
         .await;
         if page == 0 {
@@ -422,8 +442,7 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
     let mut params = json!({
         "approvalPolicy": approval_policy(turn.access),
         "sandbox": sandbox(turn.access),
-        // Each chat turn is its own short thread. Keeping them out of
-        // Codex's saved sessions stops the history filling with them.
+        // Deck owns the transcript, including when this thread spans turns.
         "ephemeral": true,
     });
     if turn.tools_disabled {
@@ -483,9 +502,6 @@ fn execution_start(turn: &Turn<'_>, thread: &str, prompt: &str, plan_model: Opti
     }
     message
 }
-
-/// Request ids for follow-up turns start here, clear of the setup ones.
-const FOLLOW_UP: u64 = 200;
 
 /// The message for the follow-up turn once the helpers are done. Codex
 /// tells the thread when a helper finishes but does not start a turn by
@@ -564,7 +580,7 @@ async fn answer_within(
     id: u64,
     limit: Duration,
 ) -> Result<Value, String> {
-    answers(lines, &[id], limit)
+    answers(lines, &[id], limit, None)
         .await
         .pop()
         .expect("one answer per request")
@@ -577,12 +593,18 @@ async fn answers(
     lines: &mut Lines<BufReader<ChildStdout>>,
     ids: &[u64],
     limit: Duration,
+    idle_thread: Option<&str>,
 ) -> Vec<Result<Value, String>> {
     let mut got: Vec<Option<Result<Value, String>>> = vec![None; ids.len()];
     let wait = async {
         while got.iter().any(Option::is_none) {
             match lines.next_line().await {
                 Ok(Some(line)) => {
+                    if idle_thread.is_some_and(|thread| idle_invalidates(&line, thread)) {
+                        // Invalidate even slots filled before this notification.
+                        got.fill(None);
+                        return Err("Codex changed while idle".to_string());
+                    }
                     let Ok(message) = serde_json::from_str::<Value>(&line) else {
                         continue;
                     };
@@ -633,7 +655,7 @@ pub(crate) async fn run(
 }
 
 pub(crate) async fn run_with_images(
-    mut child: OwnedChild,
+    child: OwnedChild,
     turn: Turn<'_>,
     prompt: &str,
     on_progress: ProgressSink<'_>,
@@ -641,346 +663,647 @@ pub(crate) async fn run_with_images(
     hook: Option<&Hook>,
     images: &[crate::attachments::Image],
 ) -> Result<Reply, TurnError> {
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    let mut lines = BufReader::new(stdout).lines();
-    // Drain the log so a chatty server cannot block on a full pipe.
-    tokio::spawn(async move {
-        let mut sink = Vec::new();
-        let _ = stderr.read_to_end(&mut sink).await;
-    });
+    let mut session = CodexLive::start(child, &turn, hook, on_progress).await?;
+    let result = session
+        .turn(&turn, prompt, on_progress, approver, hook, images)
+        .await;
+    session.close().await?;
+    result
+}
 
-    let unavailable = |what: &str, why: String| TurnError::Unavailable(format!("{what}: {why}"));
+struct TurnApprover<'a> {
+    inner: &'a dyn Approver,
+    always: std::sync::atomic::AtomicBool,
+}
 
-    initialize(&mut stdin, &mut lines)
-        .await
-        .map_err(TurnError::Unavailable)?;
-
-    let hooked = match hook.filter(|_| !turn.mcp_disabled) {
-        Some(hook) => {
-            hook_ready(
-                &mut stdin,
-                &mut lines,
-                turn.cwd.as_deref(),
-                &hook.command,
-                on_progress,
-            )
-            .await
+#[async_trait::async_trait]
+impl Approver for TurnApprover<'_> {
+    async fn decide(&self, action: ProposedAction) -> Decision {
+        let decision = self.inner.decide(action).await;
+        if decision == Decision::ApproveAlways {
+            self.always
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        None => false,
-    };
-    let mut tool_catalog = Vec::new();
-    let policy = if hooked {
-        // The hook asks about every MCP call, so no tool list is needed.
-        crate::mcp::base_policy()
-    } else {
-        on_progress(Progress::Activity("Checking MCP tool approval policies"));
-        let (policy, menu, catalog) = mcp_inventory(&mut stdin, &mut lines, turn.mcp_disabled)
-            .await
-            .map_err(TurnError::Failed)?;
-        if turn.mcp_disabled && !isolated_mcp_inventory(&catalog, turn.trusted_computer) {
-            return Err(TurnError::Failed("Codex still exposes MCP servers after isolation; gateway turn refused.".into()));
-        }
-        tool_catalog = catalog;
-        // Without the plugins the list would be short, so keep the last one.
-        if let Ok(servers) = &menu {
-            on_progress(Progress::ToolServers(servers));
-        }
-        policy
-    };
-    // Thread start is bookkeeping on every turn. The chat already says
-    // Thinking until Codex reports a real step, so this is not announced.
-    let mut start = thread_start(&turn);
-    let mut policy=policy;
-    if turn.tools_disabled {
-        for key in ["features.shell_tool", "features.unified_exec", "features.multi_agent", "features.plugins", "features.remote_plugin", "features.apps", "features.image_generation", "features.view_image", "tools.update_plan.enabled"] {
-            policy[key]=json!(false);
-        }
-        policy["web_search"]=json!("disabled");
+        decision
     }
-    start["params"]["config"] = policy;
-    send(&mut stdin, &start)
-        .await
-        .map_err(|e| unavailable("the app server went away", e.to_string()))?;
-    let started = answer(&mut lines, 1)
-        .await
-        .map_err(|e| unavailable("could not start a thread", e))?;
-    let Some(thread) = started["thread"]["id"].as_str() else {
-        return Err(unavailable(
-            "could not start a thread",
-            "no thread id in the answer".to_string(),
-        ));
-    };
 
-    // From here the model is being asked, so failures are final.
-    // Planning mode needs a model name; Codex's own default is in the
-    // answer. Without one the turn still runs read-only with the planning
-    // instruction, just without Codex's own planning mode.
-    let plan_model = if turn.plan {
-        turn.model.or(started["model"].as_str())
-    } else {
-        None
-    };
-    let mut message = execution_start(&turn, thread, prompt, plan_model);
-    message["params"]["input"] = crate::attachments::codex_input(prompt, images);
-    send(&mut stdin, &message)
-    .await
-    .map_err(|e| TurnError::Failed(format!("could not send the message: {e}")))?;
+    async fn ask(&self, questions: Vec<Question>) -> Answer {
+        self.inner.ask(questions).await
+    }
+}
 
-    let mut reader = EventReader::new(OutputFormat::CodexServer, turn.cwd.clone());
-    reader.own_thread(thread);
-    let mut pending_mcp = HashMap::new();
-    let mut gates = Gates::default().with_computer(turn.trusted_computer);
-    let mut listening = hook;
-    // Set once the reply is written but helper agents it started are still
-    // working. The server must stay open for them to finish, and then a
-    // follow-up turn passes on what they found.
-    let mut waiting_since: Option<Instant> = None;
-    let mut first_wait: Option<Instant> = None;
-    let mut gave_up = false;
-    let mut follow_ups = 0;
-    loop {
-        if reader.turn_over() {
-            let working = reader.helpers();
-            match waiting_since {
-                None if working == 0 || reader.failed() || gave_up => break,
-                None => {
-                    let since = Instant::now();
-                    waiting_since = Some(since);
-                    on_progress(Progress::Activity(&helpers_line(
-                        working,
-                        first_wait.get_or_insert(since).elapsed(),
-                    )));
-                }
-                Some(_)
-                    if working == 0
-                        || first_wait.is_some_and(|first| first.elapsed() >= HELPER_LIMIT) =>
-                {
-                    gave_up = working > 0;
-                    waiting_since = None;
-                    follow_ups += 1;
-                    let mut nudge =
-                        execution_start(&turn, thread, follow_up_prompt(gave_up), plan_model);
-                    nudge["id"] = json!(FOLLOW_UP + follow_ups);
-                    if send(&mut stdin, &nudge).await.is_err() {
-                        break;
-                    }
-                    reader.await_follow_up();
-                    on_progress(Progress::Activity(&helpers_line(0, Duration::ZERO)));
-                    continue;
-                }
-                Some(_) => {}
+/// Thread totals are cumulative across turns; a missing observation makes
+/// just that counter's next delta unknown.
+struct UsageBaseline {
+    input: Option<u64>,
+    output: Option<u64>,
+    cached: Option<u64>,
+}
+
+impl UsageBaseline {
+    fn delta(previous: &mut Option<u64>, current: Option<u64>) -> Option<u64> {
+        let old = std::mem::replace(previous, current)?;
+        current?.checked_sub(old)
+    }
+}
+
+pub(crate) struct CodexLive {
+    io: AppServer,
+    thread: String,
+    default_model: Option<String>,
+    menu: Option<Vec<apex_core::server_request::ToolServer>>,
+    tool_catalog: Vec<Value>,
+    next_id: u64,
+    baseline: UsageBaseline,
+    reusable: bool,
+}
+
+impl CodexLive {
+    pub(crate) async fn start(
+        child: OwnedChild,
+        turn: &Turn<'_>,
+        hook: Option<&Hook>,
+        on_progress: ProgressSink<'_>,
+    ) -> Result<Self, TurnError> {
+        let mut io = AppServer::start(child)
+            .await
+            .map_err(TurnError::Unavailable)?;
+        let stdin = &mut io.stdin;
+        let lines = &mut io.lines;
+        let unavailable =
+            |what: &str, why: String| TurnError::Unavailable(format!("{what}: {why}"));
+        let mut cached_menu = None;
+        let hooked = match hook.filter(|_| !turn.mcp_disabled) {
+            Some(hook) => {
+                hook_ready(
+                    stdin,
+                    lines,
+                    turn.cwd.as_deref(),
+                    &hook.command,
+                    on_progress,
+                )
+                .await
+            }
+            None => false,
+        };
+        let mut tool_catalog = Vec::new();
+        let policy = if hooked {
+            // The hook asks about every MCP call, so no tool list is needed.
+            crate::mcp::base_policy()
+        } else {
+            on_progress(Progress::Activity("Checking MCP tool approval policies"));
+            let (policy, menu, catalog) = mcp_inventory(stdin, lines, turn.mcp_disabled, None)
+                .await
+                .map_err(TurnError::Failed)?;
+            if turn.mcp_disabled && !isolated_mcp_inventory(&catalog, turn.trusted_computer) {
+                return Err(TurnError::Failed(
+                    "Codex still exposes MCP servers after isolation; gateway turn refused.".into(),
+                ));
+            }
+            tool_catalog = catalog;
+            // Without the plugins the list would be short, so keep the last one.
+            cached_menu = menu.ok();
+            policy
+        };
+        // Thread start is bookkeeping on every turn. The chat already says
+        // Thinking until Codex reports a real step, so this is not announced.
+        let mut start = thread_start(turn);
+        let mut policy = policy;
+        if turn.tools_disabled {
+            for key in [
+                "features.shell_tool",
+                "features.unified_exec",
+                "features.multi_agent",
+                "features.plugins",
+                "features.remote_plugin",
+                "features.apps",
+                "features.image_generation",
+                "features.view_image",
+                "tools.update_plan.enabled",
+            ] {
+                policy[key] = json!(false);
+            }
+            policy["web_search"] = json!("disabled");
+        }
+        start["params"]["config"] = policy;
+        send(stdin, &start)
+            .await
+            .map_err(|e| unavailable("the app server went away", e.to_string()))?;
+        let started = answer(lines, 1)
+            .await
+            .map_err(|e| unavailable("could not start a thread", e))?;
+        let Some(thread) = started["thread"]["id"].as_str() else {
+            return Err(unavailable(
+                "could not start a thread",
+                "no thread id in the answer".to_string(),
+            ));
+        };
+
+        Ok(Self {
+            io,
+            thread: thread.to_owned(),
+            default_model: started["model"].as_str().map(str::to_owned),
+            menu: cached_menu,
+            tool_catalog,
+            next_id: 2,
+            reusable: true,
+            baseline: UsageBaseline {
+                input: Some(0),
+                output: Some(0),
+                cached: Some(0),
+            },
+        })
+    }
+
+    pub(crate) fn is_alive(&mut self) -> bool {
+        if !self.reusable || !matches!(self.io.child.try_wait(), Ok(None)) {
+            return false;
+        }
+        // next_line is cancellation-safe, including when only part of a
+        // notification is available. Leave that part in the same buffer.
+        for _ in 0..256 {
+            match self.io.lines.next_line().now_or_never() {
+                None => return true,
+                Some(Ok(Some(line))) if !idle_invalidates(&line, &self.thread) => {}
+                _ => break,
             }
         }
-        // While helpers work, wake now and then to refresh the work line,
-        // which also keeps the turn's silence limit from stopping it.
-        let heartbeat = first_wait
-            .filter(|_| waiting_since.is_some())
-            .map(|first| HELPER_HEARTBEAT.min(HELPER_LIMIT.saturating_sub(first.elapsed())));
-        let next = tokio::select! {
-            next = lines.next_line() => next,
-            _ = tokio::time::sleep(heartbeat.unwrap_or_default()), if heartbeat.is_some() => {
-                let waited = first_wait.map_or(Duration::ZERO, |first| first.elapsed());
-                on_progress(Progress::Activity(&helpers_line(reader.helpers(), waited)));
-                continue;
-            }
-            call = next_call(listening) => {
-                match call {
-                    Ok(stream) => serve(stream, &mut gates, approver, on_progress).await,
-                    Err(e) => {
-                        eprintln!("[apex-deck] Codex approval hook stopped listening: {e}");
-                        listening = None;
-                    }
-                }
-                continue;
-            }
+        self.reusable = false;
+        false
+    }
+
+    pub(crate) fn terminate_now(&mut self) {
+        self.reusable = false;
+        self.io.child.signal_tree_kill();
+    }
+
+    pub(crate) async fn close(self) -> Result<(), TurnError> {
+        self.io
+            .finish()
+            .await
+            .map_err(|e| TurnError::CleanupIncomplete(format!("worker cleanup failed: {e}")))
+    }
+
+    pub(crate) async fn turn(
+        &mut self,
+        turn: &Turn<'_>,
+        prompt: &str,
+        on_progress: ProgressSink<'_>,
+        approver: &dyn Approver,
+        hook: Option<&Hook>,
+        images: &[crate::attachments::Image],
+    ) -> Result<Reply, TurnError> {
+        let continued = self.next_id != 2;
+        if !self.reusable
+            || (continued && (!self.is_alive() || next_call(hook).now_or_never().is_some()))
+        {
+            self.reusable = false;
+            return Err(TurnError::Unavailable(
+                "Codex thread is no longer reusable".into(),
+            ));
+        }
+        // Cancellation, an early return, or a partial write poisons this thread.
+        self.reusable = false;
+        let approvals = TurnApprover {
+            inner: approver,
+            always: false.into(),
         };
-        let line = match next {
-            Ok(Some(line)) => line,
-            // A reply already written stands even if the server goes away
-            // while its helpers work.
-            Ok(None) if follow_ups > 0 || waiting_since.is_some() => break,
-            Ok(None) => return Err(TurnError::Failed(ended_early(reader))),
-            Err(_) if follow_ups > 0 || waiting_since.is_some() => break,
-            Err(e) => return Err(TurnError::Failed(format!("reading output failed: {e}"))),
+        let approver: &dyn Approver = &approvals;
+        let stdin = &mut self.io.stdin;
+        let lines = &mut self.io.lines;
+        let thread = self.thread.as_str();
+        if continued {
+            // The thread's approval policy was compiled from its startup
+            // inventory. Recheck the provider's actual catalog before sending
+            // the tail, including when a formerly empty server gained tools.
+            let first = self.next_id.max(123);
+            self.next_id = first + 101;
+            let (_, menu, catalog) =
+                mcp_inventory(stdin, lines, turn.mcp_disabled, Some((thread, first)))
+                    .await
+                    .map_err(TurnError::Unavailable)?;
+            if catalog != self.tool_catalog {
+                return Err(TurnError::Unavailable(
+                    "Codex MCP catalog changed since the previous turn".into(),
+                ));
+            }
+            if let Ok(menu) = menu {
+                self.menu = Some(menu);
+            }
+        }
+        let tool_catalog = &self.tool_catalog;
+        if let Some(menu) = &self.menu {
+            on_progress(Progress::ToolServers(menu));
+        }
+        // From here the model is being asked, so failures are final.
+        // Planning mode needs a model name; Codex's own default is in the
+        // answer. Without one the turn still runs read-only with the planning
+        // instruction, just without Codex's own planning mode.
+        let plan_model = if turn.plan {
+            turn.model.or(self.default_model.as_deref())
+        } else {
+            None
         };
-        if let Ok(message) = serde_json::from_str::<Value>(&line) {
-            let item = &message["params"]["item"];
-            let computer_item = turn.trusted_computer && item["type"] == "mcpToolCall" && item["server"].as_str() == Some(crate::computer::SERVER);
-            if turn.tools_disabled && !computer_item && message["method"] == "item/started" && !matches!(item["type"].as_str(),Some("userMessage"|"agentMessage"|"reasoning"|"contextCompaction")) {
-                return Err(TurnError::Failed("A tool was requested during a text-only assistant reply; the turn was stopped.".into()));
-            }
-            if message["method"] == "item/started" && item["type"] == "mcpToolCall" {
-                if let Some(id) = item["id"].as_str() {
-                    pending_mcp.insert(id.to_string(), item.clone());
-                }
-            }
-            if message["method"] == "item/completed" {
-                if let Some(id) = item["id"].as_str() {
-                    pending_mcp.remove(id);
-                }
-            }
-            let id = message.get("id").filter(|id| !id.is_null());
-            match (id, message.get("method")) {
-                // The server is asking us something. Requests to approve an
-                // edit or a command go to the person. Anything else cannot
-                // be answered here, and is refused rather than left to hang.
-                (Some(id), Some(method)) => {
-                    if method == "item/tool/requestUserInput" {
-                        let params = &message["params"];
-                        let answer = if params["threadId"] != thread {
-                            Answer::Skipped
-                        } else {
-                            on_progress(Progress::Activity("Waiting for your answer"));
-                            approver.ask(codex_questions(params)).await
-                        };
-                        send(&mut stdin, &codex_answer(id, params, answer))
-                            .await
-                            .map_err(|_| {
-                                TurnError::Failed("Could not deliver the answer".into())
-                            })?;
-                        continue;
+        let mut message = execution_start(turn, thread, prompt, plan_model);
+        let mut active_turn_id: Option<String> = None;
+        let mut completed_cleanly = false;
+        let mut request_id = take_turn_id(&mut self.next_id);
+        message["id"] = json!(request_id);
+        message["params"]["input"] = crate::attachments::codex_input(prompt, images);
+        send(stdin, &message)
+            .await
+            .map_err(|e| TurnError::Failed(format!("could not send the message: {e}")))?;
+
+        let mut reader = EventReader::new(OutputFormat::CodexServer, turn.cwd.clone());
+        reader.own_thread(thread);
+        let mut pending_mcp = HashMap::new();
+        let mut gates = Gates::default().with_computer(turn.trusted_computer);
+        let mut listening = hook;
+        // Set once the reply is written but helper agents it started are still
+        // working. The server must stay open for them to finish, and then a
+        // follow-up turn passes on what they found.
+        let mut waiting_since: Option<Instant> = None;
+        let mut first_wait: Option<Instant> = None;
+        let mut gave_up = false;
+        let mut follow_ups = 0;
+        loop {
+            if reader.turn_over() {
+                let working = reader.helpers();
+                match waiting_since {
+                    None if working == 0 || reader.failed() || gave_up => break,
+                    None => {
+                        let since = Instant::now();
+                        waiting_since = Some(since);
+                        on_progress(Progress::Activity(&helpers_line(
+                            working,
+                            first_wait.get_or_insert(since).elapsed(),
+                        )));
                     }
-                    if method == "mcpServer/elicitation/request" {
-                        let params = &message["params"];
-                        // Only the fields that decide which buttons the card shows.
-                        let meta = &params["_meta"];
-                        if params["serverName"].as_str().is_some_and(crate::mcp::is_computer_server) {
-                            eprintln!("[apex-deck] computer permission request (private content hidden)");
-                        } else {
-                            eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
-                                params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
-                        }
-                        let decision = if (turn.mcp_disabled && !turn.trusted_computer) || params["threadId"] != thread {
-                            Decision::Reject
-                        } else if let Some(action) = mcp_question(params) {
-                            // App access is a separate decision even if its arguments
-                            // happen to match a read that the hook already allowed.
-                            on_progress(Progress::Activity(&format!(
-                                "Waiting for approval: {}",
-                                action.title
-                            )));
-                            approver.decide(action).await
-                        } else if let Some(call) = mcp_call(params, &pending_mcp) {
-                            let catalog_approval = crate::mcp::catalog_approval(&tool_catalog, &call.server, &call.tool);
-                            // High upstream risk and explicit mutating annotations must
-                            // reach the person before either automatic or cached approval.
-                            let automatic = if turn.trusted_computer && call.server == crate::computer::SERVER {
-                                Some(Decision::Approve)
-                            } else if high_risk(params) || catalog_approval == Some(true) {
-                                None
-                            } else if catalog_approval == Some(false) {
-                                Some(Decision::Approve)
-                            } else {
-                                gates.at_codex(&call)
-                            };
-                            match automatic {
-                                Some(decision) => decision,
-                                None => {
-                                    let mut action = call_action(&call, params);
-                                    action.risky |= catalog_approval == Some(true);
-                                    on_progress(Progress::Activity(&format!(
-                                        "Waiting for approval: {}",
-                                        action.title
-                                    )));
-                                    let decision = approver.decide(action).await;
-                                    // High-risk upstream decisions are specific to this
-                                    // request, never reusable permission for another hook.
-                                    if !high_risk(params) {
-                                        gates.answered_at_codex(call, decision);
-                                    }
-                                    decision
-                                }
-                            }
-                        } else {
-                            eprintln!("[apex-deck] declined MCP question: {params}");
-                            Decision::Reject
-                        };
-                        send(&mut stdin, &mcp_response(id, decision))
-                            .await
-                            .map_err(|_| {
-                                TurnError::Failed("Could not deliver MCP approval".into())
-                            })?;
-                        continue;
-                    }
-                    let reply = match proposal(
-                        method.as_str().unwrap_or(""),
-                        &message["params"],
-                        &reader,
-                    ) {
-                        Some(action) => {
-                            on_progress(Progress::Activity(&format!(
-                                "Waiting for approval: {}",
-                                action.title
-                            )));
-                            approval_response(id, approver.decide(action).await)
-                        }
-                        None => {
-                            json!({ "id": id, "error": { "code": -32601, "message": "Apex Deck cannot answer this request during a chat turn" } })
-                        }
-                    };
-                    let _ = send(&mut stdin, &reply).await;
-                    continue;
-                }
-                // The answer to `turn/start`. Only a refusal matters. A
-                // refused follow-up leaves the reply as it was.
-                (Some(_), None) => {
-                    if let Some(error) = message.get("error") {
-                        let why = error["message"].as_str().unwrap_or("the turn was refused");
-                        if follow_ups > 0 {
-                            eprintln!(
-                                "[apex-deck] Codex refused the follow-up after helpers: {why}"
-                            );
+                    Some(_)
+                        if working == 0
+                            || first_wait.is_some_and(|first| first.elapsed() >= HELPER_LIMIT) =>
+                    {
+                        gave_up = working > 0;
+                        waiting_since = None;
+                        follow_ups += 1;
+                        let mut nudge =
+                            execution_start(turn, thread, follow_up_prompt(gave_up), plan_model);
+                        completed_cleanly = false;
+                        active_turn_id = None;
+                        request_id = take_turn_id(&mut self.next_id);
+                        nudge["id"] = json!(request_id);
+                        if send(stdin, &nudge).await.is_err() {
                             break;
                         }
-                        return Err(TurnError::Failed(why.to_string()));
+                        reader.await_follow_up();
+                        on_progress(Progress::Activity(&helpers_line(0, Duration::ZERO)));
+                        continue;
+                    }
+                    Some(_) => {}
+                }
+            }
+            // While helpers work, wake now and then to refresh the work line,
+            // which also keeps the turn's silence limit from stopping it.
+            let heartbeat = first_wait
+                .filter(|_| waiting_since.is_some())
+                .map(|first| HELPER_HEARTBEAT.min(HELPER_LIMIT.saturating_sub(first.elapsed())));
+            let next = tokio::select! {
+                next = lines.next_line() => next,
+                _ = tokio::time::sleep(heartbeat.unwrap_or_default()), if heartbeat.is_some() => {
+                    let waited = first_wait.map_or(Duration::ZERO, |first| first.elapsed());
+                    on_progress(Progress::Activity(&helpers_line(reader.helpers(), waited)));
+                    continue;
+                }
+                call = next_call(listening) => {
+                    match call {
+                        Ok(stream) => serve(stream, &mut gates, approver, on_progress).await,
+                        Err(e) => {
+                            eprintln!("[apex-deck] Codex approval hook stopped listening: {e}");
+                            listening = None;
+                        }
                     }
                     continue;
                 }
-                _ => {}
+            };
+            let line = match next {
+                Ok(Some(line)) => line,
+                // A reply already written stands even if the server goes away
+                // while its helpers work.
+                Ok(None) if follow_ups > 0 || waiting_since.is_some() => break,
+                Ok(None) => return Err(TurnError::Failed(ended_early(reader))),
+                Err(_) if follow_ups > 0 || waiting_since.is_some() => break,
+                Err(e) => return Err(TurnError::Failed(format!("reading output failed: {e}"))),
+            };
+            if let Ok(message) = serde_json::from_str::<Value>(&line) {
+                let params = &message["params"];
+                let own_thread = params["threadId"].as_str().is_none_or(|id| id == thread);
+                if continued
+                    && message.get("id").is_some()
+                    && message.get("method").is_some()
+                    && !request_for_turn(params, thread, active_turn_id.as_deref())
+                {
+                    return Err(TurnError::Failed(
+                        "Codex requested approval outside the active turn".into(),
+                    ));
+                }
+                if continued
+                    && message.get("id").is_none()
+                    && message["method"].as_str().is_some_and(inventory_changed)
+                {
+                    return Err(TurnError::Failed(
+                        "Codex MCP configuration changed during the active turn".into(),
+                    ));
+                }
+                if own_thread {
+                    let event_turn = params["turnId"]
+                        .as_str()
+                        .or_else(|| params["turn"]["id"].as_str());
+                    if continued && active_turn_id.is_none() && idle_invalidates(&line, thread) {
+                        return Err(TurnError::Failed(
+                            "Codex emitted activity before acknowledging this turn".into(),
+                        ));
+                    }
+                    if let Some(id) = event_turn {
+                        if active_turn_id.as_deref().is_some_and(|active| active != id) {
+                            return Err(TurnError::Failed(
+                                "Codex emitted activity outside the requested turn".into(),
+                            ));
+                        }
+                    }
+                    if message["method"] == "turn/completed" {
+                        completed_cleanly = params["turn"]["status"] == "completed";
+                    }
+                }
+                let item = &params["item"];
+                let computer_item = turn.trusted_computer
+                    && item["type"] == "mcpToolCall"
+                    && item["server"].as_str() == Some(crate::computer::SERVER);
+                if turn.tools_disabled
+                    && !computer_item
+                    && message["method"] == "item/started"
+                    && !matches!(
+                        item["type"].as_str(),
+                        Some("userMessage" | "agentMessage" | "reasoning" | "contextCompaction")
+                    )
+                {
+                    return Err(TurnError::Failed("A tool was requested during a text-only assistant reply; the turn was stopped.".into()));
+                }
+                if message["method"] == "item/started"
+                    && own_thread
+                    && item["type"] == "mcpToolCall"
+                {
+                    if let Some(id) = item["id"].as_str() {
+                        pending_mcp.insert(id.to_string(), item.clone());
+                    }
+                }
+                if own_thread && message["method"] == "item/completed" {
+                    if let Some(id) = item["id"].as_str() {
+                        pending_mcp.remove(id);
+                    }
+                }
+                let id = message.get("id").filter(|id| !id.is_null());
+                match (id, message.get("method")) {
+                    // The server is asking us something. Requests to approve an
+                    // edit or a command go to the person. Anything else cannot
+                    // be answered here, and is refused rather than left to hang.
+                    (Some(id), Some(method)) => {
+                        if method == "item/tool/requestUserInput" {
+                            let params = &message["params"];
+                            let answer = if params["threadId"] != thread {
+                                Answer::Skipped
+                            } else {
+                                on_progress(Progress::Activity("Waiting for your answer"));
+                                approver.ask(codex_questions(params)).await
+                            };
+                            send(stdin, &codex_answer(id, params, answer))
+                                .await
+                                .map_err(|_| {
+                                    TurnError::Failed("Could not deliver the answer".into())
+                                })?;
+                            continue;
+                        }
+                        if method == "mcpServer/elicitation/request" {
+                            let params = &message["params"];
+                            // Only the fields that decide which buttons the card shows.
+                            let meta = &params["_meta"];
+                            if params["serverName"]
+                                .as_str()
+                                .is_some_and(crate::mcp::is_computer_server)
+                            {
+                                eprintln!("[apex-deck] computer permission request (private content hidden)");
+                            } else {
+                                eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
+                                params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
+                            }
+                            let decision = if (turn.mcp_disabled && !turn.trusted_computer)
+                                || params["threadId"] != thread
+                            {
+                                Decision::Reject
+                            } else if let Some(action) = mcp_question(params) {
+                                // App access is a separate decision even if its arguments
+                                // happen to match a read that the hook already allowed.
+                                on_progress(Progress::Activity(&format!(
+                                    "Waiting for approval: {}",
+                                    action.title
+                                )));
+                                approver.decide(action).await
+                            } else if let Some(call) = mcp_call(params, &pending_mcp) {
+                                let catalog_approval = crate::mcp::catalog_approval(
+                                    tool_catalog,
+                                    &call.server,
+                                    &call.tool,
+                                );
+                                // High upstream risk and explicit mutating annotations must
+                                // reach the person before either automatic or cached approval.
+                                let automatic = if turn.trusted_computer
+                                    && call.server == crate::computer::SERVER
+                                {
+                                    Some(Decision::Approve)
+                                } else if high_risk(params) || catalog_approval == Some(true) {
+                                    None
+                                } else if catalog_approval == Some(false) {
+                                    Some(Decision::Approve)
+                                } else {
+                                    gates.at_codex(&call)
+                                };
+                                match automatic {
+                                    Some(decision) => decision,
+                                    None => {
+                                        let mut action = call_action(&call, params);
+                                        action.risky |= catalog_approval == Some(true);
+                                        on_progress(Progress::Activity(&format!(
+                                            "Waiting for approval: {}",
+                                            action.title
+                                        )));
+                                        let decision = approver.decide(action).await;
+                                        // High-risk upstream decisions are specific to this
+                                        // request, never reusable permission for another hook.
+                                        if !high_risk(params) {
+                                            gates.answered_at_codex(call, decision);
+                                        }
+                                        decision
+                                    }
+                                }
+                            } else {
+                                eprintln!("[apex-deck] declined MCP question: {params}");
+                                Decision::Reject
+                            };
+                            send(stdin, &mcp_response(id, decision))
+                                .await
+                                .map_err(|_| {
+                                    TurnError::Failed("Could not deliver MCP approval".into())
+                                })?;
+                            continue;
+                        }
+                        let reply = match proposal(
+                            method.as_str().unwrap_or(""),
+                            &message["params"],
+                            &reader,
+                        ) {
+                            Some(action) => {
+                                on_progress(Progress::Activity(&format!(
+                                    "Waiting for approval: {}",
+                                    action.title
+                                )));
+                                approval_response(id, approver.decide(action).await)
+                            }
+                            None => {
+                                json!({ "id": id, "error": { "code": -32601, "message": "Apex Deck cannot answer this request during a chat turn" } })
+                            }
+                        };
+                        let _ = send(stdin, &reply).await;
+                        continue;
+                    }
+                    // The answer to `turn/start`. Only a refusal matters. A
+                    // refused follow-up leaves the reply as it was.
+                    (Some(id), None) => {
+                        if id.as_u64() != Some(request_id) {
+                            continue;
+                        }
+                        active_turn_id =
+                            message["result"]["turn"]["id"].as_str().map(str::to_owned);
+                        if let Some(error) = message.get("error") {
+                            let why = error["message"].as_str().unwrap_or("the turn was refused");
+                            if follow_ups > 0 {
+                                eprintln!(
+                                    "[apex-deck] Codex refused the follow-up after helpers: {why}"
+                                );
+                                break;
+                            }
+                            return Err(TurnError::Failed(why.to_string()));
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            report(reader.push(&format!("{line}\n")), on_progress);
+        }
+        if gave_up {
+            reader.add_note("(Some helpers were still working after 30 minutes, so this reply was handed in without them.)");
+        }
+
+        // The turn has used some of the plan; read where it stands now.
+        let mut clean = reader.turn_over()
+            && completed_cleanly
+            && !gave_up
+            && !approvals.always.load(std::sync::atomic::Ordering::Relaxed);
+        let limits_id = take_turn_id(&mut self.next_id);
+        if send(stdin, &rate_limits_read(limits_id)).await.is_ok() {
+            let read_limits = async {
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if idle_invalidates(&line, thread) {
+                        clean = false;
+                    }
+                    if let Ok(message) = serde_json::from_str::<Value>(&line) {
+                        if message["id"].as_u64() == Some(limits_id)
+                            && message.get("method").is_none()
+                        {
+                            if let Some(plan) = plan_from_read(&message["result"]) {
+                                crate::plan_cache::remember(&plan);
+                                on_progress(Progress::Plan(&plan));
+                            }
+                            return;
+                        }
+                    }
+                }
+                clean = false;
+            };
+            if tokio::time::timeout(LIMITS_TIMEOUT, read_limits)
+                .await
+                .is_err()
+            {
+                clean = false;
+            }
+        } else {
+            clean = false;
+        }
+
+        let outcome = reader.outcome();
+        match outcome.error {
+            Some(error) => Err(TurnError::Failed(error)),
+            None => {
+                self.reusable = clean;
+                Ok(Reply {
+                    cached_input_tokens: UsageBaseline::delta(
+                        &mut self.baseline.cached,
+                        outcome.cached_input_tokens,
+                    ),
+                    text: outcome.text.trim().to_string(),
+                    input_tokens: UsageBaseline::delta(
+                        &mut self.baseline.input,
+                        outcome.input_tokens,
+                    ),
+                    output_tokens: UsageBaseline::delta(
+                        &mut self.baseline.output,
+                        outcome.output_tokens,
+                    ),
+                    cost_micros: None,
+                    cost_estimated: false,
+                })
             }
         }
-        report(reader.push(&format!("{line}\n")), on_progress);
     }
-    if gave_up {
-        reader.add_note("(Some helpers were still working after 30 minutes, so this reply was handed in without them.)");
-    }
+}
 
-    // The turn has used some of the plan; read where it stands now.
-    if send(&mut stdin, &rate_limits_read(3)).await.is_ok() {
-        if let Ok(result) = answer_within(&mut lines, 3, LIMITS_TIMEOUT).await {
-            if let Some(plan) = plan_from_read(&result) {
-                crate::plan_cache::remember(&plan);
-                on_progress(Progress::Plan(&plan));
-            }
-        }
-    }
+/// Setup uses ids 10 through 122 for discovery. Keep ids unique even
+/// when a room stays open long enough to reach those values.
+fn take_turn_id(next: &mut u64) -> u64 {
+    let id = *next;
+    *next = if id == 9 { 123 } else { id + 1 };
+    id
+}
 
-    // Closing its input tells the server to exit; do not wait long for it.
-    drop(stdin);
-    if tokio::time::timeout(Duration::from_secs(2), child.wait())
-        .await
-        .is_err()
-    {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-    }
-    let cleanup = child.terminate_tree().await;
-    if let Err(error) = cleanup { return Err(TurnError::CleanupIncomplete(format!("worker cleanup failed: {error}"))); }
+fn request_for_turn(params: &Value, thread: &str, active: Option<&str>) -> bool {
+    params["threadId"] == thread && active.is_some_and(|turn| params["turnId"] == turn)
+}
 
-    let outcome = reader.outcome();
-    match outcome.error {
-        Some(error) => Err(TurnError::Failed(error)),
-        None => Ok(Reply {
-            cached_input_tokens: outcome.cached_input_tokens,
-            text: outcome.text.trim().to_string(),
-            input_tokens: outcome.input_tokens,
-            output_tokens: outcome.output_tokens,
-            cost_micros: None,
-            cost_estimated: false,
-        }),
+fn inventory_changed(method: &str) -> bool {
+    method.starts_with("mcpServer/")
+        || method.starts_with("config/")
+        || method.starts_with("externalAgentConfig/")
+        || method.starts_with("plugin/")
+        || method == "configWarning"
+}
+
+fn idle_invalidates(line: &str, thread: &str) -> bool {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return true;
+    };
+    let Some(method) = message["method"].as_str() else {
+        return false;
+    };
+    if message.get("id").is_some() {
+        return true;
     }
+    // The idle status is normally delivered just after turn/completed.
+    if method == "thread/status/changed" && message["params"]["status"]["type"] == "idle" {
+        return false;
+    }
+    inventory_changed(method)
+        || method.starts_with("item/")
+        || method.starts_with("turn/")
+        || message["params"]["threadId"] == thread
 }
 
 /// The handshake every conversation with the server starts with.
@@ -1004,23 +1327,21 @@ async fn initialize(
         .map_err(|e| format!("the app server went away: {e}"))
 }
 
-/// A short conversation with an app server started outside a turn, for
-/// account requests. `child` must have been started with `ARGS` and all
+/// The initialized transport shared by account requests and chat sessions. `child` must have been started with `ARGS` and all
 /// three standard streams piped.
-struct AccountSession {
+struct AppServer {
     child: OwnedChild,
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
 }
 
-impl AccountSession {
+impl AppServer {
     async fn start(mut child: OwnedChild) -> Result<Self, String> {
         let mut stdin = child.stdin.take().expect("stdin was piped");
         let stdout = child.stdout.take().expect("stdout was piped");
         let mut stderr = child.stderr.take().expect("stderr was piped");
         tokio::spawn(async move {
-            let mut sink = Vec::new();
-            let _ = stderr.read_to_end(&mut sink).await;
+            let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
         });
         let mut lines = BufReader::new(stdout).lines();
         initialize(&mut stdin, &mut lines).await?;
@@ -1051,9 +1372,9 @@ impl AccountSession {
 }
 
 /// Read the account's plan limits without starting a turn. `child` is
-/// started as for `AccountSession`.
+/// started as for `AppServer`.
 pub(crate) async fn read_plan(child: OwnedChild) -> Result<PlanUsage, String> {
-    let mut session = AccountSession::start(child).await?;
+    let mut session = AppServer::start(child).await?;
     let result = session.ask(&rate_limits_read(1), 1, SETUP_TIMEOUT).await;
     session.finish().await?;
     plan_from_read(&result?).ok_or_else(|| "the answer had no rate limits".to_string())
@@ -1099,9 +1420,9 @@ impl ResetOutcome {
 /// Use usage-reset credit `credit` (or the next one, when `None`), then
 /// read where the plan stands. `key` names this one attempt, so asking
 /// again with it can't use a second credit. `child` is started as for
-/// `AccountSession`.
+/// `AppServer`.
 pub(crate) async fn consume_reset(child: OwnedChild, credit: Option<&str>, key: &str) -> Result<(ResetOutcome, Option<PlanUsage>), String> {
-    let mut session = AccountSession::start(child).await?;
+    let mut session = AppServer::start(child).await?;
     let outcome = session.ask(&reset_credit_consume(1, credit, key), 1, SETUP_TIMEOUT).await.and_then(|result| {
         let outcome = result["outcome"].as_str().unwrap_or_default();
         ResetOutcome::from_wire(outcome).ok_or_else(|| format!("the app server answered with an unknown outcome {outcome:?}"))
@@ -1178,7 +1499,7 @@ pub async fn list_servers(
             let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
             let result = async {
                 initialize(&mut stdin, &mut lines).await?;
-                mcp_inventory(&mut stdin, &mut lines, false)
+                mcp_inventory(&mut stdin, &mut lines, false, None)
                     .await
                     .and_then(|(_, names, _)| names)
             }
@@ -1211,7 +1532,7 @@ pub async fn list_servers(
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let result = async {
         initialize(&mut stdin, &mut lines).await?;
-        mcp_inventory(&mut stdin, &mut lines, false)
+        mcp_inventory(&mut stdin, &mut lines, false, None)
             .await
             .and_then(|(_, names, _)| names)
     }
@@ -1495,6 +1816,38 @@ cat > /dev/null"#;
     }
 
     #[test]
+    fn nested_browser_upload_permission_reaches_its_own_card() {
+        // Actual browser upload elicitation shape from the daemon log.
+        let ask = json!({"serverName":"cua_repl", "mode":"form",
+            "message":"Allow upload to https://app.fieldwire.com/projects/darby?",
+            "requestedSchema":{"type":"object","properties":{}},
+            "_meta":{"codex_approval_kind":"mcp_tool_call","connector_id":"browser-use",
+                "file_transfer":"upload","origin":"https://app.fieldwire.com",
+                "tool_name":"upload_browser_files",
+                "tool_params":{"origin":"https://app.fieldwire.com"},"persist":["session","always"]}});
+        let action = mcp_question(&ask).expect("upload permission must reach a human decision");
+        assert!(action.detail.contains("https://app.fieldwire.com"));
+        assert!(action.risky, "file disclosure needs explicit approval");
+        for (field, value) in [
+            ("connector_id", json!("unknown")),
+            ("tool_name", json!("other_tool")),
+            ("file_transfer", json!("download")),
+            ("origin", json!("https://other.example")),
+            ("tool_params", json!({"origin":""})),
+            ("tool_params", json!({"origin":"https://app.fieldwire.com/path"})),
+        ] {
+            let mut invalid = ask.clone();
+            invalid["_meta"][field] = value;
+            assert!(mcp_question(&invalid).is_none(), "invalid {field} must reject");
+        }
+        let mut required = ask.clone();
+        required["requestedSchema"]["required"] = json!(["answer"]);
+        assert!(mcp_question(&required).is_none());
+        // A decline stays a decline; recognizing a request never approves it.
+        assert_eq!(mcp_response(&json!(5), Decision::Reject)["result"]["action"], "decline");
+    }
+
+    #[test]
     fn full_access_keeps_mcp_approval_transport_enabled() {
         let turn = Turn {
             model: None,
@@ -1669,6 +2022,162 @@ cat > /dev/null"#;
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retained_codex_reuses_one_ephemeral_thread_and_counts_turn_deltas() {
+        struct Always;
+        #[async_trait::async_trait]
+        impl Approver for Always {
+            async fn decide(&self, _: ProposedAction) -> Decision {
+                Decision::ApproveAlways
+            }
+        }
+
+        let program = r#"
+n=0
+while IFS= read -r line; do
+  id=$(echo "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"initialize"'*) echo '{"id":0,"result":{}}' ;;
+    *'"plugin/list"'*) echo "{\"id\":$id,\"result\":{}}" ;;
+    *'"mcpServerStatus/list"'*)
+      catalog='[]'
+      if [ "$n" = 1 ] && [ "$SCENARIO" = changed ]; then
+        catalog='[{"name":"new-server","tools":{}}]'
+      fi
+      echo "{\"id\":$id,\"result\":{\"data\":$catalog}}" ;;
+    *'"thread/start"'*)
+      case "$line" in *'"ephemeral":true'*) ;; *) exit 1 ;; esac
+      [ -z "$started" ] || exit 2
+      started=yes
+      echo '{"id":1,"result":{"thread":{"id":"T"}}}' ;;
+    *'"turn/start"'*)
+      case "$line" in *'"threadId":"T"'*) ;; *) exit 3 ;; esac
+      n=$((n+1))
+      echo "{\"id\":$id,\"result\":{\"turn\":{\"id\":\"u$n\"}}}"
+      if [ "$n" = 2 ]; then
+        if [ "$SCENARIO" = foreign ]; then
+          echo '{"id":"old","method":"item/commandExecution/requestApproval","params":{"threadId":"old","turnId":"u1","command":"pwd"}}'
+          IFS= read -r unexpected
+          exit 5
+        fi
+        echo '{"id":"approval","method":"item/commandExecution/requestApproval","params":{"threadId":"T","turnId":"u2","command":"pwd"}}'
+        IFS= read -r result
+        case "$result" in *'"accept"'*) ;; *) exit 4 ;; esac
+      fi
+      echo "{\"method\":\"item/completed\",\"params\":{\"threadId\":\"T\",\"turnId\":\"u$n\",\"item\":{\"type\":\"agentMessage\",\"id\":\"m$n\",\"text\":\"response $n\"}}}"
+      echo "{\"method\":\"thread/tokenUsage/updated\",\"params\":{\"threadId\":\"T\",\"tokenUsage\":{\"total\":{\"inputTokens\":$((30*n)),\"outputTokens\":$((5*n)),\"cachedInputTokens\":$((2*n))}}}}"
+      echo "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"T\",\"turn\":{\"id\":\"u$n\",\"status\":\"completed\"}}}" ;;
+    *'"account/rateLimits/read"'*)
+      echo "{\"id\":$id,\"result\":{}}" ;;
+  esac
+done"#;
+        for scenario in ["ordinary", "foreign", "changed"] {
+            let mut command = tokio::process::Command::new("sh");
+            command.env("SCENARIO", scenario);
+            command
+                .args(["-c", program])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let child = Registry::default().spawn(&mut command).unwrap();
+            let turn = Turn {
+                model: None,
+                effort: None,
+                service_tier: None,
+                access: Access::Ask,
+                external_sandbox: false,
+                cwd: None,
+                plan: false,
+                trusted_computer: false,
+                mcp_disabled: false,
+                tools_disabled: false,
+            };
+            let mut session = CodexLive::start(child, &turn, None, &|_| {})
+                .await
+                .ok()
+                .unwrap();
+            for n in 1..=2 {
+                assert!(session.is_alive());
+                let result = session
+                    .turn(&turn, "next", &|_| {}, &Always, None, &[])
+                    .await;
+                if n == 2 && scenario == "foreign" {
+                    assert!(matches!(result, Err(TurnError::Failed(_))));
+                    break;
+                }
+                if n == 2 && scenario == "changed" {
+                    assert!(matches!(result, Err(TurnError::Unavailable(_))));
+                    break;
+                }
+                let reply = result.ok().unwrap();
+                assert_eq!(reply.text, format!("response {n}"));
+                assert_eq!(
+                    (
+                        reply.input_tokens,
+                        reply.output_tokens,
+                        reply.cached_input_tokens
+                    ),
+                    (Some(30), Some(5), Some(2))
+                );
+            }
+            assert!(
+                !session.is_alive(),
+                "the session must retire after {scenario}"
+            );
+            session.close().await.ok().unwrap();
+        }
+    }
+
+    #[test]
+    fn resumed_approval_requires_proven_turn_and_thread() {
+        let request = json!({"threadId":"T","turnId":"u2"});
+        assert!(request_for_turn(&request, "T", Some("u2")));
+        assert!(!request_for_turn(&request, "H", Some("u2")));
+        assert!(!request_for_turn(&request, "T", Some("u1")));
+        assert!(!request_for_turn(&request, "T", None));
+        assert!(!request_for_turn(&json!({"threadId":"T","turnId":null}), "T", Some("u2")));
+        assert!(!request_for_turn(&json!({"turnId":"u2"}), "T", Some("u2")));
+        assert!(idle_invalidates(r#"{"method":"mcpServer/startupStatus/updated","params":{}}"#, "T"));
+    }
+
+    #[test]
+    fn usage_after_a_missing_total_is_unknown_until_the_next_baseline() {
+        let mut baseline = Some(40);
+        assert_eq!(UsageBaseline::delta(&mut baseline, None), None);
+        assert_eq!(UsageBaseline::delta(&mut baseline, Some(100)), None);
+        assert_eq!(UsageBaseline::delta(&mut baseline, Some(121)), Some(21));
+        assert_eq!(UsageBaseline::delta(&mut baseline, Some(7)), None);
+    }
+
+    #[test]
+    fn launch_bound_capabilities_require_a_fresh_program() {
+        assert!(can_retain(false, false));
+        assert!(!can_retain(true, false), "turning Code Mode off keeps the approval hook");
+        assert!(!can_retain(true, true), "a Unix Work room needs fresh approval and relay endpoints");
+        assert!(!can_retain(false, true), "a relay cannot retain a previous turn's credentials");
+    }
+
+    #[test]
+    fn idle_activity_on_the_thread_prevents_reuse() {
+        assert!(idle_invalidates(
+            r#"{"method":"turn/started","params":{"threadId":"T"}}"#,
+            "T"
+        ));
+        assert!(idle_invalidates(
+            r#"{"method":"item/completed","params":{"threadId":"helper"}}"#,
+            "T"
+        ));
+        assert!(!idle_invalidates(
+            r#"{"method":"thread/status/changed","params":{"threadId":"T","status":{"type":"idle"}}}"#,
+            "T"
+        ));
+        assert!(!idle_invalidates(
+            r#"{"method":"account/rateLimits/updated","params":{}}"#,
+            "T"
+        ));
+    }
+
     /// A stand-in for the app server: the turn starts a helper and ends,
     /// the helper finishes in its own thread a moment later, and only then
     /// does Deck ask for a follow-up that passes on what it found.
@@ -1704,7 +2213,7 @@ if [ "$EXPECT_EXTERNAL" = 1 ]; then
 fi
 say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMessage","id":"m2","text":"The helper found PINEAPPLE."}}}'
 say '{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}'
-read -r l; say '{"id":3,"result":{"rateLimits":{}}}'
+read -r l; say '{"id":4,"result":{"rateLimits":{}}}'
 cat > /dev/null"#;
             let mut command = tokio::process::Command::new("sh");
             command.env("EXPECT_EXTERNAL", if external_sandbox { "1" } else { "0" });

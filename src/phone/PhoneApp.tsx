@@ -115,9 +115,12 @@ import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
 import { PickedText } from "./PickedText";
 import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
-import { pinSource, pinText, responsePin } from "../messagePins";
+import { useThreadPinActions } from "../thread/useThreadPinActions";
+import { messagePinChange, type PinChange } from "../thread/threadActions";
+import { pinSource, pinText } from "../messagePins";
 import { handOffChoices, handOffLabel, MORE_DETAILS, moreDetailsText, partQuote, quoteFor, quoteTarget, type ReplyQuote } from "../reply";
-import { failedLine, goBackAlways, goBackAsks, goBackRequest, initialFiles, saveGoBackAlways, type GoBack } from "../revertConfirm";
+import { applyHistoryChange, historyConfirmation, planHistoryChange, retryBot } from "../threadHistoryActions";
+import { failedLine, saveGoBackAlways, type GoBack } from "../revertConfirm";
 import { archivedDetail, foldChoice, machineNote, readFolds, threadState } from "./threadListRules";
 import { reconcileWorkPanes, workPresentation } from "../workThreadMetadata.ts";
 import { changeProject } from "../projectLifecycle.ts";
@@ -560,8 +563,7 @@ export function PhoneApp() {
   /** The Retry or Revert question open under a message. */
   const [goingBack, setGoingBack] = useState<GoingBack | null>(null);
   /** A pin or unpin is on its way; one at a time, as on the desktop. */
-  const [pinning, setPinning] = useState(false);
-  const pinPending = useRef(false);
+  const { actions: pinActions, pending: pinning } = useThreadPinActions();
   const [approvalStays, setApprovalStays] = useState<Record<string, boolean>>({});
   const [agents, setAgents] = useState<string[]>([]);
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
@@ -850,7 +852,7 @@ export function PhoneApp() {
     storage: localStorage,
     findHost: (id) => {
       const host = hostsRef.current.find((item) => item.machine.id === id);
-      return host ? { machine: { id: host.machine.id, name: host.machine.name }, backend: { call: (cmd, args) => host.backend.call(cmd, args), supports: (capability) => host.supports(capability) }, connection: host.connection } : undefined;
+      return host ? { machine: { id: host.machine.id, name: host.machine.name }, backend: { call: host.backend.call.bind(host.backend), supports: (capability) => host.supports(capability) }, connection: host.connection } : undefined;
     },
     onChange: () => setDeliveryTick((n) => n + 1),
     onError: (error) => setNotice(words(error)),
@@ -1764,7 +1766,7 @@ export function PhoneApp() {
   }, [room?.id, room?.hostId, room?.messages.length, openLink?.status, openHostId, typed, queued[room ? queueKey(room.hostId, room.id) : ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
-  useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId]);
+  useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId, openHostId]);
   // Steer now stops asking once its message has gone, been steered, or been taken back.
   const queuedIds = (openId ? queued[queueKey(openHostId, openId)]?.items ?? [] : []).map((item) => item.id).join(",");
   useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
@@ -2405,27 +2407,18 @@ export function PhoneApp() {
   function togglePin(paneId: string, message: Message) {
     const shown = roomRef.current;
     if (!shown || shown.id !== paneId) return;
-    const index = shown.pins.findIndex((pin) => pinSource(pin) === message.seq);
-    if (index >= 0) { unpin(paneId, index); return; }
-    if (pinPending.current) return;
-    const host = changeHost("Pinning");
-    if (!host) return;
-    pinPending.current = true; setPinning(true);
-    void host.backend.roomPin(paneId, responsePin(message.seq, splitTldr(message.text).text))
-      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
-      .catch((error) => setNotice(`Could not pin: ${words(error)}`))
-      .finally(() => { pinPending.current = false; setPinning(false); });
+    changePin(paneId, messagePinChange(shown.pins, message.seq, splitTldr(message.text).text));
   }
 
-  function unpin(paneId: string, index: number) {
-    if (pinPending.current) return;
-    const host = changeHost("Unpinning");
+  function changePin(paneId: string, change: PinChange) {
+    if (pinActions.isPending()) return;
+    const host = changeHost(change.kind === "pin" ? "Pinning" : "Unpinning");
     if (!host) return;
-    pinPending.current = true; setPinning(true);
-    void host.backend.roomUnpin(paneId, index)
-      .then((pins) => setRoom((current) => current && current.id === paneId ? { ...current, pins } : current))
-      .catch((error) => setNotice(`Could not unpin: ${words(error)}`))
-      .finally(() => { pinPending.current = false; setPinning(false); });
+    const hostId = openHostId;
+    void pinActions.apply(host.backend, paneId, change, pins => {
+      setRoom(current => current?.id === paneId && screenRef.current.hostId === hostId
+        ? { ...current, pins } : current);
+    }).catch(error => setNotice(`Could not ${change.kind}: ${words(error)}`));
   }
 
   /** Retry on a bot's reply, Revert on your message: delete from there and put this thread's files back. Asks first, as on the desktop. */
@@ -2434,33 +2427,39 @@ export function PhoneApp() {
     if (!shown || shown.id !== paneId) return;
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     if (Object.keys(shown.working).length > 0) { setNotice("Stop the agents first."); return; }
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    const bot = retryBot(message);
     if (kind === "retry" && !shown.participants.some((p) => p.id === bot)) { setNotice(`${bot} isn't in this thread any more, so it can't answer again.`); return; }
     const host = changeHost(kind === "retry" ? "Retry" : "Revert");
     if (!host) return;
     try {
-      const plan = await host.backend.roomRevertPlan(paneId, message.seq, bot);
-      const going: GoingBack = { paneId, kind, message, plan, scope: "both", ticked: initialFiles(plan) };
-      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack(going);
+      const plan = await planHistoryChange(host.backend, paneId, message);
+      if (!showingHistoryOrigin(host.machine.id, paneId)) return;
+      const { ask, scope, ticked } = historyConfirmation(kind, plan);
+      const going: GoingBack = { hostId: host.machine.id, paneId, kind, message, plan, scope, ticked };
+      if (ask) setGoingBack(going);
       else await runGoBack(going);
     } catch (error) {
       setNotice(`Could not ${kind}: ${words(error)}`);
     }
   }
 
+  function showingHistoryOrigin(hostId: string, paneId: string) {
+    const screen = screenRef.current;
+    return screen.shown && screen.hostId === hostId && screen.roomId === paneId;
+  }
+
   async function runGoBack(going: GoingBack) {
     setGoingBack(null);
-    const { paneId, kind, message, plan, scope, ticked } = going;
+    const { hostId, paneId, kind, message, plan, scope, ticked } = going;
+    if (!showingHistoryOrigin(hostId, paneId)) return;
     const host = changeHost(kind === "retry" ? "Retry" : "Revert");
-    if (!host) return;
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
-    const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
+    if (host?.machine.id !== hostId) return;
     try {
-      const failed = await host.backend.roomRevert(paneId, message.seq, bot, request.chat, request.files);
+      const { failed, request, bot } = await applyHistoryChange(host.backend, paneId, message, kind, scope, plan, ticked);
       if (request.chat) {
         setSavedSteps((saved) => saved && saved.id === paneId && saved.hostId === host.machine.id ? { ...saved, index: dropStepsFrom(saved.index, loadedSteps.current, message.seq) } : saved);
         refreshSteps.current();
-        setRoom((current) => current && current.id === paneId ? { ...cutBack(current, message.seq), progress: {} } : current);
+        setRoom((current) => current && current.id === paneId && current.hostId === hostId ? { ...cutBack(current, message.seq), progress: {} } : current);
         // A reply that was cut off mid-way goes with the rest.
         setCuts((all) => { if (!all[paneId]) return all; const next = { ...all }; delete next[paneId]; return next; });
       }
@@ -2479,7 +2478,7 @@ export function PhoneApp() {
   }
 
   function answerGoBack(always: boolean) {
-    if (!goingBack) return;
+    if (!goingBack || !showingHistoryOrigin(goingBack.hostId, goingBack.paneId)) return;
     if (always) saveGoBackAlways(goingBack.kind, true);
     void runGoBack(goingBack);
   }
@@ -2906,7 +2905,7 @@ export function PhoneApp() {
             onMenu={() => { if (openChat) setChatSheet({ kind: "menu" }); else if (openWork) setChatSheet({ kind: "work-menu", hostId: openWork.hostId, id: openWork.id }); else if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
             pins={openRoom ? openRoom.pins : []}
             pinning={pinning}
-            onUnpin={(index) => { if (openPane) unpin(openPane.id, index); }}
+            onUnpin={(index) => { if (openPane) changePin(openPane.id, { kind: "unpin", index }); }}
             quotes={openKey ? quotes[openKey] ?? [] : []}
             onQuotes={(next) => { if (openKey) setQuotes((all) => ({ ...all, [openKey]: next })); }}
             actions={viewingPending || !openPane ? undefined : {

@@ -175,24 +175,11 @@ pub fn merged_agent_model_ids(tool: AgentTool, reported: &[ModelChoice]) -> Vec<
 }
 
 pub fn tool_prefix(tool: AgentTool) -> &'static str {
-    match tool {
-        AgentTool::ClaudeCode => "claude",
-        AgentTool::Codex => "codex",
-        AgentTool::Gemini => "gemini",
-        AgentTool::Grok => "grok",
-        AgentTool::Muse => "muse",
-    }
+    tool.prefix()
 }
 
 pub fn parse_agent_prefix(prefix: &str) -> Option<AgentTool> {
-    match prefix.trim().to_ascii_lowercase().as_str() {
-        "claude" | "claude_code" | "claudecode" => Some(AgentTool::ClaudeCode),
-        "codex" => Some(AgentTool::Codex),
-        "gemini" | "agy" | "antigravity" => Some(AgentTool::Gemini),
-        "grok" => Some(AgentTool::Grok),
-        "muse" => Some(AgentTool::Muse),
-        _ => None,
-    }
+    prefix.parse().ok()
 }
 
 /// Shared state for the HTTP gateway listener.
@@ -468,7 +455,7 @@ pub fn resolve_model_target(
             model_opt.as_deref().unwrap_or("default")
         );
         let config = ParticipantConfig {
-            can_read_images: false,
+            can_read_images: false, untethered_computer: false,
             id: ParticipantId::new("gateway"),
             display_name: "Gateway".to_string(),
             backend: Backend::Agent {
@@ -497,7 +484,7 @@ pub fn resolve_model_target(
         .find(|p| p.prefix == lower_prefix)
     {
         let config = ParticipantConfig {
-            can_read_images: false,
+            can_read_images: false, untethered_computer: false,
             id: ParticipantId::new("gateway"),
             display_name: "Gateway".to_string(),
             backend: Backend::OpenAiCompatible {
@@ -1087,6 +1074,7 @@ async fn handle_chat_completions(
     };
 
     let context = BuildContext {
+        live_sessions: false,
         watchdog_managed: false,
         codex_hook: None,
         cwd: Some(scratch.path().to_path_buf()),
@@ -1122,6 +1110,7 @@ async fn handle_chat_completions(
         unseen: Vec::new(),
         plan: false,
         cwd: None,
+        ..Default::default()
     };
 
     let completion_id = format!("chatcmpl-{}", identity::random_hex(12));
@@ -1528,12 +1517,21 @@ done
         assert!(!requests.contains("thread/start"), "must reject before creating a model session");
         assert!(!requests.contains("turn/start"), "must never send the client's prompt");
         assert_eq!(keys.list()[0].turns_today, 0, "refused turns must be refunded");
-        for family in ["gemini", "grok", "muse"] {
+        for (family, tool) in [("gemini", AgentTool::Gemini), ("grok", AgentTool::Grok), ("muse", AgentTool::Muse)] {
             let body = json!({"model":format!("{family}/default"), "messages":[{
                 "role":"user", "content":"Use x_mcp and hl_mcp"
             }]}).to_string();
             let (status, response) = raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body)).await;
-            assert_eq!(status, if cfg!(target_os = "macos") { 502 } else { 409 }, "{family}: {response}");
+            // With a usable sandbox the gateway reaches CLI lookup. The
+            // fixture provides only Codex. Without isolation it rejects earlier.
+            let error: Value = serde_json::from_str(&response).unwrap();
+            if let Some(reason) = gateway_isolation_error(&agent(tool)) {
+                assert_eq!(status, 409, "{family}: {response}");
+                assert_eq!(error["error"]["message"], reason, "{family}: {response}");
+            } else {
+                assert_eq!(status, 502, "{family}: {response}");
+                assert_eq!(error["error"]["type"], "upstream_error", "{family}: {response}");
+            }
         }
         server.abort();
         let _ = server.await;

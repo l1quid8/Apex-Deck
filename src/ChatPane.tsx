@@ -31,7 +31,9 @@ import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaiti
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
-import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
+import { useThreadPinActions } from "./thread/useThreadPinActions";
+import { messagePinChange, type PinChange } from "./thread/threadActions";
+import { pinSource, pinText, pinsBefore, pinsAfterClear } from "./messagePins";
 import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteLines, noteTitle, undoNotice, withCurationNotes } from "./curationNotes";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
@@ -49,7 +51,8 @@ import { ArtifactsPanel, DEFAULT_VIEW, type ArtifactsHost, type PanelView } from
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, artifactAutoOpen, upsertFromFile, fromReply, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
-import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
+import { applyHistoryChange, historyConfirmation, planHistoryChange, retryBot } from "./threadHistoryActions";
+import { failedLine, goBackTitle, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { botIdentity, mentionable, mentionFor, slug } from "./slug";
@@ -79,7 +82,7 @@ import { ProviderLogo } from "./providerLogos";
 import { DeckIcon } from "./DeckIcon";
 import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
-import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, resetLabel, shortCount, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
+import { contextLevel, resetTooltip, contextLine, isLow, liveWindows, percent, planLevel, planLine, shortCount, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
 import { CompactIcon, TokenIcon, UsageRing } from "./QuickControls";
 import { AGENT_LABEL, chipDescription, foldedFor, levelsShown, saveFolded, type ChipParts } from "./botChip";
 import { planOf, usePlans } from "./plans";
@@ -654,14 +657,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const timer = setTimeout(() => setRemovedNote(null), REMOVED_NOTE_MS);
     return () => clearTimeout(timer);
   }, [removedNote]);
-  const [unpinning, setUnpinning] = useState(false);
-  const unpinPending = useRef(false);
-  const removePin = (index: number) => {
-    if (unpinPending.current) return;
-    unpinPending.current = true; setUnpinning(true);
-    backend.roomUnpin(pane.id, index).then(setPins)
-      .catch((error) => notify(`Could not unpin: ${String(error)}`, "error"))
-      .finally(() => { unpinPending.current = false; setUnpinning(false); });
+  const { actions: pinActions, pending: unpinning } = useThreadPinActions();
+  const changePin = (change: PinChange) => {
+    void pinActions.apply(backend, pane.id, change, setPins)
+      .catch(error => notify(`Could not ${change.kind}: ${String(error)}`, "error"));
   };
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   /** Each running turn: when it began, the steps taken so far, and whether
@@ -1476,10 +1475,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   // Keep the elapsed times moving while anything is running.
   const running = Object.keys(working).length > 0;
   useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    if (!running && !quickSettings) return;
+    const timer = setInterval(() => setNow(Date.now()), running ? 1000 : 30_000);
     return () => clearInterval(timer);
-  }, [running]);
+  }, [running, quickSettings]);
 
   /** Open a file, folder or web address a message links to. A local server opens in the Browser tab. */
   const openTarget = (target: string, reveal = false) => {
@@ -1827,8 +1826,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if(profileMode || talkOnly)return;
     registerVoiceThread(scopeKey({hostId:voiceHost,roomId:pane.id}),{
       candidates:voiceCandidates,settings:voiceConfig,save:s=>voiceLive.current.onVoiceSettings?.(s),focus:()=>voiceLive.current.onVoiceFocus?.(pane.id),
-      realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args as any),
-      metaSession: (args) => backend.call<{ token: string; model: string }>("voice_meta_session", args as any),
+      realtimeSession: (args) => backend.call<{ client_secret: string; expires_at?: number; model: string; voice: string }>("voice_realtime_session", args),
+      metaSession: (args) => backend.call<{ token: string; model: string }>("voice_meta_session", args),
       bridge:id=>{
         let bridge=voiceBridges.current.get(id);if(bridge)return bridge;
         bridge=createThreadVoiceBridge({backend,scope:{hostId:voiceHost,roomId:pane.id,participantId:id},
@@ -1982,23 +1981,22 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if (!ready || chatReadOnly) return;
     if (busy) return notify("Stop the agents first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    const bot = retryBot(message);
     if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
     const origin = currentPlace.current;
-    void backend.roomRevertPlan(pane.id, message.seq, bot).then((plan) => {
+    void planHistoryChange(backend, pane.id, message).then((plan) => {
       if (currentPlace.current !== origin) return;
-      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan), place: origin });
-      else runGoBack(kind, message, plan, "both", initialFiles(plan));
+      const { ask, scope, ticked } = historyConfirmation(kind, plan);
+      if (ask) setGoingBack({ kind, message, plan, scope, ticked, place: origin });
+      else runGoBack(kind, message, plan, scope, ticked);
     }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
   };
   const runGoBack = (kind: GoBack, message: Message, plan: RevertPlan, scope: RevertScope, ticked: string[]) => {
     if (!ready || currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) return;
     setGoingBack(null);
-    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
-    const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     setGoneBack((n) => n + 1);
     const origin = currentPlace.current;
-    void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+    void applyHistoryChange(backend, pane.id, message, kind, scope, plan, ticked).then(({ failed, request, bot }) => {
       if (currentPlace.current !== origin) return;
       if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
@@ -2008,7 +2006,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         setTurnProgress({});
         refreshSteps.current();
       }
-      if (request.chat) setPins(list => list.filter(pin => { const seq = pinSource(pin); return seq === null || seq < message.seq; }));
+      if (request.chat) setPins(list => pinsBefore(list, message.seq));
       if (request.chat) setEntries((list) => {
         const first = list.findIndex((e) => e.kind === "message" && e.message.seq >= message.seq);
         return first < 0 ? list : list.slice(0, first);
@@ -2070,19 +2068,12 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";
     const goBackHint = busy ? "Stop the agents first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
     const copiedHere = copied === message.seq;
-    const pinIndex = pins.findIndex(pin => pinSource(pin) === message.seq);
-    const pinned = pinIndex >= 0;
+    const pinChange = messagePinChange(pins, message.seq, message.text);
+    const pinned = pinChange.kind === "unpin";
     const canPin = message.speaker.kind === "bot" || message.speaker.kind === "human";
     const pinTarget = message.speaker.kind === "human" ? "your message" : "response";
     const pinLabel = `${pinned ? "Unpin" : "Pin"} ${pinTarget}`;
-    const togglePin = () => {
-      if (unpinPending.current) return;
-      if (pinned) return removePin(pinIndex);
-      unpinPending.current = true; setUnpinning(true);
-      void backend.roomPin(pane.id, responsePin(message.seq, message.text)).then(setPins)
-        .catch(error => notify(`Could not pin: ${String(error)}`, "error"))
-        .finally(() => { unpinPending.current = false; setUnpinning(false); });
-    };
+    const togglePin = () => changePin(pinChange);
     const expanded = messageMenu === message.seq;
     const disclosure = <button type="button" className="msg-action action-disclosure" data-message-more={message.seq}
       title={expanded ? "Hide message actions" : "Show message actions"}
@@ -3143,17 +3134,17 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       <div ref={at ? cardBox : undefined} className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
         <div className="quick-strip usage-strip">
           {!makesMedia(p) && cell("ctx", <UsageRing level={ctx} glyph="context" low={isLow(ctx)} />, "ctx", ctx === null ? "—" : `${percent(ctx)}%`, `Context: ${fill ? contextLine(fill) : "Not reported"}`, isLow(ctx))}
-          {account
+          {at === undefined && (account
             ? cell("balance", <UsageRing level={null} glyph="money" />, "", left != null ? dollars(left) : "—", `Balance: ${left != null ? `${dollars(left)} left on this account` : "Not reported"}${spent ? ` · ${spent} in this chat` : ""}`)
             : live.length
-              ? live.map((w) => { const level = 1 - Math.min(100, w.used_percent) / 100; return cell(w.name, <UsageRing level={level} glyph={w.window_minutes === 300 || (w.window_minutes ?? 0) < 1440 ? "clock" : "calendar"} low={isLow(level)} />, shortWindow(w), `${percent(level)}%`, `${gatewayPlan(p) ? "Subscription" : "Plan"} · ${windowLabel(w)}: ${percent(level)}% left${w.resets_at != null ? ` · resets ${resetLabel(w.resets_at, new Date())}` : ""}`, isLow(level)); })
-              : cell("plan", <UsageRing level={provider ? planLevel(windows, nowSeconds) : null} glyph="calendar" />, "plan", plan ? `${percent(planLevel(windows, nowSeconds) ?? 0)}%` : "—", `${gatewayPlan(p) ? "Subscription" : "Plan"}: ${plan ?? "Not reported"}`)}
+              ? live.map((w) => { const level = 1 - Math.min(100, w.used_percent) / 100; return cell(w.name, <UsageRing level={level} glyph={w.window_minutes === 300 || (w.window_minutes ?? 0) < 1440 ? "clock" : "calendar"} low={isLow(level)} />, shortWindow(w), `${percent(level)}%`, `${gatewayPlan(p) ? "Subscription" : "Plan"} · ${windowLabel(w)}: ${percent(level)}% left${w.resets_at != null ? ` · ${resetTooltip(w.resets_at, nowSeconds)}` : ""}`, isLow(level)); })
+              : cell("plan", <UsageRing level={provider ? planLevel(windows, nowSeconds) : null} glyph="calendar" />, "plan", plan ? `${percent(planLevel(windows, nowSeconds) ?? 0)}%` : "—", `${gatewayPlan(p) ? "Subscription" : "Plan"}: ${plan ?? "Not reported"}`))}
           <button className="quick-cell usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} aria-label="Compact now" title="Compact now · Summarize earlier turns so every model starts from the summary">
             <span className="quick-cell-icon" aria-hidden="true"><CompactIcon /></span>
             <span className="quick-cell-label">Compact</span>
           </button>
         </div>
-        {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
+        {at === undefined && provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
         <div className="usage-tokens" title={tokenLine(totals)}>
           {totals && totals.turns > 0 ? <>
             <span aria-label="Input tokens"><TokenIcon kind="in" />{totals.input_reported_turns === 0 ? "—" : shortCount(totals.input)}</span>
@@ -3716,7 +3707,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         <div className="pins-list">
         {pins.map((pin, index) => <div className="pin" key={pin}>
           {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => jumpToMessage(pinSource(pin)!)}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
-          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning || chatReadOnly} onClick={() => removePin(index)}>×</button>
+          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning || chatReadOnly} onClick={() => changePin({ kind: "unpin", index })}>×</button>
         </div>)}
         </div>
       </details> : <p className="muted">No pinned responses. Use the pin icon on a model response.</p>);
@@ -3882,7 +3873,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         setAccessFrom(({ [id]: _applied, ...rest }) => rest);
         setPendingSettings(({ [id]: _applied, ...rest }) => rest);
         void backend.roomApplyAccess(pane.id, id).catch((error) => notify(`Could not apply access now: ${String(error)}`, "error"));
-      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={shown === null ? `${title}: Not reported` : resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      }} key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} resets={resetsFor(configOf(quickSettings.id))} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={shown === null ? `${title}: Not reported` : resetsAt != null ? `${title} · ${resetTooltip(resetsAt, now)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}</span>; }; const windows = liveWindows(planStateOf(configOf(quickSettings.id))?.windows ?? [], now); return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const before = participants.find(p => p.id === config.id)?.access;
         const saved = await backend.roomUpdateParticipant(pane.id, config, base, cwd);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.

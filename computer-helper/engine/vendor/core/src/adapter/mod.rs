@@ -6,6 +6,8 @@ pub mod live_element;
 pub(crate) mod live_identity;
 pub mod native_handle;
 pub(crate) mod observation;
+#[cfg(test)]
+mod saved_ref_test_support;
 pub(crate) mod system;
 #[cfg(test)]
 mod test_support;
@@ -14,6 +16,11 @@ pub(crate) use actions::ActionOps;
 pub(crate) use input::InputOps;
 pub(crate) use observation::ObservationOps;
 pub(crate) use observation::optional_live_read;
+#[cfg(test)]
+pub(crate) use saved_ref_test_support::{
+    saved_ref_anchor, saved_ref_element_tree, saved_ref_observation, saved_ref_observation_nodes,
+    saved_ref_scope, saved_ref_tree, saved_ref_tree_nodes, saved_ref_window_pool,
+};
 pub(crate) use system::SystemOps;
 #[cfg(test)]
 pub(crate) use test_support::{

@@ -173,7 +173,7 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         await click('Pair phone');
         await wait(()=>document.querySelector('.pair-qr svg'),'QR after turning on');
         assert.equal(await run(()=>window.fixture.on),true,'pairing turned connections on');
-        assert.match(await run(()=>document.querySelector('.pair-sheet').innerText),/Turned on phone connections so your phone can reach this Mac\. Nothing was restarted\./);
+        assert.ok((await run(()=>document.querySelector('.pair-sheet').innerText)).includes('Turned on phone connections so your phone can reach this '+(process.platform==='win32'?'PC':'Mac')+'. Nothing was restarted.'));
         assert.equal(await run(()=>window.fixture.count('pair_start')),1);
         await snap('pair-turned-on');
         await click('Cancel');

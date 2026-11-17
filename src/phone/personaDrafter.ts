@@ -55,7 +55,7 @@ function parseBackends(raw: unknown): BackendRow[] {
 }
 
 export function createPersonaDrafter(opts: {
-  call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  call<T>(...request: import("../daemon/requests").HostCommandArgs<"chat_profiles">): Promise<T>;
   personaDraft(writer: ParticipantConfig, idea: string, taken: string[]): Promise<{ name: string; persona: string }>;
   profiles: () => ParticipantConfig[];
   disabledProviders: () => readonly string[];

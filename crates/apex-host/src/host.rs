@@ -133,39 +133,22 @@ impl RoomHandle {
         if self.deleted.load(Ordering::SeqCst) { return Err("The chat folder changed. Reopen the chat.".into()); }
         Ok(guard)
     }
-    pub(crate) fn has_open_questions(&self) -> bool { !self.live.lock().unwrap().questions.is_empty() }
+    pub(crate) fn has_open_questions(&self) -> bool { !self.live.lock().unwrap().view.questions.is_empty() }
     pub(crate) fn has_pending_human_waits(&self) -> bool {
         let live = self.live.lock().unwrap();
-        !live.approvals.is_empty() || !live.questions.is_empty()
+        !live.view.approvals.is_empty() || !live.view.questions.is_empty()
     }
     /// When a worker last did something, and whether a command is still running.
     pub(crate) fn worker_activity(&self) -> (u64, bool) {
         let live = self.live.lock().unwrap();
-        (live.last_activity_ms, !live.running_commands.is_empty())
+        live.worker_activity()
     }
     pub(crate) fn busy(&self) -> bool { self.runtime.busy() || self.checkout_action.try_write().is_err() }
 }
 
-#[derive(Default)]
-struct LiveRoomState {
-    active: std::collections::BTreeSet<String>,
-    approvals: Vec<serde_json::Value>,
-    /// Questions bots are waiting on, oldest first.
-    questions: Vec<serde_json::Value>,
-    /// The latest suggested next steps, while they stand.
-    next_steps: Option<serde_json::Value>,
-    /// The watchdog's view of the worker. Only worker activity moves it.
-    last_activity_ms: u64,
-    running_commands: std::collections::HashSet<String>,
-    /// Reply text streamed so far by each working agent, so a client that
-    /// switches back or reconnects can redraw it instead of a blank turn.
-    streams: std::collections::BTreeMap<String, String>,
-    /// The latest activity line per working agent.
-    activity: std::collections::BTreeMap<String, String>,
-}
-
-/// Streamed text kept per agent is capped like the clients' own buffers.
-const LIVE_STREAM_CAP: usize = 1024 * 1024;
+#[path = "live_room_state.rs"]
+mod live_room_state;
+use live_room_state::LiveRoomState;
 
 /// Where the host keeps its files.
 #[derive(Debug, Clone)]
@@ -180,6 +163,7 @@ pub struct HostPaths {
 mod runner_runtime;
 
 pub struct Host {
+    pub maintenance: Arc<crate::maintenance::MaintenanceGate>,
     paths: HostPaths,
     /// Protected primary and saved-chat ownership lasts as long as this host.
     _ownership: Option<apex_provenance::HostOwnership>,
@@ -329,8 +313,10 @@ impl Host {
         store.interrupt_client_messages()?;
         store.settle_promotes()?;
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
+        let maintenance = Arc::new(crate::maintenance::MaintenanceGate::default());
+        let compact_maintenance = maintenance.enter()?;
         let compacting = Arc::clone(&snapshots);
-        std::thread::spawn(move || compacting.compact());
+        std::thread::spawn(move || { let _maintenance = compact_maintenance; compacting.compact(); });
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
         let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
@@ -341,6 +327,7 @@ impl Host {
         apex_adapters::set_code_mode_enabled(&paths.data,
             store.settings().ok().flatten().as_ref().and_then(|s| s["apexCodeMode"].as_str()) != Some("off"));
         let host = Arc::new(Host {
+            maintenance,
             paths,
             computer,
             _ownership: ownership,
@@ -379,6 +366,7 @@ impl Host {
             let host_weak = host_for_reconcile.clone();
             Box::pin(async move {
                 let Some(host) = host_weak.upgrade() else { return Err("host shut down".into()); };
+                let _maintenance = host.maintenance.enter()?;
                 let handle = host.handle(&thread_id)?;
                 let error = Mutex::new(None);
                 let batch = handle.runtime.begin_post_with_speaker(
@@ -637,63 +625,7 @@ impl Host {
     fn emit_room_event(&self, room: &str, event: RoomEvent, handle: Option<&RoomHandle>, recovery_seq: Option<u64>) {
         let completed_steps = self.steps.observe(room, &event);
         // Approving a "Start the work?" card ends planning for the thread.
-        let mut plan_off = false;
-        if let Some(handle) = handle {
-            let mut live = handle.live.lock().unwrap();
-            if let RoomEvent::ApprovalResolved { request, approved: true, .. } = &event {
-                plan_off = live.approvals.iter().any(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan");
-            }
-            if matches!(event, RoomEvent::TurnStarted { .. } | RoomEvent::Delta { .. } | RoomEvent::Activity { .. } | RoomEvent::WorkStep { .. } | RoomEvent::Todo { .. } | RoomEvent::MessageAdded { .. } | RoomEvent::Usage { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::QuestionResolved { .. }) {
-                live.last_activity_ms = crate::personal::now();
-            }
-            if let RoomEvent::WorkStep { id, step } = &event {
-                let key = format!("{id}:{}", step.key);
-                if step.status == apex_core::work_steps::StepStatus::Running { live.running_commands.insert(key); } else { live.running_commands.remove(&key); }
-            }
-            if let RoomEvent::TurnStarted { id } = &event { let own = format!("{id}:"); live.running_commands.retain(|key| !key.starts_with(&own)); }
-            if matches!(event, RoomEvent::Idle | RoomEvent::Stopped) { live.running_commands.clear(); }
-            match &event {
-                RoomEvent::TurnStarted { id } => { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
-                RoomEvent::Delta { id, text } => {
-                    let stream = live.streams.entry(id.as_str().to_string()).or_default();
-                    if stream.len() + text.len() < LIVE_STREAM_CAP { stream.push_str(text); }
-                }
-                RoomEvent::Activity { id, text } => { live.activity.insert(id.as_str().to_string(), text.clone()); }
-                RoomEvent::MessageAdded { message } => {
-                    if let apex_core::Speaker::Bot(id) = &message.speaker { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
-                }
-                RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => { live.streams.remove(id.as_str()); live.activity.remove(id.as_str()); }
-                RoomEvent::Idle | RoomEvent::Stopped => { live.streams.clear(); live.activity.clear(); }
-                _ => {}
-            }
-            match &event {
-                RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); live.next_steps = None; }
-                RoomEvent::QuestionRequested { id, request, questions } => {
-                    live.questions.retain(|q| q["request"].as_str() != Some(request.as_str()));
-                    live.questions.push(serde_json::json!({"id":id,"request":request,"questions":questions}));
-                    live.next_steps = None;
-                }
-                RoomEvent::QuestionResolved { request, .. } => { live.questions.retain(|q| q["request"].as_str() != Some(request.as_str())); }
-                RoomEvent::NextSteps { id, steps, pending } => {
-                    live.next_steps = (*pending || !steps.is_empty()).then(|| serde_json::json!({"id":id,"steps":steps,"pending":pending}));
-                }
-                RoomEvent::MessageAdded { message } if message.speaker == apex_core::Speaker::Human => { live.next_steps = None; }
-                RoomEvent::ApprovalRequested { id, request, action } => {
-                    live.approvals.retain(|a| a["request"].as_str() != Some(request.as_str()));
-                    live.approvals.push(serde_json::json!({"id":id,"request":request,"action":action}));
-                }
-                RoomEvent::ApprovalResolved { request, .. } => { live.approvals.retain(|a| a["request"].as_str() != Some(request.as_str())); }
-                RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => {
-                    live.active.remove(id.as_str());
-                    live.approvals.retain(|a| a["id"].as_str() != Some(id.as_str()));
-                    live.questions.retain(|q| q["id"].as_str() != Some(id.as_str()));
-                }
-                // Next steps are worked out after Idle, so only Stop clears them.
-                RoomEvent::Idle => { live.active.clear(); live.approvals.clear(); live.questions.clear(); }
-                RoomEvent::Stopped => { live.active.clear(); live.approvals.clear(); live.questions.clear(); live.next_steps = None; }
-                _ => {}
-            }
-        }
+        let plan_off = handle.is_some_and(|handle| handle.live.lock().unwrap().observe(&event));
         if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event, recovery_seq.unwrap_or(0)); }
         let (plan_changes, plan_save) = handle.map(|handle| track_plan_runs(handle, &event, plan_off)).unwrap_or_default();
         match &event {
@@ -798,16 +730,16 @@ impl Host {
         match event {
             RoomEvent::Failed { error, .. } => {
                 *handle.task_error.lock().unwrap() = Some(error.clone());
-                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.view.approvals.clone(), live.view.questions.clone()) };
                 changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
             }
             RoomEvent::Stopped => {
                 *handle.task_error.lock().unwrap() = Some("Worker stopped; edits are retained for review.".into());
-                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.view.approvals.clone(), live.view.questions.clone()) };
                 changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
             }
             RoomEvent::Idle | RoomEvent::ParticipantIdle { .. } => {
-                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.view.approvals.clone(), live.view.questions.clone()) };
                 changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
             }
             RoomEvent::MessageAdded { message } if message.text.contains("[Worker cleanup incomplete:") => {
@@ -827,7 +759,7 @@ impl Host {
                 }
             }
             RoomEvent::ApprovalRequested { .. } | RoomEvent::QuestionRequested { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::QuestionResolved { .. } => {
-                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.view.approvals.clone(), live.view.questions.clone()) };
                 changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
             }
             _ => {}
@@ -994,8 +926,10 @@ impl Host {
             }
         }
         for (tool, model) in reads {
+            let Ok(maintenance) = self.maintenance.enter() else { return; };
             let (host, room, context) = (Arc::clone(self), room.to_string(), context.clone());
             self.runtime.spawn(async move {
+                let _maintenance = maintenance;
                 let plan = if after_turn {
                     tokio::time::sleep(PLAN_READ_SETTLE).await;
                     apex_adapters::plan_usage_after_turn(tool, model.as_deref(), &context).await
@@ -1039,17 +973,9 @@ impl Host {
                 if !info.found {
                     continue;
                 }
-                let tool = match info.key.as_str() {
-                    "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
-                    "codex" => Some(AgentTool::Codex),
-                    "gemini" => Some(AgentTool::Gemini),
-                    "grok" => Some(AgentTool::Grok),
-                    "muse" => Some(AgentTool::Muse),
-                    _ => None,
-                };
-                if let Some(tool) = tool {
+                if let Ok(tool) = info.key.parse::<AgentTool>() {
                     raw_profiles.push(ParticipantConfig {
-                        can_read_images: false,
+                        can_read_images: false, untethered_computer: false,
                         id: ParticipantId::new(info.key.clone()),
                         display_name: info.label.clone(),
                         persona: String::new(),
@@ -1105,15 +1031,7 @@ impl Host {
             .into_iter()
             .map(|mut info| {
                 if info.found {
-                    let tool = match info.key.as_str() {
-                        "claude" | "claude_code" => Some(AgentTool::ClaudeCode),
-                        "codex" => Some(AgentTool::Codex),
-                        "gemini" => Some(AgentTool::Gemini),
-                        "grok" => Some(AgentTool::Grok),
-                        "muse" => Some(AgentTool::Muse),
-                        _ => None,
-                    };
-                    if let Some(tool) = tool {
+                    if let Ok(tool) = info.key.parse::<AgentTool>() {
                         if apex_adapters::chat_tool_ok(tool, path.as_deref()).is_err() {
                             info.found = false;
                         }
@@ -1204,6 +1122,7 @@ impl Host {
         if self.store.room(&id)?.is_none() {return Err("Thread unavailable.".into())}
         if handle.as_ref().is_some_and(|h|h.runtime.busy() || h.has_pending_human_waits()) {return Err("Stop work and resolve outstanding requests before moving this thread to Trash.".into())}
         let meta = self.store.update_chat_meta(&id,|meta| {if trashed {meta.trashed_at=Some(meta.trashed_at.unwrap_or_else(now_millis));} else {meta.trashed_at=None;}meta.updated_at=meta.updated_at.max(now_millis());})?;
+        if trashed { if let Some(handle) = &handle { handle.context.retire_sessions(None); } }
         self.emit(HostEvent::ThreadCatalogChanged {});
         Ok(meta)
     }
@@ -1305,6 +1224,7 @@ impl Host {
             self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from))
         };
         let context = BuildContext {
+            live_sessions: std::env::var_os("APEX_DECK_ONE_SHOT_BOTS").as_deref() != Some(std::ffi::OsStr::new("1")),
             watchdog_managed: !kind.is_chat() && self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?
                 .and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten())
                 .is_some_and(|task|task.lineage.is_some() && task.execution_thread_id.as_deref()==Some(id.as_str())),
@@ -1358,7 +1278,8 @@ impl Host {
             // changed while the thread was closed isn't this thread's work.
             let (snapshots, thread, seq) = (Arc::clone(&self.snapshots), id.clone(), snapshot.transcript.len());
             let retired = Arc::clone(&deleted);
-            std::thread::spawn(move || { let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
+            let maintenance = self.maintenance.enter()?;
+            std::thread::spawn(move || { let _maintenance = maintenance; let _ = snapshots.take_if_live(&thread, &cwd, seq, checkpoints::Kind::Open, None, &retired); });
         }
         let journal = if kind.is_chat() { None } else { Some(crate::journal::path_for(&self.paths.data.join("attachments"), &id)?) };
         if let Err(error) = self.store.save_room(&id, &SavedRoom { mounts: mounts.clone(), cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }) {
@@ -1433,7 +1354,7 @@ impl Host {
             Err(error) => { eprintln!("[apex-deck] ignoring unreadable optional turn progress for {id}: {error}"); Default::default() }
         };
         progress.extend(self.steps.snapshot(&id));
-        Ok(serde_json::json!({"untagged_responders":snapshot.untagged_responders,"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"streams":live.streams,"activity":live.activity,"progress":progress,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
+        Ok(serde_json::json!({"untagged_responders":snapshot.untagged_responders,"snapshot":snapshot,"cwd":saved.cwd,"mounts":saved.mounts,"legacy":handle.legacy,"active":live.view.active,"approvals":live.view.approvals,"questions":live.view.questions,"next_steps":live.view.next_steps,"streams":live.view.streams,"activity":live.view.activity,"progress":progress,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone(),"runner": runner,"roomRevision":handle.observation_revision.load(Ordering::SeqCst),"hostNow":runner_runtime::now()}))
 
     }
 
@@ -1468,7 +1389,7 @@ impl Host {
         if let Ok(handle) = self.handle(&input.id) {
             self.room_event(&input.id, RoomEvent::NextSteps { id: ParticipantId::new("runner"), steps: vec![], pending: false });
             // Also clear live next_steps cache
-            handle.live.lock().unwrap().next_steps = None;
+            handle.live.lock().unwrap().view.next_steps = None;
         }
         Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
     }
@@ -1609,6 +1530,7 @@ impl Host {
     }
 
     pub(crate) async fn run_batch(self: &Arc<Self>, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
+        let _maintenance = self.maintenance.enter()?;
         let _chain = Chain::start(&self.chains);
         let client_message_id = batch.client_message_id().map(str::to_owned);
         let error = Mutex::new(None);
@@ -2074,6 +1996,11 @@ impl Host {
     pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
         self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| apex_adapters::computer_backend_supported(&p.backend)))
     }
+    /// A Work-room bot saved as untethered. Only the saved room config counts,
+    /// never a model's tool arguments; the caller still requires Full access.
+    pub(crate) fn computer_participant_untethered(&self,thread:&str,id:&ParticipantId)->bool {
+        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| p.untethered_computer && p.access == apex_core::Access::Full))
+    }
     pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
     pub(crate) fn computer_participant_label(&self,thread:&str,id:&ParticipantId)->Option<String> {
         if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
@@ -2082,8 +2009,8 @@ impl Host {
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
     /// Apply a saved access change now: stop `participant` and run it again under
-    /// the new level. A tool takes its access when it starts and Deck keeps no session,
-    /// so the new run sees only the chat and the files, and is told so.
+    /// the new level. New access requires a fresh worker with the saved chat
+    /// and files as its context.
     pub async fn room_apply_access(self: &Arc<Self>, id: String, participant: ParticipantId) -> Result<(), String> {
         self.refuse_moved_chat(&id)?;
         if self.assistant_tasks.execution(&id).ok().flatten().is_some() {
@@ -2111,6 +2038,7 @@ impl Host {
         }
         if let Ok(handle) = self.handle(&id) {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+            handle.context.retire_sessions(participant.as_ref());
             handle.runtime.stop(participant.as_ref());
             // Compact/curate hold the transcript lock but do not reserve a
             // normal turn slot. Their bubble's Stop must reach the shared flag.
@@ -2135,6 +2063,7 @@ impl Host {
             return Err("Talk-only chat rooms do not use Plan mode.".into());
         }
         if self.store_plan(&id, &handle, on)? {
+            handle.context.retire_sessions(None);
             self.invalidate_room_runner(&id)?;
             self.room_event(&id, RoomEvent::PlanChanged { on });
         }
@@ -2168,7 +2097,7 @@ impl Host {
             (true, true) => apex_core::Decision::ApproveAlways,
         };
         let skip = skip.unwrap_or_default();
-        let plan_card = handle.live.lock().unwrap().approvals.iter().find(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan")
+        let plan_card = handle.live.lock().unwrap().view.approvals.iter().find(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan")
             .map(|a| (a["id"].as_str().unwrap_or("").to_string(), a["action"]["detail"].as_str().unwrap_or("").to_string()));
         // Read before the runs lock: the checkpoint lock comes first.
         let transcript = handle.checkpoint.lock().unwrap().snapshot.transcript.len();
@@ -2224,7 +2153,7 @@ impl Host {
     /// Alfred may answer a typed native request only with both a current
     /// underlying grant and a distinct approval-delegation grant. It never
     /// writes a new standing allowance on another agent's behalf.
-    pub(crate) fn room_pending_approvals(&self,id:&str)->Result<Vec<serde_json::Value>,String> {Ok(self.handle(id)?.live.lock().unwrap().approvals.clone())}
+    pub(crate) fn room_pending_approvals(&self,id:&str)->Result<Vec<serde_json::Value>,String> {Ok(self.handle(id)?.live.lock().unwrap().view.approvals.clone())}
     pub(crate) fn personal_room_approve(&self,assistant_id:&str,task_id:&str,operation:&crate::personal::OperationSpec)->Result<(),String> {
         use crate::personal::permissions::{self,PermissionAudit};
         let thread=operation.argv.first().ok_or("Thread unavailable.")?;
@@ -2242,7 +2171,7 @@ impl Host {
             if task.operation.as_ref().is_none_or(|o|o.hash()!=operation.hash()) {return Err("Approval operation changed.".into())}
             permissions::validate_marker(assistant,task,task.decision.as_ref().and_then(|d|d.decided_by_event.as_deref()).unwrap_or_default())?;
             let live=handle.live.lock().unwrap();
-            let pending=live.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
+            let pending=live.view.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
             let actor=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
             let profile=handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|p.id.as_str()==actor).cloned().ok_or("The requesting participant no longer belongs to this thread.")?;
             if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
@@ -2277,7 +2206,7 @@ impl Host {
             let room=self.personal_room_target(assistant,thread)?;
             if room.project.host_id!=operation.host||room.project.cwd!=operation.cwd {return Err("Target changed.".into())}
             let live=handle.live.lock().unwrap();
-            let pending=live.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
+            let pending=live.view.approvals.iter().find(|p|p["request"].as_str()==Some(request)).ok_or("That approval is no longer waiting.")?;
             let actor=pending["id"].as_str().ok_or("Approval actor unavailable.")?;
             let profile=handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|p.id.as_str()==actor).cloned().ok_or("The requesting participant left this thread.")?;
             if let Some(why)=crate::personal_worker::endpoint_refusal(assistant,&profile) {return Err(why)}
@@ -2460,7 +2389,7 @@ impl Host {
         }
         self.ensure_task_read_access(&id, &next)?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
-        if next.access != current.access { self.computer.revoke(Some(&id),Some(name.as_str())); }
+        if next.access != current.access || next.untethered_computer != current.untethered_computer { self.computer.revoke(Some(&id),Some(name.as_str())); }
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         let access_moved = next.access != current.access && handle.runtime.busy();
         if next.access != current.access {
@@ -3278,7 +3207,8 @@ impl Host {
     /// it never holds `room_lifecycle` or a daemon worker meanwhile.
     fn forget_snapshots(&self, id: &str) {
         let (snapshots, thread) = (Arc::clone(&self.snapshots), id.to_string());
-        std::thread::spawn(move || snapshots.delete(&thread));
+        let Ok(maintenance) = self.maintenance.enter() else { return; };
+        std::thread::spawn(move || { let _maintenance = maintenance; snapshots.delete(&thread); });
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
@@ -3293,7 +3223,7 @@ impl Host {
             self.assistant_tasks.tombstone_execution(&id).map_err(|e|e.to_string())?;
         }
         self.forget_snapshots(&id);
-        if let Some(handle) = &handle { handle.runtime.stop(None); handle.stop.store(true, Ordering::SeqCst); handle.approvals.reject_all(); }
+        if let Some(handle) = &handle { handle.context.retire_sessions(None); handle.runtime.stop(None); handle.stop.store(true, Ordering::SeqCst); handle.approvals.reject_all(); }
         self.rooms.lock().unwrap().remove(&id);
         if let Ok(name) = export::safe_file_name(&id) {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
@@ -3443,17 +3373,35 @@ impl Host {
     /// The bytes of a saved attachment, so the chat can show pictures. Only
     /// files in the attachments folder and the Library are read.
     pub fn read_attachment(&self, path: String) -> Result<Vec<u8>, String> {
+        let (bytes, _) = self.read_attachment_range(&path, None)?;
+        Ok(bytes)
+    }
+
+    /// An offset selects a bounded page that fits even the paired-device frame limit.
+    pub(crate) fn read_attachment_range(&self, path: &str, offset: Option<u64>) -> Result<(Vec<u8>, u64), String> {
+        use std::io::{Read, Seek, SeekFrom};
+        const CHUNK_BYTES: u64 = 3 * 1024 * 1024;
+        const MAX_SHOWN: u64 = 200 * 1024 * 1024;
         let data = self.paths.data.canonicalize().map_err(|e| e.to_string())?;
-        let file = Path::new(&path).canonicalize().map_err(|e| format!("Could not read {path}: {e}"))?;
+        let file = Path::new(path).canonicalize().map_err(|e| format!("Could not read {path}: {e}"))?;
         if !file.starts_with(data.join("attachments")) && !file.starts_with(data.join("library")) {
             return Err(format!("{path} is not an attachment"));
         }
-        // Videos are larger than the 20 MB attachment limit, so reads allow 200 MB.
-        const MAX_SHOWN: u64 = 200 * 1024 * 1024;
-        if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > MAX_SHOWN {
+        let mut file = std::fs::File::open(file).map_err(|e| format!("Could not read {path}: {e}"))?;
+        let total = file.metadata().map_err(|e| e.to_string())?.len();
+        if total > MAX_SHOWN {
             return Err("too big to show".into());
         }
-        std::fs::read(&file).map_err(|e| format!("Could not read {path}: {e}"))
+        let len = if let Some(offset) = offset {
+            let remaining = total.checked_sub(offset).ok_or("Attachment changed during read")?;
+            file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+            remaining.min(CHUNK_BYTES)
+        } else {
+            total
+        };
+        let mut bytes = vec![0; len as usize];
+        file.read_exact(&mut bytes).map_err(|e| format!("Could not read {path}: {e}"))?;
+        Ok((bytes, total))
     }
 
     pub fn mod_read(&self, dir: String) -> Result<mods::ModSource, String> {
@@ -3784,8 +3732,27 @@ impl Host {
         self.quit.confirm();
     }
 
+    /// Called only after maintenance has sealed admission. Runtime reservations
+    /// include accepted turns that have not emitted TurnStarted yet.
+    pub fn maintenance_blockers(&self) -> Result<(), String> {
+        if crate::personal_worker::browser::maintenance_busy(self.data_dir()) { return Err("busy: a browser tab is active".into()); }
+        if !self.runner_workers.lock().unwrap().is_empty() { return Err("busy: a goal or loop worker is still active".into()); }
+        if self.chains.load(Ordering::SeqCst) != 0 { return Err("busy: reply chains are still saving".into()); }
+        for handle in self.rooms.lock().unwrap().values() {
+            if handle.busy() || handle.has_pending_human_waits() || handle.runtime.has_cleanup_holds() { return Err("busy: a room has unfinished work".into()); }
+        }
+        if self.assistant_runs.lock().unwrap().values().any(|run| !run.finished.load(Ordering::SeqCst)) {
+            return Err("busy: an assistant task is unfinished".into());
+        }
+        if !self.personal_stops.lock().unwrap().is_empty() { return Err("busy: a personal operation is unfinished".into()); }
+        if self.fold_queue.maintenance_busy() { return Err("busy: bot changes are being folded".into()); }
+        if self.ptys.list(None).iter().any(|pty| pty.state != "exited") { return Err("busy: a terminal is still running".into()); }
+        Ok(())
+    }
+
     /// End every terminal. Called on the way out.
     pub fn shutdown(&self) {
+        for handle in self.rooms.lock().unwrap().values() { handle.context.retire_sessions(None); }
         if let Some(clock) = self.monitor_clock.lock().unwrap().take() { clock.abort(); }
         self.ptys.kill_all();
     }
@@ -6009,7 +5976,7 @@ done
 
     fn scripted(id: &str, lines: &[&str]) -> apex_core::ParticipantConfig {
         apex_core::ParticipantConfig {
-            can_read_images: false,
+            can_read_images: false, untethered_computer: false,
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
             persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None
@@ -6624,8 +6591,10 @@ done
             unseen: vec![],
             plan: false,
             cwd: None,
+            ..Default::default()
         };
         let context = apex_adapters::BuildContext {
+            live_sessions: false,
             watchdog_managed: false,
             cwd: saved.cwd.as_ref().map(PathBuf::from),
             path: Some(format!("{}:/usr/bin:/bin", bin.display())),
@@ -6913,13 +6882,25 @@ done
 
 
     #[test]
-    fn host_never_calls_apex_adapters_build_directly_for_room_participants() {
-        let source = include_str!("host.rs");
-        let code_only = source.split("#[cfg(test)]").next().unwrap_or(source);
-        assert!(
-            !code_only.contains("apex_adapters::build("),
-            "host.rs must build room participants through apex_adapters::participant_for_room"
-        );
+    fn chat_participant_refuses_workspace_access_when_a_turn_requests_it() {
+        let (host, runtime, data) = host("chat-participant-tools");
+        host.session_save(serde_json::json!({"version":1, "profiles":[{
+            "id":"bot", "display_name":"Bot", "access":"full",
+            "backend":{"kind":"agent", "tool":"claude_code", "model":"test"}
+        }]})).unwrap();
+        let chat = "aaaaaaaa-4444-4444-8444-aaaaaaaaaaaa";
+        let request = serde_json::from_value(serde_json::json!({"profile":"bot"})).unwrap();
+        host.chat_create(chat.into(), None, vec![request], RoomOptions::default()).unwrap();
+        let room = host.room(chat).unwrap();
+        let bot = runtime.block_on(async { room.lock().await.participant(&ParticipantId::new("bot")).unwrap() });
+        assert_eq!(bot.config().access, Access::Read);
+        let error = runtime.block_on(bot.respond(apex_core::TurnRequest {
+            access: Some(Access::Full), cwd: Some(data.join("nonexistent-workspace")), ..Default::default()
+        }, &|_| {})).unwrap_err();
+        assert!(error.to_string().contains("Text-only turns cannot request workspace access"), "{error}");
+        host.shutdown();
+        drop(host);
+        std::fs::remove_dir_all(data).unwrap();
     }
 }
 

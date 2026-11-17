@@ -43,7 +43,7 @@ export interface RemoteInfo {
   relay_status?: RemoteRelayStatus | null;
 }
 
-type Caller = { call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
+type Caller = Pick<import("./backend").Backend, "call">;
 
 export function pairingApi(backend: Caller) {
   return {

@@ -29,7 +29,7 @@ async fn setup() -> tokio::sync::MutexGuard<'static, ()> {
 
 fn config(id: &str, backend: Backend) -> ParticipantConfig {
     ParticipantConfig {
-        can_read_images: false,
+        can_read_images: false, untethered_computer: false,
         id: ParticipantId::new(id),
         display_name: id.to_string(),
         backend,
@@ -52,6 +52,7 @@ fn request(text: &str) -> TurnRequest {
         unseen: vec![],
         plan: false,
         cwd: None,
+        ..Default::default()
     }
 }
 

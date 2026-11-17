@@ -1,3 +1,4 @@
+import type { HostCommandArgs } from "../daemon/requests.ts";
 import type { Transport } from "../commandBackend.ts";
 
 // The phone no longer stops to ask Face ID before a command. Every action the phone can take —
@@ -13,15 +14,15 @@ import type { Transport } from "../commandBackend.ts";
 // tests/phone-command-guard.test.mjs still reads the daemon's Raises arms and checks each one reaches
 // the wire intact, so a command the daemon treats as privileged can't be silently mangled on the way.
 
-/** Guard the shared command path: one rule, the same for typed methods and raw calls. */
+/** Guard the shared command path for typed methods and direct calls. */
 export function guardPhoneCommands(transport: Transport): Transport {
   return {
     ...transport,
-    async call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    async call<T>(...request: HostCommandArgs): Promise<T> {
       // The command name reaches transport.call to be framed and sent. Anything that isn't a string
       // would be stringified into a command nobody asked for, so refuse it here.
-      if (typeof cmd !== "string") throw new Error("Invalid phone command. Nothing was sent.");
-      return transport.call<T>(cmd, args);
+      if (typeof request[0] !== "string") throw new Error("Invalid phone command. Nothing was sent.");
+      return transport.call<T>(...request);
     },
   };
 }

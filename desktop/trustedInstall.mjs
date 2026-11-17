@@ -34,7 +34,7 @@ function linuxLaunchPlan({ files, daemon }) {
   try {
     const stat = files.lstatSync(LINUX_AUTHORITY_ROOT);
     detected = true;
-    safe = stat.isDirectory() && rootProtected(LINUX_AUTHORITY_ROOT, files);
+    safe = stat.isDirectory() && rootProtected(LINUX_AUTHORITY_ROOT, files, path.posix);
   } catch (error) {
     // An inaccessible installation is not evidence that it is absent.
     detected = error.code !== 'ENOENT';
@@ -63,12 +63,12 @@ export function bundlePath(appPath) {
  * Whether every component of `target` is root-owned and closed to group and
  * world writes — the same rule peer.m applies before it trusts a peer.
  */
-export function rootProtected(target, files = fs) {
-  for (let at = path.resolve(target); ; at = path.dirname(at)) {
+export function rootProtected(target, files = fs, paths = path) {
+  for (let at = paths.resolve(target); ; at = paths.dirname(at)) {
     let stat;
     try { stat = files.lstatSync(at); } catch { return false; }
     if (stat.isSymbolicLink() || stat.uid !== 0 || (stat.mode & 0o022)) return false;
-    if (at === path.dirname(at)) return true;
+    if (at === paths.dirname(at)) return true;
   }
 }
 

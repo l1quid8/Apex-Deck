@@ -10,7 +10,7 @@ use serde_json::{json, to_value};
 #[test]
 fn participant_config_shapes() {
     let api = ParticipantConfig {
-        can_read_images: false,
+        can_read_images: false, untethered_computer: false,
         id: ParticipantId::new("opus"),
         display_name: "Opus".into(),
         backend: Backend::OpenAiCompatible {

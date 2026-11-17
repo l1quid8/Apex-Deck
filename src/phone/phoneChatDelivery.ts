@@ -114,8 +114,10 @@ export function createChatDeliveryRpc(findHost: (id: string) => ChatDeliveryHost
     },
     async post(machine, room, message) {
       const { targets, ...body } = message;
-      const value = await backend(machine).call<unknown>(targets.length ? "room_post_to" : "room_post",
-        { id: room, ...body, ...(targets.length ? { targets } : {}) });
+      const host = backend(machine);
+      const value = targets.length
+        ? await host.call<unknown>("room_post_to", { id: room, ...body, targets })
+        : await host.call<unknown>("room_post", { id: room, ...body });
       const result = receipt(value);
       if (!record(value) || value.clientMessageId !== message.clientMessageId) {
         throw new Error("The machine returned the wrong delivery receipt. This message may have reached it.");

@@ -17,7 +17,7 @@ export function useAssistantVoice({lane,backend,settings,onSettings,onFocus}:{la
  const live=useRef({lane,backend,config,onSettings,onFocus});live.current={lane,backend,config,onSettings,onFocus};
  const bridge=useMemo(()=>available?createPersonalVoiceBridge({scope:{hostId,roomId,participantId:id},send:(text,request)=>live.current.lane!.sendRequest!(text,request),stop:event=>live.current.lane!.cancelReply!(event),read:()=>live.current.backend!.call<PersonalAssistantRecord>('personal_get',{assistantId:id})}):null,[available,hostId,id,roomId,backend]);
  useEffect(()=>{if(!bridge)return;const key=scopeKey({hostId,roomId});return()=>{unregisterVoiceThread(key);bridge.dispose();};},[bridge,hostId,roomId]);
- useEffect(()=>{if(!bridge)return;registerVoiceThread(scopeKey({hostId,roomId}),{candidates,settings:config,save:s=>live.current.onSettings?.(s),focus:()=>live.current.onFocus?.(),realtimeSession:args=>live.current.backend!.call<RealtimeMint>('voice_realtime_session',args as any),metaSession:args=>live.current.backend!.call<MetaMint>('voice_meta_session',args as any),bridge:()=>bridge});});
+ useEffect(()=>{if(!bridge)return;registerVoiceThread(scopeKey({hostId,roomId}),{candidates,settings:config,save:s=>live.current.onSettings?.(s),focus:()=>live.current.onFocus?.(),realtimeSession:args=>live.current.backend!.call<RealtimeMint>('voice_realtime_session',args),metaSession:args=>live.current.backend!.call<MetaMint>('voice_meta_session',args),bridge:()=>bridge});});
  useEffect(()=>{if(bridge&&record)bridge.update(record);},[bridge,record]);
  const who:VoiceWho=()=>({seed:record?.look?.seed??id,color:record?.look?.color??'#71e6b5'});
  const props={settings:config,candidates,who};

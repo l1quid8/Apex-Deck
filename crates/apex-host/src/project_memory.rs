@@ -4,6 +4,7 @@
 use crate::assistant_tasks::{TaskError, TaskErrorKind};
 use crate::personal::FactKind;
 use crate::personal_workspace::{AssistantRef, ProjectRef};
+use crate::authority_file::VersionedDocument;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -192,6 +193,10 @@ struct Document {
     delivery_ids: BTreeMap<String, PromotionBinding>,
 }
 
+impl VersionedDocument for Document {
+    const PRETTY: bool = true;
+}
+
 struct Inner {
     path: PathBuf,
     document: Mutex<Document>,
@@ -208,18 +213,15 @@ impl ProjectMemory {
         let path = path.as_ref().to_path_buf();
         // Authority-bearing: production reads only the root broker. A same-user
         // process editing this JSON on disk is not authoritative, by design.
-        let document = match crate::authority_file::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<Document>(&bytes)
-                .map_err(|e| storage(format!("Could not read project memory: {e}")))?,
+        let document = match Document::read_from(&path) {
+            Ok(document) => document,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Document {
                 version: 1,
                 ..Document::default()
             },
             Err(e) => return Err(storage(format!("Could not read project memory: {e}"))),
         };
-        if document.version != 1 {
-            return Err(storage("Unsupported project memory document version."));
-        }
+
         Ok(Self {
             inner: Arc::new(Inner {
                 path,
@@ -865,10 +867,7 @@ fn require_current_receipt(
 }
 
 fn write_document(path: &Path, document: &Document) -> Result<(), TaskError> {
-    let bytes = serde_json::to_vec_pretty(document)
-        .map_err(|e| storage(format!("Could not encode project memory: {e}")))?;
-    // Routed through the root broker like every other authority-bearing ledger.
-    crate::authority_file::write(path, &bytes)
+    document.write_to(path)
         .map_err(|e| storage(format!("Could not save project memory: {e}")))
 }
 

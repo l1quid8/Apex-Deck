@@ -68,7 +68,7 @@ impl Journal {
         let registry = &document.value;
         if registry["version"] != 1 {
             return Err(
-                "No protected phone grant; approve this phone in the installed Mac UI".into(),
+                "No protected phone grant; approve this phone in the installed Apex Deck app".into(),
             );
         }
         if registry["revoked"]

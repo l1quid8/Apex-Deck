@@ -60,6 +60,8 @@ export function tsType(node, indent = '', root = undefined) {
       case 'array': {
         if (Array.isArray(node.prefixItems)) return `[${node.prefixItems.map(n => tsType(n, indent, root)).join(', ')}]`;
         if (Array.isArray(node.items)) return `[${node.items.map(n => tsType(n, indent, root)).join(', ')}]`;
+        if (Number.isSafeInteger(node.minItems) && node.minItems >= 0 && node.minItems <= 32 && node.minItems === node.maxItems)
+          return `[${Array(node.minItems).fill(tsType(node.items ?? true, indent, root)).join(', ')}]`;
         return node.items ? `Array<${tsType(node.items, indent, root)}>` : 'unknown[]';
       }
       case 'object': return objectType(node, indent, root);
@@ -72,7 +74,7 @@ export function tsType(node, indent = '', root = undefined) {
 function doc(text, indent) {
   if (!text) return '';
   const lines = String(text).trim().split('\n');
-  return lines.length === 1 ? `${indent}/** ${lines[0]} */\n` : `${indent}/**\n${lines.map(l => `${indent} * ${l}`).join('\n')}\n${indent} */\n`;
+  return lines.length === 1 ? `${indent}/** ${lines[0]} */\n` : `${indent}/**\n${lines.map(l => `${indent} * ${l}`.trimEnd()).join('\n')}\n${indent} */\n`;
 }
 
 function objectType(node, indent, root) {
@@ -142,8 +144,12 @@ export function render(input) {
   if (schemas.Command) {
     out.push('/** Every command name and the `args` it takes: `call("room_post", args)`. */');
     out.push('export interface Commands {');
-    for (const [name, args] of [...taggedVariants(schemas.Command, 'cmd', 'args')].sort(([a], [b]) => (a < b ? -1 : 1))) {
-      out.push(`  ${key(name)}: ${tsType(args, '  ', 'Command')};`);
+    const commandSchemas = Object.entries(schemas).filter(([name]) => name === 'Command' || name.endsWith('Request'));
+    const requests = commandSchemas.flatMap(([root, schema]) =>
+      [...taggedVariants(schema, 'cmd', 'args')].map(([name, args]) => [name, args, root]));
+    if (new Set(requests.map(([name]) => name)).size !== requests.length) throw new Error('Duplicate wire command name');
+    for (const [name, args, root] of requests.sort(([a], [b]) => (a < b ? -1 : 1))) {
+      out.push(`  ${key(name)}: ${tsType(args, '  ', root)};`);
     }
     out.push('}');
     out.push('export type CommandName = keyof Commands;');

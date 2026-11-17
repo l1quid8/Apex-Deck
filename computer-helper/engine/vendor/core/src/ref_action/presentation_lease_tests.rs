@@ -29,6 +29,7 @@ impl ObservationOps for LeaseOrderAdapter {
     }
 
     crate::adapter::complete_live_observation!("button", "Run", [capability::CLICK]);
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for LeaseOrderAdapter {
@@ -73,7 +74,7 @@ fn button_at(bounds: Rect) -> RefEntry {
     entry.geometry.bounds_hash = bounds.bounds_hash();
     entry.capabilities.available_actions = vec![capability::CLICK.into()];
     entry.source.source_app = Some("Fixture".into());
-    entry.source.source_window_id = Some("w-42".into());
+    entry.source.source_window_id = Some("w-1".into());
     entry.source.source_window_title = Some("Fixture".into());
     entry
 }

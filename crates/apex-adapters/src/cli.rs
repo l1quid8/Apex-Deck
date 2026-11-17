@@ -19,6 +19,7 @@ use crate::events::{self, EventReader, OutputFormat};
 use crate::grok_images;
 use crate::codex_server::{self, TurnError};
 use crate::muse_server;
+use crate::live_session::{Key, LiveTurn, Process, Slot};
 use crate::presets::{agent_command_in, clean_effort, clean_model, codex_service_tier, output_format};
 use crate::codex_hook;
 use crate::phone_env::{self, PhoneEnv};
@@ -85,17 +86,15 @@ impl Approver for RefuseNative {
 
 /// A participant backed by a command-line tool.
 ///
-/// Each turn starts the program fresh, writes the whole prompt to its
-/// standard input and closes it. For a custom command, everything the
-/// program prints to standard output is the reply. The coding agents Apex
-/// Deck knows are run in their event modes instead, so the reply arrives as
-/// it is written, along with what the agent is doing and what it used; see
-/// `events.rs`.
+/// Eligible Claude and Codex room turns continue a verified copy of the
+/// room transcript. Other launches receive the full prompt. Custom commands
+/// return stdout as their reply; supported agents stream protocol events.
 #[derive(Clone)]
 pub struct CliParticipant {
     config: ParticipantConfig,
     timeout: Duration,
     watchdog_managed: bool,
+    live: Option<std::sync::Arc<Slot>>,
     cwd: Option<PathBuf>,
     path: Option<String>,
     codex_hook: Option<PathBuf>,
@@ -127,7 +126,7 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false, code_mode: None, code_mode_cancel: Default::default() }
+        Self { config, live: None, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false, code_mode: None, code_mode_cancel: Default::default() }
     }
 
     /// Start a conversation turn with tools disabled at both the CLI and
@@ -179,6 +178,7 @@ impl CliParticipant {
     /// Run the tool in the folder, and with the PATH, given by `context`.
     pub fn with_context(mut self, context: &BuildContext) -> Self {
         self.watchdog_managed = context.watchdog_managed;
+        self.live = context.live_sessions.then(|| std::sync::Arc::new(Slot::new(context.process_registry.clone(), self.config.id.clone())));
         self.attachment_roots = context.attachment_roots.iter().filter_map(|root| root.canonicalize().ok()).collect();
         self.cwd = context.cwd.clone();
         self.path = context.path.clone();
@@ -486,6 +486,10 @@ fn random_token() -> String {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
+        self.run_codex_turn(model, prompt, None, images, on_progress, approver, None).await
+    }
+
+    async fn start_codex(&self) -> Result<(OwnedChild, Option<codex_hook::Hook>), ParticipantError> {
         let program = "codex";
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
         args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
@@ -545,6 +549,14 @@ fn random_token() -> String {
             }
         }
         let child = self.start_with_hook(program, &args, &env, hook.as_ref())?;
+        Ok((child, hook))
+    }
+
+    async fn run_codex_turn(
+        &self, model: Option<&str>, prompt: &str, follow_up: Option<&str>, images: &[crate::attachments::Image],
+        on_progress: ProgressSink<'_>, approver: &dyn Approver, live: Option<&mut LiveTurn>,
+    ) -> Result<Reply, ParticipantError> {
+        let program = "codex";
         let effort = clean_effort(self.config.effort.as_deref());
         // Only the Linux jail counts as an external sandbox. A `cfg!` test alone
         // would still make the compiler resolve `linux_jail`, which Windows lacks.
@@ -564,7 +576,43 @@ fn random_token() -> String {
             tools_disabled: self.tools_disabled,
             trusted_computer: self.computer_on(),
         };
-        match codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await {
+        let result = if let Some(live) = live {
+            let run = match live.process.take() {
+                Some(Process::Codex(process, hook)) => Ok((process, hook)),
+                _ => {
+                    let (child, hook) = self.start_codex().await?;
+                    codex_server::CodexLive::start(child, &turn, hook.as_ref(), on_progress).await
+                        .map(|process| (process, hook))
+                }
+            };
+            match run {
+                Ok((mut process, hook)) => {
+                    let result = process.turn(&turn, follow_up.unwrap_or(prompt), on_progress, approver, hook.as_ref(), images).await;
+                    if follow_up.is_some() && matches!(result, Err(TurnError::Unavailable(_))) {
+                        // No turn/start was delivered. Retire before retrying, and use
+                        // the full transcript with a fresh worker in this same turn.
+                        process.close().await.map_err(|_| ParticipantError::CleanupIncomplete("Codex session cleanup failed".into()))?;
+                        live.tail = None;
+                        let (child, hook) = self.start_codex().await?;
+                        return codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await.map_err(|error| match error {
+                            TurnError::CleanupIncomplete(why) => ParticipantError::CleanupIncomplete(why),
+                            TurnError::Unavailable(why) | TurnError::Failed(why) => ParticipantError::Failed(why),
+                        });
+                    }
+                    if result.is_ok() && process.is_alive() {
+                        live.process = Some(Process::Codex(process, hook));
+                    } else {
+                        process.close().await.map_err(|_| ParticipantError::CleanupIncomplete("Codex session cleanup failed".into()))?;
+                    }
+                    result
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            let (child, hook) = self.start_codex().await?;
+            codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await
+        };
+        match result {
             Ok(reply) => Ok(reply),
             Err(TurnError::Unavailable(why)) => {
                 let hint=if self.computer.is_some() {" If an external HTTP MCP server uses the reserved name apex-computer or apex_computer, rename that entry in Codex settings."}else{""};
@@ -734,10 +782,13 @@ fn random_token() -> String {
         program: &str,
         args: &[String],
         prompt: &str,
+        follow_up: Option<&str>,
         images: &[crate::attachments::Image],
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
+        live: Option<&mut LiveTurn>,
     ) -> Result<Reply, ParticipantError> {
+        let launch_args = args;
         let mut args = args.to_vec();
         if let (Some(launch), Some(helper)) = (&self.code_mode, &self.codex_hook) {
             let mut config = launch.claude_config(helper);
@@ -751,11 +802,46 @@ fn random_token() -> String {
             }
             args.extend(["--mcp-config".into(), config.to_string()]);
         }
-        let child = self.start(program, &args)?;
         let cwd = self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned());
-        let finished = claude_session::run_with_computer(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled, images, self.computer_on())
-            .await
-            .map_err(|e| ParticipantError::Failed(format!("talking to `{program}` failed: {e}")))?;
+        let one_shot = || async {
+            let child = self.start(program, &args)?;
+            claude_session::run_with_computer(child, prompt, cwd.clone(), on_progress, approver, self.plan, self.tools_disabled, images, self.computer_on())
+                .await.map_err(|e| ParticipantError::Failed(format!("talking to `{program}` failed: {e}")))
+        };
+        let finished = if let Some(live) = live {
+            let mut process = match live.process.take() {
+                Some(Process::Claude(process)) => process,
+                _ => {
+                    // The retained worker receives the turn-scoped Code Mode
+                    // credentials over its private control pipe, including on
+                    // its first turn. Its launch environment carries none.
+                    let mut launch = self.clone();
+                    launch.code_mode = None;
+                    claude_session::ClaudeProcess::new(launch.start(program, launch_args)?)
+                }
+            };
+            let rebound = if let (Some(launch), Some(helper)) = (&self.code_mode, &self.codex_hook) {
+                process.set_servers(&launch.claude_dynamic_servers(helper)).await.is_ok()
+            } else { true };
+            if !rebound {
+                live.tail = None;
+                process.terminate_now();
+                process.close().await.map_err(ParticipantError::CleanupIncomplete)?;
+                one_shot().await?
+            } else {
+                match process.run_retained(follow_up.unwrap_or(prompt), cwd.clone(), on_progress, approver, self.plan, self.tools_disabled, images, self.computer_on()).await {
+                    Ok((finished, process)) => {
+                        live.process = process.map(Process::Claude);
+                        finished
+                    }
+                    Err(error) if follow_up.is_some() && claude_session::definitely_unsent(&error) => {
+                        live.tail = None;
+                        one_shot().await?
+                    }
+                    Err(error) => return Err(ParticipantError::Failed(format!("talking to `{program}` failed: {error}"))),
+                }
+            }
+        } else { one_shot().await? };
         if let Some(error) = finished.cleanup_error { return Err(ParticipantError::CleanupIncomplete(error)); }
         self.settle(program, finished.success, &finished.status, &finished.stderr, finished.reader)
     }
@@ -883,6 +969,7 @@ pub(crate) fn sign_in_hint(program: &str, summary: &str) -> Option<&'static str>
 /// answered.
 struct Timed<'a> {
     inner: &'a dyn Approver,
+    retire_session: AtomicBool,
     last_heard: &'a Mutex<Instant>,
     asking: &'a AtomicBool,
 }
@@ -913,12 +1000,16 @@ impl Timed<'_> {
 impl Approver for Timed<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
         let _asking = self.waiting();
-        self.inner.decide(action).await
+        let decision = self.inner.decide(action).await;
+        if decision == Decision::ApproveAlways { self.retire_session.store(true, Ordering::Relaxed); }
+        decision
     }
 
     async fn decide_plan(&self, action: ProposedAction) -> apex_core::PlanAnswer {
         let _asking = self.waiting();
-        self.inner.decide_plan(action).await
+        let answer = self.inner.decide_plan(action).await;
+        if answer.decision.approved() { self.retire_session.store(true, Ordering::Relaxed); }
+        answer
     }
 
     async fn ask(&self, questions: Vec<apex_core::Question>) -> apex_core::Answer {
@@ -1080,7 +1171,8 @@ impl Participant for CliParticipant {
         }
         let program = program.as_str();
         let loaded = crate::attachments::for_request(&request, &self.attachment_roots)?;
-        let mut prompt = render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &loaded.with_note(&request.turns));
+        let mut prompt = render_prompt(&phone_env::with_hint(&request.system_with_notes(), self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &loaded.with_note(&request.turns));
+        let skipped_image = !loaded.skipped.is_empty();
         let images = loaded.images;
         let mut staged = None;
         if !images.is_empty() {
@@ -1116,7 +1208,7 @@ impl Participant for CliParticipant {
         let _staged = staged;
         let last_heard = Mutex::new(Instant::now());
         let asking = AtomicBool::new(false);
-        let approver = Timed { inner: approver, last_heard: &last_heard, asking: &asking };
+        let approver = Timed { retire_session: AtomicBool::new(false), inner: approver, last_heard: &last_heard, asking: &asking };
         let heard = |update: Progress<'_>| {
             *last_heard.lock().unwrap() = Instant::now();
             on_progress(update);
@@ -1132,16 +1224,65 @@ impl Participant for CliParticipant {
             prompt.push_str(crate::code_mode_mcp::HINT);
         }
 
+        // Claude can replace its Code Mode server on the private control stream.
+        // Codex turn/start cannot rotate the MCP environment or approval hook
+        // socket. Those launches and computer capabilities require fresh workers.
+        let hooked = !self.mcp_disabled && self.codex_hook.as_ref().is_some_and(|hook| hook.is_file());
+        let eligible = request.room_reply && !skipped_image && self.isolation.is_none()
+            && !self.computer_on() && match self.config.backend {
+                Backend::Agent { tool: AgentTool::ClaudeCode, .. } => true,
+                Backend::Agent { tool: AgentTool::Codex, .. } => codex_server::can_retain(hooked, bridge.is_some()),
+                _ => false,
+            };
+        let mut live = self.live.as_ref().and_then(|slot| {
+            if !eligible {
+                if request.room_reply { slot.clear(); }
+                return None;
+            }
+            slot.begin(Key {
+                config: self.config.clone(), cwd: self.cwd.clone(),
+                system: phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config),
+                plan: self.plan, args: args.clone(),
+                hooked,
+                tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, code_mode: bridge.is_some(),
+            }, &request.turns)
+        });
+        let follow_up = live.as_ref().and_then(|live| live.tail.as_deref()).map(|tail| {
+            let mut prompt = apex_core::render_follow_up(tail, &request.notes);
+            if bridge.is_some() { prompt.push_str(crate::code_mode_mcp::HINT); }
+            prompt
+        });
         let turn = async {
+            let finish = |live: Option<LiveTurn>, reply: &Reply| {
+                if request.room_reply {
+                    let continued = live.as_ref().is_some_and(|turn| turn.tail.is_some());
+                    let (kind, sent) = match follow_up.as_deref().filter(|_| continued) {
+                        Some(tail) => ("continued", tail),
+                        None => ("fresh", prompt.as_str()),
+                    };
+                    eprintln!("[apex-deck] live {program} turn: {kind}, prompt_chars={}", sent.chars().count());
+                }
+                if let Some(live) = live.filter(|_| !approver.retire_session.load(Ordering::Relaxed)) {
+                    live.finish(&reply.text);
+                }
+            };
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
-                return runner.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await;
+                let reply = if live.is_some() {
+                    runner.run_codex_turn(model.as_deref(), &prompt, follow_up.as_deref(), &images, on_progress, &approver, live.as_mut()).await
+                } else {
+                    runner.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await
+                }?;
+                finish(live, &reply);
+                return Ok(reply);
             }
             if let Backend::Agent { tool: AgentTool::Muse, model } = &self.config.backend {
                 return self.run_muse_server(program, &args, model.as_deref(), &prompt, &images, on_progress, &approver).await;
             }
             if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
-                return runner.run_claude_asking(program, &args, &prompt, &images, on_progress, &approver).await;
+                let reply = runner.run_claude_asking(program, &args, &prompt, follow_up.as_deref(), &images, on_progress, &approver, live.as_mut()).await?;
+                finish(live, &reply);
+                return Ok(reply);
             }
             // Grok's pictures are saved to disk, so the ones this turn made
             // are found by comparing the folder before and after.
@@ -1213,6 +1354,7 @@ impl Participant for CliParticipant {
     }
 
     async fn cancel_active_turn(&self) -> Result<bool, String> {
+        if let Some(slot) = &self.live { slot.clear(); }
         self.code_mode_cancel.stop();
         self.processes.terminate_all().await
     }
@@ -1249,7 +1391,7 @@ mod tests {
         use apex_core::Participant;
         use std::time::Duration;
         let config = || serde_json::from_value(serde_json::json!({"id":"quiet","display_name":"Quiet","backend":{"kind":"cli","program":"/bin/sh","args":["-c","sleep 0.25; printf recovered"]}})).unwrap();
-        let request = || apex_core::TurnRequest { computer:None, system:"test".into(), turns:vec![], unseen:vec![], access:None, effort_override:None, plan:false, cwd:None };
+        let request = || apex_core::TurnRequest { computer:None, system:"test".into(), turns:vec![], unseen:vec![], access:None, effort_override:None, plan:false, cwd:None, ..Default::default() };
         let ordinary = super::CliParticipant::new(config()).with_timeout(Duration::from_millis(50));
         assert!(ordinary.respond(request(), &|_| {}).await.unwrap_err().to_string().contains("without any output"));
         let delegated = super::CliParticipant::new(config()).with_context(&crate::BuildContext { watchdog_managed:true, ..Default::default() }).with_timeout(Duration::from_millis(50));
@@ -1267,7 +1409,7 @@ mod tests {
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"}})).unwrap();
         let mut bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:folder.dir.to_str().map(str::to_owned),..Default::default()}).with_tools_disabled();
         bot.isolation=Some(std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&apex_core::Backend::Scripted{lines:vec![]}).unwrap()));
-        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None};
+        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:None,effort_override:None,plan:false,cwd:None, ..Default::default() };
         let call=bot.respond(request,&|_|{});tokio::pin!(call);
         let mut owned=false;
         for _ in 0..100 {
@@ -1311,7 +1453,7 @@ exit 1
         use apex_core::Participant;
         let config=serde_json::from_value(serde_json::json!({"id":"a","display_name":"Assistant","backend":{"kind":"agent","tool":"codex"},"access":"full"})).unwrap();
         let bot=super::CliParticipant::new(config).with_context(&crate::BuildContext{path:Some("/no-assistant-executables".into()),..Default::default()}).with_tools_disabled();
-        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None};
+        let request=apex_core::TurnRequest{computer: None,system:"Hello".into(),turns:vec![],unseen:vec![],access:Some(apex_core::Access::Full),effort_override:None,plan:false,cwd:None, ..Default::default() };
         let result=bot.respond(request,&|_|{}).await;
         assert!(matches!(result,Err(ref why) if why.to_string().contains("Text-only turns cannot")),"workspace escalation must refuse before launching any provider");
     }
@@ -1544,7 +1686,7 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         }
         let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
         let asking = AtomicBool::new(false);
-        let timed = Timed { inner: &Never, last_heard: &last_heard, asking: &asking };
+        let timed = Timed { retire_session: AtomicBool::new(false), inner: &Never, last_heard: &last_heard, asking: &asking };
         let mut waiting = timed.decide(ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into(), expires_at: None, risky: false });
         assert!(waiting.as_mut().now_or_never().is_none());
         assert!(asking.load(Ordering::SeqCst));
@@ -1566,7 +1708,7 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         }
         let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
         let asking = AtomicBool::new(false);
-        let timed = Timed { inner: &Thinking, last_heard: &last_heard, asking: &asking };
+        let timed = Timed { retire_session: AtomicBool::new(false), inner: &Thinking, last_heard: &last_heard, asking: &asking };
         let mut waiting = timed.ask(vec![Question { header: String::new(), question: "Go?".into(), options: vec![], multi_select: false }]);
         assert!(waiting.as_mut().now_or_never().is_none());
         assert!(asking.load(Ordering::SeqCst), "the person is being asked, so the bot is not quiet");
@@ -1592,7 +1734,7 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
         let asking = AtomicBool::new(false);
         let inner = Noted(&asking);
-        let timed = Timed { inner: &inner, last_heard: &last_heard, asking: &asking };
+        let timed = Timed { retire_session: AtomicBool::new(false), inner: &inner, last_heard: &last_heard, asking: &asking };
         let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. A".into(), expires_at: None, risky: false };
         let answer = timed.decide_plan(start).now_or_never().expect("answered");
         assert_eq!(answer.note.as_deref(), Some("Do NOT do step 2"));

@@ -13,7 +13,7 @@ import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media
 import { dollars, mediaMenuLine, pictureLine, quoteFor } from './mediaPrice';
 
 /** What a save can carry. */
-type Change = { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings; can_read_images?: boolean };
+type Change = { model?: string; effort?: string; speed?: Speed | null; access?: Access; media?: MediaSettings; can_read_images?: boolean; untethered_computer?: boolean };
 
 interface Props {
   config: ParticipantConfig;
@@ -51,7 +51,20 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const [laterChosen, setLaterChosen] = useState(false);
+  const [untetheredConfirm, setUntetheredConfirm] = useState(false);
   const api = config.backend.kind === 'open_ai_compatible' ? config.backend : null;
+  const computerCapable = !!api || tool === 'claude_code' || tool === 'codex' || tool === 'muse';
+  const [computerAvailable, setComputerAvailable] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setComputerAvailable(false);
+    if (computerCapable && roomId && !talkOnly && !loadCurrent && !backend.demo) {
+      void Promise.resolve().then(() => backend.call<{ available: boolean }>('computer_status'))
+        .then(status => { if (live) setComputerAvailable(status.available === true); })
+        .catch(() => {});
+    }
+    return () => { live = false; };
+  }, [backend, computerCapable, roomId, talkOnly, !!loadCurrent]);
   const apiUrl = api?.base_url ?? null;
   const apiKeyEnv = api?.api_key_env ?? null;
   const [apiList, setApiList] = useState<ApiModel[]>([]);
@@ -246,10 +259,11 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
       if (left.access === sent.access) delete left.access;
       if (left.media === sent.media) delete left.media;
       if (left.can_read_images === sent.can_read_images) delete left.can_read_images;
+      if (left.untethered_computer === sent.untethered_computer) delete left.untethered_computer;
       touched.current = left;
       setSettled(n => n + 1);
     }
-    catch (error) { if (version === saveVersion.current) { setError(String(error)); delete touched.current.access; delete touched.current.can_read_images; setSettled(n => n + 1); requested.current = { model: '\0', effort: '\0' }; } }
+    catch (error) { if (version === saveVersion.current) { setError(String(error)); delete touched.current.access; delete touched.current.can_read_images; delete touched.current.untethered_computer; setSettled(n => n + 1); requested.current = { model: '\0', effort: '\0' }; } }
     if (version === saveVersion.current) setSaving(false);
   };
   useEffect(() => {
@@ -279,6 +293,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
   </> : null;
   const access = touched.current.access ?? config.access;
   const accessOptions = accessOptionsFor(tool);
+  const untethered = touched.current.untethered_computer ?? config.untethered_computer ?? false;
   const commitEffort = (value: string) => {
     setEffort(value);
     if (value !== requested.current.effort || model !== requested.current.model) void apply({ effort: value });
@@ -366,6 +381,22 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
         <label className="check-label"><input type="checkbox" checked={touched.current.can_read_images ?? config.can_read_images ?? false} onChange={e => { void apply({ can_read_images: e.target.checked }); }} /> This model can read images</label>
         <p className="muted">Turn on only if this model accepts images. Screenshots of apps you approve go to your model provider.</p>
       </details>}
+      {computerAvailable && !mediaType && !talkOnly && <div className="bot-computer bot-untethered">
+        {untetheredConfirm
+          ? <div role="group" aria-label="Confirm untethered computer use">
+              <strong>Untether computer use?</strong>
+              <p className="muted">With Full access, this agent opens and controls any Mac app without asking first, including typing, shortcuts and clicks. Protected apps (System Settings, Keychain, Passwords, sign-in windows), password fields and Stop still apply. App content goes to this agent's model provider.</p>
+              <div>
+                <button type="button" className="danger" disabled={access !== 'full'} onClick={() => { setUntetheredConfirm(false); void apply({ untethered_computer: true }); }}>Untether</button>
+                <button type="button" onClick={() => setUntetheredConfirm(false)}>Cancel</button>
+              </div>
+            </div>
+          : <label className="check-label" title={access === 'full' ? undefined : 'Needs Full access'}>
+              <input type="checkbox" aria-label="Untethered computer use" checked={untethered} disabled={!untethered && access !== 'full'}
+                onChange={e => { if (e.target.checked) setUntetheredConfirm(true); else void apply({ untethered_computer: false }); }} />
+              {' '}Untethered computer use <span className="muted">· {access === 'full' ? 'no per-app prompts' : 'needs Full access'}</span>
+            </label>}
+      </div>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}
       {note && <p className="muted">{note}</p>}

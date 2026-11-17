@@ -1,4 +1,5 @@
 import type { AppSession, Pane, Workspace } from "./types";
+import { normalizeWorkspaces } from "./hostSession.ts";
 
 /** JSON with sorted keys and no nulls, so two copies of the same threads compare equal. */
 function canonical(value: unknown): string {
@@ -21,7 +22,10 @@ export function remoteSessionEdit(
   if (!remote || !Array.isArray(remote.workspaces) || !Array.isArray(remote.panes)) return null;
   const [tag, seq] = String(remote.savedBy ?? "").split(":");
   if (tag === ours.tag && Number(seq) < ours.seq) return null;
-  if (canonical(remote.workspaces) === canonical(local.workspaces) && canonical(remote.panes) === canonical(local.panes)) return null;
+  // Compare the shape App actually retains. The host writes explicit defaults
+  // (notably hidden:false) which normalizeWorkspaces omits; comparing raw JSON
+  // turns every acknowledgment into another save and project-wide refresh.
+  if (canonical(normalizeWorkspaces(remote.workspaces)) === canonical(normalizeWorkspaces(local.workspaces)) && canonical(remote.panes) === canonical(local.panes)) return null;
   return { workspaces: remote.workspaces, panes: remote.panes };
 }
 

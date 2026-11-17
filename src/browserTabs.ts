@@ -1,3 +1,4 @@
+import { completeCommand, type BoundCommandArgs } from "./daemon/requests.ts";
 // The shared browser's rules, with no interface in them: how the person's input becomes page
 // events, and how a tab's holder is named.
 
@@ -153,14 +154,15 @@ export function chosenTab(tabs: BrowserTab[], wanted: string | null, assistantFi
   return (assistantFirst ? tabs.find((tab) => tab.assistant) : undefined)?.id ?? tabs[0]?.id ?? null;
 }
 
-export type BrowserCaller = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+type BrowserCommand = Extract<import("./generated/protocol").CommandName, `browser_tab${string}` | "personal_browser_view" | "personal_browser_take_over" | "personal_browser_input">;
+export type BrowserCaller = <T>(...request: BoundCommandArgs<BrowserCommand, "session">) => Promise<T>;
 const sessions = new Map<string, Promise<string>>();
 
 /**
  * Calls to the person's browser surface carry a session from the host's protected opening.
  * A restarted service forgets its sessions, so a refusal opens a new one and tries once more.
  */
-export function browserCaller(host: string, call: BrowserCaller): BrowserCaller {
+export function browserCaller(host: string, call: import("./backend").Backend["call"]): BrowserCaller {
   const session = () => {
     let held = sessions.get(host);
     if (!held) {
@@ -170,13 +172,13 @@ export function browserCaller(host: string, call: BrowserCaller): BrowserCaller 
     }
     return held;
   };
-  return async <T,>(cmd: string, args: Record<string, unknown> = {}) => {
+  return async <T,>(...request: BoundCommandArgs<BrowserCommand, "session">) => {
     const used = session();
-    try { return await call<T>(cmd, { ...args, session: await used }); }
+    try { return await call<T>(...completeCommand<BrowserCommand, "session">(request, { session: await used })); }
     catch (cause) {
       if (!String(cause).includes("browser_session_required")) throw cause;
       if (sessions.get(host) === used) sessions.delete(host);
-      return call<T>(cmd, { ...args, session: await session() });
+      return call<T>(...completeCommand<BrowserCommand, "session">(request, { session: await session() }));
     }
   };
 }

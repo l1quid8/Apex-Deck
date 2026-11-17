@@ -24,6 +24,7 @@ async fn launch_points_below_full_refuse_when_linux_jail_fails() {
 
     let bot = apex_adapters::CliParticipant::new(ParticipantConfig {
         can_read_images: false,
+        untethered_computer: false,
         id: ParticipantId::new("bot"),
         display_name: "bot".into(),
         backend: Backend::Cli { program: "echo".into(), args: vec!["hi".into()] },
@@ -44,6 +45,7 @@ async fn launch_points_below_full_refuse_when_linux_jail_fails() {
         unseen: vec![],
         plan: false,
         cwd: None,
+        ..Default::default()
     };
     let err = bot.respond(request, &|_| {}).await.unwrap_err();
     assert!(err.to_string().contains("simulated sandbox fault"), "got: {err}");

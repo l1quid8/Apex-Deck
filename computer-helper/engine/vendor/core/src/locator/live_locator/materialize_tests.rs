@@ -239,6 +239,30 @@ fn window_source_materialization_preserves_geometry_generation_evidence() {
 }
 
 #[test]
+fn a_process_owner_source_materializes_a_process_owned_ref() {
+    let mut observed = tree(
+        vec![node(0, evidence("button", Some("Save")), vec![], &[])],
+        vec![0],
+        true,
+    );
+    let ObservationSource::Window { window, .. } = &mut observed.source else {
+        panic!("fixture must use a window source");
+    };
+    *window = crate::WindowInfo::for_process(&crate::AppInfo {
+        name: window.app.clone(),
+        pid: window.pid,
+        bundle_id: None,
+        process_instance: window.process_instance.clone(),
+        presentation: None,
+    });
+
+    let resolution = evaluate_locator_tree(observed, &LocatorQuery::default(), &request()).unwrap();
+    let saved = resolution.refmap.unwrap().get("@e1").unwrap().clone();
+
+    assert!(saved.source.is_process_owned());
+}
+
+#[test]
 fn ref_entry_prefers_the_window_rectangle_and_tags_its_space() {
     let window_bounds = crate::Rect {
         x: 4.0,
@@ -313,6 +337,7 @@ fn source_entry() -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -329,6 +354,7 @@ fn source_entry() -> RefEntry {
             source_window_title: Some("Fixture".into()),
             source_window_bounds_hash: None,
             source_surface: SnapshotSurface::Menu,
+            renderer_accessibility_forced: false,
         },
         scope: crate::RefScope {
             root_ref: None,

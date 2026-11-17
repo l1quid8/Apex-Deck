@@ -10,8 +10,9 @@ use tokio::{net::TcpListener, task::JoinHandle};
 
 const FILE: &str = "gateway-settings.json";
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[schemars(rename = "GatewayConfig")]
 pub struct Config {
     pub enabled: bool,
     pub bind: IpAddr,
@@ -33,6 +34,9 @@ pub struct Runtime {
     task: Option<JoinHandle<()>>,
     error: Option<String>,
 }
+impl Runtime {
+    pub(crate) fn maintenance_busy(&self) -> bool { self.task.as_ref().is_some_and(|task| !task.is_finished()) }
+}
 impl Drop for Runtime {
     fn drop(&mut self) {
         if let Some(task) = self.task.take() {
@@ -40,7 +44,7 @@ impl Drop for Runtime {
         }
     }
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum Request {
     GatewayStatus {},

@@ -27,6 +27,9 @@ pub(crate) fn window_element_for_info_with_deadline(
     win: &WindowInfo,
     deadline: std::time::Instant,
 ) -> Result<AXElement, AdapterError> {
+    if win.is_process_owner() && win.title.is_empty() {
+        return Err(AdapterError::app_has_no_window(&win.app));
+    }
     if win.id.is_empty() {
         let pid = crate::system::process::process_identity::to_pid_t(win.pid)?;
         return window_element_by_title(pid, &win.title, deadline);

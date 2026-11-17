@@ -1,0 +1,32 @@
+name: iPhone build
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  iphone:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/iroh-mobile
+      - run: npm ci
+      - run: npm run iphone:sync
+      - name: Build Release for iPhone without distribution credentials
+        run: >-
+          xcodebuild build -project iphone/App/App.xcodeproj -scheme App
+          -configuration Release -destination generic/platform=iOS
+          CODE_SIGNING_ALLOWED=NO

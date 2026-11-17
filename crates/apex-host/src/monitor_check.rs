@@ -195,6 +195,7 @@ INPUT: {input}"#
             access: Some(apex_core::Access::Read),
             effort_override: None,
             cwd: None,
+            ..Default::default()
         },
         aliases,
     )
@@ -238,6 +239,7 @@ impl Host {
         F: FnOnce(ParticipantConfig, TurnRequest) -> Fut,
         Fut: Future<Output = Result<String, String>>,
     {
+        let _maintenance = self.maintenance.enter()?;
         let claimed = self.change_monitors(|monitors| {
             let m = monitors
                 .iter_mut()

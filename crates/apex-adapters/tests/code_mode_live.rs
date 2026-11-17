@@ -91,7 +91,8 @@ async fn live_selected_model_code_mode() {
         let started = Instant::now();
         let result = tokio::time::timeout(Duration::from_secs(240), bot.respond_with_approvals(TurnRequest {
             computer:None, effort_override:None, access:None, system:"Run this isolated Code Mode acceptance probe. Use only deck_code_mode. Do not retry denied tools or use alternative tools. Finish briefly after one batch.".into(),
-            turns:vec![ViewTurn {role:Role::User,content:prompt}], unseen:vec![],plan:false,cwd:None
+            turns:vec![ViewTurn {role:Role::User,content:prompt}], unseen:vec![],plan:false,cwd:None,
+            ..Default::default()
         }, &|p| if let Progress::Work(step) = p {steps.lock().unwrap().push(step.clone());}, &policy)).await;
         let elapsed = started.elapsed().as_millis();
         let steps = steps.into_inner().unwrap();

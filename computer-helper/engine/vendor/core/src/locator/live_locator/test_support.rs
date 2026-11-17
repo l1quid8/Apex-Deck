@@ -64,14 +64,37 @@ pub(crate) fn tree(
         assert_eq!(node.document_order as usize, index);
         assert!(node.children.iter().all(|child| *child as usize > index));
     }
+    let logical_depths = depths_of(&nodes, &roots);
     ObservedTree {
         nodes,
         roots,
         source: ObservationSource::Window {
             window: window(),
             surface: crate::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         stats: LocatorStats::default(),
         structurally_complete,
+        logical_depths,
     }
+}
+
+/// The logical depth of every fixture node: none of them is a layout wrapper,
+/// so each level costs one. A fixture that needs a wrapper patches the entry.
+fn depths_of(nodes: &[ObservedNode], roots: &[u32]) -> Vec<u8> {
+    let mut depths: Vec<u8> = vec![0; nodes.len()];
+    let mut pending = roots.to_vec();
+    while let Some(index) = pending.pop() {
+        let Some(node) = nodes.get(index as usize) else {
+            continue;
+        };
+        let below = depths[index as usize].saturating_add(1);
+        for child in &node.children {
+            if let Some(depth) = depths.get_mut(*child as usize) {
+                *depth = below;
+                pending.push(*child);
+            }
+        }
+    }
+    depths
 }

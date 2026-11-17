@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "agent-desktop-core"
-version = "1.0.2"
+version = "1.2.0"
 dependencies = [
  "base64",
  "libc",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "agent-desktop-macos"
-version = "1.0.2"
+version = "1.2.0"
 dependencies = [
  "accessibility-sys",
  "agent-desktop-core",

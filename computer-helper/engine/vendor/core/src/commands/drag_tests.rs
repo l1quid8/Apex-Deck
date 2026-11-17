@@ -92,6 +92,7 @@ impl ObservationOps for DragCaptureAdapter {
     ) -> Result<HitTestResult, AdapterError> {
         Ok(HitTestResult::ReachesTarget)
     }
+    crate::adapter::saved_ref_scope!("button", Some("Item"));
 }
 
 impl ActionOps for DragCaptureAdapter {}
@@ -273,6 +274,7 @@ fn ref_entry(pid: u32) -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -288,7 +290,7 @@ fn ref_entry(pid: u32) -> RefEntry {
             source_window_id: Some(format!("w-{pid}")),
             source_window_title: Some(format!("Window {pid}")),
             source_window_bounds_hash: None,
-            source_surface: crate::adapter::SnapshotSurface::Window,
+            ..Default::default()
         },
         scope: crate::RefScope {
             root_ref: None,

@@ -92,7 +92,7 @@ impl LocatorTraversal {
             logical_depth,
             self.request.max_logical_depth,
         );
-        let mut read = read_node(
+        let read = read_node(
             &element,
             super::node_read_context::NodeReadContext {
                 tree: &self.context,
@@ -161,15 +161,10 @@ impl LocatorTraversal {
         if !subtree_complete {
             self.arena.mark_incomplete();
         }
-        if let Some(token) = crate::tree::resolve::retained::capture(&element)? {
-            read.evidence.identifiers = read.evidence.identifiers.with_retained_object(token);
-        }
-        Ok(Some(ObservedSubtree::new(
-            read.evidence,
-            children,
-            subtree_complete,
-            children_count,
-        )))
+        Ok(Some(
+            ObservedSubtree::new(read.evidence, children, subtree_complete, children_count)
+                .with_wrapper(read.web_wrapper),
+        ))
     }
 
     fn visit_children(

@@ -228,6 +228,9 @@ async fn site() -> String {
                 r#"<title>Framed page</title><iframe src=/ onload="this.contentDocument.querySelector('[aria-label=Secret]').focus()"></iframe>"#.to_owned()
             } else if path.starts_with("/many") {
                 format!("<title>Many controls</title>{}<input type=password value=hidden-secret style='position:fixed;top:0'>", "<button>Item</button>".repeat(310))
+            } else if path.starts_with("/large") {
+                let size = if path.contains("wide") { "width:2400px;height:100px" } else { "width:220px;height:2200px" };
+                format!(r#"<title>Large target</title><h1>Large control</h1><button style="display:block;{size}" onclick="document.title='large clicked'">Large button</button>"#)
             } else if path.starts_with("/two") {
                 format!("<title>Second</title><p>Reached {path}</p><button onclick=\"document.title='pressed'\" style='position:fixed;left:10px;top:10px;width:120px;height:40px'>Point</button><div style='height:4000px'></div><a href='#end'>Far link</a>")
             } else if path.starts_with("/popup") {
@@ -240,6 +243,13 @@ async fn site() -> String {
             } else if path.starts_with("/parent") {
                 let frame = path.split("frame=").nth(1).unwrap_or("/nested").to_owned();
                 format!(r#"<title>Parent</title><p id=mine>parent words</p><iframe src="{frame}" style="position:fixed;left:0;top:100px;width:400px;height:200px;border:0"></iframe><script>getSelection().selectAllChildren(mine);onmessage=(e)=>document.title=e.data</script>"#)
+            } else if path.starts_with("/editing") {
+                let editor = if path.contains("textarea") {
+                    "<textarea id=editor autofocus aria-label=Editor>seedhello</textarea>"
+                } else {
+                    "<input id=editor autofocus aria-label=Editor value=seedhello>"
+                };
+                format!("<title>Editing</title>{editor}<input aria-label=Blocked value='already here' onbeforeinput='event.preventDefault()'>")
             } else if path.starts_with("/input") {
                 "<title>Typing</title><input id=box autofocus aria-label=Box><script>setInterval(()=>{document.title=box.value||'Typing'},20)</script>".to_owned()
             } else {
@@ -272,6 +282,66 @@ async fn kill_browser() {
 
 fn key(action: &str, letter: char) -> service::Event {
     service::Event::Key { action: action.into(), key: letter.to_string(), code: format!("Key{}", letter.to_ascii_uppercase()), vk: letter.to_ascii_uppercase() as i32, text: if action == "down" { letter.to_string() } else { String::new() }, modifiers: 0, commands: vec![] }
+}
+
+#[tokio::test]
+#[ignore = "starts a real headless browser"]
+async fn typing_preserves_the_caret_and_selection() {
+    let _serial = SERIAL.lock().await;
+    reset();
+    let profile = test_profile();
+    service::use_profile(profile.join("assistant-browser"));
+    let address = site().await;
+    let bot = turn("bot", "room", &live);
+    let mut actual = Vec::new();
+    for path in ["/editing", "/editing?textarea"] {
+        for numbered_field in [false, true] {
+            let read = text(call(&bot, "navigate", &json!({"url":format!("{address}{path}")})).await.unwrap());
+            let home = text(call(&bot, "press_key", &json!({"snapshot":snapshot(&read),"key":"Home"})).await.unwrap());
+            let mut args = json!({"snapshot":snapshot(&home),"text":"X"});
+            if numbered_field { args["element"] = json!(numbered(&home, "Editor")); }
+            let typed = text(call(&bot, "type_text", &args).await.unwrap());
+            let tab = current_tab(&bot).unwrap();
+            actual.push(tab.page().await.unwrap().eval("editor.value").await.unwrap());
+
+            let home = text(call(&bot, "press_key", &json!({"snapshot":snapshot(&typed),"key":"Home"})).await.unwrap());
+            let selected = text(call(&bot, "press_key", &json!({"snapshot":snapshot(&home),"key":"Shift-End"})).await.unwrap());
+            let mut args = json!({"snapshot":snapshot(&selected),"text":"replacement"});
+            if numbered_field { args["element"] = json!(numbered(&selected, "Editor")); }
+            call(&bot, "type_text", &args).await.unwrap();
+            actual.push(tab.page().await.unwrap().eval("editor.value").await.unwrap());
+        }
+    }
+    kill_browser().await;
+    let _ = std::fs::remove_dir_all(profile);
+    assert_eq!(actual, vec![json!("Xseedhello"), json!("replacement"), json!("Xseedhello"), json!("replacement"),
+        json!("Xseedhello"), json!("replacement"), json!("Xseedhello"), json!("replacement")],
+        "focused and numbered inputs and textareas must keep the caret and replace selected text");
+}
+
+#[tokio::test]
+#[ignore = "starts a real headless browser"]
+async fn typing_does_not_verify_text_that_was_already_present() {
+    let _serial = SERIAL.lock().await;
+    reset();
+    let profile = test_profile();
+    service::use_profile(profile.join("assistant-browser"));
+    let address = site().await;
+    let bot = turn("bot", "room", &live);
+    let read = text(call(&bot, "navigate", &json!({"url":format!("{address}/editing")})).await.unwrap());
+    let typed = text(call(&bot, "type_text", &json!({"snapshot":snapshot(&read),"element":numbered(&read,"Blocked"),"text":"here"})).await.unwrap());
+    let home = text(call(&bot, "press_key", &json!({"snapshot":snapshot(&typed),"key":"Home"})).await.unwrap());
+    let selected = text(call(&bot, "press_key", &json!({"snapshot":snapshot(&home),"key":"Shift-End"})).await.unwrap());
+    let same_text = text(call(&bot, "type_text", &json!({"snapshot":snapshot(&selected),"text":"already here"})).await.unwrap());
+    let tab = current_tab(&bot).unwrap();
+    let value = tab.page().await.unwrap().eval("document.querySelector('[aria-label=Blocked]').value").await.unwrap();
+    kill_browser().await;
+    let _ = std::fs::remove_dir_all(profile);
+    assert_eq!(value, "already here", "the page cancelled the insertion");
+    assert!(typed.contains("last_action: delivery=delivered_unverified"), "an existing occurrence is not evidence of insertion: {typed}");
+    assert!(!typed.contains("delivered_verified"), "{typed}");
+    assert!(same_text.contains("last_action: delivery=delivered_unverified"), "replacing a selection with identical text cannot prove insertion: {same_text}");
+    assert!(!same_text.contains("delivered_verified"), "{same_text}");
 }
 
 #[tokio::test]
@@ -561,6 +631,30 @@ async fn copy_and_cut_use_the_frame_with_the_keyboard() {
     }
     kill_browser().await;
     let _ = std::fs::remove_dir_all(profile);
+}
+
+#[tokio::test]
+#[ignore = "starts a real headless browser"]
+async fn clicking_a_control_larger_than_the_viewport_uses_its_visible_part() {
+    let _serial = SERIAL.lock().await;
+    reset();
+    let profile = test_profile();
+    service::use_profile(profile.join("assistant-browser"));
+    let address = site().await;
+    let bot = turn("large-click", "room", &live);
+    let mut failures = Vec::new();
+    for shape in ["tall", "wide"] {
+        let page = text(call(&bot, "navigate", &json!({ "url": format!("{address}/large?{shape}") })).await.unwrap());
+        let result = call(&bot, "click", &json!({ "snapshot": snapshot(&page), "element": numbered(&page, "Large button") })).await;
+        match result {
+            Ok(ref result) if result["text"].as_str().is_some_and(|text| text.contains("title: large clicked")) => {}
+            result => failures.push(format!("{shape}: {result:?}")),
+        }
+    }
+    release("large-click");
+    kill_browser().await;
+    let _ = std::fs::remove_dir_all(profile);
+    assert!(failures.is_empty(), "visible oversized controls must receive clicks: {failures:?}");
 }
 
 fn pause_at(point: &'static str) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {

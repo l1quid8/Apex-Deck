@@ -1,6 +1,6 @@
 // Gateway management is only exposed by the local desktop backend. The daemon
 // independently rejects every management request from Device and Token trust.
-export type GatewayScope = 'sub' | 'api' | 'cli';
+export type GatewayScope = import("./generated/protocol").KeyScope;
 export interface GatewayKey {
   id: string; label: string; prefix: string; scopes: GatewayScope[];
   max_turns_per_day: number | null; max_usd_micros_per_month: number | null;
@@ -11,7 +11,7 @@ export interface GatewayProvider { id: string; name: string; kind: string; avail
 export interface GatewayIssue { label: string; scopes: GatewayScope[]; allowMcp: false; maxTurnsPerDay: number | null; maxUsdMicrosPerMonth: number | null }
 export interface GatewayIssued { token: string; key: GatewayKey }
 type Owner = { demo: boolean; gatewayAdmin?: boolean; host?: { id: string } };
-type Caller = Owner & { call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
+type Caller = Owner & Pick<import("./backend").Backend, "call">;
 export function gatewayOwner(backend: Owner): boolean {
   return !backend.demo && backend.gatewayAdmin === true && backend.host?.id === 'local';
 }
@@ -27,8 +27,8 @@ export function issueGatewaySpec(label: string, scope: string, daily: string, us
   return {label:name, scopes, allowMcp:false, maxTurnsPerDay:turns, maxUsdMicrosPerMonth:budget === null ? null : Math.round(budget * 1000000)};
 }
 export function gatewayApi(backend: Caller) {
-  const call = <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> => gatewayOwner(backend)
-    ? backend.call<T>(cmd, args) : Promise.reject(new Error('Only the local host owner can manage the model gateway.'));
+  const call = <T>(...request: import("./daemon/requests").HostCommandArgs): Promise<T> => gatewayOwner(backend)
+    ? backend.call<T>(...request) : Promise.reject(new Error('Only the local host owner can manage the model gateway.'));
   return {
     status: () => call<GatewayStatus>('gateway_status'),
     providers: () => call<{ providers: GatewayProvider[] }>('gateway_providers'),

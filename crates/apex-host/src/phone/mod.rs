@@ -760,6 +760,23 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    fn write_fixture_tool(path: &std::path::Path, script: &str) {
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A concurrent fork can inherit the write descriptor until it execs.
+        // Wait for the kernel to accept this fixture before starting the phone.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match std::process::Command::new(path).arg("--fixture-ready").status() {
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY)
+                    && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                status => { assert!(status.unwrap().success()); return; }
+            }
+        }
+    }
+
     /// A data folder with fake tools that log what they're asked.
     fn fake(name: &str) -> (PathBuf, Tools) {
         let dir = std::env::temp_dir().join(format!("apex-phone-{name}-{}", std::process::id()));
@@ -775,8 +792,7 @@ mod tests {
         std::fs::write(bin.join("frame.bin"), coords::framed(&coords::tiny_jpeg(603, 1311))).unwrap();
         let script = |file: &str, body: &str| {
             let path = bin.join(file);
-            std::fs::write(&path, format!("#!/bin/sh\ndir=\"$(dirname \"$0\")\"\n{body}")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            write_fixture_tool(&path, &format!("#!/bin/sh\n[ \"$1\" = --fixture-ready ] && exit 0\ndir=\"$(dirname \"$0\")\"\n{body}"));
             path
         };
         let xcrun = script("xcrun", r#"echo "xcrun $*" >> "$dir/calls.log"
@@ -931,7 +947,7 @@ esac
             "stream-video) cat",
             "stream-video) while [ ! -f \"$dir/release-frame\" ]; do sleep 0.02; done; cat",
         );
-        std::fs::write(&tools.axe, script).unwrap();
+        write_fixture_tool(&tools.axe, &script);
         let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
         let starting = {
             let phone = Arc::clone(&phone);
@@ -1015,7 +1031,7 @@ esac
             "  simctl\\ create*) touch \"$dir/created\"; echo FAKE-UDID ;;",
             "  simctl\\ create*) touch \"$dir/created\"; echo FAKE-UDID ;;\n  simctl\\ io*recordVideo*) echo 'Recording started' >&2; exec sleep 30 ;;\n  simctl\\ shutdown*) echo 'shutdown failed' >&2; exit 1 ;;",
         );
-        std::fs::write(&tools.xcrun, xcrun).unwrap();
+        write_fixture_tool(&tools.xcrun, &xcrun);
         let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
         on(&phone).await;
         phone.human_control(Control::Recording { active: true }).await.unwrap();
@@ -1049,7 +1065,7 @@ esac
             "  *) : ;;",
             "  simctl\\ bootstatus*) while [ ! -f \"$dir/release-boot\" ]; do sleep 0.02; done ;;\n  *) : ;;",
         );
-        std::fs::write(&tools.xcrun, script).unwrap();
+        write_fixture_tool(&tools.xcrun, &script);
         let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
         phone.start();
         tokio::time::timeout(Duration::from_secs(5), async {

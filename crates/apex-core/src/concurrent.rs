@@ -179,6 +179,7 @@ impl ConcurrentRoom {
     pub fn busy(&self) -> bool {
         self.pending.load(Ordering::SeqCst) != 0
     }
+    pub fn has_cleanup_holds(&self) -> bool { !self.cleanup_holds.lock().unwrap().is_empty() }
     /// Retire only between turns, with persistence under the admission lock.
     /// A stale handle cannot admit another post after this succeeds.
     pub fn retire_if_idle<T>(&self, persist: impl FnOnce(&Room) -> Result<T, String>) -> Result<T, String> {
@@ -882,6 +883,8 @@ impl ConcurrentRoom {
                 if current {
                     room.record_usage(&ticket.id, first, sink);
                     drop(room);
+                    // The private continuation is never saved in the room transcript.
+                    retry.room_reply = false;
                     retry.turns.push(crate::ViewTurn { role: crate::Role::Assistant, content: first.text.clone() });
                     retry.turns.push(crate::ViewTurn { role: crate::Role::User, content: format!(
                         "[Apex continuation] Carry out only the already requested step ({step}) using the original request's exact arguments and restrictions. Report the result or the blocker. Do not repeat completed work."

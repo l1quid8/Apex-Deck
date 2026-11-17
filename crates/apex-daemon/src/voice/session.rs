@@ -5,7 +5,7 @@ use super::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::{collections::VecDeque, sync::Arc};
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum VoiceRequest {
     VoiceServerStatus {},

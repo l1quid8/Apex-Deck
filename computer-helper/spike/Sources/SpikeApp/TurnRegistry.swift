@@ -14,6 +14,8 @@ final class TurnRegistry {
     let access: String
     /// Set only on the signed daemon registration, never by a tool connection.
     let assistantFullAccess: Bool
+    /// A Work-room bot saved as untethered at Full access. Also daemon-only.
+    let untethered: Bool
     let control: Int32
     let grantScope: String
     var grants = [String: AppIdentity]()
@@ -23,6 +25,10 @@ final class TurnRegistry {
   /// changes on every revoke, so a missed message still cannot keep a grant.
   private struct ThreadGrant { let identity: AppIdentity; let control: Bool }
   private struct ThreadGrants { let scope: String; var apps = [String: ThreadGrant]() }
+  private let sessionAvailable: () -> Bool
+  init(sessionAvailable: @escaping () -> Bool = { true }) {
+    self.sessionAvailable = sessionAvailable
+  }
   private let lock = NSLock()
   private var turns = [String: Turn]()
   private var globallyStopped = false
@@ -38,22 +44,26 @@ final class TurnRegistry {
     return (thread, participant, token)
   }
   func register(_ args: [String: Any], control: Int32) throws -> String {
+    guard sessionAvailable() else { throw Refusal("session_locked_or_unavailable") }
     let (thread, participant, token) = try Self.fields(args)
     guard args["enabled"] as? Bool == true, let access = args["effectiveAccess"] as? String, ["read", "ask", "edits", "full"].contains(access) else { throw Refusal("computer_use_disabled_or_access_denied") }
     guard let grantScope = args["grantScope"] as? String, (1...128).contains(grantScope.utf8.count) else { throw Refusal("turn_binding_invalid") }
     let assistantFullAccess = args["assistantFullAccess"] as? Bool == true
     guard !assistantFullAccess || (access == "full" && thread.hasPrefix("assistant:") && thread.count > "assistant:".count) else { throw Refusal("assistant_full_access_binding_invalid") }
+    let untethered = args["untethered"] as? Bool == true
+    guard !untethered || (access == "full" && !assistantFullAccess) else { throw Refusal("untethered_binding_invalid") }
     lock.lock(); defer { lock.unlock() }
     guard !globallyStopped else { throw Refusal("computer_use_stopped") }
     guard turns[token] == nil, !retired.contains(token) else { throw Refusal("turn_already_registered") }
     // A newer turn supersedes every predecessor for the same owner.
     let obsolete = turns.values.filter { $0.thread == thread && $0.participant == participant }.map { $0.token }
     for old in obsolete { turns.removeValue(forKey: old); retired.insert(old); latches.removeValue(forKey: old)?.forEach { $0.value?.stop() } }
-    turns[token] = Turn(thread: thread, participant: participant, token: token, access: access, assistantFullAccess: assistantFullAccess, control: control, grantScope: grantScope)
+    turns[token] = Turn(thread: thread, participant: participant, token: token, access: access, assistantFullAccess: assistantFullAccess, untethered: untethered, control: control, grantScope: grantScope)
     if threadGrants[thread]?.scope != grantScope { threadGrants[thread] = ThreadGrants(scope: grantScope) }
     return token
   }
   func bind(_ args: [String: Any], latch: Latch? = nil) throws -> String {
+    guard sessionAvailable() else { throw Refusal("session_locked_or_unavailable") }
     let (thread, participant, token) = try Self.fields(args)
     lock.lock(); defer { lock.unlock() }
     guard let turn = turns[token], !turn.stopped, turn.thread == thread, turn.participant == participant else { throw Refusal("turn_unregistered_or_ended") }
@@ -61,6 +71,7 @@ final class TurnRegistry {
     return token
   }
   func check(_ token: String?) throws {
+    guard sessionAvailable() else { throw Refusal("session_locked_or_unavailable") }
     lock.lock(); defer { lock.unlock() }
     guard let token = token, let turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
   }
@@ -98,7 +109,7 @@ final class TurnRegistry {
   func authorizeApp(_ identity: AppIdentity, token: String, consent: () throws -> AppGrantDecision) throws {
     lock.lock()
     guard let turn = turns[token], !turn.stopped else { lock.unlock(); throw Refusal("turn_unregistered_or_ended") }
-    let full = turn.assistantFullAccess
+    let full = turn.assistantFullAccess || turn.untethered
     lock.unlock()
     if full {
       // Full authorizes this turn only. Downgrading or ending the turn cannot
@@ -118,6 +129,18 @@ final class TurnRegistry {
     guard let shared = threadGrants[turn.thread], shared.scope == turn.grantScope,
       let grant = shared.apps[bundle], grant.control || turn.access == "read" else { throw Refusal("app_grant_required") }
     return grant.identity
+  }
+  /// Untethered turns may send foreground shortcuts. Protected targets still apply.
+  func isUntethered(_ token: String?) -> Bool {
+    guard let token = token else { return false }
+    lock.lock(); defer { lock.unlock() }
+    guard let turn = turns[token], !turn.stopped else { return false }
+    return turn.untethered && turn.access == "full"
+  }
+  /// Away mode holds the Mac awake only while such a turn is live.
+  func hasActiveUntethered() -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    return !globallyStopped && turns.values.contains { $0.untethered && $0.access == "full" && !$0.stopped }
   }
   func stopAll() -> [[String: Any]] {
     lock.lock(); defer { lock.unlock() }

@@ -13,6 +13,7 @@ test('scalars, nullables, arrays, tuples and maps', () => {
   assert.equal(tsType({ type: 'integer', format: 'uint64', minimum: 0 }), 'number');
   assert.equal(tsType({ type: ['string', 'null'] }), 'string | null');
   assert.equal(tsType({ anyOf: [{ $ref: '#/$defs/Message' }, { type: 'null' }] }), 'Message | null');
+  assert.equal(tsType({ type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }), '[number, number]');
   assert.equal(tsType({ type: 'array', items: { type: 'boolean' } }), 'Array<boolean>');
   assert.equal(tsType({ type: 'array', prefixItems: [{ type: 'number' }, { type: 'string' }] }), '[number, string]');
   assert.equal(tsType({ type: 'object', additionalProperties: { type: 'number' } }), 'Record<string, number>');
@@ -132,4 +133,13 @@ test('the rendered fixture is valid TypeScript', () => {
     const r = spawnSync(process.execPath, [tsc, '--ignoreConfig', '--noEmit', '--strict', '--target', 'es2022', '--moduleResolution', 'bundler', '--module', 'esnext', join(dir, 'protocol.ts'), join(dir, 'use.ts')], { encoding: 'utf8', cwd: process.cwd() });
     assert.equal(r.status, 0, r.stdout + r.stderr);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('connection-scoped commands join the host command map and cannot shadow a host command', () => {
+  const schemas = { ...fixture.schemas, VoiceRequest: { oneOf: [
+    { properties: { cmd: { const: 'voice_server_open' }, args: { type: 'object', properties: { room: { type: 'string' } }, required: ['room'] } } },
+  ] } };
+  assert.match(render({ ...fixture, schemas }), /voice_server_open: \{\s+room: string;/);
+  assert.throws(() => render({ ...fixture, schemas: { ...schemas, OtherRequest: schemas.VoiceRequest } }), /Duplicate wire command/);
 });

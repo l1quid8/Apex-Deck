@@ -155,3 +155,66 @@ fn transient_live_read_failure_reports_no_delivery() {
         assert_eq!(error.disposition, expected);
     }
 }
+
+/// A tokenless ref is held to the whole identity rule capture recorded, not to
+/// its identifier alone: a replacement that kept the recorded identifier and
+/// changed the recorded text is a different element and must not be dispatched
+/// to.
+#[test]
+fn a_recycled_identifier_with_changed_text_is_stale_before_dispatch() {
+    struct RecycledIdentifierAdapter;
+
+    impl ObservationOps for RecycledIdentifierAdapter {
+        fn get_live_element(
+            &self,
+            _: &NativeHandle,
+            _: crate::Deadline,
+        ) -> Result<LiveElement, AdapterError> {
+            Ok(LiveElement {
+                identity: crate::LiveIdentity {
+                    name: crate::LocatorField::Known("Delete account".into()),
+                    description: crate::LocatorField::Absent,
+                    identifiers: crate::IdentifierEvidence::typed(
+                        [crate::ElementIdentifier {
+                            kind: crate::IdentifierKind::AxIdentifier,
+                            value: "save-button".into(),
+                        }],
+                        Some(0),
+                        true,
+                    ),
+                },
+                state: ElementState {
+                    role: "button".into(),
+                    states: vec![],
+                    value: None,
+                    enabled: Some(true),
+                    hidden: Some(false),
+                    offscreen: Some(false),
+                },
+                states_complete: true,
+                bounds: entry().geometry.bounds,
+                available_actions: vec![capability::CLICK.into()],
+            })
+        }
+    }
+    impl ActionOps for RecycledIdentifierAdapter {}
+    impl InputOps for RecycledIdentifierAdapter {}
+    impl SystemOps for RecycledIdentifierAdapter {}
+
+    let mut recorded = entry();
+    recorded.identity.native_id = Some(crate::ElementIdentifier {
+        kind: crate::IdentifierKind::AxIdentifier,
+        value: "save-button".into(),
+    });
+
+    let error = check_live(
+        &recorded,
+        &NativeHandle::null(),
+        &RecycledIdentifierAdapter,
+        &ActionRequest::headless(Action::Click),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::StaleRef);
+    assert!(error.message.contains("changed identity"));
+}

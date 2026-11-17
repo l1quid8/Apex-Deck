@@ -10,10 +10,12 @@ fn a_nameless_positive_area_ref_allocated_with_bounds_hidden_keeps_its_only_iden
     root.children = vec![node("button", None)];
     let mut refmap = RefMap::new();
     let config = RefAllocConfig {
+        capture: None,
         options: crate::refs::ref_alloc_options::RefAllocOptions {
             include_bounds: false,
             interactive_only: false,
             compact: false,
+            force_renderer_accessibility: false,
         },
         source: crate::refs::ref_alloc_source::RefAllocSource {
             pid: crate::ProcessId::new(7),
@@ -56,10 +58,12 @@ fn a_ref_with_its_own_identity_still_has_its_rect_stripped() {
     root.children = vec![node("button", Some("Open"))];
     let mut refmap = RefMap::new();
     let config = RefAllocConfig {
+        capture: None,
         options: crate::refs::ref_alloc_options::RefAllocOptions {
             include_bounds: false,
             interactive_only: false,
             compact: false,
+            force_renderer_accessibility: false,
         },
         source: crate::refs::ref_alloc_source::RefAllocSource {
             pid: crate::ProcessId::new(7),
