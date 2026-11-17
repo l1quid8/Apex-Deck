@@ -22,6 +22,8 @@ export function applyProgressEvent(progress: TurnProgress, event: RoomEvent): Tu
   };
   if (event.type === 'turn_started') return { ...progress, [event.id]: emptyTurnSteps };
   if (event.type === 'message_added') return event.message.speaker.kind === 'bot' ? remove(event.message.speaker.id) : progress;
+  // A saved summary completes the turn without adding a bot message.
+  if (event.type === 'compacted') return remove(event.id);
   const finish = (id: string, outcome: TurnOutcome): TurnProgress => {
     const turn = progress[id];
     if (!turn || turn.outcome) return progress;
