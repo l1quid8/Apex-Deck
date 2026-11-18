@@ -4,12 +4,15 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(new URL('../scripts/trusted-dev.py', import.meta.url));
+// The helper is macOS tooling: it runs under /usr/bin/python3 and its build
+// environment uses POSIX paths. Windows has neither.
+const UNIX_ONLY = process.platform === 'win32' ? { skip: 'Unix-only: runs /usr/bin/python3 and compares POSIX paths' } : {};
 function python(body) {
   const result = spawnSync('/usr/bin/python3', ['-I', '-c', `import importlib.util,tempfile,pathlib,json,types\nspec=importlib.util.spec_from_file_location('dev',${JSON.stringify(script)})\nd=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)\n${body}`], { encoding:'utf8' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
 }
 
-test('dev pin selection preserves standalone pins and all unrelated fields', () => python(`
+test('dev pin selection preserves standalone pins and all unrelated fields', UNIX_ONLY, () => python(`
 original={'uiCdhash':'a'*40,'daemonCdhash':'b'*40,'cliCdhash':'c'*40,'daemonStandaloneCdhash':'d'*40,'cliStandaloneCdhash':'e'*40}
 next=d.dev_config(original,{'ui':'1'*40,'daemon':'2'*40,'cli':'3'*40})
 assert next==dict(original,uiCdhash='1'*40,daemonCdhash='2'*40,cliCdhash='3'*40)
@@ -20,7 +23,7 @@ for candidate in ({'ui':'bad','daemon':'2'*40,'cli':'3'*40},{'ui':'1'*40,'daemon
  else:raise AssertionError('accepted invalid pin set')
 `));
 
-test('switch transaction rolls back failures without restoring keys or journal', () => python(`
+test('switch transaction rolls back failures without restoring keys or journal', UNIX_ONLY, () => python(`
 class Fake:
  def __init__(self,fail=None):self.config={'uiCdhash':'a'*40,'daemonCdhash':'b'*40};self.state=None;self.mode='production';self.fail=fail;self.journal=['before']
  def read_config(self):return dict(self.config)
@@ -48,7 +51,7 @@ d.restore(f);assert f.mode=='production' and f.config==original and f.state is N
 d.restore(f);assert f.mode=='production'
 `));
 
-test('drift and concurrent activation fail before stopping a service; rollback failure retains state', () => python(`
+test('drift and concurrent activation fail before stopping a service; rollback failure retains state', UNIX_ONLY, () => python(`
 class Drift:
  def read_state(self):return {'production':{'uiCdhash':'a'*40},'dev':{'uiCdhash':'b'*40}}
  def read_config(self):return {'uiCdhash':'c'*40}
@@ -60,7 +63,7 @@ for call in (lambda:d.restore(f),lambda:d.activate(f,{'ui':'1'*40,'daemon':'2'*4
  else:raise AssertionError('accepted drift or concurrency')
 `));
 
-test('root helper writes private atomic records without following symlinks', () => python(`
+test('root helper writes private atomic records without following symlinks', UNIX_ONLY, () => python(`
 with tempfile.TemporaryDirectory() as td:
  p=pathlib.Path(td)/'state.json';d.atomic_json(p,{'a':1});assert json.loads(p.read_text())=={'a':1}
  stale=pathlib.Path(td)/'state.json.new';stale.write_text('interrupted old write')
@@ -73,7 +76,7 @@ with tempfile.TemporaryDirectory() as td:
  assert target.read_text()=='untouched'
 `));
 
-test('a failed rollback retains recovery state and stop can resume from production pins', () => python(`
+test('a failed rollback retains recovery state and stop can resume from production pins', UNIX_ONLY, () => python(`
 class Recovery:
  def __init__(self):self.config={'uiCdhash':'a'*40,'daemonCdhash':'b'*40};self.state=None;self.broken=True
  def read_config(self):return dict(self.config)
@@ -94,7 +97,7 @@ assert f.state is not None and f.config==f.state['production']
 f.broken=False;d.restore(f);assert f.state is None
 `));
 
-test('interrupted prepared and active transactions recover from either known pin set', () => python(`
+test('interrupted prepared and active transactions recover from either known pin set', UNIX_ONLY, () => python(`
 class Recovery:
  def __init__(self,phase,current):
   self.state={'production':{'uiCdhash':'a'*40},'dev':{'uiCdhash':'b'*40},'phase':phase}
@@ -114,7 +117,7 @@ for phase in ('prepared','active'):
   assert ('verify','production') in f.steps
 `));
 
-test('API turns and assistant events block switching even without child processes', () => python(`
+test('API turns and assistant events block switching even without child processes', UNIX_ONLY, () => python(`
 def call(cmd,args=None):
  if cmd=='chat_list':return {'rooms':[{'id':'api-room'}]}
  if cmd=='room_state':return {'active':['api-agent']}
@@ -133,7 +136,7 @@ except RuntimeError:pass
 else:raise AssertionError('interrupted assistant reply')
 `));
 
-test('uninspectable activity requires explicit confirmation; unknown is never idle', () => python(`
+test('uninspectable activity requires explicit confirmation; unknown is never idle', UNIX_ONLY, () => python(`
 def call(cmd,args=None):
  if cmd=='chat_list':return {'rooms':[{'id':'oversized'}]}
  if cmd=='room_state':raise RuntimeError('oversized response')
@@ -147,7 +150,7 @@ seen=[];d.check_idle(degraded,lambda ids:seen.extend(ids))
 assert 'assistant activity' in seen and 'chat activity catalog' in seen and 'terminal activity' in seen
 `));
 
-test('idle registered CLI groups are allowed, but unknown, reused, busy and escaping groups block', () => python(`
+test('idle registered CLI groups are allowed, but unknown, reused, busy and escaping groups block', UNIX_ONLY, () => python(`
 with tempfile.TemporaryDirectory() as td:
  data=pathlib.Path(td);folder=data/'worker-processes'/'room';folder.mkdir(parents=True)
  record=folder/'20.json';record.write_text(json.dumps({'pid':20,'pgid':20,'birth':'macos:1:2'}))
@@ -174,7 +177,7 @@ with tempfile.TemporaryDirectory() as td:
  else:raise AssertionError('accepted unregistered child')
 `));
 
-test('only successfully inspected idle rooms qualify for closing a warm CLI session', () => python(`
+test('only successfully inspected idle rooms qualify for closing a warm CLI session', UNIX_ONLY, () => python(`
 def call(cmd,args=None):
  if cmd=='chat_list':return {'rooms':[{'id':'idle'},{'id':'unknown'}]}
  if cmd=='room_state':
@@ -184,7 +187,7 @@ def call(cmd,args=None):
 assert d.check_idle(call,lambda ids:None)=={'idle'}
 `));
 
-test('administrator IPC queries use the daemon owner UID and restore root even on failure', () => python(`
+test('administrator IPC queries use the daemon owner UID and restore root even on failure', UNIX_ONLY, () => python(`
 state={'uid':0};changes=[]
 d.os.geteuid=lambda:state['uid']
 def seteuid(uid):state['uid']=uid;changes.append(uid)
@@ -205,12 +208,12 @@ assert system.query('devices_list')=={'ok':True}
 assert state['uid']==0
 `));
 
-test('exited zombie children do not count as active work', () => python(`
+test('exited zombie children do not count as active work', UNIX_ONLY, () => python(`
 d.run=lambda *a,**k:types.SimpleNamespace(stdout=' 20 10 501 Z (codex)\\n 21 10 501 S claude\\n')
 assert d.processes()==[(21,10,501,'claude')]
 `));
 
-test('broker restart waits for asynchronous launchd removal before bootstrap', () => python(`
+test('broker restart waits for asynchronous launchd removal before bootstrap', UNIX_ONLY, () => python(`
 system=object.__new__(d.MacSystem);events=[];checks={'n':0};booted={'out':False}
 d.time.sleep=lambda seconds:events.append('wait')
 d.processes=lambda:[]
@@ -236,7 +239,7 @@ system.reload_broker()
 assert checks['n']>=3 and 'connected' in events
 `));
 
-test('broker readiness requires a full read-only response, not a successful connect', () => python(`
+test('broker readiness requires a full read-only response, not a successful connect', UNIX_ONLY, () => python(`
 system=object.__new__(d.MacSystem);sent=[]
 class Socket:
  def __enter__(self):return self
@@ -254,7 +257,7 @@ except RuntimeError:pass
 else:raise AssertionError('accepted a listening but unresponsive broker')
 `));
 
-test('unload waits for both the old process and launchd registration to disappear', () => python(`
+test('unload waits for both the old process and launchd registration to disappear', UNIX_ONLY, () => python(`
 system=object.__new__(d.MacSystem);calls=[];counts={'n':0}
 def ctl(*args,required=True):
  calls.append(args)
@@ -282,7 +285,7 @@ test('builder routes status without compiling and rejects unknown commands', asy
   assert.notEqual(sourceFingerprint([{name:'src/a.ts',data:Buffer.from('a')}]), sourceFingerprint([{name:'src/a.ts',data:Buffer.from('b')}]));
 });
 
-test('trusted dev uses a compact optimized dev profile in its own target cache', async () => {
+test('trusted dev uses a compact optimized dev profile in its own target cache', UNIX_ONLY, async () => {
   const {buildEnvironment} = await import('../scripts/trusted-dev.mjs');
   const env=buildEnvironment('/repo','source-stamp',true,{KEEP:'yes',CARGO_TARGET_DIR:'/normal',CARGO_PROFILE_DEV_OPT_LEVEL:'0'});
   assert.equal(env.KEEP,'yes');
