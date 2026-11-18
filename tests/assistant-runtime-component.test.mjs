@@ -83,10 +83,13 @@ function workspaceHarness() {
 test('the avatar opens Details and the runtime popover is gone from the workspace', () => {
   const h = workspaceHarness(); let tree = h.render();
   const trigger = find(tree, node => node.type === 'button' && /details$/.test(String(node.props['aria-label'] ?? '')));
-  assert.ok(trigger, 'the session capsule carries one details control');
+  assert.ok(trigger, 'the assistant menu carries a details control');
   assert.equal(trigger.props['aria-expanded'], false);
   assert.equal(trigger.props['aria-controls'], 'assistant-details');
-  trigger.props.onClick(); h.render();
+  const removed = [];
+  trigger.props.onClick({currentTarget:{closest:()=>({removeAttribute:name=>removed.push(name)})}});
+  h.render();
+  assert.deepEqual(removed, ['open']);
   assert.deepEqual(h.events, ['details']);
   assert.match(text(trigger), /Null/);
   assert.doesNotMatch(text(trigger), /Claude|Ask first|project/i, 'the runtime line moved into the Details sidebar');

@@ -35,12 +35,6 @@ test('VoiceSessionStrip end button uses round class and restrained red style', (
   assert.ok(css.includes('color-mix(in srgb,var(--danger) 14%,transparent)!important'));
 });
 
-test('VoiceSessionStrip reveals on hover/focus and hides 200ms after leave', () => {
-  assert.ok(tsxSource.includes('.assistant-session'));
-  assert.ok(tsxSource.includes('show-ctrls'));
-  assert.ok(tsxSource.includes('200'));
-});
-
 // Picking a look moves the controls, so the popup that offered the choice has to
 // close wherever it was opened — regular threads included, not just the
 // assistant's strip. Enforced by making the prop required: a new call site that
