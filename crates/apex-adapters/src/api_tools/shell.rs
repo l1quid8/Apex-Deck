@@ -81,10 +81,10 @@ mod windows_runtime_tests {
         let env = Env { cwd: Some(std::env::temp_dir()), ..Env::default() };
         let bash = env.shell_description().starts_with("Git Bash");
         let script = if bash { "echo out; echo err >&2; exit 3" } else { "Write-Output out; [Console]::Error.WriteLine('err'); exit 3" };
-        let finished = run(&env, &Registry::default(), script, Duration::from_secs(10)).await.unwrap();
-        assert_eq!(finished.code, Some(3));
+        let finished = run(&env, &Registry::default(), script, Duration::from_secs(30)).await.unwrap();
+        assert!(!finished.timed_out, "shell startup or execution timed out: {}", finished.output);
+        assert_eq!(finished.code, Some(3), "{}", finished.output);
         assert!(finished.output.contains("out") && finished.output.contains("err"), "{}", finished.output);
-        assert!(!finished.timed_out);
         let script = if bash { "sleep 30" } else { "Start-Sleep -Seconds 30" };
         let finished = run(&env, &Registry::default(), script, Duration::from_millis(300)).await.unwrap();
         assert!(finished.timed_out);

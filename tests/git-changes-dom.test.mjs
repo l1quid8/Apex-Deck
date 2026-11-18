@@ -42,7 +42,7 @@ test('Inline Git card toggles and moves between replies, clears top-bar scope, a
       assert.deepEqual(await run(()=>Array.from(document.querySelectorAll('.git-file-row input')).map(i=>i.checked)),[true,false,false],'expanding reveals the unselected files unchecked');
       await run(()=>document.body.click());assert.equal(await run(()=>!!document.querySelector('.git-changes-menu')),true,'clicking elsewhere leaves the inline card open');
       await run(()=>document.querySelector('.git-file-name').click());await wait(()=>document.querySelector('.git-file-patch'));assert.match(await run(()=>document.querySelector('.git-file-patch').textContent),/preferences/);
-      const image=await win.webContents.capturePage();require('node:fs').writeFileSync('/tmp/apex-git-menu-ui.png',image.toPNG());
+      const image=await win.webContents.capturePage();require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(),'apex-git-menu-ui.png'),image.toPNG());
       await run(()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})));await wait(()=>!document.querySelector('.git-changes-menu'));assert.equal(await run(()=>document.activeElement.classList.contains('turn-files-strip')),true);
       await run(()=>document.querySelector('.git-changes-trigger').click());await wait(()=>document.querySelector('#reply-2 .git-changes-menu'));
       await wait(()=>document.querySelectorAll('.git-turn-mark').length===0);
