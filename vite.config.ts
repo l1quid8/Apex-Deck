@@ -27,7 +27,7 @@ export default defineConfig({
   // Shown in Settings › General.
   define: { __APP_VERSION__: JSON.stringify(version), __APP_BUILD__: JSON.stringify(build) },
   clearScreen: false,
-  server: { watch: { ignored: ["**/target/**"] } },
+  server: { host: "127.0.0.1", allowedHosts: [".ts.net", "localhost"], hmr: { host: "127.0.0.1" }, watch: { ignored: ["**/target/**"] } },
   build: {
     rolldownOptions: {
       input: {
