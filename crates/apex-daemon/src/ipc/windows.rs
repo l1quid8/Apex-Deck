@@ -223,10 +223,13 @@ fn verify_server_owner(handle: RawHandle, expected: &str) -> io::Result<()> {
 pub fn endpoint(data: &Path) -> io::Result<PathBuf> {
     // The data lock follows Windows' case-insensitive paths and junctions.
     // Name the pipe from the same physical directory so every spelling finds
-    // its daemon. Keep lexical normalization as a fallback for filesystems
-    // that cannot return a canonical path.
-    std::fs::create_dir_all(data)?;
-    let normalized = std::fs::canonicalize(data).or_else(|_| lexical_absolute(data))?;
+    // its daemon. Naming never creates the folder: one that does not exist
+    // yet is named from its nearest existing ancestor, which is the name it
+    // keeps once the daemon has created it. Keep lexical normalization as a
+    // fallback for filesystems that cannot return a canonical path.
+    let normalized = std::fs::canonicalize(data)
+        .or_else(|_| physical_ancestor(data))
+        .or_else(|_| lexical_absolute(data))?;
     let mut hash = Sha256::new();
     // Hash the original UTF-16 code units, including non-Unicode Windows paths.
     for unit in normalized.as_os_str().encode_wide() {
@@ -237,6 +240,29 @@ pub fn endpoint(data: &Path) -> io::Result<PathBuf> {
         current_user_sid()?,
         hash.finalize()
     )))
+}
+
+/// The canonical path of the nearest existing ancestor of `data`, followed by
+/// the names below it that do not exist yet.
+fn physical_ancestor(data: &Path) -> io::Result<PathBuf> {
+    let absolute = lexical_absolute(data)?;
+    let mut missing = Vec::new();
+    let mut existing = absolute.as_path();
+    loop {
+        match std::fs::canonicalize(existing) {
+            Ok(mut resolved) => {
+                resolved.extend(missing.iter().rev());
+                return Ok(resolved);
+            }
+            Err(error) => match (existing.parent(), existing.file_name()) {
+                (Some(parent), Some(name)) => {
+                    missing.push(name);
+                    existing = parent;
+                }
+                _ => return Err(error),
+            },
+        }
+    }
 }
 
 fn lexical_absolute(data: &Path) -> io::Result<PathBuf> {

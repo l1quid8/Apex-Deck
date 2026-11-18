@@ -525,6 +525,9 @@ mod tests {
             assert!(validate_url(bad).is_err());
         }
     }
+    // This executable fixture uses a Unix shebang and executable permissions.
+    // The typed provider protocol tests above remain enabled on Windows.
+    #[cfg(unix)]
     #[tokio::test]
     async fn codex_fixture_initializes_and_preserves_early_completion() {
         use std::os::unix::fs::PermissionsExt;
