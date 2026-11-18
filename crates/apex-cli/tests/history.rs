@@ -218,7 +218,13 @@ fn concurrent_clients_keep_every_committed_input() {
                 let mut history = History::load(&path).unwrap();
                 barrier.wait();
                 for i in 0..12 {
-                    history.record(&path, &format!("{worker}-{i}")).unwrap();
+                    let text = format!("{worker}-{i}");
+                    // On a slow disk one client can wait past the lock limit.
+                    // That input was refused before anything changed, not
+                    // lost, so the client offers it again.
+                    while let Err(error) = history.record(&path, &text) {
+                        assert!(error.contains("busy in another CLI"), "{error}");
+                    }
                 }
             })
         })
