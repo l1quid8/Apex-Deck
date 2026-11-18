@@ -41,7 +41,7 @@ test('all chip styles preserve the live composer and bot actions in wide, narrow
   await server.listen();
   const url = `http://localhost:${server.httpServer.address().port}/__chat_attach_test`;
   const main = path.join(temp, 'main.cjs');
-  const screenshot = '/tmp/apex-chip-styles.png';
+  const screenshot = path.join(os.tmpdir(), 'apex-chip-styles.png');
   fs.writeFileSync(main, `
     const {app,BrowserWindow}=require('electron'); const assert=require('node:assert/strict'); const fs=require('node:fs');
     app.whenReady().then(async()=>{
@@ -89,7 +89,7 @@ test('all chip styles preserve the live composer and bot actions in wide, narrow
         await run(()=>{document.getElementById('test-root').style.display='none';const g=document.createElement('div');g.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:20px';document.body.append(g);for(const item of window.gallery.slice(1)){const d=document.createElement('section');d.className='thread-chat';d.style.cssText='border:1px solid var(--line);padding:12px;border-radius:8px';const h=document.createElement('h3');h.textContent=item.style;d.append(h);const c=document.createElement('div');c.className='composer-box';c.textContent='Message the room…';c.style.cssText='height:38px;padding:8px;border:1px solid var(--line)';d.append(c);d.insertAdjacentHTML('beforeend',item.row);g.append(d);}});
         await new Promise(r=>setTimeout(r,150));
         fs.writeFileSync(${JSON.stringify(screenshot)},(await win.webContents.capturePage()).toPNG());
-        console.log('All 13 styles preserve draft, room, accessible names and bot actions; wide/narrow/folded checks passed. Screenshot: ${screenshot}'); app.exit(0);
+        console.log('All 13 styles preserve draft, room, accessible names and bot actions; wide/narrow/folded checks passed. Screenshot: '+${JSON.stringify(screenshot)}); app.exit(0);
       }catch(error){console.error(error.stack);app.exit(1);}
     });
   `);

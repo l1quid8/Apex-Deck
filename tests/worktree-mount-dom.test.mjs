@@ -33,7 +33,7 @@ test('Mount queues, cancels, follows the original chat across focus changes and 
     await run(()=>document.getElementById('close-chat').click());await run(()=>document.getElementById('finish').click());
     await new Promise(r=>setTimeout(r,1000));
     assert.equal(await run(()=>document.getElementById('folder').textContent),'a: /tree','closing a chat cancels a queued switch');
-    const image=await win.webContents.capturePage();require('node:fs').writeFileSync('/tmp/apex-worktree-mount-ui.png',image.toPNG());console.log('Mount DOM flow passed');app.exit(0);
+    const image=await win.webContents.capturePage();require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(),'apex-worktree-mount-ui.png'),image.toPNG());console.log('Mount DOM flow passed');app.exit(0);
     }catch(e){console.error(e.stack);app.exit(1);}});`);
   try{const result=await runElectronScenario(electron,main,temp,{timeoutMs:45000});assert.equal(result.code,0,result.output);}finally{await server.close();fs.rmSync(temp,{recursive:true,force:true});}
 });

@@ -50,7 +50,7 @@ window.fixture.reset(false);
 
 test('real task manager is touch safe and preserves exact deletion scope at narrow desktop and phone widths', {timeout:180000}, async()=>{
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'task-manager-dom-'));
- const shots='/tmp/task-manager-qa';fs.mkdirSync(shots,{recursive:true});
+ const shots=path.join(os.tmpdir(),'task-manager-qa');fs.mkdirSync(shots,{recursive:true});
  const fixtureFile=path.join(temp,'fixture.jsx');fs.writeFileSync(fixtureFile,fixtureModule);
  const server=await createServer({cacheDir:path.join(temp,'vite-cache'),server:{port:0,fs:{allow:[process.cwd(),temp]}},logLevel:'error',plugins:[{name:'task-manager-test-page',configureServer(server){server.middlewares.use('/__task-manager.html',async(_req,res)=>{res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml('/__task-manager.html',
  `<html><head><style>:root{--text:#ddd;--muted:#aaa;--panel:#181b20;--bg:#181b20;--line:#333;--accent:#67d4bf;--danger:#ed7777;--hover:#30343b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui}button,input,select{color:inherit;background:#252a30;border:1px solid #444}main{width:100%}</style></head><body><div id="root"></div><script type="module" src="/@fs/${fixtureFile.replace(/\\/g,'/').replace(/^\//,'')}"></script></body></html>`));});}}]});
