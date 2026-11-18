@@ -224,7 +224,8 @@ mod tests {
         ] {
             assert!(check_environment([(name.into(), "bad".into())]).is_err());
         }
-        assert!(check_environment([("APEX_DECK_DATA_DIR".into(), "/tmp/test".into())]).is_ok());
+        let data = std::env::temp_dir().join("apex-authority-test");
+        assert!(check_environment([("APEX_DECK_DATA_DIR".into(), data.to_str().unwrap().into())]).is_ok());
         for name in [
             "APEX_DECK_BIN",
             "APEX_DECK_BOT",

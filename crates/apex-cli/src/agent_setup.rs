@@ -96,7 +96,7 @@ pub fn import_preview(path:&std::path::Path)->Result<Vec<Value>,String>{
         for field in ["null","default","none"]{w.advance(field).unwrap();}assert!(w.advance("full").is_err());
     }
     #[test] fn imports_only_supported_profiles_and_drops_grants_and_overrides(){
-        let path=std::path::PathBuf::from(format!("/tmp/apex-import-{}.json",uuid::Uuid::new_v4()));
+        let path=std::env::temp_dir().join(format!("apex-import-{}.json",uuid::Uuid::new_v4()));
         std::fs::write(&path,json!({"profiles":[{"id":"original-null","display_name":"Null","backend":{"kind":"agent","tool":"codex","model":null},"persona":"Keep actual instructions","access":"full","program":"evil","secret":"excluded"},{"id":"shell","display_name":"Shell","backend":{"kind":"cli","program":"evil"}}]}).to_string()).unwrap();
         let preview=import_preview(&path).unwrap();assert_eq!(preview.len(),1);assert_eq!(preview[0]["instructions"],"Keep actual instructions");assert_eq!(preview[0]["access"],"ask");assert!(preview[0].get("program").is_none());assert!(preview[0].get("secret").is_none());
         std::fs::remove_file(path).unwrap();

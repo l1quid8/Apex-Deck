@@ -32,7 +32,7 @@ function mount(overrides={}){
  const hooks={useRef(initial){const i=cursor++;return states[i]??(states[i]={current:initial});},useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],value=>states[i]=typeof value==='function'?value(states[i]):value];},useMemo(fn){cursor++;return fn();},useEffect(fn,next){const i=cursor++;if(!deps[i]||next.some((v,j)=>v!==deps[i][j])){deps[i]=next;queued.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}},useSyncExternalStore(sub,get){return get();}};
  const voiceController={subscribe:()=>()=>{},getState:()=>({status:'off',muted:false})};
  const Clock=()=>null;
- const bindings={AssistantCapabilities,CALL_ENGINES,REALTIME_MODELS,REALTIME_VOICES,DEFAULT_REALTIME_MODEL,DEFAULT_REALTIME_VOICE,readRealtimeModel,readRealtimeVoice,realtimeVoiceLabel,assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders,VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,tryProjectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel,voiceController,Clock,useSyncExternalStore:hooks.useSyncExternalStore};
+ const bindings={isWindows:false,AssistantCapabilities,CALL_ENGINES,REALTIME_MODELS,REALTIME_VOICES,DEFAULT_REALTIME_MODEL,DEFAULT_REALTIME_VOICE,readRealtimeModel,readRealtimeVoice,realtimeVoiceLabel,assistantTextProvider,assistantRuntimeModels,loadAssistantRuntimeProviders,VoiceSampleButton,CALL_VOICES,defaultVoiceOf,readVoiceSettings,CALL_LOOKS,voiceLabel,React,...hooks,Avatar,HexColorPicker,PersonalPanels,PersonalBrowser,AssistantAvatarEditor,assistantAppearance,createAssistantAppearance,projectIdentityKey,tryProjectIdentityKey,runtimeProfile,textModels,reconcileEffort,validateAssistantDraft,dirtyFields,providerEnabled,providerForConfig,AGENT_COLORS,createAssistantAvatarApi:()=>undefined,assistantStatus,accessLabel,voiceController,Clock,useSyncExternalStore:hooks.useSyncExternalStore};
  const components=new Function(...Object.keys(bindings),`${compiled}\nreturn {AssistantEditor,AssistantWorkspace};`)(...Object.values(bindings));
  return{props,calls,unmount(){cleanups.forEach(fn=>fn?.());},render(){cursor=0;const tree=components.AssistantEditor(props);queued.splice(0).forEach(fn=>fn());return tree;},workspace(p){return components.AssistantWorkspace(p);},async ready(){for(let i=0;i<4;i++){this.render();await new Promise(r=>setImmediate(r));}return this.render();}};
 }
@@ -233,7 +233,7 @@ test('status counts work that needs you and failed work',()=>{
  assert.equal(text(status),'Needs you · 1');assert.equal(status.props['data-state'],'needs_you');
 });
 test('menu holds Projects & access, Browser, Memory, Settings and Pause, with no runtime popover left',()=>{
- assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Projects & access','Browser','Memory','Settings','Pause']);
+ assert.deepEqual(all(header(headerLane()),n=>n.props?.role==='menuitem').map(text),['Apex AssistantReady','Projects & access','Browser','Memory','Settings','Pause']);
 });
 test('the avatar is the Details toggle and reports whether Details is open',()=>{
  const opened=[];const tree=header(headerLane(),{detailsOpen:false,onToggleDetails:()=>opened.push('toggle')});
@@ -241,7 +241,7 @@ test('the avatar is the Details toggle and reports whether Details is open',()=>
  assert.ok(avatar,'the capsule carries the details control');
  assert.equal(avatar.props['aria-expanded'],false);
  assert.equal(avatar.props['aria-controls'],'assistant-details');
- avatar.props.onClick();assert.deepEqual(opened,['toggle']);
+ avatar.props.onClick({currentTarget:{closest:()=>null}});assert.deepEqual(opened,['toggle']);
  assert.equal(find(header(headerLane(),{detailsOpen:true}),n=>n.props?.['aria-label']==='Apex Assistant details').props['aria-expanded'],true);
 });
 test('the menu opens Projects & access as a subview',()=>{
@@ -249,10 +249,12 @@ test('the menu opens Projects & access as a subview',()=>{
  find(tree,n=>n.props?.role==='menuitem'&&text(n)==='Projects & access').props.onClick({currentTarget:{closest:()=>null}});
  assert.deepEqual(opened,['projects']);
 });
-test('the ⋯ button is a 36px circle with a border',()=>{
- const css=fs.readFileSync(new URL('../src/assistant-workspace.css',import.meta.url),'utf8');
- assert.match(css,/\.assistant-workspace-menu>summary\{[^}]*width:36px/);
- assert.match(css,/\.assistant-workspace-menu>summary\{[^}]*border-radius:50%/);
+test('call and menu stay available without a context thread',()=>{
+ const calls=[];
+ const tree=header(headerLane(),{onStartCall:()=>calls.push('call')});
+ input(tree,'Call Apex Assistant').props.onClick();
+ assert.deepEqual(calls,['call']);
+ assert.ok(find(tree,n=>n.type==='summary'));
 });
 test('pause is a labelled button',()=>{
  assert.ok(find(header(headerLane()),n=>n.type==='button'&&text(n)==='Pause'));

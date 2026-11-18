@@ -32,6 +32,7 @@ test('phone composer hardware arrows recall local history and preserve native ed
         gate:{enabled:true,reason:''}, endRef:{current:null}, runner:null,
         swipe:{next:null,previous:null,position:''}, onSwipe(){},
         steps:null, pictures:{read:async()=>new ArrayBuffer(0),blocked:null},
+        onPasteFiles(files) { window.pastedFiles = files.map(file => file.name); },
         onDraft:window.replaceDraft, onResized() {}, onScrolled() {}, places:new Map(),
         onSend(){window.sends++; window.replaceDraft('');}
       });
@@ -68,6 +69,18 @@ test('phone composer hardware arrows recall local history and preserve native ed
         const replace=async text=>{await run('replaceDraft('+JSON.stringify(text)+')');await frame();};
         const history=async texts=>{await run('replaceHistory('+JSON.stringify(texts)+')');await frame();};
         const synthetic=async extra=>{const consumed=await run('(()=>{const e=new KeyboardEvent("keydown",{key:"ArrowUp",bubbles:true,cancelable:true,...'+JSON.stringify(extra)+'});document.querySelector("textarea").dispatchEvent(e);return e.defaultPrevented;})()');await frame();return consumed;};
+        const paste = async withFile => run('(' + ((withFile) => {
+          const data = new DataTransfer();
+          data.setData('text/plain', 'clipboard text');
+          if (withFile) data.items.add(new File(['image bytes'], 'screenshot.png', {type:'image/png'}));
+          const event = new ClipboardEvent('paste', {clipboardData:data, bubbles:true, cancelable:true});
+          document.querySelector('textarea').dispatchEvent(event);
+          return event.defaultPrevented;
+        }).toString() + ')(' + withFile + ')');
+        assert.equal(await paste(false), false, 'plain text uses native paste');
+        assert.equal(await paste(true), true, 'file paste is handled by the phone composer');
+        assert.deepEqual(await run('window.pastedFiles'), ['screenshot.png']);
+        assert.equal(await value(), 'unfinished', 'file paste preserves the draft text');
         await caret(3); await press('Up'); assert.equal(await value(),'new prompt');
         assert.equal(await run('document.querySelector("textarea").selectionStart'),10);
         await press('Up'); assert.equal(await value(),'old prompt');

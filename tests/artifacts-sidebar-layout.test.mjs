@@ -9,7 +9,7 @@ import { runElectronScenario } from './helpers/electron-test.mjs';
 
 test('docked Artifacts fills the sidebar and popout across Clay and Glass sizes', { timeout: 200000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'artifacts-sidebar-'));
-  const shots = '/tmp/apex-artifacts-review';
+  const shots = path.join(os.tmpdir(), 'apex-artifacts-review');
   fs.mkdirSync(shots, { recursive: true });
   const html = `<div id="root"></div><script type="module">
     import React, { useState } from 'react';
@@ -56,7 +56,7 @@ test('docked Artifacts fills the sidebar and popout across Clay and Glass sizes'
           await run("fixture.setState(s=>({...s,active:'details'}))"); await frame();
           assert.equal(await run("document.querySelector('.popout-chat-main').getBoundingClientRect().width"),geometry.chat.width);
           await run("fixture.setState(s=>({...s,active:'artifacts'}))"); await frame();
-          fs.writeFileSync('${shots}/'+theme+'-'+width+'.png',(await win.webContents.capturePage()).toPNG());
+          fs.writeFileSync(${JSON.stringify(shots)}+'/'+theme+'-'+width+'.png',(await win.webContents.capturePage()).toPNG());
         }
         for(const label of ['Source','Changes','Preview']) {
           await run("[...document.querySelectorAll('.artifacts-tabs button')].find(b=>b.textContent==="+JSON.stringify(label)+").click()");await frame();
@@ -71,7 +71,7 @@ test('docked Artifacts fills the sidebar and popout across Clay and Glass sizes'
         assert.ok(Math.abs(pop.bottom-pop.composer)<2,JSON.stringify(pop));
         await run("document.querySelector('.popout-artifacts').className='right-artifacts-slot popout-artifacts overlay'");await frame();
         assert.equal(await run("getComputedStyle(document.querySelector('.popout-artifacts')).position"),'absolute');
-        fs.writeFileSync('${shots}/popout-760.png',(await win.webContents.capturePage()).toPNG());
+        fs.writeFileSync(${JSON.stringify(shots)}+'/popout-760.png',(await win.webContents.capturePage()).toPNG());
         console.log('Six theme/size layouts, tab width, version/view controls, and full-height popout passed'); app.exit(0);
       }catch(e){console.error(e.stack);app.exit(1);}
     });

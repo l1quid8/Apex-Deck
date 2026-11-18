@@ -4,7 +4,10 @@ use serde_json::json;
 use std::{path::PathBuf, time::Duration};
 
 fn data() -> PathBuf {
-    std::path::Path::new("/tmp").join(format!("acl-{}", uuid::Uuid::new_v4().simple()))
+    // Unix sockets need a short path on macOS. Windows named pipes derive
+    // their name from the data directory and need a native absolute path.
+    let root = if cfg!(windows) { std::env::temp_dir() } else { PathBuf::from("/tmp") };
+    root.join(format!("acl-{}", uuid::Uuid::new_v4().simple()))
 }
 
 #[tokio::test]
