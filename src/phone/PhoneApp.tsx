@@ -2036,9 +2036,7 @@ export function PhoneApp() {
     pickerDraft.current = openKey ?? openId;
   }
 
-  async function readAttachments(_kind: "camera" | "photos" | "files", selected: File[]) {
-    const capturedId = pickerDraft.current;
-    pickerDraft.current = null;
+  async function readAttachments(capturedId: string | null, selected: File[]) {
     await readCapturedFiles({
       capturedId, moved: movedRef.current, files: selected,
       makeAttachment: async (file) => ({ id: crypto.randomUUID(), name: file.name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) }),
@@ -2961,6 +2959,7 @@ export function PhoneApp() {
             }}
             onSheet={openChat ? (kind) => { if (kind === "where") setChatSheet({ kind: "where" }); } : openSheet}
             onOpenComposer={openComposer}
+            onPasteFiles={(files) => readAttachments(openKey ?? openId, files)}
             chat={chatExtras}
           />
         ) : tab === "threads" ? (
@@ -3162,7 +3161,11 @@ export function PhoneApp() {
         {composerOpen && openWorkspace && openLink && <ComposerPanel
           onClose={() => setComposerOpen(false)}
           onPickerStart={startPicker}
-          onPick={readAttachments}
+          onPick={(_kind, files) => {
+            const target = pickerDraft.current;
+            pickerDraft.current = null;
+            void readAttachments(target, files);
+          }}
           files={draft.files}
           onRemoveFile={(id) => openKey && setDrafts((all) => { const now = all[openKey] ?? emptyDraft(); return { ...all, [openKey]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
           onTools={() => { setComposerOpen(false); openSheet("tools"); }}
@@ -3908,7 +3911,7 @@ function ThreadView(props: {
   /** Where you were reading each thread, kept by the app so it outlives this screen. */
   places: Map<string, ReadingPlace>;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
-  onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void; onOpenComposer(): void;
+  onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void; onOpenComposer(): void; onPasteFiles(files: File[]): void;
   /** Messages waiting on the phone for a bot to finish, oldest first. */
   queued: QueuedView[];
   /** Everyone the next message goes to is mid-reply, so Send queues it. */
@@ -4623,6 +4626,20 @@ function ThreadView(props: {
           </button>}
           <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
+              onPaste={(event) => {
+                if (props.chat) return;
+                const clipboard = event.clipboardData;
+                const files = Array.from(clipboard.files);
+                if (!files.length) {
+                  for (const item of Array.from(clipboard.items)) {
+                    const file = item.kind === "file" ? item.getAsFile() : null;
+                    if (file) files.push(file);
+                  }
+                }
+                if (!files.length) return;
+                event.preventDefault();
+                props.onPasteFiles(files);
+              }}
               placeholder={props.callSlot.live ? (pillCall ? props.callSlot.hint : "Speak or type…") : props.quotes.length ? "e.g. Check this against the tests and say what breaks" : props.plan ? "Plan with the agents — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
               onChange={(event) => { composerHistory.setText(event.target.value); setCaret(event.target.selectionStart); }}
               onKeyDown={(event) => {
