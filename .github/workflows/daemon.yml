@@ -4,11 +4,59 @@
 # (docs/superpowers/plans/2026-10-21-windows-11.md).
 name: daemon
 
+# A pull request runs once, for the pull request. A push runs only on main, so
+# a branch with an open pull request no longer runs everything twice.
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
+  # Which parts of the repository a pull request touches. A push to main always
+  # runs everything. The lists are deliberately wide, because the suites read
+  # across the tree:
+  #   - Rust tests read crates/, shared/, src/, tests/ and voice-sidecar/, and
+  #     the Linux job runs the VPS updater checks in scripts/ and tests/.
+  #   - The app tests read nearly everything (crates/, docs/, mockups/,
+  #     branding/, npm/, .github/ and the root Markdown files), so they are
+  #     skipped only for changes confined to artifacts/ and screenshots/.
+  # If the changed files cannot be listed, everything runs.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          rust=true
+          app=true
+          if [ "$EVENT" = "pull_request" ] && files=$(git diff --name-only "$BASE...$HEAD") && [ -n "$files" ]; then
+            rust=false
+            app=false
+            while IFS= read -r file; do
+              echo "$file"
+              case "$file" in
+                crates/*|shared/*|src/*|tests/*|voice-sidecar/*|scripts/*|Cargo.toml|Cargo.lock|.github/workflows/daemon.yml) rust=true ;;
+              esac
+              case "$file" in
+                artifacts/*|screenshots/*) ;;
+                *) app=true ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "rust=$rust app=$app"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+
   # One release version everywhere it is written: Cargo workspace, both
   # lockfiles, package.json, package-lock.json and the npm CLI packages.
   # Fix a failure with `node scripts/bump-version.mjs <x.y.z>`.
@@ -27,6 +75,8 @@ jobs:
   # RoomEvent, HostEvent, Welcome). A type changed in Rust without regenerating
   # fails here; fix with `node scripts/gen-protocol-types.mjs` and commit.
   protocol-types:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -44,6 +94,8 @@ jobs:
 
   # Exercise the production IPC, privacy, and lock source independently.
   test-windows-ipc:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -55,6 +107,8 @@ jobs:
         run: cargo test --locked -p apex-ipc-check --lib -- --nocapture
 
   test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -89,19 +143,19 @@ jobs:
         run: CARGO_TARGET_DIR=target cargo test --locked --manifest-path crates/iroh-mobile/Cargo.toml
 
   # Windows compilation and runtime failures fail CI, just like Unix failures.
-  # The Electron app's Node checks run here too, because the desktop app is a
-  # Windows target now and nothing else tests it there.
+  # This used to be one job that ran the Rust suites, the daemon suite and the
+  # app suite back to back, about 34 minutes against a 40-minute limit. The
+  # three now run side by side as test-windows, test-windows-daemon and
+  # test-windows-app.
   test-windows:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       # Keep LF line endings so files match the Mac and Linux checkouts.
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -119,14 +173,59 @@ jobs:
       - name: Test apex-core, apex-adapters and apex-host
         if: ${{ !cancelled() }}
         run: cargo test --locked --no-fail-fast -p apex-core -p apex-adapters -p apex-host
-      - name: Test apex-daemon
-        if: ${{ !cancelled() }}
-        run: cargo test --locked --no-fail-fast -p apex-daemon --features remote
       - name: Test provenance platform boundary
         if: ${{ !cancelled() }}
         run: cargo test --locked -p apex-provenance --lib
+
+  test-windows-daemon:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Test apex-daemon
+        run: cargo test --locked --no-fail-fast -p apex-daemon --features remote
+
+  # The Electron app's Node checks run on Windows, because the desktop app is a
+  # Windows target now and nothing else tests it there. Node splits the test
+  # files across four shards by position, so each shard runs about a quarter of
+  # them.
+  test-windows-app:
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    name: test-windows-app (${{ matrix.shard }}/4)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      # Keep LF line endings so files match the Mac and Linux checkouts.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      # One cache for all four shards: they build the same thing.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-app
+          cache-on-failure: true
+      # The Task Scheduler tests launch the real daemon and build it themselves
+      # with this same command. The old single job had already compiled it by
+      # the time they ran; build it here so no test pays for a cold compile.
+      - name: Build the daemon the Task Scheduler tests launch
+        run: cargo build --locked -p apex-daemon
       - name: Install the app's Node dependencies
-        if: ${{ !cancelled() }}
         run: npm ci
       # `require('electron')` downloads and unzips dist/electron.exe on the first
       # import; npm ci does not, because this repo's install-script allowlist
@@ -136,10 +235,10 @@ jobs:
       # `spawn EBUSY` on an electron.exe the other was still writing. Extract it
       # once, before any test file starts.
       - name: Fetch the Electron binary once, so the tests cannot race for it
-        if: ${{ !cancelled() }}
         run: node -e "import('electron').then((m) => console.log(m.default))"
+      # Type-checking does not depend on the shard, so one shard does it.
       - name: Type-check the app
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         run: npx tsc --noEmit
       - name: Test the app
         # Blocking. The suite never ran off this Mac until M4: it started at
@@ -155,7 +254,7 @@ jobs:
         # Two test files at a time: four cores booting four Chromiums at once
         # crashed scenarios silently, which reads as a failure with no output.
         if: ${{ !cancelled() }}
-        run: node --experimental-strip-types --test --test-concurrency=2 tests/*.test.mjs
+        run: node --experimental-strip-types --test --test-concurrency=2 --test-shard=${{ matrix.shard }}/4 tests/*.test.mjs
 
   build:
     needs: test
