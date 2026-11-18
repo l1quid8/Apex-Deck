@@ -1,0 +1,64 @@
+name: cli-windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/apex-cli/**'
+      - 'crates/apex-core/**'
+      - 'crates/apex-adapters/**'
+      - 'crates/apex-daemon/**'
+      - 'crates/apex-provenance/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/cli-windows.yml'
+  push:
+    branches: [feat/apex-cli-windows]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Check the CLI and all its test targets with MSVC
+        run: cargo check --locked --all-targets -p apex-cli
+      - name: Run CLI unit, transport, state and rendering tests
+        # Unix process fixtures declare cfg(unix); transport tests use the
+        # real Windows named-pipe implementation, never a Unix substitute.
+        run: cargo test --locked -p apex-cli --lib --tests
+      - name: Build development executables
+        run: cargo build --locked -p apex-cli -p apex-daemon -p apex-provenance
+      - name: Check executable versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & target/debug/apex.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'CLI version check failed' }
+          & target/debug/apex-daemon.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Backend version check failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          # Raw, unsigned debug binaries for engineering only. Protected CLI
+          # commands remain disabled until broker enrollment is implemented.
+          name: apex-cli-windows-x64-development
+          path: |
+            target/debug/apex.exe
+            target/debug/apex-daemon.exe
+            target/debug/apex-provenance.exe
+          if-no-files-found: error
+          retention-days: 7

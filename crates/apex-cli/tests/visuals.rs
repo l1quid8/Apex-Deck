@@ -146,6 +146,9 @@ fn header_drops_version_before_shortening_thread_title() {
     assert!(header.ends_with("…/app "), "{header}");
 }
 
+// The header's ~/ abbreviation is a Unix HOME convention; Windows folder
+// rendering is still covered by the remaining layout tests.
+#[cfg(unix)]
 #[test]
 fn header_abbreviates_home_only_for_paths_inside_home() {
     let home = std::env::var("HOME").unwrap();

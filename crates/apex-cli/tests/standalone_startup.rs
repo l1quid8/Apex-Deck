@@ -9,8 +9,9 @@ fn standalone_defaults_to_the_same_store_as_desktop() {
 
 #[test]
 fn explicit_path_and_attach_are_independent() {
-    let Launch::Interactive(args) = parse(["--data-dir", "/tmp/apex-test", "--connect-deck"].map(str::to_string)).unwrap() else { panic!() };
-    assert_eq!(args.data.to_str(), Some("/tmp/apex-test"));
+    let path = std::env::temp_dir().join("apex-test");
+    let Launch::Interactive(args) = parse(["--data-dir", path.to_str().unwrap(), "--connect-deck"].map(str::to_string)).unwrap() else { panic!() };
+    assert_eq!(args.data, path);
     assert!(args.connect_deck);
     assert!(parse(["--data-dir", "relative"].map(str::to_string)).is_err());
 }
