@@ -7,6 +7,16 @@ export function applyNowFirst(from: Access, to: Access): boolean {
   return RANK[to] < RANK[from];
 }
 
+/** How long an "Access changed to Full at 3:04 PM" line stays in the chat. */
+export const ACCESS_NOTE_MS = 8000;
+
+/** The next Access note to clear and how long until then. A note's key is the time it was added. */
+export function accessNoteExpiry(notes: { key: number }[], now: number): { key: number; delay: number } | null {
+  const oldest = notes[0];
+  if (!oldest) return null;
+  return { key: oldest.key, delay: Math.max(0, oldest.key + ACCESS_NOTE_MS - now) };
+}
+
 /** The Access choices a bot can take, least first. Grok and Muse have no Ask mode. */
 export function accessOptions(tool: string | null): { value: Access; text: string; title: string }[] {
   return [

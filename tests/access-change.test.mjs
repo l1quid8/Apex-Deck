@@ -85,3 +85,15 @@ test("The phone's bot settings are locked while Apply now runs", () => {
   const source = readFileSync(new URL("../src/phone/PhoneApp.tsx", import.meta.url), "utf8");
   assert.ok(source.includes('<fieldset className="ph-group ph-turn" disabled={Boolean(props.offline) || applying === "…"}'), "settings stay editable during Apply now");
 });
+
+import { ACCESS_NOTE_MS, accessNoteExpiry } from "../src/accessChange.ts";
+
+test("Access changed notes go away on their own, oldest first", () => {
+  assert.equal(accessNoteExpiry([], 1000), null);
+  // A fresh note waits the full time.
+  assert.deepEqual(accessNoteExpiry([{ key: 1000 }], 1000), { key: 1000, delay: ACCESS_NOTE_MS });
+  // The oldest note goes first, with only its remaining time.
+  assert.deepEqual(accessNoteExpiry([{ key: 1000 }, { key: 5000 }], 4000), { key: 1000, delay: ACCESS_NOTE_MS - 3000 });
+  // A note already past its time (e.g. the pane was asleep) goes right away.
+  assert.deepEqual(accessNoteExpiry([{ key: 1000 }], 1000 + ACCESS_NOTE_MS * 3), { key: 1000, delay: 0 });
+});

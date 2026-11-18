@@ -96,6 +96,7 @@ import { CLEAR_BUSY, CLEARED, commandRefusal, imageLabel, imageMessage, unknownC
 import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, type FormView } from "./questions";
 import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
+import { accessNoteExpiry } from "./accessChange";
 import { exportFileName, exportHtml, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { lastReply } from "./threadCopy.ts";
 import { threadStarted } from "./destinations.ts";
@@ -769,6 +770,12 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [accessFrom, setAccessFrom] = useState<Record<string, Access>>({});
   /** "Access changed to Read at 3:04 PM" lines for this sitting. */
   const [accessNotes, setAccessNotes] = useState<{ key: number; text: string }[]>([]);
+  useEffect(() => {
+    const next = accessNoteExpiry(accessNotes, Date.now());
+    if (!next) return;
+    const timer = setTimeout(() => setAccessNotes((notes) => notes.filter((note) => note.key !== next.key)), next.delay);
+    return () => clearTimeout(timer);
+  }, [accessNotes]);
   const closeQuickSettings = () => setQuickSettings(null);
   const [busy, setBusy] = useState(false);
   const [text, writeText] = useState(talkOnly ? chatDraft : "");
