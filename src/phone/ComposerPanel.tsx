@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { Camera, ChevronRight, Files, Folder, Image, Plan, Plug, X } from "./icons";
+import { Camera, ChevronRight, Copy, Files, Folder, Image, Plan, Plug, X } from "./icons";
 import { panelDrag, type PanelDetent } from "./composerPanelModel";
 
 export type ComposerAttachment = { id: string; name: string; bytes: Uint8Array; type?: string };
 export type ComposerPanelProps = {
   onClose(): void;
+  onPaste?(): void;
   onPickerStart(kind: "camera" | "photos" | "files"): void;
   onPick(kind: "camera" | "photos" | "files", files: File[]): void;
   files: ComposerAttachment[];
@@ -106,6 +107,7 @@ export function ComposerPanel(props: ComposerPanelProps) {
         <div className="ph-composer-media" aria-label="Media attachments">
           <button type="button" className="ph-composer-media-tile" onClick={() => pick("camera")}><Camera size={25} /><strong>Camera</strong></button>
           <button type="button" className="ph-composer-media-tile" onClick={() => pick("photos")}><Image size={25} /><strong>Photos</strong></button>
+          {props.onPaste && <button type="button" className="ph-composer-media-tile" onClick={props.onPaste}><Copy size={25} /><strong>Paste</strong></button>}
           {previews.map((preview) => <div className="ph-composer-preview" key={preview.id}><img src={preview.url} alt="Selected image" /><button type="button" aria-label={`Remove ${props.files.find((file) => file.id === preview.id)?.name ?? "image"}`} onClick={() => props.onRemoveFile(preview.id)}>×</button></div>)}
         </div>
         <div className="ph-composer-group">

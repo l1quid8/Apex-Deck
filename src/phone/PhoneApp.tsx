@@ -97,7 +97,7 @@ import type { SetupDeps } from "./sshRun";
 import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
-import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
+import { composerPlanDisabledReason, readCapturedFiles, readClipboardFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
 import { chatOutboxRows, chatRights, chatRoute, machineThreadKey, mayPostIn, pickOpenPane, projectChats, threadKey, type ChatRights } from "./chatRoutes";
 import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets } from "../chatPromote.ts";
@@ -2036,7 +2036,7 @@ export function PhoneApp() {
     pickerDraft.current = openKey ?? openId;
   }
 
-  async function readAttachments(capturedId: string | null, selected: File[]) {
+  async function readAttachments(capturedId: string | null, selected: File[] | (() => Promise<File[]>)) {
     await readCapturedFiles({
       capturedId, moved: movedRef.current, files: selected,
       makeAttachment: async (file) => ({ id: crypto.randomUUID(), name: file.name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) }),
@@ -3160,6 +3160,7 @@ export function PhoneApp() {
         {runnerDiff&&<div className="ph-runner-review-backdrop"><section className="ph-runner-review" role="dialog" aria-label="Review runner changes"><button type="button" onClick={()=>setRunnerDiff(null)}>Close changes</button><p>{runnerDiff.note||'Changes in this thread folder. Review attribution before applying or reverting anything.'}</p>{runnerDiff.files.map(file=><details key={file.path}><summary>{file.path} (+{file.added} −{file.removed})</summary><pre>{file.patch}</pre></details>)}</section></div>}
         {composerOpen && openWorkspace && openLink && <ComposerPanel
           onClose={() => setComposerOpen(false)}
+          onPaste={typeof navigator.clipboard?.read === "function" ? () => readAttachments(openKey ?? openId, readClipboardFiles) : undefined}
           onPickerStart={startPicker}
           onPick={(_kind, files) => {
             const target = pickerDraft.current;
