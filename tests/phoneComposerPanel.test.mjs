@@ -85,3 +85,29 @@ test('Plan controls explain sending, offline and read-only disabled states', asy
   assert.equal(composerPlanDisabledReason({ pendingDraft: false, sending: false, online: true, readOnly: true, offlineReason: '' }), 'Plan mode needs chat access on this machine.');
   assert.equal(composerPlanDisabledReason({ pendingDraft: true, sending: false, online: false, readOnly: true, offlineReason: 'Offline' }), null);
 });
+
+test('clipboard reads attach one file per item to the draft captured before the paste prompt', async (t) => {
+  const { readCapturedFiles, readClipboardFiles } = await import('../src/phone/composerPanelModel.ts');
+  const image = new Blob(['picture'], { type: 'image/png' });
+  const document = new File(['document'], 'brief.pdf', { type: 'application/pdf' });
+  let finishPrompt;
+  t.mock.getter(globalThis, 'navigator', () => ({
+    clipboard: { read: () => new Promise(resolve => { finishPrompt = resolve; }) },
+  }));
+  const moved = {};
+  const events = [];
+  const reading = readCapturedFiles({
+    capturedId: 'draft', moved, files: readClipboardFiles,
+    makeAttachment: async file => [file.name, await file.text()],
+    onStart: () => events.push('reading'), onFinish: () => events.push('done'),
+    onAdd: (target, files) => events.push([target, files]), onError: error => assert.fail(error),
+  });
+  assert.deepEqual(events, ['reading']);
+  moved.draft = 'original-thread';
+  finishPrompt([
+    { types: ['text/plain', image.type], getType: async type => { assert.equal(type, image.type); return image; } },
+    { types: [document.type], getType: async () => document },
+  ]);
+  await reading;
+  assert.deepEqual(events, ['reading', ['original-thread', [['Pasted-1.png', 'picture'], ['brief.pdf', 'document']]], 'done']);
+});
