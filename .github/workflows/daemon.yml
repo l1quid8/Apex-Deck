@@ -227,6 +227,12 @@ jobs:
         run: cargo build --locked -p apex-daemon
       - name: Install the app's Node dependencies
         run: npm ci
+      # Thirteen test files save a screenshot under /tmp, which on Windows is
+      # \tmp on the checkout's drive. In the single job something earlier had
+      # always created it; a shard cannot count on that, and the first sharded
+      # run failed four tests with ENOENT in D:\tmp.
+      - name: Make the \tmp folder the screenshot tests write to
+        run: New-Item -ItemType Directory -Force -Path \tmp | Out-Null
       # `require('electron')` downloads and unzips dist/electron.exe on the first
       # import; npm ci does not, because this repo's install-script allowlist
       # skips electron's postinstall (the "Downloading Electron binary..." line
