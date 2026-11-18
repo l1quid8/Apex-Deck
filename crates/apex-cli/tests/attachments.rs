@@ -1,5 +1,11 @@
 use apex_cli::attachments::{append_message, parse_paths, pasted_paths, stage, validate};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+/// An absolute launch folder on the current platform. `/launch` has no drive
+/// on Windows, so it is not absolute there.
+fn launch() -> PathBuf {
+    PathBuf::from(if cfg!(windows) { r"C:\launch" } else { "/launch" })
+}
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -22,20 +28,21 @@ impl Drop for Fixture {
 
 #[test]
 fn parses_quoted_escaped_unicode_and_literal_shell_syntax_without_evaluation() {
+    let launch = launch();
     let paths = parse_paths(
         r#""screen one.png" 'résumé 你好.pdf' third\ file.txt '$(touch nope);*.txt'"#,
-        Path::new("/launch"),
+        &launch,
     )
     .unwrap();
     assert_eq!(
         paths,
         [
-            "/launch/screen one.png",
-            "/launch/résumé 你好.pdf",
-            "/launch/third file.txt",
-            "/launch/$(touch nope);*.txt"
+            "screen one.png",
+            "résumé 你好.pdf",
+            "third file.txt",
+            "$(touch nope);*.txt"
         ]
-        .map(PathBuf::from)
+        .map(|name| launch.join(name))
     );
     for bad in [
         "",
@@ -46,7 +53,7 @@ fn parses_quoted_escaped_unicode_and_literal_shell_syntax_without_evaluation() {
         "'line\nbreak.txt'",
     ] {
         assert!(
-            parse_paths(bad, Path::new("/launch")).is_err(),
+            parse_paths(bad, &launch).is_err(),
             "accepted {bad:?}"
         );
     }
@@ -54,16 +61,17 @@ fn parses_quoted_escaped_unicode_and_literal_shell_syntax_without_evaluation() {
 
 #[test]
 fn expands_home_and_resolves_relative_paths_against_the_launch_folder() {
+    let launch = launch();
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap();
     assert_eq!(
-        parse_paths("~/Desktop/file.txt", Path::new("/launch")).unwrap(),
+        parse_paths("~/Desktop/file.txt", &launch).unwrap(),
         vec![PathBuf::from(home).join("Desktop/file.txt")]
     );
     assert_eq!(
-        parse_paths("../file.txt", Path::new("/launch/work")).unwrap(),
-        vec![PathBuf::from("/launch/work/../file.txt")]
+        parse_paths("../file.txt", &launch.join("work")).unwrap(),
+        vec![launch.join("work").join("../file.txt")]
     );
-    assert!(parse_paths("~someone/file", Path::new("/launch")).is_err());
+    assert!(parse_paths("~someone/file", &launch).is_err());
 }
 
 #[cfg(unix)]
@@ -115,7 +123,14 @@ fn stage_preserves_visible_errors_for_missing_directories_control_names_and_over
         .unwrap()
         .set_len(20 * 1024 * 1024 + 1)
         .unwrap();
-    let bad_name = f.file("bad\nname.txt", b"hi");
+    // Only Unix can create a file whose name holds a control character.
+    // Elsewhere the path alone is staged: the name is rejected before the
+    // file is opened, so the same error is still exercised.
+    let bad_name = if cfg!(unix) {
+        f.file("bad\nname.txt", b"hi")
+    } else {
+        f.0.join("bad\nname.txt")
+    };
     let queued = stage(vec![f.0.join("missing"), f.0.clone(), bad_name, big]);
     assert_eq!(queued.len(), 4);
     assert!(queued.iter().all(|item| item.error.is_some()));

@@ -40,7 +40,7 @@ jobs:
       - name: Run CLI unit, transport, state and rendering tests
         # Unix process fixtures declare cfg(unix); transport tests use the
         # real Windows named-pipe implementation, never a Unix substitute.
-        run: cargo test --locked -p apex-cli --lib --tests
+        run: cargo test --locked --no-fail-fast -p apex-cli --lib --tests
       - name: Build development executables
         run: cargo build --locked -p apex-cli -p apex-daemon -p apex-provenance
       - name: Check executable versions
