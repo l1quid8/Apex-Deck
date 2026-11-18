@@ -40,7 +40,7 @@ test('older records read inert source text and import once with the displayed ha
         assert.equal(await run(()=>document.querySelector('.legacy-history textarea')!==null),false);
         const history=(await run(()=>window.calls)).find(c=>c[0]==='legacy_import_history');
         assert.deepEqual(history[1],{snapshot:'20261022-204152',requestId:'request-7'});
-        fs.writeFileSync('/tmp/apex-g2b-transcript-smoke.png',(await win.webContents.capturePage()).toPNG());
+        fs.writeFileSync(require('node:path').join(require('node:os').tmpdir(),'apex-g2b-transcript-smoke.png'),(await win.webContents.capturePage()).toPNG());
         await run(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Import 1 record').click());
         await wait(()=>document.body.textContent.includes('Import finished'));
         const applies=(await run(()=>window.calls)).filter(c=>c[0]==='legacy_import_apply');

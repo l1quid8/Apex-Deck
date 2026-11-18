@@ -86,7 +86,7 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
         await wait(()=>document.body.innerText.includes('That thread is open in its own window.'),'popped notice');
         assert.equal(await run(()=>document.querySelector('.composer-dock-target strong').textContent),'b');
         assert.equal(await run(()=>document.querySelectorAll('.composer-input').length),1);
-        require('fs').writeFileSync('/tmp/task8-dock.png',(await win.webContents.capturePage()).toPNG());
+        require('fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(),'task8-dock.png'),(await win.webContents.capturePage()).toPNG());
         await run(()=>window.fixture.inline());
         await wait(()=>document.querySelectorAll('.composer-input').length===2,'inline composers');
         assert.equal(await run(()=>document.querySelector('.composer-dock')),null);

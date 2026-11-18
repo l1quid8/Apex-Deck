@@ -70,7 +70,7 @@ test('composer access switches immediately, persists, and marks a busy change un
         await wait(()=>document.querySelector('.chip-access')?.textContent==='Full');
         await run(()=>document.querySelector('.chip-name').click());await run(()=>document.querySelector('.chip-name').click());
         await wait(()=>document.querySelector('button.bot-access .quick-cell-label')?.textContent==='Full');
-        fs.writeFileSync('/tmp/apex-access-v4.png',(await win.webContents.capturePage()).toPNG());
+        fs.writeFileSync(require('node:path').join(require('node:os').tmpdir(),'apex-access-v4.png'),(await win.webContents.capturePage()).toPNG());
         await run(()=>{window.fixture.fail=true;document.querySelector('button.bot-access').click();});
         await wait(()=>document.querySelector('.bot-settings [role="alert"]'));
         assert.equal(await run(()=>document.querySelector('button.bot-access .quick-cell-label').textContent),'Full','failed save restores saved access');
