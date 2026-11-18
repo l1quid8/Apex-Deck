@@ -411,7 +411,7 @@ export function VoiceCallCapsule(props: Props) {
   );
 }
 
-/** Assistant session strip call controls (§6.3): floating capsule look. */
+/** Compact call controls hosted in the assistant context row. */
 export function VoiceSessionStrip(props: Props) {
   const call = useCall(props);
   const wrap = useRef<HTMLDivElement>(null);
@@ -426,58 +426,6 @@ export function VoiceSessionStrip(props: Props) {
       }
     }
   }, [call.state.muted]);
-
-  useEffect(() => {
-    const el = wrap.current;
-    if (!el) return;
-    const capsule = el.closest<HTMLElement>(".assistant-session");
-    if (!capsule) return;
-
-    let hideTimer: ReturnType<typeof setTimeout> | null = null;
-    const show = () => {
-      if (hideTimer) {
-        clearTimeout(hideTimer);
-        hideTimer = null;
-      }
-      capsule.classList.add("show-ctrls");
-    };
-    const hide = () => {
-      if (hideTimer) clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => {
-        hideTimer = null;
-        if (!ui.open && !capsule.contains(document.activeElement) && !capsule.matches(":hover")) {
-          capsule.classList.remove("show-ctrls");
-        }
-      }, 200);
-    };
-
-    const onPointerEnter = () => show();
-    const onPointerLeave = () => hide();
-    const onFocusIn = () => show();
-    const onFocusOut = (e: FocusEvent) => {
-      if (!capsule.contains(e.relatedTarget as Node)) {
-        hide();
-      }
-    };
-
-    capsule.addEventListener("pointerenter", onPointerEnter);
-    capsule.addEventListener("pointerleave", onPointerLeave);
-    capsule.addEventListener("focusin", onFocusIn);
-    capsule.addEventListener("focusout", onFocusOut);
-
-    if (call.ui.open || capsule.matches(":hover") || capsule.contains(document.activeElement)) {
-      show();
-    }
-
-    return () => {
-      if (hideTimer) clearTimeout(hideTimer);
-      capsule.removeEventListener("pointerenter", onPointerEnter);
-      capsule.removeEventListener("pointerleave", onPointerLeave);
-      capsule.removeEventListener("focusin", onFocusIn);
-      capsule.removeEventListener("focusout", onFocusOut);
-      capsule.classList.remove("show-ctrls");
-    };
-  }, [call.ui.open]);
 
   if (!window.apexDeck?.voice || !call.live || call.look !== "capsule") return null;
 
