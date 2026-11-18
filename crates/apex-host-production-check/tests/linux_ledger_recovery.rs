@@ -8,6 +8,20 @@ fn root(suffix: &str) -> std::path::PathBuf {
     root
 }
 
+/// Startup recovery may still be finishing a ledger save when the host is
+/// shut down, so the folder can briefly be non-empty. Retry for a moment
+/// rather than fail the test on its own cleanup.
+fn remove_after_host(root: &std::path::Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match std::fs::remove_dir_all(root) {
+            Ok(()) => return,
+            Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(error) => panic!("could not remove {}: {error}", root.display()),
+        }
+    }
+}
+
 #[test]
 fn linux_corrupt_ledger_must_not_start_with_an_empty_fallback() {
     let root = root("corrupt");
@@ -57,6 +71,6 @@ async fn linux_startup_must_recover_a_never_started_queued_task() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
     host.shutdown(); drop(host);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_after_host(&root);
     assert_eq!(final_status, "failed", "Restart must try the queued task and report its missing destination instead of leaving it queued forever");
 }
