@@ -326,8 +326,12 @@ fn local_origin_sequence_never_reuses_cleared_or_rewound_history() {
         let last = serde_json::to_value(host.store.room("r").unwrap().unwrap().snapshot).unwrap();
         assert!(last["transcript"][1]["originSeq"].as_u64().unwrap() > second_high);
         assert_eq!(call(&host, post("first")).await.unwrap()["state"], "done");
+        // The third post's reply is still being saved. Let it finish, or the
+        // cleanup below races it and finds the folder not empty.
+        wait_for_chat_reply(&host, "r", "third").await;
     });
     drop(host);
+    drop(runtime);
     std::fs::remove_dir_all(path).unwrap();
 }
 
