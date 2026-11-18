@@ -28,7 +28,12 @@ pub fn run(data_dir: Option<PathBuf>, options: ServeOptions) -> Result<(), Strin
         ));
     }
     let paths = paths::host_paths(data_dir)?;
+    // Windows names its pipe from the folder's physical path, so the folder
+    // is made first. Unix checks the socket path's length before making it.
+    #[cfg(windows)]
+    private_folder(&paths.data)?;
     let socket = socket_path(&paths.data)?;
+    #[cfg(unix)]
     private_folder(&paths.data)?;
     let lock = DataLock::acquire(&paths.data, &format!("apex-daemon serve (pid {})", std::process::id()))
         .map_err(|e| format!("{}: {e}", paths.data.display()))?;

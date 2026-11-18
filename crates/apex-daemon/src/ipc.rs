@@ -177,14 +177,18 @@ mod tests {
         assert_eq!(fixture.path, endpoint(&alternate).unwrap());
     }
 
+    // Asking for a name must not create the folder, and the name must not
+    // change when the daemon later creates it: the desktop asks before then.
     #[cfg(windows)]
     #[test]
-    fn windows_endpoint_creates_the_directory_before_resolving_it() {
+    fn windows_endpoint_names_a_missing_directory_without_creating_it() {
         let fixture = TestEndpoint::new();
-        let data = fixture.data.join("new-data");
+        let data = fixture.data.join("new-data").join("nested");
         let path = endpoint(&data).unwrap();
-        assert!(data.is_dir());
-        assert_eq!(path, endpoint(&std::fs::canonicalize(data).unwrap()).unwrap());
+        assert!(!fixture.data.join("new-data").exists());
+        std::fs::create_dir_all(&data).unwrap();
+        assert_eq!(path, endpoint(&data).unwrap());
+        assert_eq!(path, endpoint(&std::fs::canonicalize(&data).unwrap()).unwrap());
     }
 
     // Junctions need no symlink privilege and are a common Windows data-folder
