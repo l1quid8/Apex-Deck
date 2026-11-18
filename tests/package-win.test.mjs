@@ -185,7 +185,9 @@ test('the Windows CI job checks the app, not just the service', () => {
   const job = daemon.slice(daemon.indexOf('  test-windows:'), daemon.indexOf('  build:'));
   assert.match(job, /run: npm ci/);
   assert.match(job, /run: npx tsc --noEmit/);
-  assert.match(job, /run: node --experimental-strip-types --test --test-concurrency=2 tests\/\*\.test\.mjs/);
+  // The app tests run as four shards, still two test files at a time in each.
+  assert.match(job, /run: node --experimental-strip-types --test --test-concurrency=2 --test-shard=\$\{\{ matrix\.shard \}\}\/4 tests\/\*\.test\.mjs/);
+  assert.match(job, /shard: \[1, 2, 3, 4\]/, 'every shard must run, or a quarter of the tests are skipped');
   assert.match(job, /actions\/setup-node@/, 'the Node checks need a known Node, not the runner default');
 
   // electron unzips itself on the first import, so two test files doing it at
