@@ -3967,7 +3967,7 @@ function ThreadView(props: {
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
   const pill = usePillPress();
-  // Cards show read-only on the phone for now, at their defaults.
+  // Comparison settings stay read-only here. Built-in controls use local component state.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
   // One stable reader per sender, so a picture isn't read again on every render.
   const pictureReaders = useMemo(() => new Map<string, (path: string) => Promise<ArrayBuffer>>(), [props.pictures.read]);
@@ -4402,7 +4402,7 @@ function ThreadView(props: {
               {message.lateReplyFrom && <p className="late-reply-label">Late reply from {message.lateReplyFrom}</p>}
               {(() => {
                 const renderText = (text: string) => <div className="ph-md"><Markdown text={text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
-                ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
+                ? <ThreadCard threadId={props.paneId} hostId={props.link.id} source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
                 : undefined)} /></div>;
                 const saved = savedEntry(props.stepsIndex, message.seq);
                 return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={message.text} renderText={renderText} /> : renderText(message.text);

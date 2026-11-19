@@ -78,6 +78,12 @@ const plainMarkdown = (text: string) => text.replace(/([\\`*_{}\[\]()#+\-.!|>~<&
 /** The card in Markdown at `values` (its defaults when null): for exports, and anywhere it can't be drawn. */
 export function cardMarkdown(card: Card, values: InputValues | null): string {
   if (card.kind === "generated") return [`**${plainMarkdown(card.title)}**`, plainMarkdown(card.summary), plainMarkdown(card.fallback)].join("\n\n");
+  if (card.kind !== "comparison") {
+    const lines = card.kind === "flowchart" ? card.stages.map(s => s.label + " — " + s.detail)
+      : card.kind === "bars" ? card.points.map(p => p.label + " — " + p.value + " " + card.unit)
+      : [card.input.label + " " + card.input.default + " " + (card.input.unit ?? "") + " → " + Number((card.input.default * card.factor).toPrecision(12)) + " " + card.outputUnit];
+    return [`**${plainMarkdown(card.title)}**`, plainMarkdown(card.summary), ...lines.map(plainMarkdown)].join("\n\n");
+  }
   const ev = evaluate(card, values);
   const table = [
     ["", ...card.options.map((o) => o.label)],
@@ -107,7 +113,7 @@ export function withCardSummaries(text: string, seq: number, answers: Record<str
     if (!read.ok) return cardFallbackSummary(source, read);
     // Generated cards have no comparison settings and must never touch this
     // store, including an entry with the same cardId from another revision.
-    if (read.card.kind === "generated") return cardMarkdown(read.card, null);
+    if (read.card.kind !== "comparison") return cardMarkdown(read.card, null);
     const saved = answers[cardKey(seq, read.card.cardId)];
     return cardMarkdown(read.card, saved && saved.fingerprint === fingerprint(source) ? saved.inputs : null);
   });

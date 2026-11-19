@@ -42,7 +42,13 @@ export interface ComparisonCard {
 }
 
 /** A block read as a card, or why it can't be one. `unsupported`: a newer app could draw it. */
-export type Card = ComparisonCard | GeneratedCard;
+type InlineFields = { schemaVersion: 1; cardId: string; title: string; summary: string };
+export type InlineCard = InlineFields & (
+  | { kind: "flowchart"; stages: { label: string; detail: string }[] }
+  | { kind: "scale"; input: RangeInput; factor: number; outputUnit: string }
+  | { kind: "bars"; unit: string; points: { label: string; value: number }[] }
+);
+export type Card = ComparisonCard | GeneratedCard | InlineCard;
 export type CardRead = { ok: true; card: Card } | { ok: false; reason: string; unsupported: boolean; kind?: "generated" };
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
@@ -203,8 +209,35 @@ export function readCard(source: string): CardRead {
   if (typeof top.schemaVersion !== "number") return { ok: false, reason: "The card has no schemaVersion.", unsupported: false };
   if (top.schemaVersion !== SCHEMA_VERSION) return { ok: false, reason: `Card version ${top.schemaVersion} needs a newer Apex Deck.`, unsupported: true };
   if (typeof top.kind !== "string") return { ok: false, reason: "The card has no kind.", unsupported: false };
-  if (top.kind !== "comparison") return { ok: false, reason: `"${top.kind.slice(0, 40)}" cards need a newer Apex Deck.`, unsupported: true };
   try {
+    if (top.kind === "flowchart" || top.kind === "scale" || top.kind === "bars") {
+      const base = { schemaVersion: SCHEMA_VERSION, cardId: id(top.cardId, "cardId"), title: text(top.title, "title", 80), summary: text(top.summary, "summary", 280) } as const;
+      if (top.kind === "flowchart") {
+        const stages = list(top.stages, "stages", 2, 12).map((entry) => {
+          const stage = object(entry, "stage");
+          return { label: text(stage.label, "stage label", 64), detail: text(stage.detail, "stage detail", 480) };
+        });
+        return { ok: true, card: { ...base, kind: "flowchart", stages } };
+      }
+      if (top.kind === "bars") {
+        const points = list(top.points, "points", 2, 24).map((entry) => {
+          const point = object(entry, "point");
+          const value = number(point.value, "point value");
+          if (Math.abs(value) > 1e12) fail("Point values must be within ±1 trillion.");
+          return { label: text(point.label, "point label", 64), value };
+        });
+        return { ok: true, card: { ...base, kind: "bars", unit: text(top.unit, "unit", 24), points } };
+      }
+      const slider = input(top.input, "input");
+      if (slider.type !== "range") return fail("The calculator needs a range input.");
+      if (slider.step > slider.max - slider.min || slider.min + slider.step === slider.min) fail("The calculator needs at least two distinct slider stops.");
+      const factor = number(top.factor, "factor");
+      if (![slider.min, slider.max].every((v) => Number.isFinite(v * factor))) fail("The calculated result is too large.");
+      const stop = (slider.default - slider.min) / slider.step;
+      if (Math.abs(stop - Math.round(stop)) > 1e-8) fail("The default must be a slider stop.");
+      return { ok: true, card: { ...base, kind: "scale", input: slider, factor, outputUnit: text(top.outputUnit, "outputUnit", 24) } };
+    }
+    if (top.kind !== "comparison") return { ok: false, reason: `"${top.kind.slice(0, 40)}" cards need a newer Apex Deck.`, unsupported: true };
     const inputs = list(top.inputs, "inputs", 0, 4).map((item, i) => input(item, `inputs[${i}]`));
     unique(inputs.map((x) => x.id), "inputs");
     const rows = list(top.rows, "rows", 1, 12).map((item, i) => row(item, `rows[${i}]`));

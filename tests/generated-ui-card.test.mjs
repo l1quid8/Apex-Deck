@@ -27,12 +27,12 @@ test('automatic interfaces do not ask the user for an initial Run click',()=>{
   }
  }finally{renderedState=undefined;}
 });
-test('a running card exposes Stop and a stopped card exposes Restart',()=>{
+test('running and terminated interfaces stay inline without playback or disclosure controls',()=>{
  try {
-  for(const [phase,label] of [['running','Stop'],['idle','Restart']]){
+  for(const phase of ['running','idle']){
    renderedState={enabled:true,phase,reason:'',height:300,discuss:'',attempted:true};
-   const buttons=[];walk(GeneratedAnswerCard(props),n=>{if(n.type==='button')buttons.push(text(n));});
-   assert.deepEqual(buttons,[label]);
+   const buttons=[];walk(GeneratedAnswerCard(props),n=>{if(n.type==='button'||n.type==='details')buttons.push(text(n));});
+   assert.deepEqual(buttons,[]);
   }
  }finally{renderedState=undefined;}
 });
@@ -76,11 +76,11 @@ test('ThreadCard passes automatic opening only to the latest generated message/c
  assert.equal(ThreadCard({...base,autoStartKey:'9:other'}).props.autoStart,false);
 });
 
-test('a reconnect, Retry or Revert, or a new folder remounts a generated card, so its run stops',()=>{
- const shown=executionEpoch=>ThreadCard({source:JSON.stringify(card),seq:1,author:'Null',versions:new Map([['1:flow',1]]),answers:null,onOpen(){},threadId:'thread-a',hostId:'local',executionEpoch}).props.key;
+test('execution epoch changes recreate the controller while preserving the failed revision',()=>{
+ const shown=executionEpoch=>ThreadCard({source:JSON.stringify(card),seq:1,author:'Null',versions:new Map([['1:flow',1]]),answers:null,onOpen(){},threadId:'thread-a',hostId:'local',executionEpoch}).props;
  const keys=['1:0:/a','2:0:/a','1:1:/a','1:0:/b'].map(shown);
- assert.equal(new Set(keys).size,keys.length);
- assert.equal(shown('1:0:/a'),keys[0]);
+ assert.equal(new Set(keys.map(p=>p.key)).size,1);
+ assert.equal(new Set(keys.map(p=>p.executionEpoch)).size,keys.length);
 });
 
 test('browser without the generated desktop bridge is text-only even when ChatPane readOnly is false',()=>{
@@ -147,4 +147,37 @@ test('scrolling a running card updates its visible bounds without stopping it',(
  component(props);effects.forEach(fn=>fn());
  listeners.get('scroll')();
  assert.deepEqual(calls,[{x:20,y:80,width:500,height:300}]);
+});
+
+test('a failed mounted payload stays inert across reconnects', () => {
+  const refs = [], effects = [];
+  let index, activeRun, created = 0;
+  class Run {
+    state = { phase: 'idle', attempted: false };
+    constructor(_api, _request, changed) {
+      activeRun = this;
+      this.notify = changed;
+      created++;
+    }
+    checkCapability() {}
+    dispose() {}
+  }
+  const component = new Function('React','useState','useRef','useEffect','GeneratedRun','window',code+'\nreturn GeneratedAnswerCard;')(
+    React, value => [value, () => {}],
+    initial => refs[index++] ??= { current: initial },
+    effect => effects.push(effect), Run, mockWindow);
+  function render(patch) {
+    index = 0;
+    effects.length = 0;
+    const tree = component({...props, ...patch});
+    // Run the controller effect. The independent placement effect needs a DOM.
+    return {tree, cleanup: effects[0]()};
+  }
+  const first = render({executionEpoch: 'connected-1'});
+  activeRun.state = {phase:'idle', attempted:true};
+  activeRun.notify();
+  first.cleanup();
+  render({executionAllowed:false});
+  render({executionEpoch: 'connected-2'});
+  assert.equal(created, 1);
 });

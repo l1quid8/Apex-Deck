@@ -116,3 +116,36 @@ test('a disposed last session refreshes capability and removes the unusable Run 
   await Promise.resolve();await Promise.resolve();
   assert.equal(run.state.enabled,false);assert.match(run.state.reason,/cleanup/);
 });
+
+test('visibility loss and owner blur permit a fresh start only after stable geometry', async () => {
+  for (const cause of ['geometry', 'blur']) {
+    const {run, calls, event} = setup();
+    await run.checkCapability();
+    await run.autoStart(bounds, 0);
+    await run.autoStart(bounds, 250);
+    if (cause === 'geometry') {
+      run.place(null);
+      await new Promise(resolve => setImmediate(resolve));
+    } else {
+      event({runId:'r1', type:'stopped', reason:'Deck window lost focus.'});
+    }
+    await run.autoStart(bounds, 1000);
+    assert.equal(calls.filter(([name]) => name === 'run').length, 1);
+    await run.autoStart(bounds, 1250);
+    assert.equal(calls.filter(([name]) => name === 'run').length, 2);
+  }
+});
+
+test('focus loss during pending admission can recover after the viewport settles', async () => {
+  const {run, api, calls} = setup();
+  const start = api.run;
+  api.run = async () => { throw new Error("Error invoking remote method 'generated-ui:run': Error: Deck window lost focus."); };
+  await run.checkCapability();
+  await run.autoStart(bounds, 0);
+  await run.autoStart(bounds, 250);
+  api.run = start;
+  await run.autoStart(bounds, 300);
+  assert.equal(calls.length, 0);
+  await run.autoStart(bounds, 550);
+  assert.equal(calls.filter(([name]) => name === 'run').length, 1);
+});

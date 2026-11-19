@@ -144,3 +144,12 @@ test('run requests bind card identity and reject unknown keys before host creati
   assert.equal(readRunRequest({ requestId, source: JSON.stringify(card), identity, bounds, execute: true }).ok, false);
   assert.equal(readRunRequest({ source: JSON.stringify(card), identity, bounds }).ok, false);
 });
+
+test('native appearance accepts only opaque hex colors and a light-mode flag', () => {
+  const request = { requestId, source: JSON.stringify(card), identity, bounds: { x: 0, y: 40, width: 300, height: 200 } };
+  const colors = { background: '#faf8ef', foreground: '#202020', light: true };
+  assert.deepEqual(readRunRequest({...request, colors}).colors, colors);
+  for (const patch of [{background: 'inherit'}, {foreground:'#abcd'}, {light:1}, {extra:'value'}]) {
+    assert.equal(readRunRequest({...request, colors:{...colors, ...patch}}).ok, false);
+  }
+});

@@ -40,7 +40,21 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
   // One listener per page: a second subscription would record every event twice.
   const installObserver = () => page('window.__generatedOff?.(); window.__generatedEvents=[]; window.__generatedOff=window.apexDeck.generatedUI.onEvent(event=>__generatedEvents.push(event)); return true;');
   const button = text => page(`const card=[...document.querySelectorAll('.generated-answer')].at(-1); const b=[...card.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)}); if(!b||b.disabled)throw Error('Unavailable ${text}');b.click();return true;`);
+  const coverCard = () => page(`
+    if (!document.getElementById("gate-cover")) {
+      const overlay = document.createElement("div");
+      overlay.id = "gate-cover";
+      overlay.setAttribute("role", "dialog");
+      overlay.style.cssText = "position:fixed;inset:0;z-index:99999;background:white";
+      document.body.append(overlay);
+    }
+    return true;
+  `);
+  const uncoverCard = () => page('document.getElementById("gate-cover")?.remove();return true;');
+  const inlineFallback = card => `Boolean(${card}?.querySelector(".generated-fallback")?.getBoundingClientRect().height && !${card}.querySelector(".generated-slot,button,details"))`;
+  const latestCard = '[...document.querySelectorAll(".generated-answer")].at(-1)';
   const bringIntoView = async () => {
+    await uncoverCard();
     if (await page('return [...document.querySelectorAll(".generated-answer")].at(-1)?.dataset.generatedRunning==="true";')) return;
     await page('document.querySelectorAll(".generated-slot").item(document.querySelectorAll(".generated-slot").length-1)?.scrollIntoView({block:"center"});return true;');
     await delay(200);
@@ -53,10 +67,8 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
     await bringIntoView();
     evidence.lastStartGeometry=await page('const s=[...document.querySelectorAll(".generated-slot")].at(-1),r=s.getBoundingClientRect();return {rect:r.toJSON(),window:{w:innerWidth,h:innerHeight},visibility:document.visibilityState,ancestors:[...(()=>{let a=[],p=s.parentElement;while(p){a.push(p);p=p.parentElement}return a})()].map(e=>({class:e.className,rect:e.getBoundingClientRect().toJSON(),overflow:getComputedStyle(e).overflow})),overlays:[...document.querySelectorAll("[data-apex-agent-overlay],[role=dialog],[role=menu]")].filter(e=>e.getClientRects().length).map(e=>({class:e.className,rect:e.getBoundingClientRect().toJSON(),visibility:getComputedStyle(e).visibility})),points:[[r.left+2,r.top+2],[r.right-2,r.top+2],[r.left+2,r.bottom-2],[r.right-2,r.bottom-2],[r.left+r.width/2,r.top+r.height/2]].map(([x,y])=>({x,y,class:document.elementFromPoint(x,y)?.className,inside:s.contains(document.elementFromPoint(x,y))}))};');
     await page('window.__trace=[];window.__geometryTraceOff?.();const trace=e=>{const s=[...document.querySelectorAll(".generated-slot")].at(-1),r=s?.getBoundingClientRect();__trace.push({type:e.type,target:e.target?.className,scrollTop:e.target?.scrollTop,rect:r?.toJSON(),at:performance.now()});};for(const t of ["scroll","resize","visibilitychange"])document.addEventListener(t,trace,true);window.__geometryTraceOff=()=>{for(const t of ["scroll","resize","visibilitychange"])document.removeEventListener(t,trace,true)};return true;');
-    await page('const c=[...document.querySelectorAll(".generated-answer")].at(-1);const restart=[...c.querySelectorAll("button")].find(b=>["Restart","Open interface"].includes(b.textContent.trim())&&!b.disabled);if(restart)restart.click();return true;');
     const host = await until('generated host ready', async () => {
       const contents = generated().at(-1);
-      const runId = contents?.getURL().split('/').at(-1);
       return contents && await page('const c=[...document.querySelectorAll(".generated-answer")].at(-1);return c?.dataset.generatedRunning==="true"&&c.querySelector(".generated-slot")?.getAttribute("aria-busy")==="false";') ? contents : null;
     });
     const frames = host.mainFrame.framesInSubtree;
@@ -72,7 +84,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
     ]);
     return { host, child };
   };
-  const stop = async () => { await button('Stop'); await gone(); await installObserver(); };
+  const suspend = async () => { await coverCard(); await gone(); await installObserver(); };
   const post = async text => {
     const before=await page('return document.querySelectorAll(".message-row").length;');
     // Not awaited: the call resolves only when the bot's turn ends. A refusal still fails the step with its reason.
@@ -90,11 +102,15 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
       fs.writeFileSync(path.join(output, `${phase}-${name}-interface.png`), pixels.toPNG());
       if (name === 'claude' || name === 'codex') {
         const bitmap = pixels.toBitmap();
-        assert.ok([...bitmap.subarray(0,3)].every(channel=>channel<64), 'The native flowchart canvas needs an opaque dark backdrop for its inherited dark-mode text');
+        const background = await host.executeJavaScript('getComputedStyle(document.body).backgroundColor');
+        const rgb = background.match(/^rgb\((\d+), (\d+), (\d+)\)$/);
+        assert.ok(rgb, 'The native canvas needs an opaque reply backdrop');
+        const expected = rgb.slice(1).map(Number).reverse(); // Electron returns BGRA.
+        assert.ok(expected.every((channel, index) => Math.abs(channel - bitmap[index]) <= 2), 'Native pixels should match the reply backdrop');
       }
     }
   };
-  const frozen = async (kind, manualStop=false) => {
+  const frozen = async (kind, covered=false) => {
     await post(`@fixture ${kind}`);await bringIntoView();
     const host=await until('frozen host initialized',()=>generated().find(h=>h.mainFrame.framesInSubtree.some(f=>f.url==='about:srcdoc'&&f.osProcessId>0)));
     const runId = host.getURL().split('/').at(-1);
@@ -105,13 +121,17 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
     const pids=[...new Set(frames.map(f=>f.osProcessId))];
     assert.equal(pids.length, phase === 'recovery' ? 1 : 2, 'recovery must exercise the claimed same-process or OOPIF layout');
     for(const pid of pids)evidence.processes.push({pid,checked:false});
-    const started=Date.now();if(manualStop)await button('Stop');await gone();
+    const started=Date.now();if(covered)await coverCard();await gone();
     const stopped = await until('frozen run stop receipt', () => page(`return __generatedEvents.find(e=>e.runId===${JSON.stringify(runId)}&&e.type==="stopped");`));
-    assert.equal(stopped.reason, manualStop ? 'Generated interface approval was cancelled.' : kind === 'freeze-init' ? 'The interface did not become ready within two seconds.' : 'The interface stopped responding.');
+    if (covered) assert.equal(stopped.reason, 'Generated interface approval was cancelled.');
+    else {
+      assert.equal(stopped.reason, kind === 'freeze-init' ? 'The interface did not become ready within two seconds.' : 'The interface stopped responding.');
+      await until('terminal fallback visible', () => page(`return ${inlineFallback(latestCard)};`));
+    }
     const disposed = globalThis.__generatedAudit.find(event => event.runId === runId && event.type === 'disposed');
     assert.deepEqual(disposed.remaining, []);
-    evidence.recovery??=[];evidence.recovery.push({kind,manualStop,pids,sameGeneratedProcess:pids.length===1,stopReason:stopped.reason,payloadDelivered:true,elapsedMs:Date.now()-started});
-    assert.ok(Date.now()-started<(manualStop?1500:8500));await installObserver();
+    evidence.recovery??=[];evidence.recovery.push({kind,covered,pids,sameGeneratedProcess:pids.length===1,stopReason:stopped.reason,payloadDelivered:true,elapsedMs:Date.now()-started});
+    assert.ok(Date.now()-started<(covered?1500:8500));await installObserver();
   };
   try {
     win.setContentSize(1200, 1000); app.focus({steal:true});win.show(); win.focus();
@@ -138,18 +158,19 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         const host=await until('automatic generated host',()=>generated().at(-1));
         const child=await until('automatic child',()=>host.mainFrame.framesInSubtree.find(f=>f.url==='about:srcdoc'));
         await until('automatic content ready',()=>child.executeJavaScript('document.querySelector("#next")&&document.readyState==="complete"'));
-        assert.equal(await page('return [...document.querySelectorAll(".generated-answer button")].some(b=>/Run this interface|Open interface/.test(b.textContent));'),false);
+        assert.equal(await page(`return ${latestCard}.querySelector("button,details,header,footer,.generated-fallback")===null;`),true);
         await child.executeJavaScript('document.querySelector("#next").click()');
         assert.equal(await child.executeJavaScript('document.querySelector("#step").textContent'),'Generate HTML, CSS and JS');
-        await shot('automatic');await start();await stop();
+        await shot('automatic');await start();await suspend();
       });
-      await step('explicit Stop stays stopped; Restart creates fresh contents',async()=>{
-        await delay(1000);assert.equal(generated().length,0);await start();await stop();
+      await step('covering the card keeps it suspended until uncovered; uncovering starts a fresh run',async()=>{
+        const previous=globalThis.__generatedAudit.filter(e=>e.type==='disposed').at(-1).runId;
+        await delay(1000);assert.equal(generated().length,0);
+        const {host}=await start();assert.notEqual(host.getURL().split('/').at(-1),previous);await suspend();
       });
       await step('only newest different-id card automatically opens without replacement churn',async()=>{
-        await post('@fixture calculator');await start();await stop();
-        // Both cards remount with unconsumed attempts; nomination alone must
-        // select the calculator, rather than the old flowchart's stopped flag.
+        await post('@fixture calculator');await start();await suspend();
+        // Reload clears presentation state. Only the latest card may acquire a host.
         const before=globalThis.__generatedAudit.filter(e=>e.type==='payload-delivered').length;
         win.webContents.reload();await ready();await installObserver();await bringIntoView();
         const host=await until('automatic calculator',()=>generated().at(-1));
@@ -160,22 +181,27 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         const runId=host.getURL().split('/').at(-1);await delay(1500);
         assert.equal(generated().length,1);assert.equal(generated()[0].getURL().split('/').at(-1),runId);
         assert.equal(globalThis.__generatedAudit.filter(e=>e.type==='payload-delivered').length,before+1);
-        await start();await stop();
+        await start();await suspend();
       });
       await step('new revision automatically replaces the old run and keeps historical code inert',async()=>{
         await post('@fixture revised flowchart');await bringIntoView();const old=(await start()).host.getURL().split('/').at(-1);
         await post('@fixture revised flowchart');await gone(old);await bringIntoView();
         const next=await until('automatic revised host',()=>generated().find(host=>host.getURL().split('/').at(-1)!==old));
-        assert.ok(next);assert.equal(await page('const historical=[...document.querySelectorAll(".generated-answer")].slice(0,-1).filter(c=>c.textContent.includes("earlier version"));return historical.length>0&&historical.every(c=>!c.querySelector("button"));'),true);
-        await start();await stop();
+        assert.ok(next);
+        assert.equal(await page(`const prior=[...document.querySelectorAll(".generated-answer")].at(-2);return ${inlineFallback('prior')}&&prior.innerText.includes("isolated sandbox");`),true);
+        await start();await suspend();
       });
       await step('automatic frozen fixture is terminated and never retries itself',async()=>{
         await frozen('freeze-after');const admitted=globalThis.__generatedAudit.filter(e=>e.type==='payload-delivered').length;
+        await page('const connection=__deck.backend.machines.connection("local");connection.setStatus({kind:"resync"});return true;');
+        await delay(300);
+        await page('const connection=__deck.backend.machines.connection("local");connection.setStatus({kind:"connected",hostId:"local"});return true;');
+        await ready();
         await delay(1000);assert.equal(generated().length,0);assert.equal(globalThis.__generatedAudit.filter(e=>e.type==='payload-delivered').length,admitted);
       });
     } else if (phase === 'visual') {
       for (const provider of ['claude', 'codex']) await step(`native ${provider} flowchart layer has a pixel capture`, async () => {
-        await post(`@fixture ${provider}`); await start(); await shot(provider); await stop();
+        await post(`@fixture ${provider}`); await start(); await shot(provider); await suspend();
       });
     } else if (phase === 'quit') {
       await start();
@@ -197,20 +223,21 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
     } else if (phase === 'cycles') {
       await step('32 fresh real sessions dispose all PIDs and then fail closed', async () => {
         for (let index = 0; index < 32; index++) {
-          await start(); await stop();
+          await start(); await suspend();
         }
         assert.equal(generatedUIManager.capability().enabled, false);
         assert.match(generatedUIManager.capability().reason, /session limit/);
         await assert.rejects(generatedUIManager.run({win,frame:win.webContents.mainFrame},{}),/session limit/);
-        await until('opening disabled after last session',()=>page('return [...document.querySelectorAll(".generated-answer")].at(-1)?.textContent.includes("session limit");'));
+        await uncoverCard();
+        await until('session limit leaves the inline text version',()=>page(`const card=${latestCard};return ${inlineFallback('card')}&&card.innerText.includes("session limit");`));
       });
     } else if(phase==='recovery') {
       evidence.weakenedDiagnostic='Site isolation disabled only to exercise same-generated-process termination; no security result claimed under these flags.';
       for(const kind of ['freeze-init','freeze-after','freeze-micro','freeze-allocation'])await step(`${kind} same-process recovery`,()=>frozen(kind));
-      await step('trusted Stop terminates a frozen same-process run',()=>frozen('freeze-after',true));
+      await step('covering the card terminates a frozen same-process run',()=>frozen('freeze-after',true));
       assert.ok(evidence.recovery.some(record=>record.sameGeneratedProcess),'diagnostic actually observed the same-process path');
     } else {
-      await step('native interface renders a working SVG flowchart; Stop and Restart work', async () => {
+      await step('native interface renders a working SVG flowchart and resumes after uncovering', async () => {
         const { child } = await start();
         evidence.firstLayout=await child.executeJavaScript('({width:innerWidth,height:innerHeight,svg:document.querySelector("svg").getBoundingClientRect().toJSON(),body:document.body.getBoundingClientRect().toJSON(),ready:document.readyState})');
         evidence.cardLayout=await page('const c=document.querySelector(".generated-answer");return [c,c.parentElement,c.closest(".bubble"),c.closest(".message-row")].map(e=>({class:e?.className,rect:e?.getBoundingClientRect().toJSON(),display:e&&getComputedStyle(e).display,width:e&&getComputedStyle(e).width}));');
@@ -220,8 +247,8 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         assert.equal(await child.executeJavaScript('document.querySelector("#step").textContent'), 'Generate HTML, CSS and JS');
         await child.executeJavaScript('document.querySelector("#reset").click()');
         assert.equal(await child.executeJavaScript('document.querySelector("#step").textContent'), 'Ask a question');
-        await shot('flowchart'); await stop();
-        assert.equal(generated().length, 0); await start(); await stop();
+        await shot('flowchart'); await suspend();
+        assert.equal(generated().length, 0);
       });
       await step('Discuss preview does not modify or send a draft; trusted Discuss appends', async () => {
         await page('const el=document.querySelector(".composer textarea");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(el,"Existing typed draft");el.dispatchEvent(new Event("input",{bubbles:true}));return true;');
@@ -233,25 +260,39 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         await button('Discuss this text');
         assert.match(await page('return document.querySelector(".composer textarea").value;'), /^Existing typed draft[\s\S]*Flow step: Ask a question/);
         assert.equal(await page('return (await __deck.backend.roomState("generated-smoke")).snapshot.transcript.length;'), before);
-        await stop();
+        await suspend();
         // Leave a clean composer so its height does not shift the card in later steps.
         await page('const el=document.querySelector(".composer textarea");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(el,"");el.dispatchEvent(new Event("input",{bubbles:true}));return true;');
         await delay(300);
       });
       for (const [name, action, undo] of [
-        ['scroll', 'document.querySelector(".transcript").dispatchEvent(new Event("scroll",{bubbles:true}));', ''],
+        ['scroll', 'const t=document.querySelector(".generated-slot").closest(".transcript");const spacer=document.createElement("div");spacer.id="gate-spacer";spacer.style.cssText="height:200vh;flex:none";t.append(spacer);t.scrollTop=t.scrollHeight;', 'document.querySelector("#gate-spacer").remove();'],
         ['trusted modal overlay', 'const o=document.createElement("div");o.id="gate-overlay";o.setAttribute("role","dialog");o.style.cssText="position:fixed;inset:0;background:white;z-index:9999";document.body.append(o);', 'document.querySelector("#gate-overlay").remove();'],
         ['ApexAgent partial overlay', 'const r=document.querySelectorAll(".generated-slot").item(document.querySelectorAll(".generated-slot").length-1).getBoundingClientRect();const o=document.createElement("div");o.id="gate-overlay";o.setAttribute("data-apex-agent-overlay","bubble");o.style.cssText="position:fixed;width:20px;height:20px;z-index:9999;background:white;left:"+(r.left+35)+"px;top:"+(r.top+35)+"px";document.body.append(o);', 'document.querySelector("#gate-overlay").remove();'],
         ['connection resync', 'const c=__deck.backend.machines.connection("local");c.setStatus({kind:"resync"});', 'const c=__deck.backend.machines.connection("local");c.setStatus({kind:"connected",hostId:"local"});'],
         ['ordinary disconnect', 'const c=__deck.backend.machines.connection("local");c.setStatus({kind:"disconnected"});', 'const c=__deck.backend.machines.connection("local");c.setStatus({kind:"connected",hostId:"local"});'],
       ]) await step(`${name} disposes generated view and stale Discuss`, async () => {
-        await start(); await page(`${action}return true;`); await gone();
+        const {child}=await start();
+        if (name === 'trusted modal overlay') {
+          await child.executeJavaScript('document.querySelector("#discuss").click()');
+          await until('Discuss is pending before cover',()=>page('return Boolean(document.querySelector(".generated-discuss"));'));
+        }
+        await page(`${action}return true;`); await gone();
+        if (name === 'connection resync' || name === 'ordinary disconnect') {
+          await until('disconnected card shows its inline fallback',()=>page(`const card=${latestCard};return ${inlineFallback('card')}&&card.innerText.includes("isolated sandbox");`));
+        }
         if (undo) await page(`${undo}return true;`);
         await ready(); await installObserver();
         assert.equal(await page('return document.querySelectorAll(".generated-discuss").length;'),0);
       });
       await step('resize and owner focus loss dispose; another window cannot stop owner run', async () => {
-        await start(); win.setContentSize(1180,980); await gone(); await installObserver();
+        // The production window enforces a 600px minimum height. Size the transcript
+        // responsively so both window widths exercise real clipped bounds.
+        await start();
+        await page('const style=document.createElement("style");style.id="gate-resize";style.textContent="@media (max-width:1190px){.transcript{max-height:150px!important}}";document.head.append(style);return true;');
+        win.setContentSize(1180,980); await gone(); win.setContentSize(1200,1000);
+        await page('document.getElementById("gate-resize").remove();return true;');
+        await installObserver();
         const { host } = await start();
         const second = new BrowserWindow({show:false,width:500,height:400,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
         await second.loadURL('data:text/html,<title>Second owner canary</title>');
@@ -261,23 +302,25 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
       });
       await step('suspend invalidates all run authority without sleeping the machine', async () => {
         await start();powerMonitor.emit('suspend');await gone();await installObserver();
+        await coverCard();
+        await post('@fixture flowchart after suspend');
       });
       await step('owner zoom uses native DIP bounds and changing it revokes the old run', async()=>{
         for(const zoom of [0.8,1.2]) {
+          await coverCard();
           win.webContents.setZoomFactor(zoom); await delay(250); await installObserver();
-          const {child}=await start();
+          const {child,host}=await start();
           const css=await page('const r=document.querySelectorAll(".generated-slot").item(document.querySelectorAll(".generated-slot").length-1).getBoundingClientRect();return {width:r.width,height:r.height};');
           const viewport=await child.executeJavaScript('({width:innerWidth,height:innerHeight})');
           assert.ok(Math.abs(viewport.width-css.width*zoom)<3,JSON.stringify({viewport,css,zoom}));
-          win.webContents.setZoomFactor(1);await gone();await installObserver();
+          const old=host.getURL().split('/').at(-1);win.webContents.setZoomFactor(1);await gone(old);await installObserver();
         }
       });
       await step('revised payload stops the old run; old card remains text-only', async () => {
         const old=(await start()).host.getURL().split('/').at(-1);await post('@fixture revised flowchart');await gone(old);await installObserver();
-        const cards = await page('return [...document.querySelectorAll(".generated-answer")].map(c=>({text:c.textContent,run:!!c.querySelector("button")}));');
-        assert.ok(cards.some(card=>!card.run&&card.text.includes('earlier version')));
-        assert.match(cards.at(-1).text,/v2/);
-        await start();await stop();
+        assert.equal(await page(`const cards=[...document.querySelectorAll(".generated-answer")];const prior=cards.at(-2);return ${inlineFallback('prior')}&&prior.innerText.includes("isolated sandbox");`),true);
+        assert.match(await page(`return ${latestCard}.getAttribute("aria-label");`),/revision 2/);
+        await start();await suspend();
       });
       await step('fork and renderer reload dispose old execution and open a fresh validated host', async () => {
         // Open only `pane` after a reload. The old page's autosave is stopped first,
@@ -290,9 +333,9 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         };
         await start();await page('await __deck.backend.roomFork("generated-smoke","generated-fork",null);return true;');
         await showOnly({id:'generated-fork',workspaceId:'generated-project',kind:'chat',title:'Fork'});
-        await start();await stop();
+        await start();await suspend();
         await showOnly({id:'generated-smoke',workspaceId:'generated-project',kind:'chat',title:'Generated gates'});
-        await start();await stop();
+        await start();await suspend();
       });
       for (const fixture of ['calculator','chart']) await step(`${fixture} local controls, keyboard labels and Reset work in chat`, async()=>{
         await post(`@fixture ${fixture}`);const {child}=await start();
@@ -303,7 +346,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         assert.equal(await child.executeJavaScript('document.querySelector("#out").textContent'),'14');
         await child.executeJavaScript('document.querySelector("#reset").click()');
         assert.equal(await child.executeJavaScript('document.querySelector("#out").textContent'),'20');
-        await shot(fixture);await stop();
+        await shot(fixture);await suspend();
       });
       for(const provider of ['claude','codex']) await step(`captured ${provider} flowchart renders and its Next/Reset controls work`,async()=>{
         await post(`@fixture ${provider}`);let result=await start();
@@ -330,7 +373,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         await delay(500);evidence.keyTrace=await result.child.executeJavaScript('({k:__k,active:document.activeElement?.id,focus:document.hasFocus()})');
         await until('keyboard Reset',async()=>await result.child.executeJavaScript('document.querySelector("#status").textContent')===before);
         assert.equal(await result.child.executeJavaScript('document.querySelector("#status").textContent'),before);
-        await shot(provider);await stop();
+        await shot(provider);await suspend();
       });
       await step('chat Revert and Retry stop a running interface; the isolated daemon remains usable',async()=>{
         // Deck never moves a thread that has replies (it offers New thread or Fork), so going
@@ -353,15 +396,15 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         const beforeRetry=(await start()).host.getURL().split('/').at(-1);await expand(reply);await stillRunning();await press(reply,'Retry');await gone(beforeRetry);await installObserver();
         await until('Retry starts a new fixture stream',()=>page('return Boolean(document.querySelector(".answer-card.preparing"));'));
         await until('retried reply',()=>page('const last=[...document.querySelectorAll(".message-row")].at(-1);return !document.querySelector(".answer-card.preparing")&&Boolean(last?.querySelector(".generated-answer"));'),45000);
-        await start();await stop();
+        await start();await suspend();
       });
       for(const kind of ['freeze-init','freeze-after','freeze-micro','freeze-allocation']) await step(`${kind} watchdog recovers chat and terminates generated PIDs`,()=>frozen(kind));
-      await step('trusted Stop terminates a frozen OOPIF run',()=>frozen('freeze-after',true));
+      await step('covering the card terminates a frozen OOPIF run',()=>frozen('freeze-after',true));
       await step('quit event disposes generated PIDs while isolated daemon and chat still answer',async()=>{
         // Only the generated host's listener: Deck's own asks the window and, with nothing running, really quits.
         const quit=app.listeners('before-quit').filter(listener=>String(listener).includes('stopAll'));
         assert.equal(quit.length,1);
-        await start(); quit[0]({preventDefault(){}});await gone();
+        await post('@fixture flowchart before quit');await start(); quit[0]({preventDefault(){}});await gone();
         assert.ok(sidecar()?.alive());
       });
     }
