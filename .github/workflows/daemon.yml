@@ -116,7 +116,9 @@ jobs:
           - { os: ubuntu-22.04, suite: updater }
           - { os: ubuntu-22.04, suite: host }
           - { os: ubuntu-22.04, suite: daemon }
-          - { os: ubuntu-22.04-arm, suite: all }
+          - { os: ubuntu-22.04-arm, suite: updater }
+          - { os: ubuntu-22.04-arm, suite: host }
+          - { os: ubuntu-22.04-arm, suite: daemon }
           - { os: macos-latest, suite: all }
     name: test (${{ matrix.os }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }})
     runs-on: ${{ matrix.os }}
