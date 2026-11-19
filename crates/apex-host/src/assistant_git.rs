@@ -17,9 +17,12 @@ const MAX_NEW_FILE: u64 = 50 * 1024 * 1024;
 pub(crate) const SAVE_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// Cancel waits 30 seconds, so a stopped job's save must end well inside that.
 /// A healthy save usually fits, and pause and retry want its snapshot.
-// Windows CI starts many Git processes concurrently; exercise the production
-// grace there rather than aborting a healthy snapshot after only two seconds.
-pub(crate) const STOP_GRACE: Duration = Duration::from_secs(if cfg!(all(test, not(windows))) { 2 } else { 15 });
+///
+/// Tests get the production grace too: a healthy save is some twenty jailed
+/// Git processes, and a loaded CI runner (Windows, then Linux) ran them past a
+/// shorter test-only grace. The one test that needs a hung save to end quickly
+/// asks for a short grace explicitly.
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(15);
 /// TERM lets Git remove its own lock files before anything is killed.
 pub(crate) const SAVE_TOO_LONG: &str = "Saving the result took too long, so Deck stopped Git. The work is still in its folder.";
 pub(crate) const SAVE_STOPPED: &str = "The job was stopped before its result finished saving. The work is still in its folder.";
@@ -29,18 +32,25 @@ pub(crate) struct GitLimit {
     deadline: Instant,
     stop: Option<Arc<AtomicBool>>,
     stopped_at: Cell<Option<Instant>>,
+    grace: Duration,
 }
 
 impl GitLimit {
     pub(crate) fn new(limit: Duration, stop: Option<Arc<AtomicBool>>) -> Self {
-        Self { deadline: Instant::now() + limit, stop, stopped_at: Cell::new(None) }
+        Self::with_grace(limit, stop, STOP_GRACE)
+    }
+
+    /// How long Git may keep going after `stop` is set. Production always uses
+    /// `STOP_GRACE`; a test of a hung save shortens it to keep the test quick.
+    fn with_grace(limit: Duration, stop: Option<Arc<AtomicBool>>, grace: Duration) -> Self {
+        Self { deadline: Instant::now() + limit, stop, stopped_at: Cell::new(None), grace }
     }
 
     fn ended(&self) -> bool {
         if self.stopped_at.get().is_none() && self.stop.as_ref().is_some_and(|stop| stop.load(Ordering::SeqCst)) {
             self.stopped_at.set(Some(Instant::now()));
         }
-        Instant::now() >= self.deadline || self.stopped_at.get().is_some_and(|at| at.elapsed() >= STOP_GRACE)
+        Instant::now() >= self.deadline || self.stopped_at.get().is_some_and(|at| at.elapsed() >= self.grace)
     }
 
     fn reason(&self) -> &'static str {
@@ -1149,17 +1159,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stopping_ends_a_hung_save_after_a_short_grace() {
+        // The production grace is 15 seconds; the hang never ends, so a short
+        // grace shows the same behaviour without holding the suite.
+        const SHORT_GRACE: Duration = Duration::from_secs(2);
         let project_data = crate::project_process::TestDataDir::new();
         let root = fixture();
         hang_saves(&root);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let started = std::time::Instant::now();
-        let error = within(GitLimit::new(SAVE_LIMIT, Some(stop)), || capture(project_data.path(), &root, "stopped-save", "result")).unwrap_err();
+        let error = within(GitLimit::with_grace(SAVE_LIMIT, Some(stop), SHORT_GRACE), || capture(project_data.path(), &root, "stopped-save", "result")).unwrap_err();
         assert_eq!(error, SAVE_STOPPED);
-        assert!(started.elapsed() >= STOP_GRACE, "a save that is merely slow gets its grace");
-        assert!(started.elapsed() < STOP_GRACE + std::time::Duration::from_secs(6), "took {:?}", started.elapsed());
+        assert!(started.elapsed() >= SHORT_GRACE, "a save that is merely slow gets its grace");
+        assert!(started.elapsed() < SHORT_GRACE + std::time::Duration::from_secs(6), "took {:?}", started.elapsed());
     }
 
+    // A healthy save is some twenty Git processes; the stop grace must cover
+    // them even on a loaded CI runner, so the stop never loses a good snapshot.
     #[test]
     fn a_stopped_job_still_saves_when_git_is_healthy() {
         let project_data = crate::project_process::TestDataDir::new();
