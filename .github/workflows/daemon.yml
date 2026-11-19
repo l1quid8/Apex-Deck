@@ -112,7 +112,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-latest]
+        include:
+          - { os: ubuntu-22.04, suite: updater }
+          - { os: ubuntu-22.04, suite: host }
+          - { os: ubuntu-22.04, suite: daemon }
+          - { os: ubuntu-22.04-arm, suite: all }
+          - { os: macos-latest, suite: all }
+    name: test (${{ matrix.os }}${{ matrix.suite != 'all' && format(', {0}', matrix.suite) || '' }})
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -129,14 +135,21 @@ jobs:
           cargo build --locked -p apex-daemon --features remote --bin apex-daemon
           echo "APEX_JAIL_INIT=$GITHUB_WORKSPACE/target/debug/apex-daemon" >> "$GITHUB_ENV"
       - name: Verify native VPS updater candidates
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.suite == 'all' || matrix.suite == 'updater')
         run: |
           python3 -m unittest discover -s tests -p 'test_vps_update*.py'
           python3 scripts/check-vps-candidate.py
-      - run: cargo test --locked -p apex-core -p apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote
+      - if: matrix.suite == 'all'
+        run: cargo test --locked -p apex-core -p apex-adapters -p apex-host -p apex-daemon --features apex-daemon/remote
+      - if: matrix.suite == 'host'
+        run: cargo test --locked -p apex-core -p apex-adapters -p apex-host
+      - if: matrix.suite == 'daemon'
+        run: cargo test --locked -p apex-daemon --features remote
       - name: Test provenance platform boundary
+        if: matrix.suite == 'all' || matrix.suite == 'daemon'
         run: cargo test --locked -p apex-provenance --lib
       - name: Forged-storage tests against apex-host built without test-support
+        if: matrix.suite == 'all' || matrix.suite == 'daemon'
         run: cargo test --locked -p apex-host-production-check
       - name: Test the standalone mobile bridge with its committed lockfile
         if: runner.os == 'macOS'
