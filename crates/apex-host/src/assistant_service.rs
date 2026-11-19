@@ -5171,8 +5171,11 @@ mod tests {
         }
         assert!(f.root.join(".git/review-filter-entered").exists(), "did not enter the review diff");
         act(&f, &task.id, "pause").unwrap();
-        for _ in 0..1_000 {
-            if !f.host.assistant_runs.lock().unwrap().contains_key(&task.id) { break }
+        // The hung save gets the production stop grace, then the cleanup
+        // that ends it; the hang itself lasts 50 seconds, so this never
+        // returns because the hang gave up on its own.
+        let ended_by = std::time::Instant::now() + assistant_git::STOP_GRACE + std::time::Duration::from_secs(15);
+        while f.host.assistant_runs.lock().unwrap().contains_key(&task.id) && std::time::Instant::now() < ended_by {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Interrupted);
@@ -5245,8 +5248,11 @@ mod tests {
         let (task, _) = controlled_delegation(&f, "pause-save", TaskMode::InPlace);
         hold_result_save(&f, &task);
         act(&f, &task.id, "pause").unwrap();
-        for _ in 0..1_000 {
-            if !f.host.assistant_runs.lock().unwrap().contains_key(&task.id) { break }
+        // The hung save gets the production stop grace, then the cleanup
+        // that ends it; the hang itself lasts 50 seconds, so this never
+        // returns because the hang gave up on its own.
+        let ended_by = std::time::Instant::now() + assistant_git::STOP_GRACE + std::time::Duration::from_secs(15);
+        while f.host.assistant_runs.lock().unwrap().contains_key(&task.id) && std::time::Instant::now() < ended_by {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().status, TaskStatus::Interrupted);
