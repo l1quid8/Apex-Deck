@@ -1,4 +1,4 @@
-# apex-daemon tests on Windows, macOS, and Linux (x86_64 and arm64), then
+# apex-daemon tests on Windows, macOS, and Linux (x86_64 and arm64), alongside
 # Linux release binaries. Built on Ubuntu 22.04 so the binaries run on
 # 22.04 and 24.04 servers. Native Windows app and installer work follows M1
 # (docs/superpowers/plans/2026-10-21-windows-11.md).
@@ -257,7 +257,8 @@ jobs:
         run: node --experimental-strip-types --test --test-concurrency=2 --test-shard=${{ matrix.shard }}/4 tests/*.test.mjs
 
   build:
-    needs: test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
