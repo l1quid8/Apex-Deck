@@ -5,7 +5,7 @@
 - Only start the production build for .dmg release here `/Users/tylercaldwell/Downloads/apex-deck/release`
 - Only start the development build from release here `/Users/tylercaldwell/Downloads/apex-deck`, using `APEX_DECK_DATA_DIR="$HOME/Library/Application Support/dev.apexdeck.app" npm run desktop:dev`.
 - Before changing files or switching branches, run `git status` and preserve others' work.
-- Create the task branch here with `git switch -c <type>/<name>`.
+- Create the task branch in its own worktree with `git switch -c <type>/<name>`.
 - Run `npx tsc --noEmit` and require it to pass before merging or reporting that a change is merged.
 - After an authorized merge, delete the merged task branch.
 
@@ -33,6 +33,15 @@ When sending a Funnel link, label it PUBLIC, state that anyone with the link can
 If a shared link fails, check server survival, proxy configuration, public reachability, and asset loading before reporting it fixed.
 
 These instructions apply to every bot.
+
+## How a change gets built and tested
+
+1. **Choose the work.** Summarize what is underway and awaiting test in one line. The user decides how much starts and when. Write one sentence describing what the user should see when the change works.
+2. **Build and test.** For a feature, have a second agent review a short plan before coding. Include a mockup if a screen changes. Build in the task worktree, test the expected behavior, and record the output.
+3. **Open a pull request.** Submit the change on GitHub so the project’s automated checks run.
+4. **Review the risk.** A different model reviews the change and test evidence. Give an alert timer a short review and a permission change a deeper one. Fix findings and rerun the affected checks.
+5. **Merge and hand off.** After review passes and checks are green, the merge owner merges into GitHub’s `main` and updates the Mac. Mark each item **Awaiting your test** on the open-work list. One build can cover several items. For each, name the build to open, what to try, and what should happen.
+6. **Test and release.** The user tests when ready. Reserve the app or phone only while a step needs exclusive use. Record each result against the build number and source commit. Clear that exact build for release once all its items pass. Keep failures open, fix or revert the change, and return a new build for testing.
 
 ## Host architecture
 
