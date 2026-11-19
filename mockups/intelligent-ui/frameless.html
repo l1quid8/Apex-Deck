@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Intelligent UI · Frameless study</title>
+<style>
+:root{color-scheme:light dark;--paper:light-dark(#faf9f6,#191b1b);--ink:light-dark(#212825,#eeefea);--muted:light-dark(#56635e,#b1bbb4);--line:light-dark(#c5cec7,#46524c);--accent:light-dark(#12634c,#87ddba)}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 "Inter",-apple-system,sans-serif}main{width:min(100% - 40px,760px);margin:clamp(32px,8vh,90px) auto}header,footer{display:flex;align-items:center;gap:14px;flex-wrap:wrap}header{justify-content:space-between;color:var(--muted);font-size:13px;border-bottom:1px solid var(--line);padding-bottom:14px}.question{margin:36px 0 32px auto;width:fit-content;border-radius:16px;background:light-dark(#eeefea,#292d2a);padding:9px 16px}h1{font:500 clamp(28px,5vw,44px)/1.12 Georgia,serif;letter-spacing:-.04em;margin:0 0 12px}p{max-width:60ch}button{background:transparent;color:inherit;font:inherit;cursor:pointer;border:0;min-height:44px}button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.steps{display:grid;grid-template-columns:repeat(3,1fr);margin:32px 0 14px;gap:12px}.stage{display:grid;text-align:left;gap:10px;border-top:2px solid var(--line);padding:12px 0}.stage[aria-pressed=true]{border-color:var(--accent);color:var(--accent);font-weight:650}.seq{font:12px ui-monospace,monospace}.detail{min-height:3.5em;color:var(--muted)}footer{border-top:1px solid var(--line);margin-top:22px;font-size:13px;color:var(--muted)}footer button{padding:4px}.name{font-weight:600}#summary{color:var(--muted)}[hidden]{display:none}@media(max-width:480px){.steps{grid-template-columns:1fr;gap:0;margin:20px 0 10px}.stage{grid-template-columns:34px 1fr;align-items:center;border-top:0;border-left:2px solid var(--line);padding:8px 14px}.stage[aria-pressed=true]{border-left-color:var(--accent)}.question{margin:22px 0 24px auto}}
+article{margin-bottom:3rem}h2{font:500 clamp(26px,4vw,36px)/1.15 Georgia,serif;letter-spacing:-.035em}label,output{display:block}input[type=range]{width:min(100%,420px);height:44px;accent-color:var(--accent)}output{font-size:24px;font-variant-numeric:tabular-nums}.modes{display:flex;gap:12px;flex-wrap:wrap}.modes button[aria-pressed=true]{color:var(--accent);box-shadow:inset 0 -2px var(--accent)}figure{margin:20px 0}figcaption{font-size:13px;color:var(--muted)}.row{display:grid;grid-template-columns:90px 1fr 30px;align-items:center;gap:12px;margin:10px 0}.track{position:relative;height:18px}.track i{position:absolute;height:100%;background:var(--accent);border-radius:3px}.centered:before{content:"";position:absolute;left:50%;height:100%;border-left:1px solid var(--muted)}
+</style>
+<main><header><span>Threads / Intelligent UI</span><span>Design preview</span></header><p class="question">Show how Intelligent UI works as a flowchart. Let me tap each stage to see what happens.</p><article><p class="name">Asstra</p><h1>From question to interface</h1><p>The model writes a tool for your question. Deck checks it, then opens it right here in the conversation.</p>
+<section id="tool" aria-label="Explore the flow"><div class="steps"><button class="stage" aria-pressed="true"><span class="seq">01</span>Generate</button><button class="stage" aria-pressed="false"><span class="seq">02</span>Validate</button><button class="stage" aria-pressed="false"><span class="seq">03</span>Interact</button></div><p class="detail" role="status"></p></section>
+</article>
+<p class="question">Make a storage calculator for video at 20 Mbps. Let me change the duration from 1 to 120 minutes and see the file size in GB.</p>
+<article><h2>Video storage</h2><label for="minutes">Duration in minutes</label>
+<input id="minutes" type="range" min="1" max="120" value="30"><output id="storage" for="minutes" role="status"></output>
+<p class="detail">Estimated video payload at a constant bitrate. Each minute uses 0.15 decimal GB.</p></article>
+<p class="question">Plot these sample build times in minutes: Monday 8, Tuesday 6, Wednesday 9. Let me switch between duration and change from Monday.</p>
+<article><h2>Build times</h2><div class="modes" aria-label="Chart measure" role="group"><button aria-pressed="true" id="duration">Duration</button><button aria-pressed="false" id="change">Change from Monday</button></div>
+<figure aria-live="polite"><figcaption id="axis"></figcaption><div id="bars"></div></figure></article></main>
+<script>
+const descriptions = ['The model includes the markup, styles, and any local behavior the tool needs in its reply.', 'Deck waits for the complete card and checks its format and size before opening it.', 'Select a stage directly in the reply. The interface responds locally.'];
+const stages = [...document.querySelectorAll('.stage')];
+
+function select(index) {
+  stages.forEach((stage, i) => stage.setAttribute('aria-pressed', String(i === index)));
+  document.querySelector('.detail').textContent = descriptions[index];
+}
+stages.forEach((stage, index) => stage.addEventListener('click', () => select(index)));
+select(0);
+
+const minutes = document.querySelector('#minutes');
+function updateStorage() {
+  const duration = minutes.valueAsNumber;
+  document.querySelector('#storage').textContent = duration + ' min · ' + (duration * 0.15).toFixed(2) + ' GB';
+}
+minutes.addEventListener('input', updateStorage);
+updateStorage();
+
+const days = [['Monday', 8], ['Tuesday', 6], ['Wednesday', 9]];
+function drawChart(change) {
+  document.querySelector('#duration').setAttribute('aria-pressed', String(!change));
+  document.querySelector('#change').setAttribute('aria-pressed', String(change));
+  document.querySelector('#axis').textContent = change ? 'Minutes above or below Monday' : 'Duration in minutes';
+  const bars = document.querySelector('#bars');
+  bars.replaceChildren();
+  for (const [day, time] of days) {
+    const value = change ? time - days[0][1] : time;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const track = document.createElement('span');
+    track.className = change ? 'track centered' : 'track';
+    const bar = document.createElement('i');
+    bar.style.left = (change ? 50 + Math.min(0, value) * 20 : 0) + '%';
+    bar.style.width = Math.abs(value) * (change ? 20 : 10) + '%';
+    track.append(bar);
+    row.append(day, track, (change && value > 0 ? '+' : '') + value);
+    bars.append(row);
+  }
+}
+document.querySelector('#duration').onclick = () => drawChart(false);
+document.querySelector('#change').onclick = () => drawChart(true);
+drawChart(false);
+</script></html>

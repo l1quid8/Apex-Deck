@@ -215,6 +215,10 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     if (!state.live || state.phase !== 'bootstrap') return;
     state.phase = 'checking';
     await state.fileProtection;
+    if (state.colors) {
+      // The wrapper is opaque. Match the painted reply using a validated hex literal.
+      await state.page.insertCSS(`html,body{background-color:${state.colors.background} !important}`);
+    }
     await Promise.all(state.fileGuards);
     if (!state.live || state.guardFailed || !state.admission.live || admissions.get(state.win.id) !== state.admission) return;
     if (!ownerMatches(state, state.admission.owner) || !foreground(state.win)) { await stopState(state, 'The owning Deck frame is no longer in the foreground.'); return; }
@@ -226,6 +230,11 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     audit({ type: 'ownership-verified', runId: state.runId, records: state.records, frames: state.frames });
     state.phase = 'initializing';
     if (!state.live || !state.admission.live || admissions.get(state.win.id) !== state.admission) return;
+    if (state.colors) {
+      const { background, foreground, light } = state.colors;
+      const tokens = { background, foreground, ...(light && { surface: '#f2f2f2', muted: '#545454', border: '#999999', accent: '#175bb0' }) };
+      state.page.mainFrame.send('generated-ui:command', envelope(state, 'theme', { tokens }));
+    }
     state.page.mainFrame.send('generated-ui:command', envelope(state, 'init', { card: state.card }));
     audit({ type: 'payload-delivered', runId: state.runId });
     state.geometryAt = clock();
@@ -285,7 +294,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     ledger.count++;
     const view = new WebContentsView({ webPreferences: { ...GENERATED_WEB_PREFERENCES, session: ses, preload: path.join(here, 'preload.cjs') } });
     const state = { runId, revisionDigest: digest, win: owner.win, ownerFrame: owner.frame, card: read.card, identity: read.identity,
-      session: ses, view, page: view.webContents, live: true, phase: 'bootstrap', attached: false,
+      session: ses, view, colors: read.colors, page: view.webContents, live: true, phase: 'bootstrap', attached: false,
       timers: [], listeners: [], records: [], frames: [], fileGuards: [], budget: new MessageBudget(),
       admission, zoom, nonce: null, lastPong: clock(), started: clock(), geometryAt: null, url: `https://generated-ui.invalid/${runId}` };
     admission.state = state;

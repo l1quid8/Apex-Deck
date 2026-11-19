@@ -1,5 +1,6 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { InlineAnswer } from "./InlineAnswer.tsx";
 import { AnswerCard, CardFallback } from "./AnswerCard.tsx";
 import { cardKey, fingerprint, type AnswerStore } from "./contract.ts";
 import { readCard } from "./schema.ts";
@@ -40,14 +41,15 @@ export function ThreadCard({ source, seq, author, versions, answers, readOnly = 
   if (read.card.kind === "generated") {
     const version = versions.get(cardKey(seq, read.card.cardId)) ?? 1;
     return <GeneratedAnswerCard
-      key={`${hostId}:${threadId}:${seq}:${executionEpoch}:${source}`}
+      key={`${hostId}:${threadId}:${seq}:${source}`}
       card={read.card} source={source} version={version} author={author}
       identity={{ threadId, seq, cardId: read.card.cardId, hostId }}
       historical={version < latestCardVersion(versions, read.card.cardId)}
       autoStart={autoStartKey === cardKey(seq, read.card.cardId)}
-      readOnly={readOnly} executionAllowed={executionAllowed} onDiscuss={onDiscuss}
+      readOnly={readOnly} executionEpoch={executionEpoch} executionAllowed={executionAllowed} onDiscuss={onDiscuss}
     />;
   }
+  if (read.card.kind !== "comparison") return <InlineAnswer key={JSON.stringify([hostId, threadId, seq, source])} card={read.card} />;
   const store = readOnly ? null : answers;
   return (
     <CardBoundary source={source}>

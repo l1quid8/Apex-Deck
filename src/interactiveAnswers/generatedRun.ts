@@ -2,6 +2,7 @@
 import type { GeneratedRuntimeCapability } from '../../shared/generatedUiCapability.mjs';
 export interface GeneratedIdentity { threadId: string; seq: number; cardId: string; hostId: string }
 export interface GeneratedBounds { x: number; y: number; width: number; height: number }
+export interface GeneratedColors { background: string; foreground: string; light: boolean }
 export interface GeneratedEvent {
   runId: string;
   type: "ready" | "resize" | "discuss" | "stopped";
@@ -11,7 +12,7 @@ export interface GeneratedEvent {
 }
 export interface GeneratedApi {
   capability(): Promise<GeneratedRuntimeCapability>;
-  run(request: { requestId: string; source: string; identity: GeneratedIdentity; bounds: GeneratedBounds }): Promise<{ runId: string; revisionDigest: string }>;
+  run(request: { requestId: string; source: string; identity: GeneratedIdentity; bounds: GeneratedBounds; colors?: GeneratedColors }): Promise<{ runId: string; revisionDigest: string }>;
   /** Revoke a pending start even before run() returns a runId. */
   cancel(requestId: string): Promise<void>;
   bounds(runId: string, bounds: GeneratedBounds | null): void;
@@ -33,12 +34,23 @@ export function latestCardVersion(versions: Map<string, number>, cardId: string)
   return latest;
 }
 
-/** Each instance starts fresh. Automatic opening is a single, visible attempt. */
+// Main emits these reasons when the native view loses its presentation surface.
+const presentationStops = new Set([
+  "Deck window hidden.", "Deck window minimized.", "Deck window lost focus.",
+  "The Deck window must be in the foreground.",
+  "Deck zoom changed.", "Interface is no longer visible.",
+  "The owning Deck frame is no longer in the foreground.",
+  "Interface bounds are outside the visible card.",
+  "Interface geometry changed during initialization.",
+]);
+
+/** Each automatic start requires stable visible bounds and an enabled host. */
 export class GeneratedRun {
   state: GeneratedState = { enabled: false, phase: "idle", reason: "Checking interface availability…", discuss: "", height: 300, attempted: false };
   private api: GeneratedApi | undefined;
   private request: { source: string; identity: GeneratedIdentity };
   private changed: () => void;
+  private colors?: () => GeneratedColors | undefined;
   private generation = 0;
   private disposed = false;
   private current: string | null = null;
@@ -47,8 +59,10 @@ export class GeneratedRun {
   private unsubscribe: (() => void) | undefined;
   private automaticBounds: string | null = null;
   private visibleSince = 0;
+  private releasing = false;
 
-  constructor(api: GeneratedApi | undefined, request: { source: string; identity: GeneratedIdentity }, changed: () => void) {
+  constructor(api: GeneratedApi | undefined, request: { source: string; identity: GeneratedIdentity }, changed: () => void, colors?: () => GeneratedColors | undefined) {
+    this.colors = colors;
     this.api = api;
     this.request = request;
     this.changed = changed;
@@ -62,27 +76,28 @@ export class GeneratedRun {
   async checkCapability(preserveReasonWhenEnabled = false) {
     try {
       const result = await this.api?.capability();
-      this.update({ enabled: result?.enabled === true, reason: result?.enabled && preserveReasonWhenEnabled ? this.state.reason : result?.reason ?? "This client shows the text version of this interface." });
+      this.update({ enabled: result?.enabled === true, reason: result?.enabled && preserveReasonWhenEnabled ? this.state.reason : result?.reason ?? "Interactive content is unavailable here." });
     } catch {
-      this.update({ enabled: false, reason: "This interface is unavailable. The text version is below." });
+      this.update({ enabled: false, reason: "Interactive content is unavailable here." });
     }
   }
   async autoStart(bounds: GeneratedBounds | null, now: number) {
-    if (this.disposed || this.state.attempted || this.state.phase !== "idle") return;
+    if (this.disposed || this.releasing || this.state.attempted || this.state.phase !== "idle") return;
     if (!bounds || !this.state.enabled || !Number.isFinite(now)) { this.automaticBounds = null; return; }
     const sample = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
     if (sample !== this.automaticBounds) { this.automaticBounds = sample; this.visibleSince = now; return; }
     if (now - this.visibleSince >= 250) await this.start(bounds);
   }
   async start(bounds: GeneratedBounds) {
-    if (this.disposed || !this.api || !this.state.enabled || this.state.phase !== "idle") return;
+    if (this.disposed || this.releasing || !this.api || !this.state.enabled || this.state.phase !== "idle") return;
     const generation = ++this.generation;
     const requestId = crypto.randomUUID();
     this.requestId = requestId;
     this.early = [];
     this.update({ phase: "starting", reason: "Opening interface…", discuss: "", attempted: true });
     try {
-      const result = await this.api.run({ ...this.request, requestId, bounds });
+      const colors = this.colors?.();
+      const result = await this.api.run({ ...this.request, requestId, bounds, ...(colors && { colors }) });
       if (this.disposed || generation !== this.generation) {
         await this.api.stop(result.runId).catch(() => {});
         return;
@@ -90,10 +105,14 @@ export class GeneratedRun {
       this.current = result.runId;
       for (const event of this.early) this.receive(event);
       this.early = [];
-    } catch {
+    } catch (error) {
       if (generation === this.generation) {
         this.requestId = null;
-        this.update({ phase: "idle", reason: "This interface could not start. You can try again.", discuss: "" });
+        // Electron wraps rejected invoke() errors with the channel name.
+        const message = error instanceof Error ? error.message.replace(/^Error invoking remote method 'generated-ui:run': Error: /, "") : "";
+        const resume = presentationStops.has(message);
+        this.automaticBounds = null;
+        this.update({ phase: "idle", attempted: !resume, reason: resume ? "" : "This interface could not open.", discuss: "" });
         void this.checkCapability(true);
       }
     }
@@ -112,12 +131,14 @@ export class GeneratedRun {
       this.current = null;
       this.requestId = null;
       ++this.generation;
-      this.update({ phase: "idle", reason: event.reason ?? "Interface stopped. Restart to start fresh.", discuss: "" });
+      this.automaticBounds = null;
+      const resume = presentationStops.has(event.reason ?? "");
+      this.update({ phase: "idle", attempted: !resume, reason: resume ? "" : event.reason ?? "Interface stopped.", discuss: "" });
       void this.checkCapability(true);
     }
   }
   place(bounds: GeneratedBounds | null) {
-    if (bounds === null) { void this.stop(); return; }
+    if (bounds === null) { void this.stop(true); return; }
     if (this.current) this.api?.bounds(this.current, bounds);
   }
   takeDiscuss(): string {
@@ -125,19 +146,23 @@ export class GeneratedRun {
     this.update({ discuss: "" });
     return text;
   }
-  async stop() {
-    ++this.generation;
+  async stop(resumeWhenVisible = false) {
+    const generation = ++this.generation;
+    this.automaticBounds = null;
     const runId = this.current;
     const requestId = this.requestId;
     this.current = null;
     this.requestId = null;
     this.early = [];
-    this.update({ phase: "idle", reason: "Interface stopped. Restart to start fresh.", discuss: "", attempted: true });
+    this.releasing = true;
+    this.update({ phase: "idle", reason: "", discuss: "", attempted: !resumeWhenVisible });
     await Promise.allSettled([
       ...(requestId && this.api ? [this.api.cancel(requestId)] : []),
       ...(runId && this.api ? [this.api.stop(runId)] : []),
     ]);
+    if (this.disposed || generation !== this.generation) return;
     await this.checkCapability(true);
+    if (generation === this.generation) this.releasing = false;
   }
   dispose() {
     if (this.disposed) return;

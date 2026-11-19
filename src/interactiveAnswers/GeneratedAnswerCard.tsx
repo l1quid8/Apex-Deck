@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { GeneratedCard } from "./schema.ts";
 import { GeneratedRun, type GeneratedBounds, type GeneratedIdentity, type GeneratedState } from "./generatedRun.ts";
-import "./answer-card.css";
 import "./generated-card.css";
 
 interface Props {
@@ -13,6 +12,7 @@ interface Props {
   historical: boolean;
   readOnly: boolean;
   executionAllowed?: boolean;
+  executionEpoch?: string;
   autoStart?: boolean;
   onDiscuss?: (snapshot: string) => void;
 }
@@ -57,34 +57,53 @@ export function visibleGeneratedBounds(slot: HTMLElement): GeneratedBounds | nul
   return { x, y, width, height };
 }
 
+// Pass only opaque RGB colors to the isolated surface. The surrounding reply
+// can be transparent, particularly in Clay, so find its painted ancestor.
+function replyColors(slot: HTMLElement | null) {
+  if (!slot) return;
+  const hex = (css: string) => {
+    const rgb = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(css);
+    return rgb && "#" + rgb.slice(1).map(channel => Number(channel).toString(16).padStart(2, "0")).join("");
+  };
+  const foreground = hex(getComputedStyle(slot).color);
+  if (!foreground) return;
+  for (let node: HTMLElement | null = slot; node; node = node.parentElement) {
+    const background = hex(getComputedStyle(node).backgroundColor);
+    if (background) return { background, foreground, light: document.documentElement.dataset.deckLight === "true" };
+  }
+}
+
 /** Code is never put in Deck's DOM. Only main can create the isolated host. */
-export function GeneratedAnswerCard({ card, source, version, author, identity, historical, readOnly, executionAllowed = true, autoStart = true, onDiscuss }: Props) {
+export function GeneratedAnswerCard({ card, source, version, author, identity, historical, readOnly, executionAllowed = true, executionEpoch = "", autoStart = true, onDiscuss }: Props) {
   const [state, setState] = useState<GeneratedState>({ enabled: false, phase: "idle", reason: "Checking interface availability…", discuss: "", height: 300, attempted: false });
   const controller = useRef<GeneratedRun | null>(null);
   const slot = useRef<HTMLDivElement | null>(null);
   const viewportHeight = useRef<number | null>(null);
-  // Focus/availability changes must not retry a stopped or failed revision.
-  const automaticAttempted = useRef(false);
+  const failedRevision = useRef(false);
   const desktop = typeof window !== "undefined" && Boolean(window.apexDeck?.generatedUI);
-  const supported = desktop && executionAllowed && !readOnly && !historical && Boolean(identity.threadId);
+  const supported = desktop && autoStart && executionAllowed && !readOnly && !historical && Boolean(identity.threadId);
   useEffect(() => {
-    if (!supported) return;
+    // A focus or connection change can remount the controller for this reply.
+    // Keep a failed payload inert until ThreadCard mounts a new revision.
+    if (!supported || failedRevision.current) return;
     const api = window.apexDeck?.generatedUI;
     const run = new GeneratedRun(api, { source, identity }, () => {
-      if (run.state.attempted) automaticAttempted.current = true;
+      if (run.state.phase === "idle" && run.state.attempted) failedRevision.current = true;
       setState({ ...run.state });
-    });
+    }, () => replyColors(slot.current));
     controller.current = run;
+    setState({ ...run.state });
     void run.checkCapability();
     return () => { run.dispose(); if (controller.current === run) controller.current = null; };
-  }, [supported, source, identity.threadId, identity.hostId, identity.seq, identity.cardId]);
+  }, [supported, executionEpoch, source, identity.threadId, identity.hostId, identity.seq, identity.cardId]);
   useEffect(() => {
+    if (!supported) return;
     const place = () => {
       const run = controller.current;
       if (!run) return;
       const bounds = slot.current ? visibleGeneratedBounds(slot.current) : null;
       if (run.state.phase !== "idle") run.place(bounds);
-      else if (autoStart && !automaticAttempted.current) {
+      else if (!run.state.attempted) {
         if (bounds && slot.current) viewportHeight.current = Math.ceil(slot.current.getBoundingClientRect().height);
         void run.autoStart(document.hasFocus() ? bounds : null, performance.now());
       }
@@ -100,56 +119,46 @@ export function GeneratedAnswerCard({ card, source, version, author, identity, h
     document.addEventListener("scroll", revokeGeometry, true);
     window.addEventListener("resize", revokeGeometry);
     document.addEventListener("visibilitychange", revokeGeometry);
+    const themeObserver = new MutationObserver(() => {
+      const run = controller.current;
+      if (run && run.state.phase !== "idle") run.place(null);
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-deck-light", "data-deck-theme", "data-deck-palette"] });
     const observer = new MutationObserver(place);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "open", "hidden"] });
     const timer = window.setInterval(place, 125);
     return () => {
-      clearInterval(timer); observer.disconnect();
+      clearInterval(timer); observer.disconnect(); themeObserver.disconnect();
       document.removeEventListener("scroll", revokeGeometry, true);
       window.removeEventListener("resize", revokeGeometry);
       document.removeEventListener("visibilitychange", revokeGeometry);
     };
-  }, [autoStart]);
-  const run = () => {
-    const bounds = slot.current && visibleGeneratedBounds(slot.current);
-    if (bounds && slot.current) {
-      viewportHeight.current = Math.ceil(slot.current.getBoundingClientRect().height);
-      void controller.current?.start(bounds);
-    }
-    else setState((old) => ({ ...old, reason: "Scroll at least 200px of the interface into view before running it." }));
-  };
-  const active = state.phase !== "idle";
-  // Keep the opening footprint. Changing it can cause Chromium
-  // to scroll the transcript automatically, which correctly revokes a native
-  // view. Generated content scrolls inside this fixed viewport until Stop.
+  }, [supported]);
+  const active = supported && state.phase !== "idle";
+  const showSlot = supported && state.enabled && (active || !state.attempted);
   return (
-    <section className="answer-card generated-answer" data-generated-running={active ? "true" : undefined} aria-label={card.title}>
-      <header className="answer-card-head">
-        <span className="answer-eyebrow">Generated interface · v{version} · {author}</span>
-        <h3>{card.title}</h3>
-        <p className="answer-summary">{card.summary}</p>
-      </header>
-      {(!supported || !state.enabled) && <p className="generated-fallback">{card.fallback}</p>}
-      {supported && <>
-        {(state.enabled || active) && <div className="generated-slot" ref={slot} style={{ height: (active ? viewportHeight.current : null) ?? state.height }} aria-label={`${card.title} interface`} aria-busy={state.phase === "starting"}>
-          {!active && <span>{autoStart && !automaticAttempted.current ? "Opens automatically when in view. Scroll inside to see the full interface." : "Interface paused."}</span>}
-        </div>}
-        <footer className="answer-foot">
-          {!active && state.enabled && (!autoStart || state.attempted || automaticAttempted.current) && <button type="button" className="ghost small" onClick={run}>{state.attempted || automaticAttempted.current ? "Restart" : "Open interface"}</button>}
-          {active && <button type="button" className="ghost small" onClick={() => { void controller.current?.stop(); }}>Stop</button>}
-          <span className="answer-hint" role="status">{state.reason}</span>
-        </footer>
-        {state.enabled && <details className="generated-text-version"><summary>Text version</summary><p className="generated-fallback">{card.fallback}</p></details>}
-        {state.discuss && <div className="generated-discuss">
-          <p>Text offered by this interface:</p>
-          <pre>{state.discuss}</pre>
-          {onDiscuss && <button type="button" className="primary small" onClick={() => {
-            const text = controller.current?.takeDiscuss();
-            if (text) onDiscuss(`From ${author}'s interface "${card.title}" (v${version}):\n${text}`);
-          }}>Discuss this text</button>}
-        </div>}
-      </>}
-      {!supported && <p className="answer-hint generated-status">{historical ? "An earlier version. The text above is kept for reference." : "This client shows the text version of this interface."}</p>}
+    <section className="generated-answer" data-generated-running={active ? "true" : undefined} aria-label={card.title}>
+      <h3>{card.title}</h3>
+      {showSlot ? (
+        <div className="generated-slot" ref={slot} style={{ height: (active ? viewportHeight.current : null) ?? state.height }}
+          aria-label={card.title} aria-busy={state.phase === "starting"}>
+          {!active && <p className="generated-fallback">{card.fallback}</p>}
+        </div>
+      ) : (
+        <>
+          <p className="generated-summary">{card.summary}</p>
+          {card.fallback !== card.summary && <p className="generated-fallback">{card.fallback}</p>}
+          {supported && state.reason && state.reason !== "Checking interface availability…" &&
+            <p className="generated-status" role="status">{state.reason}</p>}
+        </>
+      )}
+      {active && state.discuss && <div className="generated-discuss">
+        <pre>{state.discuss}</pre>
+        {onDiscuss && <button type="button" className="primary small" onClick={() => {
+          const text = controller.current?.takeDiscuss();
+          if (text) onDiscuss(`From ${author}'s interface "${card.title}" (v${version}):\n${text}`);
+        }}>Discuss this text</button>}
+      </div>}
     </section>
   );
 }

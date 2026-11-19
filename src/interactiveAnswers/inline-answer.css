@@ -1,0 +1,19 @@
+.inline-answer p, .inline-answer :is(ol,ul) { margin: 0; }
+.inline-answer :is(ol,ul) { padding: 0; list-style: none; }
+.inline-answer button { min-height: 44px; max-width: 100%; background: transparent; border: 0; border-radius: 0; color: inherit; font: inherit; text-align: start; overflow-wrap: anywhere; }
+.inline-answer button[aria-pressed=true] { box-shadow: inset 0 -2px var(--accent); font-weight: 650; }
+.inline-answer button:focus-visible, .inline-answer input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.inline-answer .inline-stages { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,9rem),1fr)); gap: 4px; }
+.inline-stages button { width: 100%; }
+.inline-stages button span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.inline-answer label, .inline-answer input { display: block; width: 100%; }
+.inline-answer input[type=range] { padding: 0; height: 44px; accent-color: var(--accent); }
+.inline-answer output { font-size: 1.45em; font-variant-numeric: tabular-nums; }
+.inline-modes { display: flex; flex-wrap: wrap; gap: 6px; }
+.inline-bars li { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; margin-block: 10px; }
+.inline-bars strong { font-variant-numeric: tabular-nums; }
+.inline-track { position: relative; grid-column: 1/-1; height: 8px; background: var(--panel-2); }
+.inline-track i, .inline-track b { position: absolute; height: 100%; }
+.inline-track i { background: var(--accent); border-radius: 2px; }
+.inline-track b { border-left: 1px solid currentColor; }
+@media (max-width: 480px) { .inline-answer .inline-stages { grid-template-columns: 1fr; } }

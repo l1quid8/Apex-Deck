@@ -41,12 +41,21 @@ export class MessageBudget {
   }
 }
 export function readRunRequest(value) {
-  if (!exactKeys(value, ['requestId', 'source', 'identity', 'bounds']) || typeof value.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(value.requestId) || typeof value.source !== 'string'
+  const fields = ['requestId', 'source', 'identity', 'bounds'];
+  const colors = value?.colors;
+  if (colors !== undefined) {
+    fields.push('colors');
+    const rgb = color => typeof color === 'string' && /^#[a-f0-9]{6}$/i.test(color);
+    if (!exactKeys(colors, ['background', 'foreground', 'light']) || !rgb(colors.background) || !rgb(colors.foreground) || typeof colors.light !== 'boolean') {
+      return { ok: false, reason: 'Invalid generated interface colors.' };
+    }
+  }
+  if (!exactKeys(value, fields) || typeof value.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(value.requestId) || typeof value.source !== 'string'
       || !exactKeys(value.identity, ['threadId', 'seq', 'cardId', 'hostId'])) return { ok: false, reason: 'Invalid generated run request.' };
   const { identity } = value;
   if (['threadId', 'hostId'].some(key => typeof identity[key] !== 'string' || !identity[key] || identity[key].length > 200)
       || !Number.isSafeInteger(identity.seq) || identity.seq < 0) return { ok: false, reason: 'Invalid generated card identity.' };
   const parsed = readGeneratedCard(value.source);
   if (!parsed.ok || !parsed.card || parsed.card.cardId !== identity.cardId) return { ok: false, reason: parsed.reason || 'The generated card identity does not match.' };
-  return { ok: true, requestId: value.requestId, card: parsed.card, identity: { ...identity }, bounds: value.bounds };
+  return { ok: true, requestId: value.requestId, card: parsed.card, identity: { ...identity }, bounds: value.bounds, colors };
 }
