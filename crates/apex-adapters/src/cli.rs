@@ -745,6 +745,7 @@ fn random_token() -> String {
     ) -> Result<Reply, ParticipantError> {
         let private=self.computer.is_some() || reader.has_computer_content();
         let shown = if private {"[computer content hidden]".into()} else {reader.streamed().to_string()};
+        let private_summary = private.then(|| reader.private_failure_summary());
         let outcome = reader.outcome();
         if !success || outcome.error.is_some() {
             let detail = if private {"[computer content hidden]".into()} else {AnsiStripper::default().push(stderr_text.trim())};
@@ -756,11 +757,11 @@ fn random_token() -> String {
             );
             // A tool's own statement of what went wrong beats anything
             // picked out of its log.
-            let summary = if private {"Computer tool session failed; private content hidden".into()} else {outcome
+            let summary = private_summary.unwrap_or_else(|| outcome
                 .error
                 .as_deref()
                 .and_then(last_lines)
-                .unwrap_or_else(|| failure_summary(&detail, &shown))};
+                .unwrap_or_else(|| failure_summary(&detail, &shown)));
             let hint = sign_in_hint(program, &summary).map(|h| format!(" {h}")).unwrap_or_default();
             let how = if success { "reported an error".to_string() } else { format!("exited with {status}") };
             return Err(ParticipantError::Failed(format!("`{program}` {how}: {summary}{hint}")));
@@ -1600,6 +1601,41 @@ exit 1
     }
     use super::{failure_summary, sign_in_hint, summarize_error, CliParticipant};
     use crate::events::{EventReader, OutputFormat};
+
+    #[test]
+    fn private_claude_failure_uses_only_structured_status() {
+        let config: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({
+            "id": "claude", "display_name": "Claude",
+            "backend": {"kind":"agent", "tool":"claude_code", "model":null}
+        })).unwrap();
+        for (status, expected, used_computer) in [
+            ("401", "/login", false),
+            ("429", "rate limit", true),
+            ("503", "HTTP 503", false),
+            ("null", "Private error details", true),
+            ("12345", "Private error details", false),
+        ] {
+            let mut participant = CliParticipant::new(config.clone());
+            let mut reader = EventReader::new(OutputFormat::ClaudeStream, None);
+            if used_computer {
+                reader.push(concat!(
+                    r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"1","name":"mcp__apex-computer__inspect","input":{}}]}}"#,
+                    "\n"
+                ));
+            } else {
+                participant.computer = Some(apex_core::ComputerTurn {
+                    relay: "/test/relay".into(), thread_id: "room".into(),
+                    participant_id: "claude".into(), token: "test".into(),
+                });
+            }
+            reader.push(&format!(r#"{{"type":"result","is_error":true,"api_error_status":{status},"result":"private-payload"}}"#));
+            reader.finish();
+            let error = participant.settle("claude", false, "exit status: 1", "private-payload", reader)
+                .unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("private-payload"));
+        }
+    }
 
     #[test]
     fn reported_cost_reaches_the_cli_reply() {

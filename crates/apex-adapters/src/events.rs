@@ -99,6 +99,7 @@ pub(crate) struct EventReader {
     /// id the tool gave them.
     edits: HashMap<String, Vec<FileChange>>,
     failure: Option<String>,
+    claude_error_status: Option<u64>,
     /// The last error event. Tools also report retries this way, so it only
     /// counts if the turn ends without a reply.
     last_error: Option<String>,
@@ -160,6 +161,7 @@ impl EventReader {
             turn_over: false,
             edits: HashMap::new(),
             failure: None,
+            claude_error_status: None,
             last_error: None,
             input_tokens: None,
             output_tokens: None,
@@ -209,6 +211,16 @@ impl EventReader {
             self.line(rest.trim_end_matches('\r'), &mut steps);
         }
         steps
+    }
+
+    /// Only the structured HTTP status may leave a private failed turn.
+    pub(crate) fn private_failure_summary(&self) -> String {
+        match self.claude_error_status {
+            Some(401) => "Claude API returned HTTP 401 Unauthorized.".into(),
+            Some(429) => "Claude API returned HTTP 429 (rate limit). Try again later.".into(),
+            Some(status) => format!("Claude API returned HTTP {status}."),
+            None => "The provider did not return a reply. Private error details are hidden.".into(),
+        }
     }
 
     pub(crate) fn outcome(self) -> Outcome {
@@ -461,6 +473,8 @@ impl EventReader {
                 self.turn_over = true;
                 let text = event["result"].as_str().map(str::to_string);
                 if event["is_error"].as_bool().unwrap_or(false) {
+                    self.claude_error_status = event["api_error_status"].as_u64()
+                        .filter(|status| (400..=599).contains(status));
                     let listed = event["errors"].as_array().map(|errors| {
                         errors
                             .iter()
