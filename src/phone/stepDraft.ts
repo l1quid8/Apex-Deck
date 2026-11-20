@@ -1,4 +1,5 @@
 import { mentionFor } from "../slug.ts";
+import { mentionedWords } from "../recipients.ts";
 
 type Bot = Parameters<typeof mentionFor>[0];
 
@@ -12,6 +13,6 @@ export function stepDraft(current: string, prompt: string, by?: Bot): string {
   const said = current.replace(/\s+$/, "");
   if (!said) return `${tag}${body}`;
   // The bot is already tagged in what was typed: don't tag it twice.
-  const lead = tag && said.includes(tag.trim()) ? "" : tag;
+  const lead = by && mentionedWords(said).includes(mentionFor(by)) ? "" : tag;
   return `${said} ${lead}${body}`;
 }

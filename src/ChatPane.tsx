@@ -1,5 +1,6 @@
 import { useComposerHistory } from "./useComposerHistory";
 import { threadHistoryTexts } from "./composerHistory";
+import { stepDraft } from "./phone/stepDraft";
 import { addTokenUsage } from "./tokenUsage";
 import { gatewayPlan, planProvider, planModel } from "./gatewayTelemetry";
 import { RunnerWork } from "./runner/RunnerWork.tsx";
@@ -2735,14 +2736,14 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       (error) => flashForm(String(error).replace(/^Error: /, "")),
     );
   };
-  /** Send a next step to the bot that suggested it. */
-  const sendStep = (step: NextStep, by: string) => {
+  /** Put a next step in the composer for editing, addressed to its author. */
+  const fillStep = (step: NextStep, by: string) => {
+    if (!showComposer()) return;
+    const next = stepDraft(text, step.prompt, participants.find(p => p.id === by));
+    setText(next);
+    setCaret(next.length);
+    wantedCaret.current = next.length;
     dismissSteps(pane.id);
-    stuck.current = true;
-    if (talkOnly && onChatSend) {
-      const bot = participants.find(p => p.id === by);
-      try { onChatSend(bot ? `@${mentionFor(bot)} ${step.prompt}` : step.prompt); } catch (error) { notify(String(error), 'error'); }
-    } else void turnQueue.sendTo(step.prompt, [by]).catch((error) => notify(String(error), "error"));
   };
   /** A key in the composer that the form takes. True when it was handled. */
   const formKeys = (key: string) => {
@@ -2752,7 +2753,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     else if (act.act === "dismiss") dismissSteps(pane.id);
     else if (act.act === "collapse") setFormFolded(true);
     else if (act.act === "fill" && form.kind === "steps") setText(form.offer.steps[act.index].prompt);
-    else if (act.act === "pick" && form.kind === "steps") sendStep(form.offer.steps[act.index], form.offer.by);
+    else if (act.act === "pick" && form.kind === "steps") fillStep(form.offer.steps[act.index], form.offer.by);
     else if (act.act === "pick" && form.kind === "question") {
       const [q] = form.ask.questions;
       // A single plain question is answered from the keyboard; anything
@@ -4022,7 +4023,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
                 })()}
                 {form.kind === "steps" && form.offer.by === entry.message.speaker.id && newestReply.get(entry.message.speaker.id) === entry.message.seq &&
-                  <ReplyNextSteps key={formKeyId} offer={form.offer} onStep={sendStep} />}
+                  <ReplyNextSteps key={formKeyId} offer={form.offer} onStep={fillStep} />}
               </div>
               {messageActions(entry.message)}
             </div>
@@ -4214,7 +4215,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         {!profileMode && <QuestionForm view={composerForm} nameOf={(id) => names.get(id) ?? id} colorOf={color}
           highlighted={highlighted} collapsed={formFolded} notice={formNotice}
           onHighlight={setHighlighted} onExpand={() => setFormFolded(false)}
-          onAnswer={answerQuestion} onStep={sendStep} onDismiss={() => dismissSteps(pane.id)} />}
+          onAnswer={answerQuestion} onStep={fillStep} onDismiss={() => dismissSteps(pane.id)} />}
         {moveAsk && <div className="move-ask" role="group" aria-label="Open it somewhere else">
           <p>{moveAsk.why
             ? <>{moveAsk.why} This thread stays where it is. Open <b>{moveAsk.project}</b> as:</>
