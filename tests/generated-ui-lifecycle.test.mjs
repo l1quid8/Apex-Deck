@@ -149,3 +149,14 @@ test('focus loss during pending admission can recover after the viewport settles
   await run.autoStart(bounds, 550);
   assert.equal(calls.filter(([name]) => name === 'run').length, 1);
 });
+
+
+test('cached images survive presentation stops and cannot be injected by a stale runtime or URL',async()=>{
+ const {run,event}=setup(); await run.checkCapability();await run.start(bounds);
+ event({runId:'stale',type:'snapshot',image:'data:image/png;base64,YWJj'});assert.equal(run.state.image,undefined);
+ event({runId:'r1',type:'snapshot',image:'https://evil.invalid/a'});assert.equal(run.state.image,undefined);
+ event({runId:'r1',type:'snapshot',image:'data:image/png;base64,YWJj'});
+ await run.stop(true);assert.equal(run.state.image,'data:image/png;base64,YWJj');
+ event({runId:'older-run',type:'snapshot',image:'data:image/png;base64,ZA=='});assert.equal(run.state.image,'data:image/png;base64,YWJj');
+ event({runId:'r1',type:'snapshot',image:'data:image/png;base64,ZA=='});assert.equal(run.state.image,'data:image/png;base64,ZA==','main can finish the latest raster capture after disposal');
+});

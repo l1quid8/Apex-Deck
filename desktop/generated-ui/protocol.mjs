@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { normalizeWidgetState } from '../../shared/generatedWidgetState.mjs';
 import { readGeneratedCard } from '../../shared/generatedCard.mjs';
 
 export const PROTOCOL_VERSION = 1;
@@ -16,12 +17,13 @@ export function readRuntimeMessage(value, binding, ports = []) {
   try {
     if (ports.length || Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RUNTIME_BYTES
         || value.protocolVersion !== 1 || value.runId !== binding.runId || value.revisionDigest !== binding.revisionDigest) return { ok: false };
-    const extra = value.type === 'pong' ? ['nonce'] : value.type === 'resize' ? ['height'] : value.type === 'discuss' ? ['text'] : value.type === 'fault' ? ['code'] : [];
-    if (!['bootstrap', 'ready', 'pong', 'resize', 'discuss', 'fault'].includes(value.type) || !exactKeys(value, [...base, ...extra])) return { ok: false };
+    const extra = value.type === 'widget-state' ? ['widgetState'] : value.type === 'pong' ? ['nonce'] : value.type === 'resize' ? ['height'] : value.type === 'discuss' ? ['text'] : value.type === 'fault' ? ['code'] : [];
+    if (!['bootstrap', 'ready', 'pong', 'resize', 'discuss', 'fault', 'widget-state'].includes(value.type) || !exactKeys(value, [...base, ...extra])) return { ok: false };
     if (value.type === 'fault' && value.code !== 'message-flood') return { ok: false };
     if (value.type === 'pong' && (typeof value.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(value.nonce))) return { ok: false };
     if (value.type === 'resize' && (typeof value.height !== 'number' || !Number.isFinite(value.height))) return { ok: false };
     if (value.type === 'discuss' && (typeof value.text !== 'string' || !value.text.trim() || value.text.length > 4000)) return { ok: false };
+    if (value.type === 'widget-state') return { ok: true, message: { ...value, widgetState: normalizeWidgetState(value.widgetState) } };
     return { ok: true, message: value.type === 'resize' ? { ...value, height: Math.min(800, Math.max(200, Math.ceil(value.height))) } : value };
   } catch { return { ok: false }; }
 }

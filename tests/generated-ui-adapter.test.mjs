@@ -34,6 +34,7 @@ function childHarness(srcdoc) {
   const styles = [];
   const scriptErrors = [];
   const intervals = [];
+  const timeouts = [];
   const resizeObservers = [];
   let now = 100;
   let context;
@@ -104,12 +105,12 @@ function childHarness(srcdoc) {
   const commands = [];
   class Document { open() { events.clear(); } write() { events.clear(); } writeln() { events.clear(); } execCommand(name) { commands.push(name); return true; } }
   const document = Object.assign(new Document(),{ head, body, documentElement: { style: { setProperty() {} } }, createElement: (tag) => ({ tagName: tag.toUpperCase(), textContent: "" }), addEventListener: (type, fn, capture) => listen("document", type, fn, capture), querySelectorAll: () => [] });
-  const window = { addEventListener: (type, fn, capture) => listen("window", type, fn, capture) };
+  const window = { setTimeout: callback => { timeouts.push(callback); return timeouts.length; }, addEventListener: (type, fn, capture) => listen("window", type, fn, capture) };
   class Navigator { get mediaDevices() { return { enumerateDevices: async () => [{kind:'videoinput',deviceId:'canary'}] }; } }
   const navigator = new Navigator();
   context = vm.createContext({ Document, document, window, parent, Navigator, navigator, TextEncoder, Event: NativeEvent, Element, HTMLElement: Element, HTMLInputElement: Input, HTMLLabelElement: Label, MutationObserver: class { observe() {} }, ResizeObserver: class { constructor(callback) { resizeObservers.push(callback); } observe() {} }, getComputedStyle: () => ({ marginTop: "10", marginBottom: "4" }), setInterval: callback => { intervals.push(callback); return intervals.length; }, setTimeout: () => 1, clearInterval() {}, performance: { now: () => now }, order, console });
   vm.runInContext(scriptOf(srcdoc), context);
-  return { order, messages, styles, scriptErrors, commands, body, context, parent, dispatch, intervals, resizeObservers, setNow: value => { now = value; }, createEvent: (type, data) => new NativeEvent(type, data), eventState: (event) => eventStates.get(event), input: (options) => new Input(options), label: (options) => new Label(options), event: (data, extras = {}) => dispatch(new NativeEvent("message", { source: parent, data, ports: [], ...extras })) };
+  return { order, messages, styles, scriptErrors, commands, body, context, parent, dispatch, intervals, timeouts, resizeObservers, setNow: value => { now = value; }, createEvent: (type, data) => new NativeEvent(type, data), eventState: (event) => eventStates.get(event), input: (options) => new Input(options), label: (options) => new Label(options), event: (data, extras = {}) => dispatch(new NativeEvent("message", { source: parent, data, ports: [], ...extras })) };
 }
 
 test('startup polling and resize observations report a stable height only once, then report a real change', async () => {
@@ -117,7 +118,7 @@ test('startup polling and resize observations report a stable height only once, 
   const child = childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
   child.body.scrollHeight = 396; // 410 including body margins.
   child.event({ ...base, type: 'bind' });
-  child.event({ ...base, type: 'init', card });
+  child.event({ ...base, type: 'init', widgetState: null, card });
   for (let index = 1; index <= 45; index++) {
     child.setNow(100 + index * 200);
     child.intervals[0]();
@@ -203,7 +204,7 @@ test("wrapper rejects spoofed, stale, extra-key, port-bearing and invalid messag
   harness.message(bootstrap);
   harness.message(bootstrap);
   assert.equal(harness.toMain.length, 1);
-  harness.command({ ...base, type: "init", card });
+  harness.command({ ...base, type: "init", widgetState: null, card });
   harness.message({ ...base, type: "ready" });
   harness.message({ ...base, type: "resize", height: Infinity });
   harness.message({ ...base, type: "resize", height: 1200 });
@@ -217,7 +218,7 @@ test("wrapper faults once on three malformed overlimit windows before further se
   const { buildWrapperDocument } = await adapter();
   const harness = wrapperHarness(buildWrapperDocument);
   harness.message({ ...base, type: "bootstrap" });
-  harness.command({ ...base, type: "init", card });
+  harness.command({ ...base, type: "init", widgetState: null, card });
   harness.message({ ...base, type: "ready" });
   vm.runInContext('const stringify = JSON.stringify; globalThis.serializations = 0; JSON.stringify = (value) => { serializations++; return stringify(value); };', harness.context);
   for (let second = 1; second <= 3; second++) {
@@ -257,7 +258,7 @@ test("wrapper coalesces resize to ten per second and never forwards a child faul
   const { buildWrapperDocument } = await adapter();
   const harness = wrapperHarness(buildWrapperDocument);
   harness.message({ ...base, type: "bootstrap" });
-  harness.command({ ...base, type: "init", card });
+  harness.command({ ...base, type: "init", widgetState: null, card });
   harness.message({ ...base, type: "ready" });
   harness.message({ ...base, type: "fault", code: "message-flood" });
   for (let index = 0; index < 20; index++) {
@@ -273,10 +274,10 @@ test("child installs markup and CSS before executing exact script text once", as
   const wrapper = wrapperHarness(buildWrapperDocument);
   const child = childHarness(wrapper.frame.srcdoc);
   child.event({ ...base, type: "bind" });
-  child.event({ ...base, type: "init", card }, { source: {} });
+  child.event({ ...base, type: "init", widgetState: null, card }, { source: {} });
   assert.equal(child.order.length, 0);
-  child.event({ ...base, type: "init", card });
-  child.event({ ...base, type: "init", card });
+  child.event({ ...base, type: "init", widgetState: null, card });
+  child.event({ ...base, type: "init", widgetState: null, card });
   assert.deepEqual(child.order.slice(0, 3), ["css", "html", "js"]);
   assert.equal(child.order.filter((item) => item === "js").length, 1);
   assert.equal(child.context.payload, "</script><script>unexpected()</script>");
@@ -295,11 +296,11 @@ test("child withholds ready and pong after synchronous script syntax or runtime 
   for (const js of ["const = broken", 'window.addEventListener("error", (event) => event.stopImmediatePropagation(), true); throw new Error("Broken controls");']) {
     const child = childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
     child.event({ ...base, type: "bind" });
-    child.event({ ...base, type: "init", card: { ...card, js } });
+    child.event({ ...base, type: "init", widgetState: null, card: { ...card, js } });
     assert.equal(child.scriptErrors.length, 1);
     assert.deepEqual(child.messages.map((message) => message.type), ["bootstrap"]);
     child.event({ ...base, type: "ping", nonce: "must-not-answer" });
-    child.event({ ...base, type: "init", card });
+    child.event({ ...base, type: "init", widgetState: null, card });
     assert.deepEqual(child.messages.map((message) => message.type), ["bootstrap"]);
   }
 });
@@ -308,7 +309,7 @@ test("child window capture blocks dropped and pasted files before later model li
   const { buildWrapperDocument } = await adapter();
   const child = childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
   child.event({ ...base, type: "bind" });
-  child.event({ ...base, type: "init", card: { ...card, js: `globalThis.delivered = [];
+  child.event({ ...base, type: "init", widgetState: null, card: { ...card, js: `globalThis.delivered = [];
     window.addEventListener("drop", (event) => globalThis.delivered.push(event.dataTransfer.files[0]), true);
     window.addEventListener("paste", (event) => globalThis.delivered.push(event.clipboardData.files[0]), true);` } });
   for (const type of ["dragenter", "dragover", "drop", "paste"]) {
@@ -324,7 +325,7 @@ test("model code cannot write the clipboard through copy/cut handlers or execCom
   const { buildWrapperDocument } = await adapter();
   const child = childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
   child.event({ ...base, type: "bind" });
-  child.event({ ...base, type: "init", card: { ...card, js: `globalThis.written = [];
+  child.event({ ...base, type: "init", widgetState: null, card: { ...card, js: `globalThis.written = [];
     window.addEventListener("copy", (event) => globalThis.written.push("copy"), true);
     window.addEventListener("cut", (event) => globalThis.written.push("cut"), true);
     Reflect.apply = () => "hostile apply"; String.prototype.toLowerCase = () => "bold";` } });
@@ -350,7 +351,7 @@ test("child file guards use saved native event methods despite prototype and ins
   const { buildWrapperDocument } = await adapter();
   const child = childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
   child.event({ ...base, type: "bind" });
-  child.event({ ...base, type: "init", card: { ...card, js: `globalThis.overridden = 0;
+  child.event({ ...base, type: "init", widgetState: null, card: { ...card, js: `globalThis.overridden = 0;
     globalThis.delivered = [];
     Event.prototype.preventDefault = () => globalThis.overridden++;
     Event.prototype.stopImmediatePropagation = () => globalThis.overridden++;
@@ -375,7 +376,7 @@ test("child file activation does not invoke hostile event target or element gett
   const input = child.input({ type: "file" });
   const label = child.label({ control: input });
   child.event({ ...base, type: "bind" });
-  child.event({ ...base, type: "init", card: { ...card, js: `globalThis.activated = 0;
+  child.event({ ...base, type: "init", widgetState: null, card: { ...card, js: `globalThis.activated = 0;
     for (const type of ["click", "keydown", "pointerdown", "mousedown", "touchstart"]) window.addEventListener(type, () => activated++, true);
     Object.defineProperty(Event.prototype, "target", { get() { throw new Error("Hostile Event prototype getter"); } });
     for (const name of ["closest", "matches", "querySelector"]) Element.prototype[name] = () => { throw new Error("Hostile DOM prototype method"); };
@@ -394,4 +395,53 @@ test("child file activation does not invoke hostile event target or element gett
   assert.throws(() => input.click(), /disabled/);
   assert.throws(() => input.showPicker(), /disabled/);
   assert.throws(() => vm.runInContext('window.showOpenFilePicker()', child.context), /disabled/);
+});
+
+
+test('state restores before generated behavior, setter clones and sends only JSON for this bound revision', async()=>{
+ const {buildWrapperDocument}=await adapter();
+ const child=childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
+ child.event({...base,type:'bind'});
+ child.event({...base,type:'init',widgetState:vm.runInContext('({step:3})',child.context),card:{...card,js:'globalThis.restored=window.generatedUI.widgetState.step;window.generatedUI.setWidgetState({step:4});'}});
+ assert.equal(child.context.restored,3);
+ child.timeouts.shift()();
+ assert.equal(child.messages.find(m=>m.type==='widget-state').widgetState.step,4);
+ assert.equal(child.messages.find(m=>m.type==='widget-state').runId,runId);
+ assert.equal(vm.runInContext('const saved=window.generatedUI.widgetState;saved.step=9;window.generatedUI.widgetState.step',child.context),4);
+ assert.throws(()=>vm.runInContext('window.generatedUI.setWidgetState({step:Infinity})',child.context));
+ assert.throws(()=>vm.runInContext('window.generatedUI.setWidgetState({text:"x".repeat(4097)})',child.context));
+ const wrapper=wrapperHarness(buildWrapperDocument);
+ wrapper.message({...base,type:'bootstrap'});
+ wrapper.command({...base,type:'init',card,widgetState:null});
+ wrapper.message({...base,type:'widget-state',widgetState:vm.runInContext('({step:4})',wrapper.context)});
+ wrapper.message({...base,type:'widget-state',widgetState:{step:5},runId:'stale'});
+ wrapper.message({...base,type:'widget-state',widgetState:{text:'x'.repeat(4097)}});
+ assert.deepEqual(wrapper.toMain.map(m=>m.type),['bootstrap','widget-state']);
+});
+
+
+test('rapid state updates are synchronous locally and coalesced to one bounded host save',async()=>{
+ const {buildWrapperDocument}=await adapter();
+ const child=childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
+ child.event({...base,type:'bind'});child.event({...base,type:'init',card,widgetState:null});
+ vm.runInContext('for(let i=0;i<100;i++)window.generatedUI.setWidgetState({step:i});',child.context);
+ assert.equal(vm.runInContext('window.generatedUI.widgetState.step',child.context),99);
+ assert.equal(child.timeouts.length,1);
+ assert.equal(child.messages.filter(m=>m.type==='widget-state').length,0);
+ child.timeouts.shift()();
+ assert.equal(child.messages.filter(m=>m.type==='widget-state').length,1);
+ assert.equal(child.messages.find(m=>m.type==='widget-state').widgetState.step,99);
+});
+
+test('teardown snapshot stays a bounded primitive after hostile JSON helper replacement',async()=>{
+ const {buildWrapperDocument}=await adapter();
+ const child=childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
+ child.event({...base,type:'bind'});child.event({...base,type:'init',card,widgetState:null});
+ vm.runInContext('window.generatedUI.setWidgetState({step:7}); JSON.parse=()=>({payload:"x".repeat(1000000)}); JSON.stringify=()=>"{}";',child.context);
+ const snapshot=vm.runInContext('window.generatedUI.snapshotJSON',child.context);
+ assert.equal(typeof snapshot,'string');
+ assert.equal(snapshot,'{"step":7}');
+ assert.equal(vm.runInContext('window.generatedUI.widgetState.step',child.context),7);
+ assert.throws(()=>vm.runInContext('window.generatedUI.setWidgetState({payload:"x".repeat(1000000)})',child.context));
+ assert.equal(vm.runInContext('window.generatedUI.snapshotJSON',child.context),snapshot);
 });

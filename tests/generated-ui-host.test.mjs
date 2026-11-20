@@ -3,8 +3,17 @@ import assert from 'node:assert/strict';
 import { runtimeCapability, checkedBounds, collectOwnership, recheckOwnedProcess, bootstrapRequestAllowed } from '../desktop/generated-ui/policy.mjs';
 import { revisionDigest, readRuntimeMessage, MessageBudget, readRunRequest } from '../desktop/generated-ui/protocol.mjs';
 import { ADAPTER_VERSION, SECURITY_POLICY_VERSION } from '../desktop/generated-ui/frame-content.mjs';
-import { createGeneratedUIManager } from '../desktop/generated-ui/host.mjs';
+import { createGeneratedUIManager, readFinalWidgetState } from '../desktop/generated-ui/host.mjs';
 const code = { adapterVersion: ADAPTER_VERSION, securityPolicyVersion: SECURITY_POLICY_VERSION };
+
+test('final frame pull requests only the sealed primitive and rejects overlimit and invalid results',async()=>{
+ const child={executeJavaScript:async expression=>{assert.equal(expression,'window.generatedUI.snapshotJSON');return '{"step":7}';}};
+ assert.deepEqual(await readFinalWidgetState(child),{ok:true,value:{step:7}});
+ for(const result of [{step:7},'"'+'x'.repeat(4096)+'"','"'+'é'.repeat(2100)+'"','not-json',undefined]) {
+   assert.deepEqual(await readFinalWidgetState({executeJavaScript:async()=>result}),{ok:false});
+ }
+ assert.deepEqual(await readFinalWidgetState({executeJavaScript:()=>new Promise(()=>{})}),{ok:false});
+});
 
 test('main converts approved CSS geometry to owner zoom before native placement',()=>{
   const css={x:20,y:80,width:500,height:300};
@@ -152,4 +161,10 @@ test('native appearance accepts only opaque hex colors and a light-mode flag', (
   for (const patch of [{background: 'inherit'}, {foreground:'#abcd'}, {light:1}, {extra:'value'}]) {
     assert.equal(readRunRequest({...request, colors:{...colors, ...patch}}).ok, false);
   }
+});
+
+
+test('state messages are exact-key, revision-bound, JSON-only and size limited at main',()=>{
+ assert.equal(readRuntimeMessage(envelope('widget-state',{widgetState:{stage:2}}),binding).ok,true);
+ for(const message of [envelope('widget-state',{widgetState:NaN}),envelope('widget-state',{widgetState:{x:undefined}}),envelope('widget-state',{widgetState:'x'.repeat(4097)}),{...envelope('widget-state',{widgetState:{}}),revisionDigest:'c'.repeat(64)},envelope('widget-state',{widgetState:{},threadId:'other'})]) assert.equal(readRuntimeMessage(message,binding).ok,false);
 });

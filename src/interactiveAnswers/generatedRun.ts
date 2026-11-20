@@ -5,7 +5,8 @@ export interface GeneratedBounds { x: number; y: number; width: number; height: 
 export interface GeneratedColors { background: string; foreground: string; light: boolean }
 export interface GeneratedEvent {
   runId: string;
-  type: "ready" | "resize" | "discuss" | "stopped";
+  type: "ready" | "resize" | "discuss" | "stopped" | "snapshot";
+  image?: string;
   height?: number;
   text?: string;
   reason?: string;
@@ -13,6 +14,7 @@ export interface GeneratedEvent {
 export interface GeneratedApi {
   capability(): Promise<GeneratedRuntimeCapability>;
   run(request: { requestId: string; source: string; identity: GeneratedIdentity; bounds: GeneratedBounds; colors?: GeneratedColors }): Promise<{ runId: string; revisionDigest: string }>;
+  cached?(request: { requestId: string; source: string; identity: GeneratedIdentity; bounds: GeneratedBounds }): Promise<{ image: string | null }>;
   /** Revoke a pending start even before run() returns a runId. */
   cancel(requestId: string): Promise<void>;
   bounds(runId: string, bounds: GeneratedBounds | null): void;
@@ -26,6 +28,12 @@ export interface GeneratedState {
   discuss: string;
   height: number;
   attempted: boolean;
+  image?: string;
+  cacheChecked?: boolean;
+}
+
+function validSnapshot(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 1024 * 1024 && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(value);
 }
 
 export function latestCardVersion(versions: Map<string, number>, cardId: string): number {
@@ -54,6 +62,7 @@ export class GeneratedRun {
   private generation = 0;
   private disposed = false;
   private current: string | null = null;
+  private snapshotRun: string | null = null;
   private requestId: string | null = null;
   private early: GeneratedEvent[] = [];
   private unsubscribe: (() => void) | undefined;
@@ -72,6 +81,13 @@ export class GeneratedRun {
     if (this.disposed) return;
     this.state = { ...this.state, ...patch };
     this.changed();
+  }
+  async restoreImage() {
+    try {
+      const cached = await this.api?.cached?.({ ...this.request, requestId: crypto.randomUUID(), bounds: {x:0,y:40,width:100,height:200} });
+      if (cached?.image && validSnapshot(cached.image)) this.update({image: cached.image});
+    } catch { /* An unavailable image cache never prevents execution. */ }
+    finally { this.update({cacheChecked:true}); }
   }
   async checkCapability(preserveReasonWhenEnabled = false) {
     try {
@@ -103,6 +119,7 @@ export class GeneratedRun {
         return;
       }
       this.current = result.runId;
+      this.snapshotRun = result.runId;
       for (const event of this.early) this.receive(event);
       this.early = [];
     } catch (error) {
@@ -119,12 +136,16 @@ export class GeneratedRun {
   }
   private receive(event: GeneratedEvent) {
     if (this.disposed) return;
+    // Main may finish its final raster capture after disposal. It carries no
+    // execution authority and is accepted only for this mount’s latest run.
+    if (event.type === "snapshot" && event.runId === this.snapshotRun && validSnapshot(event.image)) { this.update({image: event.image}); return; }
     if (!this.current && this.state.phase === "starting") {
       if (this.early.length < 10) this.early.push(event);
       return;
     }
     if (event.runId !== this.current) return;
-    if (event.type === "ready") this.update({ phase: "running", reason: "" });
+    if (event.type === "snapshot" && validSnapshot(event.image)) this.update({image: event.image});
+    else if (event.type === "ready") this.update({ phase: "running", reason: "" });
     else if (event.type === "resize" && typeof event.height === "number" && Number.isFinite(event.height)) this.update({ height: Math.max(200, Math.min(800, event.height)) });
     else if (event.type === "discuss" && typeof event.text === "string" && event.text.length <= 4000) this.update({ discuss: event.text });
     else if (event.type === "stopped") {

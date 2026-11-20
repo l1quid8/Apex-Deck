@@ -7,14 +7,14 @@ const claim = {
   securityPolicyVersion: 'generated-ui-deny-all-1', electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130', platform: 'darwin', arch: 'arm64',
 };
 const reviewed = {
-  protocolVersion: 1, adapterVersion: 'open-intelligent-ui-8391a94-deck-2',
+  protocolVersion: 1, adapterVersion: 'open-intelligent-ui-8391a94-deck-3',
   securityPolicyVersion: 'generated-ui-deny-all-3', electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130', platform: 'darwin', arch: 'arm64',
 };
 test('the registry approves only the runtime that passed the packaged gates', () => {
   assert.deepEqual(GENERATED_UI_RUNTIME_POLICY.verifiedRuntimeBuilds, [{ electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130', platform: 'darwin', arch: 'arm64' }]);
   assert.deepEqual(readGeneratedUiCapability(reviewed), reviewed);
   assert.deepEqual(clientCapabilitiesForGeneratedRuntime({ enabled: true, reason: 'verified', guidance: reviewed }), { generated_ui: reviewed });
-  for (const changed of [{ electronVersion: '44.5.2' }, { chromiumVersion: '152.0.7977.131' }, { adapterVersion: 'open-intelligent-ui-8391a94-deck-3' }, { securityPolicyVersion: 'generated-ui-deny-all-2' }, { platform: 'linux' }, { arch: 'x64' }]) {
+  for (const changed of [{ electronVersion: '44.5.2' }, { chromiumVersion: '152.0.7977.131' }, { adapterVersion: 'open-intelligent-ui-8391a94-deck-unreviewed' }, { securityPolicyVersion: 'generated-ui-deny-all-2' }, { platform: 'linux' }, { arch: 'x64' }]) {
     assert.equal(readGeneratedUiCapability({ ...reviewed, ...changed }), undefined, JSON.stringify(changed));
   }
 });

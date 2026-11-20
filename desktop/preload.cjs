@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
   generatedUI: {
     capability: () => ipcRenderer.invoke('generated-ui:capability'),
     run: (request) => ipcRenderer.invoke('generated-ui:run', request),
+    cached: (request) => ipcRenderer.invoke('generated-ui:cached', request),
     bounds: (runId, bounds) => ipcRenderer.send('generated-ui:bounds', runId, bounds),
     stop: (runId) => ipcRenderer.invoke('generated-ui:stop', runId),
     cancel: (requestId) => ipcRenderer.invoke('generated-ui:cancel', requestId),

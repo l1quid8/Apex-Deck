@@ -51,7 +51,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
     return true;
   `);
   const uncoverCard = () => page('document.getElementById("gate-cover")?.remove();return true;');
-  const inlineFallback = card => `Boolean(${card}?.querySelector(".generated-fallback")?.getBoundingClientRect().height && !${card}.querySelector(".generated-slot,button,details"))`;
+  const inlineFallback = card => `Boolean(${card} && ${card}.dataset.generatedRunning!=="true" && (${card}.querySelector(".generated-snapshot") || ${card}.querySelector(".generated-fallback")?.getBoundingClientRect().height) && !${card}.querySelector("button,details"))`;
   const latestCard = '[...document.querySelectorAll(".generated-answer")].at(-1)';
   const bringIntoView = async () => {
     await uncoverCard();
@@ -126,7 +126,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
     if (covered) assert.equal(stopped.reason, 'Generated interface approval was cancelled.');
     else {
       assert.equal(stopped.reason, kind === 'freeze-init' ? 'The interface did not become ready within two seconds.' : 'The interface stopped responding.');
-      await until('terminal fallback visible', () => page(`return ${inlineFallback(latestCard)};`));
+      await until('terminal cached image or error fallback visible', () => page(`return ${inlineFallback(latestCard)};`));
     }
     const disposed = globalThis.__generatedAudit.find(event => event.runId === runId && event.type === 'disposed');
     assert.deepEqual(disposed.remaining, []);
@@ -152,7 +152,24 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
       assert.equal(generated().length, 0);
       await until('complete generated card', () => page('return Boolean(document.querySelector(".generated-answer .generated-slot"));'));
     });
-    if (phase === 'automatic') {
+    if (phase === 'persistence') {
+      await step('saved settings and cached pixels survive cover and renderer reload without fallback text',async()=>{
+        let {child,host}=await start();
+        await child.executeJavaScript('document.querySelector("#next").click()');
+        assert.equal(await child.executeJavaScript('generatedUI.widgetState.step'),1);
+        await until('cached interface image',()=>page(`return Boolean(${latestCard}.querySelector(".generated-snapshot")?.src.startsWith("data:image/png;base64,"));`));
+        const old=host.getURL().split('/').at(-1);
+        await suspend();
+        assert.equal(await page(`return Boolean(${latestCard}.querySelector(".generated-snapshot"))&&!${latestCard}.querySelector(".generated-fallback");`),true);
+        ({child,host}=await start());assert.notEqual(host.getURL().split('/').at(-1),old);
+        assert.equal(await child.executeJavaScript('document.querySelector("#step").textContent'),'Generate HTML, CSS and JS');
+        win.webContents.reload();await ready();await installObserver();({child}=await start());
+        assert.equal(await child.executeJavaScript('document.querySelector("#step").textContent'),'Generate HTML, CSS and JS');
+        await child.executeJavaScript('document.querySelector("#reset").click()');
+        assert.equal(await child.executeJavaScript('generatedUI.widgetState.step'),0);
+        await shot('restored');await suspend();
+      });
+    } else if (phase === 'automatic') {
       await step('newest interface opens without any launch click and controls work',async()=>{
         await bringIntoView();
         const host=await until('automatic generated host',()=>generated().at(-1));
@@ -188,7 +205,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         await post('@fixture revised flowchart');await gone(old);await bringIntoView();
         const next=await until('automatic revised host',()=>generated().find(host=>host.getURL().split('/').at(-1)!==old));
         assert.ok(next);
-        assert.equal(await page(`const prior=[...document.querySelectorAll(".generated-answer")].at(-2);return ${inlineFallback('prior')}&&prior.innerText.includes("isolated sandbox");`),true);
+        assert.equal(await page(`const prior=[...document.querySelectorAll(".generated-answer")].at(-2);return ${inlineFallback('prior')};`),true);
         await start();await suspend();
       });
       await step('automatic frozen fixture is terminated and never retries itself',async()=>{
@@ -229,7 +246,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         assert.match(generatedUIManager.capability().reason, /session limit/);
         await assert.rejects(generatedUIManager.run({win,frame:win.webContents.mainFrame},{}),/session limit/);
         await uncoverCard();
-        await until('session limit leaves the inline text version',()=>page(`const card=${latestCard};return ${inlineFallback('card')}&&card.innerText.includes("session limit");`));
+        await until('session limit leaves cached pixels and an explanatory status',()=>page(`const card=${latestCard};return ${inlineFallback('card')}&&card.innerText.includes("session limit");`));
       });
     } else if(phase==='recovery') {
       evidence.weakenedDiagnostic='Site isolation disabled only to exercise same-generated-process termination; no security result claimed under these flags.';
@@ -279,7 +296,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
         }
         await page(`${action}return true;`); await gone();
         if (name === 'connection resync' || name === 'ordinary disconnect') {
-          await until('disconnected card shows its inline fallback',()=>page(`const card=${latestCard};return ${inlineFallback('card')}&&card.innerText.includes("isolated sandbox");`));
+          await until('disconnected card retains its cached presentation',()=>page(`const card=${latestCard};return ${inlineFallback('card')};`));
         }
         if (undo) await page(`${undo}return true;`);
         await ready(); await installObserver();
@@ -318,7 +335,7 @@ export async function runSmoke(win, { generatedUIManager, sidecar } = {}) {
       });
       await step('revised payload stops the old run; old card remains text-only', async () => {
         const old=(await start()).host.getURL().split('/').at(-1);await post('@fixture revised flowchart');await gone(old);await installObserver();
-        assert.equal(await page(`const cards=[...document.querySelectorAll(".generated-answer")];const prior=cards.at(-2);return ${inlineFallback('prior')}&&prior.innerText.includes("isolated sandbox");`),true);
+        assert.equal(await page(`const cards=[...document.querySelectorAll(".generated-answer")];const prior=cards.at(-2);return ${inlineFallback('prior')};`),true);
         assert.match(await page(`return ${latestCard}.getAttribute("aria-label");`),/revision 2/);
         await start();await suspend();
       });

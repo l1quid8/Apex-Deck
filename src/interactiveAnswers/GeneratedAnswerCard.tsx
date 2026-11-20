@@ -93,9 +93,22 @@ export function GeneratedAnswerCard({ card, source, version, author, identity, h
     }, () => replyColors(slot.current));
     controller.current = run;
     setState({ ...run.state });
+    void run.restoreImage();
     void run.checkCapability();
     return () => { run.dispose(); if (controller.current === run) controller.current = null; };
   }, [supported, executionEpoch, source, identity.threadId, identity.hostId, identity.seq, identity.cardId]);
+  useEffect(() => {
+    // Historical/offline replies may display their own cached pixels, but get
+    // no execution authority. Keep the cache result bound to this mount.
+    if (!desktop || supported) return;
+    let mounted = true;
+    void window.apexDeck?.generatedUI?.cached?.({ source, identity, requestId: crypto.randomUUID(), bounds: {x:0,y:40,width:100,height:200} }).then(cached => {
+      if (mounted && cached.image && cached.image.length <= 1024 * 1024 && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(cached.image)) {
+        setState(previous => ({...previous, image: cached.image!}));
+      }
+    }).catch(() => {}).finally(() => { if (mounted) setState(previous => ({...previous,cacheChecked:true})); });
+    return () => { mounted = false; };
+  }, [desktop, supported, source, identity.threadId, identity.hostId, identity.seq, identity.cardId]);
   useEffect(() => {
     if (!supported) return;
     const place = () => {
@@ -135,14 +148,15 @@ export function GeneratedAnswerCard({ card, source, version, author, identity, h
     };
   }, [supported]);
   const active = supported && state.phase !== "idle";
-  const showSlot = supported && state.enabled && (active || !state.attempted);
+  const waitingForCache = desktop && typeof window.apexDeck?.generatedUI?.cached === "function" && !state.cacheChecked;
+  const showSlot = waitingForCache || Boolean(state.image) || (supported && (state.enabled || state.reason === "Checking interface availability…") && (active || !state.attempted));
   return (
     <section className="generated-answer" data-generated-running={active ? "true" : undefined} aria-label={card.title}>
       <h3>{card.title}</h3>
       {showSlot ? (
         <div className="generated-slot" ref={slot} style={{ height: (active ? viewportHeight.current : null) ?? state.height }}
           aria-label={card.title} aria-busy={state.phase === "starting"}>
-          {!active && <p className="generated-fallback">{card.fallback}</p>}
+          {state.image && <img className="generated-snapshot" src={state.image} alt={card.title + " — saved view"} draggable={false} />}
         </div>
       ) : (
         <>
@@ -152,6 +166,7 @@ export function GeneratedAnswerCard({ card, source, version, author, identity, h
             <p className="generated-status" role="status">{state.reason}</p>}
         </>
       )}
+      {showSlot && state.image && (state.attempted || (supported && !state.enabled)) && state.phase === "idle" && state.reason && state.reason !== "Checking interface availability…" && <p className="generated-status" role="status">{state.reason}</p>}
       {active && state.discuss && <div className="generated-discuss">
         <pre>{state.discuss}</pre>
         {onDiscuss && <button type="button" className="primary small" onClick={() => {
