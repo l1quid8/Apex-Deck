@@ -432,3 +432,16 @@ test('rapid state updates are synchronous locally and coalesced to one bounded h
  assert.equal(child.messages.filter(m=>m.type==='widget-state').length,1);
  assert.equal(child.messages.find(m=>m.type==='widget-state').widgetState.step,99);
 });
+
+test('teardown snapshot stays a bounded primitive after hostile JSON helper replacement',async()=>{
+ const {buildWrapperDocument}=await adapter();
+ const child=childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
+ child.event({...base,type:'bind'});child.event({...base,type:'init',card,widgetState:null});
+ vm.runInContext('window.generatedUI.setWidgetState({step:7}); JSON.parse=()=>({payload:"x".repeat(1000000)}); JSON.stringify=()=>"{}";',child.context);
+ const snapshot=vm.runInContext('window.generatedUI.snapshotJSON',child.context);
+ assert.equal(typeof snapshot,'string');
+ assert.equal(snapshot,'{"step":7}');
+ assert.equal(vm.runInContext('window.generatedUI.widgetState.step',child.context),7);
+ assert.throws(()=>vm.runInContext('window.generatedUI.setWidgetState({payload:"x".repeat(1000000)})',child.context));
+ assert.equal(vm.runInContext('window.generatedUI.snapshotJSON',child.context),snapshot);
+});

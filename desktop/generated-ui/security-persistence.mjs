@@ -29,7 +29,7 @@ try {
  const card={schemaVersion:1,kind:'generated',cardId:'stateful',title:'Stateful flow',summary:'Test',html:'<button id="next">Next</button><output id="step"></output>',css:'',js:'const saved=generatedUI.widgetState;let step=Number.isInteger(saved?.step)?saved.step:0;const draw=()=>document.querySelector("#step").textContent=String(step);document.querySelector("#next").onclick=()=>{step++;generatedUI.setWidgetState({step});draw()};draw();',fallback:'Stateful test.'};
  const identity={threadId:'thread-a',seq:1,cardId:card.cardId,hostId:'local'};
  const request=(extra={})=>({requestId:'persistence-request-00000001',source:JSON.stringify(card),identity,bounds,...extra});
- const start=async req=>{app.focus({steal:true});win.show();win.focus();await until(()=>win.isFocused());await sleep(150);current=await manager.run(owner,req);await until(()=>events.some(e=>e.runId===current.runId&&e.type==='ready'));const host=webContents.getAllWebContents().find(p=>p.getURL().endsWith(current.runId));return {host,child:host.mainFrame.framesInSubtree.find(f=>f.url==='about:srcdoc')};};
+ const start=async req=>{await sleep(150);app.focus({steal:true});win.show();win.focus();await until(()=>win.isFocused());current=await manager.run(owner,req);await until(()=>events.some(e=>e.runId===current.runId&&e.type==='ready'));const host=webContents.getAllWebContents().find(p=>p.getURL().endsWith(current.runId));return {host,child:host.mainFrame.framesInSubtree.find(f=>f.url==='about:srcdoc')};};
  const stop=async()=>{const id=current.runId;await manager.stop(owner,id);current=null;assert.deepEqual(audit.find(e=>e.runId===id&&e.type==='disposed').remaining,[]);assert.equal(win.webContents.getOSProcessId(),chatPid);};
  let run=await start(request());
  assert.equal(await run.child.executeJavaScript('document.querySelector("#step").textContent'),'0');
@@ -66,6 +66,11 @@ try {
   run=await start(request(extra));assert.equal(await run.child.executeJavaScript('document.querySelector("#step").textContent'),'0');await stop();
  }
  evidence.checks.push({name:'thread, message, host and code-revision isolation',passed:true});
+ run=await start(request());
+ await run.child.executeJavaScript('JSON.parse=()=>({payload:"x".repeat(1000000)});JSON.stringify=()=>"{}";if(generatedUI.snapshotJSON!==\'{"step":1}\')throw Error("snapshot changed");');
+ await stop();
+ run=await start(request());assert.equal(await run.child.executeJavaScript('document.querySelector("#step").textContent'),'1');await stop();
+ evidence.checks.push({name:'hostile JSON helpers cannot enlarge the teardown transfer or corrupt restored state',passed:true});
  assert.equal(await win.webContents.executeJavaScript('document.querySelector("#canary").textContent'),'Deck private data');
  assert.throws(()=>manager.cached({win,frame:{}},request()),/Deck window/);
  evidence.passed=true;

@@ -1,6 +1,15 @@
 # Generated UI widget persistence — review handoff
 
-Implementation was prepared in an isolated Deck agent copy. After the user's explicit commit/merge request, the identical changes were copied into the integration worktree on `feat/generated-widget-persistence` for commit and PR review. Merge remains blocked by the independent findings below. No installer was built or installed. The existing node_modules symlink was preserved.
+## PR #48 transfer-bound fix
+
+- Teardown now reads only the sealed `snapshotJSON` getter. Bootstrap caches this primitive using captured native JSON/UTF-8 operations, checks 4,096 UTF-8 bytes before assignment, and never calls mutable validation helpers during teardown. Electron main bounds the string again before parsing; the store repeats JSON validation. The 100 ms teardown deadline and ownership/revision checks remain.
+- New regression tests replace JSON helpers with hostile functions, exercise the actual host expression, and reject object returns, oversized UTF-16/UTF-8, malformed JSON and stalled reads. All 126 focused tests and `npx tsc --noEmit` pass.
+- Independent review by a different model found no blocking issue in the transfer fix after reviewing host and adapter tests (35 passed).
+- Packaged sandbox evidence `/tmp/deck-widget-packaged-vL2v3K`: all six groups pass, including hostile-helper teardown/restore. This is a disposable test-entry app, not installed production-chat acceptance. A harness focus race was fixed by checking foreground immediately before admission rather than waiting 150 ms afterward; production focus checks were unchanged.
+- Real-component evidence `/tmp/deck-widget-ui-ZR0CdG`: all five checks pass across scroll, reload, and a second app process; visible fallback frames remain zero. This still does not exercise production startup/daemon provenance.
+- External capture remains blocked: both configured `apex-terminal` and the explicit `l1quid8@95.179.145.4` target reject the existing key with `Permission denied (publickey)`. No remote changes occurred. Trusted install also needs administrator interaction (`sudo -n true` reports a password is required). PR stays draft and unmerged until candidate-matched production acceptance and external capture pass.
+
+Implementation is in this isolated Deck agent copy, uncommitted, unmerged and unpushed. The active workspace instruction prohibits branch switching/commits here; Deck will fold these file changes back. No installer was built or installed. The existing node_modules symlink was present before this task and was preserved.
 
 ## What changed
 
@@ -45,12 +54,3 @@ The production and external gates remain open; neither is a pass.
 - Extended `run-widget-ui.mjs` to launch two independent Electron app processes against the same isolated profile. The second process must restore Stage 1 and cached PNGs. Added a render-frame observer before card mount; checks now record visible fallback frames before reload and after reload/restart. This remains component/IPC/sandbox evidence, not production daemon/chat acceptance.
 - Final UI evidence: `/tmp/deck-widget-ui-cjy1pT/initial.json` and `restart.json`: all five checks pass, covering immediate click/cover restoration, actual scroll-out/in, renderer reload, new app-process state restoration and cached image restoration. Visible fallback frame count is zero. `covered-cache.png` captures the decoded cached image while the native sandbox is disposed.
 - `npx tsc --noEmit` and all 124 focused tests pass again. The follow-up changes are test/handoff files only, uncommitted and unmerged in this agent copy.
-
-## Integration review
-
-Fresh TypeScript and all 124 focused tests pass; `git diff --check` passes. A different-model read-only review found two P1 merge blockers:
-
-1. `shared/generated-ui-runtime.json` carries production approval into adapter deck-3 without candidate-matched production-chat and external-capture receipts. Do not merge that approval until those checks pass; alternatively, clear the verified runtime list for a disabled integration.
-2. `desktop/generated-ui/host.mjs` reads `window.generatedUI.widgetState` through child-world `executeJavaScript` during teardown. The result crosses into Electron main before its size is validated. Child-world serialization intrinsics are mutable, so the sealed getter does not establish a bounded envelope. Replace this final pull with a bounded trusted-wrapper flush/ack path and rerun immediate-teardown persistence and hostile-state probes.
-
-These findings mean the earlier focused/probe passes are insufficient for merge. The existing production-chat and external packet-capture gaps remain open. Main and the installed app are unchanged by this integration attempt.

@@ -15,6 +15,15 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const attempt = async operation => { try { return await operation(); } catch { return undefined; } };
 const envelope = (state, type, extra = {}) => ({ protocolVersion: 1, runId: state.runId, revisionDigest: state.revisionDigest, type, ...extra });
 
+export async function readFinalWidgetState(child) {
+  const snapshot = await Promise.race([
+    attempt(() => child.executeJavaScript('window.generatedUI.snapshotJSON')),
+    wait(100).then(() => undefined),
+  ]);
+  if (typeof snapshot !== 'string' || snapshot.length > 4096 || Buffer.byteLength(snapshot, 'utf8') > 4096) return { ok: false };
+  try { return { ok: true, value: JSON.parse(snapshot) }; } catch { return { ok: false }; }
+}
+
 /** Dependency injection is for a standalone main-process runtime harness only.
  * installGeneratedUI never supplies testPolicy and no IPC exposes it. */
 export function createGeneratedUIManager({ electron, emit, audit = () => {}, testPolicy, widgetStore = new WidgetStore(), clock = () => performance.now(), processKill = process.kill.bind(process), processExists = pid => {
@@ -102,12 +111,9 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
       if (state.phase === 'ready' && checkEstablished(state)) {
         const child = state.page.mainFrame.framesInSubtree.find(frame => frame.url === 'about:srcdoc');
         if (child) {
-          const snapshot = await Promise.race([
-            attempt(() => child.executeJavaScript('window.generatedUI.widgetState')),
-            wait(100).then(() => undefined),
-          ]);
-          if (snapshot !== undefined && latestCapture.get(state.revisionDigest) === state.runId) {
-            try { widgetStore.saveState(state.revisionDigest, snapshot); } catch {}
+          const snapshot = await readFinalWidgetState(child);
+          if (snapshot.ok && latestCapture.get(state.revisionDigest) === state.runId) {
+            try { widgetStore.saveState(state.revisionDigest, snapshot.value); } catch {}
           }
         }
       }

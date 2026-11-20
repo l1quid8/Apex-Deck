@@ -156,14 +156,30 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
     return reportHeight;
   }
   let widgetState = null;
+  // Cache a primitive before crossing into main. Model code can replace JSON
+  // and prototype helpers used by normal validation; never evaluate that
+  // validation or serialize a model-controlled object during teardown.
+  const parseStateJSON = JSON.parse;
+  const stringifyStateJSON = JSON.stringify;
+  const encodeStateJSON = TextEncoder.prototype.encode.bind(new TextEncoder());
+  const stateByteLength = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength").get);
+  let snapshotJSON = "null";
+  function prepareState(value) {
+    const next = normalizeWidgetState(value);
+    const json = stringifyStateJSON(next);
+    if (typeof json !== "string" || json.length > 4096 || stateByteLength(encodeStateJSON(json)) > 4096) throw new TypeError("Widget state exceeds 4096 UTF-8 bytes");
+    return json;
+  }
   let widgetSaveTimer = null;
   const deferStateSave = window.setTimeout.bind(window);
   Object.defineProperty(window, "generatedUI", { configurable: false, writable: false, value: Object.freeze({
-    get widgetState() { return normalizeWidgetState(widgetState); },
+    get widgetState() { return parseStateJSON(snapshotJSON); },
+    get snapshotJSON() { return snapshotJSON; },
     setWidgetState(value) {
       if (!initialized) throw new Error("The interface is not initialized");
-      const next = normalizeWidgetState(value);
-      widgetState = next;
+      const json = prepareState(value);
+      widgetState = parseStateJSON(json);
+      snapshotJSON = json;
       // Sliders may update at display rate. Keep the local API synchronous,
       // but coalesce host writes so normal dragging cannot trip flood guards.
       if (widgetSaveTimer === null) widgetSaveTimer = deferStateSave(() => {
@@ -188,7 +204,7 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
       if (!keysAre(card, cardKeys) || card.schemaVersion !== 1 || card.kind !== "generated" || !cardKeys.slice(2).every((key) => typeof card[key] === "string") || !card.html.trim()) return;
       const htmlBytes = encode.encode(card.html).length, cssBytes = encode.encode(card.css).length, jsBytes = encode.encode(card.js).length;
       if (htmlBytes > 49152 || cssBytes > 16384 || jsBytes > 32768 || htmlBytes + cssBytes + jsBytes > 65536) return;
-      try { widgetState = normalizeWidgetState(message.widgetState); } catch { return; }
+      try { snapshotJSON = prepareState(message.widgetState); widgetState = parseStateJSON(snapshotJSON); } catch { return; }
       initialized = true;
       // Reuse upstream final composition order: trusted head/design system,
       // generated CSS, complete markup, then one behavior phase.
