@@ -16,7 +16,7 @@ const props={card,source:JSON.stringify(card),version:1,author:'Null',identity:{
 function walk(node,fn){if(!node||typeof node!=='object')return;fn(node);for(const c of node.children??[])walk(c,fn);}
 function text(node){return node==null||typeof node==='boolean'?'':typeof node!=='object'?String(node):(node.children??node).map(text).join('');}
 test('generated fallback is literal trusted text and never an iframe or innerHTML in chat',()=>{
- const tree=GeneratedAnswerCard(props);assert.match(text(tree),/\*\*Literal summary\*\*/);assert.match(text(tree),/<script>never\(\)<\/script>/);assert.doesNotMatch(text(tree),/code secret|dangerous/);
+ const tree=GeneratedAnswerCard({...props,readOnly:true});assert.match(text(tree),/\*\*Literal summary\*\*/);assert.match(text(tree),/<script>never\(\)<\/script>/);assert.doesNotMatch(text(tree),/code secret|dangerous/);
  walk(tree,n=>{assert.notEqual(n.type,'iframe');assert.equal(n.props.dangerouslySetInnerHTML,undefined);});
 });
 test('automatic interfaces do not ask the user for an initial Run click',()=>{
@@ -138,6 +138,7 @@ test('scrolling a running card updates its visible bounds without stopping it',(
  const window={apexDeck:{generatedUI:{}},addEventListener(){},removeEventListener(){},setInterval:()=>0};
  class Run {
   state={phase:'running'};
+  restoreImage(){}
   checkCapability(){}
   place(bounds){calls.push(bounds);}
  }
@@ -159,6 +160,7 @@ test('a failed mounted payload stays inert across reconnects', () => {
       this.notify = changed;
       created++;
     }
+    restoreImage() {}
     checkCapability() {}
     dispose() {}
   }
@@ -180,4 +182,26 @@ test('a failed mounted payload stays inert across reconnects', () => {
   render({executionAllowed:false});
   render({executionEpoch: 'connected-2'});
   assert.equal(created, 1);
+});
+
+
+test('desktop reserves blank space before first rendering and cached pixels replace fallback during remount',()=>{
+ try {
+  for (const image of [undefined,'data:image/png;base64,YWJj']) {
+   renderedState={enabled:true,phase:'idle',reason:'',height:300,discuss:'',attempted:false,image};
+   const tree=GeneratedAnswerCard(props);
+   assert.doesNotMatch(text(tree),/Literal summary|never\(\)/);
+   const images=[];walk(tree,n=>{if(n.type==='img') images.push(n);});
+   assert.equal(images.length,image?1:0);
+   if(image) assert.equal(images[0].props.src,image);
+  }
+ } finally {renderedState=undefined;}
+});
+
+
+test('cached pixels keep a session-limit status visible without showing fallback text',()=>{
+ try {
+  renderedState={enabled:false,phase:'idle',reason:'The generated interface session limit was reached.',height:300,discuss:'',attempted:false,image:'data:image/png;base64,YWJj',cacheChecked:true};
+  const tree=GeneratedAnswerCard(props);assert.match(text(tree),/session limit/);assert.doesNotMatch(text(tree),/Literal summary|never\(\)/);
+ } finally {renderedState=undefined;}
 });

@@ -153,3 +153,9 @@ test('native appearance accepts only opaque hex colors and a light-mode flag', (
     assert.equal(readRunRequest({...request, colors:{...colors, ...patch}}).ok, false);
   }
 });
+
+
+test('state messages are exact-key, revision-bound, JSON-only and size limited at main',()=>{
+ assert.equal(readRuntimeMessage(envelope('widget-state',{widgetState:{stage:2}}),binding).ok,true);
+ for(const message of [envelope('widget-state',{widgetState:NaN}),envelope('widget-state',{widgetState:{x:undefined}}),envelope('widget-state',{widgetState:'x'.repeat(4097)}),{...envelope('widget-state',{widgetState:{}}),revisionDigest:'c'.repeat(64)},envelope('widget-state',{widgetState:{},threadId:'other'})]) assert.equal(readRuntimeMessage(message,binding).ok,false);
+});

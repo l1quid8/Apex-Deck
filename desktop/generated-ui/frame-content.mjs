@@ -1,10 +1,11 @@
 // Adapted from OpenIntelligentUI, commit 8391a94c1c3939c679e40ddd7bfc08a9ef690e70.
 // See third_party/open-intelligent-ui/{LICENSE,README.md,manifest.json}.
 import { readFileSync } from "node:fs";
+import { normalizeWidgetState } from "../../shared/generatedWidgetState.mjs";
 import { WRAPPER_CSP } from "./policy.mjs";
 export { WRAPPER_CSP } from "./policy.mjs";
 
-export const ADAPTER_VERSION = "open-intelligent-ui-8391a94-deck-2";
+export const ADAPTER_VERSION = "open-intelligent-ui-8391a94-deck-3";
 export const SECURITY_POLICY_VERSION = "generated-ui-deny-all-3";
 export const CHILD_CSP = WRAPPER_CSP.replace("frame-src about:; child-src about:", "frame-src 'none'; child-src 'none'");
 
@@ -19,6 +20,7 @@ export function clampReportedHeight(height) {
 
 // This fixed script contains no model bytes. It runs before any card markup.
 const CHILD_BOOTSTRAP_JS = String.raw`(() => {
+  const normalizeWidgetState = ${normalizeWidgetState.toString()};
   "use strict";
   // Chromium exposes one unlabeled entry for each present media-device kind
   // even when its native permission checks deny device operations. Remove the
@@ -153,7 +155,22 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
     setTimeout(() => clearInterval(interval), 3000);
     return reportHeight;
   }
+  let widgetState = null;
+  let widgetSaveTimer = null;
+  const deferStateSave = window.setTimeout.bind(window);
   Object.defineProperty(window, "generatedUI", { configurable: false, writable: false, value: Object.freeze({
+    get widgetState() { return normalizeWidgetState(widgetState); },
+    setWidgetState(value) {
+      if (!initialized) throw new Error("The interface is not initialized");
+      const next = normalizeWidgetState(value);
+      widgetState = next;
+      // Sliders may update at display rate. Keep the local API synchronous,
+      // but coalesce host writes so normal dragging cannot trip flood guards.
+      if (widgetSaveTimer === null) widgetSaveTimer = deferStateSave(() => {
+        widgetSaveTimer = null;
+        emit("widget-state", { widgetState });
+      }, 100);
+    },
     discuss(text) { if (initializationComplete && typeof text === "string" && text.trim() && text.length <= 4000) emit("discuss", { text }); }
   }) });
   window.addEventListener("message", (event) => {
@@ -165,12 +182,13 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
       emit("bootstrap");
       return;
     }
-    if (message && message.type === "init" && bound(message, ["card"]) && !initialized) {
+    if (message && message.type === "init" && bound(message, ["card", "widgetState"]) && !initialized) {
       const card = message.card;
       const cardKeys = ["schemaVersion", "kind", "cardId", "title", "summary", "html", "css", "js", "fallback"];
       if (!keysAre(card, cardKeys) || card.schemaVersion !== 1 || card.kind !== "generated" || !cardKeys.slice(2).every((key) => typeof card[key] === "string") || !card.html.trim()) return;
       const htmlBytes = encode.encode(card.html).length, cssBytes = encode.encode(card.css).length, jsBytes = encode.encode(card.js).length;
       if (htmlBytes > 49152 || cssBytes > 16384 || jsBytes > 32768 || htmlBytes + cssBytes + jsBytes > 65536) return;
+      try { widgetState = normalizeWidgetState(message.widgetState); } catch { return; }
       initialized = true;
       // Reuse upstream final composition order: trusted head/design system,
       // generated CSS, complete markup, then one behavior phase.
@@ -217,6 +235,7 @@ export function buildWrapperDocument({ runId, revisionDigest }) {
   const frame = document.getElementById("generated-frame");
   const host = window.generatedUIHost;
   const clampHeight = ${clampReportedHeight.toString()};
+  const normalizeWidgetState = ${normalizeWidgetState.toString()};
   const baseKeys = ["protocolVersion", "runId", "revisionDigest", "type"];
   const keysAre = (value, extra) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === baseKeys.length + extra.length && baseKeys.concat(extra).every((key) => Object.hasOwn(value, key));
   const bound = (value, extra = []) => keysAre(value, extra) && value.protocolVersion === 1 && value.runId === binding.runId && value.revisionDigest === binding.revisionDigest;
@@ -253,11 +272,12 @@ export function buildWrapperDocument({ runId, revisionDigest }) {
     else if (message.type === "ready" && bound(message) && initialized && !ready) { ready = true; host.postMessage(message); }
     else if (message.type === "pong" && bound(message, ["nonce"]) && initialized && typeof message.nonce === "string" && message.nonce.length > 0 && message.nonce.length <= 128) host.postMessage(message);
     else if (message.type === "resize" && bound(message, ["height"]) && initialized) { const height = clampHeight(message.height), now = performance.now(); if (height !== null && now - lastResize >= 100) { lastResize = now; host.postMessage({ ...message, height }); } }
+    else if (message.type === "widget-state" && bound(message, ["widgetState"]) && initialized) { try { const widgetState = normalizeWidgetState(message.widgetState); host.postMessage({ ...message, widgetState }); } catch {} }
     else if (message.type === "discuss" && bound(message, ["text"]) && initialized && typeof message.text === "string" && message.text.trim() && message.text.length <= 4000) host.postMessage(message);
   });
   host.onCommand((message) => {
     if (faulted || !bootstrap || !message || typeof message.type !== "string") return;
-    if (message.type === "init" && bound(message, ["card"]) && !initialized && byteLength(message) <= 132096) { initialized = true; frame.contentWindow.postMessage(message, "*"); }
+    if (message.type === "init" && bound(message, ["card", "widgetState"]) && !initialized && byteLength(message) <= 137216) { initialized = true; frame.contentWindow.postMessage(message, "*"); }
     else if (message.type === "ping" && bound(message, ["nonce"]) && initialized && typeof message.nonce === "string" && message.nonce.length > 0 && message.nonce.length <= 128) frame.contentWindow.postMessage(message, "*");
     else if (message.type === "theme" && bound(message, ["tokens"]) && byteLength(message) <= 8192) frame.contentWindow.postMessage(message, "*");
   });

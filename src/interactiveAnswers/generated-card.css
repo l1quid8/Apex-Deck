@@ -19,3 +19,6 @@
 .generated-slot { width: 100%; overflow: auto; min-height: 201px; max-height: min(800px, 60dvh); }
 .generated-discuss { display: grid; justify-items: start; gap: 8px; min-width: 0; }
 .generated-discuss pre { margin: 0; max-height: 240px; max-width: 100%; overflow: auto; white-space: pre-wrap; }
+
+/* Cached pixels scroll and clip as ordinary reply content while native UI remounts. */
+.generated-snapshot { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; pointer-events: none; }

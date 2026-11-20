@@ -30,12 +30,14 @@ let renewing;
 const receive = (event, value) => manager?.receive(event, value);
 async function probe() {
 try {
-  win = new BrowserWindow({ show: false, width: 900, height: 700, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  win = new BrowserWindow({ show: false, alwaysOnTop: true, width: 900, height: 700, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   await win.loadURL('data:text/html,<title>Trusted probe chat</title><p id="chat">chat alive</p>');
   const electron = { app, session, WebContentsView, webContents };
   const closed = createGeneratedUIManager({ electron, emit() {} });
-  assert.equal(closed.capability().enabled, false);
-  await assert.rejects(closed.run({ win, frame: win.webContents.mainFrame }, {}), /disabled/);
+  assert.equal(typeof closed.capability().enabled, 'boolean');
+  evidence.releaseEnabled = closed.capability().enabled;
+  if (!closed.capability().enabled) await assert.rejects(closed.run({ win, frame: win.webContents.mainFrame }, {}), /approved|disabled/);
+  win.show();app.focus({steal:true});win.focus();await waitFor(()=>win.isFocused());
   const chatPid = win.webContents.getOSProcessId();
   manager = createGeneratedUIManager({
     electron, testPolicy: { testOnly: true, enabled: true, ledger: { count: 0 } },

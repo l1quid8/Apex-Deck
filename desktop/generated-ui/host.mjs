@@ -1,3 +1,4 @@
+import { WidgetStore } from './widget-store.mjs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,11 +17,12 @@ const envelope = (state, type, extra = {}) => ({ protocolVersion: 1, runId: stat
 
 /** Dependency injection is for a standalone main-process runtime harness only.
  * installGeneratedUI never supplies testPolicy and no IPC exposes it. */
-export function createGeneratedUIManager({ electron, emit, audit = () => {}, testPolicy, clock = () => performance.now(), processKill = process.kill.bind(process), processExists = pid => {
+export function createGeneratedUIManager({ electron, emit, audit = () => {}, testPolicy, widgetStore = new WidgetStore(), clock = () => performance.now(), processKill = process.kill.bind(process), processExists = pid => {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 } }) {
   const { app, session, WebContentsView, webContents } = electron;
   const runs = new Map();
+  const latestCapture = new Map();
   const states = new Map();
   const admissions = new Map();
   const testEnabled = testPolicy?.testOnly === true && testPolicy?.enabled === true;
@@ -61,8 +63,25 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     return metric ? metric.creationTime === record.creationTime : processExists(record.pid);
   };
 
+  function capture(state) {
+    if (state.capturing || state.phase !== 'ready' || !state.attached || state.page.isDestroyed()) return;
+    state.capturing = true;
+    // Only this isolated generated view is captured; never the Deck window.
+    void state.page.capturePage().then(pixels => {
+      if (latestCapture.get(state.revisionDigest) !== state.runId || pixels.isEmpty()) return;
+      let raster = pixels, image = raster.toDataURL();
+      while (image.length > 1024 * 1024 && raster.getSize().width > 64) {
+        raster = raster.resize({width:Math.floor(raster.getSize().width / 2),quality:'good'}); image = raster.toDataURL();
+      }
+      if (image.length > 1024 * 1024) return;
+      widgetStore.saveImage(state.revisionDigest, image);
+      notify(state, 'snapshot', { image });
+    }).catch(() => {}).finally(() => { state.capturing = false; });
+  }
+
   async function stopState(state, reason = 'Stopped.') {
     if (state.stopping) return state.stopping;
+    capture(state);
     // Invalidate first. PID/frame records survive until cleanup completes.
     state.live = false;
     state.admission.live = false;
@@ -77,6 +96,21 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     state.document = null;
     state.rejectBootstrap?.(new Error(reason));
     state.stopping = (async () => {
+      // A scroll IPC can overtake the child's asynchronous save message. Pull
+      // its own sealed local snapshot once before killing the original frame.
+      // Never wait for hostile JS beyond 100ms or accept a changed frame tree.
+      if (state.phase === 'ready' && checkEstablished(state)) {
+        const child = state.page.mainFrame.framesInSubtree.find(frame => frame.url === 'about:srcdoc');
+        if (child) {
+          const snapshot = await Promise.race([
+            attempt(() => child.executeJavaScript('window.generatedUI.widgetState')),
+            wait(100).then(() => undefined),
+          ]);
+          if (snapshot !== undefined && latestCapture.get(state.revisionDigest) === state.runId) {
+            try { widgetStore.saveState(state.revisionDigest, snapshot); } catch {}
+          }
+        }
+      }
       const hostPid = (() => { try { return state.page.getOSProcessId(); } catch { return 0; } })();
       const killRecords = [...state.records].sort((a, b) => Number(a.pid === hostPid) - Number(b.pid === hostPid));
       for (const record of killRecords) {
@@ -235,7 +269,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
       const tokens = { background, foreground, ...(light && { surface: '#f2f2f2', muted: '#545454', border: '#999999', accent: '#175bb0' }) };
       state.page.mainFrame.send('generated-ui:command', envelope(state, 'theme', { tokens }));
     }
-    state.page.mainFrame.send('generated-ui:command', envelope(state, 'init', { card: state.card }));
+    state.page.mainFrame.send('generated-ui:command', envelope(state, 'init', { card: state.card, widgetState: widgetStore.get(state.revisionDigest).widgetState }));
     audit({ type: 'payload-delivered', runId: state.runId });
     state.geometryAt = clock();
     state.resolveBootstrap({ runId: state.runId, revisionDigest: state.revisionDigest });
@@ -254,9 +288,12 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     if (message.type === 'fault') { void stopState(state, 'The interface sent too many messages.'); return; }
     if (message.type === 'bootstrap') { if (state.phase === 'bootstrap') void initialize(state).catch(error => stopState(state, error.message)); return; }
     if (!state.records.length || !checkEstablished(state)) { void stopState(state, 'Generated process ownership changed.'); return; }
+    if (message.type === 'widget-state' && ['initializing', 'ready'].includes(state.phase)) {
+      widgetStore.saveState(state.revisionDigest, message.widgetState); audit({type:'widget-state-saved',runId:state.runId}); return;
+    }
     if (message.type === 'ready') {
       if (state.phase !== 'initializing') return;
-      state.phase = 'ready'; state.lastPong = clock(); notify(state, 'ready'); return;
+      state.phase = 'ready'; state.lastPong = clock(); state.view.setVisible(true); notify(state, 'ready'); capture(state); return;
     }
     if (state.phase !== 'ready') return;
     if (message.type === 'pong') {
@@ -290,6 +327,8 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     if (!capability().enabled) throw new Error(capability().reason);
     const runId = randomBytes(16).toString('hex');
     const digest = revisionDigest(read.card, read.identity, { adapter: ADAPTER_VERSION, security: SECURITY_POLICY_VERSION });
+    latestCapture.set(digest, runId);
+    if (latestCapture.size > 128) latestCapture.delete(latestCapture.keys().next().value);
     const ses = session.fromPartition(`generated-${runId}`, { cache: false });
     ledger.count++;
     const view = new WebContentsView({ webPreferences: { ...GENERATED_WEB_PREFERENCES, session: ses, preload: path.join(here, 'preload.cjs') } });
@@ -313,6 +352,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
         if (state.phase === 'ready' && now - state.lastPong >= 5000) { void stopState(state, 'The interface stopped responding.'); return; }
         if (state.records.length && !checkEstablished(state)) void stopState(state, 'Generated process ownership changed.');
       }, 100));
+      state.timers.push(setInterval(() => { if (state.live) capture(state); }, 750));
       state.timers.push(setInterval(() => {
         if (!state.live || state.phase !== 'ready') return;
         state.nonce = randomBytes(16).toString('hex');
@@ -324,7 +364,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
       state.fileProtection = configureFileChooser(state);
       void state.fileProtection.catch(error => { if (state.live) void stopState(state, `File chooser protection failed: ${error.message}`); });
       if (!state.live || !admission.live || admissions.get(owner.win.id) !== admission) return await promise;
-      view.setBounds(bounds); view.setVisible(true); owner.win.contentView.addChildView(view); state.attached = true;
+      view.setBounds(bounds); view.setVisible(false); owner.win.contentView.addChildView(view); state.attached = true;
       state.bootstrapLoadStarted = true;
       void state.page.loadURL(state.url).catch(error => { if (state.live) void stopState(state, `Generated bootstrap failed: ${error.message}`); });
       await state.fileProtection;
@@ -340,7 +380,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     if (zoom !== state.zoom) { void stopState(state, 'Deck zoom changed.'); return; }
     const checked = checkedBounds(value, owner.win.getContentBounds(), zoom);
     if (!checked) { detach(state); void stopState(state, 'Interface bounds are outside the visible card.'); return; }
-    state.geometryAt = clock(); state.view.setBounds(checked); state.view.setVisible(true);
+    state.geometryAt = clock(); state.view.setBounds(checked); state.view.setVisible(state.phase === 'ready');
     if (!state.attached) { owner.win.contentView.addChildView(state.view); state.attached = true; }
   }
   async function stop(owner, runId) {
@@ -354,19 +394,28 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     admissions.delete(owner.win.id);
     if (admission.state) await stopState(admission.state, 'Generated interface approval was cancelled.');
   }
-  async function stopAll(reason) { await Promise.all([...states.values()].map(state => stopState(state, reason))); }
-  return { capability, run, bounds, stop, cancel, stopAll, receive };
+  function cached(owner, request) {
+    if (owner.win.isDestroyed() || owner.frame !== owner.win.webContents.mainFrame) throw new Error('Not the Deck window.');
+    const read = readRunRequest(request);
+    if (!read.ok) throw new Error(read.reason);
+    const digest = revisionDigest(read.card, read.identity, { adapter: ADAPTER_VERSION, security: SECURITY_POLICY_VERSION });
+    // Snapshot is host-produced PNG; the UI gets no state from another card.
+    return { image: widgetStore.get(digest).image };
+  }
+  async function stopAll(reason) { await Promise.all([...states.values()].map(state => stopState(state, reason))); widgetStore.flush(); }
+  return { capability, run, bounds, stop, cancel, stopAll, receive, cached };
 }
 
 export function installGeneratedUI({ electron, deckWindow }) {
   const { ipcMain, app, powerMonitor } = electron;
-  const manager = createGeneratedUIManager({ electron, emit: (win, event) => { if (!win.webContents.isDestroyed()) win.webContents.send('generated-ui:event', event); } });
+  const manager = createGeneratedUIManager({ electron, widgetStore: new WidgetStore(path.join(app.getPath('userData'), 'generated-widgets')), emit: (win, event) => { if (!win.webContents.isDestroyed()) win.webContents.send('generated-ui:event', event); } });
   const owner = event => {
     const entry = deckWindow(event);
     if (!entry || event.sender !== entry.win.webContents || event.senderFrame !== entry.win.webContents.mainFrame) throw new Error('Not the Deck window.');
     return { win: entry.win, frame: event.senderFrame };
   };
   ipcMain.handle('generated-ui:capability', event => { owner(event); return manager.capability(); });
+  ipcMain.handle('generated-ui:cached', (event, request) => manager.cached(owner(event), request));
   ipcMain.handle('generated-ui:run', (event, request) => manager.run(owner(event), request));
   ipcMain.handle('generated-ui:stop', (event, runId) => manager.stop(owner(event), runId));
   ipcMain.handle('generated-ui:cancel', (event, requestId) => manager.cancel(owner(event), requestId));

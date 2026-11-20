@@ -1,0 +1,32 @@
+// Current sandbox sources in an isolated copy of a shipped Electron runtime.
+// This tests the bridge/lifecycle, not production Deck/provenance integration.
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import {fileURLToPath} from 'node:url';
+import {spawn} from 'node:child_process';
+import {createPackage,extractAll} from '@electron/asar';
+import {sealProbeApp} from './probe-app.mjs';
+const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+const root=fs.mkdtempSync('/tmp/deck-widget-packaged-');
+const app=path.join(root,'Deck Widget Test.app');
+const sourceApp=path.resolve(process.argv[2]||'/Applications/Apex Deck.app');
+fs.cpSync(sourceApp,app,{recursive:true,verbatimSymlinks:true});
+const archive=path.join(app,'Contents/Resources/app.asar'),source=path.join(root,'source');
+extractAll(archive,source);
+for(const directory of ['desktop/generated-ui','shared','third_party/open-intelligent-ui']) fs.cpSync(path.join(repo,directory),path.join(source,directory),{recursive:true});
+const runtime=process.argv.includes('--runtime');
+const entry=runtime?'runtime-smoke.mjs':'security-persistence.mjs';
+const pkg=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));pkg.main='desktop/generated-ui/'+entry;
+fs.writeFileSync(path.join(source,'package.json'),JSON.stringify(pkg));
+await createPackage(source,archive);sealProbeApp(app);
+const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+fs.writeFileSync(path.join(root,'artifact.json'),JSON.stringify({sourceApp,app,entry,archiveSha256:hash(archive),runtimeBinary:hash(path.join(app,'Contents/MacOS/Apex Deck')),sourceRuntimeBinary:hash(path.join(sourceApp,'Contents/MacOS/Apex Deck')),scope:'Current sandbox sources in shipped runtime. Disposable copy re-signed ad-hoc and ASAR metadata updated. Production startup/daemon/provenance and chat integration are not exercised.',files:['host.mjs','frame-content.mjs','protocol.mjs','widget-store.mjs'].map(file=>({file,sha256:hash(path.join(repo,'desktop/generated-ui',file))}))},null,2));
+const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('APEX_')&&!key.startsWith('ELECTRON_')&&key!=='NODE_OPTIONS'));
+const child=spawn(path.join(app,'Contents/MacOS/Apex Deck'),runtime?['--output',path.join(root,'runtime.json')]:[],{env,stdio:['ignore','pipe','pipe']});
+const log=fs.createWriteStream(path.join(root,'probe.log'));
+child.stdout.pipe(log);child.stderr.pipe(log);
+const timer=setTimeout(()=>child.kill('SIGKILL'),90000);
+const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',resolve);});clearTimeout(timer);log.end();
+console.log(JSON.stringify({code,root,archive,scope:'Packaged sandbox only; not full Deck chat'}));
+process.exitCode=code===0?0:1;
