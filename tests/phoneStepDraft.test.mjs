@@ -18,6 +18,12 @@ test("typing already in the box is kept, and a bot already tagged is not tagged 
   assert.equal(stepDraft("@nova also", "check tests.", nova), "@nova also check tests.");
 });
 
+test("a longer handle or email does not count as mentioning the suggestion author", () => {
+  assert.equal(stepDraft("@novak also", "check tests.", nova), "@novak also @nova check tests.");
+  assert.equal(stepDraft("ask me@nova", "check tests.", nova), "ask me@nova @nova check tests.");
+  assert.equal(stepDraft("@NOVA also", "check tests.", nova), "@NOVA also check tests.");
+});
+
 test("on the phone, suggestions start folded and fill the composer instead of sending", () => {
   const src = fs.readFileSync("src/phone/PhoneApp.tsx", "utf8");
   assert.match(src, /<ReplyNextSteps[^>]*startCollapsed onStep=\{fillStep\}/);
