@@ -2736,7 +2736,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       (error) => flashForm(String(error).replace(/^Error: /, "")),
     );
   };
-  /** Put a next step in the composer for editing, addressed to its author. */
+  /** Put a next step in the composer for editing. It tags no agent: the composer decides who gets it. */
   const fillStep = (step: NextStep, by: string) => {
     if (!showComposer()) return;
     const next = stepDraft(text, step.prompt, participants.find(p => p.id === by));

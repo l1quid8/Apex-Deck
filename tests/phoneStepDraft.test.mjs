@@ -9,19 +9,23 @@ test("a tapped suggestion fills an empty box", () => {
   assert.equal(stepDraft("", "  Review the changes. "), "Review the changes.");
 });
 
-test("with several bots, the suggestion is tagged for the bot that offered it", () => {
-  assert.equal(stepDraft("", "Review the changes.", nova), "@nova Review the changes.");
-});
-
-test("typing already in the box is kept, and a bot already tagged is not tagged twice", () => {
-  assert.equal(stepDraft("Also ", "check tests.", nova), "Also @nova check tests.");
+test("the suggestion is not tagged for the bot that offered it", () => {
+  assert.equal(stepDraft("", "Review the changes.", nova), "Review the changes.");
+  assert.equal(stepDraft("Also ", "check tests.", nova), "Also check tests.");
   assert.equal(stepDraft("@nova also", "check tests.", nova), "@nova also check tests.");
 });
 
-test("a longer handle or email does not count as mentioning the suggestion author", () => {
-  assert.equal(stepDraft("@novak also", "check tests.", nova), "@novak also @nova check tests.");
-  assert.equal(stepDraft("ask me@nova", "check tests.", nova), "ask me@nova @nova check tests.");
-  assert.equal(stepDraft("@NOVA also", "check tests.", nova), "@NOVA also check tests.");
+test("a suggestion its author opened with its own name loses that tag", () => {
+  assert.equal(stepDraft("", "@nova Review the changes.", nova), "Review the changes.");
+  assert.equal(stepDraft("", "@nova @nova, review the changes.", nova), "review the changes.");
+  assert.equal(stepDraft("@nova also", "@nova check tests.", nova), "@nova also check tests.");
+});
+
+test("tags for other bots, and names inside the suggestion, are kept", () => {
+  assert.equal(stepDraft("", "@novak review the changes.", nova), "@novak review the changes.");
+  assert.equal(stepDraft("", "@luna review the changes.", nova), "@luna review the changes.");
+  assert.equal(stepDraft("", "Ask @nova to review.", nova), "Ask @nova to review.");
+  assert.equal(stepDraft("", "@nova", nova), "@nova");
 });
 
 test("on the phone, suggestions start folded and fill the composer instead of sending", () => {

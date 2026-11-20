@@ -4047,7 +4047,7 @@ function ThreadView(props: {
   };
   // A suggestion goes into the box to be changed before sending, never straight out.
   const fillStep = (step: NextStep, by: string) => {
-    const text = stepDraft(props.draft.text, step.prompt, props.participants.length > 1 ? props.participants.find((p) => p.id === by) : undefined);
+    const text = stepDraft(props.draft.text, step.prompt, props.participants.find((p) => p.id === by));
     composerHistory.setText(text);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
   };

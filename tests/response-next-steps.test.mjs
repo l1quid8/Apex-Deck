@@ -121,10 +121,10 @@ test('App puts suggestions beneath the correct reply and leaves composer typing 
     assert.equal(await run('document.querySelector(".composer-dock textarea").value'),'1','a number types rather than sending a follow-up');
     const before=await run('document.querySelectorAll(".bubble.human").length');
     await run('document.querySelector(".reply-next-step").click()');await frame();
-    assert.equal(await run('document.querySelector(".composer-dock textarea").value'),'1 @ada Review changes','the suggestion preserves the draft and names its recipient');
+    assert.equal(await run('document.querySelector(".composer-dock textarea").value'),'1 Review changes','the suggestion preserves the draft and tags no agent');
     assert.equal(await run('document.querySelectorAll(".bubble.human").length'),before,'choosing a suggestion does not submit a message');
     win.webContents.insertText(' after editing');await frame();
-    assert.equal(await run('document.querySelector(".composer-dock textarea").value'),'1 @ada Review changes after editing','the composer receives focus for editing');
+    assert.equal(await run('document.querySelector(".composer-dock textarea").value'),'1 Review changes after editing','the composer receives focus for editing');
     await shot('reply-next-steps-app');
     await run('window.recordTestQuestion("a",{type:"turn_started",id:"ada"})');await frame();
     assert.equal(await run('document.querySelectorAll(".reply-next-steps").length'),0);
