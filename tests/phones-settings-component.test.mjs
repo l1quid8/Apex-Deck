@@ -17,7 +17,7 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
     import React from 'react'; import {createRoot} from 'react-dom/client';
     import {PhonesSettings} from '/src/PhonesSettings.tsx'; import '/src/styles.css';
     const root=createRoot(document.getElementById('test-root'));
-    const phone={endpointId:'ab'.repeat(32),label:'iPhone 16 Pro',tier:'chat',threads:'all',addedAt:Date.UTC(2026,9,21),lastSeen:Date.now()};
+    const phone={endpointId:'ab'.repeat(32),label:'iPhone 16 Pro',addedAt:Date.UTC(2026,9,21),lastSeen:Date.now()};
     const f=window.fixture={on:true,devices:[phone],calls:[],relay:{state:'unavailable',error:'DNS lookup failed: no DNS records found for relay.apex-terminal.xyz'},
       mount(){root.render(React.createElement(PhonesSettings,{key:Math.random(),backend}));},
       count(name){return this.calls.filter(c=>c[0]===name).length;}};
@@ -88,6 +88,12 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         // On, one phone: the confirmed relay state, Turn off, and a closed Advanced with the endpoint.
         assert.equal(await status(),'Phone connections are on. The relay is connected.');
         assert.deepEqual(await buttons(),['Pair phone','Turn off']);
+        assert.equal(await run(()=>document.querySelector('select')),null,'no access-level select on device rows');
+        const pairedText = await run(()=>document.querySelector('.paired-devices').innerText);
+        assert.match(pairedText,/iPhone 16 Pro/);
+        assert.match(pairedText,/Added .*Seen just now/);
+        assert.match(pairedText,/Revoke/);
+        assert.doesNotMatch(pairedText,/Read only|Chat and approvals|All threads/);
         assert.equal(await run(()=>document.querySelector('.phones-advanced').open),false,'Advanced starts closed');
         assert.match(await run(()=>document.querySelector('.phones-advanced').textContent),/Endpoint ID.*UDP port.*41641.*Advertised addresses/s);
         assert.doesNotMatch(await run(()=>document.body.innerText),/Remote access|Paired devices/);
@@ -146,7 +152,7 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         assert.equal(await run(()=>window.fixture.count('set')),2,'Keep on calls nothing');
 
         // Re-mount with one phone and revoke it again; Turn off this time.
-        await run(()=>{window.fixture.devices=[{endpointId:'cd'.repeat(32),label:'iPhone 13',tier:'full',threads:'all',addedAt:Date.UTC(2026,9,1),lastSeen:null}];window.fixture.mount();});
+        await run(()=>{window.fixture.devices=[{endpointId:'cd'.repeat(32),label:'iPhone 13',addedAt:Date.UTC(2026,9,1),lastSeen:null}];window.fixture.mount();});
         await wait(()=>document.body.innerText.includes('iPhone 13'),'second phone');
         await click('Revoke');
         await wait(()=>document.querySelector('[role=alertdialog]'),'revoke dialog 2');
@@ -160,7 +166,7 @@ test('Settings → Phones shows connections, turns them off and on, and asks aft
         await snap('off-none');
 
         // Revoking while connections are off never asks.
-        await run(()=>{window.fixture.devices=[{endpointId:'ef'.repeat(32),label:'iPad',tier:'chat',threads:'all',addedAt:Date.UTC(2026,9,2),lastSeen:null}];window.fixture.mount();});
+        await run(()=>{window.fixture.devices=[{endpointId:'ef'.repeat(32),label:'iPad',addedAt:Date.UTC(2026,9,2),lastSeen:null}];window.fixture.mount();});
         await wait(()=>document.body.innerText.includes('iPad'),'third phone');
         await click('Revoke');
         await wait(()=>document.querySelector('[role=alertdialog]'),'revoke dialog 3');

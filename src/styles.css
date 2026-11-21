@@ -3381,19 +3381,8 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .pair-claim-phone { font-size: 14px; }
 .pair-claim-code { font-size: 34px; font-weight: 650; letter-spacing: 0.18em; font-variant-numeric: tabular-nums; }
 .pair-done { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--accent); display: grid; place-items: center; color: var(--accent); font-size: 22px; font-weight: 700; }
-.pair-scope-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; }
 .confirm-actions.pair-actions { justify-content: space-between; align-items: center; }
 .pair-actions-right { display: flex; gap: 8px; }
-.pair-scope { margin: 4px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.pair-scope:disabled { opacity: 0.55; }
-.pair-scope > label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
-.pair-scope select { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; color: var(--text); }
-.pair-scope small { font-size: 12px; line-height: 1.5; }
-.pair-thread-choice { display: flex; gap: 16px; font-size: 13px; }
-.pair-thread-choice label, .pair-thread-list label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.pair-thread-choice input, .pair-thread-list input { margin: 0; accent-color: var(--accent); }
-.pair-thread-list { max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
-.pair-thread-list span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .key-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
 .key-state .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .key-state.found { color: var(--brand-cyan); }
