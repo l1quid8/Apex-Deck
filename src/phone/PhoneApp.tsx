@@ -78,7 +78,7 @@ import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, r
 import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   apiModelChoices, apiProviderName, modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
-  pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
+  pillDrag, pillPullReveal, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
   canSeeNewThread, connectionKey, isPaired, withHints, readHostIds, withMacHostIds,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
@@ -296,37 +296,99 @@ function toolWords(config: ParticipantConfig): string {
  * A bot pill: tap to tag, hold or pull down to open its details. The pull is short and mostly
  * straight down; sideways goes to the bar's scroll. The chip follows the finger a little.
  */
-function usePillPress() {
+type BotPullPreview = { reveal: number; sheet: HTMLDivElement | null };
+type BotPull = { anchor: HTMLElement; preview?: BotPullPreview };
+type BotPanel = { id: string; pull?: BotPull };
+
+function paintPillReveal(preview: BotPullPreview) {
+  preview.sheet?.style.setProperty("--agent-mask", `max(0px, calc(100% - ${preview.reveal}px))`);
+}
+
+function usePillPress(scope: string) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const start = useRef<{ x: number; y: number; id: number } | null>(null);
-  const done = useRef(false);
-  const [pull, setPull] = useState<{ id: string; y: number } | null>(null);
+  const start = useRef<{ anchor: HTMLElement; x: number; y: number; pointer: number; moved: boolean; preview: BotPullPreview | null } | null>(null);
+  const skipClick = useRef<string | null>(null);
   const clear = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
-  const end = () => { clear(); start.current = null; setPull(null); };
+  const resetChip = (anchor: HTMLElement) => {
+    anchor.removeAttribute("data-pulling");
+    anchor.style.removeProperty("--pull");
+  };
+  const end = () => {
+    clear();
+    if (start.current) resetChip(start.current.anchor);
+    start.current = null;
+  };
+  useEffect(() => () => { end(); skipClick.current = null; }, [scope]);
   return {
-    pull,
-    bind: (who: string, open: () => void, tap: () => void) => ({
-      onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
-        done.current = false; clear();
-        start.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
-        if (event.pointerType === "mouse") event.currentTarget.setPointerCapture?.(event.pointerId);
-        timer.current = setTimeout(() => { done.current = true; end(); open(); }, 500);
-      },
-      onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+    bind: (who: string, show: (placement: BotPull | null) => void, tap: () => void) => {
+      const open = (anchor: HTMLElement) => {
+        skipClick.current = who;
+        end();
+        show({ anchor });
+      };
+      const cancel = (event: ReactPointerEvent<HTMLElement>) => {
         const from = start.current;
-        if (!from || from.id !== event.pointerId || done.current) return;
-        const dx = event.clientX - from.x, dy = event.clientY - from.y;
-        const move = pillDrag(dx, dy);
-        if (Math.hypot(dx, dy) > 6) clear();
-        if (move === "scroll") { done.current = true; end(); return; }
-        if (move === "open") { done.current = true; end(); navigator.vibrate?.(8); open(); return; }
-        setPull(dy > 2 ? { id: who, y: Math.min(dy, 28) } : null);
-      },
-      onPointerUp: end,
-      onPointerCancel: end,
-      onContextMenu: (event: { preventDefault(): void }) => { event.preventDefault(); clear(); done.current = true; open(); },
-      onClick: () => { if (done.current) { done.current = false; return; } tap(); },
-    }),
+        if (!from || from.pointer !== event.pointerId) return;
+        skipClick.current = who;
+        end();
+        if (from.preview) show(null);
+      };
+      return {
+        onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+          if (!event.isPrimary || event.button !== 0 || start.current) return;
+          skipClick.current = null;
+          const anchor = event.currentTarget;
+          start.current = { anchor, x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false, preview: null };
+          if (event.pointerType === "mouse") anchor.setPointerCapture?.(event.pointerId);
+          timer.current = setTimeout(() => open(anchor), 500);
+        },
+        onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+          const from = start.current;
+          if (!from || from.pointer !== event.pointerId) return;
+          const dx = event.clientX - from.x, dy = event.clientY - from.y;
+          if (pillDrag(dx, dy) === "scroll") { cancel(event); return; }
+          if (Math.hypot(dx, dy) > 6) { clear(); from.moved = true; }
+          const reveal = pillPullReveal(dx, dy);
+          if (reveal === null) {
+            if (from.preview) {
+              resetChip(from.anchor);
+              from.preview = null;
+              show(null);
+            }
+            return;
+          }
+          from.anchor.style.setProperty("--pull", `${Math.min(dy, 28)}px`);
+          // Mount the preview once. Further movement only paints the chip and the sheet.
+          if (!from.preview) {
+            from.anchor.setAttribute("data-pulling", "");
+            from.preview = { reveal, sheet: null };
+            show({ anchor: from.anchor, preview: from.preview });
+            return;
+          }
+          from.preview.reveal = reveal;
+          paintPillReveal(from.preview);
+        },
+        onPointerUp: (event: ReactPointerEvent<HTMLElement>) => {
+          const from = start.current;
+          if (!from || from.pointer !== event.pointerId) return;
+          const dx = event.clientX - from.x, dy = event.clientY - from.y;
+          if (pillDrag(dx, dy) === "open") { navigator.vibrate?.(8); open(event.currentTarget); return; }
+          if (from.moved || Math.hypot(dx, dy) > 6) skipClick.current = who;
+          end();
+          if (from.preview) show(null);
+        },
+        onPointerCancel: cancel,
+        onLostPointerCapture: cancel,
+        onContextMenu: (event: React.MouseEvent<HTMLElement>) => { event.preventDefault(); open(event.currentTarget); },
+        onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
+          if (event.key === "ArrowDown") { event.preventDefault(); open(event.currentTarget); }
+        },
+        onClick: (event: React.MouseEvent<HTMLElement>) => {
+          if (event.detail && skipClick.current === who) { skipClick.current = null; return; }
+          tap();
+        },
+      };
+    },
   };
 }
 
@@ -528,7 +590,9 @@ export function PhoneApp() {
   const composerPlanLock = useRef(false);
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
-  const [botSheet, setBotSheet] = useState<string | null>(null);
+  const [botPanel, setBotPanel] = useState<BotPanel | null>(null);
+  const botPreview = !!botPanel?.pull?.preview;
+  const botSheet = botPreview ? null : botPanel?.id ?? null;
   /** The agent the Agents tab is changing: an id, or null while making a new one. Null closes the sheet. */
   const [agentSheet, setAgentSheet] = useState<{ id: string | null } | null>(null);
   /** The bots the Mac offers, which a new agent starts from. Loaded when the sheet opens. */
@@ -1767,7 +1831,7 @@ export function PhoneApp() {
   }, [room?.id, room?.hostId, room?.messages.length, openLink?.status, openHostId, typed, queued[room ? queueKey(room.hostId, room.id) : ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
-  useEffect(() => { setBotSheet(null); setSteerAsk(null); setGoingBack(null); }, [openId, openHostId]);
+  useEffect(() => { setBotPanel(null); setSteerAsk(null); setGoingBack(null); }, [openId, openHostId]);
   // Steer now stops asking once its message has gone, been steered, or been taken back.
   const queuedIds = (openId ? queued[queueKey(openHostId, openId)]?.items ?? [] : []).map((item) => item.id).join(",");
   useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
@@ -1961,7 +2025,7 @@ export function PhoneApp() {
 
   /** Ask the thread's machine which models a bot's tool offers, once per machine and tool. */
   useEffect(() => {
-    if (!botSheet || !room || !openLink || openLink.status !== "online") return;
+    if (!botSheet || viewingPending || !room || !openLink || openLink.status !== "online" || !roomFits(room, openPane?.id ?? null, openHostId)) return;
     const backend = room.configs.find((config) => config.id === botSheet)?.backend;
     const host = phoneHost(openLink.id)?.backend;
     let live = true;
@@ -1979,7 +2043,7 @@ export function PhoneApp() {
     host?.agentModels(backend.tool).then((list) => { if (live) setOffered((all) => ({ ...all, [key]: list })); }).catch(() => {});
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [botSheet, room?.id, openLink?.id, openLink?.status]);
+  }, [botSheet, viewingPending, room?.id, room?.hostId, openPane?.id, openHostId, openLink?.id, openLink?.status]);
 
   /**
    * Change a bot's model or reasoning from the phone. Each write reads the bot as its machine has it now
@@ -2855,7 +2919,10 @@ export function PhoneApp() {
             onBots={() => { if (viewingPending) setMenu({ kind: "draft-bots" }); else if (openPane) { setBotChange(null); setMenu({ kind: "bots", id: openPane.id }); } }}
             swipe={{ next: swipePeek("next"), previous: swipePeek("previous"), place: stripPlace(swipeKeys, openKey ?? null) }}
             onSwipe={swipeTo}
-            onBot={(id) => viewingPending ? setMenu({ kind: "draft-bots" }) : setBotSheet(id)}
+            botOpen={botSheet}
+            onBot={(id, pull) => {
+              setBotPanel((current) => pull ? { id, pull } : current?.id === id && current.pull?.preview ? null : current);
+            }}
             meters={openRoom ? Object.fromEntries(openRoom.configs.map((config) => {
               const provider = planProvider(config);
               return [config.id, pillMeter(provider, openRoom.fill[config.id], planOf(openRoom.plans, provider, planModel(config)), new Date())];
@@ -3249,9 +3316,9 @@ export function PhoneApp() {
                 </>)}
           </Sheet>
         )}
-        {botSheet && room && openPane && openLink && room.id === openPane.id && (() => {
-          const who = room.participants.find((p) => p.id === botSheet);
-          const config = room.configs.find((c) => c.id === botSheet);
+        {botPanel && openRoom && room === openRoom && openLink && (() => {
+          const who = room.participants.find((p) => p.id === botPanel.id);
+          const config = room.configs.find((c) => c.id === botPanel.id);
           if (!who || !config) return null;
           const provider = planProvider(config);
           const reported = config.backend.kind === "agent" ? offered[`${openLink.id}:${config.backend.tool}`] ?? [] : [];
@@ -3262,7 +3329,7 @@ export function PhoneApp() {
           const next = answerers?.paneId === room.id && answerers.ids.includes(who.id);
           const sharing = provider ? room.configs.filter((other) => planProvider(other) === provider && planModel(other) === planModel(config)).length : 0;
           return (
-            <BotSheet key={`${room.id}:${who.id}`} who={who} config={config} reported={reported} apiModels={apiModels}
+            <BotSheet key={`${room.id}:${who.id}`} pull={botPanel.pull} who={who} config={config} reported={reported} apiModels={apiModels}
               status={asking ? "Waiting on your answer" : turn ? `${toolLine(turnWords(turn, false, room.plan))} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}
               statusWarn={asking} working={Boolean(turn)} asking={asking}
               meters={botMeters(provider, room.fill[who.id], planOf(room.plans, provider, planModel(config)), new Date(), gatewayPlan(config) ? null : account?.balance ?? null)}
@@ -3286,10 +3353,10 @@ export function PhoneApp() {
                 if (!host || openLink.status !== "online") throw new Error(`${downLine(openLink)}. Nothing changed.`);
                 await host.backend.roomApplyAccess(room.id, who.id);
               }}
-              extra={openChat ? <TalkOnlyRow name={who.display_name} onMove={openChat.promotedTo ? undefined : () => { setBotSheet(null); setChatSheet({ kind: "move" }); }} /> : undefined}
-              onMention={() => { if (openKey) setDraft(openKey, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotSheet(null); }}
-              onStop={() => { void stopBot(who.id); setBotSheet(null); }}
-              onClose={() => setBotSheet(null)} />
+              extra={openChat ? <TalkOnlyRow name={who.display_name} onMove={openChat.promotedTo ? undefined : () => { setBotPanel(null); setChatSheet({ kind: "move" }); }} /> : undefined}
+              onMention={() => { if (openKey) setDraft(openKey, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotPanel(null); }}
+              onStop={() => { void stopBot(who.id); setBotPanel(null); }}
+              onClose={() => setBotPanel(null)} />
           );
         })()}
         {menu?.kind === "new" && (
@@ -3339,20 +3406,23 @@ export function PhoneApp() {
             </Sheet>
           );
         })()}
-        {menu?.kind === "draft-bots" && viewingPending && pending && (
-          <Sheet title="Agents for this thread" onClose={() => setMenu(null)}>
+        {(menu?.kind === "draft-bots" || botPanel?.pull) && viewingPending && pending && (
+          <Sheet title="Agents for this thread" pull={botPanel?.pull} onClose={() => { setMenu(null); setBotPanel(null); }}>
             <p className="ph-sheet-text">Choose who joins before the first message. These choices apply to this thread.</p>
             <div className="ph-bot-list">{(session?.profiles ?? []).map(config => {
               const who = toPerson(config);
               const picked = pendingAgents.some(agent => agent.id === config.id);
               return <div className="ph-bot-entry" key={config.id}><div className="ph-bot-row">
                 <span className="ph-bot-info"><Avatar seed={who.look.seed} color={who.look.color} size="sm" /><span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{mentionFor(config)}</small></span></span>
-                <button type="button" className="ph-bot-action" role="checkbox" aria-checked={picked} aria-label={`${picked ? "Remove" : "Add"} ${config.display_name}`} disabled={sending || !canStartOn(openHostId)} onClick={() => setPending(current => current?.id === pending.id ? { ...current, agents: picked ? pendingAgents.filter(agent => agent.id !== config.id).map(agent => agent.id) : [...pendingAgents.map(agent => agent.id), config.id] } : current)}>{picked ? <Check size={18} /> : <Plus size={18} />}</button>
+                <button type="button" className="ph-bot-action" role="checkbox" aria-checked={picked} aria-label={`${picked ? "Remove" : "Add"} ${config.display_name}`} disabled={sending || !canStartOn(openHostId)} onClick={() => {
+                  setPending(current => current?.id === pending.id ? { ...current, agents: picked ? pendingAgents.filter(agent => agent.id !== config.id).map(agent => agent.id) : [...pendingAgents.map(agent => agent.id), config.id] } : current);
+                  if (picked && botPanel?.id === config.id) setBotPanel(null);
+                }}>{picked ? <Check size={18} /> : <Plus size={18} />}</button>
               </div></div>;
             })}</div>
             {!(session?.profiles.length) && <p className="ph-sheet-text">No saved agents yet. Add one in Agents first.</p>}
             {!pendingAgents.length && <p className="ph-sheet-text ph-amber">Choose at least one agent to send a message.</p>}
-            <button type="button" className="primary ph-wide" onClick={() => setMenu(null)}>Done</button>
+            <button type="button" className="primary ph-wide" onClick={() => { setMenu(null); setBotPanel(null); }}>Done</button>
           </Sheet>
         )}
         {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
@@ -3382,7 +3452,7 @@ export function PhoneApp() {
             const reason = botChangeGate(full, member && (busy[queueKey(room.hostId, room.id)] ?? []).includes(config.id), botChangeLock.current);
             return <div className="ph-bot-entry" key={config.id}>
               <div className="ph-bot-row">
-                <button type="button" className="ph-bot-info" disabled={!member} onClick={() => { setMenu(null); setBotSheet(config.id); }}>
+                <button type="button" className="ph-bot-info" disabled={!member} onClick={() => { setMenu(null); setBotPanel({ id: config.id }); }}>
                   <Avatar seed={who.look.seed} color={who.look.color} size="sm" />
                   <span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{mentionFor(config)}{member && "model" in config.backend && config.backend.model ? ` · ${config.backend.model}` : ""}</small></span>
                 </button>
@@ -3556,7 +3626,7 @@ export function PhoneApp() {
         {chatSheet?.kind === "bots" && sheetChat && (
           <Sheet title="Agents in this chat" onClose={() => setChatSheet(null)}>
             <ChatBotsBody machine={chatMachine(sheetChat.hostId)} locked={sheetRights?.post ? "" : sheetRights?.postWhy ?? ""} bots={chatBots(sheetChat)} working={[...(busy[queueKey(sheetChat.hostId, sheetChat.id)] ?? [])]} loadProfiles={chatProfilesOn}
-              onOpen={(botId) => { if (openId === sheetChat.id) { setChatSheet(null); setBotSheet(botId); } else openChatRow(sheetChat); }}
+              onOpen={(botId) => { if (openId === sheetChat.id) { setChatSheet(null); setBotPanel({ id: botId }); } else openChatRow(sheetChat); }}
               onAdd={(profile) => changeChatBots(sheetChat, { add: profile })} onRemove={(botId) => changeChatBots(sheetChat, { remove: botId })} />
           </Sheet>
         )}
@@ -3609,18 +3679,62 @@ function BackButton({ label, onClick, className }: { label: string; onClick(): v
   return <button type="button" className={`ph-back${className ? ` ${className}` : ""}`} aria-label={`Back to ${label}`} onClick={onClick}><ChevronLeft size={26} />{label}</button>;
 }
 
-function Sheet({ title, tag, onClose, children, variant }: { title: string; tag?: ReactNode; onClose(): void; children: ReactNode; variant?: "location" }) {
+function Sheet({ title, tag, onClose, children, variant, pull }: { title: string; tag?: ReactNode; onClose(): void; children: ReactNode; variant?: "location"; pull?: BotPull }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
+  const backdrop = useRef<HTMLDivElement>(null);
+  const anchor = pull?.anchor;
+  const pullPreview = pull?.preview;
+  const preview = !!pullPreview;
+  const fromPreview = useRef(preview);
+  useLayoutEffect(() => {
+    const sheet = ref.current;
+    if (!pullPreview || !sheet) return;
+    pullPreview.sheet = sheet;
+    paintPillReveal(pullPreview);
+    return () => {
+      pullPreview.sheet = null;
+      sheet.style.removeProperty("--agent-mask");
+    };
+  }, [pullPreview]);
+  useLayoutEffect(() => {
+    const overlay = backdrop.current;
+    const frame = overlay?.parentElement;
+    if (!anchor || !overlay || !frame) return;
+    const place = () => {
+      if (!anchor.isConnected) return;
+      const chip = anchor.getBoundingClientRect();
+      const bounds = frame.getBoundingClientRect();
+      overlay.style.setProperty("--agent-x", `${Math.max(10, Math.min(frame.clientWidth - 10, chip.left + chip.width / 2 - bounds.left))}px`);
+      overlay.style.setProperty("--agent-top", `${chip.bottom - bounds.top + 2}px`);
+    };
+    place();
+    overlay.style.setProperty("--agent-color", anchor.style.getPropertyValue("--who"));
+    const observer = new ResizeObserver(place);
+    observer.observe(frame);
+    observer.observe(anchor);
+    return () => observer.disconnect();
+  }, [anchor]);
+  const view = anchor ? title : null;
+  useEffect(() => {
+    if (!preview) ref.current?.focus({ preventScroll: true });
+  }, [preview, view]);
+  useEffect(() => {
+    if (!anchor || preview) return;
+    return () => {
+      if (anchor.isConnected && !anchor.closest("[inert]")) anchor.focus({ preventScroll: true });
+    };
+  }, [anchor, preview]);
   return (
-    <div className="ph-sheet-back" onClick={onClose}>
-      <div className={`ph-sheet${variant ? ` ph-sheet-${variant}` : ""}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
-        <div className="ph-handle" />
+    <div ref={backdrop} className={`ph-sheet-back${anchor ? " ph-agent-pull-back" : ""}`} data-preview={preview || undefined} inert={preview} onClick={onClose}>
+      <div className={`ph-sheet${variant ? ` ph-sheet-${variant}` : ""}${anchor ? " ph-agent-pull-sheet" : ""}`}
+        data-unfold={!!anchor && !fromPreview.current || undefined}
+        role={preview ? undefined : "dialog"} aria-modal={preview ? undefined : true} aria-label={title} tabIndex={preview ? undefined : -1} ref={ref} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
+        {!anchor && <div className="ph-handle" />}
         <div className={`ph-sheet-title${variant ? ` ph-sheet-title-${variant}` : ""}`}>
           <h3>{title}{tag}</h3>
           <button type="button" className="ph-icon" aria-label="Close" onClick={onClose}><X size={20} /></button>
         </div>
-        <div className={`ph-sheet-body${variant ? ` ph-sheet-body-${variant}` : ""}`}>{children}</div>
+        <div key={anchor ? title : undefined} className={`ph-sheet-body${variant ? ` ph-sheet-body-${variant}` : ""}`}>{children}</div>
       </div>
     </div>
   );
@@ -3629,6 +3743,7 @@ function Sheet({ title, tag, onClose, children, variant }: { title: string; tag?
 /** A held bot: what it runs on, how much it has left, and its model and reasoning, which save as they're picked, as on the desktop. */
 function BotSheet(props: {
   who: Person; config: ParticipantConfig; reported: ModelChoice[];
+  pull?: BotPull;
   /** What an API bot's provider lists; empty for other bots, or until the machine answers. */
   apiModels: ApiModel[];
   status: string; statusWarn: boolean; working: boolean; asking: boolean;
@@ -3758,7 +3873,7 @@ function BotSheet(props: {
 
   if (view === "models" && choices) {
     return (
-      <Sheet title="Model" onClose={props.onClose}>
+      <Sheet title="Model" pull={props.pull} onClose={props.onClose}>
         <BackButton className="ph-sheet-back-link" label={name} onClick={() => setView("bot")} />
         <div className="ph-group" role="menu" aria-label={`Model for ${name}`}>
           {tool && modelRow({ id: "" })}
@@ -3778,7 +3893,7 @@ function BotSheet(props: {
   }
 
   return (
-    <Sheet title="In this thread" onClose={props.onClose}>
+    <Sheet title="In this thread" pull={props.pull} onClose={props.onClose}>
       <div className="ph-bot-head" style={{ "--agent-color": props.who.look.color } as CSSProperties}>
         <Avatar seed={props.who.look.seed} color={props.who.look.color} size="lg" working={props.working && !props.asking} />
         <span className="ph-grow">
@@ -3907,7 +4022,8 @@ function ThreadView(props: {
   /** The same, as bot ids, for the bar to light up. */
   toIds: string[] | null;
   /** The bot bar is folded into the title bar; the phone remembers this for every thread. */
-  crewShut: boolean; chipStyle?: ChipStyle; onCrew(shut: boolean): void; onBot(id: string): void;
+  crewShut: boolean; chipStyle?: ChipStyle; onCrew(shut: boolean): void;
+  botOpen: string | null; onBot(id: string, pull: BotPull | null): void;
   /** Open the Bots sheet: add a bot to this thread, or take one out. */
   onBots(): void;
   /** Each bot's context hairline and plan dot, for its pill. */
@@ -3971,7 +4087,7 @@ function ThreadView(props: {
   // The keyboard is up while the box has focus; the bot bar folds away until it goes down.
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
-  const pill = usePillPress();
+  const pill = usePillPress(JSON.stringify([props.link.id, props.paneId]));
   // Comparison settings stay read-only here. Built-in controls use local component state.
   const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
   // One stable reader per sender, so a picture isn't read again on every render.
@@ -4310,9 +4426,10 @@ function ThreadView(props: {
               const meter = props.meters[participant.id];
               const left = meter?.context ?? null;
               return (
-                <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}${pill.pull?.id === participant.id ? " pulling" : ""}`} style={{ "--who": participant.look.color, "--pull": `${pill.pull?.id === participant.id ? pill.pull.y : 0}px` } as CSSProperties}
+                <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}`} style={{ "--who": participant.look.color } as CSSProperties}
                   aria-label={`${participant.display_name}${asking(participant.id) ? ", waiting on you" : live ? ", working" : next ? ", answers your next message" : ""}${left !== null ? `, ${percent(left)}% context left` : ""}${meter?.planLow ? ", plan nearly used up" : ""}. Tap to tag. Hold or pull down for details and settings`}
-                  {...pill.bind(participant.id, () => props.onBot(participant.id), () => tag(participant.id))}>
+                  aria-haspopup="dialog" aria-expanded={props.botOpen === participant.id}
+                  {...pill.bind(participant.id, (placement) => props.onBot(participant.id, placement), () => tag(participant.id))}>
                   <span className={`ph-crew-chip chip chip-name${next ? " to" : ""}`}>
                     <span className="ph-crew-face">
                       <Avatar seed={participant.look.seed} color={participant.look.color} size="sm" working={live && !asking(participant.id)} />
@@ -4325,8 +4442,8 @@ function ThreadView(props: {
                       </span>
                       {(props.chipStyle === "ledger" || props.chipStyle === "two-line") && <span className="chip-details"><span className="chip-phase">{asking(participant.id) ? "Waiting on you" : live ? "Working" : "Idle"}</span></span>}
                     </span>
+                    <span className="ph-crew-chevron" aria-hidden="true"><ChevronDown size={12} /></span>
                   </span>
-                  <i className="ph-crew-grab" aria-hidden="true" />
                 </button>
               );
             })}

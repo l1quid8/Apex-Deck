@@ -552,3 +552,8 @@ export function pillDrag(dx: number, dy: number): "wait" | "open" | "scroll" {
   if (dy >= 28 && side <= dy * 0.5) return "open";
   return "wait";
 }
+
+/** How much of the menu to show while the finger is still down, in CSS pixels. */
+export function pillPullReveal(dx: number, dy: number): number | null {
+  return dy >= 5 && pillDrag(dx, dy) !== "scroll" ? dy * 3 : null;
+}
