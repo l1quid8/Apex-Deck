@@ -76,7 +76,10 @@ async function startDaemon(binPath, dataDir) {
   };
 }
 
-test('phone Machine page, Unified Computer Use, and App permissions work end-to-end against throwaway daemons', { timeout: 240_000 }, async (t) => {
+test('phone Machine page, Unified Computer Use, and App permissions work end-to-end against throwaway daemons', {
+  timeout: 240_000,
+  skip: process.platform !== 'darwin' && 'macOS-only: the host discovers Unified Computer Use from a Mac app bundle',
+}, async (t) => {
   const baseBin = ensureFixtureDaemon();
   const rootTmp = fs.mkdtempSync('/tmp/phone-ucu-');
   // Fake app bundle layout so `bundle()` in apex-host reports `available: true` on macOS.
