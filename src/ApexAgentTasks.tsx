@@ -123,9 +123,11 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const requestRef = useRef<PendingAssistantRequest | null>(null);
   const workerProfiles = useMemo(() => taskWorkerChoices(profiles).filter((profile) => !namedOnlyWorkerIds?.includes(profile.id)), [profiles, namedOnlyWorkerIds]);
   const chatThreads = useMemo(() => {
-    const visible = panes.filter((pane) => pane.kind === 'chat' && pane.workspaceId === owner.workspaceId && !pane.archived).map((pane) => ({ id: pane.id, title: pane.title }));
+    const visible = panes.filter((pane) => pane.kind === 'chat' && pane.workspaceId === owner.workspaceId && !pane.archived).map((pane) => ({ id: pane.id, title: pane.title, label: pane.title }));
     // The owning host also advertises saved chats that are closed or absent on this device.
-    const saved = (routingThreads ?? []).filter((thread) => !visible.some((pane) => pane.id === thread.id)).map((thread) => ({ id: thread.id, title: thread.title?.trim() || 'Saved chat' }));
+    // `label` is what the host matches the user's words against, so an untitled chat keeps its id there: the bare
+    // words "saved chat" in a message must never pick a destination.
+    const saved = (routingThreads ?? []).filter((thread) => !visible.some((pane) => pane.id === thread.id)).map((thread) => ({ id: thread.id, title: thread.title?.trim() || 'Saved chat', label: thread.title?.trim() || `Saved chat · ${thread.id}` }));
     return [...visible, ...saved];
   }, [panes, owner.workspaceId, routingThreads]);
   const ownerKey = `${owner.workspaceId}\u0000${owner.cwd}\u0000${owner.hostId}\u0000${owner.conversationId}`;
@@ -193,7 +195,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const version = generation.current;
     setBusy(true); setError('');
     try {
-      const result = await backend.call<{ message: unknown; task?: AssistantTask | null; monitor: ProjectMonitor }>('assistant_message', assistantMessageArgs(captured, pending, chatThreads.map((pane) => ({ id: pane.id, label: pane.title }))));
+      const result = await backend.call<{ message: unknown; task?: AssistantTask | null; monitor: ProjectMonitor }>('assistant_message', assistantMessageArgs(captured, pending, chatThreads.map((pane) => ({ id: pane.id, label: pane.label }))));
       if (!currentOwner(captured, version)) return;
       if (!result.monitor || result.monitor.workspaceId !== captured.workspaceId || result.monitor.cwd !== captured.cwd || result.monitor.hostId !== captured.hostId || result.monitor.conversationId !== captured.conversationId) throw new Error('The assistant returned a different project assignment.');
       if (result.task && !isTaskOwnedBy(result.task, captured)) throw new Error('The assistant returned a task for a different assignment.');

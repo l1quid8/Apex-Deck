@@ -814,3 +814,11 @@ test('task manager legacy review requires changes and check inspection for this 
   assert.equal(button(tree,'Accept and mark done').props.disabled,true);
   h.unmount();
 });
+
+test('an untitled saved chat is shown as "Saved chat" but sent to the host with its id, so the words alone never route a task', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../src/ApexAgentTasks.tsx', import.meta.url), 'utf8');
+  assert.match(source, /title: thread\.title\?\.trim\(\) \|\| 'Saved chat', label: thread\.title\?\.trim\(\) \|\| `Saved chat · \$\{thread\.id\}`/);
+  assert.match(source, /chatThreads\.map\(\(pane\) => \(\{ id: pane\.id, label: pane\.label \}\)\)/);
+  assert.doesNotMatch(source, /label: pane\.title \}\)\)\)\);/);
+});
