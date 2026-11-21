@@ -41,7 +41,7 @@ pub const PROTOCOL: u64 = 1;
 /// runtime where the platform supports local voice (see `OPTIONAL_CAPABILITIES`).
 pub const CAPABILITIES: &[&str] = &["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1"];
 /// Capabilities a daemon lists only when it has them.
-pub const OPTIONAL_CAPABILITIES: &[&str] = &["voice_server_v1", "maintenance_v1"];
+pub const OPTIONAL_CAPABILITIES: &[&str] = &["voice_server_v1", "maintenance_v1", "phone_thread_git_v1"];
 
 /// The answer to `hello`. `apex-protocol-schema` prints its schema and
 /// `scripts/gen-protocol-types.mjs` gives the clients the matching type.
@@ -499,6 +499,9 @@ where
     // it can't use; the host still checks everything) and the addresses
     // advertised for this machine, to refresh its saved hints.
     let device = guard.as_ref().and_then(Guard::device);
+    if device.is_some() && cfg!(any(target_os = "macos", target_os = "windows")) {
+        capabilities.push("phone_thread_git_v1");
+    }
     let welcome = Welcome {
         max_frame_bytes: if guard.is_some() { DEVICE_MAX_FRAME } else { MAX_FRAME },
         host_id: daemon.host_id.clone(), boot_id: daemon.boot_id.clone(), protocol: PROTOCOL, last_seq: written, resumed,

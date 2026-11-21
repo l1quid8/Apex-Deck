@@ -1550,3 +1550,24 @@
 .ph-app .ph-pick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; font-size: 16px; min-height: 0; margin: 0; padding: 0; border: 0; }
 .ph-label small.ph-ai-done { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 10px; }
 .ph-ai-acts { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+
+.ph-thread-git {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.ph-thread-git:empty { display: none; }
+.ph-thread-git .git-thread-actions { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ph-thread-git .git-branch-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ph-thread-git .git-branch-actions button { flex: 1 1 auto; min-height: 44px; font-size: 14px; font-weight: 600; }
+.ph-app .ph-thread-git button.git-primary { background: var(--brand-gradient); border-color: transparent; color: var(--accent-ink); }
+.ph-app .ph-thread-git button.git-primary:disabled { background: var(--panel-2); border-color: var(--line); color: var(--muted); }
+.ph-app .ph-thread-git button.git-primary:hover:not(:disabled) { background: var(--brand-gradient); border-color: transparent; box-shadow: none; }
+.ph-thread-git .git-menu-status, .ph-thread-git p[role="status"] { font-size: 13px; color: var(--muted); line-height: 1.45; }
+.ph-thread-git .git-menu-error { font-size: 13px; color: var(--red); line-height: 1.45; }
+.ph-thread-git details { font-size: 13px; }
+.ph-thread-git summary { display: flex; align-items: center; min-height: 44px; color: var(--mint); font-weight: 500; cursor: pointer; }
+.ph-thread-git p, .ph-thread-git pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.ph-thread-git pre { margin: 4px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 16em; overflow: auto; }

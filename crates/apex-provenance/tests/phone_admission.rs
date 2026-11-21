@@ -155,3 +155,23 @@ fn task_manager_mutations_require_current_global_full_phone_authority() {
         grant(&mut j,"full",json!("all"),true);assert!(claim(&mut j,2,cmd,true,false).is_err());
     }
 }
+
+#[test]
+fn git_actions_require_a_current_full_all_threads_grant() {
+    for kind in ["push", "request_merge", "cancel_merge", "ask_fix"] {
+        let intent = json!({"cmd":"room_thread_git_action","args":{"id":"r","action":{"kind":kind,"expected":{"head":"abc"}}}});
+        let mut journal = Journal::new();
+        for (tier, scope, revoked) in [
+            ("chat", json!("all"), false),
+            ("full", json!(["r"]), false),
+            ("full", json!("all"), true),
+        ] {
+            grant(&mut journal, tier, scope, revoked);
+            assert!(claim(&mut journal, 1, intent.clone(), true, false).is_err());
+        }
+        grant(&mut journal, "full", json!("all"), false);
+        let ack = claim(&mut journal, 1, intent.clone(), true, false).unwrap();
+        assert_eq!(ack["receipt"]["command"]["args"], intent["args"]);
+        assert!(claim(&mut journal, 1, intent, true, false).is_err());
+    }
+}
