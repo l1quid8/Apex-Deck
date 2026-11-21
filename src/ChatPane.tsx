@@ -748,8 +748,9 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [gitMenuRequest, setGitMenuRequest] = useState<GitMenuRequest | null>(null);
   const [gitCardSeq, setGitCardSeq] = useState<number | null>(null);
   const [gitCardTarget, setGitCardTarget] = useState<HTMLDivElement | null>(null);
+  const [gitActionsTarget, setGitActionsTarget] = useState<HTMLDivElement | null>(null);
   const closeGitCard = useCallback(() => { setGitMenuRequest(null); setGitCardSeq(null); }, []);
-  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && turnFiles.get(entry.message.seq)?.length);
+  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && (turnFiles.get(entry.message.seq)?.length || /(?:^|\n)Deck built [0-9a-f]{40}\s*$/.test(entry.message.text)));
   const latestGitSeq = latestGitReply?.kind === "message" ? latestGitReply.message.seq : null;
   const openGitCard = (seq: number, paths: string[] | null) => {
     setGitCardSeq(seq);
@@ -3778,7 +3779,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${liveView ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={liveView !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={toggleArtifacts}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
-      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length} request={gitMenuRequest} target={gitCardTarget} canOpen={true} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else openStandaloneGitCard(); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
+      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length + entries.length} actionsTarget={gitActionsTarget} request={gitMenuRequest} target={gitCardTarget} canOpen={true} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else openStandaloneGitCard(); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
     </div>
   );
   // The bots sit in their own row under the message box.
@@ -4020,6 +4021,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   };
                   return <SavedSteps key={`${pane.id}:${seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={loadedSteps.current.get(seq) ?? null} load={load} finalText={entry.message.text} renderText={renderText} />;
                 })()}
+                {entry.message.seq === latestGitSeq && <div ref={setGitActionsTarget} />}
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(agentName(entry.message.speaker.id))} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(agentName(entry.message.speaker.id))} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 {(() => {

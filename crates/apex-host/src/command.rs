@@ -180,6 +180,7 @@ pub enum Command {
     PtyKill { id: String },
     RoomDiff { id: String },
     RoomGitStatus { id: String },
+    RoomThreadGitAction { id: String, action: crate::thread_git::ThreadGitAction },
     RoomGitAction { id: String, action: crate::git_changes::Action },
     RoomFork { source: String, target: String, upto: Option<usize> },
     /// A thread's snapshot made into a new room here: a fork to this machine, or a thread moved before it started.
@@ -371,7 +372,7 @@ impl Command {
             | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. } | PersonalMemoryAdd { .. }
             | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
             | PersonalMachineAllow { .. } | PersonalBrowserSession { .. } | ComputerSetup { .. } | ComputerSetEnabled { .. } | ComputerSetAppPrompts { .. } | ComputerSetActionLabels { .. }
-            | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
+            | RoomThreadGitAction { .. } | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
             // Open: reads, this Mac's own desktop plumbing, chat-room posts and
             // anything the device tier alone governs.
             // Provenance
@@ -873,6 +874,7 @@ impl Host {
             PtyKill { id } => { self.pty_kill(id); reply(()) },
             RoomDiff { id } => reply(self.room_diff(id).await?),
             RoomGitStatus { id } => reply(self.room_git_status(id).await?),
+            RoomThreadGitAction { id, action } => reply(self.room_thread_git_action(id, action).await?),
             RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
             RoomImport { id, snapshot, cwd, replace, expected_room_revision } => reply(self.room_import_checked(id, snapshot, cwd, replace.unwrap_or(false), expected_room_revision)?),
@@ -1350,7 +1352,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 244);
+        assert_eq!(names.len(), 245);
         for name in [
             "personal_handoff_select",
             "personal_handoff_control",

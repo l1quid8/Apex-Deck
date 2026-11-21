@@ -21,6 +21,12 @@ pub struct State {
     pub files: Vec<File>,
     pub checks_passed: bool,
     pub clean: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<crate::thread_git::Workflow>,
+    #[serde(default)]
+    pub origin_repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_error: Option<String>,
 }
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,7 +61,7 @@ pub struct Outcome {
     pub message: String,
 }
 
-fn git(project_data: &Path, cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(project_data: &Path, cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
     git_writing(project_data, cwd, index, None, args)
 }
 /// Git that may also write `target`, a scratch checkout outside the project:
@@ -306,9 +312,12 @@ pub fn status(project_data: &Path, cwd: &Path) -> Result<State, String> {
         files,
         checks_passed,
         clean,
+        workflow: None,
+        workflow_error: None,
+        origin_repo: git(project_data,&root,None,&["remote","get-url","--push","origin"]).ok().and_then(|url|crate::thread_git::repository(url.trim()).ok()),
     })
 }
-fn current(project_data: &Path, cwd: &Path, expected: &State) -> Result<State, String> {
+pub(crate) fn current(project_data: &Path, cwd: &Path, expected: &State) -> Result<State, String> {
     let now = status(project_data, cwd)?;
     if now.root != expected.root
         || now.head != expected.head
@@ -586,7 +595,7 @@ fn merge(project_data: &Path, cwd: &Path, expected: &State) -> Result<String, St
         )),
     }
 }
-async fn run(project_data: &Path, cwd: &Path, program: &str, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn run(project_data: &Path, cwd: &Path, program: &str, args: &[&str]) -> Result<String, String> {
     let mut command = crate::project_process::tokio_command_in(project_data, program, cwd)?;
     // A scratch checkout links the project's installed packages; the jail has
     // to show where that link leads.
@@ -615,14 +624,14 @@ async fn run(project_data: &Path, cwd: &Path, program: &str, args: &[&str]) -> R
     Ok(stdout.trim().to_string())
 }
 /// The type check the card runs, unchanged from what the merge rules expect.
-const TYPECHECK: [&str; 4] = ["npx", "--no-install", "tsc", "--noEmit"];
+pub(crate) const TYPECHECK: [&str; 4] = ["npx", "--no-install", "tsc", "--noEmit"];
 fn short(head: &str) -> &str {
     head.get(..7).unwrap_or(head)
 }
 /// Runs `command` in a throwaway checkout of the commit under review, then records
 /// the pass against that commit. The working tree is never an input, so unrelated
 /// uncommitted work can neither block checks nor vouch for untested code.
-async fn check_commit(project_data: &Path, cwd: &Path, expected: &State, command: &[&str]) -> Result<String, String> {
+pub(crate) async fn check_commit(project_data: &Path, cwd: &Path, expected: &State, command: &[&str]) -> Result<String, String> {
     let work = cwd.to_path_buf();
     let before = expected.clone();
     let now = crate::project_process::spawn_blocking(project_data, move |project_data| current(project_data, &work, &before))

@@ -6,7 +6,7 @@ import { gitGates, reconcileSelection, selectTurnFiles } from '../src/gitChanges
 const source = fs.readFileSync(new URL('../src/GitChangesMenu.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^import '\.\/gitChanges.css';\n/m, '').replace('export function GitChangesMenu', 'function GitChangesMenu'), {transforms:['typescript','jsx'], jsxRuntime:'classic'}).code;
 const tick = () => new Promise(resolve => setImmediate(resolve));
-const state = () => ({root:'/repo',head:'abc',tree:'tree',branch:'feat/test',target:'main',targetHead:'base',ahead:2,behind:0,checksPassed:false,clean:false,files:[{path:'a.ts',added:2,removed:1,patch:'+a',stagedOnly:false},{path:'b.ts',added:1,removed:0,patch:'+b',stagedOnly:false}]});
+const state = () => ({root:'/repo',originRepo:'test/repo',head:'abc',tree:'tree',branch:'feat/test',target:'main',targetHead:'base',ahead:2,behind:0,checksPassed:false,clean:false,files:[{path:'a.ts',added:2,removed:1,patch:'+a',stagedOnly:false},{path:'b.ts',added:1,removed:0,patch:'+b',stagedOnly:false}]});
 function harness(backend) {
   const slots=[]; let cursor=0; const effects=[]; const timers=new Map(); const listeners=new Map(); let timer=0;
   const fakeWindow={innerWidth:360,innerHeight:500,setInterval(fn){timers.set(++timer,fn);return timer;},clearInterval(id){timers.delete(id);},addEventListener(name,fn){listeners.set(name,fn);},removeEventListener(name,fn){if(listeners.get(name)===fn)listeners.delete(name);}};
@@ -29,44 +29,36 @@ function find(node,predicate){return findAll(node,predicate)[0];}
 function text(node){if(typeof node==='string'||typeof node==='number')return String(node);return(node?.children??[]).map(text).join('');}
 const button=(tree,label)=>find(tree,n=>n.type==='button'&&text(n)===label);
 const checkboxes=tree=>findAll(tree,n=>n.type==='input'&&n.props.type==='checkbox');
-const listed=tree=>checkboxes(tree).map(n=>String(n.props['aria-label']).replace(/^Include /,'').replace(/ in commit$/,''));
+const listed=tree=>findAll(tree,n=>n.props.className==='git-file-name').map(text);
 async function loaded(h){h.render();await tick();return h.render();}
 
-test('turn chip request opens live menu with only matching files selected and submits that scope', async()=>{
-  let live=state(); const calls=[];
-  const h=harness({call:async(cmd,args)=>{if(cmd==='room_git_status')return live;calls.push(args.action);live={...live,head:'def',files:[live.files[1]]};return{state:live,message:'Committed.'};}});
-  await loaded(h);h.setProps({request:{paths:['/repo/a.ts','already-committed.ts'],nonce:1}});let tree=await loaded(h);
-  assert.deepEqual(listed(tree),['a.ts'],'only the scoped file is listed');
-  assert.ok(button(tree,'▶ 1 unselected file'),'unselected files start collapsed');
-  button(tree,'▶ 1 unselected file').props.onClick();tree=h.render();
-  assert.deepEqual(listed(tree),['a.ts','b.ts'],'expanding reveals the unselected file');
-  assert.deepEqual(checkboxes(tree).map(n=>n.props.checked),[true,false]);
-  const message=find(tree,n=>n.type==='input'&&n.props['aria-label']==='Commit message');message.props.onChange({target:{value:'Selected file'}});tree=h.render();
-  const form=find(tree,n=>n.type==='form');form.props.onSubmit({preventDefault(){}});await tick();tree=h.render();
-  assert.deepEqual(calls[0].paths,['a.ts']);assert.equal(calls[0].expected.head,'abc');
-  assert.equal(button(tree,'Merge').props.disabled,true);h.unmount();
+test('a turn can show a scoped diff, with Commit removed and direct Push',async()=>{
+  const live=state();const actions=[];
+  const h=harness({call:async(cmd,args)=>cmd==='room_git_status'?live:(actions.push(args.action),{state:live,message:'Pushed abc to origin.'})});
+  await loaded(h);h.setProps({request:{paths:['/repo/a.ts'],nonce:1}});let tree=await loaded(h);
+  assert.deepEqual(listed(tree),['a.ts']);button(tree,'▶ 1 unselected file').props.onClick();tree=h.render();
+  assert.deepEqual(listed(tree),['a.ts','b.ts']);assert.equal(find(tree,n=>n.type==='form'),undefined);
+  assert.equal(button(tree,'Waiting for review').props.disabled,true);
+  button(tree,'Push').props.onClick();button(tree,'Push').props.onClick();await tick();
+  assert.deepEqual(actions.map(a=>a.kind),['push']);assert.equal(actions[0].expected.originRepo,'test/repo');
+  h.unmount();
 });
 
-test('polling preserves deselection and stale refresh cannot replace a newer turn selection', async()=>{
-  let defer;let deferred=false;const live=state();
-  const h=harness({call:async()=>deferred?new Promise(resolve=>{defer=resolve;}):live});
-  let tree=await loaded(h);find(tree,n=>n.type==='button'&&n.props.className?.includes('git-changes-trigger')).props.onClick();tree=await loaded(h);
-  assert.deepEqual(listed(tree),['a.ts','b.ts']);
-  checkboxes(tree)[1].props.onChange({target:{checked:false}});h.render();h.poll();await tick();tree=h.render();
-  assert.deepEqual(listed(tree),['a.ts'],'a deselected file moves into the collapsed group and stays out of the commit');
-  assert.ok(button(tree,'▶ 1 unselected file'));
-  deferred=true;h.poll();const old=defer;deferred=false;
-  h.setProps({request:{paths:['/repo/b.ts'],nonce:2}});tree=await loaded(h);old({...live,head:'outdated'});await tick();tree=h.render();
-  assert.deepEqual(listed(tree),['b.ts'],'a stale poll cannot replace the newer turn selection');h.unmount();
-});
-
-test('merge requires an explicit confirmation and refreshed HEAD cancels it', async()=>{
-  let live={...state(),files:[],clean:true,checksPassed:true};const actions=[];
-  const h=harness({call:async(cmd,args)=>cmd==='room_git_status'?live:(actions.push(args.action),{state:live,message:'Merged'})});
-  await loaded(h);h.setProps({request:{paths:null,nonce:1}});let tree=await loaded(h);
-  button(tree,'Merge').props.onClick();tree=h.render();assert.ok(button(tree,'Confirm merge'));assert.equal(actions.length,0);
-  live={...live,head:'new-unreviewed-head',checksPassed:true};h.poll();await tick();tree=h.render();
-  assert.equal(button(tree,'Confirm merge'),undefined,'a changed HEAD needs a fresh merge review');h.unmount();
+test('review applies only to the current head, checks can be cancelled and a failure can request a fix',async()=>{
+  let live={...state(),workflow:{head:'abc',reviewer:'other',phase:'ready',detail:'Reviewed',pushed:true}};
+  const actions=[];const h=harness({call:async(cmd,args)=>cmd==='room_git_status'?live:(actions.push(args.action.kind),{state:live,message:'Saved'})});
+  h.setProps({actionsTarget:{}});let tree=await loaded(h);
+  button(tree,'Merge to main').props.onClick();await tick();tree=h.render();
+  live={...live,workflow:{...live.workflow,phase:'checks'}};h.poll();await tick();tree=h.render();
+  assert.ok(button(tree,'Waiting for checks…').props.disabled);
+  button(tree,'Cancel').props.onClick();await tick();tree=h.render();
+  live={...live,workflow:{...live.workflow,phase:'failed',detail:'Windows failed'}};h.poll();await tick();tree=h.render();
+  assert.ok(find(tree,n=>n.type==='details' && text(n).includes('Windows failed')));
+  button(tree,'Ask agent to fix · uses one model turn').props.onClick();await tick();tree=h.render();
+  live={...live,head:'new'};h.poll();await tick();tree=h.render();
+  assert.ok(button(tree,'Waiting for review').props.disabled);
+  assert.equal(button(tree,'Ask agent to fix · uses one model turn'),undefined);
+  assert.deepEqual(actions,['request_merge','cancel_merge','ask_fix']);h.unmount();
 });
 
 test('slow status polls are coalesced and still populate the open menu', async()=>{
@@ -83,7 +75,7 @@ test('a disconnected host disables actions on an already-open menu', async()=>{
   const h=harness({call:async(cmd,args)=>cmd==='room_git_status'?live:(actions.push(args.action),{state:live,message:'done'})});
   await loaded(h);h.setProps({request:{paths:null,nonce:1}});let tree=await loaded(h);
   h.setProps({ready:false});tree=h.render();
-  assert.equal(button(tree,'Merge').props.disabled,true);assert.equal(button(tree,'Open PR').props.disabled,true);h.unmount();
+  assert.equal(button(tree,'Push').props.disabled,true);assert.equal(button(tree,'Waiting for review').props.disabled,true);h.unmount();
 });
 
 test('read errors remove actionable state and Escape closes the inline card', async()=>{
@@ -104,7 +96,7 @@ test('top-bar opening clears turn markers and renders a closable live inline car
   assert.equal(find(tree,n=>n.props.role==='region'),undefined);
   find(tree,n=>n.props.className?.includes('git-changes-trigger')).props.onClick();tree=await loaded(h);
   assert.equal(findAll(tree,n=>n.props.className==='git-turn-mark').length,0);
-  assert.deepEqual(checkboxes(tree).map(n=>n.props.checked),[true,true]);h.unmount();
+  assert.deepEqual(listed(tree),['a.ts','b.ts']);h.unmount();
 });
 
 
