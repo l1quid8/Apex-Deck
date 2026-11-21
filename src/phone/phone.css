@@ -586,6 +586,7 @@
 .ph-handle { width: 36px; height: 5px; border-radius: 3px; background: var(--muted); opacity: .5; margin: 0 auto 8px; }
 .ph-sheet-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .ph-sheet-title h3 { margin: 0; font-size: 20px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.ph-sheet-title-app-permissions h3 { white-space: normal; overflow-wrap: anywhere; }
 .ph-sheet-text { font-size: 14px; color: var(--muted); line-height: 1.5; margin-bottom: 10px !important; }
 .ph-sheet-text svg { vertical-align: -2px; }
 

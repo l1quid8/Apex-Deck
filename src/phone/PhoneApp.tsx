@@ -3096,6 +3096,7 @@ export function PhoneApp() {
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
             covered={covered}
             ucuStatus={ucu.status}
+            ucuStatusError={ucu.statusError}
             onOpenComputerUse={() => setTab("computer")}
             onEdit={(id, next) => {
               setMachines(editMachine(machines, id, next));
@@ -3137,6 +3138,7 @@ export function PhoneApp() {
             host={selectedHost}
             online={selectedOnline}
             status={ucu.status}
+            statusError={ucu.statusError}
             onStatus={ucu.setStatus}
             onRefresh={ucu.refresh}
             onOpenAppPermissions={() => setTab("app-permissions")}
@@ -3149,6 +3151,7 @@ export function PhoneApp() {
             host={selectedHost}
             online={selectedOnline}
             status={ucu.status}
+            statusError={ucu.statusError}
             onStatus={ucu.setStatus}
             onRefresh={ucu.refresh}
             covered={covered}
@@ -3715,7 +3718,7 @@ function BackButton({ label, onClick, className }: { label: string; onClick(): v
   return <button type="button" className={`ph-back${className ? ` ${className}` : ""}`} aria-label={`Back to ${label}`} onClick={onClick}><ChevronLeft size={26} />{label}</button>;
 }
 
-function Sheet({ title, tag, onClose, children, variant, pull }: { title: string; tag?: ReactNode; onClose(): void; children: ReactNode; variant?: "location"; pull?: BotPull }) {
+function Sheet({ title, tag, onClose, children, variant, pull }: { title: string; tag?: ReactNode; onClose(): void; children: ReactNode; variant?: "location" | "app-permissions"; pull?: BotPull }) {
   const ref = useRef<HTMLDivElement>(null);
   const backdrop = useRef<HTMLDivElement>(null);
   const anchor = pull?.anchor;

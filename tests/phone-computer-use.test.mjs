@@ -43,8 +43,11 @@ async function until(what, check, ms = 20_000) {
 async function startDaemon(binPath, dataDir) {
   fs.mkdirSync(dataDir, { recursive: true });
   fs.rmSync(path.join(dataDir, 'daemon.json'), { force: true });
+  const env = { ...process.env, TMPDIR: '/tmp' };
+  // This fixture must never send policy or cursor updates to the installed helper.
+  delete env.HOME;
   const child = spawn(binPath, ['serve', '--exit-on-stdin-close', '--data-dir', dataDir], {
-    env: { ...process.env, TMPDIR: '/tmp' },
+    env,
     stdio: ['pipe', 'ignore', 'pipe'],
   });
   let stderr = '';
@@ -95,7 +98,7 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
     import React from 'react';
     import { createRoot } from 'react-dom/client';
     import { PhoneApp } from '/src/phone/PhoneApp.tsx';
-    import { PhoneAppPermissionsScreen, PhoneComputerUseScreen } from '/src/phone/ComputerUseSettings.tsx';
+    import { PhoneAppPermissionsScreen, PhoneComputerUseScreen, usePhoneComputerStatus } from '/src/phone/ComputerUseSettings.tsx';
     import '/src/phone/phone.css';
 
     const params = new URLSearchParams(location.search);
@@ -122,6 +125,9 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
       fail: 'none',
       hold: false,
       release: null,
+      holdStatus: false,
+      releaseStatus: null,
+      failStatus: false,
       calls: [],
       status() { return { available: this.available, enabled: this.enabled, skipAppPrompts: this.skip, appPromptsWarning: this.warning }; },
     };
@@ -138,7 +144,12 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
       connection: { get: () => ({ status: { kind: f.online ? 'connected' : 'disconnected' } }), subscribe: () => () => {} },
       backend: {
         async call(cmd, args) {
-          if (cmd === 'computer_status') return f.status();
+          if (cmd === 'computer_status') {
+            if (f.failStatus) throw Error('This Mac cannot report computer use status.');
+            const snapshot = f.status();
+            if (f.holdStatus) await new Promise((resolve) => { f.releaseStatus = resolve; });
+            return snapshot;
+          }
           f.calls.push([cmd, args]);
           if (f.hold) await new Promise((resolve) => { f.release = resolve; });
           if (cmd === 'computer_set_app_prompts') {
@@ -156,12 +167,11 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
       },
     };
     function EdgeHarness({ screen }) {
-      const [status, setStatus] = React.useState(() => f.status());
-      const refresh = async () => { const s = await edgeHost.backend.call('computer_status', {}); setStatus(s); return s; };
-      window.edgeSync = () => setStatus(f.status());
+      const { status, statusError, setStatus, refresh } = usePhoneComputerStatus(edgeHost, f.online);
+      window.edgeRefresh = refresh;
       return screen === 'ucu'
-        ? React.createElement(PhoneComputerUseScreen, { machineName: 'MacBook Pro', host: edgeHost, online: f.online, status, onStatus: setStatus, onRefresh: refresh, onOpenAppPermissions: () => {} })
-        : React.createElement(PhoneAppPermissionsScreen, { machineName: 'MacBook Pro', host: edgeHost, online: f.online, status, onStatus: setStatus, onRefresh: refresh, Sheet });
+        ? React.createElement(PhoneComputerUseScreen, { machineName: 'MacBook Pro', host: edgeHost, online: f.online, status, statusError, onStatus: setStatus, onRefresh: refresh, onOpenAppPermissions: () => {} })
+        : React.createElement(PhoneAppPermissionsScreen, { machineName: 'MacBook Pro', host: edgeHost, online: f.online, status, statusError, onStatus: setStatus, onRefresh: refresh, Sheet });
     }
     window.mountEdge = (screen) => root.render(React.createElement(EdgeHarness, { key: Math.random(), screen }));
     window.mountApp();
@@ -218,8 +228,16 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
         const buttons = [...scope.querySelectorAll('button')];
         const b = buttons.find((el) => el.textContent?.trim() === m) || buttons.find((el) => el.textContent && el.textContent.includes(m));
         if (!b) throw new Error('Button not found: ' + m + ' in: ' + buttons.map((x) => x.textContent).join(' | '));
+        if (b.disabled) throw new Error('Button disabled: ' + b.textContent);
         b.click();
       }, match);
+      const openAppPermissions = async () => {
+        const ready = () => [...document.querySelectorAll('main button')]
+          .some((b) => b.querySelector('strong')?.textContent === 'App permissions' && !b.disabled);
+        await wait(ready, 'App permissions is enabled');
+        await run(() => [...document.querySelectorAll('main button')]
+          .find((b) => b.querySelector('strong')?.textContent === 'App permissions').click());
+      };
 
       try {
         await win.loadURL(${JSON.stringify(url)});
@@ -267,7 +285,7 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
         assert.equal(JSON.parse(fs.readFileSync(macSettingsFile, 'utf8')).enabled, true);
 
         // Open App permissions -> Ask for each app is selected.
-        await clickButton('App permissions');
+        await openAppPermissions();
         await wait(() => document.querySelector('h2')?.textContent === 'App permissions', 'App permissions screen');
         const pressedLabel = () => run(() => document.querySelector('[role=group][aria-label="App permissions"] button[aria-pressed="true"] strong')?.textContent);
         assert.equal(await pressedLabel(), 'Ask for each app');
@@ -281,6 +299,7 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
         assert.match(dialogText, /password fields/);
         assert.match(dialogText, /Stopping an agent.s output stops its computer use/);
         assert.match(dialogText, /model provider/);
+        assert.equal(await run(() => getComputedStyle(document.querySelector('[role=dialog] h3')).whiteSpace), 'normal', 'confirmation title wraps to show the Mac name');
         assert.equal(await pressedLabel(), 'Ask for each app', 'Ask stays selected while confirmation is open');
         await clickButton('Cancel');
         await wait(() => !document.querySelector('[role=dialog]'), 'Cancel closes confirmation');
@@ -308,7 +327,7 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
         assert.deepEqual(JSON.parse(fs.readFileSync(macSettingsFile, 'utf8')), { enabled: true, skipAppPrompts: true });
 
         // Switch back to Ask -> immediate, no confirmation, persisted on daemon.
-        await clickButton('App permissions');
+        await openAppPermissions();
         await wait(() => document.querySelector('h2')?.textContent === 'App permissions', 'App permissions again');
         await clickButton('Ask for each app');
         await wait(() => document.querySelector('[role=group][aria-label="App permissions"] button[aria-pressed="true"] strong')?.textContent === 'Ask for each app', 'Ask confirmed');
@@ -317,7 +336,7 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
 
         // Edge case 1: Checkmark stays on Ask while waiting for Mac reply and on failure.
         await run(() => { window.edgeFixture.hold = true; window.mountEdge('policy'); });
-        await wait(() => document.querySelector('h2')?.textContent === 'App permissions', 'edge policy mount');
+        await wait(() => document.querySelector('[aria-label="App permissions"] button:not(:disabled)'), 'edge policy loaded');
         await clickButton('Skip prompts for Full-access agents');
         await wait(() => document.querySelector('[role=dialog]'), 'edge confirm');
         await clickButton('Skip prompts');
@@ -333,6 +352,37 @@ test('phone Machine page, Unified Computer Use, and App permissions work end-to-
         await clickButton('Ask for each app');
         await wait(() => document.querySelector('[role=alert]')?.textContent.includes('may switch back to Skip prompts after a restart'), 'Ask restart warning shown');
         assert.equal(await pressedLabel(), 'Ask for each app', 'Ask is selected after host refresh');
+        await run(() => window.mountEdge('policy'));
+        await wait(() => document.querySelector('[role=alert]')?.textContent.includes('may switch back to Skip prompts after a restart'), 'restart warning survives reopening');
+        assert.equal(await pressedLabel(), 'Ask for each app', 'Ask is selected after reopening');
+
+        // A refresh that read Ask before the write completed cannot undo the acknowledged Skip.
+        await run(() => {
+          window.edgeFixture.fail = 'none';
+          window.edgeFixture.holdStatus = true;
+          window.edgePendingStatus = window.edgeRefresh();
+        });
+        await wait(() => window.edgeFixture.releaseStatus, 'old status response held');
+        await clickButton('Skip prompts for Full-access agents');
+        await wait(() => document.querySelector('[role=dialog]'), 'confirm Skip during refresh');
+        await clickButton('Skip prompts');
+        await wait(() => document.querySelector('[aria-pressed="true"] strong')?.textContent === 'Skip prompts for Full-access agents', 'Skip acknowledged while refreshing');
+        await run(async () => {
+          window.edgeFixture.holdStatus = false;
+          window.edgeFixture.releaseStatus();
+          await window.edgePendingStatus;
+          await new Promise(requestAnimationFrame);
+          await new Promise(requestAnimationFrame);
+        });
+        assert.equal(await pressedLabel(), 'Skip prompts for Full-access agents', 'old refresh cannot undo acknowledged Skip');
+
+        await run(() => { window.edgeFixture.failStatus = true; window.edgeRefresh(); });
+        await wait(() => document.querySelector('[role=alert]')?.textContent.includes('cannot report computer use status'), 'status error shown');
+        assert.equal(await run(() => [...document.querySelectorAll('[role=group][aria-label="App permissions"] button')].every((b) => b.disabled)), true);
+        assert.equal(await pressedLabel(), undefined, 'no policy appears selected when its status is unknown');
+        await run(() => { window.edgeFixture.failStatus = false; });
+        await clickButton('Retry status');
+        await wait(() => document.querySelector('[aria-pressed="true"] strong')?.textContent === 'Skip prompts for Full-access agents', 'status retry recovers the saved policy');
 
         // Edge case 3: Offline Mac shows "Reconnect to view or change app permissions."
         await run(() => { window.edgeFixture.online = false; window.mountEdge('ucu'); });

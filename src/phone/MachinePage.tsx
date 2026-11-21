@@ -17,6 +17,7 @@ export function MachinePage({
   missing,
   covered,
   ucuStatus,
+  ucuStatusError,
   onOpenComputerUse,
   onEdit,
   onUnpair,
@@ -33,6 +34,7 @@ export function MachinePage({
   missing: string[];
   covered: boolean;
   ucuStatus: PhoneComputerStatus | null;
+  ucuStatusError: string;
   onOpenComputerUse(): void;
   onEdit(id: string, next: Machine): void;
   onUnpair(id: string): void;
@@ -68,7 +70,7 @@ export function MachinePage({
   const ucuDetail = !online
     ? "Reconnect to view or change app permissions."
     : !ucuStatus
-      ? "Checking…"
+      ? ucuStatusError ? "Couldn't check status" : "Checking…"
       : !ucuStatus.enabled
         ? "Off"
         : ucuStatus.skipAppPrompts
