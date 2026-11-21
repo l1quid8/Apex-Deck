@@ -579,12 +579,6 @@ export type ParticipantConfig = {
    */
   speed?: Speed | null;
   /**
-   * Untethered Unified Computer Use: with Full access, this bot uses Mac
-   * apps without the helper's per-app approval prompt and with relaxed
-   * reliability guards. Protected apps, password fields and Stop still apply.
-   */
-  untethered_computer?: boolean;
-  /**
    * The voice this bot speaks with on calls (a Kokoro voice id such as
    * "bf_emma"). `None` uses the app's default voice.
    */
@@ -1806,6 +1800,11 @@ export type Command = {
   cmd: "computer_set_enabled";
 } | {
   args: {
+    skip: boolean;
+  };
+  cmd: "computer_set_app_prompts";
+} | {
+  args: {
     enabled: boolean;
   };
   cmd: "computer_set_action_labels";
@@ -1824,9 +1823,6 @@ export type Command = {
 } | {
   args: Record<string, never>;
   cmd: "computer_reset_cursor_overlay";
-} | {
-  args: Record<string, never>;
-  cmd: "computer_stop";
 } | {
   args: Record<string, never>;
   cmd: "phone_status";
@@ -3418,6 +3414,9 @@ export interface Commands {
   computer_set_action_labels: {
     enabled: boolean;
   };
+  computer_set_app_prompts: {
+    skip: boolean;
+  };
   computer_set_cursor_image: {
     hotspotX?: number | null;
     hotspotY?: number | null;
@@ -3431,7 +3430,6 @@ export interface Commands {
   };
   computer_setup: Record<string, never>;
   computer_status: Record<string, never>;
-  computer_stop: Record<string, never>;
   copy_attachment: {
     path: string;
     room: string;

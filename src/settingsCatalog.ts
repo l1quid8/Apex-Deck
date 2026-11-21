@@ -131,8 +131,9 @@ export const CATALOG_ENTRIES: CatalogEntry[] = [
 
   // Unified Computer Use
   { id: 'ucu-enable', section: 'computer', label: 'Enable Unified Computer Use', keywords: ['computer','use','enable','desktop','tools'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-enable' },
-  { id: 'ucu-status', section: 'computer', label: 'Computer use status, refresh, setup', keywords: ['status','refresh','setup','permissions','accessibility','screen','recording','input','monitoring'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-status' },
-  { id: 'ucu-away', section: 'computer', label: "Keep working while I'm away", keywords: ['away','lock','locked','idle','sleep','awake','shield','unattended','untethered'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-away' },
+  { id: 'ucu-app-prompts', section: 'computer', label: 'App permissions: ask for each app or skip prompts', keywords: ['app','permissions','ask','skip','prompts','full','access','approval'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-app-prompts' },
+  { id: 'ucu-status', section: 'computer', label: 'Mac permissions and setup', keywords: ['setup','permissions','accessibility','screen','recording','input','monitoring'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-status' },
+  { id: 'ucu-away', section: 'computer', label: "Keep working while I'm away", keywords: ['away','lock','locked','idle','sleep','awake','shield','unattended','prompts'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-away' },
   { id: 'thread-grants', section: 'computer', label: 'Approval per Work thread', keywords: ['thread','grants','approval','allow','apps','permissions'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'thread-grants' },
   { id: 'cursor', section: 'computer', label: 'Cursor indicator and labels', keywords: ['cursor','pointer','mouse','labels','bubble','duration','indicator'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
   { id: 'cursor-style', section: 'computer', label: 'Cursor style presets', keywords: ['cursor','style','preset','default','simple','ring','pointer','custom'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
@@ -142,7 +143,7 @@ export const CATALOG_ENTRIES: CatalogEntry[] = [
   { id: 'cursor-image', section: 'computer', label: 'Custom cursor PNG image', keywords: ['cursor','image','png','custom','upload','reset'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
   { id: 'cursor-motion', section: 'computer', label: 'Cursor motion travel dwell timing', keywords: ['cursor','motion','travel','dwell','linger','bow','overshoot','tremor','speed'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor-customize' },
   { id: 'cursor-labels', section: 'computer', label: 'Cursor action labels', keywords: ['cursor','labels','action','description'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'cursor' },
-  { id: 'ucu-stop', section: 'computer', label: 'Stop and privacy', keywords: ['stop','privacy','model','screenshots'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-stop', advanced: true },
+  { id: 'ucu-privacy', section: 'computer', label: 'Privacy', keywords: ['privacy','model','screenshots'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'ucu-privacy', advanced: true },
 
   // Gateway
   { id: 'gateway-endpoint', section: 'gateway', label: 'Gateway endpoint and URL', keywords: ['gateway','endpoint','url','network','localhost','port','save'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'gateway-endpoint' },

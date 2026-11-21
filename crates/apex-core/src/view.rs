@@ -496,7 +496,7 @@ mod tests {
 
     fn cfg(id: &str, name: &str) -> ParticipantConfig {
         ParticipantConfig {
-            can_read_images: false, untethered_computer: false,
+            can_read_images: false,
             id: ParticipantId::new(id),
             display_name: name.to_string(),
             backend: Backend::Scripted { lines: vec![] },

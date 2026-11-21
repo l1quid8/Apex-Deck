@@ -5,10 +5,10 @@ import LocalAuthentication
 
 /// Keep working while I'm away (phase 1 of Locked Use).
 ///
-/// While it is on and an untethered turn is running, the Mac does not idle-lock.
+/// While it is on and a prompt-free turn is running, the Mac does not idle-lock.
 /// After the person has been away for `shieldDelay`, every display is covered by a
 /// shield. Any hardware keyboard or mouse input then locks the Mac; so does the end
-/// of the last untethered turn. Nothing is installed in the system: no
+/// of the last prompt-free turn. Nothing is installed in the system: no
 /// authorization plug-in, no root service. If the person locks the Mac themselves,
 /// work stops as usual.
 ///
@@ -29,10 +29,13 @@ final class AwayMode {
     return saved == 0 ? 300 : min(3600, max(60, saved))
   }
 
-  /// Asked on the main thread; true while an untethered Full turn is live.
-  var untetheredActive: () -> Bool = { false }
+  /// Asked on the main thread; true while a prompt-free Full turn is live.
+  var promptFreeActive: () -> Bool = { false }
   /// Called when the person takes over, so live turns stop with the lock.
   var onTakeover: () -> Void = {}
+  /// Called when the shield comes down: the lock was confirmed or the owner
+  /// authenticated. Until then the helper starts no new turn after a takeover.
+  var onTakeoverSettled: () -> Void = {}
 
   private var assertion: IOPMAssertionID = 0
   private var timer: Timer?
@@ -61,7 +64,7 @@ final class AwayMode {
   }
 
   private func tick() {
-    let active = enabled && untetheredActive()
+    let active = enabled && promptFreeActive()
     let idle = Self.hardwareIdle()
     defer { lastIdle = idle }
     if shielded {
@@ -152,6 +155,8 @@ final class AwayMode {
     shields.removeAll()
     shielded = false
     unlocking = false
+    // Only now is a takeover over: the screen locked, or the owner authenticated.
+    onTakeoverSettled()
   }
 
   private func requireOwner() {

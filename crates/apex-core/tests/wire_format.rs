@@ -10,7 +10,7 @@ use serde_json::{json, to_value};
 #[test]
 fn participant_config_shapes() {
     let api = ParticipantConfig {
-        can_read_images: false, untethered_computer: false,
+        can_read_images: false,
         id: ParticipantId::new("opus"),
         display_name: "Opus".into(),
         backend: Backend::OpenAiCompatible {
@@ -379,4 +379,15 @@ fn old_config_without_the_field_loads() {
         "id":"old", "display_name":"Old", "backend":{"kind":"scripted","lines":[]}
     })).unwrap();
     assert_eq!(to_value(&config).unwrap()["can_read_images"], false);
+}
+
+/// The per-agent switch is gone (App permissions is one setting for the whole
+/// Mac). A room saved with the old key still loads, the key grants nothing,
+/// and the next save drops it.
+#[test]
+fn old_untethered_field_is_ignored() {
+    let saved = json!({"id":"a","display_name":"A","backend":{"kind":"scripted"},"access":"full","untethered_computer":true});
+    let config: ParticipantConfig = serde_json::from_value(saved).expect("an old saved agent still loads");
+    assert_eq!(config.access, Access::Full);
+    assert!(to_value(&config).unwrap().get("untethered_computer").is_none(), "the old key is not written back");
 }
