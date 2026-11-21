@@ -337,8 +337,8 @@ final class Server {
   func ask(_ identity: AppIdentity, name: String, detail: String, token: String, state: ClientSession, request: String) throws {
     try turns.authorizeApp(identity, token: token) {
       let control = try turns.canControl(token)
-      let owner = try turns.requester(token)
-      let prompt = AppGrantPrompt(text: "Requested by: \(owner.1.prefix(64))\nThread: \(owner.0.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(name).\n\n\(detail)")
+      let owner = try turns.requesterLabel(token)
+      let prompt = AppGrantPrompt(text: AppGrantPrompt.text(requester: owner.1, thread: owner.0, control: control, name: name, detail: detail))
       DispatchQueue.main.async { prompt.show() }
       defer { DispatchQueue.main.async { prompt.dismiss() } }
       let deadline = ProcessInfo.processInfo.systemUptime + 120

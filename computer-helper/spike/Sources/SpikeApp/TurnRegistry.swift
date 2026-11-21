@@ -10,6 +10,10 @@ final class TurnRegistry {
   struct Turn {
     let thread: String
     let participant: String
+    /// What the person calls the agent and thread now. Shown in the consent
+    /// prompt only; the ids above stay the binding, since a rename keeps them.
+    let participantName: String
+    let threadName: String
     let token: String
     let access: String
     /// Set only on the signed daemon registration, never by a tool connection.
@@ -43,6 +47,12 @@ final class TurnRegistry {
     else { throw Refusal("turn_binding_invalid") }
     return (thread, participant, token)
   }
+  /// One short line: a name can never add lines to the consent prompt.
+  static func label(_ value: Any?, fallback: String) -> String {
+    let words = (value as? String ?? "").unicodeScalars.split { CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }
+    let line = words.map { String(String.UnicodeScalarView($0)) }.joined(separator: " ")
+    return String((line.isEmpty ? fallback : line).prefix(64))
+  }
   func register(_ args: [String: Any], control: Int32) throws -> String {
     guard sessionAvailable() else { throw Refusal("session_locked_or_unavailable") }
     let (thread, participant, token) = try Self.fields(args)
@@ -58,7 +68,8 @@ final class TurnRegistry {
     // A newer turn supersedes every predecessor for the same owner.
     let obsolete = turns.values.filter { $0.thread == thread && $0.participant == participant }.map { $0.token }
     for old in obsolete { turns.removeValue(forKey: old); retired.insert(old); latches.removeValue(forKey: old)?.forEach { $0.value?.stop() } }
-    turns[token] = Turn(thread: thread, participant: participant, token: token, access: access, assistantFullAccess: assistantFullAccess, untethered: untethered, control: control, grantScope: grantScope)
+    turns[token] = Turn(thread: thread, participant: participant,
+      participantName: Self.label(args["participantName"], fallback: participant), threadName: Self.label(args["threadName"], fallback: thread), token: token, access: access, assistantFullAccess: assistantFullAccess, untethered: untethered, control: control, grantScope: grantScope)
     if threadGrants[thread]?.scope != grantScope { threadGrants[thread] = ThreadGrants(scope: grantScope) }
     return token
   }
@@ -79,6 +90,12 @@ final class TurnRegistry {
     lock.lock(); defer { lock.unlock() }
     guard let turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
     return (turn.thread, turn.participant)
+  }
+  /// The thread and agent names for the consent prompt.
+  func requesterLabel(_ token: String) throws -> (String, String) {
+    lock.lock(); defer { lock.unlock() }
+    guard let turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
+    return (turn.threadName, turn.participantName)
   }
   var isStopped: Bool {
     lock.lock(); defer { lock.unlock() }; return globallyStopped

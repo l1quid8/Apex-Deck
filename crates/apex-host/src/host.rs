@@ -2009,6 +2009,10 @@ impl Host {
         if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
         self.handle(thread).ok()?.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).map(|p|p.display_name.clone())
     }
+    /// The thread's title as the person sees it, for the consent prompt.
+    pub(crate) fn computer_thread_label(&self,thread:&str)->Option<String> {
+        self.store.chat_meta(thread).ok().flatten().map(|meta|meta.title.trim().to_owned()).filter(|title|!title.is_empty())
+    }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
     /// Apply a saved access change now: stop `participant` and run it again under
