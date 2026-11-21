@@ -77,53 +77,33 @@ impl Journal {
         {
             return Err("This phone is revoked or its protected registry is invalid".into());
         }
-        let device = registry["devices"]
+        let _device = registry["devices"]
             .as_array()
             .and_then(|ds| ds.iter().find(|d| d["endpointId"] == endpoint))
             .ok_or("No protected grant for this phone")?;
+        // Kept in the wire request (`phone_claim`) so broker and daemon wire format
+        // does not change in this PR; a granted, unrevoked phone has full access.
+        let _ = assistant_room;
         let name = command["cmd"].as_str().ok_or("Missing phone command")?;
-        // Explicit allowlist: never delegate UI receipts, pairing, migration or
+        // Explicit allowlist: a granted, unrevoked phone may submit every
+        // allowlisted intent. Never delegate UI receipts, pairing, migration or
         // device administration back to a paired device.
-        let (tier, room) = match name {
+        match name {
             "room_post" | "room_post_to" | "room_turn" | "room_decide" | "room_answer"
-            | "room_runner_start" | "room_runner_action" | "room_set_plan" => (1, command["args"]["id"].as_str()),
-            "room_mount"
+            | "room_runner_start" | "room_runner_action" | "room_set_plan"
+            | "room_mount"
             | "room_update_participant"
             | "room_add_participant"
             | "room_remove_participant"
             | "room_set_options"
-            | "room_forget_allowed" => (2, command["args"]["id"].as_str()),
-            "room_create" | "room_import" | "room_fork" | "chat_promote" | "room_thread_git_action" => (2, None),
+            | "room_forget_allowed"
+            | "room_create" | "room_import" | "room_fork" | "chat_promote" | "room_thread_git_action" => {}
             _ if crate::protected(name)
                 && (name.starts_with("personal_")
                     || name.starts_with("assistant_")
                     || name.starts_with("project_memory_")
-                    || name == "project_task_lifecycle") =>
-            {
-                (2, None)
-            }
+                    || name == "project_task_lifecycle") => {}
             _ => return Err("Command cannot acquire phone submission authority".into()),
-        };
-        let actual = match device["tier"].as_str() {
-            Some("read_only") => 0,
-            Some("chat") => 1,
-            Some("full") => 2,
-            _ => return Err("Invalid protected phone tier".into()),
-        };
-        let global = device["threads"] == "all";
-        let scoped = match room {
-            Some(room) if !room.is_empty() => {
-                global
-                    || device["threads"]
-                        .as_array()
-                        .is_some_and(|rs| rs.iter().any(|r| r.as_str() == Some(room)))
-            }
-            _ => global,
-        };
-        if actual < tier || !scoped || (assistant_room && (actual < 2 || !global)) {
-            return Err(
-                "This phone's current tier or thread scope does not permit this intent".into(),
-            );
         }
         let command = phone_command(endpoint, session, id, command)?;
         let receipt = self.issue(uid, data_dir, command, true)?;

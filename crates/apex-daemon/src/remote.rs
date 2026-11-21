@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_paired_phone_is_served_within_its_tier() {
+    async fn a_paired_phone_has_full_access_and_still_refuses_never_commands() {
         let data = crate::devices::tests::folder();
         let (daemon, server) = daemon(&data.0).await;
         let phone_key = SecretKey::generate();
@@ -592,10 +592,10 @@ mod tests {
         let mut phone = Phone::dial(phone_key, &server).await;
         let hello = phone.call(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1 } })).await.unwrap();
         assert_eq!(hello["ok"]["host_id"], "host-1");
-        let refused = phone.call(json!({ "id": 1, "cmd": "pty_spawn", "args": { "id": "p", "cols": 80, "rows": 24 } })).await.unwrap();
-        assert!(refused["err"].as_str().unwrap().contains("chat access"), "{refused}");
-        let state = phone.call(json!({ "id": 2, "cmd": "room_state", "args": { "id": "nope" } })).await.unwrap();
-        assert_eq!(state["id"], 2);
+        let terminals = phone.call(json!({ "id": 1, "cmd": "pty_list", "args": {} })).await.unwrap();
+        assert!(terminals["ok"].is_array(), "{terminals}");
+        let refused = phone.call(json!({ "id": 2, "cmd": "quit_app", "args": {} })).await.unwrap();
+        assert_eq!(refused["err"], "not allowed from a remote device");
         assert!(daemon.devices.get(&phone.connection.remote_id().to_string()).is_none(), "the phone sees the server's ID");
     }
 
