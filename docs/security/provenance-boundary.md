@@ -76,15 +76,15 @@ without a file passes these checks.
 
 On macOS, the pinned daemon may call `phone_claim` only for the peer identity obtained
 from an authenticated iroh session. The broker reads `devices.json` from its
-protected journal, checks the current device, tier, thread scope and revocation,
+protected journal, checks that the device is granted and not revoked,
 then records and consumes the exact command in one transaction. The replay key
 binds the device, fresh random connection identity and numeric request ID;
 changing the command or verb cannot reuse that identity. The signed response
 also binds the kernel UID, canonical data directory, exact command and a fresh
 challenge. The host verifies it before dispatch and records the outcome.
 
-Ordinary coding socket access cannot establish these grants. `devices_add`,
-`devices_set_tier`, `devices_set_threads` and `pair_approve` require exact
+Ordinary coding socket access cannot establish these grants. `devices_add`
+and `pair_approve` require exact
 installed-UI receipts. Revocation remains available through the running
 installed daemon because it removes authority. Offline Mac list/revoke returns
 an actionable instruction to start Deck; it never edits legacy JSON. Device grants use protected compare-and-swap storage; editable legacy
@@ -94,10 +94,8 @@ certifies old device entries. Pairing, grant administration, migration and
 `provenance_execute` cannot obtain phone submission authority.
 
 The daemon still checks every command's normal permission classification before
-admission and checks it again before returning a result. The broker additionally
-requires global Full authority for assistant-owned room intents. A scoped Chat
-grant cannot approve or continue an assistant execution by treating it as an
-ordinary coding room. Personal/assistant intents require global Full authority.
+admission and checks it again before returning a result. Every granted,
+unrevoked phone has full access to the broker's allowlisted phone commands.
 The OS identity boundary still requires installed signed-app acceptance; broker
 Journal, signed-response, fixture-dispatch and production-negative tests are
 separate evidence, not a physical-iPhone validation.
@@ -417,7 +415,7 @@ still reports `active count = 1`.
 | Checklist item | Evidence |
 | --- | --- |
 | Signed UI and daemon succeed through the root broker in isolated data | `positive.trusted-daemon`, `positive.protected-read` (protected daemon `serve --data-dir <tmp>` logs no `protected ledgers unavailable` and answers a protected ledger read). Source: `apex-provenance::tests::claim_is_durable_and_cannot_be_replayed_after_reload`, `exact_retry_is_idempotent_but_changed_request_is_rejected`, `apex-provenance::tests::native_audit_token_rejects_an_unpinned_same_user_process` |
-| The same intent from shell, raw socket, stdio attach and an alternative daemon is refused, with no protected state change | `negative.raw-socket-issue`, `negative.stdio-protected-command` (a real `apex-daemon --stdio --attach --data-dir <tmp>` session relaying to the running protected daemon, not a second socket exchange; `--attach` fails rather than starting a second host, so a reply proves the transport), `negative.copied-daemon`, `negative.copied-daemon-serves`, `negative.installed-daemon*`. Source: `untrusted_process_cannot_issue_even_with_full_filesystem_access`, `unknown_and_nested_commands_never_gain_authority`, `copied_receipt_cannot_cross_user_project_or_data_directory`, `apex-host::command::tests::provenance_unverified_command_is_refused_before_any_mutation`, `apex-daemon::authority::tests::every_command_for_every_tier_and_scope` (`provenance_execute` is `Need::Never` for paired devices) |
+| The same intent from shell, raw socket, stdio attach and an alternative daemon is refused, with no protected state change | `negative.raw-socket-issue`, `negative.stdio-protected-command` (a real `apex-daemon --stdio --attach --data-dir <tmp>` session relaying to the running protected daemon, not a second socket exchange; `--attach` fails rather than starting a second host, so a reply proves the transport), `negative.copied-daemon`, `negative.copied-daemon-serves`, `negative.installed-daemon*`. Source: `untrusted_process_cannot_issue_even_with_full_filesystem_access`, `unknown_and_nested_commands_never_gain_authority`, `copied_receipt_cannot_cross_user_project_or_data_directory`, `apex-host::command::tests::provenance_unverified_command_is_refused_before_any_mutation`, `apex-daemon::authority::tests::any_paired_device_runs_every_paired_command` (`provenance_execute` is `Need::Never` for paired devices) |
 | Tampered user JSON, restart, protected originals and approval states win | `tamper.forged-user-json` (a *valid* forged `assistant-tasks-v1.json` — revision 9, task `forged-acceptance` — planted, daemon started, stopped and started again; both starts must answer the protected ledger exactly, field for field, and the planted file must be untouched). The fixture is `crates/apex-host/tests/fixtures/forged-assistant-tasks-v1.json` and `assistant_tasks::tests::acceptance_tamper_fixture_is_a_valid_forged_ledger` parses it with the real document type and serves it through `AssistantTasks::open`, so "ignored" cannot mean "unparseable". Source: `protected_ledgers_reject_untrusted_writers_and_stale_versions`, `protected_personal_approval_survives_reload_without_trusting_user_json` |
 | Crash between claim/dispatch/outcome leaves an uncertain status and no repeated effects; concurrent compare-and-swap; rejected approvals | `a_crash_between_claim_and_outcome_leaves_one_claim_and_no_replay` and `two_writers_from_the_same_read_commit_once_and_the_second_is_refused` (added here; they were the only gaps), plus `stale_approval_rejection_is_durable_and_cannot_be_rewritten`, `archived_submission_finish_is_reported_not_silently_dropped`, `expired_unclaimed_receipt_fails_closed_and_can_be_reissued`, and at the worker level `personal_worker::tests::attempted_non_idempotent_op_becomes_uncertain_and_asks` |
 | Installed signatures, every fuse slice, keys, ACLs, nested resources, symlink containment; developer/ad-hoc or copied mutable code refused | `static.signature.*`, `static.signature.app-deep`, `static.hardened-runtime.*`, `static.entitlements.*`, `static.fuses` (protected copy), `static.fuses.installed` (`/Applications`; every slice scanned for the Electron wire), `static.ownership`, `static.symlinks`, `static.keys-and-acls` (root-only, no ACL, modes), `negative.copied-daemon` (same bytes from a user-owned path are refused) |
