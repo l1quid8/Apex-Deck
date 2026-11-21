@@ -24,7 +24,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import { botChangeGate, botSendGate } from "../phoneBots";
 import { AppearanceSettings } from "../AppearanceSettings";
-import { CodeModeSettings } from "./CodeModeSettings";
+import { MachinePage } from "./MachinePage";
+import { PhoneAppPermissionsScreen, PhoneComputerUseScreen, usePhoneComputerStatus } from "./ComputerUseSettings";
 import { defaultAppearanceSettings, type AppearanceSettings as AppearanceState } from "../themes";
 import { applyPhoneTheme, loadPhoneAppearance, savePhoneAppearance, loadPhoneChipStyle, savePhoneChipStyle } from "./appearance";
 import { ChipStylePicker } from "../ChipStylePicker";
@@ -172,7 +173,7 @@ const CREW_KEY = "apex-deck.phone.crew.v1";
 const OPEN_KEY = "apex-deck.phone.openThreads.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
-type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "settings" | "general" | "appearance" | "log";
+type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "machine" | "computer" | "app-permissions" | "settings" | "appearance" | "log";
 type Draft = { text: string; files: ComposerAttachment[] };
 /** A message on its way, as it was in the box: its text and files, and the quotes with their Send to. */
 type QueuedDraft = { draft: Draft; quotes: ReplyQuote[]; inBox: boolean; failed?: boolean };
@@ -630,7 +631,8 @@ export function PhoneApp() {
   const { actions: pinActions, pending: pinning } = useThreadPinActions();
   const [approvalStays, setApprovalStays] = useState<Record<string, boolean>>({});
   const [agents, setAgents] = useState<string[]>([]);
-  const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
+  const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null);
+  const [repairSshOpen, setRepairSshOpen] = useState(0);
   /** Approval cards open on each machine, by thread id, from that machine's events. */
   const [waiting, setWaiting] = useState<Record<string, string[]>>({});
   /** Newest message seen per thread on this phone, so Recents moves without a save to the Mac per message. */
@@ -2719,8 +2721,17 @@ export function PhoneApp() {
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
   const covered = chatSheet !== null || composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen || agentSheet !== null || worktreesOpen;
   // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
-  const shownTab = tab === "machines" ? machinesReturn.current : tab;
-  const litTab = shownTab === "settings" || shownTab === "general" || shownTab === "appearance" || shownTab === "log" ? settingsReturn.current : shownTab;
+  const inMachinesFlow = tab === "machines" || tab === "machine" || tab === "computer" || tab === "app-permissions";
+  const shownTab = inMachinesFlow ? machinesReturn.current : tab;
+  const litTab = shownTab === "settings" || shownTab === "appearance" || shownTab === "log" ? settingsReturn.current : shownTab;
+  const selectedMachine = selectedMachineId ? machines.find((item) => item.id === selectedMachineId) ?? null : null;
+  const selectedHost = selectedMachine ? phoneHost(selectedMachine.id) : null;
+  const selectedLink = selectedMachine ? linkOf(selectedMachine.id) : null;
+  const selectedOnline = selectedLink?.status === "online";
+  const ucu = usePhoneComputerStatus(tab === "machine" || tab === "computer" || tab === "app-permissions" ? selectedHost : null, selectedOnline);
+  useEffect(() => {
+    if ((tab === "machine" || tab === "computer" || tab === "app-permissions") && !selectedMachine) setTab("machines");
+  }, [tab, selectedMachine]);
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots" || menu.kind === "artifacts" || menu.kind === "delete") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -2859,7 +2870,13 @@ export function PhoneApp() {
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
-            {tab === "general" || tab === "appearance" || tab === "log"
+            {tab === "app-permissions"
+              ? <BackButton label="Unified Computer Use" onClick={() => setTab("computer")} />
+              : tab === "computer"
+              ? <BackButton label={selectedMachine?.name ?? "Machines"} onClick={() => setTab(selectedMachine ? "machine" : "machines")} />
+              : tab === "machine"
+              ? <BackButton label="Machines" onClick={() => setTab("machines")} />
+              : tab === "appearance" || tab === "log"
               ? <BackButton label="Settings" onClick={() => setTab("settings")} />
               : tab === "settings"
               ? <BackButton label={tabName(settingsReturn.current)} onClick={() => setTab(settingsReturn.current)} />
@@ -2871,7 +2888,7 @@ export function PhoneApp() {
             <span className="ph-head-actions">
               {tab === "threads" && <button type="button" className="ph-icon" aria-label="New chat or thread" onClick={() => { setQuery(""); setChatSheet({ kind: "new" }); }}><Plus size={22} /></button>}
               {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
-              {tab !== "settings" && tab !== "general" && tab !== "appearance" && tab !== "log" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
+              {tab !== "settings" && tab !== "appearance" && tab !== "log" && !inMachinesFlow && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
@@ -3063,19 +3080,80 @@ export function PhoneApp() {
             <h2>Settings</h2>
             <p className="ph-intro">Preferences for this phone.</p>
             <div className="ph-list">
-              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("general")}><span className="ph-grow"><strong>General</strong><small>Machine settings · Apex Code Mode</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
-              <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
+              <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections, paired devices and machine settings</small></span><ChevronRight size={15} /></button>
               <LockRow />
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("log")}><span className="ph-grow"><strong>Connection log</strong><small>Leaving and coming back, and thread load times</small></span><ChevronRight size={15} /></button>
             </div>
           </main>
-        ) : tab === "general" ? (
-          <main className="ph-content" inert={covered}>
-            <h2>General</h2>
-            <p className="ph-intro">Global preferences on the selected machine.</p>
-            <CodeModeSettings hosts={hosts} />
-          </main>
+        ) : tab === "machine" && selectedMachine ? (
+          <MachinePage
+            machine={selectedMachine}
+            host={selectedHost}
+            link={selectedLink}
+            route={isPaired(selectedMachine) && selectedOnline ? routes[selectedMachine.id] ?? null : null}
+            icon={machineIcon(selectedMachine.id, 18)}
+            missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
+            covered={covered}
+            ucuStatus={ucu.status}
+            onOpenComputerUse={() => setTab("computer")}
+            onEdit={(id, next) => {
+              setMachines(editMachine(machines, id, next));
+              if (selectedMachineId === id) setSelectedMachineId(next.id);
+              setNotice(`Saved ${next.name.trim()}. Reconnecting…`);
+            }}
+            onUnpair={(id) => {
+              const gone = machines.find((machine) => machine.id === id);
+              if (gone && isPaired(gone) && gone.setup) {
+                if (gone.setup.kept) void ssh?.forget(signInId(gone.setup)).catch(() => {});
+                try {
+                  const { [`${gone.setup.host}:${gone.setup.port}`]: _, ...rest } = readServerKeys();
+                  localStorage.setItem(SERVER_KEYS, JSON.stringify(rest));
+                } catch { /* the old key stays until storage works */ }
+              }
+              setMachines((list) => removeMachine(list, id));
+              setSelectedMachineId(null);
+              setTab("machines");
+            }}
+            onRetry={(id) => phoneHost(id)?.connection.retryNow()}
+            onRepair={ssh && sshRuns ? async (machine) => {
+              const setup = machine.setup!;
+              const saved = await ssh.saved(signInId(setup));
+              sshRuns.clear();
+              sshRuns.start({ label: machine.name, host: setup.host, port: setup.port, user: setup.user, keep: true, ...saved });
+              setRepairSshOpen((n) => n + 1);
+              setTab("machines");
+            } : undefined}
+            onForgetSignIn={(machine) => {
+              void ssh?.forget(signInId(machine.setup!)).catch(() => {});
+              setMachines((list) => list.map((item) => (item.id === machine.id && isPaired(item) && item.setup ? { ...item, setup: { ...item.setup, kept: false } } : item)));
+            }}
+            onError={setNotice}
+          />
+        ) : tab === "computer" && selectedMachine ? (
+          <PhoneComputerUseScreen
+            machineName={selectedMachine.name}
+            icon={machineIcon(selectedMachine.id, 18)}
+            host={selectedHost}
+            online={selectedOnline}
+            status={ucu.status}
+            onStatus={ucu.setStatus}
+            onRefresh={ucu.refresh}
+            onOpenAppPermissions={() => setTab("app-permissions")}
+            covered={covered}
+          />
+        ) : tab === "app-permissions" && selectedMachine ? (
+          <PhoneAppPermissionsScreen
+            machineName={selectedMachine.name}
+            icon={machineIcon(selectedMachine.id, 18)}
+            host={selectedHost}
+            online={selectedOnline}
+            status={ucu.status}
+            onStatus={ucu.setStatus}
+            onRefresh={ucu.refresh}
+            covered={covered}
+            Sheet={Sheet}
+          />
         ) : tab === "log" ? (
           <ConnectionLog covered={covered} />
         ) : tab === "appearance" ? (
@@ -3099,16 +3177,7 @@ export function PhoneApp() {
             covered={covered}
             pairing={plugin !== null}
             setup={sshRuns}
-            onRepair={async (machine) => {
-              const setup = machine.setup!;
-              const saved = await ssh!.saved(signInId(setup));
-              sshRuns!.clear();
-              sshRuns!.start({ label: machine.name, host: setup.host, port: setup.port, user: setup.user, keep: true, ...saved });
-            }}
-            onForgetSignIn={(machine) => {
-              void ssh?.forget(signInId(machine.setup!)).catch(() => {});
-              setMachines((list) => list.map((item) => (item.id === machine.id && isPaired(item) && item.setup ? { ...item, setup: { ...item.setup, kept: false } } : item)));
-            }}
+            openSshSignal={repairSshOpen}
             scan={scanner ? scanner.scan : null}
             autoScan={scanAtLaunch}
             onAutoScan={() => setScanAtLaunch(false)}
@@ -3121,22 +3190,8 @@ export function PhoneApp() {
             giveBack={(link) => gateRef.current!.release(link, "failed")}
             machineIcon={machineIcon}
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
-            confirm={confirmUnpair}
+            onSelect={(id) => { setSelectedMachineId(id); setTab("machine"); }}
             onAdd={(machine) => { setMachines((list) => addMachine(list, machine)); setNotice(`Pairing ${machine.name.trim()}…`); }}
-            onEdit={(id, machine) => { setMachines(editMachine(machines, id, machine)); setNotice(`Saved ${machine.name.trim()}. Reconnecting…`); }}
-            onUnpair={(id) => {
-              const gone = machines.find((machine) => machine.id === id);
-              if (gone && isPaired(gone) && gone.setup) {
-                if (gone.setup.kept) void ssh?.forget(signInId(gone.setup)).catch(() => {});
-                try {
-                  const { [`${gone.setup.host}:${gone.setup.port}`]: _, ...rest } = readServerKeys();
-                  localStorage.setItem(SERVER_KEYS, JSON.stringify(rest));
-                } catch { /* the old key stays until storage works */ }
-              }
-              setMachines((list) => removeMachine(list, id));
-              setConfirmUnpair(null);
-            }}
-            onConfirm={setConfirmUnpair}
             onRetry={(id) => phoneHost(id)?.connection.retryNow()}
             onError={setNotice}
           />
@@ -4829,16 +4884,14 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "ssh" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, setup, onRepair, onForgetSignIn, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
-  machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
+function Machines({ machines, links, routes, covered, machineIcon, missing, pairing, setup, openSshSignal, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onSelect, onAdd, onPair, onRetry, onError }: {
+  machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[];
   /** The native plugin can pair from a QR code. */
   pairing: boolean;
-  /** The camera scanner, when there is one. */
   /** Runs Add a machine's SSH setup. Null outside the iPhone app. */
   setup: SetupRuns | null;
-  /** Face ID, then the same setup again with the kept sign-in. */
-  onRepair(machine: PairedMachine): Promise<void>;
-  onForgetSignIn(machine: PairedMachine): void;
+  /** Bumped when Repair with saved sign-in opens SSH setup from a machine page. */
+  openSshSignal: number;
   scan: (() => Promise<string>) | null;
   /** Open the camera now, as the first thing: no machine is saved yet. */
   autoScan: boolean;
@@ -4854,8 +4907,9 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   adopt(link: string): boolean;
   /** The slot was taken, then the link was rejected before a sheet opened. */
   giveBack(link: string): void;
+  onSelect(id: string): void;
   onAdd(machine: DirectMachine): void; onPair(request: { link: string; kind: MachineKind; id: string; name: string }): void;
-  onEdit(id: string, machine: Machine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
+  onRetry(id: string): void; onError(message: string): void;
 }) {
   const hasMac = machines.some((machine) => machine.kind === "mac");
   const blank = (kind: MachineKind) => ({ name: "", url: "", token: "", kind, id: kind === "server" ? missing[0] ?? "" : "" });
@@ -4863,9 +4917,11 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   const [how, setHow] = useState<AddHow>(defaultAddHow(pairing));
   const [pasted, setPasted] = useState("");
   const [adding, setAdding] = useState(machines.length === 0);
-  /** The machine being edited. Its form takes the place of its card. */
-  const [editing, setEditing] = useState<string | null>(null);
-  const [edit, setEdit] = useState(() => blank("mac"));
+  useEffect(() => {
+    if (!openSshSignal) return;
+    setHow("ssh");
+    setAdding(true);
+  }, [openSshSignal]);
   const pairWith = (link: string, held = false): boolean => {
     const trimmed = link.trim();
     // A link already holds the slot. Camera and paste take it here, or leave the open sheet alone.
@@ -4890,7 +4946,6 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
     if (!incoming) return;
     const link = incoming;
     onIncomingHandled();
-    setEditing(null);
     setHow("qr");
     if (link.adding) setAdding(true);
     if (!pairWith(link.url, true)) onIncomingFailed();
@@ -4902,52 +4957,25 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
       {machines.map((machine) => {
         const link = links.find((item) => item.id === machine.id);
         const paired = isPaired(machine);
-        if (editing === machine.id) return (
-          <form key={machine.id} className="ph-group ph-padded ph-form" onSubmit={(event) => {
-            event.preventDefault();
-            try {
-              const id = machine.kind === "mac" ? "local" : edit.id.trim();
-              onEdit(machine.id, paired ? { ...machine, id, name: edit.name } : { id, name: edit.name, kind: machine.kind, url: edit.url, token: edit.token });
-              setEditing(null);
-            } catch (error) { onError(words(error)); }
-          }}>
-            <h3>{machineIcon(machine.id, 18)} Edit {machine.name}</h3>
-            <label className="ph-label">Name<input value={edit.name} onChange={(event) => setEdit({ ...edit, name: event.target.value })} required autoCapitalize="words" /></label>
-            {machine.kind === "server" && <label className="ph-label">Id<input value={edit.id} onChange={(event) => setEdit({ ...edit, id: event.target.value })} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
-            {!paired && <label className="ph-label">Address<input value={edit.url} onChange={(event) => setEdit({ ...edit, url: event.target.value })} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>}
-            {!paired && <label className="ph-label">Daemon token<input type="password" value={edit.token} onChange={(event) => setEdit({ ...edit, token: event.target.value.trim() })} placeholder="Leave empty to keep the saved token" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>Paste a new token only if it changed.</small></label>}
-            <button type="submit" className="primary ph-wide">Save</button>
-            <button type="button" className="ph-plain ph-wide" onClick={() => setEditing(null)}>Cancel</button>
-          </form>
-        );
         const route = paired && link?.status === "online" ? routes[machine.id] : null;
         const state = !link ? "Connecting…" : link.status === "online" ? route === "direct" ? "Connected · Direct" : route === "relayed" ? "Connected · Relayed" : "Connected" : link.problem ? "Can't connect" : link.status === "offline" ? "Offline" : "Connecting…";
         return (
           <div key={machine.id} className={`ph-group ph-padded${link?.problem ? " bad" : ""}`}>
-            <h3>{machineIcon(machine.id, 18)} {machine.name}</h3>
-            <p className="ph-muted"><i className={`ph-dot${link?.status === "online" ? " on" : link?.status === "offline" ? " off" : ""}`} />{state} · paired with this phone</p>
+            <button type="button" className="ph-srow ph-preference" onClick={() => onSelect(machine.id)}>
+              {machineIcon(machine.id, 18)}
+              <span className="ph-grow">
+                <strong>{machine.name}</strong>
+                <small><i className={`ph-dot${link?.status === "online" ? " on" : link?.status === "offline" ? " off" : ""}`} />{state}</small>
+              </span>
+              <ChevronRight size={16} />
+            </button>
             {link && link.status !== "online" && link.status !== "connecting" && <p className={link.problem ? "ph-red" : "ph-muted"}>{downLine(link)}</p>}
-            <p className="ph-path">{paired ? `${machine.setup ? "Set up over SSH" : "Paired by QR code"} · ${machine.hostEndpointId.slice(0, 12)}…` : machine.url}{machine.kind === "server" ? ` · id ${machine.id}` : ""}</p>
             {link && link.status === "offline" && !link.problem && <button type="button" className="ph-wide" onClick={() => onRetry(machine.id)}>Retry now</button>}
-            {confirm === machine.id
-              ? <>
-                <p className="ph-muted">Its threads stay on {machine.name}. You can pair it again later.</p>
-                <button type="button" className="danger ph-wide" onClick={() => onUnpair(machine.id)}>Unpair {machine.name}</button>
-                <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(null)}>Cancel</button>
-              </>
-              : <>
-                <button type="button" className="ph-wide" onClick={() => { setEdit({ name: machine.name, url: paired ? "" : machine.url, token: "", kind: machine.kind, id: machine.kind === "server" ? machine.id : "" }); setEditing(machine.id); onConfirm(null); }}>Edit…</button>
-                {paired && machine.setup?.kept && <>
-                  <button type="button" className="ph-wide" onClick={() => { onRepair(machine).then(() => { setHow("ssh"); setAdding(true); }, (error: unknown) => onError(words(error))); }}>Repair with saved sign-in…</button>
-                  <button type="button" className="ph-plain ph-wide" onClick={() => onForgetSignIn(machine)}>Forget saved sign-in</button>
-                </>}
-                <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(machine.id)}>Unpair…</button>
-              </>}
           </div>
         );
       })}
       {missing.length > 0 && <p className="ph-intro">Your Mac's threads also use {missing.join(", ")}. Pair each one so those threads work here too.</p>}
-      {!adding && !editing && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setHow(defaultAddHow(pairing)); setAdding(true); }}>Add a machine…</button>}
+      {!adding && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setHow(defaultAddHow(pairing)); setAdding(true); }}>Add a machine…</button>}
       {adding && how === "ssh" && (
         <div className="ph-group ph-padded ph-form">
           <img className="ph-logo-wide" src="/branding/logo-horizontal.svg" alt="Apex Deck" width="160" height="40" />

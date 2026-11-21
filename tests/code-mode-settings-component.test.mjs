@@ -18,7 +18,7 @@ test('Code Mode controls acknowledge saves, show failures, sync host changes and
     const f=window.fixture={mode:'auto',kind:'connected',calls:[],fail:false,hold:false,
       emit(mode){this.mode=mode;for(const cb of listeners)cb({apexCodeMode:mode});},
       connection(kind){this.kind=kind;for(const cb of connections)cb();},
-      mount(phone){root.render(React.createElement(phone?CodeModeSettings:CodeModeControl,phone?{hosts:[host]}:{backend}));}};
+      mount(phone){root.render(React.createElement(phone?CodeModeSettings:CodeModeControl,phone?{host}:{backend}));}};
     const backend={settingsLoad:async()=>({apexCodeMode:f.mode}),
       onSettingsChanged:async cb=>{listeners.add(cb);return()=>listeners.delete(cb);},
       async call(cmd,args){f.calls.push([cmd,args]);if(f.fail)throw Error('save refused');
@@ -49,7 +49,7 @@ test('Code Mode controls acknowledge saves, show failures, sync host changes and
         assert.equal(await run(()=>document.querySelector('select').value),'off');
         await run(()=>{window.fixture.fail=false;window.fixture.emit('auto');});
         await wait(()=>document.querySelector('select').value==='auto','external host update');
-        await run(()=>window.fixture.mount(true));await wait(()=>document.body.innerText.includes('General')&&document.querySelector('select[aria-label="Apex Code Mode"]')?.value==='auto','phone load');
+        await run(()=>window.fixture.mount(true));await wait(()=>document.body.innerText.includes('Apex Code Mode')&&document.querySelector('select[aria-label="Apex Code Mode"]')?.value==='auto','phone load');
         assert.equal(await run(()=>document.querySelector('select[aria-label="Apex Code Mode"]').disabled),false);
         assert.doesNotMatch(await run(()=>document.body.innerText),/Full access is required/);
         await choose('off');await wait(()=>document.body.innerText.includes('Test Mac confirmed Off'),'phone acknowledged save');
