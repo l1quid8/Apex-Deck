@@ -14,22 +14,19 @@ use serde_json::json;
 #[cfg(feature = "remote")]
 use serde_json::Value;
 
-use crate::devices::Tier;
 use crate::local_call;
 #[cfg(feature = "remote")]
 use crate::local_call::{Client, Refused};
 use crate::{ipc, paths, remote_config};
 
 pub const USAGE: &str = "\
-usage: apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--json]
+usage: apex-daemon pair [--json]
        apex-daemon remote info
        apex-daemon remote on
        apex-daemon remote advertise <host:port>… | --clear
 
   pair       show a QR code for the Apex Deck phone app to scan, then approve the
              phone that claims it (the daemon must be running with --remote)
-  --tier     what the phone may do: read_only, chat (default) or full
-  --threads  which threads it may reach: all (default) or a list of IDs
   --json     for a program: one JSON event per line instead of the QR and prompt.
              After the claim event, `approve CODE` on stdin approves that phone;
              a different code or anything else cancels
@@ -42,9 +39,6 @@ usage: apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--js
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairOptions {
-    pub tier: Tier,
-    /// `None` is every thread.
-    pub threads: Option<Vec<String>>,
     /// One JSON event per line, for a program driving this over SSH.
     pub json: bool,
 }
@@ -64,18 +58,16 @@ fn usage(why: impl std::fmt::Display) -> String {
 
 /// Read what follows `pair`.
 pub fn parse(args: &[String]) -> Result<PairOptions, String> {
-    let mut options = PairOptions { tier: Tier::Chat, threads: None, json: false };
+    let mut options = PairOptions { json: false };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || args.next().cloned().ok_or_else(|| usage(format!("{arg} needs a value")));
         match arg.as_str() {
-            "--tier" => options.tier = Tier::parse(&value()?)?,
-            "--threads" => {
-                let list = value()?;
-                options.threads = (list != "all").then(|| list.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect());
-                if options.threads.as_ref().is_some_and(Vec::is_empty) {
-                    return Err(usage("--threads needs all or a list of thread IDs"));
-                }
+            // Wire tolerance: installed iPhone builds add a machine over SSH with
+            // `apex-daemon pair --json --tier full`. Accept and ignore `--tier` and
+            // `--threads` until every iPhone is on a TestFlight build containing Task 4.
+            "--tier" | "--threads" => {
+                let _ = value()?;
             }
             "--json" => options.json = true,
             other => return Err(usage(format!("unknown argument {other}"))),
@@ -192,20 +184,17 @@ where
     R: BufRead + Send + 'static,
 {
     if options.json {
-        return pair_json(client, options, out, stdin, interrupted).await;
+        return pair_json(client, out, stdin, interrupted).await;
     }
     let say = |out: &mut W, text: &str| -> Result<(), String> {
         out.write_all(text.as_bytes()).and_then(|()| out.flush()).map_err(|e| e.to_string())
     };
-    let threads = options.threads.as_ref().map_or(json!("all"), |t| json!(t));
-    let started = client.call("pair_start", json!({ "tier": options.tier, "threads": threads })).await.map_err(|r| r.err)?;
+    let started = client.call("pair_start", json!({})).await.map_err(|r| r.err)?;
     let (invitation, link) = (started["invitation"].clone(), started["link"].as_str().unwrap_or_default().to_string());
     let minutes = started["expires_at"].as_u64().unwrap_or(0).saturating_sub(crate::devices::now_ms()).div_ceil(60_000);
-    let scope = options.threads.as_ref().map_or("every thread".to_string(), |t| format!("threads {}", t.join(", ")));
     say(out, &format!(
-        "{}\nScan this with the Apex Deck app on your phone, or paste this link into it:\n{link}\n\nThe phone gets {} access to {scope}. The code expires in {minutes} minutes; Ctrl-C cancels.\nWaiting for a phone…\n",
+        "{}\nScan this to pair a phone with this machine, or paste this link into the Apex Deck app:\n{link}\n\nThe code expires in {minutes} minutes; Ctrl-C cancels.\nWaiting for a phone…\n",
         qr(&link)?,
-        tier_name(options.tier),
     ))?;
 
     tokio::pin!(interrupted);
@@ -245,16 +234,15 @@ where
         cancel(client, &invitation).await;
         return Err(format!("not approved; {label} was not paired"));
     }
-    let approved = client.call("pair_approve", json!({ "invitation": invitation, "claim_id": claim["claim_id"] })).await.map_err(|r| r.err)?;
-    let device: &Value = &approved["device"];
-    say(out, &format!("Paired {label} with {} access. Manage it with `apex-daemon devices`.\n", tier_name(serde_json::from_value(device["tier"].clone()).unwrap_or(options.tier))))
+    let _approved = client.call("pair_approve", json!({ "invitation": invitation, "claim_id": claim["claim_id"] })).await.map_err(|r| r.err)?;
+    say(out, &format!("Paired {label}. Manage it with `apex-daemon devices`.\n"))
 }
 
 /// `pair --json`: the same steps for a program. It reads the link, dials it
 /// itself, and approves only the code it worked out, so a stranger who got the
 /// link first is cancelled instead of paired.
 #[cfg(feature = "remote")]
-async fn pair_json<W, R>(client: &mut Client, options: &PairOptions, out: &mut W, stdin: R, interrupted: impl std::future::Future<Output = ()>) -> Result<(), String>
+async fn pair_json<W, R>(client: &mut Client, out: &mut W, stdin: R, interrupted: impl std::future::Future<Output = ()>) -> Result<(), String>
 where
     W: Write,
     R: BufRead + Send + 'static,
@@ -262,8 +250,7 @@ where
     let emit = |out: &mut W, event: Value| -> Result<(), String> {
         writeln!(out, "{event}").and_then(|()| out.flush()).map_err(|e| e.to_string())
     };
-    let threads = options.threads.as_ref().map_or(json!("all"), |t| json!(t));
-    let started = client.call("pair_start", json!({ "tier": options.tier, "threads": threads })).await.map_err(|r| r.err)?;
+    let started = client.call("pair_start", json!({})).await.map_err(|r| r.err)?;
     let invitation = started["invitation"].clone();
     emit(out, json!({ "event": "link", "link": started["link"], "expires_at": started["expires_at"] }))?;
 
@@ -323,15 +310,6 @@ async fn cancel(client: &mut Client, invitation: &Value) {
     let _ = client.call("pair_cancel", json!({ "invitation": invitation })).await;
 }
 
-#[cfg(feature = "remote")]
-fn tier_name(tier: Tier) -> &'static str {
-    match tier {
-        Tier::ReadOnly => "read-only",
-        Tier::Chat => "chat",
-        Tier::Full => "full",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,18 +323,16 @@ mod tests {
     }
 
     #[test]
-    fn pair_takes_a_tier_and_threads() {
-        assert_eq!(parse(&[]), Ok(PairOptions { tier: Tier::Chat, threads: None, json: false }));
-        assert!(parse(&["--json"]).unwrap().json);
-        assert_eq!(parse(&["--tier", "full", "--threads", "all"]), Ok(PairOptions { tier: Tier::Full, threads: None, json: false }));
-        assert_eq!(parse(&["--threads", "r1, r2", "--tier", "read_only"]), Ok(PairOptions { tier: Tier::ReadOnly, threads: Some(vec!["r1".into(), "r2".into()]), json: false }));
+    fn pair_ignores_old_tier_and_threads_flags() {
+        assert_eq!(parse(&[]), Ok(PairOptions { json: false }));
+        assert_eq!(parse(&["--json", "--tier", "full", "--threads", "r1,r2"]), Ok(PairOptions { json: true }));
+        assert!(parse(&["--tier"]).unwrap_err().contains("--tier needs a value"));
+        assert!(parse(&["--threads"]).unwrap_err().contains("--threads needs a value"));
+        assert!(parse(&["--admin"]).unwrap_err().contains("unknown argument"));
     }
 
     #[test]
     fn pair_mistakes_are_named() {
-        assert!(parse(&["--tier", "admin"]).unwrap_err().contains("admin"));
-        assert!(parse(&["--tier"]).unwrap_err().contains("--tier needs a value"));
-        assert!(parse(&["--threads", ","]).unwrap_err().contains("--threads"));
         assert!(parse(&["--label", "x"]).unwrap_err().contains("--label"));
         assert!(parse(&["now"]).unwrap_err().contains("now"));
     }
@@ -414,7 +390,7 @@ mod tests {
         use iroh::{Endpoint, SecretKey};
         use tokio::sync::mpsc;
 
-        use crate::devices::{Devices, Threads};
+        use crate::devices::Devices;
         use crate::pairing::invites::PairError;
         use crate::pairing::Invite;
         use crate::protocol::{self, Daemon, Trust};
@@ -512,7 +488,7 @@ mod tests {
             let (daemon, socket, at, endpoint_id) = live_daemon(&data.0).await;
             remote_config::set_advertised(&data.0, &["myhome.ddns.net:41641".into()]).unwrap();
             let (_never, interrupted) = tokio::sync::oneshot::channel();
-            let options = PairOptions { tier: Tier::Full, threads: Some(vec!["r1".into()]), json: false };
+            let options = PairOptions { json: false };
             let (cli, mut screen) = run_cli(&socket, options, "y\n", interrupted).await;
             let invite = link_from(&mut screen).await;
             assert_eq!(&invite.host, &endpoint_id);
@@ -521,13 +497,13 @@ mod tests {
 
             let phone = SecretKey::generate();
             let ok = pair_dial(phone.clone(), at, &invite).await.expect("paired");
-            assert_eq!((ok["tier"].clone(), ok["threads"].clone()), (json!("full"), json!(["r1"])));
+            assert_eq!((ok["tier"].clone(), ok["threads"].clone()), (json!("full"), json!("all")));
             assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), cli).await.unwrap().unwrap(), Ok(()));
             let printed = rest(&mut screen).await;
             assert!(printed.contains("Tyler's iPhone wants to pair.") && printed.contains("Code: ") && printed.contains("Approve? [y/N]"), "{printed}");
-            assert!(printed.contains("Paired Tyler's iPhone with full access"), "{printed}");
+            assert!(printed.contains("Paired Tyler's iPhone. Manage it with `apex-daemon devices`."), "{printed}");
             let device = daemon.devices.get(&phone.public().to_string()).expect("in the registry");
-            assert_eq!((device.label.as_str(), device.tier, device.threads), ("Tyler's iPhone", Tier::Full, Threads::Only(vec!["r1".into()])));
+            assert_eq!(device.label.as_str(), "Tyler's iPhone");
         }
 
         /// What `--json` printed so far, one event per line.
@@ -545,7 +521,7 @@ mod tests {
                 let (_never, interrupted) = tokio::sync::oneshot::channel();
                 let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
                 let reader = std::io::BufReader::new(reader);
-                let (cli, mut screen) = run_cli_with(&socket, PairOptions { tier: Tier::Full, threads: None, json: true }, reader, interrupted).await;
+                let (cli, mut screen) = run_cli_with(&socket, PairOptions { json: true }, reader, interrupted).await;
                 let link = event(&mut screen).await;
                 assert_eq!(link["event"], "link");
                 let invite = Invite::parse_link(link["link"].as_str().unwrap(), crate::devices::now_ms() / 1000).unwrap();
@@ -572,7 +548,7 @@ mod tests {
             let data = crate::devices::tests::folder();
             let (daemon, socket, at, _endpoint_id) = live_daemon(&data.0).await;
             let (_never, interrupted) = tokio::sync::oneshot::channel();
-            let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None, json: false }, "\n", interrupted).await;
+            let (cli, mut screen) = run_cli(&socket, PairOptions { json: false }, "\n", interrupted).await;
             let invite = link_from(&mut screen).await;
             let phone = SecretKey::generate();
             let refused = pair_dial(phone.clone(), at, &invite).await.expect_err("denied");
@@ -586,7 +562,7 @@ mod tests {
             let data = crate::devices::tests::folder();
             let (daemon, socket, at, _endpoint_id) = live_daemon(&data.0).await;
             let (interrupt, interrupted) = tokio::sync::oneshot::channel();
-            let (cli, mut screen) = run_cli(&socket, PairOptions { tier: Tier::Chat, threads: None, json: false }, "y\n", interrupted).await;
+            let (cli, mut screen) = run_cli(&socket, PairOptions { json: false }, "y\n", interrupted).await;
             let invite = link_from(&mut screen).await;
             interrupt.send(()).unwrap();
             assert!(cli.await.unwrap().unwrap_err().contains("cancelled"));
@@ -610,7 +586,7 @@ mod tests {
             tokio::spawn(protocol::serve(off, Trust::Local, input, output));
             let mut client = Client::hello(ours).await.unwrap();
             let mut out = Vec::new();
-            let err = pair(&mut client, &PairOptions { tier: Tier::Chat, threads: None, json: false }, &mut out, std::io::Cursor::new(""), std::future::pending()).await.unwrap_err();
+            let err = pair(&mut client, &PairOptions { json: false }, &mut out, std::io::Cursor::new(""), std::future::pending()).await.unwrap_err();
             assert!(err.contains("apex-daemon serve --remote"), "{err}");
         }
     }

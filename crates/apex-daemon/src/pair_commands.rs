@@ -11,19 +11,13 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::devices::{Threads, Tier};
 use crate::protocol::Daemon;
 use crate::remote_config;
 
 #[derive(schemars::JsonSchema, Debug, serde::Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum PairRequest {
-    PairStart {
-        #[serde(default = "chat")]
-        tier: Tier,
-        #[serde(default)]
-        threads: Option<Threads>,
-    },
+    PairStart {},
     PairWait { invitation: String },
     PairApprove { invitation: String, claim_id: String },
     PairCancel { invitation: String },
@@ -34,10 +28,6 @@ pub enum PairRequest {
         #[serde(default)]
         import: bool,
     },
-}
-
-fn chat() -> Tier {
-    Tier::Chat
 }
 
 /// An `err` answer: the text, and a word naming why.
@@ -134,7 +124,7 @@ mod pairing {
 
     pub async fn run(daemon: Arc<Daemon>, request: PairRequest) -> Result<Value, Refusal> {
         match request {
-            PairRequest::PairStart { tier, threads } => start(daemon, tier, threads.unwrap_or(Threads::ALL)).await,
+            PairRequest::PairStart {} => start(daemon).await,
             PairRequest::PairWait { invitation } => {
                 let inv = id16("invitation", &invitation)?;
                 let claim = daemon.invites.wait(&inv).await.map_err(refused)?;
@@ -174,7 +164,7 @@ mod pairing {
     /// The message when this daemon isn't serving remote access.
     pub const NOT_REMOTE: &str = "Phone connections are off, so no phone could reach this machine. Turn them on in Deck's Settings → Phones, or start the daemon with `apex-daemon serve --remote`, then try again.";
 
-    async fn start(daemon: Arc<Daemon>, tier: Tier, threads: Threads) -> Result<Value, Refusal> {
+    async fn start(daemon: Arc<Daemon>) -> Result<Value, Refusal> {
         // The name lookup can run a process. Do it before taking the
         // controller lock, which also covers turning connections off.
         let name = tokio::task::spawn_blocking(machine_name).await.unwrap_or_else(|_| "This computer".into());
@@ -190,7 +180,7 @@ mod pairing {
                 }
             }
             let host = HostInfo { host: *endpoint.id().as_bytes(), name: name.clone(), relay: crate::remote::RELAY.to_string(), addrs };
-            let invite = daemon.invites.start(host, tier, threads.clone(), now);
+            let invite = daemon.invites.start(host, now);
             json!({ "invitation": B64.encode(invite.inv), "link": invite.to_link(), "expires_at": now.saturating_add(LIFETIME_MS) })
         }).await;
         made.ok_or_else(|| Refusal::new(NOT_REMOTE, "not_remote"))
@@ -221,5 +211,16 @@ mod pairing {
         } else {
             name.chars().take(64).collect()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_start_ignores_old_tier_and_threads_args() {
+        let request: PairRequest = serde_json::from_value(json!({ "cmd": "pair_start", "args": { "tier": "read_only", "threads": ["r1"] } })).unwrap();
+        assert!(matches!(request, PairRequest::PairStart {}));
     }
 }

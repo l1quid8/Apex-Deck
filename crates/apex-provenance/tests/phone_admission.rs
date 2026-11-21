@@ -21,12 +21,8 @@ fn grant_raw(j: &mut Journal, device: Value, revoked: bool) {
     )
     .unwrap();
 }
-fn grant(j: &mut Journal, tier: &str, threads: Value, revoked: bool) {
-    grant_raw(
-        j,
-        json!({"endpointId": endpoint(), "tier": tier, "threads": threads}),
-        revoked,
-    );
+fn grant(j: &mut Journal, revoked: bool) {
+    grant_raw(j, json!({"endpointId": endpoint()}), revoked);
 }
 fn command(name: &str) -> Value {
     let args = match name {
@@ -62,7 +58,7 @@ fn claim(
 #[test]
 fn authenticated_full_phone_can_create_and_approve_without_desktop_receipt() {
     let mut j = Journal::new();
-    grant(&mut j, "full", json!("all"), false);
+    grant(&mut j, false);
     for (id, name) in ["room_create", "room_decide", "room_answer"]
         .iter()
         .enumerate()
@@ -77,9 +73,9 @@ fn authenticated_full_phone_can_create_and_approve_without_desktop_receipt() {
 fn admission_requires_pinned_daemon_and_protected_device_grant() {
     let mut j = Journal::new();
     assert!(claim(&mut j, 1, command("room_create"), true, false).is_err());
-    grant(&mut j, "full", json!("all"), false);
+    grant(&mut j, false);
     assert!(claim(&mut j, 1, command("room_create"), false, false).is_err());
-    for name in ["provenance_execute", "devices_add", "devices_set_tier", "devices_set_threads", "pair_approve", "legacy_import_apply"] {
+    for name in ["provenance_execute", "devices_add", "pair_approve", "legacy_import_apply"] {
         assert!(claim(&mut j, 1, command(name), true, false).is_err(), "{name} acquired phone authority");
     }
 }
@@ -115,7 +111,7 @@ fn admission_still_checks_grant_revocation_and_allowlist() {
 #[test]
 fn consumed_phone_identity_cannot_replay_or_change_content() {
     let mut j = Journal::new();
-    grant(&mut j, "full", json!("all"), false);
+    grant(&mut j, false);
     claim(&mut j, 1, command("room_create"), true, false).unwrap();
     assert!(claim(&mut j, 1, command("room_create"), true, false).is_err());
     assert!(claim(
@@ -133,7 +129,7 @@ fn consumed_phone_claim_survives_signed_checkpoint_and_reload() {
     use ring::signature::KeyPair;
     let key = apex_provenance::new_key().unwrap();
     let mut j = Journal::new();
-    grant(&mut j, "full", json!("all"), false);
+    grant(&mut j, false);
     claim(&mut j, 9, command("room_create"), true, false).unwrap();
     j.compact(&key).unwrap();
     let bytes = serde_json::to_vec(&j).unwrap();

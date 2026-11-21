@@ -18,12 +18,12 @@ fn the_cli_manages_devices_through_a_running_daemon() {
     let data = temp_dir();
     let _served = Served::start(&data.0, &[]);
     let phone = "ab".repeat(32);
-    let (ok, added, stderr) = devices(&data.0, &["add", &phone, "--label", "Phone", "--tier", "chat"]);
+    let (ok, added, stderr) = devices(&data.0, &["add", &phone, "--label", "Phone"]);
     assert!(ok, "{stderr}");
-    assert_eq!((added["endpointId"].clone(), added["tier"].clone(), added["threads"].clone()), (json!(phone), json!("chat"), json!("all")));
-    assert!(devices(&data.0, &["tier", &phone, "full"]).0);
+    assert_eq!((added["endpointId"].clone(), added["label"].clone()), (json!(phone), json!("Phone")));
+    assert!(added.get("tier").is_none() && added.get("threads").is_none(), "{added}");
     let (_, listed, _) = devices(&data.0, &["list"]);
-    assert_eq!(listed["devices"][0]["tier"], "full");
+    assert_eq!(listed["devices"][0]["endpointId"], phone);
     assert!(devices(&data.0, &["revoke", &phone]).0);
     let (ok, _, stderr) = devices(&data.0, &["add", &phone, "--label", "Phone"]);
     assert!(!ok && stderr.contains("revoked"), "{stderr}");

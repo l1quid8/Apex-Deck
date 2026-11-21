@@ -17,7 +17,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use crate::devices::{ApproveError, Device, Devices, Threads, Tier};
+use crate::devices::{ApproveError, Device, Devices};
 use crate::pairing::{close, Invite};
 
 /// How long an invitation lives after `start`.
@@ -126,8 +126,6 @@ struct Invitation {
     secret: [u8; 32],
     /// This machine's name, as the phone is told it.
     name: String,
-    tier: Tier,
-    threads: Threads,
     /// On the callers' clock (ms), checked against the `now` they pass.
     expires_at: u64,
     /// The same moment on the monotonic clock, for waiters.
@@ -253,15 +251,15 @@ impl Invites {
     }
 
     /// A new invitation, live for `LIFETIME_MS` from `now` (ms since the
-    /// epoch). An approval adds the phone with `tier` and `threads`.
-    pub fn start(&self, host: HostInfo, tier: Tier, threads: Threads, now: u64) -> Invite {
+    /// epoch).
+    pub fn start(&self, host: HostInfo, now: u64) -> Invite {
         let (inv, secret) = (random::<16>(), random::<32>());
         let expires_at = now.saturating_add(LIFETIME_MS);
         let mut invitations = self.invitations.lock().unwrap();
         // Forget ones long over, so the map stays small.
         invitations.retain(|_, i| i.live() || now < i.expires_at.saturating_add(LIFETIME_MS));
         let deadline = Instant::now() + Duration::from_millis(LIFETIME_MS);
-        invitations.insert(inv, Invitation { secret, name: host.name.clone(), tier, threads, expires_at, deadline, bad_proofs: 0, state: State::Open });
+        invitations.insert(inv, Invitation { secret, name: host.name.clone(), expires_at, deadline, bad_proofs: 0, state: State::Open });
         Invite { v: 1, host: host.host, name: host.name, relay: host.relay, addrs: host.addrs, inv, secret, exp: expires_at / 1000, os: std::env::consts::OS.into() }
     }
 
@@ -390,7 +388,7 @@ impl Invites {
             self.notify();
             return Err(PairError::PhoneLeft);
         }
-        let result = devices.approve_pairing(&claim.phone_id, &claim.label, invitation.tier, invitation.threads.clone(), claim.revision);
+        let result = devices.approve_pairing(&claim.phone_id, &claim.label, claim.revision);
         let result = match result {
             Ok(device) => {
                 invitation.state = State::Approved { claim_id: *claim_id, device: device.clone() };
@@ -465,7 +463,6 @@ impl Invites {
 mod tests {
     use super::*;
     use crate::devices::tests::{folder, id, Folder};
-    use crate::devices::Tier;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     const T0: u64 = 1_000_000_000;
@@ -526,7 +523,7 @@ mod tests {
 
     impl Setup {
         fn start(&self) -> InviteId {
-            self.invites.start(host(), Tier::Chat, Threads::ALL, T0).inv
+            self.invites.start(host(), T0).inv
         }
         fn claim(&self, inv: &InviteId, phone: &str, proof_ok: bool, conn: &Arc<FakeConn>) -> Result<Claim, PairError> {
             self.invites.claim(&self.devices, inv, phone, "Tyler's iPhone", "123456".into(), proof_ok, conn.clone(), T0 + 1)
@@ -546,8 +543,8 @@ mod tests {
     #[test]
     fn start_returns_a_full_invite() {
         let s = setup();
-        let a = s.invites.start(host(), Tier::Full, Threads::ALL, T0);
-        let b = s.invites.start(host(), Tier::Full, Threads::ALL, T0);
+        let a = s.invites.start(host(), T0);
+        let b = s.invites.start(host(), T0);
         assert_eq!((a.v, a.host, a.name.as_str(), a.relay.as_str()), (1, [0xab; 32], "Tyler's Mac Studio", crate::pairing::RELAY));
         assert_eq!(a.addrs, vec!["192.168.1.2:4000".to_string()]);
         assert_eq!(a.exp, (T0 + MIN5) / 1000);
@@ -592,7 +589,7 @@ mod tests {
     #[test]
     fn revoked_phone_needs_explicit_approval() {
         let s = setup();
-        s.devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        s.devices.add(&id(1), "Phone", false).unwrap();
         s.devices.revoke(&id(1)).unwrap();
         let revoked_at = s.devices.list().unwrap().revoked[0].revoked_at;
         let inv = s.start();
@@ -601,7 +598,7 @@ mod tests {
         assert_eq!(claim.revision, 2);
         assert_eq!(s.devices.get(&id(1)), None, "a claim lets nothing in");
         let device = s.approve(&inv, &claim).unwrap();
-        assert_eq!((device.tier, device.label.as_str()), (Tier::Chat, "Tyler's iPhone"));
+        assert_eq!(device.label.as_str(), "Tyler's iPhone");
         assert_eq!(s.devices.get(&id(1)), Some(device));
         assert!(s.on_disk().revoked.is_empty());
         assert_eq!(s.paired_on_disk(&id(1)), 1);
@@ -802,7 +799,7 @@ mod tests {
     #[test]
     fn stale_approval_never_restores() {
         let s = setup();
-        s.devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        s.devices.add(&id(1), "Phone", false).unwrap();
         s.devices.revoke(&id(1)).unwrap();
         let tombstone = s.devices.list().unwrap().revoked;
         let old = s.start();
@@ -820,13 +817,13 @@ mod tests {
     fn revision_survives_identical_tombstone() {
         let s = setup();
         crate::devices::freeze_clock(Some(T0));
-        s.devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        s.devices.add(&id(1), "Phone", false).unwrap();
         s.devices.revoke(&id(1)).unwrap();
         let tombstone = s.devices.list().unwrap().revoked;
         let inv = s.start();
         let claim = s.claim(&inv, &id(1), true, &conn()).unwrap();
         assert_eq!(claim.previously_revoked_at, Some(T0));
-        s.devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, true).unwrap();
+        s.devices.add(&id(1), "Phone", true).unwrap();
         s.devices.revoke(&id(1)).unwrap();
         assert_eq!(s.devices.list().unwrap().revoked, tombstone, "the tombstone looks exactly the same");
         assert_eq!(s.approve(&inv, &claim), Err(PairError::Changed));
@@ -837,9 +834,9 @@ mod tests {
         let inv = s.start();
         let claim = s.claim(&inv, &id(2), true, &conn()).unwrap();
         assert_eq!(claim.previously_revoked_at, None);
-        s.devices.add(&id(2), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        s.devices.add(&id(2), "Phone", false).unwrap();
         s.devices.revoke(&id(2)).unwrap();
-        s.devices.add(&id(2), "Phone", Tier::Chat, Threads::ALL, true).unwrap();
+        s.devices.add(&id(2), "Phone", true).unwrap();
         s.devices.revoke(&id(2)).unwrap();
         assert_eq!(s.approve(&inv, &claim), Err(PairError::Changed));
         assert_eq!(s.devices.get(&id(2)), None);
@@ -1042,7 +1039,7 @@ mod tests {
             let (inv, claim, _fake) = claimed(&s, &id(1));
             assert_eq!((claim.revision, claim.previously_revoked_at), (2, Some(5)));
             let devices = s.devices.clone();
-            let (approved, restored) = race(&s, run, inv, &claim, move || devices.add(&id(1), "Phone", Tier::ReadOnly, Threads::ALL, true)).await;
+            let (approved, restored) = race(&s, run, inv, &claim, move || devices.add(&id(1), "Phone", true)).await;
             assert_ne!(approved.is_ok(), restored.is_ok(), "exactly one succeeds: {approved:?} {restored:?}");
             match &approved {
                 Ok(_) => assert!(restored.as_ref().unwrap_err().contains("already paired")),
@@ -1064,7 +1061,7 @@ mod tests {
             let devices = s.devices.clone();
             let (approved, ()) = race(&s, run, inv, &claim, move || {
                 devices.revoke(&id(1)).unwrap();
-                devices.add(&id(1), "Phone", Tier::ReadOnly, Threads::ALL, true).unwrap();
+                devices.add(&id(1), "Phone", true).unwrap();
             })
             .await;
             let last = s.on_disk().revisions[&id(1)];

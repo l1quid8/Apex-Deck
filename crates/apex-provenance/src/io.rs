@@ -446,7 +446,7 @@ mod phone_claim_tests {
         let endpoint = "ab".repeat(32); let session = "cd".repeat(16); let nonce = "ef".repeat(16);
         let command = json!({"cmd":"room_create","args":{"id":"r","participants":[],"options":{"policy":"mention","max_bot_hops":0}}});
         let mut journal = crate::Journal::new();
-        journal.write_document(uid,folder,"devices.json",0,json!({"version":1,"devices":[{"endpointId":endpoint,"tier":"full","threads":"all"}],"revoked":[]}),true).unwrap();
+        journal.write_document(uid,folder,"devices.json",0,json!({"version":1,"devices":[{"endpointId":endpoint}],"revoked":[]}),true).unwrap();
         let ack = journal.claim_device_command(uid,folder,&endpoint,&session,7,command.clone(),false,&nonce,true).unwrap();
         let response = serde_json::to_value(crate::sign(&key,&ack).unwrap()).unwrap();
         let expected = crate::phone_command(&endpoint,&session,7,command).unwrap();

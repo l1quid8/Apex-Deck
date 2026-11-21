@@ -181,8 +181,8 @@ test('only revised startup checks request the versioned content-bound submission
 test('device grants and pairing approval bind exact installed UI receipts', async()=>{
   const {publicKey,privateKey}=generateKeyPairSync('ed25519');
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
-  for(const cmd of ['devices_add','devices_set_tier','devices_set_threads','pair_approve']) {
-    const frame={id:1,cmd,args:{id:'phone',tier:'full'}};
+  for(const cmd of ['devices_add','pair_approve']) {
+    const frame={id:1,cmd,args:{id:'phone',label:'Phone'}};
     let issued;
     const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
       issued=request.command;
@@ -194,7 +194,7 @@ test('device grants and pairing approval bind exact installed UI receipts', asyn
 });
 
 test('remote device management reaches the host while local Mac grants require attestation', () => {
-  for (const cmd of ['devices_add', 'devices_set_tier', 'devices_set_threads', 'pair_approve']) {
+  for (const cmd of ['devices_add', 'pair_approve']) {
     assert.equal(mod.needsAttestation(cmd, false), true, `${cmd} on this Mac`);
     assert.equal(mod.needsAttestation(cmd, true), false, `${cmd} on a remote host`);
   }

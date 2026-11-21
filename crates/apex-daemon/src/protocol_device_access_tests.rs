@@ -36,7 +36,7 @@ mod device_access_updates {
     async fn linux_device_rejects_missing_stale_or_wrong_folder_bindings_before_saving() {
         for case in ["missing-old", "stale-old", "missing-folder", "wrong-folder"] {
             let (daemon, _data, bot, folder) = fixture(true, Ok(()));
-            let phone = add(&daemon, 70, Tier::Full, Threads::ALL);
+            let phone = add(&daemon, 70);
             let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
             assert!(client.hello().await.get("ok").is_some());
             let old = if case == "missing-old" { None } else if case == "stale-old" { Some("edits") } else { Some("read") };
@@ -51,7 +51,7 @@ mod device_access_updates {
     #[tokio::test]
     async fn linux_device_raise_refuses_failed_confinement_without_saving() {
         let (daemon, _data, bot, folder) = fixture(true, Err("sandbox probe failed".into()));
-        let phone = add(&daemon, 71, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 71);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         let reply = client.hello().await;
         assert!(reply["err"].as_str().is_some_and(|e| e.contains("sandbox probe failed")), "{reply}");
@@ -62,7 +62,7 @@ mod device_access_updates {
     #[tokio::test]
     async fn linux_device_voice_is_refused_when_confinement_failed() {
         let (daemon, _data, _bot, _folder) = fixture(true, Err("sandbox probe failed".into()));
-        let phone = add(&daemon, 74, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 74);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         let hello = client.hello().await;
         assert!(hello["err"].as_str().is_some_and(|e| e.contains("sandbox probe failed")), "a failed probe must refuse device admission before voice or events: {hello}");
@@ -72,7 +72,7 @@ mod device_access_updates {
     #[tokio::test]
     async fn linux_device_can_lower_access() {
         let (daemon, _data, bot, folder) = fixture(true, Ok(()));
-        let phone = add(&daemon, 75, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 75);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         client.send(update(&bot, Some("read"), Some(&folder))).await;
@@ -130,7 +130,7 @@ mod device_access_updates {
     #[tokio::test]
     async fn current_confined_linux_device_can_raise_with_bound_old_level_and_folder() {
         let (daemon, _data, bot, folder) = fixture(true, Ok(()));
-        let phone = add(&daemon, 72, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 72);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         client.send(update(&bot, Some("read"), Some(&folder))).await;
@@ -150,7 +150,7 @@ mod device_access_updates {
     async fn mac_windows_device_updates_do_not_require_a_linux_trust_record() {
         let (daemon, data, bot, _folder) = fixture(false, Ok(()));
         assert!(!data.0.join(crate::trust_host::FILE).exists());
-        let phone = add(&daemon, 73, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 73);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         client.send(update(&bot, None, None)).await;
@@ -162,7 +162,7 @@ mod device_access_updates {
     #[tokio::test]
     async fn concurrent_device_raises_commit_only_one_matching_old_level() {
         let (daemon, _data, bot, folder) = fixture(true, Ok(()));
-        let phone = add(&daemon, 77, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 77);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         client.send(update(&bot, Some("read"), Some(&folder))).await;

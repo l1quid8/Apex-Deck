@@ -29,7 +29,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
 use crate::authority;
-use crate::devices::{Device, Devices, Threads, Tier};
+use crate::devices::{Device, Devices};
 use crate::gateway_keys::GatewayKeys;
 
 /// The protocol version `hello` must name.
@@ -73,11 +73,16 @@ pub struct Welcome {
     pub addrs: Option<Vec<String>>,
 }
 
-/// A paired device's current grant, as the welcome states it.
+/// Wire tolerance: installed iPhone builds hide the Tasks tab without this.
+/// Delete once every iPhone is on a TestFlight build containing Task 4.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct DeviceAccess {
-    pub tier: crate::devices::Tier,
-    pub threads: crate::devices::Threads,
+    pub tier: &'static str,
+    pub threads: &'static str,
+}
+
+impl DeviceAccess {
+    pub const FULL: DeviceAccess = DeviceAccess { tier: "full", threads: "all" };
 }
 
 /// A frame longer than this closes the connection.
@@ -484,7 +489,9 @@ where
         host_id: daemon.host_id.clone(), boot_id: daemon.boot_id.clone(), protocol: PROTOCOL, last_seq: written, resumed,
         version: env!("CARGO_PKG_VERSION"), capabilities,
         build_commit: crate::build_info::commit(), build_dirty: crate::build_info::dirty(),
-        access: device.as_ref().map(|d| DeviceAccess { tier: d.tier, threads: d.threads.clone() }),
+        // Wire tolerance: installed iPhone builds hide the Tasks tab without `"access": {"tier":"full","threads":"all"}`.
+        // Delete once every iPhone is on a TestFlight build containing Task 4.
+        access: device.as_ref().map(|_| DeviceAccess::FULL),
         addrs: device.is_some().then(|| crate::remote_config::advertised(&daemon.data)),
     };
     let welcome = json!({ "id": hello.id, "ok": welcome });
@@ -974,7 +981,7 @@ fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, 
 }
 
 fn management_grant(name: &str) -> bool {
-    matches!(name, "devices_add" | "devices_set_tier" | "devices_set_threads" | "pair_approve")
+    matches!(name, "devices_add" | "pair_approve")
 }
 
 async fn run_management_receipt(daemon: Arc<Daemon>, receipt: apex_provenance::Signed) -> Result<Value, crate::pair_commands::Refusal> {
@@ -1018,11 +1025,7 @@ pub enum DevicesRequest {
     #[serde(rename = "devices_list")]
     List {},
     #[serde(rename = "devices_add")]
-    Add { id: String, label: String, tier: Tier, threads: Option<Threads>, #[serde(default)] restore: bool },
-    #[serde(rename = "devices_set_tier")]
-    SetTier { id: String, tier: Tier },
-    #[serde(rename = "devices_set_threads")]
-    SetThreads { id: String, threads: Threads },
+    Add { id: String, label: String, #[serde(default)] restore: bool },
     #[serde(rename = "devices_revoke")]
     Revoke { id: String },
 }
@@ -1037,9 +1040,7 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
     let value = |v: Result<Device, String>| v.and_then(|d| serde_json::to_value(d).map_err(|e| e.to_string()));
     match request {
         DevicesRequest::List {} => serde_json::to_value(devices.list()?).map_err(|e| e.to_string()),
-        DevicesRequest::Add { id, label, tier, threads, restore } => value(devices.add(&id, &label, tier, threads.unwrap_or(Threads::ALL), restore)),
-        DevicesRequest::SetTier { id, tier } => value(devices.set_tier(&id, tier)),
-        DevicesRequest::SetThreads { id, threads } => value(devices.set_threads(&id, threads)),
+        DevicesRequest::Add { id, label, restore } => value(devices.add(&id, &label, restore)),
         DevicesRequest::Revoke { id } => devices.revoke(&id).map(|()| Value::Null),
     }
 }
@@ -1381,9 +1382,9 @@ mod tests {
         let (daemon, _data) = daemon();
         let now = crate::devices::now_ms();
         let host = HostInfo { host: [1; 32], name: "Mac".into(), relay: "".into(), addrs: vec![] };
-        let expired = daemon.invites.start(host.clone(), Tier::Chat, Threads::ALL, now);
+        let expired = daemon.invites.start(host.clone(), now);
         assert!(daemon.invites.secret(&expired.inv, now + LIFETIME_MS).is_err());
-        let cancelled = daemon.invites.start(host, Tier::Chat, Threads::ALL, now);
+        let cancelled = daemon.invites.start(host, now);
         daemon.invites.cancel(&cancelled.inv).unwrap();
         for (invitation, expected) in [
             ("invalid".into(), "bad_request"), ("AAAAAAAAAAAAAAAAAAAAAA".into(), "unknown"),
@@ -1754,7 +1755,7 @@ mod tests {
     #[tokio::test]
     async fn remote_input_closed_is_refused_without_ending_the_session() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let mut token = connect_to(&daemon, Trust::Token);
         token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
         token.next().await.unwrap();
@@ -1773,8 +1774,8 @@ mod tests {
     use crate::devices::tests::id;
     use apex_host::events::HostEvent;
 
-    fn add(daemon: &Daemon, n: u8, tier: Tier, threads: Threads) -> String {
-        daemon.devices.add(&id(n), "Phone", tier, threads, false).unwrap();
+    fn add(daemon: &Daemon, n: u8) -> String {
+        daemon.devices.add(&id(n), "Phone", false).unwrap();
         id(n)
     }
 
@@ -1820,7 +1821,7 @@ mod tests {
             Arc::get_mut(&mut daemon).unwrap().linux_device_policy = Some(true);
             daemon.confinement.set(Ok(())).unwrap();
             crate::trust_host::run_no_reboot(&daemon.data, true).unwrap();
-            let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+            let phone = add(&daemon, 1);
             let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
             client.hello().await;
             match reset {
@@ -1850,7 +1851,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn gateway_keys_are_issued_only_from_this_machine() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let issue_frame = json!({ "id": 1, "cmd": "gateway_keys_issue", "args": { "label": "friend" } });
 
         let mut token = connect_to(&daemon, Trust::Token);
@@ -1895,8 +1896,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn devices_are_managed_only_from_this_machine() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
-        let add_frame = json!({ "id": 1, "cmd": "devices_add", "args": { "id": id(2), "label": "Tablet", "tier": "chat" } });
+        let phone = add(&daemon, 1);
+        let add_frame = json!({ "id": 1, "cmd": "devices_add", "args": { "id": id(2), "label": "Tablet" } });
 
         let mut token = connect_to(&daemon, Trust::Token);
         token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
@@ -1904,7 +1905,7 @@ mod tests {
         let (mut device, _session) = connect_device(&daemon, &phone, 1 << 16);
         device.hello().await;
         for client in [&mut token, &mut device] {
-            for frame in [add_frame.clone(), json!({ "id": 1, "cmd": "devices_list" }), json!({ "id": 1, "cmd": "devices_set_tier", "args": { "id": phone, "tier": "full" } }), json!({ "id": 1, "cmd": "devices_revoke", "args": { "id": phone } })] {
+            for frame in [add_frame.clone(), json!({ "id": 1, "cmd": "devices_list" }), json!({ "id": 1, "cmd": "devices_revoke", "args": { "id": phone } })] {
                 client.send(frame).await;
                 assert_eq!(client.next().await.unwrap(), json!({ "id": 1, "err": "not allowed from a remote connection" }));
             }
@@ -1914,16 +1915,21 @@ mod tests {
         let mut local = connect_to(&daemon, Trust::Local);
         local.hello().await;
         local.send(add_frame).await;
-        assert_eq!(local.next().await.unwrap()["ok"]["tier"], "chat");
-        local.send(json!({ "id": 2, "cmd": "devices_set_tier", "args": { "id": id(2), "tier": "read_only" } })).await;
-        assert_eq!(local.next().await.unwrap()["ok"]["tier"], "read_only");
+        assert_eq!(local.next().await.unwrap()["ok"]["label"], "Tablet");
         local.send(json!({ "id": 3, "cmd": "devices_revoke", "args": { "id": id(2) } })).await;
         assert_eq!(local.next().await.unwrap(), json!({ "id": 3, "ok": null }));
         local.send(json!({ "id": 4, "cmd": "devices_list" })).await;
         let list = local.next().await.unwrap();
         assert_eq!(list["ok"]["revoked"][0]["endpointId"], id(2));
-        local.send(json!({ "id": 5, "cmd": "devices_set_tier", "args": { "id": id(2), "tier": "superuser" } })).await;
-        assert!(local.next().await.unwrap()["err"].is_string());
+    }
+
+    #[test]
+    fn removed_device_commands_are_unknown() {
+        let data = crate::devices::tests::folder();
+        let devices = Devices::open(&data.0);
+        for cmd in ["devices_set_tier", "devices_set_threads"] {
+            assert!(manage_json(&devices, json!({ "cmd": cmd, "args": { "id": id(1), "tier": "full", "threads": "all" } })).is_err());
+        }
     }
 
     /// Test 3.
@@ -1935,7 +1941,7 @@ mod tests {
         assert_eq!(stranger.next().await, None);
         assert_eq!(session.await.unwrap(), Ended::Refused);
 
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         daemon.devices.revoke(&phone).unwrap();
         let (mut revoked, session) = connect_device(&daemon, &phone, 1 << 16);
         assert!(revoked.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
@@ -1946,7 +1952,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn revoking_a_device_closes_its_session_at_once() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         daemon.host.events().emit(pty("before"));
@@ -1956,7 +1962,7 @@ mod tests {
         daemon.host.events().emit(pty("after"));
         assert_eq!(frames_for(&mut client, Duration::from_millis(200)).await, Vec::<Value>::new());
 
-        let tablet = add(&daemon, 2, Tier::Full, Threads::ALL);
+        let tablet = add(&daemon, 2);
         let (_silent, session) = connect_device(&daemon, &tablet, 1 << 16);
         tokio::time::sleep(Duration::from_millis(50)).await;
         daemon.devices.revoke(&tablet).unwrap();
@@ -1967,7 +1973,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn revoking_a_device_that_stopped_reading_still_closes_it() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 256);
         client.hello().await;
         // Far more than the 256-byte pipe holds; nothing reads it.
@@ -1985,9 +1991,9 @@ mod tests {
     #[tokio::test]
     async fn a_revoke_missed_by_a_lagged_receiver_still_closes_the_session() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         for n in 10..(10 + crate::devices::REVOKE_CAPACITY as u8 + 4) {
-            add(&daemon, n, Tier::Chat, Threads::ALL);
+            add(&daemon, n);
         }
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
@@ -2006,7 +2012,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_revoke_between_connecting_and_hello_closes_the_session() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         tokio::time::sleep(Duration::from_millis(50)).await;
         daemon.devices.revoke(&phone).unwrap();
@@ -2020,7 +2026,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_formerly_limited_read_only_device_posts_anywhere_and_lists_terminals() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::ReadOnly, Threads::Only(vec!["a".into()]));
+        let phone = add(&daemon, 1);
         let mut local = connect_to(&daemon, Trust::Local);
         local.hello().await;
         let session = json!({ "version": 1, "workspaces": [{ "id": "w1" }, { "id": "w2" }], "panes": [
@@ -2045,7 +2051,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reply_under_way_is_dropped_when_the_device_is_revoked() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let guard = Some(Guard {
             linux_trust_data: daemon.uses_linux_device_policy().then(|| daemon.data.clone()),
             devices: Arc::clone(&daemon.devices),
@@ -2057,7 +2063,7 @@ mod tests {
         assert!(matches!(reply_frame(&guard, reply), Err(Stop::Revoked)));
 
         // Also check over a live session while a reply is in flight.
-        let phone2 = add(&daemon, 2, Tier::Full, Threads::ALL);
+        let phone2 = add(&daemon, 2);
         let (mut client, session) = connect_device(&daemon, &phone2, 1 << 16);
         client.hello().await;
         client.send(json!({ "id": 1, "cmd": "agents_detect" })).await;
@@ -2071,9 +2077,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_revoked_device_stays_out_after_a_restart() {
         let (daemon, data) = daemon();
-        let phone = add(&daemon, 1, Tier::Chat, Threads::ALL);
-        add(&daemon, 2, Tier::ReadOnly, Threads::ALL);
-        daemon.devices.set_tier(&id(2), Tier::Full).unwrap();
+        let phone = add(&daemon, 1);
+        add(&daemon, 2);
         daemon.devices.revoke(&phone).unwrap();
         let restarted = Arc::new(Daemon {
             voice: crate::voice::VoiceServer::new(&data.0),
@@ -2088,13 +2093,13 @@ mod tests {
         let (mut client, session) = connect_device(&restarted, &phone, 1 << 16);
         assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
         assert_eq!(session.await.unwrap(), Ended::Refused);
-        assert_eq!(restarted.devices.get(&id(2)).unwrap().tier, Tier::Full);
+        assert!(restarted.devices.get(&id(2)).is_some());
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_device_never_gets_quit_requests_or_local_only_commands() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         daemon.host.events().emit(HostEvent::QuitRequested(7));
@@ -2138,7 +2143,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pairing_commands_are_refused_from_a_token_or_a_device() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let mut token = connect_to(&daemon, Trust::Token);
         token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
         token.next().await.unwrap();
@@ -2154,22 +2159,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_devices_hello_carries_its_access_and_the_advertised_addresses() {
+    async fn welcome_states_full_access_for_older_phone_builds() {
         let (daemon, _data) = daemon();
         std::fs::create_dir_all(&daemon.data).unwrap();
         crate::remote_config::set_advertised(&daemon.data, &["myhome.ddns.net:41641".into()]).unwrap();
-        let phone = add(&daemon, 1, Tier::Chat, Threads::Only(vec!["a".into()]));
+        let phone = add(&daemon, 1);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         let ok = client.hello().await["ok"].clone();
-        assert_eq!(ok["access"], json!({ "tier": "chat", "threads": ["a"] }));
+        assert_eq!(ok["access"], json!({ "tier": "full", "threads": "all" }));
         assert_eq!(ok["addrs"], json!(["myhome.ddns.net:41641"]));
         assert_eq!(ok["host_id"], "host-1");
-
-        // The current access, not the one it paired with.
-        daemon.devices.set_tier(&phone, Tier::Full).unwrap();
-        daemon.devices.set_threads(&phone, Threads::ALL).unwrap();
-        let (mut again, _session) = connect_device(&daemon, &phone, 1 << 16);
-        assert_eq!(again.hello().await["ok"]["access"], json!({ "tier": "full", "threads": "all" }));
 
         // Nobody else gets either.
         let mut local = connect_to(&daemon, Trust::Local);
@@ -2231,8 +2230,6 @@ mod tests {
         assert_eq!((unknown["reason"].clone(), unknown["err"].clone()), (json!("unknown"), json!("There's no such pairing code. Start again.")));
         local.send(json!({ "id": 2, "cmd": "pair_cancel", "args": { "invitation": "not base64!" } })).await;
         assert_eq!(local.until_reply(2).await.pop().unwrap()["reason"], "bad_request");
-        local.send(json!({ "id": 3, "cmd": "pair_start", "args": { "tier": "admin" } })).await;
-        assert_eq!(local.until_reply(3).await.pop().unwrap()["reason"], "bad_request");
     }
     #[tokio::test]
     async fn voice_frames_stay_on_the_owning_session_and_out_of_events() {
@@ -2294,7 +2291,7 @@ mod tests {
         let (running, task) = crate::voice::test_helper::fake_helper("test").await;
         Arc::get_mut(&mut daemon).unwrap().voice =
             crate::voice::test_helper::server_with_helper(&data.0, running);
-        let phone = add(&daemon, 1, Tier::ReadOnly, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut c, _) = connect_device(&daemon, &phone, 1 << 16);
         c.hello().await;
         c.send(json!({"id":1,"cmd":"voice_server_status"})).await;
@@ -2311,7 +2308,7 @@ mod tests {
         let (running, task) = crate::voice::test_helper::fake_helper("test").await;
         Arc::get_mut(&mut daemon).unwrap().voice =
             crate::voice::test_helper::server_with_helper(&data.0, running);
-        let phone = add(&daemon, 1, Tier::Chat, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut a, _) = connect_device(&daemon, &phone, 1 << 16);
         a.hello().await;
         a.send(json!({"id":1,"cmd":"voice_server_open","args":{"room":"r"}}))
@@ -2337,7 +2334,7 @@ mod tests {
         let (running, task) = crate::voice::test_helper::fake_helper("test").await;
         Arc::get_mut(&mut daemon).unwrap().voice =
             crate::voice::test_helper::server_with_helper(&data.0, running);
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         client
@@ -2355,7 +2352,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reply_too_long_for_a_device_is_refused_and_the_session_goes_on() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let mut local = connect_to(&daemon, Trust::Local);
         local.hello().await;
         let pad = "x".repeat(DEVICE_MAX_FRAME);
@@ -2381,7 +2378,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn an_event_too_long_for_a_device_is_skipped() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut device, session) = connect_device(&daemon, &phone, 1 << 16);
         device.hello().await;
         daemon.host.events().emit(pty(&"x".repeat(DEVICE_MAX_FRAME)));

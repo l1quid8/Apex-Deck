@@ -383,8 +383,10 @@ pub async fn pair_serve(daemon: Arc<Daemon>, connection: Connection, host: iroh:
         }
     };
     match outcome {
-        Ok(device) => {
-            let ok = json!({ "ok": { "host_id": daemon.host_id, "host_name": host_name, "tier": device.tier, "threads": device.threads } });
+        Ok(_device) => {
+            // Wire tolerance: installed iPhone builds label a missing tier "can only read".
+            // Delete once every iPhone is on a TestFlight build containing Task 4.
+            let ok = json!({ "ok": { "host_id": daemon.host_id, "host_name": host_name, "tier": "full", "threads": "all" } });
             pair_end(&mut output, &connection, ok, close::BYE, b"paired").await;
         }
         Err(e) => {
@@ -525,7 +527,7 @@ pub mod pair_phone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::{Devices, Threads, Tier};
+    use crate::devices::Devices;
     use apex_host::HostPaths;
     use futures::{SinkExt, StreamExt};
     use iroh::endpoint::{ConnectionError, VarInt};
@@ -587,7 +589,7 @@ mod tests {
         let data = crate::devices::tests::folder();
         let (daemon, server) = daemon(&data.0).await;
         let phone_key = SecretKey::generate();
-        daemon.devices.add(&phone_key.public().to_string(), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        daemon.devices.add(&phone_key.public().to_string(), "Phone", false).unwrap();
 
         let mut phone = Phone::dial(phone_key, &server).await;
         let hello = phone.call(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1 } })).await.unwrap();
@@ -605,7 +607,7 @@ mod tests {
         let (daemon, server) = daemon(&data.0).await;
         let phone_key = SecretKey::generate();
         let phone_id = phone_key.public().to_string();
-        daemon.devices.add(&phone_id, "Phone", Tier::Full, Threads::ALL, false).unwrap();
+        daemon.devices.add(&phone_id, "Phone", false).unwrap();
         let mut phone = Phone::dial(phone_key, &server).await;
         phone.call(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1 } })).await.unwrap();
         daemon.devices.revoke(&phone_id).unwrap();
@@ -655,7 +657,7 @@ mod tests {
     /// An invitation naming `host` (normally the server's own ID).
     fn invite_for(daemon: &Daemon, host: iroh::EndpointId) -> Invite {
         let info = HostInfo { host: *host.as_bytes(), name: "Test Mac".into(), relay: crate::pairing::RELAY.into(), addrs: vec![] };
-        daemon.invites.start(info, Tier::Chat, Threads::ALL, now_ms())
+        daemon.invites.start(info, now_ms())
     }
 
     /// Approve the claim now, off the async workers (the registry write
@@ -678,7 +680,7 @@ mod tests {
             tokio::spawn(async move { approve(&daemon, &invite).await })
         };
         let ok = pair_dial(key.clone(), socket(&server), &invite).await.unwrap();
-        assert_eq!(ok, json!({ "host_id": "host-1", "host_name": "Test Mac", "tier": "chat", "threads": "all" }));
+        assert_eq!(ok, json!({ "host_id": "host-1", "host_name": "Test Mac", "tier": "full", "threads": "all" }));
         let device = approver.await.unwrap().unwrap();
         assert_eq!(device.endpoint_id, key.public().to_string());
         assert_eq!(device.label, "Tyler's iPhone");
@@ -868,7 +870,7 @@ mod tests {
         crate::trust_host::run_no_reboot(&data.0, true).unwrap();
         let (daemon, server) = daemon_with_policy(&data.0, true).await;
         let key = SecretKey::generate();
-        daemon.devices.add(&key.public().to_string(), "Phone", Tier::Full, Threads::ALL, false).unwrap();
+        daemon.devices.add(&key.public().to_string(), "Phone", false).unwrap();
         let mut phone = Phone::dial(key, &server).await;
         assert!(phone.call(json!({"id":0,"cmd":"hello","args":{"protocol":1}})).await.unwrap().get("ok").is_some());
         crate::trust_host::run_no_reboot(&data.0, true).unwrap();
@@ -887,7 +889,7 @@ mod tests {
         let (daemon, server) = daemon_with_policy(&data.0, true).await;
         let pre_key = SecretKey::generate();
         let pre_id = pre_key.public().to_string();
-        daemon.devices.add(&pre_id, "OldPhone", Tier::Full, Threads::ALL, false).unwrap();
+        daemon.devices.add(&pre_id, "OldPhone", false).unwrap();
         let pre_dev = daemon.devices.get(&pre_id).unwrap();
         assert!(pre_dev.confined_epoch.is_none(), "before trust, device has no epoch");
         // Now trust host
@@ -904,7 +906,7 @@ mod tests {
         // Device with current epoch should succeed (added after trust)
         let cur_key = SecretKey::generate();
         let cur_id = cur_key.public().to_string();
-        daemon.devices.add(&cur_id, "NewPhone", Tier::Full, Threads::ALL, false).unwrap();
+        daemon.devices.add(&cur_id, "NewPhone", false).unwrap();
         let cur_dev = daemon.devices.get(&cur_id).unwrap();
         assert_eq!(cur_dev.confined_epoch.as_deref(), Some(epoch.as_str()));
         let mut cur_phone = Phone::dial(cur_key, &server).await;

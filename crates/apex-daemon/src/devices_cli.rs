@@ -1,4 +1,4 @@
-//! `apex-daemon devices …`: list, add, retier and revoke remote devices.
+//! `apex-daemon devices …`: list, add and revoke remote devices.
 //!
 //! With a daemon running, the request goes through its local socket, so a
 //! revoke also cuts off a connected device at once. Otherwise the registry
@@ -10,64 +10,52 @@ use std::path::PathBuf;
 use apex_host::lock::{DataLock, LockError};
 use serde_json::{json, Value};
 
-use crate::devices::{Devices, Tier};
+use crate::devices::Devices;
 use crate::{ipc, local_call, paths, protocol};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevicesAction {
     List,
     /// Temporary until QR pairing (milestone 3) adds devices.
-    Add { id: String, label: String, tier: Tier, threads: Option<Vec<String>>, restore: bool },
-    Tier { id: String, tier: Tier },
-    Threads { id: String, threads: Option<Vec<String>> },
+    Add { id: String, label: String, restore: bool },
     Revoke { id: String },
 }
 
 pub const USAGE: &str = "\
 usage: apex-daemon devices list
-       apex-daemon devices add <endpoint-id> --label NAME [--tier read_only|chat|full] [--threads ID,ID] [--restore]
-       apex-daemon devices tier <endpoint-id> <read_only|chat|full>
-       apex-daemon devices threads <endpoint-id> <all|ID,ID>
+       apex-daemon devices add <endpoint-id> --label NAME [--restore]
        apex-daemon devices revoke <endpoint-id>";
 
 /// Read what follows `devices`.
 pub fn parse(args: &[String]) -> Result<DevicesAction, String> {
     let usage = |why: String| format!("{why}\n\n{USAGE}");
-    let threads = |list: &str| -> Option<Vec<String>> { (list != "all").then(|| list.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect()) };
     match args.first().map(String::as_str) {
         Some("list") if args.len() == 1 => Ok(DevicesAction::List),
         Some("revoke") if args.len() == 2 => Ok(DevicesAction::Revoke { id: args[1].clone() }),
-        Some("tier") if args.len() == 3 => Ok(DevicesAction::Tier { id: args[1].clone(), tier: Tier::parse(&args[2])? }),
-        Some("threads") if args.len() == 3 => Ok(DevicesAction::Threads { id: args[1].clone(), threads: threads(&args[2]) }),
         Some("add") if args.len() >= 2 => {
             let id = args[1].clone();
-            let (mut label, mut tier, mut list, mut restore) = (None, Tier::Chat, None, false);
+            let (mut label, mut restore) = (None, false);
             let mut rest = args[2..].iter();
             while let Some(arg) = rest.next() {
                 let mut value = || rest.next().cloned().ok_or_else(|| usage(format!("{arg} needs a value")));
                 match arg.as_str() {
                     "--label" => label = Some(value()?),
-                    "--tier" => tier = Tier::parse(&value()?)?,
-                    "--threads" => list = threads(&value()?),
                     "--restore" => restore = true,
                     other => return Err(usage(format!("unknown argument {other}"))),
                 }
             }
             let label = label.ok_or_else(|| usage("add needs --label".into()))?;
-            Ok(DevicesAction::Add { id, label, tier, threads: list, restore })
+            Ok(DevicesAction::Add { id, label, restore })
         }
-        _ => Err(usage("say list, add, tier, threads or revoke".into())),
+        _ => Err(usage("say list, add or revoke".into())),
     }
 }
 
 /// The protocol request for `action`.
 pub fn request(action: &DevicesAction) -> Value {
-    let threads = |t: &Option<Vec<String>>| t.as_ref().map_or(json!("all"), |t| json!(t));
     match action {
         DevicesAction::List => json!({ "cmd": "devices_list", "args": {} }),
-        DevicesAction::Add { id, label, tier, threads: t, restore } => json!({ "cmd": "devices_add", "args": { "id": id, "label": label, "tier": tier, "threads": threads(t), "restore": restore } }),
-        DevicesAction::Tier { id, tier } => json!({ "cmd": "devices_set_tier", "args": { "id": id, "tier": tier } }),
-        DevicesAction::Threads { id, threads: t } => json!({ "cmd": "devices_set_threads", "args": { "id": id, "threads": threads(t) } }),
+        DevicesAction::Add { id, label, restore } => json!({ "cmd": "devices_add", "args": { "id": id, "label": label, "restore": restore } }),
         DevicesAction::Revoke { id } => json!({ "cmd": "devices_revoke", "args": { "id": id } }),
     }
 }
@@ -103,21 +91,19 @@ mod tests {
     }
 
     #[test]
-    fn each_action_and_its_request() {
+    fn devices_has_list_add_and_revoke_only() {
         assert_eq!(parse(&["list"]), Ok(DevicesAction::List));
         assert_eq!(parse(&["revoke", "abc"]), Ok(DevicesAction::Revoke { id: "abc".into() }));
-        assert_eq!(parse(&["tier", "abc", "full"]), Ok(DevicesAction::Tier { id: "abc".into(), tier: Tier::Full }));
-        assert_eq!(parse(&["threads", "abc", "all"]), Ok(DevicesAction::Threads { id: "abc".into(), threads: None }));
-        let add = parse(&["add", "abc", "--label", "My phone", "--threads", "r1, r2", "--restore"]).unwrap();
-        assert_eq!(add, DevicesAction::Add { id: "abc".into(), label: "My phone".into(), tier: Tier::Chat, threads: Some(vec!["r1".into(), "r2".into()]), restore: true });
-        assert_eq!(request(&add), json!({ "cmd": "devices_add", "args": { "id": "abc", "label": "My phone", "tier": "chat", "threads": ["r1", "r2"], "restore": true } }));
-        assert_eq!(request(&DevicesAction::Tier { id: "abc".into(), tier: Tier::ReadOnly }), json!({ "cmd": "devices_set_tier", "args": { "id": "abc", "tier": "read_only" } }));
+        assert!(parse(&["tier", "abc", "full"]).is_err());
+        assert!(parse(&["threads", "abc", "all"]).is_err());
+        let add = parse(&["add", "abc", "--label", "My phone", "--restore"]).unwrap();
+        assert_eq!(add, DevicesAction::Add { id: "abc".into(), label: "My phone".into(), restore: true });
+        assert_eq!(request(&add), json!({ "cmd": "devices_add", "args": { "id": "abc", "label": "My phone", "restore": true } }));
     }
 
     #[test]
     fn mistakes_are_named() {
         assert!(parse(&[]).unwrap_err().contains("say list"));
-        assert!(parse(&["tier", "abc", "admin"]).unwrap_err().contains("admin"));
         assert!(parse(&["add", "abc"]).unwrap_err().contains("--label"));
         assert!(parse(&["add", "abc", "--label"]).unwrap_err().contains("--label needs a value"));
         assert!(parse(&["revoke"]).is_err());
@@ -128,7 +114,7 @@ mod tests {
     fn without_a_daemon_the_registry_is_changed_here() {
         let data = crate::devices::tests::folder();
         let id = crate::devices::tests::id(1);
-        run(Some(data.0.clone()), DevicesAction::Add { id: id.clone(), label: "Phone".into(), tier: Tier::Full, threads: None, restore: false }).unwrap();
+        run(Some(data.0.clone()), DevicesAction::Add { id: id.clone(), label: "Phone".into(), restore: false }).unwrap();
         run(Some(data.0.clone()), DevicesAction::Revoke { id: id.clone() }).unwrap();
         let saved = Devices::open(&data.0).list().unwrap();
         assert!(saved.devices.is_empty());
