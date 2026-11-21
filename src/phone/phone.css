@@ -544,6 +544,45 @@
 @keyframes ph-fade { from { opacity: 0; } }
 @keyframes ph-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .ph-sheet, .ph-sheet-back, .ph-dot.wait, .ph-dot.busy { animation: none; } .ph-crew { transition: none; } }
+
+.ph-agent-pull-back { background: #0005; animation: none; }
+.ph-agent-pull-back[data-preview] { background: transparent; pointer-events: none; }
+.ph-agent-pull-back::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: calc(var(--agent-top) - 4px);
+  left: clamp(20px, calc(var(--agent-x) - 4px), 100% - 28px);
+  width: 8px;
+  height: 8px;
+  background: var(--panel);
+  border: solid var(--agent-color, var(--line));
+  border-width: 1px 0 0 1px;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+.ph-agent-pull-sheet {
+  position: absolute;
+  top: var(--agent-top);
+  left: clamp(10px, calc(var(--agent-x) - 170px), max(10px, 100% - 350px));
+  box-sizing: border-box;
+  width: min(340px, 100% - 20px);
+  max-height: max(0px, calc(100% - var(--agent-top) - max(10px, env(safe-area-inset-bottom))));
+  border: 1px solid var(--line);
+  border-top-color: var(--agent-color, var(--line));
+  border-radius: 14px;
+  animation: none;
+  clip-path: inset(0 0 var(--agent-mask, 0px) 0 round 14px);
+  transition: clip-path 200ms cubic-bezier(.2, .8, .2, 1);
+}
+.ph-agent-pull-sheet[data-unfold] { animation: ph-agent-unfold 200ms cubic-bezier(.2, .8, .2, 1); }
+.ph-agent-pull-back[data-preview] .ph-agent-pull-sheet { transition: none; }
+.ph-agent-pull-sheet > .ph-sheet-body { padding-bottom: 14px; }
+@keyframes ph-agent-unfold { from { clip-path: inset(0 0 90% 0 round 14px); } }
+@media (prefers-reduced-motion: reduce) {
+  .ph-agent-pull-sheet, .ph-agent-pull-sheet[data-unfold] { animation: none; transition: none; }
+}
+
 .ph-handle { width: 36px; height: 5px; border-radius: 3px; background: var(--muted); opacity: .5; margin: 0 auto 8px; }
 .ph-sheet-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .ph-sheet-title h3 { margin: 0; font-size: 20px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
@@ -763,12 +802,11 @@
 .ph-crew-pill.ph-crew-pill { position: relative; touch-action: pan-x; flex-direction: column; justify-content: center; }
 .ph-crew-pill .ph-crew-chip { transform: translateY(calc(var(--pull, 0px) * .14)); transition: transform .18s cubic-bezier(.2, .8, .2, 1); }
 .ph-crew-pill.pulling .ph-crew-chip { transition: none; }
-.ph-crew-grab { position: absolute; left: 50%; bottom: 2px; width: 12px; height: 3px; margin-left: -6px; border-radius: 2px; background: color-mix(in srgb, var(--muted) 35%, transparent); transition: background .15s, width .15s, margin-left .15s; }
-.ph-crew-pill.pulling .ph-crew-grab { width: calc(12px + var(--pull, 0px) * .5); margin-left: calc(-6px - var(--pull, 0px) * .25); background: var(--who, var(--mint)); }
+.ph-crew-chevron { display: flex; color: var(--muted); }
 .ph-crew-pill.ph-crew-pill:hover, .ph-crew-pill.ph-crew-pill:focus { background: transparent; }
 .ph-tool-source { margin-left: 5px; color: var(--muted); font-weight: 400; }
 .ph-tool-token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; opacity: .7; }
-@media (prefers-reduced-motion: reduce) { .ph-crew-pill .ph-crew-chip, .ph-crew-grab { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .ph-crew-pill .ph-crew-chip { transition: none; } }
 
 /* Sent while a bot was mid-reply: the bubble waits, dimmed, with what it waits for and Steer now. */
 .ph-queued { margin: 0 0 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
@@ -833,7 +871,6 @@
 .ph-bot-error button { color: inherit; background: none; border: 0; min-height: 44px; text-decoration: underline; }
 .ph-bot-spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: ph-bot-spin .8s linear infinite; }
 @keyframes ph-bot-spin { to { transform: rotate(360deg); } }
-.ph-crew-grab { display: none; }
 
 /* Library: the phone's picture list and full-screen view (src/phone/PhoneLibrary.tsx). */
 .ph-lib { display: flex; flex-direction: column; min-height: 100%; width: 100%; box-sizing: border-box; }

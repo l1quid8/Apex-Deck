@@ -5,7 +5,7 @@ import { webSocketConnect } from '../src/daemon/webSocketLink.ts';
 import { openPhoneHost } from '../src/phoneBackend.ts';
 import {
   addMachine, editMachine, approvalWhere, draftVisible, forkLine, loadMachines, newThreadGate,
-  botMeters, crewOpen, modelChoices, pillDrag, pillMeter, settingsLine, toolLine, toolRows, toolSearch, toolWords, withPhoneChange, downLine, mentionPicks, pauseLine, pickMention, postRouted, pressNewThread, refusalLine, tagFromBar, threadSend, threadTitleFromMessage,
+  botMeters, crewOpen, modelChoices, pillDrag, pillPullReveal, pillMeter, settingsLine, toolLine, toolRows, toolSearch, toolWords, withPhoneChange, downLine, mentionPicks, pauseLine, pickMention, postRouted, pressNewThread, refusalLine, tagFromBar, threadSend, threadTitleFromMessage,
   apiModelChoices, apiProviderName, reasoningLevels,
 } from '../src/phoneRules.ts';
 import { phoneShell } from '../src/phoneShell.ts';
@@ -314,6 +314,16 @@ test('a bot pill opens its details on a short downward drag, and sideways still 
   assert.equal(pillDrag(0, -20), 'scroll');
   assert.equal(pillDrag(20, 32), 'wait');
   assert.equal(pillDrag(30, 32), 'scroll');
+});
+
+test('the agent menu reveal follows a downward pull and retreats when the finger backs up', () => {
+  assert.equal(pillPullReveal(0, 4), null);
+  assert.equal(pillPullReveal(0, 8), 24);
+  assert.equal(pillPullReveal(2, 28), 84);
+  assert.equal(pillPullReveal(2, 50), 150);
+  assert.equal(pillPullReveal(0, 6), 18);
+  assert.equal(pillPullReveal(14, 6), null);
+  assert.equal(pillPullReveal(0, -12), null);
 });
 
 // An OpenAI URL lookalike must not enable paid priority settings.
