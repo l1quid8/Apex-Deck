@@ -36,7 +36,7 @@ final class TurnRegistryTests: XCTestCase {
     let registry = TurnRegistry(sessionAvailable: { unlocked })
     let token = String(repeating: "a", count: 64)
     let args: [String: Any] = ["threadId": "t", "participantId": "p", "turnToken": token,
-      "effectiveAccess": "full", "enabled": true, "untethered": true, "grantScope": "s"]
+      "effectiveAccess": "full", "enabled": true, "promptFree": true, "grantScope": "s"]
     _ = try registry.register(args, control: -1)
     unlocked = false
     for operation in [{ _ = try registry.bind(args) }, { try registry.check(token) },
@@ -74,25 +74,25 @@ final class TurnRegistryTests: XCTestCase {
     XCTAssertThrowsError(try registry.register(args("e", "read", true), control: -1))
   }
 
-  func testUntetheredWorkRoomFullSkipsConsentOnlyAtFull() throws {
+  func testPromptFreeWorkRoomFullSkipsConsentOnlyAtFull() throws {
     let registry = TurnRegistry()
     let app = AppIdentity(bundle: "com.example.app", path: "/Applications/Example.app", executable: "/x", signature: Data([1]))
-    func args(_ token: Character, _ access: String, _ untethered: Bool, assistant: Bool = false) -> [String: Any] {
+    func args(_ token: Character, _ access: String, _ promptFree: Bool, assistant: Bool = false) -> [String: Any] {
       ["threadId": "work-thread", "participantId": "p", "turnToken": String(repeating: token, count: 64), "effectiveAccess": access,
-       "enabled": true, "grantScope": "s", "untethered": untethered, "assistantFullAccess": assistant]
+       "enabled": true, "grantScope": "s", "promptFree": promptFree, "assistantFullAccess": assistant]
     }
     let free = try registry.register(args("a", "full", true), control: -1)
     var asked = 0
     try registry.authorizeApp(app, token: free) { asked += 1; return .denied }
-    XCTAssertEqual(asked, 0, "an untethered Full turn opens apps without the native card")
-    XCTAssertTrue(registry.isUntethered(free))
-    XCTAssertThrowsError(try registry.register(args("b", "edits", true), control: -1), "untethered requires Full")
+    XCTAssertEqual(asked, 0, "a prompt-free Full turn opens apps without the native card")
+    XCTAssertTrue(registry.isPromptFree(free))
+    XCTAssertThrowsError(try registry.register(args("b", "edits", true), control: -1), "skipping prompts requires Full")
     XCTAssertThrowsError(try registry.register(args("c", "full", true, assistant: true), control: -1), "the two stamps never combine")
-    let tethered = try registry.register(args("d", "full", false), control: -1)
-    XCTAssertFalse(registry.isUntethered(tethered))
-    XCTAssertThrowsError(try registry.identity(app.bundle, token: tethered), "an untethered grant ends with its turn")
+    let asking = try registry.register(args("d", "full", false), control: -1)
+    XCTAssertFalse(registry.isPromptFree(asking))
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: asking), "a prompt-free grant ends with its turn")
     _ = registry.stopAll()
-    XCTAssertFalse(registry.isUntethered(free), "Stop ends untethered authority")
+    XCTAssertFalse(registry.isPromptFree(free), "ending the turn ends its prompt-free authority")
   }
 
   func testNativeConsentRechecksTurnAfterTheHumanAnswers() throws {
@@ -108,7 +108,6 @@ final class TurnRegistryTests: XCTestCase {
 
   func testTurnReplacementStopAndReplayAreTerminalAndReadCannotControl() throws {
     let registry = TurnRegistry()
-    XCTAssertFalse(registry.isStopped)
     let first = String(repeating: "a", count: 64), next = String(repeating: "b", count: 64)
     func args(_ token: String, _ access: String = "full", _ enabled: Bool = true) -> [String: Any] {
       ["threadId": "thread", "participantId": "agent", "turnToken": token, "effectiveAccess": access, "enabled": enabled, "grantScope": "scope"]
@@ -128,15 +127,52 @@ final class TurnRegistryTests: XCTestCase {
     XCTAssertThrowsError(try registry.register(args(first), control: -1))
     XCTAssertTrue(try registry.canControl(next))
     XCTAssertEqual(registry.stopAll().count, 1)
-    XCTAssertTrue(registry.isStopped)
     XCTAssertThrowsError(try registry.check(next))
     XCTAssertTrue(registry.stopAll().isEmpty)
     registry.end(next)
-    XCTAssertTrue(registry.isStopped)
-    XCTAssertThrowsError(try registry.register(args(String(repeating: "c", count: 64)), control: -1))
-    registry.resume()
-    XCTAssertFalse(registry.isStopped)
-    XCTAssertThrowsError(try registry.bind(args(next)))
+    XCTAssertThrowsError(try registry.bind(args(next)), "an ended turn stays ended")
+    XCTAssertThrowsError(try registry.register(args(next), control: -1), "and its token cannot be replayed")
+  }
+  /// `skipAppPrompts` only draws the menu-bar icon. Whether a turn skips the
+  /// app prompt is the daemon's per-turn stamp and nothing else.
+  func testDisplayFlagNeverDecidesWhetherToPrompt() throws {
+    let registry = TurnRegistry()
+    let app = AppIdentity(bundle: "com.example.app", path: "/Applications/Example.app", executable: "/x", signature: Data([1]))
+    let token = try registry.register(["threadId": "work-thread", "participantId": "p", "turnToken": String(repeating: "a", count: 64),
+      "effectiveAccess": "full", "enabled": true, "grantScope": "s", "promptFree": false, "skipAppPrompts": true], control: -1)
+    var asked = 0
+    XCTAssertThrowsError(try registry.authorizeApp(app, token: token) { asked += 1; return .denied })
+    XCTAssertEqual(asked, 1, "the app prompt is still shown")
+    XCTAssertFalse(registry.isPromptFree(token))
+    XCTAssertFalse(registry.hasActivePromptFree())
+  }
+  /// Lock, takeover and Quit end the current turns and nothing more: there is
+  /// no Stopped state to resume from, so the next message simply works.
+  func testRegisterAfterStopAllSucceeds() throws {
+    let registry = TurnRegistry()
+    func args(_ token: Character) -> [String: Any] {
+      ["threadId": "thread", "participantId": "agent", "turnToken": String(repeating: token, count: 64), "effectiveAccess": "full", "enabled": true, "grantScope": "scope"]
+    }
+    let first = try registry.register(args("a"), control: -1)
+    XCTAssertEqual(registry.stopAll().count, 1)
+    XCTAssertThrowsError(try registry.check(first))
+    let next = try registry.register(args("b"), control: -1)
+    XCTAssertNoThrow(try registry.check(next))
+    XCTAssertEqual(try registry.bind(args("b")), next)
+  }
+  /// Someone touched the Mac in away mode. Until the lock is confirmed (or the
+  /// owner authenticates to dismiss the shield), no turn may start behind it.
+  func testRegisterRefusedWhileTakeoverLockUnconfirmed() throws {
+    let registry = TurnRegistry()
+    func args(_ token: Character) -> [String: Any] {
+      ["threadId": "thread", "participantId": "agent", "turnToken": String(repeating: token, count: 64), "effectiveAccess": "full", "enabled": true, "promptFree": true, "grantScope": "scope"]
+    }
+    _ = try registry.register(args("a"), control: -1)
+    XCTAssertEqual(registry.takeover().count, 1, "the takeover ends the running turn")
+    XCTAssertFalse(registry.hasActivePromptFree())
+    XCTAssertThrowsError(try registry.register(args("b"), control: -1)) { XCTAssertEqual(($0 as? Refusal)?.code, "takeover_lock_unconfirmed") }
+    registry.takeoverSettled()
+    XCTAssertNoThrow(try registry.register(args("c"), control: -1))
   }
   func testThreadGrantsReachOtherBotsInTheThreadUntilRevoked() throws {
     let registry = TurnRegistry()
@@ -166,8 +202,7 @@ final class TurnRegistryTests: XCTestCase {
     let regrant = try turn(scope: "revoked")
     try registry.grant(app, token: regrant, forThread: true)
     _ = registry.stopAll()
-    registry.resume()
-    XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn(scope: "revoked")), "Stop clears thread grants")
+    XCTAssertThrowsError(try registry.identity(app.bundle, token: try turn(scope: "revoked")), "ending every turn clears thread grants")
   }
   func testDeliveredActionsAreNeverReportedAsFailures() {
     XCTAssertNotNil(EngineSession.deliveredNote("foreign_secure_or_unknown_focus; delivery=delivered_unverified verification_scope=unavailable", tool: "click"))

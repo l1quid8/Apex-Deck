@@ -496,9 +496,9 @@ function PhonesSection({ backend: _backend }: { backend: Backend }) {
 
 function ComputerSection({ backend, highlightId }: { backend: Backend; highlightId: string | null }) {
   return <>
-    <div className={highlightId==='ucu-enable' || highlightId==='ucu-status' ? 'search-highlight' : ''} id="ucu-enable"><ComputerUseSettings backend={backend} /></div>
-    <Advanced title="Access, status & recovery" id="thread-grants"><p className="settings-note">Thread grants and revoke actions are managed in Unified Computer Use. Global enabled state, permissions, thread approval/revocation, and cursor preferences are kept up front.</p></Advanced>
-    <Advanced title="Mac permissions & privacy" id="ucu-stop"><p className="settings-note">Privacy: granted app content goes to the model you chose. Only approved apps are shared. Stop ends current access.</p></Advanced>
+    <div className={highlightId==='ucu-enable' || highlightId==='ucu-status' || highlightId==='ucu-app-prompts' ? 'search-highlight' : ''} id="ucu-enable"><ComputerUseSettings backend={backend} /></div>
+    <Advanced title="Access, status & recovery" id="thread-grants"><p className="settings-note">Thread grants and revoke actions are managed in Unified Computer Use. The On switch, App permissions, Mac permissions and cursor preferences are kept up front.</p></Advanced>
+    <Advanced title="Mac permissions & privacy" id="ucu-privacy"><p className="settings-note">Privacy: granted app content goes to the model you chose. With Ask for each app, only apps you approve are shared. Stopping an agent&rsquo;s output ends its access; switching Unified Computer Use off ends everyone&rsquo;s.</p></Advanced>
   </>;
 }
 

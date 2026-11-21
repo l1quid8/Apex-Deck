@@ -126,6 +126,7 @@ pub enum Command {
     ComputerStatus {},
     ComputerSetup {},
     ComputerSetEnabled { enabled: bool },
+    ComputerSetAppPrompts { skip: bool },
     ComputerSetActionLabels { enabled: bool },
     ComputerSetCursorOverlay { prefs: serde_json::Value },
     ComputerSetCursorImage {
@@ -137,7 +138,6 @@ pub enum Command {
         hotspot_y: Option<f64>,
     },
     ComputerResetCursorOverlay {},
-    ComputerStop {},
     PhoneStatus {},
     PhoneStart {},
     PhoneStop {},
@@ -371,7 +371,7 @@ impl Command {
             | PersonalHandoffControl { .. } | PersonalAvatarGenerate { .. } | PersonalAvatarCancel { .. } | PersonalWorkspaceConfigure { .. }
             | PersonalConfigure { .. } | PersonalPermissionSet { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. } | PersonalMemoryAdd { .. }
             | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
-            | PersonalMachineAllow { .. } | PersonalBrowserSession { .. } | ComputerSetup { .. } | ComputerSetEnabled { .. } | ComputerSetActionLabels { .. }
+            | PersonalMachineAllow { .. } | PersonalBrowserSession { .. } | ComputerSetup { .. } | ComputerSetEnabled { .. } | ComputerSetAppPrompts { .. } | ComputerSetActionLabels { .. }
             | RoomThreadGitAction { .. } | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
             // Open: reads, this Mac's own desktop plumbing, chat-room posts and
             // anything the device tier alone governs.
@@ -408,7 +408,7 @@ impl Command {
             BrowserTabs { .. } | BrowserTabOpen { .. } | BrowserTabClose { .. } | BrowserTabControl { .. } | BrowserTabShare { .. } | BrowserTabFrame { .. }
             | BrowserTabInput { .. } | BrowserTabResize { .. } | BrowserTabUpload { .. } | BrowserTabStop { .. } => Policy::OPEN,
             // Computer
-            ComputerStatus { .. } | ComputerSetCursorOverlay { .. } | ComputerSetCursorImage { .. } | ComputerResetCursorOverlay { .. } | ComputerStop { .. } => Policy::OPEN,
+            ComputerStatus { .. } | ComputerSetCursorOverlay { .. } | ComputerSetCursorImage { .. } | ComputerResetCursorOverlay { .. } => Policy::OPEN,
             // Phone
             PhoneStatus { .. } | PhoneStart { .. } | PhoneStop { .. } | PhoneView { .. } | PhoneHuman { .. } | PhoneDevices { .. } | PhoneControl { .. }
             | PhoneGiveBack { .. } | PhoneBot { .. } | PhoneChatQueued { .. } => Policy::OPEN,
@@ -786,10 +786,10 @@ impl Host {
             ComputerSetup {} => reply(self.computer_setup().await?),
             ComputerSetActionLabels { enabled } => reply(self.computer_set_action_labels(enabled).await?),
             ComputerSetEnabled { enabled } => reply(self.computer_set_enabled(enabled).await?),
+            ComputerSetAppPrompts { skip } => reply(self.computer_set_app_prompts(skip).await?),
             ComputerSetCursorOverlay { prefs } => reply(self.computer_set_cursor_overlay(prefs).await?),
             ComputerSetCursorImage { image_base64, hotspot_x, hotspot_y } => reply(self.computer_set_cursor_image(image_base64, hotspot_x, hotspot_y).await?),
             ComputerResetCursorOverlay {} => reply(self.computer_reset_cursor_overlay().await?),
-            ComputerStop {} => reply(self.computer_stop().await),
             PhoneStatus {} => reply(self.phone.status()),
             PhoneStart {} => reply(self.phone.start()),
             PhoneStop {} => reply(self.phone.stop().await?),
@@ -1030,6 +1030,14 @@ mod tests {
         assert!(matches!(undo, Command::RoomCurateUndo { id } if id == "r"));
     }
 
+    /// There is no Stop, Stopped or Resume: stopping an agent's output ends
+    /// its computer use, and switching Unified Computer Use off ends all of it.
+    #[test]
+    fn computer_stop_is_not_a_command() {
+        assert!(Command::from_json(json!({"cmd":"computer_stop","args":{}})).is_err());
+        assert!(!names().iter().any(|name| name == "computer_stop"));
+    }
+
     #[test]
     fn the_policy_table_agrees_with_the_wrappers_the_daemon_and_cli_call() {
         let probe = |cmd: &str, args: serde_json::Value| Command::from_json(json!({"cmd": cmd, "args": args})).unwrap();
@@ -1039,6 +1047,9 @@ mod tests {
             (probe("room_decide", json!({"id":"r","request":"q","approve":true})), Policy::PROTECTED_TERMINAL),
             (probe("room_set_plan", json!({"id":"r","on":true})), Policy::PROTECTED_TERMINAL),
             (probe("personal_send", json!({"assistantId":"p","requestId":"q","text":"hi"})), Policy::PROTECTED),
+            (probe("computer_set_enabled", json!({"enabled":true})), Policy::PROTECTED),
+            // An agent's tool path must never switch app prompts off for itself.
+            (probe("computer_set_app_prompts", json!({"skip":true})), Policy::PROTECTED),
             (probe("file_read", json!({"root":"/tmp","path":"x"})), Policy::OPEN),
             (probe("room_state", json!({"id":"r"})), Policy::OPEN),
         ];

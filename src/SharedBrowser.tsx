@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { sameServer } from "./previewAddress";
 import { normalise } from "./RightBrowser";
-import { browserCaller, buttonName, chosenTab, dialogChoices, finishClipboard, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName, type BrowserTab, type PageEvent } from "./browserTabs";
+import { agentTabs, browserCaller, buttonName, chosenTab, dialogChoices, finishClipboard, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName, type BrowserTab, type PageEvent } from "./browserTabs";
 import "./shared-browser.css";
 import { deckClipboard } from "./copyText";
 
@@ -29,11 +29,10 @@ export interface SharedBrowserProps {
   /** An address to show, once. `anyPage` is for a server that just started: any page of it will do. */
   open?: { url: string; anyPage?: boolean } | null;
   onOpened?: () => void;
-  onStopAll?: () => void;
 }
 
 /** One browser for the person, the assistant and bots: every view here is a live tab on `hostName`. */
-export function SharedBrowser({ call, hostName, hostId = hostName, visible, thread, roomName, assistantName, assistantFirst = false, open, onOpened, onStopAll }: SharedBrowserProps) {
+export function SharedBrowser({ call, hostName, hostId = hostName, visible, thread, roomName, assistantName, assistantFirst = false, open, onOpened }: SharedBrowserProps) {
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [wanted, pick] = useState<string | null>(() => lastTab.get(hostId) ?? null);
   const setWanted = useCallback((id: string) => { lastTab.set(hostId, id); pick(id); }, [hostId]);
@@ -211,7 +210,7 @@ export function SharedBrowser({ call, hostName, hostId = hostName, visible, thre
       {tab.control.kind === "bot" && <button type="button" onClick={() => act(live.current.call("browser_tab_stop", { tab: tab.id }))}>Stop this agent</button>}
       {human && (tab.rooms.length > 0 || tab.assistant) && <button type="button" onClick={() => act(live.current.call("browser_tab_control", { tab: tab.id, take: false }))}>Hand back</button>}
       {thread && !tab.assistant && <button type="button" title={shared ? `Agents in ${thread.title} can no longer reach this tab` : `Agents in ${thread.title} can use this tab. It doesn't hand them your control.`} onClick={() => act(live.current.call("browser_tab_share", { tab: tab.id, thread: thread.id, share: !shared }))}>{shared ? "Remove from this thread" : "Share with this thread"}</button>}
-      {anyBot && onStopAll && <button type="button" className="shared-browser-stop" onClick={onStopAll}>Stop all</button>}
+      {anyBot && <button type="button" className="shared-browser-stop" onClick={() => act(Promise.all(agentTabs(tabs).map((id) => live.current.call("browser_tab_stop", { tab: id }))))}>Stop all</button>}
     </div>}
     {problem && <p role="alert" className="shared-browser-problem">{PROBLEMS[problem] ?? problem}</p>}
     {tab?.dialogOpen && <div className="shared-browser-dialog" role="alertdialog" aria-label="Page dialog">

@@ -133,7 +133,7 @@ final class Input {
       up.postToPid(pid)
     })
   }
-  /// Untethered shortcuts only: activate the granted app and wait until it is frontmost.
+  /// Prompt-free turns only: activate the granted app and wait until it is frontmost.
   private func bringToFront(_ app: NSRunningApplication) throws {
     if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return }
     _ = app.activate()
@@ -144,10 +144,10 @@ final class Input {
     }
     throw Refusal("shortcut_needs_foreground")
   }
-  func key(_ key: String, s: Snapshot, id: String, untethered: Bool = false) throws {
+  func key(_ key: String, s: Snapshot, id: String, promptFree: Bool = false) throws {
     guard let (code, flags) = Policy.key(key) else { throw Refusal("unsupported_key") }
     if Policy.needsForeground(flags: flags) {
-      guard untethered else { throw Refusal("shortcut_needs_foreground") }
+      guard promptFree else { throw Refusal("shortcut_needs_foreground") }
       guard !Policy.blockedShortcut(code: code, flags: flags) else { throw Refusal("shortcut_blocked") }
       try bringToFront(s.app)
     }

@@ -450,6 +450,51 @@ impl ThreadGit {
                 })?;
             }
             Decision::Submit => {
+                let (owner, repo) = w.repo.split_once('/').ok_or("Invalid repository.")?;
+                let query = "query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){ref(qualifiedName:\"refs/heads/main\"){refUpdateRule{requiredStatusCheckContexts}}}}";
+                let raw = shell
+                    .run(
+                        data,
+                        root,
+                        "gh",
+                        &[
+                            "api",
+                            "graphql",
+                            "--hostname",
+                            "github.com",
+                            "-f",
+                            &format!("query={query}"),
+                            "-f",
+                            &format!("owner={owner}"),
+                            "-f",
+                            &format!("repo={repo}"),
+                        ],
+                    )
+                    .await?;
+                let policy: serde_json::Value =
+                    serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+                let required = policy
+                    .pointer("/data/repository/ref/refUpdateRule/requiredStatusCheckContexts")
+                    .and_then(|contexts| contexts.as_array());
+                let Some(required) = required.filter(|contexts| !contexts.is_empty()) else {
+                    self.update(room, w, |job| {
+                        job.phase = Phase::Blocked;
+                        job.detail = "GitHub reports no required status checks for main. Configure required checks before merging from Deck.".into();
+                    })?;
+                    return Ok(());
+                };
+                for context in required {
+                    let name = context.as_str().ok_or("Invalid required check name.")?;
+                    if !pr.status_check_rollup.iter().any(|check| {
+                        (check["name"] == name && check["conclusion"] == "SUCCESS")
+                            || (check["context"] == name && check["state"] == "SUCCESS")
+                    }) {
+                        self.update(room, w, |job| {
+                            job.detail = format!("Waiting for required check: {name}.");
+                        })?;
+                        return Ok(());
+                    }
+                }
                 // Serialize dispatch with cancellation; retries use GitHub's exact-SHA compare.
                 let mut submitting = w.clone();
                 submitting.phase = Phase::Submitting;

@@ -93,6 +93,7 @@ struct Github {
     creates: AtomicUsize,
     fail: AtomicBool,
     pause: AtomicBool,
+    required: Option<Vec<String>>,
     dispatch: tokio::sync::Notify,
     resume: tokio::sync::Notify,
 }
@@ -119,6 +120,13 @@ impl Shell for Github {
             ["pr", "view"] => {
                 let actual = git(data, cwd, None, &["rev-parse", "HEAD"])?;
                 Ok(serde_json::json!({"number":42,"state":if self.merged.load(Ordering::SeqCst){"MERGED"}else{"OPEN"},"headRefOid":actual.trim(),"headRefName":"task","baseRefName":"main","isCrossRepository":false,"mergeCommit":{"oid":"a".repeat(40)},"mergeStateStatus":"CLEAN","statusCheckRollup":[{"name":"Windows","conclusion":if self.fail.load(Ordering::SeqCst){"FAILURE"}else{"SUCCESS"}}]}).to_string())
+            }
+            ["api", "graphql"] => {
+                let contexts = self
+                    .required
+                    .clone()
+                    .unwrap_or_else(|| vec!["Windows".into()]);
+                Ok(serde_json::json!({"data":{"repository":{"ref":{"refUpdateRule":{"requiredStatusCheckContexts":contexts}}}}}).to_string())
             }
             ["api", ..] => {
                 let sha = git(data, cwd, None, &["rev-parse", "HEAD"])?;
@@ -276,4 +284,23 @@ async fn failed_check_exposes_output_and_only_an_explicit_fix_marks_it_requested
     assert!(f.store.mark_fix("r", &failed).unwrap());
     assert!(!f.store.mark_fix("r", &failed).unwrap());
     assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_green_check_requires_a_complete_nonempty_required_set() {
+    for (required, expected) in [
+        (vec!["Windows".into(), "Linux".into()], Phase::Checks),
+        (vec![], Phase::Blocked),
+    ] {
+        let f = Fixture::new();
+        let remote = Github {
+            required: Some(required),
+            ..Github::default()
+        };
+        f.store.admit("r", &f.reviewed(), false).unwrap();
+        f.tick(&f.store, &remote).await;
+        f.tick(&f.store, &remote).await;
+        assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
+        assert_eq!(f.store.get("r").unwrap().unwrap().phase, expected);
+    }
 }

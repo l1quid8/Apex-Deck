@@ -41,9 +41,8 @@ pub(super) enum Reach {
 
 /// Saved Full authorizes control without another assistant or app prompt. Ask
 /// retains per-app consent and its read-only ceilings when reports are present.
-pub(super) fn reach(assistant: &PersonalAssistant, profile: &ParticipantConfig, enabled: bool, stopped: bool, reports: bool) -> Reach {
+pub(super) fn reach(assistant: &PersonalAssistant, profile: &ParticipantConfig, enabled: bool, reports: bool) -> Reach {
     if !enabled { return Reach::Off("Unified Computer Use is off in Settings"); }
-    if stopped { return Reach::Off("Unified Computer Use is stopped; Resume is in Settings"); }
     if !apex_adapters::computer_backend_supported(&profile.backend) { return Reach::Off("this model has no computer tools"); }
     if assistant.paused { return Reach::Off("you paused this assistant"); }
     // The gateway's refusals: nothing that could reach the network, no tools on this host.
@@ -171,8 +170,7 @@ pub(super) fn decide_permission(assistant:&mut PersonalAssistant,decision_id:&st
 
 impl Host {
     pub(super) fn personal_computer_reach(&self, assistant: &PersonalAssistant, profile: &ParticipantConfig, reports: bool) -> Reach {
-        let (enabled, stopped) = self.computer.state();
-        reach(assistant, profile, enabled, stopped, reports)
+        reach(assistant, profile, self.computer.enabled(), reports)
     }
 
     /// Registers this reply with the helper. The lease is the turn's authority;
@@ -208,14 +206,14 @@ mod tests {
         assistant.permissions.set(crate::personal::permissions::Capability::ComputerUse, crate::personal::permissions::Scope::AllProjects, crate::personal::permissions::GrantMode::Ask, false).unwrap();
         let event: crate::personal::PersonalEvent = serde_json::from_value(serde_json::json!({"id":"pe-1","requestId":"human-1","source":{"kind":"human","text":"Yes, finish that for me"},"receivedAt":1,"state":"processing"})).unwrap();
         assistant.events.push(event.clone());
-        assert_eq!(reach(&assistant, &profile, true, false, true), Reach::Tools(Access::Full));
+        assert_eq!(reach(&assistant, &profile, true, true), Reach::Tools(Access::Full));
         assert!(!hold_for_permission(&mut assistant, &event, 2));
         assert_eq!(apply_permission_reach(&assistant, &event, true, Reach::Tools(Access::Full)), Reach::Tools(Access::Full));
         assert!(assistant.tasks.is_empty());
         let mut already_used = event.clone(); already_used.computer_started = true;
         assert!(matches!(apply_permission_reach(&assistant, &already_used, true, Reach::Tools(Access::Full)), Reach::Off(_)), "Full never replays a reply whose actions may have landed");
         assistant.profile.as_mut().unwrap().access = Access::Ask;
-        assert_ne!(reach(&assistant, assistant.profile.as_ref().unwrap(), true, false, true), Reach::Tools(Access::Full));
+        assert_ne!(reach(&assistant, assistant.profile.as_ref().unwrap(), true, true), Reach::Tools(Access::Full));
         assert!(matches!(apply_permission_reach(&assistant, &event, true, Reach::Tools(Access::Ask)), Reach::Off(_)), "downgraded access must restore the ordinary approval gate");
     }
 
@@ -225,17 +223,16 @@ mod tests {
         profile.access = Access::Full;
         assistant.profile = Some(profile.clone());
         assistant.workspace_config_version = Some(4);
-        assert_eq!(reach(&assistant, &profile, true, false, true), Reach::Tools(Access::Full));
-        assert!(matches!(reach(&assistant, &profile, false, false, true), Reach::Off(_)));
-        assert!(matches!(reach(&assistant, &profile, true, true, true), Reach::Off(_)));
+        assert_eq!(reach(&assistant, &profile, true, true), Reach::Tools(Access::Full));
+        assert!(matches!(reach(&assistant, &profile, false, true), Reach::Off(_)));
         assistant.privacy.local_only = true;
-        assert!(matches!(reach(&assistant, &profile, true, false, true), Reach::Off(_)));
+        assert!(matches!(reach(&assistant, &profile, true, true), Reach::Off(_)));
         assistant.privacy.local_only = false;
         assistant.projects = vec![serde_json::from_value(serde_json::json!({"project":{"hostId":"h","workspaceId":"w","cwd":"/p"},"tools":"off"})).unwrap()];
-        assert!(matches!(reach(&assistant, &profile, true, false, true), Reach::Off(_)));
+        assert!(matches!(reach(&assistant, &profile, true, true), Reach::Off(_)));
         assistant.projects.clear();
         assistant.workspace_config_version = None;
-        assert_eq!(reach(&assistant, &profile, true, false, true), Reach::Tools(Access::Read), "a legacy full profile is not saved Full authority");
+        assert_eq!(reach(&assistant, &profile, true, true), Reach::Tools(Access::Read), "a legacy full profile is not saved Full authority");
     }
 
     #[test]
@@ -261,7 +258,7 @@ mod tests {
         decide_permission(&mut assistant,&decision.id,&decision.params_hash,true,"pe-2",3).unwrap().unwrap();
         assert_eq!(apply_permission_reach(&assistant,&event,false,Reach::Tools(Access::Ask)),Reach::Tools(Access::Ask));
         let mut other=event.clone();other.id="pe-3".into();assistant.events.push(other.clone());
-        assert!(matches!(apply_permission_reach(&assistant,&other,false,reach(&assistant,&profile,true,false,false)),Reach::Off(_)));
+        assert!(matches!(apply_permission_reach(&assistant,&other,false,reach(&assistant, &profile, true, false)),Reach::Off(_)));
         assistant.permissions.revision+=1;
         assert!(matches!(apply_permission_reach(&assistant,&event,false,Reach::Tools(Access::Ask)),Reach::Off(_)));
         assistant.events[0].computer_started=true;
@@ -280,16 +277,15 @@ mod tests {
     #[test]
     fn saved_rules_and_settings_set_the_reach_with_no_per_assistant_switch() {
         let (mut assistant, profile) = assistant();
-        assert_eq!(reach(&assistant, &profile, true, false, false), Reach::Tools(Access::Ask), "the app prompt is the ask");
-        assert!(matches!(reach(&assistant, &profile, false, false, false), Reach::Off(_)));
-        assert!(matches!(reach(&assistant, &profile, true, true, false), Reach::Off(_)));
+        assert_eq!(reach(&assistant, &profile, true, false), Reach::Tools(Access::Ask), "the app prompt is the ask");
+        assert!(matches!(reach(&assistant, &profile, false, false), Reach::Off(_)));
         assistant.rules.push(StandingRule { id: "r".into(), text: "hands off".into(), class: ToolClass::Write, mode: ActionMode::HandOff, created_at: 0 });
-        assert_eq!(reach(&assistant, &profile, true, false, false), Reach::Tools(Access::Read), "a rule only tightens");
+        assert_eq!(reach(&assistant, &profile, true, false), Reach::Tools(Access::Read), "a rule only tightens");
         assistant.paused = true;
-        assert!(matches!(reach(&assistant, &profile, true, false, false), Reach::Off(_)));
+        assert!(matches!(reach(&assistant, &profile, true, false), Reach::Off(_)));
         assistant.paused = false;
         let gemini: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"p","display_name":"P","backend":{"kind":"agent","tool":"gemini"}})).unwrap();
-        assert_eq!(reach(&assistant, &gemini, true, false, false), Reach::Off("this model has no computer tools"));
+        assert_eq!(reach(&assistant, &gemini, true, false), Reach::Off("this model has no computer tools"));
     }
 
     #[test]
@@ -297,9 +293,9 @@ mod tests {
         let (mut assistant, mut profile) = assistant();
         assistant.workspace_config_version = Some(4);
         profile.access = Access::Read;
-        assert_eq!(reach(&assistant, &profile, true, false, false), Reach::Tools(Access::Read));
+        assert_eq!(reach(&assistant, &profile, true, false), Reach::Tools(Access::Read));
         profile.access = Access::Ask;
-        assert_eq!(reach(&assistant, &profile, true, false, false), Reach::Tools(Access::Ask));
+        assert_eq!(reach(&assistant, &profile, true, false), Reach::Tools(Access::Ask));
     }
 
     #[test]
@@ -308,17 +304,17 @@ mod tests {
         for class in [ToolClass::Send, ToolClass::Spend] {
             let (mut assistant, profile) = assistant();
             assistant.rules.push(rule(class));
-            assert_eq!(reach(&assistant, &profile, true, false, false), Reach::Tools(Access::Read), "a click can send or buy");
+            assert_eq!(reach(&assistant, &profile, true, false), Reach::Tools(Access::Read), "a click can send or buy");
         }
         let (mut assistant, profile) = assistant();
         assistant.privacy.local_only = true;
-        assert!(matches!(reach(&assistant, &profile, true, false, false), Reach::Off(_)), "the browser reaches the network");
+        assert!(matches!(reach(&assistant, &profile, true, false), Reach::Off(_)), "the browser reaches the network");
         assistant.privacy.local_only = false;
-        assert_eq!(reach(&assistant, &profile, true, false, true), Reach::Tools(Access::Read), "planted words get no control");
+        assert_eq!(reach(&assistant, &profile, true, true), Reach::Tools(Access::Read), "planted words get no control");
         assert!(prompt(Reach::Tools(Access::Read), true, true).contains("new conversation"));
         assistant.host_id = "h".into();
         assistant.projects = vec![serde_json::from_value(serde_json::json!({"project":{"hostId":"h","workspaceId":"w","cwd":"/p"},"tools":"off"})).unwrap()];
-        assert!(matches!(reach(&assistant, &profile, true, false, false), Reach::Off(_)));
+        assert!(matches!(reach(&assistant, &profile, true, false), Reach::Off(_)));
     }
 
     #[test]

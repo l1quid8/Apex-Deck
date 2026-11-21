@@ -42,6 +42,70 @@ final class StatusBarIconTests: XCTestCase {
     XCTAssertEqual(image.accessibilityDescription, StatusBarIcon.name)
   }
 
+  private func pixels(_ image: NSImage) throws -> Data {
+    let rep = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 36, pixelsHigh: 36, bitsPerSample: 8,
+      samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    image.draw(in: NSRect(x: 0, y: 0, width: 36, height: 36))
+    NSGraphicsContext.restoreGraphicsState()
+    return Data(bytes: try XCTUnwrap(rep.bitmapData), count: rep.bytesPerRow * rep.pixelsHigh)
+  }
+
+  // While this Mac skips app prompts for Full-access agents, the menu bar says so.
+  func testPromptsSkippedIconIsADifferentTemplateWithItsOwnName() throws {
+    let plain = try icon()
+    let skipped = try XCTUnwrap(StatusBarIcon.load(from: bundle(withIcon: true), promptsSkipped: true))
+    XCTAssertTrue(skipped.isTemplate, "it still follows the menu bar's light or dark style")
+    XCTAssertEqual(skipped.size, NSSize(width: 18, height: 18))
+    XCTAssertEqual(skipped.accessibilityDescription, StatusBarIcon.skippedName)
+    XCTAssertNotEqual(StatusBarIcon.skippedName, StatusBarIcon.name)
+    XCTAssertNotEqual(try pixels(skipped), try pixels(plain), "the skipped variant draws differently")
+    XCTAssertEqual(try pixels(try XCTUnwrap(StatusBarIcon.load(from: bundle(withIcon: true), promptsSkipped: false))), try pixels(plain))
+  }
+
+  func testPromptsSkippedIsSpokenAndSurvivesTheTextFallback() throws {
+    let button = NSButton(title: "", target: nil, action: nil)
+    StatusBarIcon.apply(try XCTUnwrap(StatusBarIcon.load(from: bundle(withIcon: true), promptsSkipped: true)), to: button, promptsSkipped: true)
+    XCTAssertEqual(button.toolTip, StatusBarIcon.skippedName)
+    XCTAssertEqual(button.accessibilityLabel(), StatusBarIcon.skippedName)
+    XCTAssertEqual(button.title, "")
+    StatusBarIcon.apply(nil, to: button, promptsSkipped: true)
+    XCTAssertEqual(button.title, StatusBarIcon.skippedName, "with no image the words carry it")
+    StatusBarIcon.apply(nil, to: button)
+    XCTAssertEqual(button.title, StatusBarIcon.name)
+    XCTAssertEqual(button.toolTip, StatusBarIcon.name)
+  }
+
+  // The flag reaches the helper on every turn registration and on each change,
+  // so a helper started by an agent's turn is right without any status read.
+  func testDisplayFollowsRegistrationsAndPushes() {
+    let display = AppPromptsDisplay()
+    var seen: [Bool] = []
+    display.onChange = { seen.append($0) }
+    XCTAssertFalse(display.promptsSkipped)
+    display.note(["threadId": "t", "skipAppPrompts": true, "policyRevision": UInt64(2)])
+    XCTAssertTrue(display.promptsSkipped)
+    display.note(["threadId": "t", "skipAppPrompts": true, "policyRevision": UInt64(2)])
+    display.note(["threadId": "t"])
+    XCTAssertTrue(display.promptsSkipped, "a registration without the field changes nothing")
+    display.note(["skipAppPrompts": "false"])
+    XCTAssertTrue(display.promptsSkipped, "only a real boolean counts")
+    display.set(false, revision: 3)
+    XCTAssertEqual(seen, [true, false], "the icon is redrawn only when the value changes")
+  }
+
+  func testLateAskRegistrationKeepsNewerSkipIndicator() {
+    let display = AppPromptsDisplay()
+    var redraws: [Bool] = []
+    display.onChange = { redraws.append($0) }
+    display.set(true, revision: 12)
+    display.note(["skipAppPrompts": false, "policyRevision": UInt64(11)])
+    XCTAssertTrue(display.promptsSkipped)
+    XCTAssertEqual(display.policyRevision, 12)
+    XCTAssertEqual(redraws, [true])
+  }
+
   func testImageReplacesTitle() throws {
     let image = try icon()
     let button = NSButton(title: "old", target: nil, action: nil)

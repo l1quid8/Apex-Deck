@@ -372,6 +372,9 @@ impl Participant for OpenAiCompatParticipant {
         // Thinking goes back with the tool calls it led to, unless the
         // server turns that down.
         let mut echo_thinking = true;
+        // Set once the server has said it takes no pictures: this reply goes
+        // on without them, and is never asked a second time.
+        let mut images_off = false;
         let mut rounds: Vec<Usage> = Vec::new();
         let mut last_context_reported = false;
         let mut stopped_early = false;
@@ -457,6 +460,14 @@ impl Participant for OpenAiCompatParticipant {
                     messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS));
                     continue;
                 }
+                // A text-only server sent a picture, often one another agent
+                // posted: ask once more with a note where each picture was.
+                // Only a reply that names pictures as unsupported lands here.
+                if !images_off && matches!(status.as_u16(), 400 | 404 | 415 | 422 | 501) && refuses_images(&lower) && drop_images(&mut messages) {
+                    images_off = true;
+                    computer_images.clear();
+                    continue;
+                }
                 let snippet = provider_text(&text, 300, computer_content);
                 let hint = match status.as_u16() {
                     401 | 403 if key.is_none() => " This server wants an API key. Open this agent's settings and paste one into API key.",
@@ -531,6 +542,10 @@ impl Participant for OpenAiCompatParticipant {
                     image_parts.push(json!({"type":"text", "text":format!("Computer image from tool call {}{}", call.id,
                         snapshot.map(|id| format!(", snapshot {id}")).unwrap_or_default())}));
                     for image in result.images {
+                        if images_off {
+                            image_parts.push(json!({"type":"text", "text":IMAGE_NOT_SENT}));
+                            continue;
+                        }
                         computer_images.push_back((image_message, image_parts.len()));
                         image_parts.push(json!({"type":"image_url", "image_url":{"url":format!("data:{};base64,{}",image.mime,image.data)}}));
                     }
@@ -781,6 +796,67 @@ fn refuses_tools(lower: &str) -> bool {
     let about_tools = lower.contains("tool") || lower.contains("function call");
     let refusal = ["not support", "unsupported", "doesn't support", "not supported", "not available for this model", "not enabled for this model"];
     about_tools && refusal.iter().any(|r| lower.contains(r))
+}
+
+/// What stands in for a picture the server would not take.
+const IMAGE_NOT_SENT: &str = "[A picture was attached here but not sent: this model's server does not accept images. Say that you could not see it.]";
+
+/// Whether an error says the server takes no pictures at all, as opposed to
+/// a complaint about one picture's size or format.
+fn refuses_images(lower: &str) -> bool {
+    // Wordings that can only mean a server with no eyes.
+    const EXACT: [&str; 6] = [
+        "requires starting ds4-server with --vision",
+        "image_url is only supported by certain models",
+        "unknown variant `image_url`",
+        "unknown variant \"image_url\"",
+        "unknown variant 'image_url'",
+        "not a multimodal model",
+    ];
+    // Wordings that also open a limit: "images are not supported above
+    // 20 MB", "does not support image formats other than png". These count
+    // only when the statement stops there.
+    const STATEMENTS: [&str; 12] = [
+        "image input is not supported",
+        "image inputs are not supported",
+        "images are not supported",
+        "vision is not supported",
+        "not support image inputs",
+        "not support image input",
+        "not support images",
+        "not support vision",
+        "n't support image inputs",
+        "n't support image input",
+        "n't support images",
+        "n't support vision",
+    ];
+    EXACT.iter().any(|r| lower.contains(r))
+        || STATEMENTS.iter().any(|r| lower.match_indices(r).any(|(at, _)| statement_ends(&lower[at + r.len()..])))
+}
+
+/// Whether what follows a refusal leaves it a flat "no": nothing, closing
+/// punctuation, "by/for this model", or llama.cpp's " - hint: ..." suffix.
+/// A following word ("above", "larger", "on the free plan") makes it a limit.
+fn statement_ends(rest: &str) -> bool {
+    let rest = ["by", "for", "with", "on"].iter()
+        .flat_map(|word| ["this model", "the model"].map(|model| format!(" {word} {model}")))
+        .find_map(|tail| rest.strip_prefix(tail.as_str()))
+        .unwrap_or(rest);
+    let after = rest.trim_start();
+    after.is_empty()
+        || (after.len() == rest.len() && after.starts_with(['.', ';', '!', '"', '\'', '\\', '}', ')', ']']))
+        || after.starts_with("- hint")
+}
+
+/// Swap every picture in the request for a note saying it was left out.
+/// False when there was no picture to take out.
+fn drop_images(messages: &mut [Value]) -> bool {
+    let mut dropped = false;
+    for part in messages.iter_mut().filter_map(|m| m["content"].as_array_mut()).flatten().filter(|p| p["type"] == "image_url") {
+        *part = json!({"type":"text", "text":IMAGE_NOT_SENT});
+        dropped = true;
+    }
+    dropped
 }
 
 /// What a failed reply leaves the cooldown at. A model that says outright it
@@ -1357,6 +1433,177 @@ done
         assert_eq!(parse_sse_line(""), vec![SseLine::Ignored]);
         assert_eq!(parse_sse_line(r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#), vec![SseLine::Ignored]);
     }
+    /// What ds4-server answers a picture with when started without `--vision`.
+    const DS4_NO_VISION: &str = r#"{"error":{"message":"image input requires starting ds4-server with --vision FILE","type":"invalid_request_error"}}"#;
+
+    /// One turn against a stand-in server that answers each chat request with
+    /// the next scripted status and body. Returns what the server was sent and
+    /// what the turn came to.
+    async fn scripted_turn(tag: &str, with_image: bool, script: Vec<(u16, String)>) -> (Vec<Value>, Result<Reply, ParticipantError>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let received = bodies.clone();
+        let http = tokio::spawn(async move {
+            let mut script = script.into_iter();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let header_end = loop {
+                    let mut buffer = [0; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") { break end + 4; }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
+                let length: usize = headers.lines().find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                }).unwrap_or(0);
+                while bytes.len() < header_end + length {
+                    let mut buffer = [0; 8192];
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buffer[..n]);
+                }
+                let (status, kind, body) = if headers.starts_with("GET ") {
+                    (200, "application/json", r#"{"data":[]}"#.to_string())
+                } else {
+                    received.lock().unwrap().push(serde_json::from_slice::<Value>(&bytes[header_end..header_end + length]).unwrap());
+                    // A request past the script is a retry nobody asked for.
+                    let (status, body) = script.next().unwrap_or((500, "unscripted request".into()));
+                    (status, if status == 200 { "text/event-stream" } else { "application/json" }, body)
+                };
+                socket.write_all(format!("HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let config: ParticipantConfig = serde_json::from_value(json!({"id":"ds4", "display_name":"Ds4", "backend":{
+            "kind":"open_ai_compatible", "base_url":format!("http://{address}/v1"),"model":"fixture-text-only"
+        }})).unwrap();
+        let path = std::env::temp_dir().join(format!("apex-no-vision-{}-{tag}.png", std::process::id()));
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let bot = OpenAiCompatParticipant::new(config).with_attachment_roots(vec![path.parent().unwrap().canonicalize().unwrap()]);
+        let content = if with_image { format!("What is in this picture?\nAttached image: {}", path.display()) } else { "What is in this picture?".into() };
+        let request = TurnRequest { system: "test".into(), turns: vec![apex_core::ViewTurn { role: Role::User, content }], ..Default::default() };
+        let result = bot.respond_with_progress(request, &|_| {}).await;
+        http.abort();
+        let _ = std::fs::remove_file(path);
+        let bodies = bodies.lock().unwrap().clone();
+        (bodies, result)
+    }
+
+    fn answer(text: &str) -> (u16, String) {
+        (200, format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":{"content":text}}]})))
+    }
+
+    fn image_parts(body: &Value) -> usize {
+        body["messages"].as_array().unwrap().iter().filter_map(|m| m["content"].as_array()).flatten().filter(|p| p["type"] == "image_url").count()
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refuses_pictures_is_asked_again_without_them() {
+        let (bodies, result) = scripted_turn("retry", true, vec![(400, DS4_NO_VISION.into()), answer("I can't see the picture.")]).await;
+        assert_eq!(result.unwrap().text, "I can't see the picture.");
+        assert_eq!(bodies.len(), 2, "one refused request, one retry");
+        assert_eq!(image_parts(&bodies[0]), 1);
+        assert_eq!(image_parts(&bodies[1]), 0, "the retry carries no picture");
+        let parts = bodies[1]["messages"][1]["content"].as_array().unwrap();
+        assert!(parts[0]["text"].as_str().unwrap().starts_with("What is in this picture?"), "the person's words stay");
+        assert_eq!(parts[1], json!({"type":"text", "text":IMAGE_NOT_SENT}));
+        // Nothing else about the request changes.
+        for field in ["model", "stream", "stream_options"] {
+            assert_eq!(bodies[0][field], bodies[1][field], "{field}");
+        }
+        assert_eq!(bodies[0]["messages"][0], bodies[1]["messages"][0]);
+    }
+
+    #[tokio::test]
+    async fn other_errors_with_a_picture_attached_are_not_retried() {
+        let cases = [
+            (400, "this model's maximum context length is 8192 tokens, including 1 image"),
+            (400, "invalid image: could not decode base64"),
+            (400, "image_url requires a valid https url"),
+            (400, "image input contains an unsupported format"),
+            (400, "image_url requires a url field"),
+            (400, "image input is not supported above 20 MB"),
+            (400, "this model does not support images larger than 20 MB"),
+            (400, "this model does not support image formats other than png"),
+            (400, "unknown variant `input_audio`, expected `text` or `image_url`"),
+            (401, "invalid api key; images are not supported on the free plan"),
+            (413, "request too large: image input is not supported above 20 MB"),
+            (429, "rate limit reached for image input, not supported burst"),
+            (500, "image input requires starting ds4-server with --vision FILE"),
+        ];
+        for (index, (status, text)) in cases.into_iter().enumerate() {
+            let (bodies, result) = scripted_turn(&format!("other-{index}"), true, vec![(status, text.into()), answer("should not get here")]).await;
+            assert_eq!(bodies.len(), 1, "{status} {text}: no retry");
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(text), "{status}: the server's own words are shown, got {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_picture_refusal_is_retried_only_once() {
+        let (bodies, result) = scripted_turn("once", true, vec![(400, DS4_NO_VISION.into()), (400, DS4_NO_VISION.into()), answer("should not get here")]).await;
+        assert_eq!(bodies.len(), 2, "one retry, then the turn fails");
+        assert!(result.unwrap_err().to_string().contains("--vision"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_retry_reports_what_the_retry_was_told() {
+        let (bodies, result) = scripted_turn("retry-fails", true, vec![(400, DS4_NO_VISION.into()), (503, "model is still loading".into())]).await;
+        assert_eq!(bodies.len(), 2);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("503") && error.contains("model is still loading"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_picture_refusal_with_no_picture_in_the_request_is_not_retried() {
+        let (bodies, result) = scripted_turn("no-image", false, vec![(400, DS4_NO_VISION.into()), answer("should not get here")]).await;
+        assert_eq!(bodies.len(), 1);
+        assert!(result.unwrap_err().to_string().contains("--vision"));
+    }
+
+    #[test]
+    fn only_a_real_refusal_of_pictures_counts() {
+        for refusal in [
+            "image input requires starting ds4-server with --vision file",
+            "image input is not supported - hint: if this is unexpected, you may need to provide the mmproj",
+            "invalid content type. image_url is only supported by certain models.",
+            "this model does not support image input",
+            "registry.ollama.ai/library/x does not support images",
+            "failed to deserialize the json body into the target type: messages[1]: unknown variant `image_url`, expected `text`",
+            "model is not a multimodal model; vision is not supported",
+            r#"{"error":{"message":"this model does not support image inputs.","type":"invalid_request_error"}}"#,
+            r#"{"error":"images are not supported by this model"}"#,
+            "vision is not supported for this model",
+        ] {
+            assert!(refuses_images(refusal), "{refusal}");
+        }
+        for other in [
+            "this model's maximum context length is 8192 tokens, including 1 image",
+            "invalid image: could not decode base64",
+            "image too large: 30 mb exceeds the 20 mb limit",
+            "this model does not support tools",
+            "unsupported image format: image/tiff",
+            "image_url requires a valid https url",
+            "image input contains an unsupported format",
+            "image_url requires a url field",
+            "image input is not supported above 20 mb",
+            "this model does not support images larger than 20 mb",
+            "this model does not support image formats other than png",
+            "images are not supported on the free plan",
+            "this model does not support imagery tools",
+            "unknown variant `input_audio`, expected `text` or `image_url`",
+            "vision requires a larger context window",
+            "rate limit reached",
+        ] {
+            assert!(!refuses_images(other), "{other}");
+        }
+    }
+
     #[test]
     fn attached_images_are_native_content_not_just_path_text() {
         let path = std::env::temp_dir().join(format!("apex-vision-{}.png", std::process::id()));
