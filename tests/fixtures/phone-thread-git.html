@@ -1,0 +1,104 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<div id="root"></div>
+<output id="result" style="position:fixed;bottom:10px;right:10px;background:white;color:black;z-index:9999"></output>
+<script type="module">
+import '/src/styles.css';
+import '/src/phone/phone.css';
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {PhoneApp} from '/src/phone/PhoneApp.tsx';
+import {canUseThreadGit} from '/src/phone/PhoneThreadGit.tsx';
+
+const root = createRoot(document.querySelector('#root'));
+const writes = [];
+let reads = 0;
+let workflow = {head:'abc', reviewer:'reviewer', phase:'ready', detail:'Reviewed abc', pushed:false};
+const state = () => ({root:'/fixture', branch:'fix/alert', originRepo:'test/repo', head:'abc', ahead:1, files:[], workflow:{...workflow}});
+const backend = {async call(cmd, {id, action}) {
+  if (id !== 'phone-room') throw Error('Wrong thread');
+  if (cmd === 'room_git_status') { reads++; return state(); }
+  if (cmd !== 'room_thread_git_action' || action.expected.head !== workflow.head) throw Error('Wrong command or commit');
+  writes.push(action.kind);
+  switch (action.kind) {
+    case 'push': workflow.pushed = true; break;
+    case 'request_merge': workflow.phase = 'checks'; break;
+    case 'cancel_merge': workflow.phase = 'cancelled'; break;
+    case 'ask_fix': workflow.fix_requested = true; break;
+    default: throw Error('Unexpected action');
+  }
+  return {state:state(), message:'Saved'};
+}};
+const machine = {id:'local',name:'Fixture Mac',kind:'mac',url:'ws://127.0.0.1:19101',token:'fixture'};
+const session = {version:1,profiles:[],workspaces:[{id:'p',path:'/fixture',name:'Fixture project'}],
+  panes:[{id:'phone-room',kind:'chat',workspaceId:'p',title:'Alert fix'}],activeWorkspace:'p',section:'threads'};
+localStorage.setItem('apex-deck.phone.machines.v1', JSON.stringify([machine]));
+localStorage.setItem('apex-deck.phone.session.v1', JSON.stringify(session));
+const RealSocket = window.WebSocket;
+window.WebSocket = class extends EventTarget {
+  constructor(url,...args) {
+    super();
+    if (url !== machine.url && url !== machine.url+'/') return new RealSocket(url,...args);
+    queueMicrotask(() => this.dispatchEvent(new Event('open')));
+  }
+  close() { this.dispatchEvent(new Event('close')); }
+  async send(frame) {
+    const {id,cmd,args} = JSON.parse(frame);
+    let response = {id,err:'Unsupported fixture command '+cmd};
+    if (cmd === 'hello') response = {id,ok:{host_id:'fixture',boot_id:'boot',protocol:1,version:'0.9.19',last_seq:0,resumed:false,
+      capabilities:['phone_thread_git_v1'],access:{tier:'full',threads:'all'}}};
+    if (cmd === 'session_load') response = {id,ok:session};
+    if (cmd === 'room_state') response = {id,ok:{active:[],approvals:[],snapshot:{participants:[],transcript:[],options:{policy:'mention',max_bot_hops:3}}}};
+    if (cmd === 'room_git_status' || cmd === 'room_thread_git_action') response = {id,ok:await backend.call(cmd,args)};
+    queueMicrotask(() => this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(response)})));
+  }
+};
+async function mount() {
+  const row = () => [...document.querySelectorAll('button')].find(b => b.textContent.includes('Alert fix'));
+  await wait(row);
+  row().click();
+}
+async function leave() {
+  const back = document.querySelector('button[aria-label="Back to Threads"]');
+  if (!back) throw Error('Missing thread navigation '+document.body.innerText);
+  back.click();
+}
+const button = label => Array.from(document.querySelectorAll('button')).find(b => b.textContent === label);
+async function wait(check) {
+  for (let i=0; i<200; i++) {
+    if (check()) return;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw Error('Timed out waiting for ' + check + ' · '+document.body.innerText);
+}
+async function click(label) {
+  await wait(() => button(label) && !button(label).disabled);
+  button(label).click();
+}
+async function run() {
+  if (canUseThreadGit(null) || canUseThreadGit({tier:'chat',threads:'all'}) ||
+      canUseThreadGit({tier:'full',threads:['phone-room']}) || !canUseThreadGit({tier:'full',threads:'all'})) throw Error('Incorrect device gate');
+  root.render(React.createElement(PhoneApp));
+  await mount();
+  await click('Push');
+  await click('Merge to main');
+  await wait(() => button('Waiting for checks…'));
+  await leave();
+  await wait(() => !button('Cancel'));
+  const before = reads;
+  await mount();
+  await wait(() => reads > before && button('Cancel'));
+  await click('Cancel');
+  await click('Merge to main');
+  await wait(() => button('Waiting for checks…'));
+  await leave();
+  await wait(() => !button('Cancel'));
+  workflow = {...workflow, phase:'failed', detail:'Windows check failed\nexpected 0 alerts'};
+  await mount();
+  await wait(() => document.querySelector('details pre')?.textContent.includes('expected 0 alerts'));
+  await click('Ask agent to fix · uses one model turn');
+  await wait(() => button('Fix requested')?.disabled);
+  if (writes.join(',') !== 'push,request_merge,cancel_merge,request_merge,ask_fix') throw Error('Unexpected writes ' + writes);
+}
+run().then(() => result.textContent='PASS', e => result.textContent='FAIL '+e.message);
+</script>

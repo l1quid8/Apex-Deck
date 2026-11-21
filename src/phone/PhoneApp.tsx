@@ -144,6 +144,7 @@ import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
 import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText } from "../threadCopy";
+import { PhoneThreadGit, canUseThreadGit } from "./PhoneThreadGit";
 import { WorktreesPane, copyNeedsYou, useWorktrees } from "./WorktreesPane";
 import { canManageWorktrees, newBelow } from "./worktrees";
 import { copyText } from "../copyText";
@@ -2647,6 +2648,7 @@ export function PhoneApp() {
   // finishes, for the icon's amber dot; the folder in use comes from the thread already loaded.
   const [worktreesOpen, setWorktreesOpen] = useState(false);
   useEffect(() => { setWorktreesOpen(false); }, [openId, openHostId]);
+  const gitHost = openPane && !openChat && !viewingPending && !openPane.assistantTaskId && openPath ? phoneHost(openHostId) : null;
   const worktreeHost = openPane && !openChat && !openWork && !viewingPending && !openPane.assistantTaskId && openWorkspace?.path ? phoneHost(openHostId) : null;
   const worktreesShown = Boolean(worktreeHost && canManageWorktrees(worktreeHost.access()));
   const worktreeState = useWorktrees(worktreeHost?.backend ?? null, openWorkspace?.path ?? "", openPane?.id ?? "", worktreesShown && openLink?.status === "online",
@@ -2825,6 +2827,8 @@ export function PhoneApp() {
         {inChat && openWorkspace && openLink ? (
           <ThreadView
             call={!openChat && openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
+            gitActions={gitHost && openPane && openLink.status === "online" && gitHost.supports("phone_thread_git_v1") && canUseThreadGit(gitHost.access()) &&
+              <PhoneThreadGit key={queueKey(openHostId, openPane.id)} backend={gitHost.backend} room={openPane.id} />}
             callSlot={callSlot}
             callStrip={openPane ? <PhoneCallStrip voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
             callCapsule={openPane ? <PhoneCallCapsule voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
@@ -3880,6 +3884,7 @@ function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: s
 interface SwipeRow { id: string; hostId: string; title: string; where: string; words: string }
 
 function ThreadView(props: {
+  gitActions?: ReactNode;
   /** The mic beside Send and the call's sheet; `button` is false while the box shows Send in its place. */
   call?: (button: boolean) => ReactNode;
   callSlot: { live: boolean; look: CallLook; hint: string };
@@ -4483,6 +4488,7 @@ function ThreadView(props: {
             </section>
           );
         })}
+        {props.gitActions}
         {props.approvals.map((card) => (
           <div key={card.request} className="ph-approval">
             <ApprovalCard action={card.action.kind === "tool" ? { ...card.action, title: toolLine(card.action.title) } : card.action} request={card.request} by={card.id} name={person(card.id).display_name} hostName={approvalWhere(props.machine, props.path, props.kind)} disabled={paused} onDecide={(approve, always) => props.onDecide(card.request, approve, always)} />

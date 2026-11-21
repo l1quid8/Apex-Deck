@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import { transform } from 'sucrase';
 import { gitGates, reconcileSelection, selectTurnFiles } from '../src/gitChanges.ts';
 const source = fs.readFileSync(new URL('../src/GitChangesMenu.tsx', import.meta.url), 'utf8');
-const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^import '\.\/gitChanges.css';\n/m, '').replace('export function GitChangesMenu', 'function GitChangesMenu'), {transforms:['typescript','jsx'], jsxRuntime:'classic'}).code;
+const actionSource = fs.readFileSync(new URL('../src/ThreadGitActions.tsx', import.meta.url), 'utf8');
+const actionCode = transform(actionSource.replace(/^import .*;\n/gm, '').replace('export function ThreadGitActions', 'function ThreadGitActions'), { transforms: ['typescript','jsx'], jsxRuntime: 'classic', production: true }).code;
+const compiled = actionCode + '\n' + transform(source.replace(/^import .*;\n/gm, '').replace(/^import '\.\/gitChanges.css';\n/m, '').replace('export function GitChangesMenu', 'function GitChangesMenu'), {transforms:['typescript','jsx'], jsxRuntime:'classic'}).code;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const state = () => ({root:'/repo',originRepo:'test/repo',head:'abc',tree:'tree',branch:'feat/test',target:'main',targetHead:'base',ahead:2,behind:0,checksPassed:false,clean:false,files:[{path:'a.ts',added:2,removed:1,patch:'+a',stagedOnly:false},{path:'b.ts',added:1,removed:0,patch:'+b',stagedOnly:false}]});
 function harness(backend) {
@@ -19,7 +21,7 @@ function harness(backend) {
     useEffect:effect,useLayoutEffect:effect,
   };
   const fakeDocument={body:{},activeElement:null};
-  const React={Fragment:'fragment',createElement(type,props,...children){const node={type,props:props??{},children:children.flat(Infinity),style:{},focus(){this.focused=true;fakeDocument.activeElement=this;},contains(node){return node===this||Boolean(node?.props.id&&node.props.id===this.props.id);},getBoundingClientRect(){return{left:0,right:350,top:25,bottom:50,width:320,height:300};}};if(props?.ref&&typeof props.ref==='object')props.ref.current=node;return node;}};
+  const React={Fragment:'fragment',createElement(type,props,...children){if(typeof type==='function')return type(props);const node={type,props:props??{},children:children.flat(Infinity),style:{},focus(){this.focused=true;fakeDocument.activeElement=this;},contains(node){return node===this||Boolean(node?.props.id&&node.props.id===this.props.id);},getBoundingClientRect(){return{left:0,right:350,top:25,bottom:50,width:320,height:300};}};if(props?.ref&&typeof props.ref==='object')props.ref.current=node;return node;}};
   const component = new Function('React',...Object.keys(hooks),'createPortal','Diff','popoverTop','gitGates','reconcileSelection','selectTurnFiles','window','document','ResizeObserver','HTMLElement',compiled+'; return GitChangesMenu;')(React,...Object.values(hooks),(child)=>child,'Diff',()=>55,gitGates,reconcileSelection,selectTurnFiles,fakeWindow,fakeDocument,class{observe(){}disconnect(){}},Object);
   let props={backend,room:'room',cwd:'/repo',active:true,ready:true,revision:0,request:null,target:{},canOpen:true,onOpen(){props={...props,request:{paths:null,nonce:Date.now()}};},onClose(){props={...props,request:null};},onReview(){},onChanged(){}};
   return {render(){cursor=0;const tree=component(props);while(effects.length)effects.shift()();return tree;},setProps(next){props={...props,...next};},poll(){for(const fn of timers.values())fn();},key(e){listeners.get('keydown')?.(e);},unmount(){for(const slot of slots)slot?.cleanup?.();}};
