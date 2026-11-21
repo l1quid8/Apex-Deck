@@ -22,6 +22,7 @@ final class Server {
     return session["CGSSessionScreenIsLocked"] as? Bool != true
   }
   let turns = TurnRegistry(sessionAvailable: Server.sessionAvailable)
+  let promptsDisplay = AppPromptsDisplay()
   let browser = BrowserBroker()
   lazy var activity = ActivityTap(latch)
   var input: Input { Input(ax: ax, latch: latch) }
@@ -46,11 +47,12 @@ final class Server {
     }
   }
   func startIsolatedRun() -> Bool { false } // Session authority always comes from the signed daemon.
-  func stopIsolatedRun() {
+  /// `takeover` also holds new turns back until the away-mode lock is confirmed.
+  func stopIsolatedRun(takeover: Bool = false) {
     CursorOverlayIntegration.cleanupOnStop()
     activity.stopAll()
     lease.releaseAll()
-    for turn in turns.stopAll() {
+    for turn in takeover ? turns.takeover() : turns.stopAll() {
       guard let fd = turn["control"] as? Int32, fd >= 0, let params = turn["params"] as? [String: Any] else { continue }
       DispatchQueue.global().async { self.send(["jsonrpc": "2.0", "method": "unified/stop", "params": params], fd); close(fd) }
     }
@@ -70,11 +72,12 @@ final class Server {
     cursorOverlayDict["enabled"] = CursorOverlaySettings.isEnabled
     cursorOverlayDict["labelsEnabled"] = CursorOverlaySettings.showLabel
     return ["accessibilityTrusted": ax.trusted(), "screenCaptureAccess": CGPreflightScreenCaptureAccess(),
-      "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2, "stopped": turns.isStopped,
+      "listenEventAccess": CGPreflightListenEventAccess(), "tapHealthy": state.2,
       "cursorOverlayEnabled": CursorOverlaySettings.isEnabled,
       "cursorOverlayLabelsEnabled": CursorOverlaySettings.showLabel,
       "cursorOverlay": cursorOverlayDict,
       "awayMode": AwayMode.shared.status(),
+      "skipAppPrompts": promptsDisplay.promptsSkipped,
       "pid": ProcessInfo.processInfo.processIdentifier]
   }
   func send(_ value: [String: Any], _ client: Int32) { output.lock(); defer { output.unlock() }; Wire.send(value, fd: client) }
@@ -136,6 +139,7 @@ final class Server {
         do {
           guard authenticated, !protocolStarted, controlToken == nil, state.token == nil else { throw Refusal("authenticated_daemon_required") }
           controlToken = try self.turns.register(params, control: client)
+          self.promptsDisplay.note(params)
           if let owner = self.lease.currentOwner, (try? self.turns.check(owner)) == nil,
             self.lease.release(owner) { self.activity.invalidateObservations() }
           self.response(id, ["registered": true], client)
@@ -162,6 +166,13 @@ final class Server {
         guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
         DispatchQueue.main.async { self.showSetup?() }
         self.response(id, ["shown": true], client); return
+      }
+      if method == "unified/set-app-prompts" {
+        // Draws the menu bar icon only. Prompting follows each turn's own stamp.
+        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
+        guard let skip = params["skip"] as? Bool else { self.fail(id, "invalid_request", client); return }
+        self.promptsDisplay.set(skip)
+        self.response(id, self.status(), client); return
       }
       if method == "unified/set-action-labels" {
         guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
@@ -222,15 +233,6 @@ final class Server {
         CursorOverlaySettings.resetToDefaults()
         CursorOverlaySettings.showLabel = false
         self.response(id, self.status(), client); return
-      }
-      if method == "unified/resume" {
-        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
-        guard Self.sessionAvailable() else { self.fail(id, "session_locked_or_unavailable", client); return }
-        self.turns.resume(); self.response(id, ["resumed": true], client); return
-      }
-      if method == "unified/stop-all" {
-        guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
-        self.stopIsolatedRun(); self.response(id, ["stopped": true], client); return
       }
       protocolStarted = true
       if method == "initialize" {
@@ -503,7 +505,7 @@ final class Server {
       guard Set(args.keys) == ["snapshot", "key"], let key = args["key"] as? String else { throw Refusal("invalid_arguments") }
       // Generic label for key, show at focus only as fallback before validation
       CursorOverlayIntegration.showForFocus(snapshot: s, label: key == "" ? "Key" : key, action: .generic)
-      try input.key(key, s: s, id: id, untethered: turns.isUntethered(activeState.token))
+      try input.key(key, s: s, id: id, promptFree: turns.isPromptFree(activeState.token))
       engineSession.recordUnverifiedInput()
     case "scroll":
       guard Set(args.keys) == ["snapshot", "element", "direction", "amount"], let number = args["element"] as? Int,
@@ -546,7 +548,7 @@ final class Server {
       tool("control", "Operate one retained numbered control in a fresh snapshot without the pointer or keyboard. action is toggle, check, uncheck, expand, collapse, select (value = the option's label, for pop-up menus, lists and tabs) or set_value (value = the field's full new text; prefer type_text for typing). More reliable than click for checkboxes, switches, disclosure triangles, pop-ups and sliders. Password fields are refused.", snap.merging(["element": element, "action": ["type": "string", "enum": ["toggle", "check", "uncheck", "expand", "collapse", "select", "set_value"]], "value": ["type": "string", "maxLength": 16384]]) { $1 }, ["snapshot", "element", "action"]),
       tool("click_point", "Press the control under a point in the current screenshot. x/y are image pixels; requires its image_snapshot and a writable session. The pointer never moves, so pixel_target_has_no_control is returned where nothing pressable is under the point, such as a canvas.", snap.merging(["x": ["type": "number", "minimum": 0], "y": ["type": "number", "minimum": 0]]) { $1 }, ["snapshot", "x", "y"]),
       tool("type_text", "Type into a numbered text control, or the app's focused field if element is omitted. Works in the background and is verified by reading the field back. Password fields are refused.", snap.merging(["text": ["type": "string", "maxLength": 65536], "element": element]) { $1 }, ["snapshot", "text"]),
-      tool("press_key", "Press a named key, such as Return, Tab, Space, PageDown or Shift-Tab, on the app's focused control. Delivery is not verified, so read the screen and never repeat it blindly. Cmd- and Control- shortcuts return shortcut_needs_foreground unless this bot is untethered, which brings the app to the front first; quit and force-quit shortcuts are always blocked. Minimized windows return key_needs_visible_window. Return in a browser's own controls, such as the address bar, returns browser_control_needs_visible_window while the window is fully covered.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
+      tool("press_key", "Press a named key, such as Return, Tab, Space, PageDown or Shift-Tab, on the app's focused control. Delivery is not verified, so read the screen and never repeat it blindly. Cmd- and Control- shortcuts return shortcut_needs_foreground unless app prompts are skipped for this Full-access agent, which brings the app to the front first; quit and force-quit shortcuts are always blocked. Minimized windows return key_needs_visible_window. Return in a browser's own controls, such as the address bar, returns browser_control_needs_visible_window while the window is fully covered.", snap.merging(["key": str]) { $1 }, ["snapshot", "key"]),
       tool("scroll", "Scroll one retained native control by accessibility. Web pages usually return scroll_not_supported_use_reveal.", snap.merging(["element": element, "direction": ["type": "string", "enum": ["up", "down", "left", "right"]], "amount": ["type": "integer", "minimum": 1, "maximum": 20]]) { $1 }, ["snapshot", "element", "direction", "amount"]),
       tool("reveal", "Scroll a retained numbered control into view. This is the way to scroll a web page.", snap.merging(["element": element]) { $1 }, ["snapshot", "element"])]
   }

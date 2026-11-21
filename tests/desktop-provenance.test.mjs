@@ -28,11 +28,14 @@ test('every host command requiring provenance enters desktop attestation',()=>{
 test('approval grants, permission edits, trash and action labels bind exact signed submissions',async()=>{
   const {publicKey,privateKey}=generateKeyPairSync('ed25519');
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  assert.ok(mod.protectedCommands.has('computer_set_app_prompts'));
+  assert.equal(mod.needsAttestation('computer_set_app_prompts',false),true);
   const frames=[
     {id:31,cmd:'personal_decide_always',args:{assistantId:'alfred',requestId:'approval-request',decisionId:'decision-1',paramsHash:'params-hash',expectedRevision:7,capability:'commandRun',scope:{kind:'project',host:'mac',cwd:'/project'}}},
     {id:32,cmd:'personal_permission_set',args:{assistantId:'alfred',expectedRevision:8,capability:'commandRun',scope:{kind:'allProjects'},mode:'always',delegate:false}},
     {id:33,cmd:'room_set_trashed',args:{id:'thread-1',trashed:true}},
     {id:34,cmd:'computer_set_action_labels',args:{enabled:true}},
+    {id:35,cmd:'computer_set_app_prompts',args:{skip:true}},
   ];
   const response=command=>{
     const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});

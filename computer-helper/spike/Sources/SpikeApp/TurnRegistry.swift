@@ -18,8 +18,8 @@ final class TurnRegistry {
     let access: String
     /// Set only on the signed daemon registration, never by a tool connection.
     let assistantFullAccess: Bool
-    /// A Work-room bot saved as untethered at Full access. Also daemon-only.
-    let untethered: Bool
+    /// A Full-access Work-room turn started while this Mac skips app prompts. Also daemon-only.
+    let promptFree: Bool
     let control: Int32
     let grantScope: String
     var grants = [String: AppIdentity]()
@@ -35,7 +35,7 @@ final class TurnRegistry {
   }
   private let lock = NSLock()
   private var turns = [String: Turn]()
-  private var globallyStopped = false
+  private var takeoverHold = false
   private var retired = Set<String>()
   private var latches = [String: [WeakLatch]]()
   private var threadGrants = [String: ThreadGrants]()
@@ -60,16 +60,16 @@ final class TurnRegistry {
     guard let grantScope = args["grantScope"] as? String, (1...128).contains(grantScope.utf8.count) else { throw Refusal("turn_binding_invalid") }
     let assistantFullAccess = args["assistantFullAccess"] as? Bool == true
     guard !assistantFullAccess || (access == "full" && thread.hasPrefix("assistant:") && thread.count > "assistant:".count) else { throw Refusal("assistant_full_access_binding_invalid") }
-    let untethered = args["untethered"] as? Bool == true
-    guard !untethered || (access == "full" && !assistantFullAccess) else { throw Refusal("untethered_binding_invalid") }
+    let promptFree = args["promptFree"] as? Bool == true
+    guard !promptFree || (access == "full" && !assistantFullAccess) else { throw Refusal("prompt_free_binding_invalid") }
     lock.lock(); defer { lock.unlock() }
-    guard !globallyStopped else { throw Refusal("computer_use_stopped") }
+    guard !takeoverHold else { throw Refusal("takeover_lock_unconfirmed") }
     guard turns[token] == nil, !retired.contains(token) else { throw Refusal("turn_already_registered") }
     // A newer turn supersedes every predecessor for the same owner.
     let obsolete = turns.values.filter { $0.thread == thread && $0.participant == participant }.map { $0.token }
     for old in obsolete { turns.removeValue(forKey: old); retired.insert(old); latches.removeValue(forKey: old)?.forEach { $0.value?.stop() } }
     turns[token] = Turn(thread: thread, participant: participant,
-      participantName: Self.label(args["participantName"], fallback: participant), threadName: Self.label(args["threadName"], fallback: thread), token: token, access: access, assistantFullAccess: assistantFullAccess, untethered: untethered, control: control, grantScope: grantScope)
+      participantName: Self.label(args["participantName"], fallback: participant), threadName: Self.label(args["threadName"], fallback: thread), token: token, access: access, assistantFullAccess: assistantFullAccess, promptFree: promptFree, control: control, grantScope: grantScope)
     if threadGrants[thread]?.scope != grantScope { threadGrants[thread] = ThreadGrants(scope: grantScope) }
     return token
   }
@@ -97,10 +97,6 @@ final class TurnRegistry {
     guard let turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
     return (turn.threadName, turn.participantName)
   }
-  var isStopped: Bool {
-    lock.lock(); defer { lock.unlock() }; return globallyStopped
-  }
-  func resume() { lock.lock(); globallyStopped = false; lock.unlock() }
   func canControl(_ token: String) throws -> Bool {
     lock.lock(); defer { lock.unlock() }
     guard let turn = turns[token], !turn.stopped else { throw Refusal("turn_unregistered_or_ended") }
@@ -126,7 +122,7 @@ final class TurnRegistry {
   func authorizeApp(_ identity: AppIdentity, token: String, consent: () throws -> AppGrantDecision) throws {
     lock.lock()
     guard let turn = turns[token], !turn.stopped else { lock.unlock(); throw Refusal("turn_unregistered_or_ended") }
-    let full = turn.assistantFullAccess || turn.untethered
+    let full = turn.assistantFullAccess || turn.promptFree
     lock.unlock()
     if full {
       // Full authorizes this turn only. Downgrading or ending the turn cannot
@@ -147,21 +143,31 @@ final class TurnRegistry {
       let grant = shared.apps[bundle], grant.control || turn.access == "read" else { throw Refusal("app_grant_required") }
     return grant.identity
   }
-  /// Untethered turns may send foreground shortcuts. Protected targets still apply.
-  func isUntethered(_ token: String?) -> Bool {
+  /// Prompt-free turns may send foreground shortcuts. Protected targets still apply.
+  func isPromptFree(_ token: String?) -> Bool {
     guard let token = token else { return false }
     lock.lock(); defer { lock.unlock() }
     guard let turn = turns[token], !turn.stopped else { return false }
-    return turn.untethered && turn.access == "full"
+    return turn.promptFree && turn.access == "full"
   }
   /// Away mode holds the Mac awake only while such a turn is live.
-  func hasActiveUntethered() -> Bool {
+  func hasActivePromptFree() -> Bool {
     lock.lock(); defer { lock.unlock() }
-    return !globallyStopped && turns.values.contains { $0.untethered && $0.access == "full" && !$0.stopped }
+    return turns.values.contains { $0.promptFree && $0.access == "full" && !$0.stopped }
   }
+  /// Someone touched the Mac while the away-mode shield was up. Ends every
+  /// turn and refuses new ones until `takeoverSettled`: a failed lock leaves
+  /// the shield up, and no turn may start behind it.
+  func takeover() -> [[String: Any]] {
+    lock.lock(); takeoverHold = true; lock.unlock()
+    return stopAll()
+  }
+  /// The lock was confirmed, or the owner authenticated to remove the shield.
+  func takeoverSettled() { lock.lock(); takeoverHold = false; lock.unlock() }
+  /// Ends the current turns and their grants. Nothing stays latched: the
+  /// next registration starts a new turn.
   func stopAll() -> [[String: Any]] {
     lock.lock(); defer { lock.unlock() }
-    globallyStopped = true
     threadGrants.removeAll()
     return turns.keys.compactMap { token in
       guard var turn = turns[token], !turn.stopped else { return nil }

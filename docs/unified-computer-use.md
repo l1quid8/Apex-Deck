@@ -11,31 +11,37 @@ Unified Computer Use lets Deck bots read and control granted Mac applications th
 
 ## App access
 
-The helper asks before a bot first uses an app. **Allow Once** ends with that bot's turn. **Allow for This Work Thread** lets every supported bot in that thread use the app, including on follow-up turns, with no more prompts. It is held in memory for that thread only, and the app's identity is rechecked on every request and action. A read-only approval does not cover a turn that can control the app. Stop, revoking access (including removing a bot, changing its access, turning on Plan, closing the thread or turning the feature off) and restarting Deck's service or the helper all clear it.
+The helper asks before a bot first uses an app. **Allow Once** ends with that bot's turn. **Allow for This Work Thread** lets every supported bot in that thread use the app, including on follow-up turns, with no more prompts. It is held in memory for that thread only, and the app's identity is rechecked on every request and action. A read-only approval does not cover a turn that can control the app. Stopping the agent's output, switching App permissions to **Ask for each app**, revoking access (including removing a bot, changing its access, turning on Plan, closing the thread or turning the feature off) and restarting Deck's service or the helper all clear it.
 
 The helper ships inside `Apex Deck.app/Contents/Resources/Unified Computer Use.app`. Approve the copy inside the installed Deck application, rather than an older prototype or a source-tree build. The macOS permission-list name is **Unified Computer Use**. Changing from the earlier Spike app requires new grants; the old app's grants do not establish permission for this one.
 
-## Untethered computer use
+## App permissions
 
-For a bot you trust, open its settings and turn on **Untethered computer use**. It needs Full access and asks you to confirm once. An untethered bot:
+**Settings → Unified Computer Use → App permissions** is one choice for the whole Mac:
 
-- opens and controls any Mac app without the helper's per-app approval card, in every Work thread it joins;
-- can send Cmd and Control shortcuts: the helper brings the app to the front first. Quit (Cmd-Q and variants) and Force Quit stay blocked.
+- **Ask for each app** (the default): the helper shows its approval card before an agent first uses an app.
+- **Skip prompts for Full-access agents**: asks you to confirm once. After that, an agent on Full access:
+  - opens and controls any Mac app without the approval card, in every Work thread it joins;
+  - can send Cmd and Control shortcuts: the helper brings the app to the front first. Quit (Cmd-Q and variants) and Force Quit stay blocked.
 
-These still apply: protected apps (System Settings, Keychain, Passwords, sign-in and security windows), password fields, app identity checks, Stop (Deck and the menu bar), Plan staying read-only, and macOS's own Accessibility and Screen Recording permissions. Lowering the bot's access or turning the switch off ends the current authority at once. Personal assistants keep their own Full-trust setting.
+Agents on Read-only, Ask or Edit access always ask, whichever choice is set. There is no per-agent switch. A turn already running when you choose Skip keeps asking until its next turn. Choosing **Ask for each app** takes effect at once: it ends every computer-use turn and forgets every thread's "allow for this thread" approvals. If that change can't be saved, it still applies now and Settings warns that it may switch back after a restart.
+
+The choice is kept when you turn Unified Computer Use off and on, and across restarts. While prompts are skipped, the menu bar icon shows a dot and its tooltip reads "app prompts skipped".
+
+These still apply: protected apps (System Settings, Keychain, Passwords, sign-in and security windows), password fields, app identity checks, Plan staying read-only, and macOS's own Accessibility and Screen Recording permissions. Lowering an agent's access ends its current authority at once. Personal assistants keep their own Full-trust setting.
 
 Every bot also benefits from two reliability changes: a call that arrives while another bot's action is running now waits up to eight seconds instead of failing with `action_busy`, and a screen reading that is too large is cut at a line boundary instead of failing with `engine_output_too_large`.
 
 ## Keep working while I'm away
 
-Untethered bots normally stop when your Mac locks. To let them keep going while you step away, choose **Keep Working While I'm Away** from the Unified Computer Use menu bar icon and confirm. It can only be turned on there, on the Mac itself, never from Deck's settings, your phone or remote access. Deck's settings show whether it is on.
+Agents stop using the computer when your Mac locks. To let Full-access agents with prompts skipped keep going while you step away, choose **Keep Working While I'm Away** from the Unified Computer Use menu bar icon and confirm. It can only be turned on there, on the Mac itself, never from Deck's settings, your phone or remote access. Deck's settings show whether it is on.
 
-While it is on and at least one untethered bot has a turn running:
+While it is on and at least one such agent has a turn running:
 
 - the Mac does not lock or sleep its display when idle;
 - after 5 minutes with no keyboard or mouse input, a black shield covers every display (hidden from screen sharing and screenshots);
-- any keyboard or mouse input while the shield is up locks the Mac at once, the same way **Lock Screen** does. If macOS refuses the lock, the shield stays until you confirm with Touch ID or your password;
-- when the last untethered turn ends or you press Stop, the Mac locks if the shield was up, and normal idle locking resumes.
+- any keyboard or mouse input while the shield is up locks the Mac at once, the same way **Lock Screen** does. If macOS refuses the lock, the shield stays until you confirm with Touch ID or your password, and no new computer-use turn starts until then;
+- when the last such turn ends, the Mac locks if the shield was up, and normal idle locking resumes.
 
 Before the shield goes up, the desktop is unlocked as it would be before your normal idle lock. If you lock the Mac yourself (Control-Command-Q, the lid, the menu), bots stop as usual; resuming work on a locked Mac is a separate, later feature. Nothing is installed in macOS: there is no authorization plug-in or root service. Apps whose windows are covered may refresh web content more slowly, as with any covered window.
 
@@ -44,8 +50,8 @@ Before the shield goes up, the desktop is unlocked as it would be before your no
 In a Work thread, type `!` and select **Unified Computer Use**, or send
 `!unified-computer-use Open TextEdit and type hello.` The existing tool picker
 adds the token for you. This requests the bundled desktop tools from the addressed
-bot; it does not enable the feature, clear Stop or grant app permissions. If the
-feature is off or stopped, Deck explains which setting to change before sending.
+bot; it does not enable the feature or grant app permissions. If the
+feature is off, Deck explains which setting to change before sending.
 The older `!apex-computer` spelling is also recognized.
 
 ## Models and apps
@@ -58,13 +64,13 @@ Text-only notice: **This model can’t read screenshots and relies on accessibil
 
 App coverage depends on the application's accessibility support. A successful package or unit test does not establish that every app or model works. Screenshots are bounded, in-memory captures of the granted app's selected window, not continuous screen recording.
 
-## Permissions and Stop
+## Permissions and stopping
 
 Reading requires an app grant too. Read-only and Plan turns cannot open, focus or mutate an app. Control permissions belong to the bot's current host-authorized turn; an old background worker cannot reuse its token in a later turn. A disconnected or ended turn loses its capability.
 
 Only one bot controls the desktop at a time. Actions use observations tied to the app and retained native controls. If the screen changes or you use the keyboard or mouse, the bot must observe again. A refusal does not return screen content.
 
-Use **Stop** in Deck's Unified Computer Use settings, the normal thread Stop button, or the helper's independent menu bar control. Stop blocks reads as well as input and invalidates the affected turn. After a global Stop, choose **Resume** in settings before sending a new message. System permission/security applications, password fields and the controller's own surfaces are protected. This is not a sandbox against an unrestricted shell running as your macOS user.
+There are two ways to stop. To stop one agent, stop its output with the normal thread Stop button: that ends its computer use, reads as well as input. To stop everything, switch **Enable Unified Computer Use** off in Settings; quitting the helper from its menu bar icon also ends every turn. Nothing stays stopped: there is no Resume, and the next message starts a new turn. System permission/security applications, password fields and the controller's own surfaces are protected. This is not a sandbox against an unrestricted shell running as your macOS user.
 
 ## Privacy
 

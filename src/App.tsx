@@ -3420,7 +3420,7 @@ export function App() {
                 const browserName = inAssistant ? selectedAssistant!.hostName : hostNameFor(browserHost);
                 const browserKey = inAssistant ? `assistant:${assistantHost?.routeHostId ?? browserName}` : browserHost;
                 return <SharedBrowser key={browserKey} call={browserRoute.call.bind(browserRoute)} hostId={browserKey} hostName={browserName} visible={visible} assistantFirst={inAssistant} assistantName={selectedAssistant?.assistant?.name ?? "Assistant"}
-                  thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} onStopAll={() => { void browserRoute.call("computer_stop").catch(() => {}); }} />;
+                  thread={!inAssistant && browserHost === focusedHost && pane?.kind === "chat" ? { id: pane.id, title: pane.title } : null} roomName={(id) => panes.find((item) => item.id === id)?.title} open={browserAddress} onOpened={() => setBrowserAddress(null)} />;
               },
               plan: () => { const feed = focusedPane ? planFeeds[focusedPane] : undefined; return feed?.runs.length
                 ? <PlanTab key={focusedPane} runs={feed.runs} want={planWant?.pane === focusedPane ? planWant : null} onDecide={feed.decide} onStop={feed.stop} onClose={closeDetails} expanded={sidePanelFull} onExpand={() => setSidePanelFull(!sidePanelFull)} />

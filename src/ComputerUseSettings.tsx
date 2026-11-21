@@ -28,7 +28,8 @@ type ComputerStatus = {
   accessibilityTrusted?: boolean;
   listenEventAccess?: boolean;
   screenCaptureAccess?: boolean;
-  stopped?: boolean;
+  /** This Mac's App permissions choice: Full-access agents skip app prompts. */
+  skipAppPrompts?: boolean;
   cursorOverlayLabelsEnabled?: boolean;
   /** Keep working while I'm away. Switched only from the helper's menu bar menu. */
   awayMode?: { enabled: boolean; holding: boolean; shielded: boolean; shieldDelaySeconds: number };
@@ -65,6 +66,9 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   const [prefs, setPrefs] = useState<CursorOverlayPrefs>(DEFAULT_PREFS);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmSkip, setConfirmSkip] = useState(false);
+  // Kept apart from `error`: a later look at the host must not hide that Ask was not saved.
+  const [promptsError, setPromptsError] = useState('');
   const [customOpen, setCustomOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -123,6 +127,23 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     } catch (e: any) {
       try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'cursor', error: e?.message } })); } catch {}
       setError(e?.message || 'The request could not finish. Open Unified Computer Use from the menu bar and check its status.');
+    } finally { setBusy(false); }
+  };
+
+  // The choice shown is always the host's. A failed change is followed by a
+  // fresh status: Ask takes effect on the Mac even when it could not be saved.
+  const setAppPrompts = async (skip: boolean) => {
+    setConfirmSkip(false);
+    const seq = nextSettingsSaveSequence();
+    try { window.dispatchEvent(new CustomEvent('settings-save-pending', { detail: { seq, source: 'computer' } })); } catch {}
+    setBusy(true); setPromptsError('');
+    try {
+      setStatus(await backend.call<ComputerStatus>('computer_set_app_prompts', { skip }));
+      try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'computer' } })); } catch {}
+    } catch (e: any) {
+      try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'computer', error: e?.message } })); } catch {}
+      setPromptsError(e?.message || 'App permissions could not be changed.');
+      await refresh();
     } finally { setBusy(false); }
   };
 
@@ -218,6 +239,10 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
     } finally { setBusy(false); }
   };
 
+  const skip = status?.skipAppPrompts === true;
+  const promptsLocked = busy || backend.demo || !status?.available || !status.enabled;
+  const unavailable = backend.demo ? 'Available in the macOS desktop app.' : !status ? 'Checking this host…' : !status.available ? status.reason || 'The bundled helper is unavailable on this host.' : '';
+
   const permission = (value: boolean | undefined) => value === true ? 'Allowed' : value === false ? 'Not allowed' : 'Open the helper to check';
 
   const previewStyle: React.CSSProperties = {
@@ -233,12 +258,31 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
   return <>
     <div className="settings-card">
       <div className="settings-row">
-        <div className="settings-label"><strong>Enable Unified Computer Use</strong><small>Let supported agents request access to Mac apps. Each app needs your permission before an agent can read or control it.</small></div>
+        <div className="settings-label"><strong>Enable Unified Computer Use</strong><small>{skip
+          ? 'Let supported agents use Mac apps. Full-access agents skip app prompts. Other agents ask before each app.'
+          : 'Let supported agents request access to Mac apps. Each app needs your permission before an agent can read or control it.'}</small>
+          {unavailable && <small role="status">{unavailable}</small>}</div>
         <input type="checkbox" aria-label="Enable Unified Computer Use" checked={status?.enabled ?? false} disabled={busy || backend.demo || !status?.available} onChange={e => { void act('computer_set_enabled', { enabled: e.target.checked }); }} />
       </div>
-      <div className="settings-row">
-        <div className="settings-label"><strong>Status</strong><small role="status">{backend.demo ? 'Available in the macOS desktop app.' : !status ? 'Checking this host…' : !status.available ? status.reason || 'The bundled helper is unavailable on this host.' : !status.enabled ? 'Off' : status.stopped ? 'Stopped. Resume, then send a new message to begin a new turn.' : 'Ready for app requests'}</small></div>
-        {status?.enabled && status.stopped ? <button disabled={busy || backend.demo} onClick={() => { void act('computer_set_enabled', { enabled: true }); }}>Resume</button> : <button disabled={busy || backend.demo} onClick={() => { void refresh(); }}>Refresh</button>}
+      <div className="settings-row stacked" id="ucu-app-prompts">
+        <div className="settings-row-top">
+          <div className="settings-label"><strong>App permissions</strong><small>{!status?.enabled && status?.available
+            ? 'Turn on Unified Computer Use to change this.'
+            : 'When agents ask before opening or controlling a Mac app. Agents below Full access always ask.'}</small></div>
+          <div className="inline-options" role="group" aria-label="App permissions">
+            <button type="button" aria-pressed={!skip} disabled={promptsLocked} onClick={() => { if (skip) void setAppPrompts(false); else setConfirmSkip(false); }}>Ask for each app</button>
+            <button type="button" aria-pressed={skip} disabled={promptsLocked} onClick={() => { if (!skip) setConfirmSkip(true); }}>Skip prompts for Full-access agents</button>
+          </div>
+        </div>
+        {confirmSkip && !skip && !promptsLocked && <div className="settings-confirm" role="group" aria-label="Confirm skipping app prompts">
+          <strong>Skip app prompts for all Full-access agents on this Mac?</strong>
+          <p>Any agent with Full access can open and control Mac apps without asking first, including typing, shortcuts and clicks. Protected apps (System Settings, Keychain, Passwords, sign-in windows) and password fields still apply. Stopping an agent&rsquo;s output stops its computer use. App content goes to that agent&rsquo;s model provider.</p>
+          <div className="settings-confirm-actions">
+            <button type="button" onClick={() => setConfirmSkip(false)}>Cancel</button>
+            <button type="button" className="danger" onClick={() => { void setAppPrompts(true); }}>Skip prompts</button>
+          </div>
+        </div>}
+        {promptsError && <p role="alert" className="danger-text">{promptsError}</p>}
       </div>
       <div className="settings-row">
         <div className="settings-label"><strong>Mac permissions</strong><small>Accessibility: {permission(status?.accessibilityTrusted)}<br />Input Monitoring: {permission(status?.listenEventAccess)}<br />Screen Recording: {permission(status?.screenCaptureAccess)}</small></div>
@@ -328,12 +372,8 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
 
     <div className="settings-card">
       {status?.available && status.awayMode && <div className="settings-row" id="ucu-away"><div className="settings-label"><strong>Keep working while I&rsquo;m away</strong><small>{status?.awayMode?.enabled
-        ? `On. While an untethered agent works, this Mac won't idle-lock. After ${Math.round((status.awayMode.shieldDelaySeconds || 300) / 60)} minutes without input a shield covers the screens, and any keyboard or mouse input locks the Mac.${status.awayMode.shielded ? ' Shield is up now.' : status.awayMode.holding ? ' Holding the Mac awake now.' : ''}`
-        : 'Off. Untethered agents stop when this Mac locks. Turn it on from the Unified Computer Use menu bar icon; it can’t be switched on remotely.'}</small></div></div>}
-      <div className="settings-row">
-        <div className="settings-label"><strong>Stop Unified Computer Use</strong><small>Cancels active input and revokes current turns. The helper also has an independent Stop control in the menu bar.</small></div>
-        <button className="danger" disabled={busy || backend.demo || !status?.available} onClick={() => { void act('computer_stop'); }}>Stop</button>
-      </div>
+        ? `On. While a Full-access agent works with app prompts skipped, this Mac won't idle-lock. After ${Math.round((status.awayMode.shieldDelaySeconds || 300) / 60)} minutes without input a shield covers the screens, and any keyboard or mouse input locks the Mac.${status.awayMode.shielded ? ' Shield is up now.' : status.awayMode.holding ? ' Holding the Mac awake now.' : ''}`
+        : 'Off. Agents stop using the computer when this Mac locks. Turn it on from the Unified Computer Use menu bar icon; it can’t be switched on remotely.'}</small></div></div>}
     </div>
 
     <div className="settings-card">

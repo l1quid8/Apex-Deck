@@ -142,6 +142,11 @@ export function holderName(tab: BrowserTab, roomName: (id: string) => string | u
 }
 
 /** The tab's short name in the strip. */
+/** The tabs "Stop all" acts on: each one an agent holds gets "Stop this agent". */
+export function agentTabs(tabs: BrowserTab[]): string[] {
+  return tabs.filter((tab) => tab.control.kind === "bot").map((tab) => tab.id);
+}
+
 export function tabName(tab: BrowserTab): string {
   if (tab.title) return tab.title;
   try { const host = new URL(tab.url).host; if (host) return host; } catch { /* A new tab has no address yet. */ }

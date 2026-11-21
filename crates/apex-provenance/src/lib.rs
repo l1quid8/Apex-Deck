@@ -748,7 +748,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
 pub fn protected(name: &str) -> bool {
     matches!(
         name,
-        "computer_setup" | "computer_set_enabled" | "computer_set_action_labels"
+        "computer_setup" | "computer_set_enabled" | "computer_set_app_prompts" | "computer_set_action_labels"
             // Shared desktop/terminal intents use the same exact receipt and
             // replay boundary. Peer admission still validates app/CLI identity.
             | "agent_profile_save" | "provider_setup_begin" | "backend_stop"
@@ -1612,6 +1612,7 @@ mod tests {
             (json!({"cmd":"personal_permission_set","provenanceRequestId":"permission-1","args":{"assistantId":"alfred","expectedRevision":7,"capability":"commandRun","scope":{"kind":"allProjects"},"mode":"always","delegate":false}}),"expectedRevision",json!(8)),
             (json!({"cmd":"room_set_trashed","provenanceRequestId":"trash-1","args":{"id":"thread-1","trashed":true}}),"trashed",json!(false)),
             (json!({"cmd":"computer_set_action_labels","provenanceRequestId":"labels-1","args":{"enabled":true}}),"enabled",json!(false)),
+            (json!({"cmd":"computer_set_app_prompts","provenanceRequestId":"prompts-1","args":{"skip":true}}),"skip",json!(false)),
         ] {
             let mut journal=Journal::new();
             assert!(journal.issue(501,"/data",command.clone(),false).is_err());

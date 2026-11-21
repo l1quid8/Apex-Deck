@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { browserCaller, browserHostFor, chosenTab, coalesce, dialogChoices, finishClipboard, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName } from "../src/browserTabs.ts";
+import { agentTabs, browserCaller, browserHostFor, chosenTab, coalesce, dialogChoices, finishClipboard, holderName, inputQueue, keyAction, modifierBits, pagePoint, tabForAddress, tabName } from "../src/browserTabs.ts";
 
 const key = (key, more = {}) => ({ key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...more });
 const tab = (id, more = {}) => ({ id, url: "", title: "", control: { kind: "free" }, rooms: [], assistant: false, popup: false, dialogOpen: false, fileChooser: false, width: 1280, height: 800, ...more });
@@ -176,4 +176,10 @@ test("a Cut's commit goes to the tab it was made on, not the one in view", async
 test("a Cut abandoned by the host says the source text stayed", async () => {
   const send = async () => { throw new Error("browser_cut_abandoned"); };
   await assert.rejects(finishClipboard({ id: "a", copied: "words", cut: "t1" }, send, async () => {}), /nothing was cut/);
+});
+
+test("Stop all stops each tab an agent holds, and only those", () => {
+  const tabs = [tab("a", { control: { kind: "bot", room: "r", participant: "p" } }), tab("b"), tab("c", { control: { kind: "human" } }), tab("d", { control: { kind: "bot", room: "r2", participant: "q" } })];
+  assert.deepEqual(agentTabs(tabs), ["a", "d"]);
+  assert.deepEqual(agentTabs([tab("b")]), []);
 });

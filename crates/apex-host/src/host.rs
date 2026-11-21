@@ -979,7 +979,7 @@ impl Host {
                 }
                 if let Ok(tool) = info.key.parse::<AgentTool>() {
                     raw_profiles.push(ParticipantConfig {
-                        can_read_images: false, untethered_computer: false,
+                        can_read_images: false,
                         id: ParticipantId::new(info.key.clone()),
                         display_name: info.label.clone(),
                         persona: String::new(),
@@ -2000,11 +2000,6 @@ impl Host {
     pub(crate) fn computer_participant_supported(&self,thread:&str,id:&ParticipantId)->bool {
         self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| apex_adapters::computer_backend_supported(&p.backend)))
     }
-    /// A Work-room bot saved as untethered. Only the saved room config counts,
-    /// never a model's tool arguments; the caller still requires Full access.
-    pub(crate) fn computer_participant_untethered(&self,thread:&str,id:&ParticipantId)->bool {
-        self.handle(thread).ok().is_some_and(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).is_some_and(|p| p.untethered_computer && p.access == apex_core::Access::Full))
-    }
     pub(crate) fn room_is_busy(&self, id: &str) -> bool { self.rooms.lock().unwrap().get(id).is_some_and(|handle| handle.runtime.busy()) }
     pub(crate) fn computer_participant_label(&self,thread:&str,id:&ParticipantId)->Option<String> {
         if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
@@ -2031,7 +2026,6 @@ impl Host {
         let participants=self.handle(thread).ok().map(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.clone()).unwrap_or_default();
         names_of(&participants,ids)
     }
-    pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
     /// Apply a saved access change now: stop `participant` and run it again under
     /// the new level. New access requires a fresh worker with the saved chat
@@ -2414,7 +2408,7 @@ impl Host {
         }
         self.ensure_task_read_access(&id, &next)?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
-        if next.access != current.access || next.untethered_computer != current.untethered_computer { self.computer.revoke(Some(&id),Some(name.as_str())); }
+        if next.access != current.access { self.computer.revoke(Some(&id),Some(name.as_str())); }
         let replacement = apex_adapters::participant_for_room(room.kind(), next.clone(), &context);
         let access_moved = next.access != current.access && handle.runtime.busy();
         if next.access != current.access {
@@ -6072,7 +6066,7 @@ done
 
     fn scripted(id: &str, lines: &[&str]) -> apex_core::ParticipantConfig {
         apex_core::ParticipantConfig {
-            can_read_images: false, untethered_computer: false,
+            can_read_images: false,
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
             persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None

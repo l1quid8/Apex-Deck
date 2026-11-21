@@ -680,7 +680,7 @@ mod tests {
         };
         saved.snapshot.transcript[0].speaker = Speaker::Bot(ParticipantId::new("keystone"));
         saved.snapshot.participants = vec![ParticipantConfig {
-            can_read_images: false, untethered_computer: false,
+            can_read_images: false,
             id: ParticipantId::new("keystone"),
             display_name: "Keystone".into(),
             backend: Backend::OpenAiCompatible { base_url: "http://127.0.0.1:9/v1".into(), model: "fixture".into(), api_key_env: None },

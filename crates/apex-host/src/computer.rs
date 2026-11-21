@@ -21,11 +21,33 @@ fn assistant_full_access(assistant: &crate::personal::PersonalAssistant, thread:
         && crate::personal::permissions::full_access(assistant)
 }
 
-/// Untethered turns skip the helper's app prompt. Only a Work-room bot whose
-/// saved config says so, at Full access for this very turn, gets the stamp;
-/// Plan and Read turns never do, and assistant replies use their own stamp.
-fn untethered_turn(access: Access, assistant_reply: bool, saved: impl FnOnce() -> bool) -> bool {
-    access == Access::Full && !assistant_reply && saved()
+/// A turn carrying this stamp skips the helper's app prompt. It needs this
+/// Mac's "Skip prompts for Full-access agents" setting, read in the turn's own
+/// admission snapshot, and Full access for this very turn; Plan and Read
+/// turns never get it, and assistant replies use their own stamp.
+fn prompt_free_turn(access: Access, assistant_reply: bool, skip_prompts: bool) -> bool {
+    access == Access::Full && !assistant_reply && skip_prompts
+}
+
+/// Shown when Ask for each app took effect but its save failed.
+pub(crate) const ASK_NOT_SAVED: &str = "Ask for each app is on now but couldn't be saved; it may switch back to Skip prompts after a restart.";
+
+/// Everything a starting turn's authority depends on, behind one lock.
+#[derive(Default)]
+struct Policy {
+    generations: HashMap<String, u64>,
+    /// This Mac's App permissions choice: Full-access agents skip app prompts.
+    skip_prompts: bool,
+}
+
+/// One snapshot of the policy a turn starts under. Its generation is
+/// rechecked at commit, which also covers the skip flag: switching to Ask
+/// bumps every generation in the same critical section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Admission {
+    pub generation: u64,
+    pub skip_prompts: bool,
+    thread: String,
 }
 
 fn instance_id() -> String {
@@ -113,56 +135,90 @@ impl BrowserLink {
 
 pub(crate) struct Computer {
     enabled: AtomicBool,
-    stopped: AtomicBool,
     settings: PathBuf,
     data_root: PathBuf,
     /// New each daemon start, so remembered thread grants never outlive it.
     instance: String,
-    generations: Mutex<HashMap<String, u64>>,
+    /// Held for a whole settings update, save included, so the file always
+    /// matches the live values. Lock order: writer, then policy, then active.
+    writer: Mutex<()>,
+    policy: Mutex<Policy>,
     #[cfg(unix)]
     active: Mutex<HashMap<String, Active>>,
+    #[cfg(test)]
+    saves: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    save_hook: Mutex<Option<Box<dyn Fn(usize) + Send>>>,
 }
 impl Computer {
     pub fn new(data: &Path) -> Arc<Self> {
         let settings = data.join("computer-enabled.json");
-        let enabled = crate::authority_file::read(&settings)
+        let saved = crate::authority_file::read(&settings)
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            .is_some_and(|v| v["enabled"] == true);
+            .unwrap_or_default();
+        let enabled = saved["enabled"] == true;
         Arc::new(Self {
             enabled: AtomicBool::new(enabled),
-            stopped: AtomicBool::new(false),
             settings,
             data_root: data.to_path_buf(),
             instance: instance_id(),
-            generations: Mutex::default(),
+            writer: Mutex::default(),
+            policy: Mutex::new(Policy { generations: HashMap::new(), skip_prompts: saved["skipAppPrompts"] == true }),
             #[cfg(unix)]
             active: Mutex::default(),
+            #[cfg(test)]
+            saves: Default::default(),
+            #[cfg(test)]
+            save_hook: Mutex::default(),
         })
     }
-    pub(crate) fn state(&self) -> (bool, bool) {
-        (self.enabled.load(Ordering::SeqCst), self.stopped.load(Ordering::SeqCst))
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
     }
     fn cursor_prefs(&self) -> crate::cursor_overlay::CursorOverlayPrefs {
         crate::cursor_overlay::load(&self.data_root)
     }
     pub(crate) fn generation(&self, thread: &str) -> u64 {
-        *self
-            .generations
-            .lock()
-            .unwrap()
-            .entry(thread.into())
-            .or_default()
+        self.admission(thread).generation
+    }
+    /// For status and tests. A starting turn uses `admission` instead.
+    pub(crate) fn skip_prompts(&self) -> bool {
+        self.policy.lock().unwrap().skip_prompts
+    }
+    pub(crate) fn admission(&self, thread: &str) -> Admission {
+        let mut policy = self.policy.lock().unwrap();
+        Admission {
+            generation: *policy.generations.entry(thread.into()).or_default(),
+            skip_prompts: policy.skip_prompts,
+            thread: thread.into(),
+        }
+    }
+    /// The single gate a starting turn passes: nothing it was admitted under
+    /// has changed. The turn becomes active inside the same critical section,
+    /// so a change either refuses it here or revokes it afterwards.
+    #[cfg(unix)]
+    fn commit(&self, admission: &Admission, turn: Active) -> Result<(), TurnStartFailure> {
+        let policy = self.policy.lock().unwrap();
+        if policy.generations.get(&admission.thread).copied().unwrap_or(0) != admission.generation
+            || !self.enabled.load(Ordering::SeqCst)
+        {
+            return Err(TurnStartFailure::AuthorityChanged);
+        }
+        self.active.lock().unwrap().insert(turn.token.clone(), turn);
+        Ok(())
     }
     fn grant_scope(&self, generation: u64) -> String {
         format!("{}:{generation}", self.instance)
     }
     pub fn revoke(&self, thread: Option<&str>, participant: Option<&str>) {
-        let mut generations = self.generations.lock().unwrap();
+        self.revoke_locked(&mut self.policy.lock().unwrap(), thread, participant);
+    }
+    fn revoke_locked(&self, policy: &mut Policy, thread: Option<&str>, participant: Option<&str>) {
         if let Some(thread) = thread {
-            *generations.entry(thread.into()).or_default() += 1;
+            *policy.generations.entry(thread.into()).or_default() += 1;
         } else {
-            for generation in generations.values_mut() {
+            for generation in policy.generations.values_mut() {
                 *generation += 1;
             }
         }
@@ -173,37 +229,46 @@ impl Computer {
         });
     }
     fn ready(&self, thread: &str, generation: u64) -> bool {
-        self.enabled.load(Ordering::SeqCst)
-            && !self.stopped.load(Ordering::SeqCst)
-            && self.generation(thread) == generation
+        self.enabled.load(Ordering::SeqCst) && self.generation(thread) == generation
     }
+    /// Callers hold `writer`. The other setting's value is the live one, so
+    /// the file never carries a value memory does not (or is about to) hold.
+    fn save(&self, enabled: bool, skip_prompts: bool) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            let count = self.saves.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(hook) = &*self.save_hook.lock().unwrap() { hook(count); }
+        }
+        crate::authority_file::write(&self.settings, &serde_json::to_vec(&json!({"enabled":enabled,"skipAppPrompts":skip_prompts})).unwrap()).map_err(|error|format!("Could not save Unified Computer Use settings: {error}. The installed Apex Deck service may need updating."))
+    }
+    /// Off takes effect before its save, On only after it.
     pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        let _writer = self.writer.lock().unwrap();
         if !enabled {
             self.enabled.store(false, Ordering::SeqCst);
             self.revoke(None, None);
         }
-        crate::authority_file::write(&self.settings, &serde_json::to_vec(&json!({"enabled":enabled})).unwrap()).map_err(|error|format!("Could not save Unified Computer Use settings: {error}. The installed Apex Deck service may need updating."))?;
+        self.save(enabled, self.skip_prompts())?;
         self.enabled.store(enabled, Ordering::SeqCst);
-        self.stopped.store(false, Ordering::SeqCst);
-        if !enabled {
-            self.revoke(None, None);
-        }
         Ok(())
     }
-    fn stop(&self) -> Vec<String> {
-        self.stopped.store(true, Ordering::SeqCst);
-        #[cfg(unix)]
-        let threads = self
-            .active
-            .lock()
-            .unwrap()
-            .values()
-            .map(|s| s.thread.clone())
-            .collect();
-        #[cfg(not(unix))]
-        let threads = vec![];
-        self.revoke(None, None);
-        threads
+    /// Ask (`false`) takes effect before its save and ends every turn and
+    /// thread grant in the same step as the flag; Skip only after its save,
+    /// leaving running turns to ask until their next turn.
+    pub fn set_skip_prompts(&self, skip: bool) -> Result<(), String> {
+        let _writer = self.writer.lock().unwrap();
+        let enabled = self.enabled.load(Ordering::SeqCst);
+        if skip {
+            self.save(enabled, true)?;
+            self.policy.lock().unwrap().skip_prompts = true;
+            return Ok(());
+        }
+        {
+            let mut policy = self.policy.lock().unwrap();
+            policy.skip_prompts = false;
+            self.revoke_locked(&mut policy, None, None);
+        }
+        self.save(enabled, false).map_err(|error| format!("{ASK_NOT_SAVED} {error}"))
     }
 }
 
@@ -340,9 +405,37 @@ impl TurnStartFailure {
             Self::Connection => "Unified Computer Use could not connect to its helper for this reply. Check Unified Computer Use in Settings before trying again.",
             Self::Registration => "Unified Computer Use could not authorize this reply with its helper. A healthy helper status does not prove reply authorization. If Apex Deck was updated while the helper was running, finish active computer-use work, then sign out of macOS and sign back in before trying again.",
             Self::Session => "Unified Computer Use could not create a secure computer session for this reply. Try again after checking Unified Computer Use in Settings.",
-            Self::AuthorityChanged => "Unified Computer Use authority changed while this reply was starting. Check Stop and app permissions in Settings before trying again.",
+            Self::AuthorityChanged => "Unified Computer Use authority changed while this reply was starting. Check Unified Computer Use in Settings, then send again.",
         }
     }
+}
+
+/// What the helper is told about a starting turn. `promptFree` is the stamp
+/// that skips its app prompt; `skipAppPrompts` is this Mac's setting, sent
+/// with every turn only so the menu bar icon is right. The helper never
+/// reads the second to decide anything.
+fn registration(admission: &Admission, id: &ParticipantId, (participant_name, thread_name): (Option<String>, Option<String>), token: &str, access: Access, assistant_reply: bool, assistant_full: bool, grant_scope: &str) -> Value {
+    let access_name = match access {
+        Access::Read => "read",
+        Access::Ask => "ask",
+        Access::Edits => "edits",
+        Access::Full => "full",
+    };
+    json!({
+        "threadId": admission.thread, "participantId": id.as_str(), "turnToken": token,
+        "participantName": participant_name, "threadName": thread_name,
+        "effectiveAccess": access_name, "assistantFullAccess": assistant_full,
+        "promptFree": prompt_free_turn(access, assistant_reply, admission.skip_prompts),
+        "skipAppPrompts": admission.skip_prompts,
+        "enabled": true, "grantScope": grant_scope,
+    })
+}
+
+/// Tells a running helper which menu bar icon to draw. Best effort: the next
+/// turn registration or status read corrects a missed one.
+#[cfg(unix)]
+async fn push_app_prompts(stream: &mut tokio::io::BufReader<tokio::net::UnixStream>, skip: bool) {
+    let _ = rpc(stream, "unified/set-app-prompts", json!({"skip":skip})).await;
 }
 
 #[cfg(unix)]
@@ -387,7 +480,6 @@ impl TurnHook {
                     .upgrade()
                     .is_some_and(|host| host.computer_participant_supported(&self.thread, id)))
                 || !self.computer.enabled.load(Ordering::SeqCst)
-                || self.computer.stopped.load(Ordering::SeqCst)
             {
                 return Ok(None);
             }
@@ -395,7 +487,8 @@ impl TurnHook {
             {
                 let maintenance = self.host.upgrade().ok_or(TurnStartFailure::AuthorityChanged)?
                     .maintenance.enter().map_err(|_| TurnStartFailure::AuthorityChanged)?;
-                let generation = self.computer.generation(&self.thread);
+                let admission = self.computer.admission(&self.thread);
+                let generation = admission.generation;
                 let path = verified_bundle().await.map_err(|_| TurnStartFailure::Verification)?;
                 let mut stream = match connect().await {
                     Ok(s) => s,
@@ -421,43 +514,24 @@ impl TurnHook {
                 SystemRandom::new().fill(&mut random).map_err(|_| TurnStartFailure::Session)?;
                 let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
                 let control = !matches!(access, Access::Read);
-                let access_name = match access {
-                    Access::Read => "read",
-                    Access::Ask => "ask",
-                    Access::Edits => "edits",
-                    Access::Full => "full",
-                };
                 let assistant_full = self.host.upgrade().and_then(|host| {
                     let assistant = crate::personal_worker::computer_thread_assistant(&self.thread)?;
                     host.personal_get(assistant).ok()
                 }).is_some_and(|assistant| assistant_full_access(&assistant, &self.thread, id, access, self.ended.is_some()));
-                let untethered = untethered_turn(access, self.ended.is_some(), || self.host.upgrade().is_some_and(|host| host.computer_participant_untethered(&self.thread, id)));
                 // The consent prompt names the agent and thread as the person sees them
                 // now; the ids stay the binding because a rename keeps them.
-                let (participant_name, thread_name) = self.host.upgrade().map(|host| (host.computer_participant_label(&self.thread, id), host.computer_thread_label(&self.thread))).unwrap_or_default();
-                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"participantName":participant_name,"threadName":thread_name,"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"untethered":untethered,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
+                let names = self.host.upgrade().map(|host| (host.computer_participant_label(&self.thread, id), host.computer_thread_label(&self.thread))).unwrap_or_default();
+                register_turn(&mut stream, registration(&admission, id, names, &token, access, self.ended.is_some(), assistant_full, &self.computer.grant_scope(generation))).await?;
                 if !self.computer.ready(&self.thread, generation) { return Err(TurnStartFailure::AuthorityChanged); }
                 let shutdown = duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?;
                 let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?).map_err(|_| TurnStartFailure::Session)?;
-                {
-                    let generations = self.computer.generations.lock().unwrap();
-                    if generations.get(&self.thread).copied().unwrap_or(0) != generation
-                        || !self.computer.enabled.load(Ordering::SeqCst)
-                        || self.computer.stopped.load(Ordering::SeqCst)
-                    {
-                        return Err(TurnStartFailure::AuthorityChanged);
-                    }
-                    self.computer.active.lock().unwrap().insert(
-                        token.clone(),
-                        Active {
-                            thread: self.thread.clone(),
-                            participant: id.as_str().into(),
-                            token: token.clone(),
-                            socket: shutdown,
-                            ended: self.ended.clone(),
-                        },
-                    );
-                }
+                self.computer.commit(&admission, Active {
+                    thread: self.thread.clone(),
+                    participant: id.as_str().into(),
+                    token: token.clone(),
+                    socket: shutdown,
+                    ended: self.ended.clone(),
+                })?;
                 request.computer = Some(ComputerTurn {
                     relay: path.join("Contents/Helpers/SpikeMCP"),
                     thread_id: self.thread.clone(),
@@ -566,7 +640,7 @@ impl Host {
             "listenEventAccess": false,
             "screenCaptureAccess": false,
             "tapHealthy": false,
-            "stopped": self.computer.stopped.load(Ordering::SeqCst),
+            "skipAppPrompts": self.computer.skip_prompts(),
             "cursorOverlayLabelsEnabled": prefs.labels_enabled,
             "cursorOverlay": prefs,
         });
@@ -586,6 +660,11 @@ impl Host {
                             status[key] = helper[key].clone();
                         }
                     }
+                    // A helper that started without a turn (from Settings) draws the right icon too.
+                    let skip = self.computer.skip_prompts();
+                    if helper["skipAppPrompts"].as_bool().is_some_and(|shown| shown != skip) {
+                        push_app_prompts(&mut stream, skip).await;
+                    }
                     if let Some(overlay) = helper.get("cursorOverlay") {
                         if !overlay.is_null() {
                             status["cursorOverlayFromHelper"] = overlay.clone();
@@ -604,9 +683,6 @@ impl Host {
                     }
                     status["cursorOverlay"] = serde_json::to_value(&prefs).unwrap_or(json!({}));
                     status["cursorOverlayLabelsEnabled"] = json!(prefs.labels_enabled);
-                    status["stopped"] = json!(
-                        self.computer.stopped.load(Ordering::SeqCst) || helper["stopped"] == true
-                    );
                     return status;
                 }
             }
@@ -632,9 +708,6 @@ impl Host {
         if names.iter().any(|name| apex_core::server_request::unified_computer_use_server().matches(name)) {
             if !self.computer.enabled.load(Ordering::SeqCst) {
                 return Err("Enable Settings → Unified Computer Use before requesting !unified-computer-use.".into());
-            }
-            if self.computer.stopped.load(Ordering::SeqCst) {
-                return Err("Unified Computer Use is stopped. Choose Resume in Settings → Unified Computer Use, then send again.".into());
             }
         }
         Ok(())
@@ -759,30 +832,20 @@ impl Host {
         Ok(self.computer_status().await)
     }
     pub async fn computer_set_enabled(&self, enabled: bool) -> Result<Value, String> {
-        if enabled {
-            // Only an explicit UI enable/Resume may clear the native Stop
-            // latch. Keep the host stopped until its acknowledgement arrives;
-            // a timed-out/late native resume cannot re-enable host turns.
-            self.computer.stopped.store(true, Ordering::SeqCst);
-            self.computer.revoke(None, None);
-            #[cfg(unix)]
-            if let Ok(mut stream) = connect().await {
-                let result = rpc(&mut stream, "unified/resume", json!({})).await?;
-                if result["resumed"] != true {
-                    return Err("Unified Computer Use did not acknowledge Resume.".into());
-                }
-            }
-            // An offline helper starts with no Stop latch or registered turns.
-        }
         self.computer.set_enabled(enabled)?;
         Ok(self.computer_status().await)
     }
-    pub async fn computer_stop(&self) -> Value {
-        self.computer.stop();
-        for thread in self.computer_room_ids() {
-            self.room_stop(thread, None);
+    /// This Mac's App permissions choice. Ask ends every computer-use turn
+    /// and takes effect even when its save fails; the error then says so.
+    pub async fn computer_set_app_prompts(&self, skip: bool) -> Result<Value, String> {
+        let saved = self.computer.set_skip_prompts(skip);
+        // The icon follows the live setting, which Ask changes even when its save fails.
+        #[cfg(unix)]
+        if let Ok(mut stream) = connect().await {
+            push_app_prompts(&mut stream, self.computer.skip_prompts()).await;
         }
-        self.computer_status().await
+        saved?;
+        Ok(self.computer_status().await)
     }
 }
 
@@ -792,11 +855,11 @@ mod tests {
     #[test]
     fn trusted_full_stamp_requires_the_saved_assistant_owner_and_current_profile() {
         let mut assistant: crate::personal::PersonalAssistant = serde_json::from_value(json!({"id":"a","name":"A","style":"","hostId":"h","profile":{"id":"p","display_name":"P","backend":{"kind":"agent","tool":"claude_code"},"access":"full"},"workspaceConfigVersion":4,"allowedFolders":[],"paused":false,"revision":1,"createdAt":0,"counters":{"message":0,"event":0,"task":0,"decision":0},"messages":[],"events":[],"tasks":[]})).unwrap();
-        assert!(untethered_turn(Access::Full, false, || true));
-        assert!(!untethered_turn(Access::Edits, false, || true), "only Full access carries the stamp");
-        assert!(!untethered_turn(Access::Read, false, || true), "Plan and Read turns never carry it");
-        assert!(!untethered_turn(Access::Full, false, || false), "an unsaved bot never carries it");
-        assert!(!untethered_turn(Access::Full, true, || true), "assistant replies keep their own stamp");
+        assert!(prompt_free_turn(Access::Full, false, true));
+        assert!(!prompt_free_turn(Access::Edits, false, true), "only Full access carries the stamp");
+        assert!(!prompt_free_turn(Access::Read, false, true), "Plan and Read turns never carry it");
+        assert!(!prompt_free_turn(Access::Full, false, false), "Ask for each app never carries it");
+        assert!(!prompt_free_turn(Access::Full, true, true), "assistant replies keep their own stamp");
         assert!(assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, true));
         assert!(!assistant_full_access(&assistant, "assistant:a", &ParticipantId::new("p"), Access::Full, false), "an ordinary room never receives the stamp, even if its ID resembles the assistant namespace");
         assert!(!assistant_full_access(&assistant, "work-room", &ParticipantId::new("p"), Access::Full, true));
@@ -933,7 +996,7 @@ mod tests {
         computer.revoke(Some("other"), None);
         assert!(link.live(&running), "another thread's revoke leaves this one alone");
         computer.revoke(Some("t"), None);
-        assert!(!link.live(&running), "Stop or any revoke ends every step that follows");
+        assert!(!link.live(&running), "any revoke ends every step that follows");
         // The task is scheduled on this thread. Drop the turn's reference
         // before yielding so only the detached call still owns the permit.
         link.start("late".into(), "read_screen".into(), json!({}));
@@ -961,7 +1024,7 @@ mod tests {
         std::fs::remove_dir_all(data).unwrap();
     }
     #[test]
-    fn stop_and_disable_invalidate_pending_and_active_turns() {
+    fn revoke_and_disable_invalidate_pending_and_active_turns() {
         let data =
             std::env::temp_dir().join(format!("apex-computer-lifecycle-{}", std::process::id()));
         std::fs::create_dir_all(&data).unwrap();
@@ -976,14 +1039,300 @@ mod tests {
         assert_ne!(scope, computer.grant_scope(computer.generation("thread")));
         let next = computer.generation("thread");
         assert!(computer.ready("thread", next));
-        computer.stop();
-        assert!(!computer.ready("thread", next));
-        computer.set_enabled(true).unwrap();
         assert!(computer.ready("thread", computer.generation("thread")));
         computer.set_enabled(false).unwrap();
         assert!(!computer.ready("thread", computer.generation("thread")));
         std::fs::remove_dir_all(data).unwrap();
     }
+    fn fresh(name: &str) -> (PathBuf, Arc<Computer>) {
+        let data = std::env::temp_dir().join(format!("apex-computer-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(&data).unwrap();
+        let computer = Computer::new(&data);
+        (data, computer)
+    }
+    /// Makes every later save fail for real: the ledger's rename target is a
+    /// directory with something in it.
+    fn block_saves(data: &Path) -> PathBuf {
+        let target = crate::authority_file::fixture_path(&data.join("computer-enabled.json"));
+        let _ = std::fs::remove_file(&target);
+        std::fs::create_dir_all(target.join("in-the-way")).unwrap();
+        target
+    }
+
+    #[test]
+    fn skip_prompts_persists_with_enabled() {
+        let (data, computer) = fresh("skip-persists");
+        assert!(!computer.skip_prompts(), "everyone starts on Ask for each app");
+        computer.set_enabled(true).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        let reloaded = Computer::new(&data);
+        assert!(reloaded.skip_prompts());
+        assert!(reloaded.enabled.load(Ordering::SeqCst), "saving Skip keeps the On switch");
+        reloaded.set_skip_prompts(false).unwrap();
+        let again = Computer::new(&data);
+        assert!(!again.skip_prompts());
+        assert!(again.enabled.load(Ordering::SeqCst));
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn turning_ucu_off_and_on_keeps_skip() {
+        let (data, computer) = fresh("skip-survives-off");
+        computer.set_enabled(true).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        computer.set_enabled(false).unwrap();
+        assert!(computer.skip_prompts());
+        assert!(Computer::new(&data).skip_prompts(), "Off is saved without dropping Skip");
+        computer.set_enabled(true).unwrap();
+        assert!(computer.skip_prompts());
+        assert!(Computer::new(&data).skip_prompts());
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn skip_off_revokes_every_thread() {
+        let (data, computer) = fresh("skip-off-revokes");
+        computer.set_enabled(true).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        let (a, b) = (computer.generation("a"), computer.generation("b"));
+        let scopes = (computer.grant_scope(a), computer.grant_scope(b));
+        computer.set_skip_prompts(true).unwrap();
+        assert_eq!((computer.generation("a"), computer.generation("b")), (a, b), "choosing Skip ends nothing");
+        computer.set_skip_prompts(false).unwrap();
+        assert!(computer.generation("a") > a && computer.generation("b") > b);
+        // The helper keys "allow for this thread" grants by this scope.
+        assert_ne!(scopes.0, computer.grant_scope(computer.generation("a")));
+        assert_ne!(scopes.1, computer.grant_scope(computer.generation("b")));
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn concurrent_set_enabled_and_skip_keep_both() {
+        let (data, computer) = fresh("both-writers");
+        for round in 0..50 {
+            computer.set_enabled(false).unwrap();
+            computer.set_skip_prompts(false).unwrap();
+            let (one, two) = (computer.clone(), computer.clone());
+            let enable = std::thread::spawn(move || one.set_enabled(true).unwrap());
+            let skip = std::thread::spawn(move || two.set_skip_prompts(true).unwrap());
+            enable.join().unwrap();
+            skip.join().unwrap();
+            let reloaded = Computer::new(&data);
+            assert!(reloaded.enabled.load(Ordering::SeqCst) && reloaded.skip_prompts(), "round {round}: one writer overwrote the other");
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    /// Null's second race. `first` is parked inside its save; `second` must
+    /// wait for the whole update, so the last one to take the lock wins both
+    /// the live value and the file.
+    fn overlapping(first: bool, name: &str) {
+        use std::sync::mpsc;
+        let (data, computer) = fresh(name);
+        computer.set_skip_prompts(!first).unwrap();
+        let (parked_tx, parked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let before = computer.saves.load(Ordering::SeqCst);
+        *computer.save_hook.lock().unwrap() = Some(Box::new(move |count| {
+            if count == before + 1 {
+                parked_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+        }));
+        let a = { let computer = computer.clone(); std::thread::spawn(move || computer.set_skip_prompts(first)) };
+        parked_rx.recv().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let b = { let computer = computer.clone(); std::thread::spawn(move || { let result = computer.set_skip_prompts(!first); done_tx.send(()).unwrap(); result }) };
+        // A correct second writer is blocked for as long as the first is
+        // parked, so this wait always runs out; a broken one finishes at once.
+        assert!(done_rx.recv_timeout(Duration::from_millis(200)).is_err(), "the second update ran while the first was still saving");
+        assert_eq!(computer.saves.load(Ordering::SeqCst), before + 1, "the second update has not saved");
+        release_tx.send(()).unwrap();
+        a.join().unwrap().unwrap();
+        b.join().unwrap().unwrap();
+        assert_eq!(computer.skip_prompts(), !first);
+        assert_eq!(Computer::new(&data).skip_prompts(), !first, "the file agrees with the live setting");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+    #[test]
+    fn overlapping_ask_and_skip_match_after_reload() {
+        overlapping(false, "overlap-ask-first");
+        overlapping(true, "overlap-skip-first");
+    }
+
+    #[test]
+    fn overlapping_writes_stress() {
+        let (data, computer) = fresh("overlap-stress");
+        for round in 0..200 {
+            let (one, two) = (computer.clone(), computer.clone());
+            let ask = std::thread::spawn(move || one.set_skip_prompts(false).unwrap());
+            let skip = std::thread::spawn(move || two.set_skip_prompts(true).unwrap());
+            ask.join().unwrap();
+            skip.join().unwrap();
+            assert_eq!(computer.skip_prompts(), Computer::new(&data).skip_prompts(), "round {round}");
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn ask_save_failure_still_takes_effect() {
+        let (data, computer) = fresh("ask-save-fails");
+        computer.set_enabled(true).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        let before = computer.generation("t");
+        block_saves(&data);
+        assert!(computer.set_skip_prompts(false).is_err());
+        let admission = computer.admission("t");
+        assert!(!admission.skip_prompts, "Ask is live even though it was not saved");
+        assert!(admission.generation > before);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn ask_save_failure_reports_restart_risk() {
+        let (data, computer) = fresh("ask-save-warning");
+        computer.set_enabled(true).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        let blocked = block_saves(&data);
+        let error = computer.set_skip_prompts(false).unwrap_err();
+        assert!(error.starts_with(ASK_NOT_SAVED), "{error}");
+        assert!(ASK_NOT_SAVED.contains("may switch back to Skip prompts after a restart"));
+        std::fs::remove_dir_all(blocked).unwrap();
+        // Any later settings write repairs the file from the live values.
+        computer.set_enabled(true).unwrap();
+        assert!(!Computer::new(&data).skip_prompts());
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn skip_save_failure_changes_nothing() {
+        let (data, computer) = fresh("skip-save-fails");
+        computer.set_enabled(true).unwrap();
+        let before = computer.generation("t");
+        block_saves(&data);
+        assert!(computer.set_skip_prompts(true).is_err());
+        assert!(!computer.skip_prompts());
+        assert_eq!(computer.generation("t"), before);
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    /// The helper's menu bar icon learns the setting from every registration.
+    /// That field only draws the icon; skipping the prompt is the per-turn stamp.
+    #[test]
+    fn registration_carries_the_display_flag_apart_from_the_stamp() {
+        let id = ParticipantId::new("p");
+        let skip = Admission { generation: 3, skip_prompts: true, thread: "t".into() };
+        let names = || (Some("Astra".to_owned()), Some("Trip plan".to_owned()));
+        let full = registration(&skip, &id, names(), "token", Access::Full, false, false, "scope");
+        assert_eq!((full["participantName"].clone(), full["threadName"].clone()), (json!("Astra"), json!("Trip plan")), "the consent prompt keeps the names people see");
+        assert_eq!(full["skipAppPrompts"], true);
+        assert_eq!(full["promptFree"], true);
+        assert_eq!(full["threadId"], "t");
+        assert_eq!(full["grantScope"], "scope");
+        let edits = registration(&skip, &id, names(), "token", Access::Edits, false, false, "scope");
+        assert_eq!(edits["skipAppPrompts"], true, "the icon shows this Mac's setting whoever is working");
+        assert_eq!(edits["promptFree"], false, "but an Edit agent still asks for each app");
+        assert_eq!(edits["effectiveAccess"], "edits");
+        let assistant = registration(&skip, &id, names(), "token", Access::Full, true, true, "scope");
+        assert_eq!(assistant["promptFree"], false, "assistant replies keep their own stamp");
+        assert_eq!(assistant["assistantFullAccess"], true);
+        let ask = Admission { generation: 3, skip_prompts: false, thread: "t".into() };
+        let asking = registration(&ask, &id, names(), "token", Access::Full, false, false, "scope");
+        assert_eq!((asking["skipAppPrompts"].clone(), asking["promptFree"].clone()), (json!(false), json!(false)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_icon_push_sends_only_the_setting() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (client, helper) = tokio::net::UnixStream::pair().unwrap();
+        let peer = tokio::spawn(async move {
+            let mut helper = tokio::io::BufReader::new(helper);
+            let mut line = String::new();
+            helper.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            helper.get_mut().write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":request["id"],"result":{}})).as_bytes()).await.unwrap();
+            request
+        });
+        push_app_prompts(&mut tokio::io::BufReader::new(client), true).await;
+        let request = peer.await.unwrap();
+        assert_eq!(request["method"], "unified/set-app-prompts");
+        assert_eq!(request["params"], json!({"skip":true}));
+    }
+
+    #[cfg(unix)]
+    fn active(thread: &str, token: &str) -> (Active, std::os::unix::net::UnixStream) {
+        let (socket, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        (Active { thread: thread.into(), participant: "p".into(), token: token.into(), socket, ended: None }, peer)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ask_during_admission_refuses_skip_turn() {
+        let (data, computer) = fresh("ask-during-admission");
+        computer.set_enabled(true).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        let admission = computer.admission("t");
+        assert!(admission.skip_prompts);
+        computer.set_skip_prompts(false).unwrap();
+        let (turn, _peer) = active("t", "token");
+        assert_eq!(computer.commit(&admission, turn), Err(TurnStartFailure::AuthorityChanged));
+        assert!(computer.active.lock().unwrap().is_empty(), "the skip turn never became active");
+        let next = computer.admission("t");
+        assert!(!next.skip_prompts);
+        let (turn, _peer) = active("t", "token");
+        assert_eq!(computer.commit(&next, turn), Ok(()), "the next turn starts, asking for each app");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ask_after_commit_revokes_the_skip_turn() {
+        let (data, computer) = fresh("ask-after-commit");
+        computer.set_enabled(true).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        let admission = computer.admission("t");
+        let (turn, _peer) = active("t", "token");
+        computer.commit(&admission, turn).unwrap();
+        assert!(computer.ready("t", admission.generation));
+        computer.set_skip_prompts(false).unwrap();
+        assert!(computer.active.lock().unwrap().is_empty());
+        assert!(!computer.ready("t", admission.generation));
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skip_switched_on_mid_turn_leaves_the_running_turn_asking() {
+        let (data, computer) = fresh("skip-mid-turn");
+        computer.set_enabled(true).unwrap();
+        let admission = computer.admission("t");
+        let (turn, _peer) = active("t", "token");
+        computer.commit(&admission, turn).unwrap();
+        computer.set_skip_prompts(true).unwrap();
+        assert!(!admission.skip_prompts, "its stamp was set at registration");
+        assert!(computer.ready("t", admission.generation), "and it keeps running");
+        assert!(computer.admission("t").skip_prompts, "the next turn skips");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn disabled_computer_use_refuses_the_commit() {
+        let (data, computer) = fresh("commit-disabled");
+        computer.set_enabled(true).unwrap();
+        let admission = computer.admission("t");
+        computer.set_enabled(false).unwrap();
+        computer.set_enabled(true).unwrap();
+        #[cfg(unix)]
+        {
+            let (turn, _peer) = active("t", "token");
+            assert_eq!(computer.commit(&admission, turn), Err(TurnStartFailure::AuthorityChanged));
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn lease_drop_revokes_socket_immediately_and_policy_timeout_cannot_linger() {

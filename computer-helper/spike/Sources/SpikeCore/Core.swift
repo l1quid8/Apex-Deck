@@ -69,7 +69,7 @@ public enum Policy {
   }
   /// App shortcuts only fire for the active app, so these do nothing from the background.
   public static func needsForeground(flags: UInt64) -> Bool { flags & (1 << 20 | 1 << 18) != 0 }
-  /// Quit, log out, lock and force-quit stay blocked even for untethered turns.
+  /// Quit, log out, lock and force-quit stay blocked even for prompt-free turns.
   public static func blockedShortcut(code: UInt16, flags: UInt64) -> Bool {
     let cmd: UInt64 = 1 << 20, shift: UInt64 = 1 << 17, alt: UInt64 = 1 << 19, control: UInt64 = 1 << 18
     let mods = flags & (cmd | shift | alt | control)
