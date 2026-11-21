@@ -6,12 +6,16 @@ import Foundation
 /// grant anything.
 final class AppPromptsDisplay {
   private let lock = NSLock()
+  private var revision: UInt64?
+  var policyRevision: UInt64? { lock.lock(); defer { lock.unlock() }; return revision }
   private var skipped = false
   /// Called with the new value, on the caller's thread, only when it changes.
   var onChange: (Bool) -> Void = { _ in }
   var promptsSkipped: Bool { lock.lock(); defer { lock.unlock() }; return skipped }
-  func set(_ skip: Bool) {
+  func set(_ skip: Bool, revision incoming: UInt64) {
     lock.lock()
+    if let revision, incoming <= revision { lock.unlock(); return }
+    revision = incoming
     let changed = skipped != skip
     skipped = skip
     lock.unlock()
@@ -20,6 +24,8 @@ final class AppPromptsDisplay {
   /// Every turn registration carries the setting, so a helper an agent's turn
   /// started is right before anyone opens Settings.
   func note(_ registration: [String: Any]) {
-    if let skip = registration["skipAppPrompts"] as? Bool { set(skip) }
+    if let skip = registration["skipAppPrompts"] as? Bool, let revision = registration["policyRevision"] as? UInt64 {
+      set(skip, revision: revision)
+    }
   }
 }

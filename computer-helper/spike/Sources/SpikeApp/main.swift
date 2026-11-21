@@ -27,9 +27,10 @@ final class Delegate: NSObject, NSApplicationDelegate {
     menu.addItem(withTitle: "Quit Unified Computer Use", action: #selector(quit), keyEquivalent: "").target = self
     item.menu = menu
     server.showSetup = { [weak self] in self?.setup() }
-    server.promptsDisplay.onChange = { [weak self] skipped in
+    server.promptsDisplay.onChange = { [weak self] _ in
       DispatchQueue.main.async {
-        guard let button = self?.item.button else { return }
+        guard let self, let button = self.item.button else { return }
+        let skipped = self.server.promptsDisplay.promptsSkipped
         StatusBarIcon.apply(StatusBarIcon.load(promptsSkipped: skipped), to: button, promptsSkipped: skipped)
       }
     }

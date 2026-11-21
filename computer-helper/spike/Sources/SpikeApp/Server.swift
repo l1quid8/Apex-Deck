@@ -78,6 +78,7 @@ final class Server {
       "cursorOverlay": cursorOverlayDict,
       "awayMode": AwayMode.shared.status(),
       "skipAppPrompts": promptsDisplay.promptsSkipped,
+      "policyRevision": promptsDisplay.policyRevision as Any,
       "pid": ProcessInfo.processInfo.processIdentifier]
   }
   func send(_ value: [String: Any], _ client: Int32) { output.lock(); defer { output.unlock() }; Wire.send(value, fd: client) }
@@ -170,8 +171,8 @@ final class Server {
       if method == "unified/set-app-prompts" {
         // Draws the menu bar icon only. Prompting follows each turn's own stamp.
         guard authenticated else { self.fail(id, "authenticated_daemon_required", client); return }
-        guard let skip = params["skip"] as? Bool else { self.fail(id, "invalid_request", client); return }
-        self.promptsDisplay.set(skip)
+        guard let skip = params["skip"] as? Bool, let revision = params["policyRevision"] as? UInt64 else { self.fail(id, "invalid_request", client); return }
+        self.promptsDisplay.set(skip, revision: revision)
         self.response(id, self.status(), client); return
       }
       if method == "unified/set-action-labels" {

@@ -84,15 +84,26 @@ final class StatusBarIconTests: XCTestCase {
     var seen: [Bool] = []
     display.onChange = { seen.append($0) }
     XCTAssertFalse(display.promptsSkipped)
-    display.note(["threadId": "t", "skipAppPrompts": true])
+    display.note(["threadId": "t", "skipAppPrompts": true, "policyRevision": UInt64(2)])
     XCTAssertTrue(display.promptsSkipped)
-    display.note(["threadId": "t", "skipAppPrompts": true])
+    display.note(["threadId": "t", "skipAppPrompts": true, "policyRevision": UInt64(2)])
     display.note(["threadId": "t"])
     XCTAssertTrue(display.promptsSkipped, "a registration without the field changes nothing")
     display.note(["skipAppPrompts": "false"])
     XCTAssertTrue(display.promptsSkipped, "only a real boolean counts")
-    display.set(false)
+    display.set(false, revision: 3)
     XCTAssertEqual(seen, [true, false], "the icon is redrawn only when the value changes")
+  }
+
+  func testLateAskRegistrationKeepsNewerSkipIndicator() {
+    let display = AppPromptsDisplay()
+    var redraws: [Bool] = []
+    display.onChange = { redraws.append($0) }
+    display.set(true, revision: 12)
+    display.note(["skipAppPrompts": false, "policyRevision": UInt64(11)])
+    XCTAssertTrue(display.promptsSkipped)
+    XCTAssertEqual(display.policyRevision, 12)
+    XCTAssertEqual(redraws, [true])
   }
 
   func testImageReplacesTitle() throws {

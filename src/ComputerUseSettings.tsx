@@ -30,6 +30,7 @@ type ComputerStatus = {
   screenCaptureAccess?: boolean;
   /** This Mac's App permissions choice: Full-access agents skip app prompts. */
   skipAppPrompts?: boolean;
+  appPromptsWarning?: string | null;
   cursorOverlayLabelsEnabled?: boolean;
   /** Keep working while I'm away. Switched only from the helper's menu bar menu. */
   awayMode?: { enabled: boolean; holding: boolean; shielded: boolean; shieldDelaySeconds: number };
@@ -92,6 +93,7 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       };
       setPrefs(merged);
       setError('');
+      return s;
     } catch {
       setError('Unified Computer Use is unavailable on this host. Update the desktop app and try again.');
     }
@@ -145,8 +147,8 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'computer' } })); } catch {}
     } catch (e: any) {
       try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'computer', error: e?.message } })); } catch {}
-      setPromptsError(e?.message || 'App permissions could not be changed.');
-      await refresh();
+      const current = await refresh();
+      if (!current?.appPromptsWarning) setPromptsError(e?.message || 'App permissions could not be changed.');
     } finally { setBusy(false); }
   };
 
@@ -289,7 +291,7 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
             <button type="button" className="danger" onClick={() => { void setAppPrompts(true); }}>Skip prompts</button>
           </div>
         </div>}
-        {promptsError && <p role="alert" className="danger-text">{promptsError}</p>}
+        {(status?.appPromptsWarning || promptsError) && <p role="alert" className="danger-text">{status?.appPromptsWarning || promptsError}</p>}
       </div>
       <div className="settings-row">
         <div className="settings-label"><strong>Mac permissions</strong><small>Accessibility: {permission(status?.accessibilityTrusted)}<br />Input Monitoring: {permission(status?.listenEventAccess)}<br />Screen Recording: {permission(status?.screenCaptureAccess)}</small></div>

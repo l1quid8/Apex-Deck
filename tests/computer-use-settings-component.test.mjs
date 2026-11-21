@@ -17,22 +17,25 @@ test('App permissions is one Mac-wide choice that waits for the host, and there 
     const ASK_NOT_SAVED="Ask for each app is on now but couldn't be saved; it may switch back to Skip prompts after a restart.";
     const OFF_NOT_SAVED="Unified Computer Use is off now but that couldn't be saved; it may switch back on after a restart.";
     const f=window.fixture={available:true,enabled:true,skip:false,reason:undefined,calls:[],fail:'none',hold:false,
-      status(){return {available:this.available,enabled:this.enabled,skipAppPrompts:this.skip,reason:this.reason,accessibilityTrusted:true,listenEventAccess:true,screenCaptureAccess:true};}};
+      status(){return {available:this.available,enabled:this.enabled,skipAppPrompts:this.skip,appPromptsWarning:this.warning,reason:this.reason,accessibilityTrusted:true,listenEventAccess:true,screenCaptureAccess:true};}};
     const backend={demo:false,async call(cmd,args){
       if(cmd==='computer_status')return f.status();
       f.calls.push([cmd,args]);
       if(f.hold)await new Promise(resolve=>f.release=resolve);
       if(cmd==='computer_set_app_prompts'){
         if(f.fail==='refuse')throw Error('Could not save Unified Computer Use settings: disk full.');
-        if(f.fail==='askNotSaved'&&!args.skip){f.skip=false;throw Error(ASK_NOT_SAVED+' Could not save Unified Computer Use settings: disk full.');}
-        f.skip=args.skip;
+        if(f.fail==='askNotSaved'&&!args.skip){f.skip=false;f.warning=ASK_NOT_SAVED;throw Error(ASK_NOT_SAVED+' Could not save Unified Computer Use settings: disk full.');}
+        f.skip=args.skip;f.warning=null;
       }
       if(cmd==='computer_set_enabled'){
         if(f.fail==='offNotSaved'&&!args.enabled){f.enabled=false;throw Error(OFF_NOT_SAVED+' Could not save Unified Computer Use settings: disk full.');}
         f.enabled=args.enabled;
       }
       return f.status();}};
-    createRoot(document.getElementById('root')).render(React.createElement(ComputerUseSettings,{backend}));
+    let root;
+    window.openSettings=()=>{root=createRoot(document.getElementById('root'));root.render(React.createElement(ComputerUseSettings,{backend}));};
+    window.closeSettings=()=>root.unmount();
+    window.openSettings();
     window.ready=true;
   </script></body></html>`;
   const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error', plugins: [{ name: 'computer-use-settings-test', configureServer(server) { server.middlewares.use('/__computer_use_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__computer_use_test', html)); }); } }] });
@@ -116,8 +119,11 @@ test('App permissions is one Mac-wide choice that waits for the host, and there 
         await wait(()=>document.querySelector('[role=group][aria-label="App permissions"] button[aria-pressed=true]')?.textContent.trim()==='Ask for each app','Ask is selected from the host');
         v=await view();assert.deepEqual(v.pressed,[ASK]);
         assert.ok(v.alerts.some(a=>a.includes("Ask for each app is on now but couldn't be saved; it may switch back to Skip prompts after a restart.")),v.alerts.join(' | '));
-        // The warning outlives another look at the host: Ask is still unsaved.
-        await refocus();await new Promise(r=>setTimeout(r,200));
+        // Destroy all component state and reopen against the same running host.
+        await run(()=>window.closeSettings());
+        assert.equal(await run(()=>document.getElementById('root').childElementCount),0);
+        await run(()=>window.openSettings());
+        await wait(()=>document.querySelector('[role=alert]')?.textContent.includes('after a restart'),'warning after reopening Settings');
         v=await view();assert.deepEqual(v.pressed,[ASK]);assert.ok(v.alerts.some(a=>a.includes('may switch back to Skip prompts after a restart')),'the warning stays after a refresh');
 
         // An open confirmation never outlives the choice being locked: it must

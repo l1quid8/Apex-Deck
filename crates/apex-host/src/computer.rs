@@ -40,6 +40,35 @@ struct Policy {
     generations: HashMap<String, u64>,
     /// This Mac's App permissions choice: Full-access agents skip app prompts.
     skip_prompts: bool,
+    saved_skip_prompts: bool,
+    revision: u64,
+}
+
+impl Policy {
+    fn choose(&mut self, skip: bool) {
+        if self.skip_prompts != skip {
+            self.skip_prompts = skip;
+            self.revision = initial_policy_revision().max(self.revision + 1);
+        }
+    }
+
+    fn warning(&self) -> Option<&'static str> {
+        (self.saved_skip_prompts && !self.skip_prompts).then_some(ASK_NOT_SAVED)
+    }
+}
+
+// The macOS helper can outlive the daemon. Use the shared monotonic clock
+// so the restarted daemon's initial snapshot supersedes earlier messages.
+fn initial_policy_revision() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: time is writable and CLOCK_MONOTONIC is supported on macOS.
+        assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) }, 0);
+        time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+    }
+    #[cfg(not(target_os = "macos"))]
+    { 0 }
 }
 
 /// One snapshot of the policy a turn starts under. Its generation is
@@ -49,6 +78,7 @@ struct Policy {
 pub(crate) struct Admission {
     pub generation: u64,
     pub skip_prompts: bool,
+    revision: u64,
     thread: String,
 }
 
@@ -160,13 +190,19 @@ impl Computer {
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             .unwrap_or_default();
         let enabled = saved["enabled"] == true;
+        let skip_prompts = saved["skipAppPrompts"] == true;
         Arc::new(Self {
             enabled: AtomicBool::new(enabled),
             settings,
             data_root: data.to_path_buf(),
             instance: instance_id(),
             writer: Mutex::default(),
-            policy: Mutex::new(Policy { generations: HashMap::new(), skip_prompts: saved["skipAppPrompts"] == true }),
+            policy: Mutex::new(Policy {
+                generations: HashMap::new(),
+                skip_prompts,
+                saved_skip_prompts: skip_prompts,
+                revision: initial_policy_revision(),
+            }),
             #[cfg(unix)]
             active: Mutex::default(),
             #[cfg(test)]
@@ -188,11 +224,16 @@ impl Computer {
     pub(crate) fn skip_prompts(&self) -> bool {
         self.policy.lock().unwrap().skip_prompts
     }
+    fn policy_status(&self) -> (bool, u64, Option<&'static str>) {
+        let policy = self.policy.lock().unwrap();
+        (policy.skip_prompts, policy.revision, policy.warning())
+    }
     pub(crate) fn admission(&self, thread: &str) -> Admission {
         let mut policy = self.policy.lock().unwrap();
         Admission {
             generation: *policy.generations.entry(thread.into()).or_default(),
             skip_prompts: policy.skip_prompts,
+            revision: policy.revision,
             thread: thread.into(),
         }
     }
@@ -250,7 +291,9 @@ impl Computer {
             self.enabled.store(false, Ordering::SeqCst);
             self.revoke(None, None);
         }
-        self.save(enabled, self.skip_prompts()).map_err(|error| if enabled { error } else { format!("{OFF_NOT_SAVED} {error}") })?;
+        let skip = self.skip_prompts();
+        self.save(enabled, skip).map_err(|error| if enabled { error } else { format!("{OFF_NOT_SAVED} {error}") })?;
+        self.policy.lock().unwrap().saved_skip_prompts = skip;
         self.enabled.store(enabled, Ordering::SeqCst);
         Ok(())
     }
@@ -262,15 +305,19 @@ impl Computer {
         let enabled = self.enabled.load(Ordering::SeqCst);
         if skip {
             self.save(enabled, true)?;
-            self.policy.lock().unwrap().skip_prompts = true;
+            let mut policy = self.policy.lock().unwrap();
+            policy.choose(true);
+            policy.saved_skip_prompts = true;
             return Ok(());
         }
         {
             let mut policy = self.policy.lock().unwrap();
-            policy.skip_prompts = false;
+            policy.choose(false);
             self.revoke_locked(&mut policy, None, None);
         }
-        self.save(enabled, false).map_err(|error| format!("{ASK_NOT_SAVED} {error}"))
+        self.save(enabled, false).map_err(|error| format!("{ASK_NOT_SAVED} {error}"))?;
+        self.policy.lock().unwrap().saved_skip_prompts = false;
+        Ok(())
     }
 }
 
@@ -429,6 +476,7 @@ fn registration(admission: &Admission, id: &ParticipantId, (participant_name, th
         "effectiveAccess": access_name, "assistantFullAccess": assistant_full,
         "promptFree": prompt_free_turn(access, assistant_reply, admission.skip_prompts),
         "skipAppPrompts": admission.skip_prompts,
+        "policyRevision": admission.revision,
         "enabled": true, "grantScope": grant_scope,
     })
 }
@@ -436,8 +484,8 @@ fn registration(admission: &Admission, id: &ParticipantId, (participant_name, th
 /// Tells a running helper which menu bar icon to draw. Best effort: the next
 /// turn registration or status read corrects a missed one.
 #[cfg(unix)]
-async fn push_app_prompts(stream: &mut tokio::io::BufReader<tokio::net::UnixStream>, skip: bool) {
-    let _ = rpc(stream, "unified/set-app-prompts", json!({"skip":skip})).await;
+async fn push_app_prompts(stream: &mut tokio::io::BufReader<tokio::net::UnixStream>, (skip, revision): (bool, u64)) {
+    let _ = rpc(stream, "unified/set-app-prompts", json!({"skip":skip, "policyRevision":revision})).await;
 }
 
 #[cfg(unix)]
@@ -635,6 +683,7 @@ impl Host {
     pub async fn computer_status(&self) -> Value {
         let available = bundle().is_some();
         let prefs = self.computer.cursor_prefs();
+        let (skip, revision, warning) = self.computer.policy_status();
         let mut status = json!({
             "available": available,
             "enabled": self.computer.enabled.load(Ordering::SeqCst),
@@ -642,7 +691,8 @@ impl Host {
             "listenEventAccess": false,
             "screenCaptureAccess": false,
             "tapHealthy": false,
-            "skipAppPrompts": self.computer.skip_prompts(),
+            "skipAppPrompts": skip,
+            "appPromptsWarning": warning,
             "cursorOverlayLabelsEnabled": prefs.labels_enabled,
             "cursorOverlay": prefs,
         });
@@ -663,9 +713,8 @@ impl Host {
                         }
                     }
                     // A helper that started without a turn (from Settings) draws the right icon too.
-                    let skip = self.computer.skip_prompts();
-                    if helper["skipAppPrompts"].as_bool().is_some_and(|shown| shown != skip) {
-                        push_app_prompts(&mut stream, skip).await;
+                    if helper["policyRevision"].as_u64() != Some(revision) {
+                        push_app_prompts(&mut stream, (skip, revision)).await;
                     }
                     if let Some(overlay) = helper.get("cursorOverlay") {
                         if !overlay.is_null() {
@@ -844,7 +893,8 @@ impl Host {
         // The icon follows the live setting, which Ask changes even when its save fails.
         #[cfg(unix)]
         if let Ok(mut stream) = connect().await {
-            push_app_prompts(&mut stream, self.computer.skip_prompts()).await;
+            let (skip, revision, _) = self.computer.policy_status();
+            push_app_prompts(&mut stream, (skip, revision)).await;
         }
         saved?;
         Ok(self.computer_status().await)
@@ -1192,18 +1242,25 @@ mod tests {
         std::fs::remove_dir_all(data).unwrap();
     }
 
-    #[test]
-    fn ask_save_failure_reports_restart_risk() {
-        let (data, computer) = fresh("ask-save-warning");
+    #[tokio::test]
+    async fn ask_save_failure_reports_restart_risk() {
+        let data = std::env::temp_dir().join(format!("apex-host-ask-warning-{}", instance_id()));
+        let host = Host::new(crate::HostPaths { data: data.clone(), downloads: None }, tokio::runtime::Handle::current());
+        let computer = &host.computer;
         computer.set_enabled(true).unwrap();
         computer.set_skip_prompts(true).unwrap();
         let blocked = block_saves(&data);
         let error = computer.set_skip_prompts(false).unwrap_err();
+        let status = host.computer_status().await;
+        assert_eq!(status["skipAppPrompts"], false);
+        assert_eq!(status["appPromptsWarning"], ASK_NOT_SAVED);
         assert!(error.starts_with(ASK_NOT_SAVED), "{error}");
         assert!(ASK_NOT_SAVED.contains("may switch back to Skip prompts after a restart"));
         std::fs::remove_dir_all(blocked).unwrap();
         // Any later settings write repairs the file from the live values.
         computer.set_enabled(true).unwrap();
+        assert!(host.computer_status().await["appPromptsWarning"].is_null());
+        host.shutdown();
         assert!(!Computer::new(&data).skip_prompts());
         std::fs::remove_dir_all(data).unwrap();
     }
@@ -1248,11 +1305,12 @@ mod tests {
     #[test]
     fn registration_carries_the_display_flag_apart_from_the_stamp() {
         let id = ParticipantId::new("p");
-        let skip = Admission { generation: 3, skip_prompts: true, thread: "t".into() };
+        let skip = Admission { revision: 5, generation: 3, skip_prompts: true, thread: "t".into() };
         let names = || (Some("Astra".to_owned()), Some("Trip plan".to_owned()));
         let full = registration(&skip, &id, names(), "token", Access::Full, false, false, "scope");
         assert_eq!((full["participantName"].clone(), full["threadName"].clone()), (json!("Astra"), json!("Trip plan")), "the consent prompt keeps the names people see");
         assert_eq!(full["skipAppPrompts"], true);
+        assert_eq!(full["policyRevision"], skip.revision);
         assert_eq!(full["promptFree"], true);
         assert_eq!(full["threadId"], "t");
         assert_eq!(full["grantScope"], "scope");
@@ -1263,14 +1321,14 @@ mod tests {
         let assistant = registration(&skip, &id, names(), "token", Access::Full, true, true, "scope");
         assert_eq!(assistant["promptFree"], false, "assistant replies keep their own stamp");
         assert_eq!(assistant["assistantFullAccess"], true);
-        let ask = Admission { generation: 3, skip_prompts: false, thread: "t".into() };
+        let ask = Admission { revision: 5, generation: 3, skip_prompts: false, thread: "t".into() };
         let asking = registration(&ask, &id, names(), "token", Access::Full, false, false, "scope");
         assert_eq!((asking["skipAppPrompts"].clone(), asking["promptFree"].clone()), (json!(false), json!(false)));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn the_icon_push_sends_only_the_setting() {
+    async fn the_icon_push_sends_the_setting_and_revision() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let (client, helper) = tokio::net::UnixStream::pair().unwrap();
         let peer = tokio::spawn(async move {
@@ -1281,10 +1339,10 @@ mod tests {
             helper.get_mut().write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":request["id"],"result":{}})).as_bytes()).await.unwrap();
             request
         });
-        push_app_prompts(&mut tokio::io::BufReader::new(client), true).await;
+        push_app_prompts(&mut tokio::io::BufReader::new(client), (true, 5)).await;
         let request = peer.await.unwrap();
         assert_eq!(request["method"], "unified/set-app-prompts");
-        assert_eq!(request["params"], json!({"skip":true}));
+        assert_eq!(request["params"], json!({"skip":true, "policyRevision":5}));
     }
 
     #[cfg(unix)]
@@ -1337,6 +1395,7 @@ mod tests {
         let (turn, _peer) = active("t", "token");
         computer.commit(&admission, turn).unwrap();
         computer.set_skip_prompts(true).unwrap();
+        assert!(admission.revision < computer.policy_status().1, "the pending registration predates the Skip push");
         assert!(!admission.skip_prompts, "its stamp was set at registration");
         assert!(computer.ready("t", admission.generation), "and it keeps running");
         assert!(computer.admission("t").skip_prompts, "the next turn skips");
