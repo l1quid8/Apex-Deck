@@ -29,6 +29,8 @@ fn prompt_free_turn(access: Access, assistant_reply: bool, skip_prompts: bool) -
     access == Access::Full && !assistant_reply && skip_prompts
 }
 
+/// Shown when switching Unified Computer Use off took effect but its save failed.
+pub(crate) const OFF_NOT_SAVED: &str = "Unified Computer Use is off now but that couldn't be saved; it may switch back on after a restart.";
 /// Shown when Ask for each app took effect but its save failed.
 pub(crate) const ASK_NOT_SAVED: &str = "Ask for each app is on now but couldn't be saved; it may switch back to Skip prompts after a restart.";
 
@@ -248,7 +250,7 @@ impl Computer {
             self.enabled.store(false, Ordering::SeqCst);
             self.revoke(None, None);
         }
-        self.save(enabled, self.skip_prompts())?;
+        self.save(enabled, self.skip_prompts()).map_err(|error| if enabled { error } else { format!("{OFF_NOT_SAVED} {error}") })?;
         self.enabled.store(enabled, Ordering::SeqCst);
         Ok(())
     }
@@ -1203,6 +1205,29 @@ mod tests {
         // Any later settings write repairs the file from the live values.
         computer.set_enabled(true).unwrap();
         assert!(!Computer::new(&data).skip_prompts());
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    /// Off is the way to stop everything, so it holds even when it cannot be
+    /// saved, and the error says it may not survive a restart.
+    #[test]
+    fn off_save_failure_still_takes_effect_and_reports_restart_risk() {
+        let (data, computer) = fresh("off-save-fails");
+        computer.set_enabled(true).unwrap();
+        let before = computer.generation("t");
+        let blocked = block_saves(&data);
+        let error = computer.set_enabled(false).unwrap_err();
+        assert!(error.starts_with(OFF_NOT_SAVED), "{error}");
+        assert!(OFF_NOT_SAVED.contains("may switch back on after a restart"));
+        assert!(!computer.enabled());
+        assert!(computer.generation("t") > before, "every turn ended");
+        // On changes nothing when it cannot be saved, and carries no such warning.
+        let error = computer.set_enabled(true).unwrap_err();
+        assert!(!error.contains("after a restart"), "{error}");
+        assert!(!computer.enabled());
+        std::fs::remove_dir_all(blocked).unwrap();
+        computer.set_skip_prompts(false).unwrap();
+        assert!(!Computer::new(&data).enabled(), "the next successful write repairs the file");
         std::fs::remove_dir_all(data).unwrap();
     }
 

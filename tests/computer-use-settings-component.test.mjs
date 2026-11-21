@@ -15,6 +15,7 @@ test('App permissions is one Mac-wide choice that waits for the host, and there 
     import React from 'react'; import {createRoot} from 'react-dom/client';
     import {ComputerUseSettings} from '/src/ComputerUseSettings.tsx';
     const ASK_NOT_SAVED="Ask for each app is on now but couldn't be saved; it may switch back to Skip prompts after a restart.";
+    const OFF_NOT_SAVED="Unified Computer Use is off now but that couldn't be saved; it may switch back on after a restart.";
     const f=window.fixture={available:true,enabled:true,skip:false,reason:undefined,calls:[],fail:'none',hold:false,
       status(){return {available:this.available,enabled:this.enabled,skipAppPrompts:this.skip,reason:this.reason,accessibilityTrusted:true,listenEventAccess:true,screenCaptureAccess:true};}};
     const backend={demo:false,async call(cmd,args){
@@ -26,7 +27,10 @@ test('App permissions is one Mac-wide choice that waits for the host, and there 
         if(f.fail==='askNotSaved'&&!args.skip){f.skip=false;throw Error(ASK_NOT_SAVED+' Could not save Unified Computer Use settings: disk full.');}
         f.skip=args.skip;
       }
-      if(cmd==='computer_set_enabled')f.enabled=args.enabled;
+      if(cmd==='computer_set_enabled'){
+        if(f.fail==='offNotSaved'&&!args.enabled){f.enabled=false;throw Error(OFF_NOT_SAVED+' Could not save Unified Computer Use settings: disk full.');}
+        f.enabled=args.enabled;
+      }
       return f.status();}};
     createRoot(document.getElementById('root')).render(React.createElement(ComputerUseSettings,{backend}));
     window.ready=true;
@@ -115,6 +119,31 @@ test('App permissions is one Mac-wide choice that waits for the host, and there 
         // The warning outlives another look at the host: Ask is still unsaved.
         await refocus();await new Promise(r=>setTimeout(r,200));
         v=await view();assert.deepEqual(v.pressed,[ASK]);assert.ok(v.alerts.some(a=>a.includes('may switch back to Skip prompts after a restart')),'the warning stays after a refresh');
+
+        // An open confirmation never outlives the choice being locked: it must
+        // not come back on its own when Unified Computer Use is switched on again.
+        await run(()=>{window.fixture.fail='none';window.fixture.enabled=true;window.fixture.skip=false;});await refocus();
+        await wait(()=>document.querySelector('[role=group][aria-label="App permissions"] button[aria-pressed=true]')?.textContent.trim()==='Ask for each app'&&!document.querySelector('[role=group][aria-label="App permissions"] button').disabled,'back on Ask');
+        await press('App permissions',SKIP);await wait(()=>document.querySelector('[role=group][aria-label="Confirm skipping app prompts"]'),'confirmation before the lock');
+        await run(()=>{window.fixture.enabled=false;});await refocus();
+        await wait(()=>document.querySelector('[role=group][aria-label="App permissions"] button').disabled&&!document.querySelector('[role=group][aria-label="Confirm skipping app prompts"]'),'locking closes the confirmation');
+        await run(()=>{window.fixture.enabled=true;});await refocus();
+        await wait(()=>!document.querySelector('[role=group][aria-label="App permissions"] button').disabled,'unlocked again');
+        await new Promise(r=>setTimeout(r,150));
+        assert.equal((await view()).confirm,null,'the confirmation does not reopen without a click');
+        assert.equal((await run(()=>window.fixture.calls)).filter(c=>c[0]==='computer_set_app_prompts'&&c[1].skip).length,2,'and nothing was sent');
+
+        // Off took effect on the Mac but could not be saved: the switch shows
+        // Off (what the Mac is doing) with the restart warning.
+        await run(()=>{window.fixture.fail='offNotSaved';});
+        await run(()=>{document.querySelector('input[aria-label="Enable Unified Computer Use"]').click();});
+        await wait(()=>[...document.querySelectorAll('[role=alert]')].some(a=>a.textContent.includes('may switch back on after a restart')),'the Off restart warning is shown');
+        await wait(()=>document.querySelector('input[aria-label="Enable Unified Computer Use"]').checked===false,'the switch shows Off from the host');
+
+        // The helper is installed but not answering: the host's reason is shown under Enable.
+        await run(()=>{window.fixture.fail='none';window.fixture.enabled=true;window.fixture.reason='Open Unified Computer Use to check permissions.';});await refocus();
+        await wait(()=>document.querySelector('input[aria-label="Enable Unified Computer Use"]')?.closest('.settings-row')?.innerText.includes('Open Unified Computer Use to check permissions.'),'the helper reason is under Enable');
+        await run(()=>{window.fixture.reason=undefined;});
 
         // Off: the choice is locked but still shows what is saved.
         await run(()=>{window.fixture.fail='none';window.fixture.enabled=false;window.fixture.skip=true;});await refocus();

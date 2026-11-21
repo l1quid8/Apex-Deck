@@ -70,7 +70,7 @@ Reading requires an app grant too. Read-only and Plan turns cannot open, focus o
 
 Only one bot controls the desktop at a time. Actions use observations tied to the app and retained native controls. If the screen changes or you use the keyboard or mouse, the bot must observe again. A refusal does not return screen content.
 
-There are two ways to stop. To stop one agent, stop its output with the normal thread Stop button: that ends its computer use, reads as well as input. To stop everything, switch **Enable Unified Computer Use** off in Settings; quitting the helper from its menu bar icon also ends every turn. Nothing stays stopped: there is no Resume, and the next message starts a new turn. System permission/security applications, password fields and the controller's own surfaces are protected. This is not a sandbox against an unrestricted shell running as your macOS user.
+There are two ways to stop. To stop one agent, stop its output with the normal thread Stop button: that ends its computer use, reads as well as input. To stop everything, switch **Enable Unified Computer Use** off in Settings. Quitting the helper from its menu bar icon ends the turns running at that moment but is not an off switch: the next reply that needs the computer opens the helper again. Nothing stays stopped: there is no Resume, and the next message starts a new turn. If switching off can't be saved, it still applies now and Settings warns that it may switch back on after a restart. System permission/security applications, password fields and the controller's own surfaces are protected. This is not a sandbox against an unrestricted shell running as your macOS user.
 
 ## Privacy
 

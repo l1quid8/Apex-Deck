@@ -126,6 +126,9 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
       try { window.dispatchEvent(new CustomEvent('settings-saved', { detail: { seq, source: 'cursor' } })); } catch {}
     } catch (e: any) {
       try { window.dispatchEvent(new CustomEvent('settings-save-error', { detail: { seq, source: 'cursor', error: e?.message } })); } catch {}
+      // Off takes effect on the Mac even when it could not be saved, so show
+      // what the host says now, then the error (a refresh clears the old one).
+      await refresh();
       setError(e?.message || 'The request could not finish. Open Unified Computer Use from the menu bar and check its status.');
     } finally { setBusy(false); }
   };
@@ -241,7 +244,11 @@ export function ComputerUseSettings({ backend }: { backend: Backend }) {
 
   const skip = status?.skipAppPrompts === true;
   const promptsLocked = busy || backend.demo || !status?.available || !status.enabled;
-  const unavailable = backend.demo ? 'Available in the macOS desktop app.' : !status ? 'Checking this host…' : !status.available ? status.reason || 'The bundled helper is unavailable on this host.' : '';
+  // The host's own reason covers both "no helper on this host" and "the helper isn't answering".
+  const unavailable = backend.demo ? 'Available in the macOS desktop app.' : !status ? 'Checking this host…' : status.reason || (status.available ? '' : 'The bundled helper is unavailable on this host.');
+  // A confirmation never outlives the choice being locked, so it can't
+  // reappear by itself when Unified Computer Use is switched on again.
+  useEffect(() => { if (promptsLocked || skip) setConfirmSkip(false); }, [promptsLocked, skip]);
 
   const permission = (value: boolean | undefined) => value === true ? 'Allowed' : value === false ? 'Not allowed' : 'Open the helper to check';
 

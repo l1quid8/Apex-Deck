@@ -52,7 +52,7 @@ This is the isolated implementation for feat/ucu-cursor-overlay.
 
 - `hideAfterAction()` – fade out after each successful tool call (click, type, scroll, point).
 - `cleanupOnStop()` – immediate removal on:
-  - Stop Unified Computer Use (menu or `unified/stop-all`)
+  - Every turn ending at once (screen lock, away-mode takeover, Quit)
   - `unified/end-turn`
   - Any action failure / internal error (prevents orphan)
   - `setEnabled(false)`
