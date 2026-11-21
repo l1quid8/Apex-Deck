@@ -736,6 +736,7 @@ fn document_key(uid: u32, data_dir: &str, name: &str) -> Result<String, String> 
                 | "personal-machine.json"
                 | "project-memory-v1.json"
                 | "room-runners-v1.json"
+                | "thread-git-v1.json"
                 | "devices.json"
         )
     {
@@ -799,7 +800,7 @@ pub fn protected(name: &str) -> bool {
             | "room_remove_participant"
             | "room_set_options"
             | "room_forget_allowed"
-            | "room_runner_start" | "room_runner_action" | "room_set_plan"
+            | "room_thread_git_action" | "room_runner_start" | "room_runner_action" | "room_set_plan"
             | "room_mount"
             | "personal_memory_add"
             | "personal_memory_correct"

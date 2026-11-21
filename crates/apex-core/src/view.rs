@@ -121,6 +121,7 @@ pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> St
     }
 
     out.push_str(&user_identity());
+    out.push_str("After committing your own code on a task branch, end your reply with a standalone line: Deck built <full HEAD SHA>. After independently reviewing that exact commit and passing it, end with: Deck review passed <full HEAD SHA>. Use these lines only for completed work or an actual code review.\n");
     out.push_str(
         "Messages from the user and from other models arrive with the speaker's name in square \
          brackets, like \"[User]: ...\". Do not put your own name in front of your replies.\n\
