@@ -126,8 +126,10 @@ pub fn command_needs(command: &Command) -> Need {
         ArtifactExport { .. } => Need::Paired,
         ExportThread { .. } => Need::Paired,
 
-        // Desktop control and permission setup belong to this Mac.
-        ComputerStatus {} | ComputerSetup {} | ComputerSetEnabled { .. } | ComputerSetAppPrompts { .. } | ComputerSetActionLabels { .. } | ComputerSetCursorOverlay { .. } | ComputerSetCursorImage { .. } | ComputerResetCursorOverlay {} => Need::Never,
+        // User decision (2026-11-20): a paired phone may view and change UCU on/off and App permissions.
+        ComputerStatus {} | ComputerSetEnabled { .. } | ComputerSetAppPrompts { .. } => Need::Paired,
+        // Helper setup and cursor indicator belong to this Mac.
+        ComputerSetup {} | ComputerSetActionLabels { .. } | ComputerSetCursorOverlay { .. } | ComputerSetCursorImage { .. } | ComputerResetCursorOverlay {} => Need::Never,
         // Never remote.
         DataFolder {} => Need::Never,
         EnvPresent { .. } => Need::Never,
@@ -344,8 +346,8 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         BrowserTabStop { .. } => None,
         ComputerStatus {} => None,
         ComputerSetup {} => None,
-        ComputerSetEnabled { .. } => None,
-        ComputerSetAppPrompts { .. } => None,
+        ComputerSetEnabled { .. } => Raises,
+        ComputerSetAppPrompts { .. } => Raises,
         ComputerSetActionLabels { .. } => None,
         ComputerSetCursorOverlay { .. } => None,
         ComputerSetCursorImage { .. } => None,
@@ -722,10 +724,10 @@ pub(crate) mod tests {
             ("mod_fs_stat", false, json!({ "path": "x" })),
             ("mod_env_get", false, json!({ "name": "HOME" })),
             // The phone is this Mac's simulator; paired devices can't drive it.
-            ("computer_status", false, json!({})),
+            ("computer_status", true, json!({})),
             ("computer_setup", false, json!({})),
-            ("computer_set_enabled", false, json!({"enabled":true})),
-            ("computer_set_app_prompts", false, json!({"skip":true})),
+            ("computer_set_enabled", true, json!({"enabled":true})),
+            ("computer_set_app_prompts", true, json!({"skip":true})),
             ("computer_set_action_labels", false, json!({"enabled":true})),
             ("computer_set_cursor_overlay", false, json!({"prefs":{}})),
             ("computer_set_cursor_image", false, json!({"imageBase64":""})),
@@ -813,6 +815,8 @@ pub(crate) mod tests {
             ("session_save", AccessEffect::Raises, "session JSON can carry profiles with Full access"),
             ("settings_save", AccessEffect::Raises, "settings could carry defaults affecting access"),
             ("settings_code_mode_set", AccessEffect::Raises, "global Code Mode is a user control"),
+            ("computer_set_enabled", AccessEffect::Raises, "enables desktop computer use for agents"),
+            ("computer_set_app_prompts", AccessEffect::Raises, "controls whether Full-access agents skip Mac app prompts"),
             ("monitor_watch_save", AccessEffect::Raises, "watch settings persist a provider profile with an access field"),
             // Proven NOT to raise:
             ("chat_create", AccessEffect::None, "chat enforces Read-only: ChatBotPatch refuses access field, host forces Read (host.rs:1082,5435)"),

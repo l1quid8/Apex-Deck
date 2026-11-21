@@ -32,6 +32,10 @@ fn command(name: &str) -> Value {
         "room_decide" => json!({"id":"r","request":"approval-1","approve":true,"always":false}),
         "room_answer" => json!({"id":"r","request":"question-1","answers":[["yes"]]}),
         "personal_todo" => json!({"assistantId":"a","expectedRevision":2,"action":"add","text":"Buy cable"}),
+        "computer_set_enabled" => json!({"enabled":true}),
+        "computer_set_app_prompts" => json!({"skip":true}),
+        "computer_setup" => json!({}),
+        "computer_set_action_labels" => json!({"enabled":true}),
         _ => json!({"id":"r","text":"hello"}),
     };
     json!({"cmd":name,"args":args})
@@ -143,11 +147,44 @@ fn git_actions_are_admitted_for_any_granted_phone() {
     for kind in ["push", "request_merge", "cancel_merge", "ask_fix"] {
         let intent = json!({"cmd":"room_thread_git_action","args":{"id":"r","action":{"kind":kind,"expected":{"head":"abc"}}}});
         let mut journal = Journal::new();
-        grant_raw(&mut journal, json!({"endpointId": endpoint()}), true);
+        grant(&mut journal, true);
         assert!(claim(&mut journal, 1, intent.clone(), true, false).is_err());
-        grant_raw(&mut journal, json!({"endpointId": endpoint()}), false);
+        grant(&mut journal, false);
         let ack = claim(&mut journal, 1, intent.clone(), true, false).unwrap();
         assert_eq!(ack["receipt"]["command"]["args"], intent["args"]);
         assert!(claim(&mut journal, 1, intent, true, false).is_err());
+    }
+}
+
+#[test]
+fn a_granted_phone_can_change_both_computer_settings() {
+    let mut j = Journal::new();
+    grant(&mut j, false);
+    for (id, cmd) in [
+        (1, json!({"cmd":"computer_set_enabled","args":{"enabled":true}})),
+        (2, json!({"cmd":"computer_set_enabled","args":{"enabled":false}})),
+        (3, json!({"cmd":"computer_set_app_prompts","args":{"skip":true}})),
+        (4, json!({"cmd":"computer_set_app_prompts","args":{"skip":false}})),
+    ] {
+        let ack = claim(&mut j, id, cmd.clone(), true, false).unwrap();
+        assert_eq!(ack["kind"], "claim");
+        assert_eq!(ack["receipt"]["command"]["cmd"], cmd["cmd"]);
+        assert_eq!(ack["receipt"]["command"]["args"], cmd["args"]);
+        // Replayed request ID is refused for both commands.
+        assert!(claim(&mut j, id, cmd.clone(), true, false).is_err());
+    }
+    // A revoked phone is refused for both commands.
+    grant(&mut j, true);
+    assert!(claim(&mut j, 5, command("computer_set_enabled"), true, false).is_err());
+    assert!(claim(&mut j, 6, command("computer_set_app_prompts"), true, false).is_err());
+}
+
+#[test]
+fn computer_setup_and_action_labels_stay_closed_to_phones() {
+    let mut j = Journal::new();
+    grant(&mut j, false);
+    for name in ["computer_setup", "computer_set_action_labels"] {
+        let err = claim(&mut j, 1, command(name), true, false).unwrap_err();
+        assert!(err.contains("Command cannot acquire phone submission authority"), "{name}: {err}");
     }
 }

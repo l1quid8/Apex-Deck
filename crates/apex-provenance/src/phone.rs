@@ -98,6 +98,8 @@ impl Journal {
             | "room_set_options"
             | "room_forget_allowed"
             | "room_create" | "room_import" | "room_fork" | "chat_promote" | "room_thread_git_action" => {}
+            // User decision (2026-11-20): a paired phone may change these two Mac-wide UCU settings.
+            "computer_set_enabled" | "computer_set_app_prompts" => {}
             _ if crate::protected(name)
                 && (name.starts_with("personal_")
                     || name.starts_with("assistant_")
