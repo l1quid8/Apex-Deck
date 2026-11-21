@@ -1,6 +1,12 @@
 import { normalizeDiffPath } from './diffPaths.ts';
 export interface GitFile { path: string; added: number; removed: number; patch: string; stagedOnly: boolean }
+export interface ThreadWorkflow {
+  head: string; branch: string; root: string; repo: string; builder: string; builder_model: string;
+  reviewer: string | null; result_oid?: string | null; phase: 'syncing' | 'ready' | 'preparing' | 'checks' | 'submitting' | 'cancelling' | 'cancelled' | 'failed' | 'blocked' | 'merged';
+  generation: number; pr: number | null; detail: string; pushed: boolean; fix_requested: boolean;
+}
 export interface GitState {
+  workflowError?: string | null; originRepo?: string | null; workflow?: ThreadWorkflow;
   root: string; head: string; tree: string; branch: string | null; target: string | null; targetHead: string | null;
   ahead: number; behind: number; files: GitFile[]; checksPassed: boolean; clean: boolean;
 }

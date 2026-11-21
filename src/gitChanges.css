@@ -55,3 +55,8 @@
 .git-file-entry.is-unselected { opacity: 0.72; }
 
 .git-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+.git-thread-actions { margin-top: 8px; min-width: 0; }
+.git-thread-actions .git-branch-actions { flex-wrap: wrap; justify-content: flex-start; }
+.git-thread-actions .git-branch-actions button { flex: 0 1 auto; }
+.git-thread-actions pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16em; overflow: auto; }

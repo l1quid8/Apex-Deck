@@ -1,0 +1,506 @@
+use super::{git, repository, run, Phase, ThreadGit, Workflow};
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Pull {
+    number: u64,
+    state: String,
+    head_ref_oid: String,
+    head_ref_name: String,
+    base_ref_name: String,
+    is_cross_repository: bool,
+    merge_commit: Option<Oid>,
+    merge_state_status: String,
+    status_check_rollup: Vec<serde_json::Value>,
+}
+#[derive(Deserialize)]
+struct Oid {
+    oid: String,
+}
+enum Decision {
+    Wait,
+    Submit,
+    Finish(Phase, String),
+}
+fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
+    if pr.head_ref_oid != w.head
+        || pr.head_ref_name != w.branch
+        || pr.base_ref_name != "main"
+        || pr.is_cross_repository
+    {
+        return Decision::Finish(
+            Phase::Blocked,
+            "The pull request changed. Review the new commit.".into(),
+        );
+    }
+    if pr.state == "MERGED" {
+        return Decision::Finish(
+            Phase::Merged,
+            format!(
+                "Merged PR #{} into main at {}. Awaiting your test.",
+                pr.number,
+                pr.merge_commit
+                    .as_ref()
+                    .map(|c| c.oid.as_str())
+                    .unwrap_or("unknown commit")
+            ),
+        );
+    }
+    if w.phase == Phase::Cancelling {
+        return Decision::Finish(
+            Phase::Cancelled,
+            "Merge cancelled. The branch stays on GitHub.".into(),
+        );
+    }
+    if !local_current || pr.state != "OPEN" {
+        return Decision::Finish(
+            Phase::Blocked,
+            "The branch or PR changed. A new merge request is needed.".into(),
+        );
+    }
+    for check in &pr.status_check_rollup {
+        let result = check["conclusion"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| check["state"].as_str())
+            .unwrap_or("");
+        if [
+            "FAILURE",
+            "ERROR",
+            "TIMED_OUT",
+            "CANCELLED",
+            "ACTION_REQUIRED",
+            "STARTUP_FAILURE",
+            "STALE",
+        ]
+        .contains(&result)
+        {
+            let name = check["name"]
+                .as_str()
+                .or_else(|| check["context"].as_str())
+                .unwrap_or("GitHub check");
+            let url = check["detailsUrl"]
+                .as_str()
+                .or_else(|| check["targetUrl"].as_str())
+                .unwrap_or("");
+            return Decision::Finish(
+                Phase::Failed,
+                format!("{name} reported {result} on {}. {url}", w.head),
+            );
+        }
+    }
+    if pr.merge_state_status != "CLEAN"
+        || pr.status_check_rollup.is_empty()
+        || !pr.status_check_rollup.iter().all(|c| {
+            let success = c["conclusion"] == "SUCCESS" || c["state"] == "SUCCESS";
+            success || c["conclusion"] == "SKIPPED" || c["conclusion"] == "NEUTRAL"
+        })
+        || !pr
+            .status_check_rollup
+            .iter()
+            .any(|c| c["conclusion"] == "SUCCESS" || c["state"] == "SUCCESS")
+    {
+        return Decision::Wait;
+    }
+    Decision::Submit
+}
+pub(super) trait Shell {
+    async fn run(
+        &self,
+        data: &Path,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+    ) -> Result<String, String>;
+}
+struct ProjectShell;
+impl Shell for ProjectShell {
+    async fn run(
+        &self,
+        data: &Path,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+    ) -> Result<String, String> {
+        run(data, cwd, program, args).await
+    }
+}
+impl ThreadGit {
+    pub async fn sync(
+        &self,
+        host: &crate::host::Host,
+        room: &str,
+        w: &Workflow,
+    ) -> Result<(), String> {
+        let data = host.data_dir();
+        let root = Path::new(&w.root);
+        let sha = w
+            .result_oid
+            .as_deref()
+            .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or("Missing GitHub merge commit.")?;
+        let worktrees = run(
+            data,
+            root,
+            "git",
+            &["worktree", "list", "--porcelain", "-z"],
+        )
+        .await?;
+        let main = worktrees
+            .split("\0\0")
+            .find_map(|block| {
+                let mut fields = block.split('\0');
+                let path = fields.next()?.strip_prefix("worktree ")?;
+                fields
+                    .any(|f| f == "branch refs/heads/main")
+                    .then(|| PathBuf::from(path))
+            })
+            .ok_or("Main is not checked out on this machine.")?;
+        if main == root {
+            return Err("Task checkout is now on main; local update deferred.".into());
+        }
+        let main_gate = host.checkout_gate(&main);
+        let _lease = main_gate
+            .acquire(format!("thread-git-sync:{room}"), Default::default())
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let read = |args: &[&str]| git(data, &main, None, args).map(|s| s.trim().to_string());
+        if read(&["symbolic-ref", "--short", "HEAD"])? != "main"
+            || !read(&["status", "--porcelain"])?.is_empty()
+        {
+            return Err("Local main has work in progress.".into());
+        }
+        let url = read(&["remote", "get-url", "origin"])?;
+        if repository(&url)? != w.repo {
+            return Err("Local main has a different origin.".into());
+        }
+        run(
+            data,
+            &main,
+            "git",
+            &["fetch", "--no-tags", &url, "refs/heads/main"],
+        )
+        .await?;
+        read(&["merge-base", "--is-ancestor", sha, "FETCH_HEAD"])?;
+        if read(&["merge-base", "--is-ancestor", sha, "HEAD"]).is_err() {
+            run(data, &main, "git", &["merge", "--ff-only", sha]).await?;
+        }
+        // Delete only the remote ref that still points to the reviewed SHA.
+        let remote_ref = format!("refs/heads/{}", w.branch);
+        let remote = run(data, root, "git", &["ls-remote", &url, &remote_ref]).await?;
+        let mut detail = format!("{} Local main contains this merge.", w.detail);
+        if remote.split_whitespace().next() == Some(&w.head) {
+            let lease = format!("--force-with-lease={remote_ref}:{}", w.head);
+            if let Err(e) = run(
+                data,
+                root,
+                "git",
+                &["push", &lease, &url, &format!(":{remote_ref}")],
+            )
+            .await
+            {
+                detail.push_str(&format!(" Remote branch retained: {e}"));
+            }
+        }
+        detail.push_str(" The checked-out task branch is retained.");
+        self.update(room, w, |j| {
+            j.phase = Phase::Merged;
+            j.detail = detail;
+        })?;
+        Ok(())
+    }
+    pub fn defer_sync(&self, room: &str, w: &Workflow, why: String) -> Result<bool, String> {
+        self.update(room, w, |j| {
+            j.phase = Phase::Merged;
+            j.detail = format!("{} Local update deferred: {why}", w.detail);
+        })
+    }
+    pub(super) async fn advance(
+        &self,
+        shell: &impl Shell,
+        room: &str,
+        w: &Workflow,
+        data: &Path,
+        mounted: Option<&Path>,
+    ) -> Result<(), String> {
+        let root = Path::new(&w.root);
+        let gh_repo = format!("github.com/{}", w.repo);
+        // No checkout or credentials inferred from another room on recovery.
+        let local = if let Some(cwd) = mounted {
+            let head = shell.run(data, cwd, "git", &["rev-parse", "HEAD"]).await?;
+            let branch = shell
+                .run(data, cwd, "git", &["symbolic-ref", "--short", "HEAD"])
+                .await
+                .unwrap_or_default();
+            let repo = shell
+                .run(data, cwd, "git", &["remote", "get-url", "--push", "origin"])
+                .await?;
+            shell
+                .run(data, cwd, "git", &["rev-parse", "--show-toplevel"])
+                .await?
+                == w.root
+                && head == w.head
+                && branch == w.branch
+                && repository(&repo).ok().as_ref() == Some(&w.repo)
+        } else {
+            false
+        };
+        if w.pr.is_none() && (w.phase == Phase::Cancelling || !local) {
+            self.update(room, w, |j| {
+                j.phase = if local {
+                    Phase::Cancelled
+                } else {
+                    Phase::Blocked
+                };
+                j.detail = "Merge stopped before submission.".into();
+            })?;
+            return Ok(());
+        }
+        if w.phase == Phase::Preparing {
+            if !local {
+                self.update(room, w, |j| {
+                    j.phase = Phase::Blocked;
+                    j.detail = "The local commit changed. Review the new commit.".into();
+                })?;
+                return Ok(());
+            }
+            let state = crate::git_changes::status(data, root)?;
+            if git(
+                data,
+                root,
+                None,
+                &["cat-file", "-e", &format!("{}:tsconfig.json", w.head)],
+            )
+            .is_ok()
+            {
+                if let Err(why) = crate::git_changes::check_commit(
+                    data,
+                    root,
+                    &state,
+                    &crate::git_changes::TYPECHECK,
+                )
+                .await
+                {
+                    self.update(room, w, |j| {
+                        j.phase = Phase::Failed;
+                        j.detail = why.chars().take(6000).collect();
+                    })?;
+                    return Ok(());
+                }
+            }
+            if self.get(room)?.as_ref() != Some(w) {
+                return Ok(());
+            }
+        }
+        if w.pr.is_none() {
+            let url = shell
+                .run(
+                    data,
+                    root,
+                    "git",
+                    &["remote", "get-url", "--push", "origin"],
+                )
+                .await?;
+            if repository(&url)? != w.repo {
+                return Err("Origin changed.".into());
+            }
+            shell
+                .run(
+                    data,
+                    root,
+                    "git",
+                    &["push", &url, &format!("{}:refs/heads/{}", w.head, w.branch)],
+                )
+                .await?;
+            let list = shell
+                .run(
+                    data,
+                    root,
+                    "gh",
+                    &[
+                        "pr",
+                        "list",
+                        "--repo",
+                        &gh_repo,
+                        "--base",
+                        "main",
+                        "--head",
+                        &w.branch,
+                        "--state",
+                        "open",
+                        "--json",
+                        "number,isCrossRepository",
+                        "--jq",
+                        "[.[] | select(.isCrossRepository == false)][0].number // empty",
+                    ],
+                )
+                .await?;
+            let n = if list.is_empty() {
+                let url = shell
+                    .run(
+                        data,
+                        root,
+                        "gh",
+                        &[
+                            "pr",
+                            "create",
+                            "--repo",
+                            &gh_repo,
+                            "--head",
+                            &w.branch,
+                            "--base",
+                            "main",
+                            "--title",
+                            &w.branch,
+                            "--body",
+                            "Reviewed in the Apex Deck thread.",
+                        ],
+                    )
+                    .await?;
+                url.trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("")
+                    .parse::<u64>()
+            } else {
+                list.parse::<u64>()
+            }
+            .map_err(|_| "GitHub returned an invalid PR number.")?;
+            self.update(room, w, |j| {
+                j.pr = Some(n);
+                j.pushed = true;
+                j.phase = Phase::Checks;
+                j.detail = format!("Waiting for checks on PR #{n}…");
+            })?;
+            return Ok(());
+        }
+        if w.phase == Phase::Preparing {
+            self.update(room, w, |j| {
+                j.phase = Phase::Checks;
+                j.detail = "Waiting for checks…".into();
+            })?;
+            return Ok(());
+        }
+        let number = w.pr.unwrap().to_string();
+        let raw=shell.run(data,root,"gh",&["pr","view",&number,"--repo",&gh_repo,"--json","number,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit,mergeStateStatus,statusCheckRollup"]).await?;
+        let pr: Pull = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        match reconcile(w, &pr, local) {
+            Decision::Wait => {}
+            Decision::Finish(phase, mut detail) => {
+                if phase == Phase::Failed {
+                    // Fetch only the failing Actions run for this PR's commit.
+                    if let Some(run_id) = pr
+                        .status_check_rollup
+                        .iter()
+                        .filter(|c| c["conclusion"] == "FAILURE")
+                        .filter_map(|c| c["detailsUrl"].as_str())
+                        .find_map(|url| {
+                            url.strip_prefix(&format!(
+                                "https://github.com/{}/actions/runs/",
+                                w.repo
+                            ))?
+                            .split('/')
+                            .next()?
+                            .parse::<u64>()
+                            .ok()
+                        })
+                    {
+                        if let Ok(log) = shell
+                            .run(
+                                data,
+                                root,
+                                "gh",
+                                &[
+                                    "run",
+                                    "view",
+                                    &run_id.to_string(),
+                                    "--repo",
+                                    &w.repo,
+                                    "--log-failed",
+                                ],
+                            )
+                            .await
+                        {
+                            let tail = log.lines().rev().take(24).collect::<Vec<_>>();
+                            detail.push('\n');
+                            detail.push_str(
+                                &tail
+                                    .into_iter()
+                                    .rev()
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                                    .chars()
+                                    .take(6000)
+                                    .collect::<String>(),
+                            );
+                        }
+                    }
+                }
+                self.update(room, w, |j| {
+                    j.phase = phase;
+                    if j.phase == Phase::Merged {
+                        j.result_oid = pr.merge_commit.as_ref().map(|c| c.oid.clone());
+                        if j.result_oid.is_some() {
+                            j.phase = Phase::Syncing;
+                        }
+                    }
+                    j.detail = detail;
+                })?;
+            }
+            Decision::Submit => {
+                // Serialize dispatch with cancellation; retries use GitHub's exact-SHA compare.
+                let mut submitting = w.clone();
+                submitting.phase = Phase::Submitting;
+                submitting.detail = "Confirming merge with GitHub…".into();
+                if !self.update(room, w, |job| *job = submitting.clone())? {
+                    return Ok(());
+                }
+                let result = shell
+                    .run(
+                        data,
+                        root,
+                        "gh",
+                        &[
+                            "api",
+                            "--hostname",
+                            "github.com",
+                            "--method",
+                            "PUT",
+                            &format!("repos/{}/pulls/{number}/merge", w.repo),
+                            "-f",
+                            &format!("sha={}", w.head),
+                            "-f",
+                            "merge_method=merge",
+                        ],
+                    )
+                    .await;
+                if let Err(why) = result {
+                    // A transport timeout can follow a successful write. Re-read
+                    // the PR before retrying. A definitive refusal stops dispatch.
+                    let refused = ["HTTP 403", "HTTP 404", "HTTP 405", "HTTP 409", "HTTP 422"]
+                        .iter()
+                        .any(|status| why.contains(status));
+                    self.update(room, &submitting, |job| {
+                        if refused {
+                            job.phase = Phase::Blocked;
+                        }
+                        job.detail = why.chars().take(1500).collect();
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+    pub async fn poll(&self, room: &str, job: Workflow, data: &Path, mounted: Option<&Path>) {
+        if let Err(why) = self.advance(&ProjectShell, room, &job, data, mounted).await {
+            let _ = self.update(room, &job, |j| {
+                j.detail = format!(
+                    "Waiting for GitHub · {}",
+                    why.chars().take(1500).collect::<String>()
+                )
+            });
+        }
+    }
+}

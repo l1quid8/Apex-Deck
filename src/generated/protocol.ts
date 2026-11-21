@@ -606,6 +606,8 @@ export type PersonalViewContext = {
   openThreadIds?: Array<string>;
 };
 
+export type Phase = "syncing" | "ready" | "preparing" | "checks" | "submitting" | "cancelling" | "cancelled" | "failed" | "blocked" | "merged";
+
 export type PlanRun = {
   by: ParticipantId;
   detail: string;
@@ -950,10 +952,13 @@ export type State = {
   clean: boolean;
   files: Array<File>;
   head: string;
+  originRepo?: string | null;
   root: string;
   target?: string | null;
   targetHead?: string | null;
   tree: string;
+  workflow?: Workflow | null;
+  workflowError?: string | null;
 };
 
 export type StepKind = "command" | "read" | "search" | "list" | "edit" | "web" | "tool" | "helper" | "thinking" | "other";
@@ -987,6 +992,20 @@ export type TaskRef = {
   revision?: number | null;
   source: string;
   taskId: string;
+};
+
+export type ThreadGitAction = {
+  expected: State;
+  kind: "push";
+} | {
+  expected: State;
+  kind: "request_merge";
+} | {
+  expected: State;
+  kind: "cancel_merge";
+} | {
+  expected: State;
+  kind: "ask_fix";
 };
 
 export type ThreadLabel = {
@@ -1065,6 +1084,23 @@ export type WorkStep = {
   /** Key of the helper step this step ran under. */
   parent?: string | null;
   status: StepStatus;
+};
+
+export type Workflow = {
+  branch: string;
+  builder: string;
+  builder_model: string;
+  detail: string;
+  fix_requested: boolean;
+  generation: number;
+  head: string;
+  phase: Phase;
+  pr?: number | null;
+  pushed: boolean;
+  repo: string;
+  result_oid?: string | null;
+  reviewer?: string | null;
+  root: string;
 };
 
 export type Command = {
@@ -2052,6 +2088,12 @@ export type Command = {
     id: string;
   };
   cmd: "room_git_status";
+} | {
+  args: {
+    action: ThreadGitAction;
+    id: string;
+  };
+  cmd: "room_thread_git_action";
 } | {
   args: {
     action: Action;
@@ -4281,6 +4323,10 @@ export interface Commands {
   room_targets: {
     id: string;
     text: string;
+  };
+  room_thread_git_action: {
+    action: ThreadGitAction;
+    id: string;
   };
   room_turn: {
     hops?: number | null;
