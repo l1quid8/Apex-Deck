@@ -31,7 +31,7 @@ export function PhoneThreadGit({ backend, room }: { backend: Backend; room: stri
         if (live && ticket === revision.current) setState(next);
         if (!next.workflow) delay = 30000;
       } catch {
-        if (live && ticket === revision.current) setState(null);
+        // Keep the last known Git state and any active error visible across transient poll failures.
       } finally {
         reading = false;
         if (live) timer = setTimeout(refresh, delay);

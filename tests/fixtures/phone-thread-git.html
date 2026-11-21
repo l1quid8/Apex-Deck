@@ -13,12 +13,19 @@ import {canUseThreadGit} from '/src/phone/PhoneThreadGit.tsx';
 const root = createRoot(document.querySelector('#root'));
 const writes = [];
 let reads = 0;
+let failNextRead = false;
+let failNextWrite = false;
 let workflow = {head:'abc', reviewer:'reviewer', phase:'ready', detail:'Reviewed abc', pushed:false};
 const state = () => ({root:'/fixture', branch:'fix/alert', originRepo:'test/repo', head:'abc', ahead:1, files:[], workflow:{...workflow}});
 const backend = {async call(cmd, {id, action}) {
   if (id !== 'phone-room') throw Error('Wrong thread');
-  if (cmd === 'room_git_status') { reads++; return state(); }
+  if (cmd === 'room_git_status') {
+    reads++;
+    if (failNextRead) { failNextRead = false; throw Error('Transient status blip'); }
+    return state();
+  }
   if (cmd !== 'room_thread_git_action' || action.expected.head !== workflow.head) throw Error('Wrong command or commit');
+  if (failNextWrite) { failNextWrite = false; throw Error('Push rejected by remote'); }
   writes.push(action.kind);
   switch (action.kind) {
     case 'push': workflow.pushed = true; break;
@@ -49,7 +56,10 @@ window.WebSocket = class extends EventTarget {
       capabilities:['phone_thread_git_v1'],access:{tier:'full',threads:'all'}}};
     if (cmd === 'session_load') response = {id,ok:session};
     if (cmd === 'room_state') response = {id,ok:{active:[],approvals:[],snapshot:{participants:[],transcript:[],options:{policy:'mention',max_bot_hops:3}}}};
-    if (cmd === 'room_git_status' || cmd === 'room_thread_git_action') response = {id,ok:await backend.call(cmd,args)};
+    if (cmd === 'room_git_status' || cmd === 'room_thread_git_action') {
+      try { response = {id,ok:await backend.call(cmd,args)}; }
+      catch (error) { response = {id,err:error instanceof Error ? error.message : String(error)}; }
+    }
     queueMicrotask(() => this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(response)})));
   }
 };
@@ -80,6 +90,12 @@ async function run() {
       canUseThreadGit({tier:'full',threads:['phone-room']}) || !canUseThreadGit({tier:'full',threads:'all'})) throw Error('Incorrect device gate');
   root.render(React.createElement(PhoneApp));
   await mount();
+  failNextWrite = true;
+  failNextRead = true;
+  const readsBeforeFail = reads;
+  await click('Push');
+  await wait(() => reads > readsBeforeFail && document.querySelector('.ph-thread-git [role="alert"]')?.textContent.includes('Push rejected by remote'));
+  if (!button('Push') || !button('Merge to main')) throw Error('Transient poll failure hid Git controls');
   await click('Push');
   await click('Merge to main');
   await wait(() => button('Waiting for checks…'));
