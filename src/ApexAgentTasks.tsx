@@ -65,10 +65,13 @@ function readableResult(text: string | null | undefined): string {
   const first = cleaned.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
   return oneLine(first, 160);
 }
-/** Worker display names for the task's destination (or its recorded workers); ids are shown only when no profile matches. */
+/** A worker's name: the one it has in the task's thread (the host sends those), else its Agents-tab name; its id only when neither knows it. */
+const workerName = (task: AssistantTask, profiles: ParticipantConfig[], id: string): string =>
+  task.workerNames?.[id] || profiles.find((profile) => profile.id === id)?.display_name || id;
+/** Worker display names for the task's destination (or its recorded workers). */
 const workerLabel = (task: AssistantTask, profiles: ParticipantConfig[]): string => {
   const ids = task.destination?.workers?.length ? task.destination.workers : task.workers ?? [];
-  return ids.length ? ids.map((id) => profiles.find((profile) => profile.id === id)?.display_name ?? id).join(', ') : 'Not chosen yet';
+  return ids.length ? ids.map((id) => workerName(task, profiles, id)).join(', ') : 'Not chosen yet';
 };
 /** Verification from saved check results; each entry records whether it succeeded. */
 function verificationLabel(task: AssistantTask): string {
@@ -85,7 +88,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
   const [receipt, setReceipt] = useState<{ requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'legacy' | 'unknown' | 'unchecked'; taskId?: string | null } | null>(null);
-  const [routingThreads, setRoutingThreads] = useState<{ id: string; workers: ParticipantConfig[] }[] | undefined>(undefined);
+  const [routingThreads, setRoutingThreads] = useState<{ id: string; title?: string | null; workers: ParticipantConfig[] }[] | undefined>(undefined);
   const [namedOnlyWorkerIds, setNamedOnlyWorkerIds] = useState<string[] | undefined>(undefined);
   const [archivedExecutions, setArchivedExecutions] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
@@ -120,9 +123,11 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const requestRef = useRef<PendingAssistantRequest | null>(null);
   const workerProfiles = useMemo(() => taskWorkerChoices(profiles).filter((profile) => !namedOnlyWorkerIds?.includes(profile.id)), [profiles, namedOnlyWorkerIds]);
   const chatThreads = useMemo(() => {
-    const visible = panes.filter((pane) => pane.kind === 'chat' && pane.workspaceId === owner.workspaceId && !pane.archived).map((pane) => ({ id: pane.id, title: pane.title }));
+    const visible = panes.filter((pane) => pane.kind === 'chat' && pane.workspaceId === owner.workspaceId && !pane.archived).map((pane) => ({ id: pane.id, title: pane.title, label: pane.title }));
     // The owning host also advertises saved chats that are closed or absent on this device.
-    const saved = (routingThreads ?? []).filter((thread) => !visible.some((pane) => pane.id === thread.id)).map((thread) => ({ id: thread.id, title: `Saved chat · ${thread.id}` }));
+    // `label` is what the host matches the user's words against, so an untitled chat keeps its id there: the bare
+    // words "saved chat" in a message must never pick a destination.
+    const saved = (routingThreads ?? []).filter((thread) => !visible.some((pane) => pane.id === thread.id)).map((thread) => ({ id: thread.id, title: thread.title?.trim() || 'Saved chat', label: thread.title?.trim() || `Saved chat · ${thread.id}` }));
     return [...visible, ...saved];
   }, [panes, owner.workspaceId, routingThreads]);
   const ownerKey = `${owner.workspaceId}\u0000${owner.cwd}\u0000${owner.hostId}\u0000${owner.conversationId}`;
@@ -190,7 +195,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const version = generation.current;
     setBusy(true); setError('');
     try {
-      const result = await backend.call<{ message: unknown; task?: AssistantTask | null; monitor: ProjectMonitor }>('assistant_message', assistantMessageArgs(captured, pending, chatThreads.map((pane) => ({ id: pane.id, label: pane.title }))));
+      const result = await backend.call<{ message: unknown; task?: AssistantTask | null; monitor: ProjectMonitor }>('assistant_message', assistantMessageArgs(captured, pending, chatThreads.map((pane) => ({ id: pane.id, label: pane.label }))));
       if (!currentOwner(captured, version)) return;
       if (!result.monitor || result.monitor.workspaceId !== captured.workspaceId || result.monitor.cwd !== captured.cwd || result.monitor.hostId !== captured.hostId || result.monitor.conversationId !== captured.conversationId) throw new Error('The assistant returned a different project assignment.');
       if (result.task && !isTaskOwnedBy(result.task, captured)) throw new Error('The assistant returned a task for a different assignment.');
@@ -477,11 +482,11 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {taskDetailView && task.status === 'needs_clarification' && <p className="assistant-task-warning">{proposedDestination(task) ? `${taskAssistantName(task)} has a question before it starts. Its question is in the conversation; answer it below.` : `${taskAssistantName(task)} didn't pick a chat for this. Say which chat to use below, or Dismiss it.`}</p>}
         {task.status === 'proposed' && <dl className="assistant-task-proposal" aria-label="Proposed destination">
           <div><dt>Worker</dt><dd>{workerLabel(task, profiles)}</dd></div>
-          <div><dt>Destination chat</dt><dd>{task.destination ? (task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification') : 'Needs clarification'}</dd></div>
+          <div><dt>Destination chat</dt><dd>{task.destination ? (task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? (task.destination.threadId ? 'Saved chat' : 'Needs clarification')) : 'Needs clarification'}</dd></div>
           <div><dt>Machine</dt><dd>{owner.hostId}</dd></div>
           <div><dt>Mode</dt><dd>{modeLabel(task.mode)}</dd></div>
         </dl>}
-        {task.destination && task.status !== 'proposed' && <p className="assistant-task-muted">Destination: {task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification'}{task.destination.workers.length ? ` · Workers: ${task.destination.workers.join(', ')}` : ''}</p>}
+        {task.destination && task.status !== 'proposed' && <p className="assistant-task-muted">Destination: {task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? (task.destination.threadId ? 'Saved chat' : 'Needs clarification')}{task.destination.workers.length ? ` · Workers: ${task.destination.workers.map((id) => workerName(task, profiles, id)).join(', ')}` : ''}</p>}
         {task.mode === 'in_place' && task.status === 'queued' && <p className="assistant-task-lease">Queued for checkout access; work starts when the current writer releases it.</p>}
         {task.mode === 'in_place' && ['running', 'needs_you', 'ready_for_review', 'applying'].includes(task.status) && <p className="assistant-task-lease">Edits are already in the checkout. This task holds the writer lease through review; other Deck writers wait. Accept releases the lease, and Request changes keeps it.</p>}
         <nav className="assistant-task-links" aria-label="Related threads">{taskThreadLinks(task).map((link) => <button type="button" key={link.id} onClick={() => onOpenThread?.(link.id)}>{link.label}</button>)}</nav>

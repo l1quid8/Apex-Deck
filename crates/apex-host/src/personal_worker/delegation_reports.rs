@@ -4,7 +4,8 @@ use crate::assistant_tasks::{AssistantTask, TaskAttempt, TaskStatus as JobStatus
 
 pub(crate) fn factual(task: &AssistantTask, attempt: &TaskAttempt) -> String {
     let id=task.workers.first().map(String::as_str).unwrap_or("The worker");
-    let worker=task.result_data.as_ref().and_then(|d|d["workerProfiles"].as_array()).and_then(|ps|ps.iter().find(|p|p["id"].as_str()==Some(id))).and_then(|p|p["display_name"].as_str()).unwrap_or(id);
+    let named=|id:&str|task.result_data.as_ref().and_then(|d|d["workerProfiles"].as_array()).and_then(|ps|ps.iter().find(|p|p["id"].as_str()==Some(id))).and_then(|p|p["display_name"].as_str()).unwrap_or(id).to_owned();
+    let worker=named(id);
     let state=match attempt.status {
         JobStatus::ReadyForReview => format!("{worker}'s result is ready for your review."),
         JobStatus::Done => format!("{worker}'s result was accepted."),
@@ -15,7 +16,7 @@ pub(crate) fn factual(task: &AssistantTask, attempt: &TaskAttempt) -> String {
         _ if attempt.result.as_deref()==Some(crate::assistant_git::SAVE_TOO_LONG) => format!("Saving {worker}'s result took too long, so I stopped that attempt. The saved work is still there to review."),
         _ => format!("{worker} couldn't finish the job."),
     };
-    let controls=task.conversation_events.iter().filter(|e|e.run_id==attempt.run_id && e.kind=="question_resolved").map(|e|format!("Host record · {}: {}",e.worker_id,e.text)).collect::<Vec<_>>().join("\n");
+    let controls=task.conversation_events.iter().filter(|e|e.run_id==attempt.run_id && e.kind=="question_resolved").map(|e|format!("Host record · {}: {}",named(&e.worker_id),e.text)).collect::<Vec<_>>().join("\n");
     let state=if controls.is_empty() {state} else {format!("{state}\n{controls}")};
     let output=attempt.result.as_deref().unwrap_or("");
     // Team collection already bounds each of at most ten worker reports.

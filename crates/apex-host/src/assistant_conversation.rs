@@ -1404,7 +1404,8 @@ pub fn source_chat_excerpts(cwd: &str, chats: &[(String, String, SavedRoom)]) ->
                 .map(|message| SourceMessage {
                     from: match &message.speaker {
                         Speaker::Human => "human".into(),
-                        Speaker::Bot(participant) => participant.to_string(),
+                        // The agent's name in that chat; its id only once it has left.
+                        Speaker::Bot(participant) => saved.snapshot.participants.iter().find(|p| &p.id == participant).map_or_else(|| participant.to_string(), |p| p.display_name.clone()),
                     },
                     text: clip_chars(&message.text, SOURCE_MESSAGE_CHARS),
                     at: message.at,

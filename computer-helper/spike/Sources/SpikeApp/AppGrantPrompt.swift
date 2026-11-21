@@ -10,6 +10,10 @@ final class AppGrantPrompt: NSObject, NSWindowDelegate {
   private var panel: NSPanel?
   private let text: String
   init(text: String) { self.text = text }
+  /// `requester` and `thread` are the names the person sees in Deck, not internal ids.
+  static func text(requester: String, thread: String, control: Bool, name: String, detail: String) -> String {
+    "Requested by: \(requester.prefix(64))\nThread: \(thread.prefix(64))\n\nA bot wants to \(control ? "read and control" : "read") \(name).\n\n\(detail)"
+  }
   func decision() -> AppGrantDecision? { lock.lock(); defer { lock.unlock() }; return result }
   func show() {
     guard decision() == nil else { return }

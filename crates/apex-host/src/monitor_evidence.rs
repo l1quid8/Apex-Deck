@@ -175,23 +175,31 @@ pub fn collect(project_data: &Path,
         }
         let transcript = &saved.snapshot.transcript;
         let from = transcript.len().saturating_sub(MAX_THREAD_MESSAGES);
+        // `content` names agents as people know them; `stable` names them by id and is what the version is taken
+        // from, so renaming an agent does not make findings the user already settled look new.
         let mut content = String::new();
+        let mut stable = String::new();
         if from > 0 {
-            content.push_str(&format!(
-                "[Earlier messages omitted; showing the last {MAX_THREAD_MESSAGES}.]\n"
-            ));
+            let omitted = format!("[Earlier messages omitted; showing the last {MAX_THREAD_MESSAGES}.]\n");
+            content.push_str(&omitted);
+            stable.push_str(&omitted);
         }
         for message in &transcript[from..] {
-            let role = match &message.speaker {
-                Speaker::Human => "human".to_owned(),
-                Speaker::Bot(participant) => format!("assistant:{participant}"),
+            let (role, stable_role) = match &message.speaker {
+                Speaker::Human => ("human".to_owned(), "human".to_owned()),
+                Speaker::Bot(participant) => (
+                    format!("assistant:{}", saved.snapshot.participants.iter().find(|p| &p.id == participant).map_or_else(|| participant.to_string(), |p| p.display_name.clone())),
+                    format!("assistant:{participant}"),
+                ),
             };
             let when = message
                 .at
                 .map(|at| format!("{at}"))
                 .unwrap_or_else(|| "time unknown".into());
             content.push_str(&format!("[{role} at {when}]\n{}\n", message.text));
+            stable.push_str(&format!("[{stable_role} at {when}]\n{}\n", message.text));
         }
+        let (stable, _) = fit_text(&stable, remaining);
         let (content, truncated) = fit_text(&content, remaining);
         remaining = remaining.saturating_sub(content.len());
         if truncated {
@@ -199,15 +207,18 @@ pub fn collect(project_data: &Path,
                 "Saved thread '{id}' was truncated to fit evidence limits"
             ));
         }
-        sources.push(EvidenceSource {
+        let mut source = EvidenceSource {
             version: String::new(),
             id: format!("thread:{id}"),
             kind: "thread".into(),
             label: format!("Saved thread {id}"),
             observed_at: now,
-            content,
+            content: stable,
             truncated,
-        });
+        };
+        source.version = source_version(&source);
+        source.content = content;
+        sources.push(source);
         if remaining == 0 {
             if thread_index + 1 < threads.len() {
                 warnings.push("Additional selected sources were omitted after reaching the evidence size limit".into());
@@ -247,7 +258,7 @@ pub fn collect(project_data: &Path,
         commits,
     );
 
-    for source in &mut sources {
+    for source in sources.iter_mut().filter(|source| source.version.is_empty()) {
         source.version = source_version(source);
     }
     warnings.sort();
@@ -656,5 +667,38 @@ mod tests {
             .unwrap()
             .content
             .contains("at 42"));
+    }
+    #[tokio::test]
+    async fn renaming_an_agent_changes_what_is_shown_but_not_the_source_version() {
+        use apex_core::{Access, Backend, ParticipantConfig, ParticipantId};
+        let root = Temp::new();
+        let mut room = Room::new(vec![], RoomOptions::default());
+        room.post_human("said", &|_| {}).await;
+        let mut saved = SavedRoom { mounts: vec![],
+            cwd: Some(root.path().to_string_lossy().into_owned()),
+            snapshot: room.snapshot(),
+        };
+        saved.snapshot.transcript[0].speaker = Speaker::Bot(ParticipantId::new("keystone"));
+        saved.snapshot.participants = vec![ParticipantConfig {
+            can_read_images: false, untethered_computer: false,
+            id: ParticipantId::new("keystone"),
+            display_name: "Keystone".into(),
+            backend: Backend::OpenAiCompatible { base_url: "http://127.0.0.1:9/v1".into(), model: "fixture".into(), api_key_env: None },
+            persona: String::new(),
+            access: Access::Read,
+            effort: None, speed: None, voice: None, appearance: None, media: None,
+        }];
+        let before = collect_at(root.path(), &[], &[("t".into(), saved.clone())], 100);
+        saved.snapshot.participants[0].display_name = "Asstra".into();
+        let after = collect_at(root.path(), &[], &[("t".into(), saved.clone())], 100);
+        let thread = |snapshot: &EvidenceSnapshot| snapshot.sources.iter().find(|s| s.id == "thread:t").unwrap().clone();
+        assert!(thread(&before).content.contains("assistant:Keystone"));
+        assert!(thread(&after).content.contains("assistant:Asstra"));
+        assert!(!thread(&after).version.is_empty());
+        assert_eq!(thread(&before).version, thread(&after).version);
+        // A real change to what was said still moves the version.
+        saved.snapshot.transcript[0].text = "said more".into();
+        let changed = collect_at(root.path(), &[], &[("t".into(), saved)], 100);
+        assert_ne!(thread(&after).version, thread(&changed).version);
     }
 }

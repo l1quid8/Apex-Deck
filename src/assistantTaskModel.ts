@@ -60,7 +60,7 @@ export interface AssistantTask {
   updatedAtMs: number;
 }
 export interface TaskUsage { inputTokens?: number | null; outputTokens?: number | null; costMicros?: number | null }
-export interface AssistantTaskSnapshot { project?: ProjectRef; workspaceId: string; revision: number; tasks: AssistantTask[]; routingThreads?: { id: string; workers: ParticipantConfig[] }[]; namedOnlyWorkerIds?: string[]; executions: { taskId: string; workspaceId: string; threadId: string; mode: AssistantTaskMode; tombstonedAtMs: number | null; pane?: AssistantExecutionPane }[] }
+export interface AssistantTaskSnapshot { project?: ProjectRef; workspaceId: string; revision: number; tasks: AssistantTask[]; routingThreads?: { id: string; title?: string | null; workers: ParticipantConfig[] }[]; namedOnlyWorkerIds?: string[]; executions: { taskId: string; workspaceId: string; threadId: string; mode: AssistantTaskMode; tombstonedAtMs: number | null; pane?: AssistantExecutionPane }[] }
 export interface PendingAssistantRequest {
   lineage?: AssistantLineage;
   requestId: string;

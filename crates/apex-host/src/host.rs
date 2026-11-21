@@ -711,8 +711,9 @@ impl Host {
         let profiles=task.result_data.as_ref().and_then(|d|d["workerProfiles"].as_array()).cloned().unwrap_or_default();
         let room=task.execution_thread_id.as_deref().or_else(||task.destination.as_ref().and_then(|d|d.thread_id.as_deref())).and_then(|id|self.store().room(id).ok().flatten());
         let names=task.workers.iter().map(|id| {
-            let name=profiles.iter().find(|p|p["id"].as_str()==Some(id)).and_then(|p|p["display_name"].as_str()).map(str::to_owned)
-                .or_else(||room.as_ref().and_then(|r|r.snapshot.participants.iter().find(|p|p.id.as_str()==id).map(|p|p.display_name.clone())))
+            // The room's name is the current one; the task's saved profile is from before any rename.
+            let name=room.as_ref().and_then(|r|r.snapshot.participants.iter().find(|p|p.id.as_str()==id).map(|p|p.display_name.clone()))
+                .or_else(||profiles.iter().find(|p|p["id"].as_str()==Some(id)).and_then(|p|p["display_name"].as_str()).map(str::to_owned))
                 .unwrap_or_else(||id.clone());
             (id.clone(),name)
         }).collect::<std::collections::BTreeMap<_,_>>();
@@ -1382,7 +1383,7 @@ impl Host {
         if input.runner.workers.iter().chain(input.runner.checker.iter()).any(|id| !configs.iter().any(|p| p.id.as_str() == id)) { return Err("Runner participant is not in this room".into()); }
         let res = self.runner_service.lock().unwrap().start(input.clone(), now_ms)?;
         if let crate::runner::service::RunnerMutation::Applied(snapshot)=&res {
-            let note=format!("{} started: {}\nWorking: {} · {} turns/runs · {} calls · {} minutes lifetime. Measurable spend cap: ${:.2}, best effort; unavailable costs remain unknown. [Runner {}]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.objective.as_deref().or(snapshot.prompt.as_deref()).unwrap_or(""),snapshot.workers.join(", "),snapshot.limits.max_turns.unwrap_or(30),snapshot.limits.max_invocations.unwrap_or(120),snapshot.limits.lifetime_ms/60000,snapshot.limits.max_cost_micros.unwrap_or(0) as f64/1e6,snapshot.id);
+            let note=format!("{} started: {}\nWorking: {} · {} turns/runs · {} calls · {} minutes lifetime. Measurable spend cap: ${:.2}, best effort; unavailable costs remain unknown. [Runner {}]",if snapshot.kind==crate::runner::RunnerKind::Goal{"Goal"}else{"Loop"},snapshot.objective.as_deref().or(snapshot.prompt.as_deref()).unwrap_or(""),names_of(&configs,&snapshot.workers).join(", "),snapshot.limits.max_turns.unwrap_or(30),snapshot.limits.max_invocations.unwrap_or(120),snapshot.limits.lifetime_ms/60000,snapshot.limits.max_cost_micros.unwrap_or(0) as f64/1e6,snapshot.id);
             self.runner_note(&input.id,&handle,&note).await?;
         }
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
@@ -2009,6 +2010,27 @@ impl Host {
         if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
         self.handle(thread).ok()?.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p|&p.id==id).map(|p|p.display_name.clone())
     }
+    /// The thread's title as the person sees it, for the consent prompt.
+    pub(crate) fn computer_thread_label(&self,thread:&str)->Option<String> {
+        if let Some(assistant)=crate::personal_worker::computer_thread_assistant(thread) { return self.personal_get(assistant).ok().map(|a|a.name); }
+        self.thread_title(thread)
+    }
+    /// A thread's title as the person sees it: the saved chat title, or the
+    /// open pane's title when a client renamed it without saving chat details
+    /// (the phone does). `None` when the thread has neither.
+    pub(crate) fn thread_title(&self,thread:&str)->Option<String> {
+        let shown=|title:&str|Some(title.trim().to_owned()).filter(|title|!title.is_empty());
+        self.store.chat_meta(thread).ok().flatten().and_then(|meta|shown(&meta.title)).or_else(|| {
+            let session=self.store.session().ok().flatten()?;
+            session.get("panes")?.as_array()?.iter().find(|pane|pane.get("id").and_then(|id|id.as_str())==Some(thread))?.get("title")?.as_str().and_then(shown)
+        })
+    }
+    /// The names agents go by now in `thread`, for text a person or a model
+    /// reads; an id stands in only for an agent the thread no longer has.
+    pub(crate) fn agent_names(&self,thread:&str,ids:&[String])->Vec<String> {
+        let participants=self.handle(thread).ok().map(|handle|handle.checkpoint.lock().unwrap().snapshot.participants.clone()).unwrap_or_default();
+        names_of(&participants,ids)
+    }
     pub(crate) fn computer_room_ids(&self) -> Vec<String> { self.rooms.lock().unwrap().keys().cloned().collect() }
 
     /// Apply a saved access change now: stop `participant` and run it again under
@@ -2404,7 +2426,7 @@ impl Host {
             // If step 2 fails, the level stays as it was and the change reports the failure.
             if let Some(existing) = room.participant(&name) {
                 if let Err(why) = existing.cancel_active_turn().await {
-                    return Err(format!("Could not stop process tree for `{name}`: {why}"));
+                    return Err(format!("Could not stop process tree for {}: {why}", existing.config().display_name));
                 }
             }
 
@@ -2785,7 +2807,7 @@ impl Host {
             .ok_or_else(|| format!("no participant with the id `{participant}` is in this chat"))?;
         match &config.backend {
             apex_core::Backend::OpenAiCompatible { base_url, api_key_env, .. } => Ok((base_url.clone(), api_key_env.clone())),
-            _ => Err(format!("`{participant}` doesn't run on an API")),
+            _ => Err(format!("{} doesn't run on an API", config.display_name)),
         }
     }
 
@@ -2808,7 +2830,7 @@ impl Host {
                 .ok_or_else(|| format!("no saved agent has the id `{participant}`"))?;
             match &config.backend {
                 apex_core::Backend::OpenAiCompatible { base_url, api_key_env, .. } => (base_url.clone(), api_key_env.clone()),
-                _ => return Err(format!("`{participant}` doesn't run on an API")),
+                _ => return Err(format!("{} doesn't run on an API", config.display_name)),
             }
         };
         apex_adapters::list_models(&base_url, api_key_env.as_deref()).await
@@ -4856,6 +4878,12 @@ mod tests {
     }
 }
 
+
+/// Each id's current display name among `participants`; the id itself for one that isn't there.
+pub(crate) fn names_of(participants:&[apex_core::ParticipantConfig],ids:&[String])->Vec<String> {
+    ids.iter().map(|id|participants.iter().find(|p|p.id.as_str()==id).map_or_else(||id.clone(),|p|p.display_name.clone())).collect()
+}
+
 #[cfg(test)]
 mod host_tests {
     use super::*;
@@ -5351,6 +5379,19 @@ mod host_tests {
         let _ = std::fs::remove_dir_all(data);
     }
 
+    #[test]
+    fn people_see_current_names_and_titles_not_ids() {
+        let (host, _runtime, _data) = host("names-not-ids");
+        host.room_create("pane-1".into(), vec![named_bot("keystone", "Asstra")], RoomOptions::default(), None).unwrap();
+        // A renamed agent keeps its id; text names it as the thread does now.
+        assert_eq!(host.agent_names("pane-1", &["keystone".into(), "gone".into()]), vec!["Asstra".to_owned(), "gone".to_owned()]);
+        // A title set only on the open pane (a phone rename) still counts.
+        assert_eq!(host.thread_title("pane-1"), None);
+        host.session_save(serde_json::json!({"version":1,"panes":[{"id":"pane-1","kind":"chat","title":" GLOBAL UCU "}]})).unwrap();
+        assert_eq!(host.thread_title("pane-1").as_deref(), Some("GLOBAL UCU"));
+        assert_eq!(host.computer_thread_label("pane-1").as_deref(), Some("GLOBAL UCU"));
+    }
+
     fn named_bot(id: &str, name: &str) -> ParticipantConfig {
         serde_json::from_value(serde_json::json!({"id":id,"display_name":name,"backend":{"kind":"scripted","lines":["[pass]"]}})).unwrap()
     }
@@ -5471,7 +5512,7 @@ mod host_tests {
         let mut lowered = bot_cfg.clone();
         lowered.access = Access::Read;
         let err = runtime.block_on(host.room_update_participant("r".into(), lowered)).unwrap_err();
-        assert!(err.contains("Could not stop process tree for `bot`: process refused to exit"), "{err}");
+        assert!(err.contains("Could not stop process tree for Bot: process refused to exit"), "{err}");
 
         let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
         assert_eq!(saved.access, Access::Full, "stored access must not be downgraded when stop fails");

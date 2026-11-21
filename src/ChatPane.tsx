@@ -1086,6 +1086,11 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const names = useMemo(() => new Map(participants.map((p) => [p.id, p.display_name])), [participants]);
   const namesRef = useRef(names);
   namesRef.current = names;
+  // An agent that left the chat keeps its messages, so keep the name it had here
+  // (or its Agents-tab name) rather than labelling them with its permanent id.
+  const lastNames = useRef(new Map<string, string>());
+  for (const p of [...profiles, ...participants]) lastNames.current.set(p.id, p.display_name);
+  const agentName = (id: string) => namesRef.current.get(id) ?? lastNames.current.get(id) ?? id;
   const identities = useRef(new Map<string, AgentAppearance>());
   for (const p of [...participants, ...profiles]) {
     identities.current.set(p.id, p.appearance ?? legacyAppearance(p.id));
@@ -1119,7 +1124,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   useEffect(() => {
     if (profileMode) return;
     let alive = true;
-    const nameOf = (id: string) => namesRef.current.get(id) ?? id;
+    const nameOf = (id: string) => agentName(id);
     /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()) ?? questionSignal(questionSnapshot()[pane.id], namesRef.current));
     let recoveredState: import("./types").RoomState | null = null;
@@ -1750,7 +1755,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       try {
         if (kind === "curate") {
           const reply = await backend.roomCurate(pane.id);
-          const notice = curateNotice({ ...reply, by: namesRef.current.get(reply.by) ?? reply.by });
+          const notice = curateNotice({ ...reply, by: agentName(reply.by) });
           if (notice) notify(notice.text, notice.tone);
         } else {
           const notice = undoNotice(await backend.roomCurateUndo(pane.id));
@@ -1901,7 +1906,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     }
     const ids = stillHere(action, participants.map((p) => p.id));
     if (ids.length === 0 || !liveKeys.has(key)) return null;
-    const label = action.kind === "retry" ? "Try again" : letLabel(ids.map((id) => names.get(id) ?? id));
+    const label = action.kind === "retry" ? "Try again" : letLabel(ids.map((id) => agentName(id)));
     return <button type="button" className="ghost small" disabled={ids.some((id) => working[id])} onClick={() => {
       if (usedActions.current.has(key)) return;
       usedActions.current.add(key);
@@ -1958,7 +1963,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const box = range.getBoundingClientRect();
     setPicked({ message, text, x: box.left + box.width / 2, y: box.top });
   };
-  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => partQuote(p.message, p.text, (id) => names.get(id) ?? id);
+  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => partQuote(p.message, p.text, (id) => agentName(id));
   const addPicked = () => {
     if (!picked || !showComposer()) return;
     const next = pickedQuote(picked);
@@ -1990,7 +1995,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if (busy) return notify("Stop the agents first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     const bot = retryBot(message);
-    if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
+    if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${bot ? agentName(bot) : "That agent"} isn't in this thread any more, so it can't answer again.`, "error");
     const origin = currentPlace.current;
     void planHistoryChange(backend, pane.id, message).then((plan) => {
       if (currentPlace.current !== origin) return;
@@ -2058,7 +2063,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         </li>)}
       </ul>}
       {showFiles && plan.skipped.length > 0 && <p>Too big to save, so left as they are: {plan.skipped.join(", ")}</p>}
-      {plan.effects.length > 0 && <p className="goback-effects">Can't be undone: {plan.effects.map((effect, i) => <span key={i}><code>{effect.command}</code> ({names.get(effect.by) ?? effect.by}){i < plan.effects.length - 1 ? ", " : ""}</span>)}</p>}
+      {plan.effects.length > 0 && <p className="goback-effects">Can't be undone: {plan.effects.map((effect, i) => <span key={i}><code>{effect.command}</code> ({agentName(effect.by)}){i < plan.effects.length - 1 ? ", " : ""}</span>)}</p>}
       {kind === "revert" && scope !== "files" && <p>Your message goes back in the box, unsent.</p>}
       <div className="row">
         <button type="button" className="primary small" autoFocus onClick={() => answerGoBack(false)}>Allow once</button>
@@ -2069,7 +2074,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   };
   /** Directional disclosure for message actions; the row wraps in a narrow pane. */
   const messageActions = (message: Message) => {
-    const quote = () => { if (!showComposer()) return; const next = quoteFor(message, (id) => names.get(id) ?? id); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
+    const quote = () => { if (!showComposer()) return; const next = quoteFor(message, (id) => agentName(id)); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
     const copy = () => void copyMessage(message);
     const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
     const goBackKind: GoBack | null = message.speaker.kind === "bot" ? "retry" : message.speaker.kind === "human" ? "revert" : null;
@@ -2096,7 +2101,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     const held = expanded || goingBack?.message.seq === message.seq;
     const primary = [
       <button key="quote" type="button" className="msg-action quote" title="Quote" onClick={quote}
-        aria-label={message.speaker.kind === "bot" ? `Quote response from ${names.get(message.speaker.id) ?? message.speaker.id}` : "Quote your message"}>
+        aria-label={message.speaker.kind === "bot" ? `Quote response from ${agentName(message.speaker.id)}` : "Quote your message"}>
         <DeckIcon name="reply" size={18} />
       </button>,
       <button key="copy" type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
@@ -2337,7 +2342,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   };
   const cardIn = (message: Message) => (code: { language: string; text: string }) =>
     code.language === CARD_LANGUAGE
-      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={`${hostConnection.revision}:${goneBack}:${cwd}`} executionAllowed={!chatReadOnly && focused && ready && hostCanMutate(hostConnection.status)} autoStartKey={autoStartKey} readOnly={chatReadOnly || message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
+      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? agentName(message.speaker.id) : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={`${hostConnection.revision}:${goneBack}:${cwd}`} executionAllowed={!chatReadOnly && focused && ready && hostCanMutate(hostConnection.status)} autoStartKey={autoStartKey} readOnly={chatReadOnly || message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
       : undefined;
 
   const changeArtifacts = (next: ArtifactFile) => {
@@ -3749,7 +3754,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   })}{adding && !editing ? addButton : quickAddButton("details", false)}</>;
   /** Take an Always allow back. The bot asks again next time. */
   const forgetRule = (rule: AllowedRule) => backend.roomForgetAllowed(pane.id, rule)
-    .then(() => setRemovedNote(removedLine(names.get(rule.by) ?? rule.by)))
+    .then(() => setRemovedNote(removedLine(agentName(rule.by))))
     .catch((error) => notify(`Could not remove it: ${String(error)}`, "error"));
   const allowedList = <>
     {allowed.length === 0
@@ -3757,11 +3762,11 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       : <ul className="allowed-list" aria-label="Always allowed">
         {allowed.map((rule) => <li key={`${rule.by}\u001f${rule.kind}\u001f${rule.what}`}>
           <span className="allowed-copy">
-            <strong style={{ "--agent-color": color(rule.by) } as CSSProperties}>{names.get(rule.by) ?? rule.by}</strong>
+            <strong style={{ "--agent-color": color(rule.by) } as CSSProperties}>{agentName(rule.by)}</strong>
             <span className={`allowed-what${rule.kind === "command" || rule.kind === "tool" ? " mono" : ""}`} title={rule.what}>{describeRule(rule)}</span>
             <span className="allowed-when">{allowedLine(rule, new Date())}</span>
           </span>
-          <button className="ghost small" aria-label={`Stop always allowing ${describeRule(rule)} for ${names.get(rule.by) ?? rule.by}`} onClick={() => void forgetRule(rule)}>Remove</button>
+          <button className="ghost small" aria-label={`Stop always allowing ${describeRule(rule)} for ${agentName(rule.by)}`} onClick={() => void forgetRule(rule)}>Remove</button>
         </li>)}
       </ul>}
     {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
@@ -3893,7 +3898,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           if (before && before !== actual.access) setAccessFrom(all => ({ ...all, [config.id]: all[config.id] ?? before }));
         }
       }} /> }
-      {!profileMode && !talkOnly && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 agent" : `${participants.length} agents`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
+      {!profileMode && !talkOnly && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 agent" : `${participants.length} agents`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => agentName(id)} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} cwd={cwd} />} />, details.slot)}
       {profileMode && !adding && participants.length > 0 && <div className="chat-bar"><div className="chips">{addButton}</div></div>}
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -3959,21 +3964,21 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             </p>
           ) : entry.kind === "low" ? (
             <p key={`l${entry.low.key}`} className="notice low-context">
-              <span>{names.get(entry.low.id) ?? entry.low.id} is down to {entry.low.left}% context. Compacting summarizes earlier turns and refills it.</span>
+              <span>{agentName(entry.low.id)} is down to {entry.low.left}% context. Compacting summarizes earlier turns and refills it.</span>
               <button className="ghost" onClick={compactChat} disabled={!canCompact}>Compact</button>
             </p>
           ) : entry.kind === "summary" ? (
             <details key={`s${entry.summary.upto}`} className="compacted">
               <summary>
-                {entry.summary.by ? `Summarized by ${names.get(entry.summary.by) ?? entry.summary.by}` : "Summarized"} · the models see this instead of the messages above
+                {entry.summary.by ? `Summarized by ${agentName(entry.summary.by)}` : "Summarized"} · the models see this instead of the messages above
               </summary>
               <Markdown text={entry.summary.summary} onOpen={openTarget} pathExists={pathExists} />
             </details>
           ) : entry.kind === "curation" ? (
             <details key={`c${entry.curation.at}-${entry.curation.when}`} className="compacted">
-              <summary>{noteTitle(entry.curation, names.get(entry.curation.by) ?? entry.curation.by)}</summary>
+              <summary>{noteTitle(entry.curation, agentName(entry.curation.by))}</summary>
               <div className="md">
-                {noteLines(entry.curation, names.get(entry.curation.by) ?? entry.curation.by, isSealed(entry.curation, compactedUpto), noteTime).map(noteLine)}
+                {noteLines(entry.curation, agentName(entry.curation.by), isSealed(entry.curation, compactedUpto), noteTime).map(noteLine)}
                 <p className="curation-actions">
                   <button type="button" className="ghost" onClick={() => jumpToMessage(entry.curation.hidden[0][0])}>Show in chat</button>
                   {entry.curation.undone == null && !isSealed(entry.curation, compactedUpto) && <button type="button" className="ghost" onClick={undoCuration} disabled={!canCompact}>Undo</button>}
@@ -3998,7 +4003,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
               />
               <div className="bubble bot completed" data-seq={entry.message.seq} data-activity="idle" style={{ "--agent-color": color(entry.message.speaker.id) } as CSSProperties}>
                 <span className="speaker">
-                  {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
+                  {agentName(entry.message.speaker.id)}
                 </span>
                 {entry.message.lateReplyFrom && <p className="late-reply-label">Late reply from {entry.message.lateReplyFrom}</p>}
                 {(() => {
@@ -4015,8 +4020,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   };
                   return <SavedSteps key={`${pane.id}:${seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={loadedSteps.current.get(seq) ?? null} load={load} finalText={entry.message.text} renderText={renderText} />;
                 })()}
-                <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
-                <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
+                <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(agentName(entry.message.speaker.id))} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
+                <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(agentName(entry.message.speaker.id))} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 {(() => {
                   const files = turnFiles.get(entry.message.seq);
                   if (!files?.length) return null;
@@ -4044,7 +4049,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item, ...after]
             : [item, ...after];
         })}
-        {Object.entries(turnProgress).filter(([, turn]) => turn.outcome).map(([id, turn]) => <InterruptedSteps key={`ended-${id}`} name={names.get(id) ?? id} turn={turn} renderText={(text) => <Markdown text={text} onOpen={openTarget} />} />)}
+        {Object.entries(turnProgress).filter(([, turn]) => turn.outcome).map(([id, turn]) => <InterruptedSteps key={`ended-${id}`} name={agentName(id)} turn={turn} renderText={(text) => <Markdown text={text} onOpen={openTarget} />} />)}
         {transcriptMounted.current && Object.entries(drafts).map(([id, partial]) => {
           const turn = working[id];
           const steps = turn?.steps ?? [];
@@ -4059,7 +4064,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
               <div className="bubble bot writing" aria-busy="true" data-activity={asks[id]?.length ? "waiting" : "working"} style={{ "--agent-color": color(id) } as CSSProperties}>
                 <span className="speaker">
-                  {names.get(id) ?? id}
+                  {agentName(id)}
                 </span>
                 {turn && (turn.work.structured || turn.work.todo.length > 0) ? (
                   <WorkSteps turn={turn.work} live renderText={(text) => <Markdown text={text} onOpen={openTarget} />} />
@@ -4075,7 +4080,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 )}
                 {partial && !(turn && (turn.work.structured || turn.work.todo.length > 0) && turn.work.timeline?.length) && (
                   <div className="draft-text">
-                    <Markdown text={partial} onOpen={openTarget} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={names.get(id) ?? id} /> : undefined)} />
+                    <Markdown text={partial} onOpen={openTarget} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={agentName(id)} /> : undefined)} />
                   </div>
                 )}
                 {(asks[id] ?? []).filter((ask) => !planShowsChip(ask.action, ask.request, planRuns, planTab)).map((ask) => (
@@ -4085,7 +4090,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                     request={ask.request}
                     by={id}
                     action={ask.action}
-                    name={names.get(id) ?? id}
+                    name={agentName(id)}
                     deadline={deadlineNote(ask.action.expires_at, now)}
                     onDecide={(approve, always) => backend.roomDecide(pane.id, ask.request, approve, always)}
                   />
@@ -4099,7 +4104,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   </span>
                   <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (curating ? CURATE_WORKING : planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
                   {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
-                  {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={chargeWarning([id]) ? `Stop ${names.get(id) ?? id}. ${chargeWarning([id])}` : `Stop ${names.get(id) ?? id}`} onClick={() => stopBots(id)}><StopSquare /> Stop</button>}
+                  {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${agentName(id)}`} title={chargeWarning([id]) ? `Stop ${agentName(id)}. ${chargeWarning([id])}` : `Stop ${agentName(id)}`} onClick={() => stopBots(id)}><StopSquare /> Stop</button>}
                 </div>
               </div>
             </div>
@@ -4108,7 +4113,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         {accessNotes.map((note) => <div key={note.key} className="access-note muted" role="status">{note.text}</div>)}
         {transcriptMounted.current && planChipRun && <PlanChip key={planChipRun.request} run={planChipRun} onOpen={() => onOpenPlan?.(pane.id, planChipRun.request)} />}
         {queued.map((item) => {
-          const who = item.to.map((id) => names.get(id) ?? id).join(", ");
+          const who = item.to.map((id) => agentName(id)).join(", ");
           const steerable = !item.failed && item.kind === "message" && item.to.some((id) => working[id]);
           const hold = item.failed ? null : turnQueue.holdOf(item);
           return <div key={`q${item.id}`} className="queued-inline">
@@ -4160,7 +4165,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       {!profileMode && (unread > 0 || cardsAway.length > 0) && <div className="transcript-pills">
         {cardsAway.length > 0 && <button type="button" className="transcript-pill" onClick={() => showCard(cardsAway[0].request)}>
           <span className="pill-dot" aria-hidden="true" />
-          {waitingLine(owners(cardsAway).map((id) => names.get(id) ?? id))} · Show
+          {waitingLine(owners(cardsAway).map((id) => agentName(id)))} · Show
         </button>}
         {unread > 0 && <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>}
       </div>}
@@ -4172,7 +4177,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           onView={setPanel}
           onClose={() => setPanel(null)}
           overlay={narrow}
-          nameOf={(id) => names.get(id) ?? id}
+          nameOf={(id) => agentName(id)}
           colorOf={color}
           onOpenLink={openTarget}
           backend={backend}
@@ -4191,7 +4196,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           overlay={false}
           docked
           expandable={artifactsHost.expandable}
-          nameOf={(id) => names.get(id) ?? id}
+          nameOf={(id) => agentName(id)}
           colorOf={color}
           onOpenLink={openTarget}
           backend={backend}
@@ -4212,7 +4217,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
-        {!profileMode && <QuestionForm view={composerForm} nameOf={(id) => names.get(id) ?? id} colorOf={color}
+        {!profileMode && <QuestionForm view={composerForm} nameOf={(id) => agentName(id)} colorOf={color}
           highlighted={highlighted} collapsed={formFolded} notice={formNotice}
           onHighlight={setHighlighted} onExpand={() => setFormFolded(false)}
           onAnswer={answerQuestion} onStep={fillStep} onDismiss={() => dismissSteps(pane.id)} />}
@@ -4232,7 +4237,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             <span className="quote-head-actions">
               <span className="pane-menu-wrap hand-off">
                 <button ref={handOffButton} type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onClick={() => setHandOffOpen((open) => !open)}>
-                  {handOffLabel(quoteTo, (id) => names.get(id) ?? id)} ▾
+                  {handOffLabel(quoteTo, (id) => agentName(id))} ▾
                 </button>
                 {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
                   {handOffChoices(quoteTo, participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
@@ -4253,11 +4258,11 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
         {!talkOnly && <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />}
         <ThreadComposerBox stacked={stacked} withTray={!!work && !work.started} adding={quickAdd === "dock" && !dock} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
-          <RunnerDrawer snapshot={runner} hostNowOffsetMs={runnerHostOffset} composerRef={input} platform="desktop" endRequest={runnerEndRequest} showRequest={runnerShowRequest} onEndCancel={()=>{runnerClear.current=false;}}
+          <RunnerDrawer snapshot={runner} nameOf={agentName} hostNowOffsetMs={runnerHostOffset} composerRef={input} platform="desktop" endRequest={runnerEndRequest} showRequest={runnerShowRequest} onEndCancel={()=>{runnerClear.current=false;}}
             onAction={(action,limits)=>{if(!runner)return;void runnerAction(backend,pane.id,runner,action,limits,runnerClear.current).then(next=>{runnerClear.current=false;setRunner(next);}).catch(error=>notify(String(error),'error'));}}
             onReviewChanges={()=>{setTurnPaths(runner?.changedPaths??[]);setFocusPath(null);details?.show("changes");loadDiff();}}/>
           {runnerMode&&!runnerUnfinished&&<RunnerSetup config={runnerConfig} onConfig={setRunnerConfig} participants={participants.map(p=>({id:p.id,name:p.display_name}))} kind={runnerMode} interval={runnerInterval} onInterval={setRunnerInterval} limits={runnerLimits} onLimits={setRunnerLimits} onCancel={()=>setRunnerMode(null)}/>}
-          <ComposerMenu threadItems={threadItems} threadNotice={threadBlock && <div role="status" className="muted">{threadBlock}{multiWaiting && !multiBlocked && <button type="button" onPointerDown={event => event.preventDefault()} onClick={onOpenMulti}>Open it</button>}</div>} talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} disabledCommands={runnerUnfinished?{goal:`A ${runner!.kind} is unfinished here. End it first.`,loop:`A ${runner!.kind} is unfinished here. End it first.`}:planOn?{goal:'Turn off Plan first',loop:'Turn off Plan first'}:backend.supports?.('room_runner_v1')===false?{goal:'Update this host to use goals and loops',loop:'Update this host to use goals and loops'}:{}} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={threadTrigger} choose={(item, trigger) => {
+          <ComposerMenu threadItems={threadItems} threadNotice={threadBlock && <div role="status" className="muted">{threadBlock}{multiWaiting && !multiBlocked && <button type="button" onPointerDown={event => event.preventDefault()} onClick={onOpenMulti}>Open it</button>}</div>} talkOnly={talkOnly} disabled={chatReadOnly} ref={composerMenu} planOn={planOn} disabledCommands={runnerUnfinished?{goal:`A ${runner!.kind} is unfinished here. End it first.`,loop:`A ${runner!.kind} is unfinished here. End it first.`}:planOn?{goal:'Turn off Plan first',loop:'Turn off Plan first'}:backend.supports?.('room_runner_v1')===false?{goal:'Update this host to use goals and loops',loop:'Update this host to use goals and loops'}:{}} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${agentName(id)}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={threadTrigger} choose={(item, trigger) => {
             if (item.kind === "thread") {
               if (!trigger || threadBlock || item.disabledReason || !onTagThread) return;
               onTagThread(pane.id, { paneId: item.paneId, hostId: item.hostId }, { text, tldr }, trigger.start, trigger.end);

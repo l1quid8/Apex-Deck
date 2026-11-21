@@ -213,6 +213,10 @@ impl Host {
             }
         }
         let mut snapshot = monitor_evidence::collect(self.data_dir(), &m.cwd, &m.files, &rooms, now())?;
+        // People and the model know a thread by its title, not its id.
+        for source in snapshot.sources.iter_mut().filter(|source| source.kind == "thread") {
+            if let Some(title) = source.id.strip_prefix("thread:").and_then(|id| self.thread_title(id)) { source.label = title; }
+        }
         snapshot.warnings.extend(warnings);
         snapshot.warnings.sort();
         snapshot.warnings.dedup();

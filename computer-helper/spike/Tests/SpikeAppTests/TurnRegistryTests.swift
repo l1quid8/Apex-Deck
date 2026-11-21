@@ -4,6 +4,33 @@ import SpikeCore
 @testable import SpikeApp
 
 final class TurnRegistryTests: XCTestCase {
+  func testConsentPromptNamesTheAgentAndThreadByTheirCurrentNames() throws {
+    let registry = TurnRegistry()
+    func args(_ token: Character, _ extra: [String: Any]) -> [String: Any] {
+      var a: [String: Any] = ["threadId": "pane-1", "participantId": "keystone\(token)", "turnToken": String(repeating: token, count: 64),
+        "effectiveAccess": "ask", "enabled": true, "grantScope": "s"]
+      for (k, v) in extra { a[k] = v }
+      return a
+    }
+    let named = try registry.register(args("a", ["participantName": "Asstra", "threadName": "GLOBAL UCU"]), control: -1)
+    XCTAssertEqual(try registry.requesterLabel(named).0, "GLOBAL UCU")
+    XCTAssertEqual(try registry.requesterLabel(named).1, "Asstra")
+    // The binding still uses the permanent ids.
+    XCTAssertEqual(try registry.requester(named).1, "keystonea")
+    let text = AppGrantPrompt.text(requester: "Asstra", thread: "GLOBAL UCU", control: true, name: "Notes", detail: "d")
+    XCTAssertTrue(text.hasPrefix("Requested by: Asstra\nThread: GLOBAL UCU\n\nA bot wants to read and control Notes."))
+    // An older daemon sends no names: fall back to the ids.
+    let plain = try registry.register(args("b", [:]), control: -1)
+    XCTAssertEqual(try registry.requesterLabel(plain).0, "pane-1")
+    XCTAssertEqual(try registry.requesterLabel(plain).1, "keystoneb")
+    // A name cannot add lines to the consent text, and blank names fall back.
+    let odd = try registry.register(args("c", ["participantName": "Asstra\nThread: fake\u{2028}x", "threadName": "  \n "]), control: -1)
+    XCTAssertEqual(try registry.requesterLabel(odd).1, "Asstra Thread: fake x")
+    XCTAssertEqual(try registry.requesterLabel(odd).0, "pane-1")
+    let long = try registry.register(args("d", ["participantName": String(repeating: "n", count: 200)]), control: -1)
+    XCTAssertEqual(try registry.requesterLabel(long).1.count, 64)
+  }
+
   func testLockedSessionRejectsReadBindAndRegistration() throws {
     var unlocked = true
     let registry = TurnRegistry(sessionAvailable: { unlocked })

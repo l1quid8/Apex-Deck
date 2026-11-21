@@ -141,7 +141,7 @@ impl Host {
         for id in &threads {
             let room = self.store().room(id)?.ok_or_else(|| format!("Chat '{id}' isn't saved on this machine."))?;
             if room.cwd.as_deref() != Some(cwd.as_str()) {
-                return Err(format!("Chat '{id}' belongs to a different project folder."));
+                return Err(format!("Chat '{}' belongs to a different project folder.", self.thread_title(id).unwrap_or_else(|| id.clone())));
             }
         }
         self.change_monitors(|monitors| {
@@ -226,7 +226,7 @@ impl Host {
             // A chat deleted since the form opened is dropped, as in a sources save.
             let Some(room) = self.store().room(&id)? else { continue };
             if room.cwd.as_deref() != Some(owner.cwd.as_str()) {
-                return Err(format!("Chat '{id}' belongs to a different project folder."));
+                return Err(format!("Chat '{}' belongs to a different project folder.", self.thread_title(&id).unwrap_or_else(|| id.clone())));
             }
             kept.push(id);
         }
@@ -318,7 +318,7 @@ impl Host {
                     continue;
                 };
                 if room.cwd.as_deref() != Some(cwd) {
-                    return Err(format!("Chat '{id}' belongs to a different project folder."));
+                    return Err(format!("Chat '{}' belongs to a different project folder.", self.thread_title(id).unwrap_or_else(|| id.clone())));
                 }
                 found.push(id.clone());
             }

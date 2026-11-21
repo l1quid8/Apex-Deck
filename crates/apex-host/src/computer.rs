@@ -432,7 +432,10 @@ impl TurnHook {
                     host.personal_get(assistant).ok()
                 }).is_some_and(|assistant| assistant_full_access(&assistant, &self.thread, id, access, self.ended.is_some()));
                 let untethered = untethered_turn(access, self.ended.is_some(), || self.host.upgrade().is_some_and(|host| host.computer_participant_untethered(&self.thread, id)));
-                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"untethered":untethered,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
+                // The consent prompt names the agent and thread as the person sees them
+                // now; the ids stay the binding because a rename keeps them.
+                let (participant_name, thread_name) = self.host.upgrade().map(|host| (host.computer_participant_label(&self.thread, id), host.computer_thread_label(&self.thread))).unwrap_or_default();
+                register_turn(&mut stream,json!({"threadId":self.thread,"participantId":id.as_str(),"participantName":participant_name,"threadName":thread_name,"turnToken":token,"effectiveAccess":access_name,"assistantFullAccess":assistant_full,"untethered":untethered,"enabled":true,"grantScope":self.computer.grant_scope(generation)})).await?;
                 if !self.computer.ready(&self.thread, generation) { return Err(TurnStartFailure::AuthorityChanged); }
                 let shutdown = duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?;
                 let writer = tokio::net::UnixStream::from_std(duplicate_control(stream.get_ref()).map_err(|_| TurnStartFailure::Session)?).map_err(|_| TurnStartFailure::Session)?;
