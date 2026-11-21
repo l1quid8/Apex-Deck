@@ -52,17 +52,6 @@ export type Machine = DirectMachine | PairedMachine;
 
 export const isPaired = (machine: Machine): machine is PairedMachine => "transport" in machine && machine.transport === "iroh";
 
-/** What a machine lets this phone do, from its welcome over iroh. */
-export interface RemoteAccess {
-  tier: "read_only" | "chat" | "full";
-  threads: "all" | string[];
-}
-
-/** New thread starts a bot in any folder, so only Full shows it. A WebSocket pair has no access and keeps it. */
-export function canSeeNewThread(access: RemoteAccess | null | undefined): boolean {
-  return !access || access.tier === "full";
-}
-
 /**
  * What reconnects a machine when it changes. A paired machine's addresses
  * aren't in it: new ones are read at the next dial. Its pairedAt is, so pairing

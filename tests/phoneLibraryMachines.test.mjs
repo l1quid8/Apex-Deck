@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { listPhoneLibrary, phoneLibraryNote } from "../src/phone/libraryMachines.ts";
 
 const picture = { file: "a.png", kind: "image", source: "chat", room: "t1", by: "Null", created: 100, path: "/lib/a.png" };
-const fullAccess = { tier: "full", threads: "all" };
 const denied = "The Library needs Full access to all threads on Work MacBook. Change this phone's access in Work MacBook's Settings → Phones.";
 
 // A fake connection store: counts listeners so the tests can check each one was removed.
@@ -38,8 +37,8 @@ function fakeBackend(list = [picture]) {
   return backend;
 }
 
-function machine({ connection, backend, access = () => fullAccess }) {
-  return { id: "m1", name: "Work MacBook", backend, connection, access };
+function machine({ connection, backend }) {
+  return { id: "m1", name: "Work MacBook", backend, connection };
 }
 
 test("a machine still connecting waits, then sends exactly one library_list once connected", async () => {
@@ -58,32 +57,6 @@ test("a connection that is already connected sends one request straight away", a
   const connection = fakeConnection("connected");
   const backend = fakeBackend();
   assert.deepEqual(await listPhoneLibrary(machine({ connection, backend }), 1000), [picture]);
-  assert.equal(backend.requests, 1);
-});
-
-test("restricted access after hello rejects with the Full access line and sends no request", async () => {
-  for (const access of [{ tier: "chat", threads: "all" }, { tier: "full", threads: ["t1"] }, { tier: "read_only", threads: "all" }]) {
-    const connection = fakeConnection("connected");
-    const backend = fakeBackend();
-    await assert.rejects(listPhoneLibrary(machine({ connection, backend, access: () => access }), 1000), (error) => {
-      assert.equal(error.message, "needs Full access to all threads");
-      return true;
-    });
-    assert.equal(backend.requests, 0);
-    assert.equal(connection.listeners, 0);
-  }
-});
-
-test("access is read after the connection is ready, not before", async () => {
-  const connection = fakeConnection("connecting");
-  const backend = fakeBackend();
-  let reads = 0;
-  const pending = listPhoneLibrary(machine({ connection, backend, access: () => (reads += 1, fullAccess) }), 1000);
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal(reads, 0);
-  connection.set("connected");
-  await pending;
-  assert.equal(reads, 1);
   assert.equal(backend.requests, 1);
 });
 
@@ -112,10 +85,10 @@ test("a request that fails rejects and unsubscribes", async () => {
   assert.equal(connection.listeners, 0);
 });
 
-test("a machine without access info (WebSocket) is not denied", async () => {
+test("a machine without access info lists its Library straight away", async () => {
   const connection = fakeConnection("connected");
   const backend = fakeBackend();
-  assert.deepEqual(await listPhoneLibrary(machine({ connection, backend, access: () => null }), 1000), [picture]);
+  assert.deepEqual(await listPhoneLibrary(machine({ connection, backend }), 1000), [picture]);
   assert.equal(backend.requests, 1);
 });
 

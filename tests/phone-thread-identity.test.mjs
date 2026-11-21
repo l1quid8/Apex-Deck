@@ -9,7 +9,7 @@ const { transform } = createRequire(import.meta.url)('sucrase');
 
 test('a Next button drawn for one machine\'s chat sends nothing once another machine\'s chat is open', async () => {
   const {createPhoneChatDelivery}=await import(new URL('../src/phone/phoneChatDelivery.ts', import.meta.url).href);
-  const {chatRoute,threadKey,mayPostIn}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
+  const {chatRoute,threadKey}=await import(new URL('../src/phone/chatRoutes.ts', import.meta.url).href);
   const {createRoomRecovery,representedRoomEvent}=await import(new URL('../src/roomRecovery.ts', import.meta.url).href);
   const {createStepsIndexLoader}=await import(new URL('../src/workSteps.ts', import.meta.url).href);
   const {formView}=await import(new URL('../src/questions.ts', import.meta.url).href);
@@ -22,7 +22,7 @@ test('a Next button drawn for one machine\'s chat sends nothing once another mac
   const compiled=transform(effect+'\n'+gate+'\n'+functions,{transforms:['typescript']}).code;
   const calls=[],notices=[];const disk=new Map();
   const snapshot={kind:'chat',participants:[{id:'bot',display_name:'Bot',backend:{kind:'agent',tool:'codex',model:null},persona:'',access:'read',effort:null}],options:{policy:'everyone',max_bot_hops:3},transcript:[]};
-  const host={machine:{id:'B',name:'Machine B'},supports:()=>true,access:()=>({tier:'full',threads:'all'}),connection:{get:()=>({status:{kind:'connected'}})},backend:{
+  const host={machine:{id:'B',name:'Machine B'},supports:()=>true,connection:{get:()=>({status:{kind:'connected'}})},backend:{
   roomState:async id=>{calls.push({cmd:'screen room_state',id});return new Promise(()=>{})},
   roomSteps:async()=>null,onRoomEvent:async()=>()=>{},
   supports:()=>true,call:async(cmd,args)=>{calls.push({cmd,args});if(cmd==='room_state')return{snapshot};if(cmd==='chat_list')return{rooms:[]};if(cmd==='room_post_to')return{clientMessageId:args.clientMessageId,state:'running',replySeqs:[]};throw Error(cmd)}
@@ -38,7 +38,7 @@ test('a Next button drawn for one machine\'s chat sends nothing once another mac
   setRoom:next=>{env.room=typeof next==='function'?next(env.room):next;env.roomRef.current=env.room},
   setNotice:n=>notices.push(n),words:String,useEffect:cb=>cb(),chatGate:null,
   setSavedSteps:()=>{},setWaiting:()=>{},setBusy:()=>{},setCuts:()=>{},queues:{current:new Map()},stuckRef:{current:false},stick:near=>{env.stuckRef.current=near},
-  chatOnline:true,openRights:{post:true},linkOf:()=>({id:'B',status:'online'}),roomFor:row=>env.room&&env.room.id===row.id&&env.room.hostId===row.hostId?env.room:null,draft:{text:'',files:[]},mayPostIn,
+  chatOnline:true,openRights:{post:true},linkOf:()=>({id:'B',status:'online'}),roomFor:row=>env.room&&env.room.id===row.id&&env.room.hostId===row.hostId?env.room:null,draft:{text:'',files:[]},
   chatRoute,chatMachine:id=>({name:'Machine '+id}),queueFor:()=>{throw Error('Work queue must not run')},findRoom:()=>null,
   promoteHolds,readPromoteTickets,localStorage:{getItem:()=>null},
   // The connection log is not under test here; its slow-load timers must not hold the test open.

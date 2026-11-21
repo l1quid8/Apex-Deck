@@ -217,7 +217,7 @@ fn address_in_use(error: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::{now_ms, Devices, Threads, Tier};
+    use crate::devices::{now_ms, Devices};
     use crate::pairing::invites::{HostInfo, PairError};
     use crate::remote::{self, ALPN};
     use apex_host::HostPaths;
@@ -339,7 +339,7 @@ mod tests {
         let daemon = daemon(&data.0);
         let first = switched(&daemon, true, false).await.unwrap();
         let phone_key = SecretKey::generate();
-        daemon.devices.add(&phone_key.public().to_string(), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        daemon.devices.add(&phone_key.public().to_string(), "Phone", false).unwrap();
         let server = daemon.remote.with_running(|endpoint| endpoint.clone()).await.unwrap();
         let client = remote::bind(phone_key.clone(), None, 0).await.unwrap();
         let port = server.bound_sockets().iter().map(|addr| addr.port()).find(|port| *port != 0).unwrap();
@@ -367,7 +367,7 @@ mod tests {
         let daemon = daemon(&data.0);
         let first = switched(&daemon, true, false).await.unwrap();
         let port = first["port"].as_u64().unwrap();
-        let invite = daemon.invites.start(HostInfo { host: [7; 32], name: "Mac".into(), relay: remote::RELAY.into(), addrs: vec![] }, Tier::Chat, Threads::ALL, now_ms());
+        let invite = daemon.invites.start(HostInfo { host: [7; 32], name: "Mac".into(), relay: remote::RELAY.into(), addrs: vec![] }, now_ms());
         let waiting = tokio::spawn({
             let invites = Arc::clone(&daemon.invites);
             let id = invite.inv;
@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(daemon.remote.snapshot(&data.0).await["enabled"], false);
 
         switched(&daemon, true, false).await.unwrap();
-        let invite = daemon.invites.start(HostInfo { host: [7; 32], name: "Mac".into(), relay: remote::RELAY.into(), addrs: vec![] }, Tier::Chat, Threads::ALL, now_ms());
+        let invite = daemon.invites.start(HostInfo { host: [7; 32], name: "Mac".into(), relay: remote::RELAY.into(), addrs: vec![] }, now_ms());
         remote_settings::fail_next_save(&data.0);
         let error = switched(&daemon, false, false).await.unwrap_err();
         assert!(error.contains("injected"), "{error}");

@@ -1,7 +1,6 @@
 //! Loopback tests against the real daemon (no relay).
 use super::*;
 use apex_daemon::{
-    devices::{Threads, Tier},
     pairing::invites::HostInfo,
     protocol::Daemon,
     remote,
@@ -118,13 +117,13 @@ impl Server {
     }
 
     fn pair_phone(&self, id: &str) {
-        self.daemon.devices.add(id, "Phone", Tier::Full, Threads::ALL, false).unwrap();
+        self.daemon.devices.add(id, "Phone", false).unwrap();
     }
 
     /// An invitation naming `host`, reachable at this server.
     fn invite(&self, host: [u8; 32]) -> Invite {
         let info = HostInfo { host, name: "Test Mac".into(), relay: RELAY.into(), addrs: vec![self.addr()] };
-        self.daemon.invites.start(info, Tier::Chat, Threads::ALL, apex_daemon::devices::now_ms())
+        self.daemon.invites.start(info, apex_daemon::devices::now_ms())
     }
 }
 
@@ -462,7 +461,7 @@ async fn pairing_codes_match_and_approval_pairs() {
     tokio::task::spawn_blocking(move || daemon.invites.approve(&invite.inv, &claim.claim_id, &daemon.devices, apex_daemon::devices::now_ms())).await.unwrap().unwrap();
     let done = events.wait(h, "pairDone", Duration::from_secs(10)).await;
     assert_eq!(done["hostEndpointId"], server.id());
-    assert_eq!(done["tier"], "chat");
+    assert_eq!(done["tier"], "full");
     // Now a paired phone.
     let c = b.connect(&server.id(), &[server.addr()]).unwrap();
     events.wait(c, "opened", Duration::from_secs(10)).await;

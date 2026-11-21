@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend } from "../backend";
 import type { GitOutcome, GitState } from "../gitChanges";
-import type { RemoteAccess } from "../phoneRules";
 import { ThreadGitActions, type ThreadGitAction } from "../ThreadGitActions";
-
-// Protected Git writes require a paired device with a Full, all-threads grant.
-export const canUseThreadGit = (access: RemoteAccess | null) =>
-  access?.tier === "full" && access.threads === "all";
 
 export function PhoneThreadGit({ backend, room }: { backend: Backend; room: string }) {
   const [state, setState] = useState<GitState | null>(null);

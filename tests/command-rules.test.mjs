@@ -43,7 +43,7 @@ test('the Mac and the phone both run commands through the shared rules', () => {
   const phone = fs.readFileSync('src/phone/PhoneApp.tsx', 'utf8');
   assert.doesNotMatch(phone, /Other slash commands are available on desktop/);
   assert.match(phone, /await runCommand\(command, host, sentPane,/);
-  assert.match(phone, /commandRefusal\(command, \{ talkOnly: false, readOnly: host\.access\(\)\?\.tier === "read_only" \}\)/);
+  assert.match(phone, /commandRefusal\(command, \{ talkOnly: false, readOnly: false \}\)/);
   for (const name of ['clear', 'compact', 'curate', 'curate_undo', 'fork', 'export', 'diff', 'plan', 'image', 'unknown']) assert.match(phone, new RegExp(`case "${name}"`), `the phone handles /${name}`);
   assert.match(phone, /if \("command" in parsed\) \{ setNotice\(chatCommandRefusal\(parsed\.command\)\); return; \}/);
 });

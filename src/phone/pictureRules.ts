@@ -1,14 +1,8 @@
-// Pictures in a phone thread: who may load them, and a small cache so
+// Pictures in a phone thread: when they can load, and a small cache so
 // swiping between threads doesn't fetch the same picture over and over.
-import type { RemoteAccess } from "../phoneRules";
 
-/**
- * Why pictures can't load on this machine, or null when they can. Reading a
- * picture file needs Full access on the machine (the host checks it), so a
- * phone paired lower gets a clear tile in place of a blank gap.
- */
-export function pictureBlock(input: { access: RemoteAccess | null | undefined; online: boolean; machine: string }): string | null {
-  if (input.access && input.access.tier !== "full") return `Pictures need Full access on ${input.machine}`;
+/** Why pictures can't load on this machine, or null when they can. */
+export function pictureBlock(input: { online: boolean; machine: string }): string | null {
   if (!input.online) return `${input.machine} is offline`;
   return null;
 }

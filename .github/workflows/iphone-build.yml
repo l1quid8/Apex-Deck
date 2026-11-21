@@ -24,6 +24,10 @@ jobs:
         with:
           workspaces: crates/iroh-mobile
       - run: npm ci
+      - name: Test phone Unified Computer Use against macOS fixture daemons
+        run: |
+          cargo build --locked -p apex-daemon --features test-support --bin apex-daemon-fixture
+          node --experimental-strip-types --test tests/phone-computer-use.test.mjs
       - run: npm run iphone:sync
       - name: Build Release for iPhone without distribution credentials
         run: >-

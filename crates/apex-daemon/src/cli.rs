@@ -9,10 +9,10 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
        apex-daemon doctor [--data-dir PATH]
        apex-daemon data-dir [--data-dir PATH]
        apex-daemon endpoint [--data-dir PATH]
-       apex-daemon devices list|add|tier|threads|revoke … [--data-dir PATH]
+       apex-daemon devices list|add|revoke … [--data-dir PATH]
        apex-daemon keys list|issue|revoke … [--data-dir PATH]
        apex-daemon allow-root <folder>|list|remove … [--data-dir PATH]
-       apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--data-dir PATH]
+       apex-daemon pair [--json] [--data-dir PATH]
        apex-daemon remote info|advertise … [--data-dir PATH]
        apex-daemon trust-host [--no-reboot] [--data-dir PATH]
 
@@ -36,7 +36,7 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
                    and the last lines of its log; the first thing to run when something is off
   data-dir         print the data folder the daemon would use, and exit
   endpoint         print the local socket path or Windows pipe name, and exit
-  devices          list, add, retier or revoke phones allowed to connect from outside;
+  devices          list, add or revoke phones allowed to connect from outside;
                    `apex-daemon devices` alone explains each
   keys             list, issue or revoke model gateway API keys (`apx_sk_…`); only
                    from this machine, and the raw key is shown once
@@ -316,8 +316,8 @@ mod tests {
 
     #[test]
     fn devices_takes_its_own_words_and_the_data_dir() {
-        let cli = parse(&["--data-dir", "/d", "devices", "tier", "abc", "full"]).unwrap();
-        assert_eq!(cli, Cli { action: Action::Devices(crate::devices_cli::DevicesAction::Tier { id: "abc".into(), tier: crate::devices::Tier::Full }), data_dir: Some(PathBuf::from("/d")) });
+        let cli = parse(&["--data-dir", "/d", "devices", "revoke", "abc"]).unwrap();
+        assert_eq!(cli, Cli { action: Action::Devices(crate::devices_cli::DevicesAction::Revoke { id: "abc".into() }), data_dir: Some(PathBuf::from("/d")) });
         assert_eq!(parse(&["devices", "list", "--data-dir", "/d"]).unwrap().data_dir, Some(PathBuf::from("/d")));
         assert!(parse(&["devices"]).unwrap_err().contains("say list"));
     }
@@ -350,13 +350,13 @@ mod tests {
 
     #[test]
     fn pair_and_remote_take_their_own_words_and_the_data_dir() {
-        let cli = parse(&["pair", "--tier", "full", "--data-dir", "/d"]).unwrap();
-        assert_eq!(cli, Cli { action: Action::Pair(crate::pair_cli::PairOptions { tier: crate::devices::Tier::Full, threads: None, json: false }), data_dir: Some(PathBuf::from("/d")) });
+        let cli = parse(&["pair", "--json", "--data-dir", "/d"]).unwrap();
+        assert_eq!(cli, Cli { action: Action::Pair(crate::pair_cli::PairOptions { json: true }), data_dir: Some(PathBuf::from("/d")) });
         assert_eq!(parse(&["remote", "info"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Info));
         assert_eq!(parse(&["remote", "advertise", "--clear"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Advertise(vec![])));
         assert_eq!(parse(&["pair", "--help"]).unwrap().action, Action::PairHelp);
         assert!(parse(&["remote", "advertise", "nonsense"]).unwrap_err().contains("host:port"));
-        assert!(parse(&["pair", "--tier", "admin"]).unwrap_err().contains("admin"));
+        assert!(parse(&["pair", "--admin"]).unwrap_err().contains("unknown argument"));
     }
 
     #[test]

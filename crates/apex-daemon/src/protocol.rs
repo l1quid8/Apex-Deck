@@ -29,7 +29,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
 use crate::authority;
-use crate::devices::{Device, Devices, Threads, Tier};
+use crate::devices::{Device, Devices};
 use crate::gateway_keys::GatewayKeys;
 
 /// The protocol version `hello` must name.
@@ -73,11 +73,16 @@ pub struct Welcome {
     pub addrs: Option<Vec<String>>,
 }
 
-/// A paired device's current grant, as the welcome states it.
+/// Wire tolerance: installed iPhone builds hide the Tasks tab without this.
+/// Delete once every iPhone is on a TestFlight build containing Task 4.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct DeviceAccess {
-    pub tier: crate::devices::Tier,
-    pub threads: crate::devices::Threads,
+    pub tier: &'static str,
+    pub threads: &'static str,
+}
+
+impl DeviceAccess {
+    pub const FULL: DeviceAccess = DeviceAccess { tier: "full", threads: "all" };
 }
 
 /// A frame longer than this closes the connection.
@@ -152,11 +157,7 @@ impl Daemon {
         let device = self.devices.get(id).ok_or("This device is no longer paired.")?;
         crate::trust_host::check_device_epoch(&self.data, &device)?;
         self.confinement.get().ok_or("The sandbox probe has not completed.")?.clone()?;
-        if authority::access_effect(command) == authority::AccessEffect::Raises
-            && (device.tier != Tier::Full || !device.threads.is_all()) {
-            return Err("would raise access and needs full on all threads".into());
-        }
-        authority::check(&device, &authority::command_needs(command))
+        authority::check(&authority::command_needs(command))
     }
 
     pub(crate) fn uses_linux_device_policy(&self) -> bool {
@@ -275,16 +276,11 @@ pub fn lines_up_to<R: AsyncRead, W: AsyncWrite>(reader: R, writer: W, max: usize
     (FramedRead::new(reader, LinesCodec::new_with_max_length(max)), FramedWrite::new(writer, LinesCodec::new()))
 }
 
-/// A reply, held back until the events sent before it are written. For a
-/// device, `need` is checked again and a `session_load` filtered again just
-/// before it goes out, so narrowing a device mid-command still applies.
+/// A reply, held back until the events sent before it are written.
 struct Reply {
     after: u64,
     id: u64,
     result: Result<Value, String>,
-    need: Option<authority::Need>,
-    session: bool,
-    chat_list: bool,
 }
 
 /// A remote device's session: who it is, and word of revokes.
@@ -381,37 +377,23 @@ fn fit(frame: String, max: usize) -> Option<String> {
 
 /// The frame for `reply` as this session may have it right now.
 fn reply_frame(guard: &Option<Guard>, reply: Reply) -> Result<String, Stop> {
-    // A device's access is checked before either outcome, so an error can't
-    // carry details the device may no longer see.
-    let device = match guard {
-        None => None,
-        Some(guard) => {
-            let device = guard.device().ok_or(Stop::Revoked)?;
-            if let Some(need) = &reply.need {
-                if let Err(why) = authority::check(&device, need) {
-                    return Ok(refusal(json!(reply.id), why));
-                }
-            }
-            Some(device)
-        }
-    };
-    let value = match (device, reply.result) {
-        (_, Err(why)) => return Ok(refusal(json!(reply.id), why)),
-        (Some(device), Ok(value)) if reply.session => authority::filter_session(&device.threads, value),
-        (Some(device), Ok(value)) if reply.chat_list => authority::filter_chat_list(&device.threads, value),
-        (_, Ok(value)) => value,
-    };
-    Ok(json!({ "id": reply.id, "ok": value }).to_string())
+    if let Some(guard) = guard {
+        guard.device().ok_or(Stop::Revoked)?;
+    }
+    match reply.result {
+        Err(why) => Ok(refusal(json!(reply.id), why)),
+        Ok(value) => Ok(json!({ "id": reply.id, "ok": value }).to_string()),
+    }
 }
 
 /// Whether an event goes to this session: always for local and token
-/// clients; for a device, by its tier and threads right now.
+/// clients; for a paired device, every event allowed to remote devices.
 fn delivers(guard: &Option<Guard>, envelope: &Envelope) -> Result<bool, Stop> {
     match guard {
         None => Ok(true),
         Some(guard) => {
-            let device = guard.device().ok_or(Stop::Revoked)?;
-            Ok(authority::may_receive(&device, &envelope.event))
+            guard.device().ok_or(Stop::Revoked)?;
+            Ok(authority::may_receive(&envelope.event))
         }
     }
 }
@@ -507,7 +489,9 @@ where
         host_id: daemon.host_id.clone(), boot_id: daemon.boot_id.clone(), protocol: PROTOCOL, last_seq: written, resumed,
         version: env!("CARGO_PKG_VERSION"), capabilities,
         build_commit: crate::build_info::commit(), build_dirty: crate::build_info::dirty(),
-        access: device.as_ref().map(|d| DeviceAccess { tier: d.tier, threads: d.threads.clone() }),
+        // Wire tolerance: installed iPhone builds hide the Tasks tab without `"access": {"tier":"full","threads":"all"}`.
+        // Delete once every iPhone is on a TestFlight build containing Task 4.
+        access: device.as_ref().map(|_| DeviceAccess::FULL),
         addrs: device.is_some().then(|| crate::remote_config::advertised(&daemon.data)),
     };
     let welcome = json!({ "id": hello.id, "ok": welcome });
@@ -548,7 +532,6 @@ where
     let mut voice = crate::voice::session::VoiceSession::new(daemon.voice.clone(), owner);
     type VoiceDone = (
         u64,
-        authority::Need,
         String,
         Result<Option<(crate::voice::Lease, crate::voice::relay::Relay)>, String>,
     );
@@ -606,20 +589,7 @@ where
                         if guard.as_ref().is_some_and(|g| g.device().is_none()) {
                             return Ended::Revoked;
                         }
-                        let denied = voice.room().is_some_and(|room| {
-                            guard.as_ref().and_then(Guard::device).is_some_and(|d| {
-                                authority::check(
-                                    &d,
-                                    &authority::Need::Tier(Tier::Chat, authority::Scope::Thread(room.into())),
-                                )
-                                .is_err()
-                            })
-                        });
-                        if denied {
-                            voice.close_all("this device's access changed");
-                        } else {
-                            voice.frame(&frame);
-                        }
+                        voice.frame(&frame);
                     }
                     Ok((id, Request::Voice(request))) => {
                         use crate::voice::session::VoiceRequest::*;
@@ -627,8 +597,8 @@ where
                         if guard.as_ref().is_some_and(|g| g.device().is_none()) {
                             return Ended::Revoked;
                         }
-                        if let Some(d) = guard.as_ref().and_then(Guard::device) {
-                            if let Err(e) = authority::check(&d, &need) {
+                        if guard.is_some() {
+                            if let Err(e) = authority::check(&need) {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), e)).await {
                                     return stop.into();
                                 }
@@ -730,7 +700,7 @@ where
                                     } else {
                                         server.warm().await.map(|_| None)
                                     };
-                                    let _ = tx.send((id, need, room, result)).await;
+                                    let _ = tx.send((id, room, result)).await;
                                 });
                                 continue;
                             }
@@ -825,42 +795,41 @@ where
                         let confinement = if guard.is_some() && daemon.uses_linux_device_policy() {
                             daemon.require_confinement().await
                         } else { Ok(()) };
-                        let need = match &guard {
+                        let allowed = match &guard {
                             // The downgrade classification relies on the device
                             // route checking old_level under the room lock. A
                             // local/token request cannot claim that exemption.
                             // A same-user local peer on Linux with a proven jail
                             // takes the terminal surface; the host re-checks it.
                             None if local_linux_cli && apex_host::local_linux_cli_surface(&command) => {
-                                apex_host::local_linux_cli_admitted().map(|_| None)
+                                apex_host::local_linux_cli_admitted()
                             }
                             None if daemon.uses_linux_device_policy() && (authority::access_effect(&command) == authority::AccessEffect::Raises
                                 || matches!(&*command, Command::RoomUpdateParticipant { .. })) => {
                                 Err("Raising access is only allowed from a paired device on this Linux host; local socket, CLI and SSH calls cannot authorize it.".into())
                             }
-                            None => Ok(None),
+                            None => Ok(()),
                             Some(guard) => match guard.device() {
                                 None => return Ended::Revoked,
                                 Some(device) => {
-                                    let need = authority::command_needs(&command);
                                     if let Err(why) = &confinement {
                                         Err(why.clone())
                                     } else if daemon.uses_linux_device_policy() {
-                                        daemon.authorize_linux_device(&device.endpoint_id, &command).map(|_| Some(need))
+                                        daemon.authorize_linux_device(&device.endpoint_id, &command)
                                     } else {
-                                        authority::check(&device, &need).map(|_| Some(need))
+                                        authority::allowed(&command)
                                     }
                                 }
                             },
                         };
-                        match need {
-                            Ok(need) => {
+                        match allowed {
+                            Ok(()) => {
                                 in_flight += 1;
                                 let device_intent = guard.as_ref().map(|g| {
                                     let frame: Value = serde_json::from_str(&text).expect("request already parsed");
                                     (g.id.clone(), phone_session.clone(), json!({"cmd":frame["cmd"],"args":frame.get("args").cloned().unwrap_or(json!({}))}))
                                 });
-                                run(Arc::clone(&daemon), id, *command, context, need, replies_tx.clone(), hello.client_capability, device_intent, local_linux_cli);
+                                run(Arc::clone(&daemon), id, *command, context, replies_tx.clone(), hello.client_capability, device_intent, local_linux_cli);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -886,15 +855,13 @@ where
                     drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
                 }
             },
-            Some((id,need,room,result))=voice_done.recv()=>{
+            Some((id, room, result)) = voice_done.recv() => {
                 in_flight -= 1;
-                let allowed = reading
-                    && guard.as_ref().is_none_or(|g| {
-                        g.device()
-                            .is_some_and(|d| authority::check(&d, &need).is_ok())
-                    });
-                let result = if !allowed {
-                    Err("this device's access changed".into())
+                if guard.as_ref().is_some_and(|g| g.device().is_none()) {
+                    return Ended::Revoked;
+                }
+                let result = if !reading {
+                    Err("connection closed".into())
                 } else {
                     result.map(|v| match v {
                         Some((lease, relay)) => {
@@ -911,21 +878,11 @@ where
                     return stop.into();
                 }
             }
-            Some(line)=voice.next_line(), if reading=>{
-                let denied = voice.room().is_some_and(|room| {
-                    guard.as_ref().is_some_and(|g| {
-                        g.device().is_none_or(|d| {
-                            authority::check(
-                                &d,
-                                &authority::Need::Tier(Tier::Chat, authority::Scope::Thread(room.into())),
-                            )
-                            .is_err()
-                        })
-                    })
-                });
-                if denied {
-                    voice.close_all("this device's access changed");
-                } else if let Err(stop) = send(&mut output, &mut guard, line).await {
+            Some(line) = voice.next_line(), if reading => {
+                if guard.as_ref().is_some_and(|g| g.device().is_none()) {
+                    return Ended::Revoked;
+                }
+                if let Err(stop) = send(&mut output, &mut guard, line).await {
                     return stop.into();
                 }
             }
@@ -991,16 +948,13 @@ where
     Ended::Closed
 }
 
-/// Run `command` on its own task and send its result to `replies`, with
-/// what a device needed to run it (`need`), to be checked again on delivery.
+/// Run `command` on its own task and send its result to `replies`.
 #[allow(clippy::too_many_arguments)]
-fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>, local_linux_cli: bool) {
+fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>, local_linux_cli: bool) {
     let host = Arc::clone(&daemon.host);
     // Every log line written while the command runs ends in `cmd=… room=…`.
     let span = tracing::info_span!("cmd", cmd = %context.cmd, room = tracing::field::Empty);
     if let Some(room) = &context.room { span.record("room", room.as_str()); }
-    let session = matches!(command, Command::SessionLoad {});
-    let chat_list = matches!(command, Command::ChatList {});
     let admission = host.maintenance.enter();
     let task = {
         let host = Arc::clone(&host);
@@ -1022,12 +976,12 @@ fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, 
             Ok(result) => result,
             Err(_) => Err("the command failed unexpectedly".to_string()),
         };
-        let _ = replies.send(Reply { after: host.events().last_seq(), id, result, need, session, chat_list });
+        let _ = replies.send(Reply { after: host.events().last_seq(), id, result });
     });
 }
 
 fn management_grant(name: &str) -> bool {
-    matches!(name, "devices_add" | "devices_set_tier" | "devices_set_threads" | "pair_approve")
+    matches!(name, "devices_add" | "pair_approve")
 }
 
 async fn run_management_receipt(daemon: Arc<Daemon>, receipt: apex_provenance::Signed) -> Result<Value, crate::pair_commands::Refusal> {
@@ -1071,11 +1025,7 @@ pub enum DevicesRequest {
     #[serde(rename = "devices_list")]
     List {},
     #[serde(rename = "devices_add")]
-    Add { id: String, label: String, tier: Tier, threads: Option<Threads>, #[serde(default)] restore: bool },
-    #[serde(rename = "devices_set_tier")]
-    SetTier { id: String, tier: Tier },
-    #[serde(rename = "devices_set_threads")]
-    SetThreads { id: String, threads: Threads },
+    Add { id: String, label: String, #[serde(default)] restore: bool },
     #[serde(rename = "devices_revoke")]
     Revoke { id: String },
 }
@@ -1090,9 +1040,7 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
     let value = |v: Result<Device, String>| v.and_then(|d| serde_json::to_value(d).map_err(|e| e.to_string()));
     match request {
         DevicesRequest::List {} => serde_json::to_value(devices.list()?).map_err(|e| e.to_string()),
-        DevicesRequest::Add { id, label, tier, threads, restore } => value(devices.add(&id, &label, tier, threads.unwrap_or(Threads::ALL), restore)),
-        DevicesRequest::SetTier { id, tier } => value(devices.set_tier(&id, tier)),
-        DevicesRequest::SetThreads { id, threads } => value(devices.set_threads(&id, threads)),
+        DevicesRequest::Add { id, label, restore } => value(devices.add(&id, &label, restore)),
         DevicesRequest::Revoke { id } => devices.revoke(&id).map(|()| Value::Null),
     }
 }
@@ -1434,9 +1382,9 @@ mod tests {
         let (daemon, _data) = daemon();
         let now = crate::devices::now_ms();
         let host = HostInfo { host: [1; 32], name: "Mac".into(), relay: "".into(), addrs: vec![] };
-        let expired = daemon.invites.start(host.clone(), Tier::Chat, Threads::ALL, now);
+        let expired = daemon.invites.start(host.clone(), now);
         assert!(daemon.invites.secret(&expired.inv, now + LIFETIME_MS).is_err());
-        let cancelled = daemon.invites.start(host, Tier::Chat, Threads::ALL, now);
+        let cancelled = daemon.invites.start(host, now);
         daemon.invites.cancel(&cancelled.inv).unwrap();
         for (invitation, expected) in [
             ("invalid".into(), "bad_request"), ("AAAAAAAAAAAAAAAAAAAAAA".into(), "unknown"),
@@ -1807,7 +1755,7 @@ mod tests {
     #[tokio::test]
     async fn remote_input_closed_is_refused_without_ending_the_session() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let mut token = connect_to(&daemon, Trust::Token);
         token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
         token.next().await.unwrap();
@@ -1826,8 +1774,8 @@ mod tests {
     use crate::devices::tests::id;
     use apex_host::events::HostEvent;
 
-    fn add(daemon: &Daemon, n: u8, tier: Tier, threads: Threads) -> String {
-        daemon.devices.add(&id(n), "Phone", tier, threads, false).unwrap();
+    fn add(daemon: &Daemon, n: u8) -> String {
+        daemon.devices.add(&id(n), "Phone", false).unwrap();
         id(n)
     }
 
@@ -1873,7 +1821,7 @@ mod tests {
             Arc::get_mut(&mut daemon).unwrap().linux_device_policy = Some(true);
             daemon.confinement.set(Ok(())).unwrap();
             crate::trust_host::run_no_reboot(&daemon.data, true).unwrap();
-            let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+            let phone = add(&daemon, 1);
             let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
             client.hello().await;
             match reset {
@@ -1903,7 +1851,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn gateway_keys_are_issued_only_from_this_machine() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let issue_frame = json!({ "id": 1, "cmd": "gateway_keys_issue", "args": { "label": "friend" } });
 
         let mut token = connect_to(&daemon, Trust::Token);
@@ -1948,8 +1896,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn devices_are_managed_only_from_this_machine() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
-        let add_frame = json!({ "id": 1, "cmd": "devices_add", "args": { "id": id(2), "label": "Tablet", "tier": "chat" } });
+        let phone = add(&daemon, 1);
+        let add_frame = json!({ "id": 1, "cmd": "devices_add", "args": { "id": id(2), "label": "Tablet" } });
 
         let mut token = connect_to(&daemon, Trust::Token);
         token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
@@ -1957,7 +1905,7 @@ mod tests {
         let (mut device, _session) = connect_device(&daemon, &phone, 1 << 16);
         device.hello().await;
         for client in [&mut token, &mut device] {
-            for frame in [add_frame.clone(), json!({ "id": 1, "cmd": "devices_list" }), json!({ "id": 1, "cmd": "devices_set_tier", "args": { "id": phone, "tier": "full" } }), json!({ "id": 1, "cmd": "devices_revoke", "args": { "id": phone } })] {
+            for frame in [add_frame.clone(), json!({ "id": 1, "cmd": "devices_list" }), json!({ "id": 1, "cmd": "devices_revoke", "args": { "id": phone } })] {
                 client.send(frame).await;
                 assert_eq!(client.next().await.unwrap(), json!({ "id": 1, "err": "not allowed from a remote connection" }));
             }
@@ -1967,16 +1915,21 @@ mod tests {
         let mut local = connect_to(&daemon, Trust::Local);
         local.hello().await;
         local.send(add_frame).await;
-        assert_eq!(local.next().await.unwrap()["ok"]["tier"], "chat");
-        local.send(json!({ "id": 2, "cmd": "devices_set_tier", "args": { "id": id(2), "tier": "read_only" } })).await;
-        assert_eq!(local.next().await.unwrap()["ok"]["tier"], "read_only");
+        assert_eq!(local.next().await.unwrap()["ok"]["label"], "Tablet");
         local.send(json!({ "id": 3, "cmd": "devices_revoke", "args": { "id": id(2) } })).await;
         assert_eq!(local.next().await.unwrap(), json!({ "id": 3, "ok": null }));
         local.send(json!({ "id": 4, "cmd": "devices_list" })).await;
         let list = local.next().await.unwrap();
         assert_eq!(list["ok"]["revoked"][0]["endpointId"], id(2));
-        local.send(json!({ "id": 5, "cmd": "devices_set_tier", "args": { "id": id(2), "tier": "superuser" } })).await;
-        assert!(local.next().await.unwrap()["err"].is_string());
+    }
+
+    #[test]
+    fn removed_device_commands_are_unknown() {
+        let data = crate::devices::tests::folder();
+        let devices = Devices::open(&data.0);
+        for cmd in ["devices_set_tier", "devices_set_threads"] {
+            assert!(manage_json(&devices, json!({ "cmd": cmd, "args": { "id": id(1), "tier": "full", "threads": "all" } })).is_err());
+        }
     }
 
     /// Test 3.
@@ -1988,7 +1941,7 @@ mod tests {
         assert_eq!(stranger.next().await, None);
         assert_eq!(session.await.unwrap(), Ended::Refused);
 
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         daemon.devices.revoke(&phone).unwrap();
         let (mut revoked, session) = connect_device(&daemon, &phone, 1 << 16);
         assert!(revoked.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
@@ -1999,7 +1952,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn revoking_a_device_closes_its_session_at_once() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         daemon.host.events().emit(pty("before"));
@@ -2009,7 +1962,7 @@ mod tests {
         daemon.host.events().emit(pty("after"));
         assert_eq!(frames_for(&mut client, Duration::from_millis(200)).await, Vec::<Value>::new());
 
-        let tablet = add(&daemon, 2, Tier::Full, Threads::ALL);
+        let tablet = add(&daemon, 2);
         let (_silent, session) = connect_device(&daemon, &tablet, 1 << 16);
         tokio::time::sleep(Duration::from_millis(50)).await;
         daemon.devices.revoke(&tablet).unwrap();
@@ -2020,7 +1973,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn revoking_a_device_that_stopped_reading_still_closes_it() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 256);
         client.hello().await;
         // Far more than the 256-byte pipe holds; nothing reads it.
@@ -2038,9 +1991,9 @@ mod tests {
     #[tokio::test]
     async fn a_revoke_missed_by_a_lagged_receiver_still_closes_the_session() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         for n in 10..(10 + crate::devices::REVOKE_CAPACITY as u8 + 4) {
-            add(&daemon, n, Tier::Chat, Threads::ALL);
+            add(&daemon, n);
         }
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
@@ -2059,7 +2012,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_revoke_between_connecting_and_hello_closes_the_session() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         tokio::time::sleep(Duration::from_millis(50)).await;
         daemon.devices.revoke(&phone).unwrap();
@@ -2070,179 +2023,62 @@ mod tests {
         assert!(frames.iter().all(|f| f["id"] != 1), "{frames:?}");
     }
 
-    /// Tests 4a and 7: thread scope for commands, snapshots, live and replayed events.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_device_limited_to_a_thread_never_reaches_another() {
+    async fn a_formerly_limited_read_only_device_posts_anywhere_and_lists_terminals() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::Only(vec!["a".into()]));
+        let phone = add(&daemon, 1);
         let mut local = connect_to(&daemon, Trust::Local);
         local.hello().await;
-        let session = json!({ "version": 1, "workspaces": [{ "id": "w1" }, { "id": "w2", "name": "Secret" }], "panes": [
+        let session = json!({ "version": 1, "workspaces": [{ "id": "w1" }, { "id": "w2" }], "panes": [
             { "id": "a", "kind": "chat", "workspaceId": "w1" }, { "id": "b", "kind": "chat", "workspaceId": "w2" } ] });
         local.send(json!({ "id": 1, "cmd": "session_save", "args": { "session": session } })).await;
         local.until_reply(1).await;
+        local.send(json!({ "id": 2, "cmd": "room_create", "args": { "id": "b", "participants": [], "options": { "policy": "mention", "max_bot_hops": 0 } } })).await;
+        assert!(local.until_reply(2).await.last().unwrap().get("ok").is_some());
 
-        let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
-        let hello = client.hello().await;
-        client.send(json!({ "id": 1, "cmd": "room_state", "args": { "id": "b" } })).await;
-        assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("thread b"));
-        client.send(json!({ "id": 2, "cmd": "room_post", "args": { "id": "b", "text": "hi" } })).await;
-        assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("thread b"));
-        client.send(json!({ "id": 3, "cmd": "session_load" })).await;
-        let loaded = client.next().await.unwrap();
-        assert_eq!(loaded["ok"]["panes"], json!([{ "id": "a", "kind": "chat", "workspaceId": "w1" }]));
-        assert!(!loaded.to_string().contains("Secret"));
-
-        daemon.host.events().emit(room("b", 1));
-        daemon.host.events().emit(room("a", 2));
-        daemon.host.events().emit(room("b", 3));
-        let event = client.next().await.unwrap();
-        assert_eq!((event["payload"]["room"].clone(), event["seq"].clone()), (json!("a"), json!(hello["ok"]["last_seq"].as_u64().unwrap() + 2)));
-        assert_eq!(frames_for(&mut client, Duration::from_millis(200)).await, Vec::<Value>::new());
-
-        // Coming back, the replay is filtered the same way.
-        let (mut back, _session) = connect_device(&daemon, &phone, 1 << 16);
-        back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": hello["ok"]["last_seq"] } } })).await;
-        assert_eq!(back.next().await.unwrap()["ok"]["resumed"], true);
-        let replayed = frames_for(&mut back, Duration::from_millis(200)).await;
-        assert_eq!(replayed.iter().map(|f| f["payload"]["room"].clone()).collect::<Vec<_>>(), vec![json!("a")]);
-    }
-
-    /// Test 4b: replies don't wait on events the device never gets.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_device_whose_events_are_filtered_still_gets_prompt_replies() {
-        let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::ReadOnly, Threads::Only(vec!["a".into()]));
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
-        for n in 1..=5u64 {
-            for k in 0..50 {
-                daemon.host.events().emit(room("b", k));
-            }
-            client.send(json!({ "id": n, "cmd": "agents_detect" })).await;
-            let frame = tokio::time::timeout(Duration::from_secs(10), client.next()).await.expect("a prompt reply").unwrap();
-            assert_eq!(frame["id"], n, "{frame}");
-        }
-    }
-
-    /// Tests 4c and 6: a narrower tier or thread list applies to the very next event and command.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn narrowing_a_device_applies_to_the_next_event_and_command() {
-        let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
-        let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
-        client.hello().await;
-        daemon.host.events().emit(pty("one"));
-        assert_eq!(client.next().await.unwrap()["payload"]["data"], "one");
-        client.send(json!({ "id": 1, "cmd": "folder_list" })).await;
+        client.send(json!({ "id": 1, "cmd": "room_post", "args": { "id": "b", "text": "hi" } })).await;
         assert!(client.until_reply(1).await.last().unwrap().get("ok").is_some());
-
-        daemon.devices.set_tier(&phone, Tier::Chat).unwrap();
-        daemon.host.events().emit(pty("two"));
-        daemon.host.events().emit(room("a", 1));
-        assert_eq!(client.next().await.unwrap()["payload"]["room"], "a", "pty output stopped at once");
-        client.send(json!({ "id": 2, "cmd": "folder_list" })).await;
-        assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("chat access"));
-
-        daemon.devices.set_threads(&phone, Threads::Only(vec!["c".into()])).unwrap();
-        daemon.host.events().emit(room("a", 2));
-        daemon.host.events().emit(room("c", 3));
-        assert_eq!(client.next().await.unwrap()["payload"]["room"], "c");
+        client.send(json!({ "id": 2, "cmd": "pty_list" })).await;
+        assert!(client.until_reply(2).await.last().unwrap()["ok"].is_array());
+        client.send(json!({ "id": 3, "cmd": "session_load" })).await;
+        let loaded = client.until_reply(3).await.pop().unwrap();
+        let panes: Vec<&str> = loaded["ok"]["panes"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+        assert_eq!(panes, vec!["a", "b"]);
     }
 
-    /// A reply carries what it needed; this checks it again as it goes out.
-    fn held(daemon: &Daemon, phone: &str, command: Value, result: Value) -> (Option<Guard>, Reply) {
-        let command: Command = serde_json::from_value(command).unwrap();
-        let guard = Guard { linux_trust_data: daemon.uses_linux_device_policy().then(|| daemon.data.clone()), devices: Arc::clone(&daemon.devices), id: phone.to_string(), revokes: daemon.devices.subscribe() };
-        let session = matches!(command, Command::SessionLoad {});
-        let chat_list = matches!(command, Command::ChatList {});
-        let reply = Reply { after: 0, id: 7, result: Ok(result), need: Some(authority::command_needs(&command)), session, chat_list };
-        (Some(guard), reply)
-    }
-
-    fn frame(reply: Result<String, Stop>) -> Value {
-        serde_json::from_str(&reply.ok().expect("a frame, not a cut-off")).unwrap()
-    }
-
-    /// Narrowing a device while its command runs applies to that command's reply.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_reply_under_way_is_checked_again_against_the_narrowed_device() {
+    async fn a_reply_under_way_is_dropped_when_the_device_is_revoked() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
-        let (guard, reply) = held(&daemon, &phone, json!({ "cmd": "folder_list", "args": {} }), json!(["secret"]));
-        daemon.devices.set_tier(&phone, Tier::Chat).unwrap();
-        let sent = frame(reply_frame(&guard, reply));
-        assert!(sent["err"].as_str().unwrap().contains("chat access"), "{sent}");
-        assert_eq!(sent["id"], 7);
-
-        let session = json!({ "panes": [{ "kind": "chat", "id": "a" }, { "kind": "chat", "id": "b" }], "workspaces": [], "layouts": {} });
-        let (guard, reply) = held(&daemon, &phone, json!({ "cmd": "session_load", "args": {} }), session);
-        daemon.devices.set_threads(&phone, Threads::Only(vec!["a".into()])).unwrap();
-        let sent = frame(reply_frame(&guard, reply));
-        let panes: Vec<&str> = sent["ok"]["panes"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
-        assert_eq!(panes, ["a"], "session_load is filtered by the threads allowed now");
-        assert!(sent["ok"].get("layouts").is_none());
-
-        let (guard, reply) = held(&daemon, &phone, json!({ "cmd": "session_load", "args": {} }), json!({}));
+        let phone = add(&daemon, 1);
+        let guard = Some(Guard {
+            linux_trust_data: daemon.uses_linux_device_policy().then(|| daemon.data.clone()),
+            devices: Arc::clone(&daemon.devices),
+            id: phone.clone(),
+            revokes: daemon.devices.subscribe(),
+        });
+        let reply = Reply { after: 0, id: 7, result: Ok(json!({ "secret": true })) };
         daemon.devices.revoke(&phone).unwrap();
         assert!(matches!(reply_frame(&guard, reply), Err(Stop::Revoked)));
-    }
 
-    /// An error under way is rechecked too, so it can't leak paths after a downgrade.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn an_error_under_way_is_checked_again_against_the_narrowed_device() {
-        let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
-        let (guard, mut reply) = held(&daemon, &phone, json!({ "cmd": "folder_list", "args": {} }), json!(null));
-        reply.result = Err("can't read /Users/someone/secret".into());
-        daemon.devices.set_tier(&phone, Tier::Chat).unwrap();
-        let sent = frame(reply_frame(&guard, reply));
-        let err = sent["err"].as_str().unwrap();
-        assert!(err.contains("chat access") && !err.contains("secret"), "{sent}");
-        assert_eq!(sent["id"], 7);
-
-        let (guard, mut reply) = held(&daemon, &phone, json!({ "cmd": "folder_list", "args": {} }), json!(null));
-        reply.result = Err("can't read /Users/someone/secret".into());
-        daemon.devices.revoke(&phone).unwrap();
-        assert!(matches!(reply_frame(&guard, reply), Err(Stop::Revoked)));
-    }
-
-    /// Test 4e2: global events reach only devices allowed every thread, live and replayed.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_limited_full_device_gets_no_terminal_or_settings_events() {
-        let (daemon, _data) = daemon();
-        let all = add(&daemon, 1, Tier::Full, Threads::ALL);
-        let limited = add(&daemon, 2, Tier::Full, Threads::Only(vec!["a".into()]));
-        let (mut everything, _s1) = connect_device(&daemon, &all, 1 << 16);
-        let (mut some, _s2) = connect_device(&daemon, &limited, 1 << 16);
-        let start = everything.hello().await["ok"]["last_seq"].as_u64().unwrap();
-        some.hello().await;
-        let mut local = connect_to(&daemon, Trust::Local);
-        local.hello().await;
-        local.send(json!({ "id": 1, "cmd": "settings_save", "args": { "settings": { "theme": "dark" } } })).await;
-        local.until_reply(1).await;
-        daemon.host.events().emit(pty("terminal another client opened"));
-        daemon.host.events().emit(room("a", 1));
-
-        let names = |frames: &[Value]| frames.iter().map(|f| f["event"].as_str().unwrap_or_default().to_string()).collect::<Vec<_>>();
-        assert_eq!(names(&frames_for(&mut everything, Duration::from_millis(300)).await), vec!["settings-changed", "pty-data", "room-event"]);
-        assert_eq!(names(&frames_for(&mut some, Duration::from_millis(300)).await), vec!["room-event"]);
-
-        for (device, expected) in [(&all, vec!["settings-changed", "pty-data", "room-event"]), (&limited, vec!["room-event"])] {
-            let (mut back, _s) = connect_device(&daemon, device, 1 << 16);
-            back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": start } } })).await;
-            back.next().await.unwrap();
-            assert_eq!(names(&frames_for(&mut back, Duration::from_millis(300)).await), expected);
-        }
+        // Also check over a live session while a reply is in flight.
+        let phone2 = add(&daemon, 2);
+        let (mut client, session) = connect_device(&daemon, &phone2, 1 << 16);
+        client.hello().await;
+        client.send(json!({ "id": 1, "cmd": "agents_detect" })).await;
+        daemon.devices.revoke(&phone2).unwrap();
+        assert_eq!(ended_within(session, Duration::from_secs(1)).await, Ended::Revoked);
+        let frames = frames_for(&mut client, Duration::from_millis(200)).await;
+        assert!(frames.iter().all(|f| f.get("ok").is_none()), "no ok frame after revoke: {frames:?}");
     }
 
     /// Test 5: a revoke survives a restart of the daemon.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_revoked_device_stays_out_after_a_restart() {
         let (daemon, data) = daemon();
-        let phone = add(&daemon, 1, Tier::Chat, Threads::ALL);
-        add(&daemon, 2, Tier::ReadOnly, Threads::ALL);
-        daemon.devices.set_tier(&id(2), Tier::Full).unwrap();
+        let phone = add(&daemon, 1);
+        add(&daemon, 2);
         daemon.devices.revoke(&phone).unwrap();
         let restarted = Arc::new(Daemon {
             voice: crate::voice::VoiceServer::new(&data.0),
@@ -2257,13 +2093,13 @@ mod tests {
         let (mut client, session) = connect_device(&restarted, &phone, 1 << 16);
         assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
         assert_eq!(session.await.unwrap(), Ended::Refused);
-        assert_eq!(restarted.devices.get(&id(2)).unwrap().tier, Tier::Full);
+        assert!(restarted.devices.get(&id(2)).is_some());
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_device_never_gets_quit_requests_or_local_only_commands() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         daemon.host.events().emit(HostEvent::QuitRequested(7));
@@ -2307,7 +2143,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pairing_commands_are_refused_from_a_token_or_a_device() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let mut token = connect_to(&daemon, Trust::Token);
         token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
         token.next().await.unwrap();
@@ -2323,22 +2159,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_devices_hello_carries_its_access_and_the_advertised_addresses() {
+    async fn welcome_states_full_access_for_older_phone_builds() {
         let (daemon, _data) = daemon();
         std::fs::create_dir_all(&daemon.data).unwrap();
         crate::remote_config::set_advertised(&daemon.data, &["myhome.ddns.net:41641".into()]).unwrap();
-        let phone = add(&daemon, 1, Tier::Chat, Threads::Only(vec!["a".into()]));
+        let phone = add(&daemon, 1);
         let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
         let ok = client.hello().await["ok"].clone();
-        assert_eq!(ok["access"], json!({ "tier": "chat", "threads": ["a"] }));
+        assert_eq!(ok["access"], json!({ "tier": "full", "threads": "all" }));
         assert_eq!(ok["addrs"], json!(["myhome.ddns.net:41641"]));
         assert_eq!(ok["host_id"], "host-1");
-
-        // The current access, not the one it paired with.
-        daemon.devices.set_tier(&phone, Tier::Full).unwrap();
-        daemon.devices.set_threads(&phone, Threads::ALL).unwrap();
-        let (mut again, _session) = connect_device(&daemon, &phone, 1 << 16);
-        assert_eq!(again.hello().await["ok"]["access"], json!({ "tier": "full", "threads": "all" }));
 
         // Nobody else gets either.
         let mut local = connect_to(&daemon, Trust::Local);
@@ -2400,8 +2230,6 @@ mod tests {
         assert_eq!((unknown["reason"].clone(), unknown["err"].clone()), (json!("unknown"), json!("There's no such pairing code. Start again.")));
         local.send(json!({ "id": 2, "cmd": "pair_cancel", "args": { "invitation": "not base64!" } })).await;
         assert_eq!(local.until_reply(2).await.pop().unwrap()["reason"], "bad_request");
-        local.send(json!({ "id": 3, "cmd": "pair_start", "args": { "tier": "admin" } })).await;
-        assert_eq!(local.until_reply(3).await.pop().unwrap()["reason"], "bad_request");
     }
     #[tokio::test]
     async fn voice_frames_stay_on_the_owning_session_and_out_of_events() {
@@ -2458,29 +2286,19 @@ mod tests {
         task.abort();
     }
     #[tokio::test]
-    async fn voice_requests_need_chat_and_install_needs_full() {
+    async fn paired_device_can_use_voice_requests() {
         let (mut daemon, data) = daemon();
         let (running, task) = crate::voice::test_helper::fake_helper("test").await;
         Arc::get_mut(&mut daemon).unwrap().voice =
             crate::voice::test_helper::server_with_helper(&data.0, running);
-        let phone = add(&daemon, 1, Tier::ReadOnly, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut c, _) = connect_device(&daemon, &phone, 1 << 16);
         c.hello().await;
-        for (id, cmd) in [
-            (1, "voice_server_open"),
-            (2, "voice_server_warm"),
-            (3, "voice_server_install"),
-            (4, "voice_server_install_cancel"),
-        ] {
-            c.send(json!({"id":id,"cmd":cmd,"args":{"room":"r"}})).await;
-            assert!(c.until_reply(id).await.last().unwrap().get("err").is_some());
-        }
-        c.send(json!({"id":5,"cmd":"voice_server_status"})).await;
-        assert!(c.until_reply(5).await.last().unwrap().get("ok").is_some());
-        daemon.devices.set_tier(&phone, Tier::Chat).unwrap();
-        c.send(json!({"id":6,"cmd":"voice_server_open","args":{"room":"r"}}))
+        c.send(json!({"id":1,"cmd":"voice_server_status"})).await;
+        assert!(c.until_reply(1).await.last().unwrap().get("ok").is_some());
+        c.send(json!({"id":2,"cmd":"voice_server_open","args":{"room":"r"}}))
             .await;
-        assert!(c.until_reply(6).await.last().unwrap()["ok"]["channel"].is_number());
+        assert!(c.until_reply(2).await.last().unwrap()["ok"]["channel"].is_number());
         task.abort();
     }
 
@@ -2490,7 +2308,7 @@ mod tests {
         let (running, task) = crate::voice::test_helper::fake_helper("test").await;
         Arc::get_mut(&mut daemon).unwrap().voice =
             crate::voice::test_helper::server_with_helper(&data.0, running);
-        let phone = add(&daemon, 1, Tier::Chat, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut a, _) = connect_device(&daemon, &phone, 1 << 16);
         a.hello().await;
         a.send(json!({"id":1,"cmd":"voice_server_open","args":{"room":"r"}}))
@@ -2516,7 +2334,7 @@ mod tests {
         let (running, task) = crate::voice::test_helper::fake_helper("test").await;
         Arc::get_mut(&mut daemon).unwrap().voice =
             crate::voice::test_helper::server_with_helper(&data.0, running);
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
         client.hello().await;
         client
@@ -2534,7 +2352,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reply_too_long_for_a_device_is_refused_and_the_session_goes_on() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let mut local = connect_to(&daemon, Trust::Local);
         local.hello().await;
         let pad = "x".repeat(DEVICE_MAX_FRAME);
@@ -2560,7 +2378,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn an_event_too_long_for_a_device_is_skipped() {
         let (daemon, _data) = daemon();
-        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let phone = add(&daemon, 1);
         let (mut device, session) = connect_device(&daemon, &phone, 1 << 16);
         device.hello().await;
         daemon.host.events().emit(pty(&"x".repeat(DEVICE_MAX_FRAME)));

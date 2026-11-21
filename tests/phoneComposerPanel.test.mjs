@@ -78,12 +78,12 @@ test('Plan changes apply the current boolean to the captured room and wait for a
   assert.equal(continuation, 1);
 });
 
-test('Plan controls explain sending, offline and read-only disabled states', async () => {
+test('Plan controls explain sending and offline disabled states', async () => {
   const { composerPlanDisabledReason } = await import('../src/phone/composerPanelModel.ts');
-  assert.equal(composerPlanDisabledReason({ pendingDraft: false, sending: true, online: true, readOnly: false, offlineReason: 'Offline' }), 'Wait for sending to finish.');
-  assert.equal(composerPlanDisabledReason({ pendingDraft: false, sending: false, online: false, readOnly: false, offlineReason: 'Machine is offline.' }), 'Machine is offline.');
-  assert.equal(composerPlanDisabledReason({ pendingDraft: false, sending: false, online: true, readOnly: true, offlineReason: '' }), 'Plan mode needs chat access on this machine.');
-  assert.equal(composerPlanDisabledReason({ pendingDraft: true, sending: false, online: false, readOnly: true, offlineReason: 'Offline' }), null);
+  assert.equal(composerPlanDisabledReason({ pendingDraft: false, sending: true, online: true, offlineReason: 'Offline' }), 'Wait for sending to finish.');
+  assert.equal(composerPlanDisabledReason({ pendingDraft: false, sending: false, online: false, offlineReason: 'Machine is offline.' }), 'Machine is offline.');
+  assert.equal(composerPlanDisabledReason({ pendingDraft: false, sending: false, online: true, offlineReason: '' }), null);
+  assert.equal(composerPlanDisabledReason({ pendingDraft: true, sending: false, online: false, offlineReason: 'Offline' }), null);
 });
 
 test('clipboard reads attach one file per item to the draft captured before the paste prompt', async (t) => {

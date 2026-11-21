@@ -53,9 +53,6 @@ export type AgentAppearance = {
  */
 export type AgentTool = "claude_code" | "codex" | "gemini" | "grok" | "muse";
 
-/** The string `"all"`, and nothing else. */
-export type AllThreads = "all";
-
 /** Something the person chose "Always allow" for. Saved with the thread. */
 export type AllowedRule = {
   allowed_at?: number;
@@ -321,10 +318,13 @@ export type Curation = {
   when: number;
 };
 
-/** A paired device's current grant, as the welcome states it. */
+/**
+ * Wire tolerance: installed iPhone builds hide the Tasks tab without this.
+ * Delete once every iPhone is on a TestFlight build containing Task 4.
+ */
 export type DeviceAccess = {
-  threads: Threads;
-  tier: Tier;
+  threads: string;
+  tier: string;
 };
 
 /** The person's own input, as it happened. */
@@ -1006,12 +1006,6 @@ export type ThreadLabel = {
   id: string;
   label: string;
 };
-
-/** Which threads (room IDs) a device may reach. */
-export type Threads = AllThreads | Array<string>;
-
-/** What a device may do, least first. */
-export type Tier = "read_only" | "chat" | "full";
 
 export type TodoItem = {
   status: TodoStatus;
@@ -2766,22 +2760,8 @@ export type DevicesRequest = {
     id: string;
     label: string;
     restore?: boolean;
-    threads?: Threads | null;
-    tier: Tier;
   };
   cmd: "devices_add";
-} | {
-  args: {
-    id: string;
-    tier: Tier;
-  };
-  cmd: "devices_set_tier";
-} | {
-  args: {
-    id: string;
-    threads: Threads;
-  };
-  cmd: "devices_set_threads";
 } | {
   args: {
     id: string;
@@ -2900,10 +2880,7 @@ export type MaintenanceRequest = {
 };
 
 export type PairRequest = {
-  args: {
-    threads?: Threads | null;
-    tier?: Tier;
-  };
+  args: Record<string, never>;
   cmd: "pair_start";
 } | {
   args: {
@@ -3439,20 +3416,10 @@ export interface Commands {
     id: string;
     label: string;
     restore?: boolean;
-    threads?: Threads | null;
-    tier: Tier;
   };
   devices_list: Record<string, never>;
   devices_revoke: {
     id: string;
-  };
-  devices_set_threads: {
-    id: string;
-    threads: Threads;
-  };
-  devices_set_tier: {
-    id: string;
-    tier: Tier;
   };
   env_present: {
     names: Array<string>;
@@ -3703,10 +3670,7 @@ export interface Commands {
   pair_cancel: {
     invitation: string;
   };
-  pair_start: {
-    threads?: Threads | null;
-    tier?: Tier;
-  };
+  pair_start: Record<string, never>;
   pair_wait: {
     invitation: string;
   };
