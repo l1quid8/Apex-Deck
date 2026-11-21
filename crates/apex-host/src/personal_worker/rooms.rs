@@ -75,6 +75,10 @@ pub struct Target {
 }
 
 impl Target {
+    /// The name the agent with this id goes by in the chat; the id for one that isn't in it.
+    pub fn worker_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.workers.iter().find(|(worker, _)| worker == id).map_or(id, |(_, name)| name.as_str())
+    }
     /// Why this operation can't become a task. Only a read may repeat, so
     /// nothing keeps messaging a chat on its own.
     pub fn refusal(&self, tool: &str, argv: &[String], timed: bool, machine: bool) -> Option<String> {
@@ -570,7 +574,7 @@ impl Host {
                 let bots = op.argv.get(1).map(|ids| split(ids)).unwrap_or_default();
                 if bots.is_empty() { self.room_stop(room.thread.clone(), None); }
                 for bot in &bots { self.room_stop(room.thread.clone(), Some(ParticipantId::new(*bot))); }
-                let who = if bots.is_empty() { "every agent".to_owned() } else { bots.join(", ") };
+                let who = if bots.is_empty() { "every agent".to_owned() } else { bots.iter().map(|bot| room.worker_name(bot)).collect::<Vec<_>>().join(", ") };
                 Ok(ToolRun { exit_code: 0, output: format!("Stop sent to {who} in {}.", room.title) })
             }
             SEND | RESUME | ASSIGN => self.room_deliver(&assistant, task_id, &room, op).await,
@@ -616,19 +620,20 @@ impl Host {
                 if let Some(reason)=super::endpoint_refusal(&assistant,&participant) {return Err(reason)}
                 self.room_state(room.thread.clone())?;
                 let saved=self.store().room(&room.thread)?.ok_or("Thread unavailable.")?;
+                let added=participant.display_name.clone();
                 if saved.snapshot.kind.is_chat() {
                     let profile=self.chat_saved_profiles()?.into_iter().find(|p|p.id==participant.id).ok_or("This agent has no saved profile for a talk-only chat.")?;
                     if let Some(reason)=super::endpoint_refusal(&assistant,&profile) {return Err(reason)}
                     self.chat_add_participant_checked(room.thread.clone(),crate::chat_bots::ChatBotRequest{profile:profile.id.to_string(),id:None,display_name:None,model:None,effort:None,speed:None},&||self.personal_room_authority(assistant_id,task_id,op)).await?;
                 } else {self.room_add_participant_checked(room.thread.clone(),participant,&||self.personal_room_authority(assistant_id,task_id,op)).await?;}
-                Ok(ToolRun{exit_code:0,output:format!("Added participant {id}.")})
+                Ok(ToolRun{exit_code:0,output:format!("Added participant {added}.")})
             },
             REMOVE => {
                 self.room_state(room.thread.clone())?;
                 let saved=self.store().room(&room.thread)?.ok_or("Thread unavailable.")?;
                 if saved.snapshot.kind.is_chat() {self.chat_remove_participant_checked(room.thread.clone(),ParticipantId::new(&op.argv[1]),&||self.personal_room_authority(assistant_id,task_id,op)).await?;}
                 else {self.room_remove_participant_checked(room.thread.clone(),ParticipantId::new(&op.argv[1]),&||self.personal_room_authority(assistant_id,task_id,op)).await?;}
-                Ok(ToolRun{exit_code:0,output:format!("Removed participant {}.",op.argv[1])})
+                Ok(ToolRun{exit_code:0,output:format!("Removed participant {}.",room.worker_name(&op.argv[1]))})
             },
             other => Err(format!("{other} isn't a chat operation.")),
         }

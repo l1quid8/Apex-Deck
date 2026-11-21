@@ -184,7 +184,7 @@ pub fn collect(project_data: &Path,
         for message in &transcript[from..] {
             let role = match &message.speaker {
                 Speaker::Human => "human".to_owned(),
-                Speaker::Bot(participant) => format!("assistant:{participant}"),
+                Speaker::Bot(participant) => format!("assistant:{}", saved.snapshot.participants.iter().find(|p| &p.id == participant).map_or_else(|| participant.to_string(), |p| p.display_name.clone())),
             };
             let when = message
                 .at

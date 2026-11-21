@@ -787,7 +787,7 @@ pub fn draw(f: &mut Frame, s: &AppState, welcome_index: usize) -> Rect {
             let i = offset;
             let outcome = match row["outcome"].as_str() { Some("failed") => " · Failed", Some("stopped") => " · Interrupted", Some("passed") => " · Ended without reply", _ if row["live"] == true => " · In progress", _ => "" };
             let count = row["count"].as_u64().unwrap_or(0).saturating_sub(row["helpers"].as_u64().unwrap_or(0));
-            lines.push(Line::from(Span::styled(format!(" {}Turn {} · {} · {} steps · checklist {} of {} completed{outcome}", if i == s.progress_selected { "› " } else { "  " }, row["seq"].as_u64().unwrap_or(0), safe(row["by"].as_str().unwrap_or("Agent")), count, row["todo_completed"].as_u64().unwrap_or(0), row["todo_count"].as_u64().unwrap_or(0)), Style::default().fg(if i == s.progress_selected { CYAN } else { GRAY }))));
+            lines.push(Line::from(Span::styled(format!(" {}Turn {} · {} · {} steps · checklist {} of {} completed{outcome}", if i == s.progress_selected { "› " } else { "  " }, row["seq"].as_u64().unwrap_or(0), safe(&crate::approval_card::agent_name(s, &row["by"])), count, row["todo_completed"].as_u64().unwrap_or(0), row["todo_count"].as_u64().unwrap_or(0)), Style::default().fg(if i == s.progress_selected { CYAN } else { GRAY }))));
         }
         if let Some(detail) = &s.progress_detail {
             let timeline = crate::progress::timeline(&detail["timeline"]);

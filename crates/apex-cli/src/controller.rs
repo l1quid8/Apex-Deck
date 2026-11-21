@@ -757,7 +757,7 @@ async fn runner(c: &Context, kind: &str, arg: &str) -> Result<Outcome, String> {
     }
     let limits = serde_json::to_value(apex_host::runner::RunnerLimits::default_limits())
         .map_err(|e| e.to_string())?;
-    let title=format!("Start {kind}: {}\nWorkers: {}\nLimits: 30 turns/runs · 120 calls · 2h · $5 best-effort spend cap.",input["objective"].as_str().or(input["prompt"].as_str()).unwrap_or(""),workers.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+    let title=format!("Start {kind}: {}\nWorkers: {}\nLimits: 30 turns/runs · 120 calls · 2h · $5 best-effort spend cap.",input["objective"].as_str().or(input["prompt"].as_str()).unwrap_or(""),members(c).iter().filter_map(|p| p["display_name"].as_str().filter(|name| !name.trim().is_empty()).or_else(|| p["id"].as_str())).collect::<Vec<_>>().join(", "));
     let args = json!({"id":id,"requestId":uuid::Uuid::new_v4().to_string(),"expectedRoomRevision":c.state["roomRevision"],"runner":{"schemaVersion":1,"kind":kind,"objective":input["objective"],"prompt":input["prompt"],"intervalSeconds":input["intervalSeconds"],"workers":workers,"limits":limits}});
     Ok(confirm(title, "room_runner_start", args))
 }

@@ -2426,7 +2426,7 @@ export function PhoneApp() {
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     if (Object.keys(shown.working).length > 0) { setNotice("Stop the agents first."); return; }
     const bot = retryBot(message);
-    if (kind === "retry" && !shown.participants.some((p) => p.id === bot)) { setNotice(`${bot} isn't in this thread any more, so it can't answer again.`); return; }
+    if (kind === "retry" && !shown.participants.some((p) => p.id === bot)) { setNotice(`${session?.profiles.find((profile) => profile.id === bot)?.display_name ?? "That agent"} isn't in this thread any more, so it can't answer again.`); return; }
     const host = changeHost(kind === "retry" ? "Retry" : "Revert");
     if (!host) return;
     try {
@@ -4598,7 +4598,7 @@ function ThreadView(props: {
           </div>
         )}
         {props.form}
-        <RunnerDrawer snapshot={props.runner} hostNowOffsetMs={props.runnerHostOffset} composerRef={inputRef} platform="phone" endRequest={props.runnerEndRequest} showRequest={props.runnerShowRequest} onEndCancel={props.onRunnerEndCancel} onAction={props.onRunnerAction} onReviewChanges={props.onRunnerReview}/>
+        <RunnerDrawer snapshot={props.runner} nameOf={(id) => person(id).display_name} hostNowOffsetMs={props.runnerHostOffset} composerRef={inputRef} platform="phone" endRequest={props.runnerEndRequest} showRequest={props.runnerShowRequest} onEndCancel={props.onRunnerEndCancel} onAction={props.onRunnerAction} onReviewChanges={props.onRunnerReview}/>
         {props.runnerSetup}
         {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {picking && picking.picks.length > 0 && (

@@ -284,7 +284,7 @@ impl Host {
         let mut source_rooms = Vec::new();
         for id in &monitor.threads {
             let Ok(Some(saved)) = self.store().room(id) else { continue };
-            let label = input.thread_labels.iter().find(|l| &l.id == id).map(|l| l.label.clone()).unwrap_or_else(|| id.clone());
+            let label = input.thread_labels.iter().find(|l| &l.id == id).map(|l| l.label.clone()).or_else(|| self.thread_title(id)).unwrap_or_else(|| id.clone());
             source_rooms.push((id.clone(), label, saved));
         }
         let source_chats = assistant_conversation::source_chat_excerpts(&owner.cwd, &source_rooms);
@@ -932,7 +932,7 @@ impl Host {
             .map_err(|e| e.to_string())?;
         *self.handle(&child_id)?.task_run_id.lock().unwrap() = Some(run_id.clone());
         if post_source_line {
-            self.append_assistant_note(&parent_id, task_started_line(&task.original_request, &workers))
+            self.append_assistant_note(&parent_id, task_started_line(&task.original_request, &self.agent_names(&child_id, &workers)))
                 .await?;
         }
         // Keep the durable reservation, but let the child room acquire the
@@ -1132,7 +1132,7 @@ impl Host {
             .map_err(|e| e.to_string())?;
         *self.handle(&child_id)?.task_run_id.lock().unwrap() = Some(run_id.clone());
         if post_source_line {
-            self.append_assistant_note(&parent_id, task_started_line(&task.original_request, &workers))
+            self.append_assistant_note(&parent_id, task_started_line(&task.original_request, &self.agent_names(&child_id, &workers)))
                 .await?;
         }
         let handle = self.handle(&child_id)?;
@@ -1588,7 +1588,8 @@ impl Host {
                     if !eligible { named_only_workers.insert(profile.id.to_string()); }
                     eligible
                 }).collect();
-                routing_threads.push(json!({"id":id,"workers":workers}));
+                let title = self.thread_title(&id);
+                routing_threads.push(json!({"id":id,"title":title,"workers":workers}));
             }
         }
         let project = std::path::Path::new(&owner.cwd).canonicalize().ok().map(|cwd| crate::personal_workspace::ProjectRef {
@@ -2575,6 +2576,9 @@ fn task_start_prompt(task: &AssistantTask) -> String {
 fn routing_done_line(task: &AssistantTask) -> Option<String> {
     let destination = task.destination.as_ref()?;
     let workers = if destination.workers.is_empty() { &task.workers } else { &destination.workers };
+    // Workers know each other by name; the saved profiles carry the names this task started with.
+    let profiles = task.result_data.as_ref().and_then(|data| data["workerProfiles"].as_array()).cloned().unwrap_or_default();
+    let workers = workers.iter().map(|id| profiles.iter().find(|p| p["id"].as_str() == Some(id)).and_then(|p| p["display_name"].as_str()).unwrap_or(id).to_owned()).collect::<Vec<_>>();
     let (lead, rest) = workers.split_first()?;
     let place = match destination.new_thread_title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(title) if destination.new_thread => format!("this new thread, \"{title}\""),
@@ -2731,11 +2735,12 @@ fn spawn_task_attempt(project_data: &std::path::Path,
             let transcript = &checkpoint.snapshot.transcript;
             if let Some(task) = task_before.as_ref().filter(|task| task.workers.len() > 1) {
                 let started = task.attempts.last().map(|a| a.started_at_ms).unwrap_or(u64::MAX);
-                let reports = task.workers.iter().filter_map(|worker| {
+                let names = crate::host::names_of(&checkpoint.snapshot.participants, &task.workers);
+                let reports = task.workers.iter().zip(&names).filter_map(|(worker, name)| {
                     transcript.iter().rev().find(|message| {
                         matches!(&message.speaker, apex_core::Speaker::Bot(id) if id.as_str() == worker)
                             && message.at.is_some_and(|at| at >= started)
-                    }).map(|message| format!("{worker}: {}", message.text.chars().take(2000).collect::<String>()))
+                    }).map(|message| format!("{name}: {}", message.text.chars().take(2000).collect::<String>()))
                 }).collect::<Vec<_>>();
                 (!reports.is_empty()).then(|| reports.join("\n\n"))
             } else {
@@ -4466,6 +4471,9 @@ mod tests {
         assert!(prompt.contains("don't ask about them again"), "{prompt}");
         task.destination = Some(TaskDestination { thread_id: Some("parent".into()), workers: vec!["null".into()], new_thread: false, new_thread_title: None });
         assert!(task_start_prompt(&task).contains("runs in this thread, and null works alone."));
+        // A renamed worker goes by its name; its id never changes, so the prompt must not use it.
+        task.result_data = Some(json!({"workerProfiles":[{"id":"null","display_name":"Asstra"}]}));
+        assert!(task_start_prompt(&task).contains("runs in this thread, and Asstra works alone."));
         task.destination = None;
         assert!(!task_start_prompt(&task).contains("Routing is already done"));
     }

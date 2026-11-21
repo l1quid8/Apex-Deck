@@ -14,8 +14,10 @@ export interface RunnerDrawerProps {
   endRequest?: number;
   showRequest?: number;
   onEndCancel?():void;
+  /** An agent's current name for its id; the snapshot's workers and checker are ids, which a rename keeps. */
+  nameOf?(id: string): string;
 }
-export function RunnerDrawer({snapshot, hostNowOffsetMs, onAction, onReviewChanges, composerRef, platform, endRequest=0, showRequest=0, onEndCancel}: RunnerDrawerProps) {
+export function RunnerDrawer({snapshot, hostNowOffsetMs, onAction, onReviewChanges, composerRef, platform, endRequest=0, showRequest=0, onEndCancel, nameOf=id=>id}: RunnerDrawerProps) {
   const [open,setOpen]=useState(false);
   const [confirm,setConfirm]=useState(false);
   const [now,setNow]=useState(Date.now());
@@ -55,7 +57,7 @@ export function RunnerDrawer({snapshot, hostNowOffsetMs, onAction, onReviewChang
       {snapshot.checkpoint?.next&&<p>Next: {snapshot.checkpoint.next}</p>}
       {snapshot.checkpoint?.blocker&&<p>Blocked: {snapshot.checkpoint.blocker}</p>}
       {snapshot.checkResults?.map(c=><details key={`${c.attemptId}:${c.id}`}><summary>{c.passed?'✓':'✗'} Check: {c.id}</summary><pre>{c.output}</pre></details>)}
-      <p>Working: {snapshot.workers.join(', ')}{snapshot.checker?` · Checker: ${snapshot.checker}`:''}</p>
+      <p>Working: {snapshot.workers.map(nameOf).join(', ')}{snapshot.checker?` · Checker: ${nameOf(snapshot.checker)}`:''}</p>
       <p>{snapshot.usage.turns}/{snapshot.limits.maxTurns??30} {snapshot.kind==='loop'?'runs':'turns'} · {snapshot.usage.invocations}/{snapshot.limits.maxInvocations??120} calls · {snapshot.usage.costMicros==null||snapshot.usage.unknownCostTurns>0?'Cost unavailable':`$${(snapshot.usage.costMicros/1e6).toFixed(2)} / $${(snapshot.limits.maxCostMicros??0)/1e6}`} · {Math.max(0,Math.floor((now+hostNowOffsetMs-snapshot.startedAt)/60000))}m / {snapshot.limits.lifetimeMs/60000}m</p>
       <p className="runner-note">{snapshot.reason!=='none'?`Reason: ${snapshot.reason.replaceAll('_',' ')}. `:''}{snapshot.phase==='completed'?'Completion reported by workers; see evidence and checks.':''}{snapshot.pendingRequestId?'Answer the pending request in chat. Resume keeps unresolved requests waiting.':''}</p>
       {!terminal&&<RunnerLimitEditor key={`${snapshot.id}:${snapshot.limits.lifetimeMs}:${snapshot.limits.maxTurns}:${snapshot.limits.maxCostMicros}`} limits={snapshot.limits} applyLabel={view.limitHit?'Apply and resume':'Apply limits'} onApply={limits=>onAction('update_limits',limits)}/>}
