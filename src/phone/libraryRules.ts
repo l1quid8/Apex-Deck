@@ -1,5 +1,4 @@
 import type { LibraryItem } from "../backend";
-import type { RemoteAccess } from "../phoneRules";
 
 /** A picture's caption: the bot and the date, plus the time when asked. A missing bot name reads "A bot". */
 export function libraryCaption(item: LibraryItem, withTime: boolean): string {
@@ -39,9 +38,4 @@ export function notShownReason(item: LibraryItem, machine = "the Mac"): string |
   if (item.bytes === undefined) return `Update Deck on ${machine} to show this here`;
   if (fitsOnPhone(item)) return null;
   return item.kind === "video" ? "Too big to play on the phone" : "Too big for the phone";
-}
-
-/** The Mac only lists the Library for Full access to all threads. A WebSocket pair has no access and keeps it. */
-export function canSeeLibrary(access: RemoteAccess | null | undefined): boolean {
-  return !access || (access.tier === "full" && access.threads === "all");
 }

@@ -14,15 +14,13 @@ export function CodeModeSettings({ hosts }: { hosts: PhoneHost[] }) {
   const [, refresh] = useState(0);
   useEffect(() => host?.connection.subscribe(() => refresh(value => value + 1)), [host]);
   const connected = host?.connection.get().status.kind === "connected";
-  const access = host?.access();
-  const allowed = host && (!access || (access.tier === "full" && access.threads === "all"));
   useEffect(() => {
     let current = true;
     let changed = false;
     let stop: (() => void) | undefined;
     setMode(null);
     setStatus("");
-    if (host && connected && allowed) {
+    if (host && connected) {
       void host.backend.onSettingsChanged?.(raw => {
         changed = true;
         if (current) {
@@ -36,9 +34,9 @@ export function CodeModeSettings({ hosts }: { hosts: PhoneHost[] }) {
       }).catch(error => { if (current) setStatus(String(error)); });
     }
     return () => { current = false; stop?.(); };
-  }, [host, connected, allowed, reload]);
+  }, [host, connected, reload]);
   async function save(next: "auto" | "off") {
-    if (!host || !connected || !allowed || busy) return;
+    if (!host || !connected || busy) return;
     setBusy(true);
     setStatus(`Saving on ${host.machine.name}…`);
     try {
@@ -61,13 +59,13 @@ export function CodeModeSettings({ hosts }: { hosts: PhoneHost[] }) {
       </select>
     </label>
     <label className="ph-srow"><span className="ph-grow"><strong>Apex Code Mode</strong><small>Let supported API models, Claude Code and Codex batch tool calls and filter results to reduce context use.</small></span>
-      <select aria-label="Apex Code Mode" value={mode ?? ""} disabled={!connected || !allowed || mode === null || busy} onChange={event => void save(event.target.value === "off" ? "off" : "auto")}>
+      <select aria-label="Apex Code Mode" value={mode ?? ""} disabled={!connected || mode === null || busy} onChange={event => void save(event.target.value === "off" ? "off" : "auto")}>
         {mode === null && <option value="">Unavailable</option>}
         <option value="auto">Auto</option><option value="off">Off</option>
       </select>
     </label>
     <p>Applies to all agents on the selected machine. Off stops active batches and pending batch approvals; completed writes stay in place. Ordinary tools remain available.</p>
-    <p role="status">{!host ? "Pair and select a machine." : !connected ? `${host.machine.name} is disconnected. Nothing will be queued.` : !allowed ? `Full access is required on ${host.machine.name}, with access to all threads.` : status || (mode === null ? "Loading machine settings…" : `Saved on ${host.machine.name}, not this phone.`)}</p>
-    <button type="button" disabled={!host || !connected || !allowed || busy} onClick={() => setReload(value => value + 1)}>Refresh machine settings</button>
+    <p role="status">{!host ? "Pair and select a machine." : !connected ? `${host.machine.name} is disconnected. Nothing will be queued.` : status || (mode === null ? "Loading machine settings…" : `Saved on ${host.machine.name}, not this phone.`)}</p>
+    <button type="button" disabled={!host || !connected || busy} onClick={() => setReload(value => value + 1)}>Refresh machine settings</button>
   </section>;
 }

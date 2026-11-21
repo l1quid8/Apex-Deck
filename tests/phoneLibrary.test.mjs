@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PHONE_PICTURE_MAX, canSeeLibrary, fitsOnPhone, notShownReason, gridColumns, libraryCaption, libraryErrorLine } from "../src/phone/libraryRules.ts";
+import { PHONE_PICTURE_MAX, fitsOnPhone, notShownReason, gridColumns, libraryCaption, libraryErrorLine } from "../src/phone/libraryRules.ts";
 
 const item = (by, created = 1_700_000_000_000) => ({ file: "a.png", kind: "image", source: "chat", room: "t1", by, created, path: "/lib/a.png" });
 
@@ -44,13 +44,6 @@ test("a picture of unknown size is skipped with a reason, not risked", () => {
   assert.equal(notShownReason(item("Null")), "Update Deck on the Mac to show this here");
   assert.equal(notShownReason({ ...item("Null"), bytes: PHONE_PICTURE_MAX + 1 }), "Too big for the phone");
   assert.equal(notShownReason({ ...item("Null"), bytes: 10 }), null);
-});
-
-test("the Library needs Full access to all threads, like the Mac's check", () => {
-  assert.equal(canSeeLibrary({ tier: "full", threads: "all" }), true);
-  assert.equal(canSeeLibrary({ tier: "full", threads: ["room-1"] }), false);
-  assert.equal(canSeeLibrary({ tier: "chat", threads: "all" }), false);
-  assert.equal(canSeeLibrary(null), true);
 });
 
  test("unknown-size server pictures name their source machine", () => {

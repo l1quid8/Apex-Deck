@@ -104,9 +104,9 @@ export function chatOutboxRows(chat: CachedChat | undefined, view: {
 // ---- What this phone may do with chats on a machine -------------------------------------------
 
 export interface ChatRights {
-  /** May ask the machine for its chat list. Any paired level may; the machine filters it. */
+  /** May ask the machine for its chat list. */
   list: boolean;
-  /** May post, rename, archive and change bots in a chat it can see. */
+  /** May post, rename, archive and change bots in a chat. */
   post: boolean;
   /** May start a chat there or move one in. */
   create: boolean;
@@ -124,26 +124,14 @@ export interface ChatRights {
  *  message id that stops a resent message being answered twice. */
 export function chatRights(machine: {
   name: string; online: boolean; rooms: boolean; delivery: boolean;
-  access: { tier: "read_only" | "chat" | "full"; threads: unknown } | null | undefined;
 }): ChatRights {
   const update = `Update Deck on ${machine.name} to chat here.`;
   const unknown = !machine.rooms && !machine.online;
   const capable = machine.rooms && machine.delivery;
-  const readOnly = machine.access?.tier === "read_only";
-  const scoped = !!machine.access && machine.access.threads !== "all";
-  const postWhy = unknown ? `Waiting for ${machine.name} to connect.` : !capable ? update : readOnly ? `This phone can only read on ${machine.name}.` : "";
-  const why = postWhy || (scoped ? `This phone only sees some threads on ${machine.name}.` : "");
-  // Before the first welcome the phone can't know the machine's version, but it may already know its own access.
-  const queueWhy = readOnly ? `This phone can only read on ${machine.name}.` : !unknown && !capable ? update : "";
+  const postWhy = unknown ? `Waiting for ${machine.name} to connect.` : !capable ? update : "";
+  const why = postWhy;
+  const queueWhy = !unknown && !capable ? update : "";
   return { list: machine.rooms, post: !postWhy, create: !why, why, postWhy, queue: !queueWhy, queueWhy };
-}
-
-/** Whether this phone may post to one room: not read-only, and the room is among the threads it may
- *  use. Unknown access (before the first welcome) doesn't block; the machine checks again anyway. */
-export function mayPostIn(access: { tier: "read_only" | "chat" | "full"; threads: unknown } | null | undefined, room: string): boolean {
-  if (!access) return true;
-  if (access.tier === "read_only") return false;
-  return access.threads === "all" || (Array.isArray(access.threads) && access.threads.includes(room));
 }
 
 // ---- New chat's bots ---------------------------------------------------------------------------

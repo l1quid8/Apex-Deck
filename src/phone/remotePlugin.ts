@@ -23,8 +23,6 @@ export type RemoteEvent =
       name: string;
       hostId?: string | null;
       hostName?: string | null;
-      tier?: string | null;
-      threads?: unknown;
     };
 
 /** What the app needs from the plugin. Tests pass a fake. */

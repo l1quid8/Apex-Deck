@@ -32,13 +32,12 @@ import type { ChipStyle } from "../botChip";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ApexAgentSources } from "../ApexAgentSources";
-import { assistantDisplayName } from "../assistantName.ts";
 import { ApexAgentAll } from "../ApexAgentAll";
 import type { PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
 import { usePersonalAssistants } from "../usePersonalAssistants.ts";
 import { PhoneTasks } from "./PhoneTasks";
-import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phoneTaskFullAccess, phonePersonalTaskSources, phoneHandoffTasks } from "./taskFeed.ts";
+import { collectPhoneTasks, phoneTaskBackend, phoneTasksNeedAttention, phonePersonalTaskSources, phoneHandoffTasks } from "./taskFeed.ts";
 import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState, type AssistantVisiblePane } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { SPEED_OPTIONS, speedHint } from "../speed";
@@ -79,7 +78,7 @@ import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   apiModelChoices, apiProviderName, modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, pillPullReveal, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
-  canSeeNewThread, connectionKey, isPaired, withHints, readHostIds, withMacHostIds,
+  connectionKey, isPaired, withHints, readHostIds, withMacHostIds,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
@@ -99,7 +98,7 @@ import { PhoneLibrary } from "./PhoneLibrary";
 import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
 import { composerPlanDisabledReason, readCapturedFiles, readClipboardFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList } from "./ThreadList";
-import { chatOutboxRows, chatRights, chatRoute, machineThreadKey, mayPostIn, pickOpenPane, projectChats, threadKey, type ChatRights } from "./chatRoutes";
+import { chatOutboxRows, chatRights, chatRoute, machineThreadKey, pickOpenPane, projectChats, threadKey, type ChatRights } from "./chatRoutes";
 import { parseAbandon, promoteHolds, promoteKey, promoteRequest, readPromoteTickets, settleForPromote, withoutTicket, writePromoteTickets } from "../chatPromote.ts";
 import { CHAT_CATALOG_KEY, LEGACY_GATEWAY_KEY, LEGACY_HISTORY_KEY, botNames, chatRows, chatTitle, findRoom, legacyChats, legacyEntries, newChatStart, parseChatEntry, parseChatList, parseChatProfiles, promotedWork, readCatalog, rememberLast, withListedChatResponse, withoutHosts, withRoom, type ChatCatalog, type ChatEntry, type ChatProfile, type LegacyChat } from "../chatCatalog";
 import { ChatBotsBody, ChatRows, ChatWhereBody, LegacyImportBody, MoveToWorkBody, NewChatBody, NewMenuBody, TalkOnlyRow, type ChatMachineView } from "./ChatSheets";
@@ -114,7 +113,7 @@ import { leftBehindWords, type ChatDeliveryStatus } from "../chatDelivery";
 import { forkedPane, forkUpto } from "./messageFork";
 import { GoBackAsk, MessageActions, type GoingBack } from "./MessageActions";
 import { PickedText } from "./PickedText";
-import { cutBack, needsFull, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
+import { cutBack, outgoingText, putBackLine, quotesBack, withQuote } from "./messageTools";
 import { useThreadPinActions } from "../thread/useThreadPinActions";
 import { messagePinChange, type PinChange } from "../thread/threadActions";
 import { pinSource, pinText } from "../messagePins";
@@ -144,9 +143,9 @@ import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
 import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText } from "../threadCopy";
-import { PhoneThreadGit, canUseThreadGit } from "./PhoneThreadGit";
+import { PhoneThreadGit } from "./PhoneThreadGit";
 import { WorktreesPane, copyNeedsYou, useWorktrees } from "./WorktreesPane";
-import { canManageWorktrees, newBelow } from "./worktrees";
+import { newBelow } from "./worktrees";
 import { copyText } from "../copyText";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
@@ -747,7 +746,7 @@ export function PhoneApp() {
 
   // Every paired machine's Library, whether or not its machine is online; PhoneLibrary shows each one's status.
   const libraryMachines = useMemo<PhoneLibraryMachine[]>(() => hosts.map((host) => ({
-    id: host.machine.id, name: host.machine.name, backend: host.backend, connection: host.connection, access: host.access,
+    id: host.machine.id, name: host.machine.name, backend: host.backend, connection: host.connection,
   })), [hosts]);
 
   const links: LinkView[] = hosts.map((host) => {
@@ -769,9 +768,6 @@ export function PhoneApp() {
     agentSheetId,
     () => sessionRef.current?.disabledProviders ?? [],
   ) : undefined), [macHost, agentSheetOpen, agentSheetId]);
-  /** A thread is saved on the Mac and runs on its machine; starting one needs Full on both. */
-  const newAllowed = canSeeNewThread(macHost?.access());
-  const canStartOn = (hostId: string) => newAllowed && canSeeNewThread(hosts.find((host) => host.machine.id === hostId)?.access());
   const macOnline = mac?.status === "online";
   const linkOf = (id: string) => links.find((link) => link.id === id) ?? null;
   const downWords = (id: string, name: string) => { const link = linkOf(id); return link ? downLine(link) : `Connecting to ${name}`; };
@@ -876,8 +872,7 @@ export function PhoneApp() {
   };
   const assistantProjects = useMemo(() => workspaces.filter((workspace) => !workspace.hidden).map((workspace) => {
     const hostId = workspaceHost(workspace);
-    const host = hosts.find((item) => item.machine.id === hostId);
-    return { workspace, link: linkOf(hostId), allowed: canSeeNewThread(host?.access()) };
+    return { workspace, link: linkOf(hostId), allowed: true };
   }), [workspaces, hosts, tick]);
   const visibleAssistantRegistry = useMemo(() => currentAssistantRegistry(assistantRegistry,
     Object.fromEntries(Object.entries(assistantOwners).filter(([workspaceId, owner]) => {
@@ -922,10 +917,8 @@ export function PhoneApp() {
     onChange: () => setDeliveryTick((n) => n + 1),
     onError: (error) => setNotice(words(error)),
     // Without chat_delivery_v1 a machine ignores the message id, so a message waits instead of being marked as maybe sent.
-    // A phone that may not post there (read-only, or no longer allowed that thread) keeps the message too:
-    // the machine would refuse it and leave it with no way to recover.
     // A chat being moved to a Work thread, or already moved, keeps it too: it would land after the copy.
-    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && mayPostIn(host.access(), message.room) && !promoteHolds(readPromoteTickets(localStorage), message.machine.id, message.room, findRoom(catalogRef.current, message.machine.id, message.room)?.promotedTo); },
+    canSend: (_chat, message) => { const host = hostsRef.current.find((item) => item.machine.id === message.machine.id); return !!host && host.supports("chat_rooms") && host.supports("chat_delivery_v1") && !promoteHolds(readPromoteTickets(localStorage), message.machine.id, message.room, findRoom(catalogRef.current, message.machine.id, message.room)?.promotedTo); },
   });
   const delivery = deliveryRef.current.controller;
 
@@ -1044,7 +1037,7 @@ export function PhoneApp() {
     const eligible = assistantProjects.filter((project) => project.allowed && project.link?.status === "online");
     const refresh = async (project: typeof assistantProjects[number]) => {
       const host = hosts.find((item) => item.machine.id === workspaceHost(project.workspace));
-      if (!host || !project.allowed || !phoneTaskFullAccess(host) || project.link?.status !== "online") return;
+      if (!host || project.link?.status !== "online") return;
       const version = (versions.get(project.workspace.id) ?? 0) + 1;
       versions.set(project.workspace.id, version);
       try {
@@ -1070,7 +1063,7 @@ export function PhoneApp() {
         const snapshot = await host.backend.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner });
         if (!live || versions.get(project.workspace.id) !== version) return;
         const identity = host.connection.get().status;
-        if (!phoneTaskFullAccess(host) || identity.kind !== "connected" || !identity.hostId || identity.hostId !== authenticatedHostId) throw new Error("The project machine changed during task refresh.");
+        if (identity.kind !== "connected" || !identity.hostId || identity.hostId !== authenticatedHostId) throw new Error("The project machine changed during task refresh.");
         setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot, Date.now(), identity.hostId));
         setAssistantRegistryErrors((all) => { const { [project.workspace.id]: _old, ...rest } = all; return rest; });
       } catch (error) {
@@ -1107,7 +1100,7 @@ export function PhoneApp() {
   const rightsOf = (hostId: string): ChatRights => {
     const host = phoneHost(hostId);
     if (!host) { const gone = "This machine isn't paired with this phone any more."; return { list: false, post: false, create: false, why: gone, postWhy: gone, queue: false, queueWhy: gone }; }
-    return chatRights({ name: host.machine.name, online: linkOf(hostId)?.status === "online", rooms: host.supports("chat_rooms"), delivery: host.supports("chat_delivery_v1"), access: host.access() });
+    return chatRights({ name: host.machine.name, online: linkOf(hostId)?.status === "online", rooms: host.supports("chat_rooms"), delivery: host.supports("chat_delivery_v1") });
   };
   /** Which machines can take a new chat from this phone, and why not when they can't. */
   const chatMachines: ChatMachineView[] = hosts.map((host) => {
@@ -1366,7 +1359,7 @@ export function PhoneApp() {
   if (room) rostersRef.current.set(queueKey(room.hostId, room.id), { participants: room.participants, policy: room.policy });
   const phoneVoiceRef = useRef<PhoneVoice | null>(null);
   if (!phoneVoiceRef.current) phoneVoiceRef.current=createPhoneVoice({
-    host:id=> {const h=hostsRef.current.find(h=>h.machine.id===id); if(!h)return null;return {name:h.machine.name,backend:h.backend,voice:h.voice,canCall:()=>h.supports('voice_server_v1')&&h.access()?.tier!=='read_only',whenConnected:ms=>new Promise<void>((resolve,reject)=>{if(h.connection.get().status.kind==='connected'){resolve();return;}const timer=setTimeout(()=>{off();reject(Error(`Can't reach ${h.machine.name} right now.`));},ms);const off=h.connection.subscribe(()=>{if(h.connection.get().status.kind==='connected'){clearTimeout(timer);off();resolve();}});})};},
+    host:id=> {const h=hostsRef.current.find(h=>h.machine.id===id); if(!h)return null;return {name:h.machine.name,backend:h.backend,voice:h.voice,canCall:()=>h.supports('voice_server_v1'),whenConnected:ms=>new Promise<void>((resolve,reject)=>{if(h.connection.get().status.kind==='connected'){resolve();return;}const timer=setTimeout(()=>{off();reject(Error(`Can't reach ${h.machine.name} right now.`));},ms);const off=h.connection.subscribe(()=>{if(h.connection.get().status.kind==='connected'){clearTimeout(timer);off();resolve();}});})};},
     queue:(host,room)=>queueFor(room,host),participants:(host,room)=>participantsRef.current.get(JSON.stringify([host,room]))??[],onScreen:(host,room)=>screenRef.current.shown&&screenRef.current.hostId===host&&screenRef.current.roomId===room,storage:localStorage,keepAwake,
     roomTitle:(host,room)=>{
       const current=voiceRoomsRef.current;
@@ -1477,7 +1470,7 @@ export function PhoneApp() {
     return sessionEdits.current(async () => {
       const source = phoneTaskSources.find(source => source.assistant.hostId === assistant.hostId && source.assistant.assistantId === assistant.assistantId);
       const route = source && phoneTaskBackend({verifiedHostId:assistant.hostId,routeHostId:source.routeHostId ?? assistant.hostId,offline:source.offline}, taskHosts);
-      if (!route || project.hostId !== assistant.hostId) throw new Error('Reconnect the owning machine with Full access before choosing a worker.');
+      if (!route || project.hostId !== assistant.hostId) throw new Error('Reconnect the owning machine before choosing a worker.');
       const threadId = `pane-${crypto.randomUUID()}`;
       await route.roomCreate(threadId, [profile], NEW_THREAD, project.cwd);
       const fresh = await route.sessionLoad();
@@ -1509,7 +1502,6 @@ export function PhoneApp() {
   /** + New agent: the Mac says which bots it has, so the new agent can start from a tool that runs there. */
   function newAgent() {
     if (!macHost) return;
-    if (!canSeeNewThread(macHost.access())) { setNotice(`Making an agent needs Full access on ${mac?.name ?? "your Mac"}. Change this phone's level in that machine's Settings → Phones.`); return; }
     setAgentSaveProblem("");
     setAgentTemplatesProblem("");
     setAgentTemplates(null);
@@ -1574,7 +1566,6 @@ export function PhoneApp() {
     const target = hostOf(workspace);
     const gate = newThreadGate(mac, target ?? undefined);
     if (!gate.ok) { setNotice(gate.reason); return; }
-    if (!canStartOn(workspaceHost(workspace))) { setNotice("Starting a thread needs Full access on its machine. Change this phone's level in that machine's Settings → Phones."); return; }
     const action = pressNewThread(pending ? { workspaceId: pending.workspaceId, text: draftFor(pending.id).text, files: draftFor(pending.id).files.length } : null, workspace.id);
     if (action === "blocked" && pending) { setNotice("Send or clear the draft you already started."); openThread(pending.id); return; }
     const id = action === "move" && pending ? pending.id : (pending?.workspaceId === workspace.id ? pending.id : `draft-${Date.now().toString(36)}`);
@@ -2114,7 +2105,7 @@ export function PhoneApp() {
 
   /** A /command typed in a Work thread, other than /goal and /loop. The rules are the Mac's (commandRules.ts); this runs them on the phone. */
   async function runCommand(command: SlashCommand, host: PhoneHost, pane: Pane, clearBox: () => void) {
-    const refused = commandRefusal(command, { talkOnly: false, readOnly: host.access()?.tier === "read_only" });
+    const refused = commandRefusal(command, { talkOnly: false, readOnly: false });
     if (refused) { setNotice(refused.text); return; }
     const shown = room && room.id === pane.id && room.hostId === host.machine.id ? room : null;
     const busy = !!shown && Object.keys(shown.working).length > 0;
@@ -2198,7 +2189,7 @@ export function PhoneApp() {
     if (composerPlanLock.current) return;
     const roomId = openPane.id;
     const host = phoneHost(openLink.id);
-    if (!host || openLink.status !== "online" || host.access()?.tier === "read_only") return;
+    if (!host || openLink.status !== "online") return;
     composerPlanLock.current = true;
     setComposerPlan({ roomId, pending: true, error: null });
     try {
@@ -2346,7 +2337,6 @@ export function PhoneApp() {
         const hostId = workspaceHost(workspace);
         const host = phoneHost(hostId);
         if (!host || toLink(host.connection.get().status) !== "online") throw new Error("Connect the project's machine before removing it.");
-        if (!canStartOn(hostId)) throw new Error("Removing a project needs Full access on its machine.");
         await changeProject(host.backend,workspace,'remove');
         await stopProjectPanes(current.panes.filter((pane) => pane.workspaceId === id), host.backend, (paneId) => {
           const queue = queues.current.get(queueKey(hostId, paneId));
@@ -2418,11 +2408,10 @@ export function PhoneApp() {
   }
 
   /** The open thread's machine when it can take a change from this phone; otherwise says why and gives null. */
-  function changeHost(what: string): PhoneHost | null {
+  function changeHost(_what: string): PhoneHost | null {
     const host = openLink ? phoneHost(openLink.id) : null;
     if (!host || !openLink) { setNotice("This thread's machine isn't paired with this phone."); return null; }
     if (openLink.status !== "online") { setNotice(downLine(openLink)); return null; }
-    if (!canSeeNewThread(host.access())) { setNotice(needsFull(what, openLink.name)); return null; }
     return host;
   }
 
@@ -2707,14 +2696,13 @@ export function PhoneApp() {
     setNotice("This thread is still updating. Try again in a moment.");
     return true;
   };
-  // The title bar's Worktrees pane: a project thread on a machine that gives this phone Full access to
-  // every thread (the Mac lists worktrees for nothing less). Read when the thread opens and when a reply
+  // The title bar's Worktrees pane: read when the thread opens and when a reply
   // finishes, for the icon's amber dot; the folder in use comes from the thread already loaded.
   const [worktreesOpen, setWorktreesOpen] = useState(false);
   useEffect(() => { setWorktreesOpen(false); }, [openId, openHostId]);
   const gitHost = openPane && !openChat && !viewingPending && !openPane.assistantTaskId && openPath ? phoneHost(openHostId) : null;
   const worktreeHost = openPane && !openChat && !openWork && !viewingPending && !openPane.assistantTaskId && openWorkspace?.path ? phoneHost(openHostId) : null;
-  const worktreesShown = Boolean(worktreeHost && canManageWorktrees(worktreeHost.access()));
+  const worktreesShown = Boolean(worktreeHost);
   const worktreeState = useWorktrees(worktreeHost?.backend ?? null, openWorkspace?.path ?? "", openPane?.id ?? "", worktreesShown && openLink?.status === "online",
     Object.keys(openRoom?.working ?? {}).length > 0, openRoom?.cwd);
   const openQueue = openPane ? queued[queueKey(openHostId, openPane.id)] : undefined;
@@ -2786,7 +2774,6 @@ export function PhoneApp() {
     // a connected machine that can't take it says why now.
     if (chatOnline && openRights && !openRights.post) return { enabled: false, reason: openRights.postWhy };
     if (!chatOnline && openRights && !openRights.queue) return { enabled: false, reason: openRights.queueWhy };
-    if (!mayPostIn(phoneHost(openChat.hostId)?.access(), openChat.id)) return { enabled: false, reason: `This phone isn't allowed to use this chat on ${chatMachine(openChat.hostId).name} any more.` };
     if ((roomFor(openChat)?.participants.length ?? openChat.bots.length) === 0) return { enabled: false, reason: "This chat has no agents yet. Add one from Agents in the ⋯ menu." };
     return { enabled: draft.text.trim().length > 0, reason: "" };
   })();
@@ -2882,7 +2869,7 @@ export function PhoneApp() {
               ? <BackButton label="Code" onClick={() => setTerminalHomeSignal((n) => n + 1)} />
               : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tabName(tab)}</h1>}
             <span className="ph-head-actions">
-              {tab === "threads" && (newAllowed || chatMachines.some((item) => item.chats)) && <button type="button" className="ph-icon" aria-label="New chat or thread" onClick={() => { setQuery(""); setChatSheet({ kind: "new" }); }}><Plus size={22} /></button>}
+              {tab === "threads" && <button type="button" className="ph-icon" aria-label="New chat or thread" onClick={() => { setQuery(""); setChatSheet({ kind: "new" }); }}><Plus size={22} /></button>}
               {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
               {tab !== "settings" && tab !== "general" && tab !== "appearance" && tab !== "log" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
@@ -2890,8 +2877,8 @@ export function PhoneApp() {
         )}
         {inChat && openWorkspace && openLink ? (
           <ThreadView
-            call={!openChat && openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
-            gitActions={gitHost && openPane && openLink.status === "online" && gitHost.supports("phone_thread_git_v1") && canUseThreadGit(gitHost.access()) &&
+            call={!openChat && openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={true} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
+            gitActions={gitHost && openPane && openLink.status === "online" && gitHost.supports("phone_thread_git_v1") &&
               <PhoneThreadGit key={queueKey(openHostId, openPane.id)} backend={gitHost.backend} room={openPane.id} />}
             callSlot={callSlot}
             callStrip={openPane ? <PhoneCallStrip voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
@@ -2985,8 +2972,6 @@ export function PhoneApp() {
               onGoBack: (message) => { if (stillUpdating()) return; if (openChat) setNotice("Retry and Revert aren't in chats yet."); else void goBack(openPane.id, message); },
               // A task's thread belongs to its assistant, so it has no Fork; a chat has no folder to fork into.
               onFork: openPane.assistantTaskId || openChat ? undefined : (seq) => {
-                const hostId = workspaceHost(openWorkspace);
-                if (!canStartOn(hostId)) { setNotice(needsFull("Forking", linkOf(hostId)?.name ?? "this machine")); return; }
                 if (stillUpdating()) return;
                 void forkFrom(openPane, seq);
               },
@@ -2999,7 +2984,7 @@ export function PhoneApp() {
             onSend={() => { void send(); }}
             onDecide={decide}
             pictures={{
-              blocked: pictureBlock({ access: phoneHost(openHostId)?.access(), online: openLink.status === "online", machine: openLink.name }),
+              blocked: pictureBlock({ online: openLink.status === "online", machine: openLink.name }),
               read: readPictureFor(openHostId, openPane?.id ?? ""),
             }}
             // Questions wait above the composer; next steps follow the reply that offered them, as on the Mac.
@@ -3051,8 +3036,8 @@ export function PhoneApp() {
             machineIcon={machineIcon}
             onToggle={(key) => setFolded((all) => ({ ...all, [key]: !foldChoice(all, key, key.startsWith("project:") && Boolean(workspaces.find((workspace) => `project:${workspace.id}` === key)?.collapsed)) }))}
             onOpen={openThread}
-            onNew={newAllowed ? startIn : undefined}
-            onPick={newAllowed ? () => { setQuery(""); setMenu({ kind: "new" }); } : undefined}
+            onNew={startIn}
+            onPick={() => { setQuery(""); setMenu({ kind: "new" }); }}
             onThreadMenu={(id) => { if (!panes.find((pane) => pane.id === id)?.assistantTaskId) setMenu({ kind: "thread", id }); }}
             onProjectMenu={(id) => setMenu({ kind: "project", id })}
             onMachines={() => { machinesReturn.current = "threads"; setTab("machines"); }}
@@ -3061,9 +3046,9 @@ export function PhoneApp() {
             onArchived={() => setMenu({ kind: "archived" })}
           />
         ) : tab === "tasks" ? (
-          <PhoneTasks delegationTargets={personalCollection.assistants.flatMap(summary => (personalCollection.lane(summary.ref)?.assistant?.projects ?? []).filter(binding => binding.tools !== 'off').map(binding => ({assistant:summary.ref,project:binding.project,name:assistantProjects.find(item => item.workspace.id === binding.project.workspaceId)?.workspace.name ?? binding.project.cwd})))} onCreateTaskWorkerThread={createPhoneTaskWorker} personalSources={phoneTaskSources} rows={taskRows} problems={[...Object.values(assistantRegistryErrors), ...hosts.filter(host => host.connection.get().status.kind === 'connected' && !phoneTaskFullAccess(host)).map(host => `Tasks on ${host.machine.name} require Full access. Change this phone’s access in that machine’s Settings → Phones.`)]} covered={covered} backendForRow={taskBackend} profiles={session?.profiles ?? []} panes={panes}
+          <PhoneTasks delegationTargets={personalCollection.assistants.flatMap(summary => (personalCollection.lane(summary.ref)?.assistant?.projects ?? []).filter(binding => binding.tools !== 'off').map(binding => ({assistant:summary.ref,project:binding.project,name:assistantProjects.find(item => item.workspace.id === binding.project.workspaceId)?.workspace.name ?? binding.project.cwd})))} onCreateTaskWorkerThread={createPhoneTaskWorker} personalSources={phoneTaskSources} rows={taskRows} problems={Object.values(assistantRegistryErrors)} covered={covered} backendForRow={taskBackend} profiles={session?.profiles ?? []} panes={panes}
             onKeepThread={(row, project, id) => { void sessionEdits.current(async () => {
-              const route = taskBackend(row); if (!route) throw new Error('Reconnect with Full access to keep this conversation.');
+              const route = taskBackend(row); if (!route) throw new Error('Reconnect to keep this conversation.');
               const fresh = await route.sessionLoad(); if (!fresh) throw new Error('The owning machine has no saved workspace.');
               const existing = fresh.panes.find(pane => pane.id === id);
               if (existing && existing.workspaceId !== project.workspaceId) throw new Error('This conversation belongs to another project.');
@@ -3161,7 +3146,7 @@ export function PhoneApp() {
             personal={personal} onPersonal={() => setPersonalOpen(true)}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
-            canEditAgents={newAllowed}
+            canEditAgents={true}
             onNewAgent={newAgent}
             onEditAgent={changeAgent}
             onAssistant={(workspaceId) => {
@@ -3169,7 +3154,6 @@ export function PhoneApp() {
               if (!workspace) return;
               const projectHost = phoneHost(workspaceHost(workspace));
               if (!projectHost) { setNotice(`Pair ${workspaceHost(workspace)} with this phone to open its project assistant.`); return; }
-              if (!canSeeNewThread(projectHost.access())) { setNotice(`Project assistant needs Full access on ${projectHost.machine.name}. Change this phone's level in that machine's Settings → Phones.`); return; }
               setAssistantWorkspaceId(workspace.id);
             }}
             onShow={() => {
@@ -3207,8 +3191,8 @@ export function PhoneApp() {
           <WorkspaceTaskDetails row={handoffDetail} backend={taskBackend(handoffDetail)} profiles={session?.profiles ?? []} panes={panes} onOpenThread={id => { setOpenHost(handoffDetail.routeHostId); setOpenId(id); setTab("threads"); setPersonalOpen(false); setHandoffDetailKey(null); }} />
         </Sheet>}
         </div>}
-        {assistantWorkspace && assistantWorkspaceHost && (canSeeNewThread(assistantWorkspaceHost.access())
-          ? <div className="apex-agent-backdrop"><ApexAgentSources
+        {assistantWorkspace && assistantWorkspaceHost && (
+          <div className="apex-agent-backdrop"><ApexAgentSources
             key={JSON.stringify([assistantWorkspace.id, workspaceHost(assistantWorkspace), assistantWorkspace.path])}
             workspace={assistantWorkspace}
             backend={assistantWorkspaceHost.backend}
@@ -3217,8 +3201,7 @@ export function PhoneApp() {
             assistantName={personal?.name}
             onBack={() => setAssistantWorkspaceId(null)}
             onClose={() => setAssistantWorkspaceId(null)}
-          /></div>
-          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`${assistantDisplayName(personal?.name)} for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label={`Close ${assistantDisplayName(personal?.name)}`}>×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Phones.</p></section></div>)}
+          /></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => endLink("cancelled")}>
             <PairSheet key={pairing.attempt} plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onFailed={() => settle("failed", false)} onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
@@ -3246,7 +3229,7 @@ export function PhoneApp() {
           onLocation={() => { setComposerOpen(false); openSheet("where"); }}
           plan={pending && openId === pending.id ? pendingDraftPlans[pending.id] ?? false : openRoom?.plan ?? false}
           planPending={(composerPlan.pending && composerPlan.roomId === openPane?.id) || sending}
-          planDisabledReason={composerPlanDisabledReason({ pendingDraft: Boolean(pending && openId === pending.id), sending, online: openLink.status === "online", readOnly: phoneHost(openLink.id)?.access()?.tier === "read_only", offlineReason: downLine(openLink) })}
+          planDisabledReason={composerPlanDisabledReason({ pendingDraft: Boolean(pending && openId === pending.id), sending, online: openLink.status === "online", offlineReason: downLine(openLink) })}
           onPlanChange={(on) => { void changeComposerPlan(on); }}
           runnerDisabledReason={runnerBackend?.supports?.('room_runner_v1')===false?'Update this host to use goals and loops.':runnerUnfinished?`A ${runner!.kind} is unfinished here. End it first.`:viewingPending?'Send the first message before starting a runner.':null}
           onRunner={armRunner}
@@ -3256,7 +3239,7 @@ export function PhoneApp() {
         {ask && openPane && askTarget && (
           <Sheet title="Work on another machine?" onClose={() => setAsk(null)}>
             <p className="ph-sheet-text">“{openPane.title}” has started on {openLink?.name ?? "this machine"}, and a started thread stays on its machine. Open {askTarget.name} on {linkOf(workspaceHost(askTarget))?.name ?? "that machine"} as:</p>
-            {canStartOn(workspaceHost(askTarget)) && <button type="button" className="primary ph-wide" onClick={() => { setAsk(null); startIn(askTarget); }}>New thread</button>}
+            <button type="button" className="primary ph-wide" onClick={() => { setAsk(null); startIn(askTarget); }}>New thread</button>
             <button type="button" className="ph-wide" onClick={() => { void forkTo(openPane, askTarget); }}>Fork this thread<small>Copies the history. Nothing runs until you send.</small></button>
             <button type="button" className="ph-plain ph-wide" onClick={() => setAsk(null)}>Cancel</button>
           </Sheet>
@@ -3364,7 +3347,7 @@ export function PhoneApp() {
             <ProjectSheet rows={pickerRows(workspaces, panes, "", (id) => linkOf(id)?.status !== "online")} links={links} query={query} machineIcon={machineIcon} onQuery={setQuery} onPick={startIn} />
             {/* A project that isn't saved yet: pick its folder on a machine, then the thread starts there. */}
             <p className="ph-label ph-new-project-label">New project</p>
-            {links.filter((link) => canStartOn(link.id)).map((link) => (
+            {links.map((link) => (
               <button key={link.id} type="button" className="ph-srow" disabled={link.status !== "online"} onClick={() => { setMenu(null); void openBrowse(link.id, null, null, true); }}>
                 <span className="ph-srow-icon"><Plus size={18} /></span>
                 <span className="ph-grow">
@@ -3414,7 +3397,7 @@ export function PhoneApp() {
               const picked = pendingAgents.some(agent => agent.id === config.id);
               return <div className="ph-bot-entry" key={config.id}><div className="ph-bot-row">
                 <span className="ph-bot-info"><Avatar seed={who.look.seed} color={who.look.color} size="sm" /><span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{mentionFor(config)}</small></span></span>
-                <button type="button" className="ph-bot-action" role="checkbox" aria-checked={picked} aria-label={`${picked ? "Remove" : "Add"} ${config.display_name}`} disabled={sending || !canStartOn(openHostId)} onClick={() => {
+                <button type="button" className="ph-bot-action" role="checkbox" aria-checked={picked} aria-label={`${picked ? "Remove" : "Add"} ${config.display_name}`} disabled={sending} onClick={() => {
                   setPending(current => current?.id === pending.id ? { ...current, agents: picked ? pendingAgents.filter(agent => agent.id !== config.id).map(agent => agent.id) : [...pendingAgents.map(agent => agent.id), config.id] } : current);
                   if (picked && botPanel?.id === config.id) setBotPanel(null);
                 }}>{picked ? <Check size={18} /> : <Plus size={18} />}</button>
@@ -3427,7 +3410,7 @@ export function PhoneApp() {
         )}
         {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
           const host = workspaces.find((item) => item.id === menuPane.workspaceId) ? phoneHost(workspaceHost(workspaces.find((item) => item.id === menuPane.workspaceId)!)) : null;
-          const full = !!host && canStartOn(host.machine.id);
+          const full = !!host;
           const absent = (session?.profiles ?? []).filter((profile) => !room.configs.some((config) => config.id === profile.id));
           const change = async (config: ParticipantConfig, remove: boolean) => {
             if (!host || botChangeLock.current || botChangeGate(full, remove && (busy[queueKey(room.hostId, room.id)] ?? []).includes(config.id), false)) return;
@@ -3492,7 +3475,7 @@ export function PhoneApp() {
           const hostId = workspace ? workspaceHost(workspace) : "local";
           const host = phoneHost(hostId);
           // The host decides, from this phone's level on that machine; the phone only says so before trying.
-          const why = deleteThreadGate({ paired: !!host, online: !!host && toLink(host.connection.get().status) === "online", full: canStartOn(hostId), machine: host?.machine.name ?? "its machine" });
+          const why = deleteThreadGate({ paired: !!host, online: !!host && toLink(host.connection.get().status) === "online", full: true, machine: host?.machine.name ?? "its machine" });
           return (
             <Sheet title={asked.title} onClose={() => setMenu(null)}>
               <p className="ph-sheet-text">{asked.body}</p>
@@ -3521,13 +3504,13 @@ export function PhoneApp() {
                 {menuProject.path && <p className="ph-path">{menuProject.path}</p>}
                 <p className="ph-meta">{threadCount(count)}</p>
               </div>
-              {canStartOn(workspaceHost(menuProject)) && <MenuRow label="New thread here" onClick={() => startIn(menuProject)} />}
+              <MenuRow label="New thread here" onClick={() => startIn(menuProject)} />
               <MenuRow label={menuProject.pinned ? "Unpin project" : "Pin project"} onClick={() => {
                 saveSession((current) => ({ ...current, workspaces: current.workspaces.map((item) => item.id === menuProject.id ? { ...item, pinned: item.pinned ? undefined : true } : item) })).catch((error) => setNotice(words(error)));
                 setMenu(null);
               }} />
               {menuProject.path && <MenuRow label="Copy folder path" detail={folderCopyText(menuProject.path)} onClick={() => { copyPath(menuProject.path); setMenu(null); }} />}
-              {newAllowed && <MenuRow label="Remove project…" danger onClick={() => setMenu({ kind: "remove", id: menuProject.id })} />}
+              <MenuRow label="Remove project…" danger onClick={() => setMenu({ kind: "remove", id: menuProject.id })} />
             </Sheet>
           );
         })()}
@@ -3538,13 +3521,12 @@ export function PhoneApp() {
               const workspace = workspaces.find((item) => item.id === pane.workspaceId) ?? null;
               const link = workspace ? hostOf(workspace) : null;
               return (
-                <button key={pane.id} type="button" className="ph-arch-row" disabled={!newAllowed} onClick={() => { void restoreArchived(pane.id); }}>
+                <button key={pane.id} type="button" className="ph-arch-row" onClick={() => { void restoreArchived(pane.id); }}>
                   <strong>{pane.title}</strong>
                   <small>{archivedDetail({ project: workspace?.name, machine: link?.name, age: pane.activeAt ? ageWords(Date.now() - pane.activeAt) : undefined })}</small>
                 </button>
               );
             })}
-            {!newAllowed && <p className="ph-sheet-text">{"Restoring needs Full access on your Mac. Change this phone's level in the Mac's Settings → Phones."}</p>}
           </Sheet>
         )}
         {menu?.kind === "remove" && (() => {
@@ -3565,7 +3547,7 @@ export function PhoneApp() {
             {(() => {
               const start = newChatStart(catalog, chatMachines, (hostId) => chatProfiles.current.get(hostId));
               const where = start ? chatMachine(start.hostId).name : null;
-              return <NewMenuBody chatLine={start ? `On ${where}. No folder; agents talk only.` : null} workLine={newAllowed ? "Pick a folder. Agents can read or edit files there." : null}
+              return <NewMenuBody chatLine={start ? `On ${where}. No folder; agents talk only.` : null} workLine="Pick a folder. Agents can read or edit files there."
                 onChat={() => setChatSheet({ kind: "new-chat" })} onWork={() => { setChatSheet(null); setQuery(""); setMenu({ kind: "new" }); }} />;
             })()}
           </Sheet>
@@ -3638,8 +3620,7 @@ export function PhoneApp() {
         {chatSheet?.kind === "move" && sheetChat && (
           <Sheet title="Move to a Work thread" onClose={() => setChatSheet(null)}>
             <MoveToWorkBody machine={chatMachine(sheetChat.hostId)} bots={chatBots(sheetChat)}
-              blocked={!canSeeNewThread(phoneHost(sheetChat.hostId)?.access()) || phoneHost(sheetChat.hostId)?.access()?.threads !== undefined && phoneHost(sheetChat.hostId)?.access()?.threads !== "all"
-                ? `A Work thread can change files, so it needs Full access to every thread on ${chatMachine(sheetChat.hostId).name}. Change it on that machine.` : ""}
+              blocked=""
               unconfirmed={promoteTicket(sheetChat) ?? null}
               listFolder={(path) => { const host = phoneHost(sheetChat.hostId); return host ? host.backend.listFolder(path) : Promise.reject(new Error("That machine isn't paired with this phone.")); }}
               onMove={(cwd, access) => promoteChat(sheetChat, cwd, access)} onStartOver={() => startPromoteOver(sheetChat)} />
@@ -5027,7 +5008,7 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
         <div className="ph-list">
           {/* Making one comes first, so the agent you want is never hidden behind a scroll of the ones you have. */}
           <button type="button" className="ph-srow ph-project-assistant" disabled={!canEditAgents} onClick={onNewAgent}>
-            <span className="ph-grow"><strong>+ New agent</strong><small>{canEditAgents ? "Start from a saved agent on your Mac, then name it." : "Making agents needs Full access on your Mac: Settings → Phones."}</small></span>
+            <span className="ph-grow"><strong>+ New agent</strong><small>Start from a saved agent on your Mac, then name it.</small></span>
             {canEditAgents && <ChevronRight size={15} />}
           </button>
           {bots.map((bot) => {
@@ -5068,7 +5049,7 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
             const detail = error ? `Assistant unavailable: ${error}`
               : !projectLink ? "Pair its machine to this phone"
               : projectLink.status !== "online" ? downLine(projectLink)
-                : !allowed ? "Needs Full access on its machine" : `${projectLink.name} · Open project assistant`;
+                : `${projectLink.name} · Open project assistant`;
             return <button key={workspace.id} type="button" className="ph-srow ph-project-assistant" disabled={!available} onClick={() => onAssistant(workspace.id)}>
               <span className="ph-grow"><strong>{workspace.name}</strong><small>{detail}</small></span>
               {available && <ChevronRight size={15} />}

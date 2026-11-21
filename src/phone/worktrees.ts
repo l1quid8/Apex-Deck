@@ -1,12 +1,6 @@
-// The phone's Worktrees pane: what each row says, and who may open the pane. The Mac's Worktrees tab
+// The phone's Worktrees pane: what each row says. The Mac's Worktrees tab
 // (RightWorktrees.tsx) does the same jobs with the same commands; this file only words them for a phone.
-import type { RemoteAccess } from "../phoneRules";
 import type { Worktree, WorktreeList } from "../types";
-
-/** The Mac lists worktrees only for Full access to every thread (authority.rs), so other phones get no pane. */
-export function canManageWorktrees(access: RemoteAccess | null | undefined): boolean {
-  return !access || (access.tier === "full" && access.threads === "all");
-}
 
 /** A path as the phone shows it: the home folder as ~, and long paths cut from the left. */
 export function shortPath(path: string, max = 46): string {

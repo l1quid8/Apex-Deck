@@ -67,7 +67,7 @@ export function PairSheet({ plugin, link, label, ready, onPaired, onFailed, onCl
   );
   if (state.kind === "done") return (
     <>
-      <p className="ph-sheet-text">Paired with {state.paired.name}.{state.paired.tier === "full" ? "" : state.paired.tier === "chat" ? " This phone can chat in existing threads but not start new ones." : " This phone can read threads but not send."}</p>
+      <p className="ph-sheet-text">Paired with {state.paired.name}.</p>
       <button type="button" className="primary ph-wide" onClick={() => onClose("done")}>Done</button>
     </>
   );

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ConnectFailure, olderThan, readFeed, runSetup } from "../src/phone/sshRun.ts";
-import { report, shellQuote } from "../src/phone/sshScripts.ts";
+import { PAIR, report, shellQuote } from "../src/phone/sshScripts.ts";
+
+test("PAIR script omits --tier", () => {
+  assert.equal(PAIR.includes("--tier"), false);
+  assert.match(PAIR, /apex-daemon pair --json$/);
+});
 
 const SHA = "a".repeat(64);
 const FEED = JSON.stringify({ schemaVersion: 1, version: "0.9.8", daemons: [{ arch: "x86_64", name: "apex-daemon-linux-x86_64", sha256: SHA }] });
@@ -80,7 +85,7 @@ function deps(box, over = {}) {
         box.state.onLine(JSON.stringify({ event: "claim", code: machineCode, label: "iPhone" }));
         await ack;
         if (over.pairFails) throw new Error(over.pairFails);
-        return { hostEndpointId: "b".repeat(64), addrs: [], name: "box", tier: "full" };
+        return { hostEndpointId: "b".repeat(64), addrs: [], name: "box" };
       })();
       return { done, cancel: over.onPairCancel ?? (() => {}) };
     },
@@ -348,7 +353,7 @@ test("once approve is sent, Stop can't strand a machine that paired", async () =
   const box = server();
   let started;
   const dependency = deps(box, { deps: { pair(link, onCode) {
-    const done = onCode("123456").then(() => { started.cancel(); return { hostEndpointId: "b".repeat(64), addrs: [], name: "box", tier: "full" }; });
+    const done = onCode("123456").then(() => { started.cancel(); return { hostEndpointId: "b".repeat(64), addrs: [], name: "box" }; });
     box.state.onLine(JSON.stringify({ event: "claim", code: "123456" }));
     return { done, cancel() {} };
   } } });

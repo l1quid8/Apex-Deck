@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChatDeliveryController, JsonChatDeliveryStorage } from '../src/chatDelivery.ts';
 import { chatRows, emptyCatalog, findRoom, parseChatList, readCatalog, withHostRooms, withListedRooms, withoutHosts } from '../src/chatCatalog.ts';
-import { chatOutboxRows, chatRights, chatRoute, freshChatId, mayPostIn, pickOpenPane, projectChats, startingBots, threadKey } from '../src/phone/chatRoutes.ts';
+import { chatOutboxRows, chatRights, chatRoute, freshChatId, pickOpenPane, projectChats, startingBots, threadKey } from '../src/phone/chatRoutes.ts';
 import { PROMOTES_KEY, parseAbandon, promoteKey, promoteRequest, readPromoteTickets, withoutTicket, writePromoteTickets } from '../src/chatPromote.ts';
 
 const A = { id: 'studio', name: 'Studio MacBook' };
@@ -146,20 +146,15 @@ test('a queued message on a connected machine that lacks chat delivery says why 
   assert.equal(rows[0].line, 'Update Deck on Apex-Terminal to chat here.');
 });
 
-test('chat rights: listing is open to every level; sending needs both capabilities; starting needs every thread', () => {
+test('a_connected_machine_can_always_post', () => {
   const base = { name: 'Apex-Terminal', online: true, rooms: true, delivery: true };
-  assert.deepEqual(chatRights({ ...base, access: { tier: 'full', threads: 'all' } }), { list: true, post: true, create: true, why: '', postWhy: '', queue: true, queueWhy: '' });
-  const roomsOnly = chatRights({ ...base, delivery: false, access: { tier: 'full', threads: 'all' } });
+  assert.deepEqual(chatRights(base), { list: true, post: true, create: true, why: '', postWhy: '', queue: true, queueWhy: '' });
+  const roomsOnly = chatRights({ ...base, delivery: false });
   assert.equal(roomsOnly.list, true);
   assert.equal(roomsOnly.post, false);
   assert.equal(roomsOnly.create, false);
   assert.match(roomsOnly.why, /Update Deck on Apex-Terminal/);
-  const reader = chatRights({ ...base, access: { tier: 'read_only', threads: 'all' } });
-  assert.deepEqual([reader.list, reader.post, reader.create], [true, false, false]);
-  const scoped = chatRights({ ...base, access: { tier: 'chat', threads: ['c1'] } });
-  assert.deepEqual([scoped.list, scoped.post, scoped.create], [true, true, false]);
-  assert.match(scoped.why, /only sees some threads/);
-  const away = chatRights({ ...base, online: false, rooms: false, delivery: false, access: null });
+  const away = chatRights({ ...base, online: false, rooms: false, delivery: false });
   assert.deepEqual([away.list, away.post], [false, false]);
   assert.match(away.postWhy, /Waiting for Apex-Terminal/);
 });
@@ -268,26 +263,22 @@ test("a list the new machine sent after the import is the last word: a chat it l
   assert.equal(withHostRooms(after, B.id, B.name, []).hosts[B.id].listedAt, 150);
 });
 
-test('a read-only phone may not keep a message for later, and one kept before it knew can be taken back', async () => {
+test('an offline message can wait before capabilities are known, and one held for an older daemon can be taken back', async () => {
   const base = { name: 'Apex-Terminal', online: false, rooms: true, delivery: true };
-  const reader = chatRights({ ...base, access: { tier: 'read_only', threads: 'all' } });
-  assert.equal(reader.queue, false);
-  assert.match(reader.queueWhy, /can only read on Apex-Terminal/);
   // Before the first welcome the phone can't know the version, so a message may wait.
-  assert.equal(chatRights({ ...base, rooms: false, delivery: false, access: null }).queue, true);
+  assert.equal(chatRights({ ...base, rooms: false, delivery: false }).queue, true);
   // Known to be too old: it would wait for ever.
-  assert.match(chatRights({ ...base, delivery: false, access: { tier: 'full', threads: 'all' } }).queueWhy, /Update Deck/);
+  assert.match(chatRights({ ...base, delivery: false }).queueWhy, /Update Deck/);
 
-  // Queued before the access was known: the send predicate holds it, so it is never marked maybe-sent.
   const h = phone();
   const held = new ChatDeliveryController({ storage: new JsonChatDeliveryStorage(h.local), rpc: h.rpc, id: () => 'held-1', canSend: () => false });
-  const id = held.enqueue(h.chatId, 'not allowed here');
+  const id = held.enqueue(h.chatId, 'waiting for update');
   await held.send(h.chatId, id);
   assert.equal(held.snapshot().chats[h.chatId].outbox.find((item) => item.id === id).state, 'unsent');
   assert.deepEqual(h.calls.filter((call) => call[0] === 'post'), []);
-  const rows = chatOutboxRows(held.snapshot().chats[h.chatId], { hostId: A.id, room: 'r1', online: true, shown: new Set(), confirming: null, sendWhy: reader.postWhy });
-  assert.deepEqual(rows.map((row) => [row.line, row.canTakeBack]), [['This phone can only read on Apex-Terminal.', true]]);
-  assert.equal(held.takeBack(h.chatId, id), 'not allowed here');
+  const rows = chatOutboxRows(held.snapshot().chats[h.chatId], { hostId: A.id, room: 'r1', online: true, shown: new Set(), confirming: null, sendWhy: 'Update Deck on Apex-Terminal to chat here.' });
+  assert.deepEqual(rows.map((row) => [row.line, row.canTakeBack]), [['Update Deck on Apex-Terminal to chat here.', true]]);
+  assert.equal(held.takeBack(h.chatId, id), 'waiting for update');
   assert.deepEqual(held.snapshot().chats[h.chatId].outbox, []);
 });
 
@@ -328,21 +319,32 @@ test("an older chat list that arrives late can't bring back a chat a newer list 
   assert.equal(withListedRooms(after, B.id, B.name, [], 200).hosts[B.id].listedAt, 200);
 });
 
-test('a phone no longer allowed one thread keeps its waiting message unsent, so it can still be taken back', async () => {
-  // The rule the phone sends by: not read-only, and the thread is one it may use.
-  assert.equal(mayPostIn({ tier: 'chat', threads: 'all' }, 'r1'), true);
-  assert.equal(mayPostIn({ tier: 'chat', threads: ['r1'] }, 'r1'), true);
-  assert.equal(mayPostIn({ tier: 'chat', threads: ['other-room'] }, 'r1'), false);
-  assert.equal(mayPostIn({ tier: 'full', threads: [] }, 'r1'), false);
-  assert.equal(mayPostIn({ tier: 'read_only', threads: 'all' }, 'r1'), false);
-  assert.equal(mayPostIn(null, 'r1'), true);
-  // Queued while allowed, then the machine reconnects with that thread taken away.
-  const h = phone();
-  const access = { tier: 'chat', threads: ['other-room'] };
-  const held = new ChatDeliveryController({ storage: new JsonChatDeliveryStorage(h.local), rpc: h.rpc, id: () => 'scoped-1', canSend: (_chat, message) => mayPostIn(access, message.room) });
-  const id = held.enqueue(h.chatId, 'typed while allowed');
-  await held.send(h.chatId, id);
-  assert.equal(held.snapshot().chats[h.chatId].outbox.find((item) => item.id === id).state, 'unsent');
-  assert.deepEqual(h.calls.filter((call) => call[0] === 'post'), []);
-  assert.equal(held.takeBack(h.chatId, id), 'typed while allowed');
+test('an_old_daemon_refusal_is_shown', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const refusal = 'this device has chat access and this needs full';
+  let draft = 'Keep this draft';
+  let sendError = '';
+  const entry = { inBox: true, failed: false };
+  const queue = new ParticipantQueues(
+    async () => ['null'],
+    async () => {
+      try {
+        throw new Error(refusal);
+      } catch (error) {
+        entry.failed = true;
+        throw new Error(`${error.message}. Your message is still in the box.`);
+      }
+    },
+    async () => {},
+    () => {},
+    (error) => { sendError = error instanceof Error ? error.message : String(error); },
+    () => true,
+    false,
+  );
+  await queue.send(draft);
+  entry.inBox = false;
+  if (!entry.failed) draft = '';
+  assert.equal(entry.failed, true);
+  assert.ok(sendError.includes(refusal), `expected refusal in ${sendError}`);
+  assert.equal(draft, 'Keep this draft');
 });
