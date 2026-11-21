@@ -801,7 +801,7 @@
 /* Pull a bot pill down for its details: the chip follows the finger a little, over a small grab line. */
 .ph-crew-pill.ph-crew-pill { position: relative; touch-action: pan-x; flex-direction: column; justify-content: center; }
 .ph-crew-pill .ph-crew-chip { transform: translateY(calc(var(--pull, 0px) * .14)); transition: transform .18s cubic-bezier(.2, .8, .2, 1); }
-.ph-crew-pill.pulling .ph-crew-chip { transition: none; }
+.ph-crew-pill[data-pulling] .ph-crew-chip { transition: none; }
 .ph-crew-chevron { display: flex; color: var(--muted); }
 .ph-crew-pill.ph-crew-pill:hover, .ph-crew-pill.ph-crew-pill:focus { background: transparent; }
 .ph-tool-source { margin-left: 5px; color: var(--muted); font-weight: 400; }

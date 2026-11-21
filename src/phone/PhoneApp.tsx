@@ -295,40 +295,49 @@ function toolWords(config: ParticipantConfig): string {
  * A bot pill: tap to tag, hold or pull down to open its details. The pull is short and mostly
  * straight down; sideways goes to the bar's scroll. The chip follows the finger a little.
  */
-type BotPull = { anchor: HTMLElement; reveal: number | null };
+type BotPullPreview = { reveal: number; sheet: HTMLDivElement | null };
+type BotPull = { anchor: HTMLElement; preview?: BotPullPreview };
 type BotPanel = { id: string; pull?: BotPull };
+
+function paintPillReveal(preview: BotPullPreview) {
+  preview.sheet?.style.setProperty("--agent-mask", `max(0px, calc(100% - ${preview.reveal}px))`);
+}
 
 function usePillPress(scope: string) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const start = useRef<{ x: number; y: number; pointer: number; moved: boolean } | null>(null);
+  const start = useRef<{ anchor: HTMLElement; x: number; y: number; pointer: number; moved: boolean; preview: BotPullPreview | null } | null>(null);
   const skipClick = useRef<string | null>(null);
-  const [pull, setPull] = useState<{ id: string; y: number } | null>(null);
   const clear = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
-  useEffect(() => {
-    setPull(null);
-    return () => { clear(); start.current = null; skipClick.current = null; };
-  }, [scope]);
+  const resetChip = (anchor: HTMLElement) => {
+    anchor.removeAttribute("data-pulling");
+    anchor.style.removeProperty("--pull");
+  };
+  const end = () => {
+    clear();
+    if (start.current) resetChip(start.current.anchor);
+    start.current = null;
+  };
+  useEffect(() => () => { end(); skipClick.current = null; }, [scope]);
   return {
-    pull,
     bind: (who: string, show: (placement: BotPull | null) => void, tap: () => void) => {
-      const end = () => { clear(); start.current = null; setPull(null); };
       const open = (anchor: HTMLElement) => {
         skipClick.current = who;
         end();
-        show({ anchor, reveal: null });
+        show({ anchor });
       };
       const cancel = (event: ReactPointerEvent<HTMLElement>) => {
-        if (start.current?.pointer !== event.pointerId) return;
+        const from = start.current;
+        if (!from || from.pointer !== event.pointerId) return;
         skipClick.current = who;
         end();
-        show(null);
+        if (from.preview) show(null);
       };
       return {
         onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
           if (!event.isPrimary || event.button !== 0 || start.current) return;
           skipClick.current = null;
           const anchor = event.currentTarget;
-          start.current = { x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false };
+          start.current = { anchor, x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false, preview: null };
           if (event.pointerType === "mouse") anchor.setPointerCapture?.(event.pointerId);
           timer.current = setTimeout(() => open(anchor), 500);
         },
@@ -339,8 +348,24 @@ function usePillPress(scope: string) {
           if (pillDrag(dx, dy) === "scroll") { cancel(event); return; }
           if (Math.hypot(dx, dy) > 6) { clear(); from.moved = true; }
           const reveal = pillPullReveal(dx, dy);
-          setPull(reveal !== null ? { id: who, y: Math.min(dy, 28) } : null);
-          show(reveal !== null ? { anchor: event.currentTarget, reveal } : null);
+          if (reveal === null) {
+            if (from.preview) {
+              resetChip(from.anchor);
+              from.preview = null;
+              show(null);
+            }
+            return;
+          }
+          from.anchor.style.setProperty("--pull", `${Math.min(dy, 28)}px`);
+          // Mount the preview once. Further movement only paints the chip and the sheet.
+          if (!from.preview) {
+            from.anchor.setAttribute("data-pulling", "");
+            from.preview = { reveal, sheet: null };
+            show({ anchor: from.anchor, preview: from.preview });
+            return;
+          }
+          from.preview.reveal = reveal;
+          paintPillReveal(from.preview);
         },
         onPointerUp: (event: ReactPointerEvent<HTMLElement>) => {
           const from = start.current;
@@ -349,7 +374,7 @@ function usePillPress(scope: string) {
           if (pillDrag(dx, dy) === "open") { navigator.vibrate?.(8); open(event.currentTarget); return; }
           if (from.moved || Math.hypot(dx, dy) > 6) skipClick.current = who;
           end();
-          show(null);
+          if (from.preview) show(null);
         },
         onPointerCancel: cancel,
         onLostPointerCapture: cancel,
@@ -565,7 +590,7 @@ export function PhoneApp() {
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
   const [botPanel, setBotPanel] = useState<BotPanel | null>(null);
-  const botPreview = botPanel?.pull?.reveal != null;
+  const botPreview = !!botPanel?.pull?.preview;
   const botSheet = botPreview ? null : botPanel?.id ?? null;
   /** The agent the Agents tab is changing: an id, or null while making a new one. Null closes the sheet. */
   const [agentSheet, setAgentSheet] = useState<{ id: string | null } | null>(null);
@@ -2892,7 +2917,7 @@ export function PhoneApp() {
             onSwipe={swipeTo}
             botOpen={botSheet}
             onBot={(id, pull) => {
-              setBotPanel((current) => pull ? { id, pull } : current?.id === id && current.pull?.reveal != null ? null : current);
+              setBotPanel((current) => pull ? { id, pull } : current?.id === id && current.pull?.preview ? null : current);
             }}
             meters={openRoom ? Object.fromEntries(openRoom.configs.map((config) => {
               const provider = planProvider(config);
@@ -3654,8 +3679,19 @@ function Sheet({ title, tag, onClose, children, variant, pull }: { title: string
   const ref = useRef<HTMLDivElement>(null);
   const backdrop = useRef<HTMLDivElement>(null);
   const anchor = pull?.anchor;
-  const preview = pull?.reveal != null;
+  const pullPreview = pull?.preview;
+  const preview = !!pullPreview;
   const fromPreview = useRef(preview);
+  useLayoutEffect(() => {
+    const sheet = ref.current;
+    if (!pullPreview || !sheet) return;
+    pullPreview.sheet = sheet;
+    paintPillReveal(pullPreview);
+    return () => {
+      pullPreview.sheet = null;
+      sheet.style.removeProperty("--agent-mask");
+    };
+  }, [pullPreview]);
   useLayoutEffect(() => {
     const overlay = backdrop.current;
     const frame = overlay?.parentElement;
@@ -3688,7 +3724,6 @@ function Sheet({ title, tag, onClose, children, variant, pull }: { title: string
     <div ref={backdrop} className={`ph-sheet-back${anchor ? " ph-agent-pull-back" : ""}`} data-preview={preview || undefined} inert={preview} onClick={onClose}>
       <div className={`ph-sheet${variant ? ` ph-sheet-${variant}` : ""}${anchor ? " ph-agent-pull-sheet" : ""}`}
         data-unfold={!!anchor && !fromPreview.current || undefined}
-        style={preview ? { "--agent-mask": `max(0px, calc(100% - ${pull.reveal}px))` } as CSSProperties : undefined}
         role={preview ? undefined : "dialog"} aria-modal={preview ? undefined : true} aria-label={title} tabIndex={preview ? undefined : -1} ref={ref} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
         {!anchor && <div className="ph-handle" />}
         <div className={`ph-sheet-title${variant ? ` ph-sheet-title-${variant}` : ""}`}>
@@ -4386,7 +4421,7 @@ function ThreadView(props: {
               const meter = props.meters[participant.id];
               const left = meter?.context ?? null;
               return (
-                <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}${pill.pull?.id === participant.id ? " pulling" : ""}`} style={{ "--who": participant.look.color, "--pull": `${pill.pull?.id === participant.id ? pill.pull.y : 0}px` } as CSSProperties}
+                <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}`} style={{ "--who": participant.look.color } as CSSProperties}
                   aria-label={`${participant.display_name}${asking(participant.id) ? ", waiting on you" : live ? ", working" : next ? ", answers your next message" : ""}${left !== null ? `, ${percent(left)}% context left` : ""}${meter?.planLow ? ", plan nearly used up" : ""}. Tap to tag. Hold or pull down for details and settings`}
                   aria-haspopup="dialog" aria-expanded={props.botOpen === participant.id}
                   {...pill.bind(participant.id, (placement) => props.onBot(participant.id, placement), () => tag(participant.id))}>
