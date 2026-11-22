@@ -94,6 +94,11 @@ impl Store {
         }
         Ok(state)
     }
+    /// The projects already on record, without seeding or saving anything.
+    /// Search uses this: it must never write.
+    pub(crate) fn projects_on_record(&self) -> Result<Vec<ProjectEntry>, String> {
+        Ok(self.lifecycle()?.projects.into_values().collect())
+    }
     pub fn project_list(&self) -> Result<Vec<ProjectEntry>, String> {
         self.project_list_with_rooms(&self.chat_list()?)
     }

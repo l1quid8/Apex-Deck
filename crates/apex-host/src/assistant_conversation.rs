@@ -1173,6 +1173,15 @@ impl ConversationStore {
         Ok(Some(record.clone()))
     }
 
+    /// Visit every saved request and its reply, across owners, for Search.
+    /// The caller holds a search grant; nothing here is owner-scoped.
+    pub(crate) fn for_each_record(&self, mut visit: impl FnMut(&ConversationRecord)) {
+        let document = self.inner.document.lock().unwrap();
+        for record in document.records.values() {
+            visit(record);
+        }
+    }
+
     fn save(&self) -> Result<(), ConversationError> {
         let document = self.inner.document.lock().unwrap();
         self.save_locked(&document)

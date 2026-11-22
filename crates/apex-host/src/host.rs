@@ -173,6 +173,7 @@ pub struct Host {
     store: Store,
     settings_write: Mutex<()>,
     thread_git: crate::thread_git::ThreadGit,
+    pub(crate) search: crate::search::Search,
     snapshots: Arc<checkpoints::Snapshots>,
     quit: QuitGate,
     tool_servers: Mutex<HashMap<String, Vec<apex_core::server_request::ToolServer>>>,
@@ -330,6 +331,7 @@ impl Host {
         let host = Arc::new(Host {
             maintenance,
             thread_git: crate::thread_git::ThreadGit::new(&paths.data),
+            search: Default::default(),
             paths,
             computer,
             _ownership: ownership,

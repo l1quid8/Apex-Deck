@@ -123,6 +123,8 @@ pub fn command_needs(command: &Command) -> Need {
         CopyAttachment { .. } => Need::Paired,
         ImportReplyImage { .. } => Need::Paired,
         LibraryList {} | LibraryRemove { .. } | LibraryRename { .. } => Need::Paired,
+        // Search reads every thread; a paired device has full access.
+        SearchOpen {} | Search { .. } | SearchCancel { .. } => Need::Paired,
         ArtifactExport { .. } => Need::Paired,
         ExportThread { .. } => Need::Paired,
 
@@ -454,6 +456,9 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         FileRead { .. } => None,
         FileFind { .. } => None,
         FileSearch { .. } => None,
+        SearchOpen { .. } => None,
+        Search { .. } => None,
+        SearchCancel { .. } => None,
         FileCreate { .. } => None,
         FileWrite { .. } => None,
         FileRename { .. } => None,
@@ -674,6 +679,9 @@ pub(crate) mod tests {
             ("file_read", true, json!({ "root": "/project", "path": "/project/README.md" })),
             ("file_find", true, json!({ "root": "/project", "query": "readme" })),
             ("file_search", true, json!({ "root": "/project", "query": "TODO", "caseSensitive": false, "folder": null })),
+            ("search_open", true, json!({})),
+            ("search", true, json!({ "lane": "content", "query": "installer" })),
+            ("search_cancel", true, json!({ "lane": "content" })),
             ("file_create", true, json!({ "root": "/project", "parent": "/project", "name": "new.txt", "folder": false })),
             ("file_write", true, json!({ "root": "/project", "path": "a.txt", "text": "x", "expected": null })),
             ("file_rename", true, json!({ "root": "/project", "path": "/project/old.txt", "name": "new.txt" })),

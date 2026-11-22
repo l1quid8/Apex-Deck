@@ -199,6 +199,11 @@ test('remote device management reaches the host while local Mac grants require a
     assert.equal(mod.needsAttestation(cmd, true), false, `${cmd} on a remote host`);
   }
   assert.equal(mod.needsAttestation('assistant_message', true), true);
+  // Search Deck: this Mac signs for its own daemon; a remote machine checks the connection itself.
+  assert.equal(mod.needsAttestation('search_open', false), true);
+  assert.equal(mod.needsAttestation('search_open', true), false);
+  // The grant is the connection, so the searches themselves carry no receipt anywhere.
+  for (const cmd of ['search', 'search_cancel']) for (const remote of [false, true]) assert.equal(mod.needsAttestation(cmd, remote), false, cmd);
   assert.equal(mod.needsAttestation('room_create', true), false);
   assert.equal(mod.needsAttestation('room_create', false), true);
   assert.equal(mod.needsAttestation('devices_revoke', false), false);

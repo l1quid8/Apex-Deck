@@ -1443,6 +1443,42 @@ impl RoomReader<'_> {
     }
 
     pub(crate) fn meta(&self, id: &str) -> Option<&ChatRoomMeta> { self.metas.get(id) }
+
+    /// The saved thread file for `id`, for a reader that keeps its own cache.
+    pub(crate) fn file(&self, id: &str) -> PathBuf { self.store.room_path(id) }
+
+    /// Every id this read knows of: saved thread files plus catalog entries.
+    pub(crate) fn ids(&self) -> Result<Vec<String>, String> {
+        let mut ids: std::collections::BTreeSet<String> = self.store.room_ids()?.into_iter().collect();
+        ids.extend(self.metas.keys().cloned());
+        Ok(ids.into_iter().collect())
+    }
+
+    /// Where `id` lives and who is in it, from the protected manifest.
+    /// `Ok(None)` on a plain (Linux) store with no entry: the file's own
+    /// fields stand, as in `apply_room_authority`. `Err` when a protected
+    /// store has no entry: a legacy room that was never reauthorized.
+    pub(crate) fn place(&self, id: &str) -> Result<Option<RoomPlace>, String> {
+        let Some(entry) = self.authority.get(id) else {
+            if crate::authority_file::plain(&self.store.root) { return Ok(None); }
+            return Err("This legacy room has no verified authority manifest.".into());
+        };
+        let trusted: RoomAuthority = serde_json::from_value(entry.clone()).map_err(|e| e.to_string())?;
+        Ok(Some(RoomPlace {
+            chat: trusted.kind.is_chat(),
+            project_cwd: trusted.mounts.first().map(|m| m.from.clone()).or_else(|| trusted.cwd.clone()),
+            cwd: trusted.cwd,
+            names: trusted.participants.into_iter().map(|p| (p.id.0, p.display_name)).collect(),
+        }))
+    }
+}
+
+/// A room's kind, folders and participant names as the manifest has them.
+pub(crate) struct RoomPlace {
+    pub chat: bool,
+    pub cwd: Option<String>,
+    pub project_cwd: Option<String>,
+    pub names: std::collections::HashMap<String, String>,
 }
 
 pub(crate) fn room_id_from_file(name: &str) -> Option<String> {

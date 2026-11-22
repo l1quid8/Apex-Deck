@@ -299,6 +299,13 @@ pub enum Command {
     FileRead { root: String, path: String },
     FileFind { root: String, query: String },
     FileSearch { root: String, query: String, case_sensitive: bool, folder: Option<String> },
+    /// Mark this connection as allowed to search. Protected: the proof is
+    /// checked per kind of connection before this runs (see `policy`).
+    SearchOpen {},
+    /// Refused unless this connection holds a live grant from `search_open`.
+    Search { #[serde(flatten)] request: crate::search::SearchRequest },
+    /// Cancels only this connection's own request in `lane`.
+    SearchCancel { lane: crate::search::SearchLane },
     FileCreate { root: String, parent: String, name: String, folder: bool },
     FileWrite { root: String, path: String, text: String, expected: Option<String> },
     FileRename { root: String, path: String, name: String },
@@ -373,6 +380,14 @@ impl Command {
             | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
             | PersonalMachineAllow { .. } | PersonalBrowserSession { .. } | ComputerSetup { .. } | ComputerSetEnabled { .. } | ComputerSetAppPrompts { .. } | ComputerSetActionLabels { .. }
             | RoomThreadGitAction { .. } | RoomFork { .. } | RoomMount { .. } | ChatPromote { .. } | RoomForgetAllowed { .. } => Policy::PROTECTED,
+            // Search returns text from every thread, so opening it needs the
+            // same proof as acting for the person. It is not on the terminal
+            // surface: a same-user socket peer on Linux (SSH, the terminal
+            // app, a Full-access agent) cannot open it; a paired device can.
+            SearchOpen { .. } => Policy::PROTECTED,
+            // Open at this gate, and useless without a grant: the search
+            // module refuses both before any store is read.
+            Search { .. } | SearchCancel { .. } => Policy::OPEN,
             // Open: reads, this Mac's own desktop plumbing, chat-room posts and
             // anything the device tier alone governs.
             // Provenance
@@ -503,17 +518,39 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + 
     tokio::task::spawn_blocking(work).await.map_err(|_| "The key store stopped answering.".to_string())?
 }
 
+/// Who is calling, as the transport knows it. Neither field is ever read from
+/// a command: the daemon supplies both, so no frame and no receipt can set them.
+#[derive(Debug, Clone)]
+pub struct Caller {
+    pub capability: apex_core::GeneratedUiCapability,
+    /// The daemon's id for the connection this command arrived on. `None` for
+    /// an in-process call, which therefore can never hold a search grant.
+    pub session: Option<Arc<str>>,
+}
+
+impl Caller {
+    /// A caller with no connection: `Host::call` and other in-process paths.
+    pub fn in_process(capability: apex_core::GeneratedUiCapability) -> Self {
+        Self { capability, session: None }
+    }
+}
+
 impl Host {
     /// Run `command` and answer with what the matching method returns, as JSON.
     pub async fn call(self: &Arc<Self>, command: Command) -> Result<Value, String> {
         self.call_with_client_capability(command, apex_core::GeneratedUiCapability::Unsupported).await
     }
 
+    /// An in-process call with a client capability and no connection.
+    pub async fn call_with_client_capability(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+        self.call_from(command, Caller::in_process(capability)).await
+    }
+
     /// Session context is supplied by the authenticated transport, never from
     /// a command argument or durable room setting. This host does not execute UI.
-    pub async fn call_with_client_capability(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+    pub async fn call_from(self: &Arc<Self>, command: Command, caller: Caller) -> Result<Value, String> {
         #[cfg(feature="test-support")]
-        if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,capability).await;}
+        if crate::test_support::isolated(self.data_dir()) {return self.dispatch_command(command,caller).await;}
         use Command::*;
         let needs_receipt = |command:&Command| -> Result<bool,String> {
             if command.requires_provenance() {
@@ -534,10 +571,13 @@ impl Host {
                 if !(command.requires_provenance() || matches!(command,RoomPost{..}|RoomPostTo{..}|RoomTurn{..})) { return Err("Attested command is outside the protected submission surface".into()); }
                 command
             }
+            // A connection that reached this machine without a receipt (SSH,
+            // the WebSocket token, the local socket) is told what would work.
+            SearchOpen {} => return Err(if caller.session.is_some() { crate::search::SEARCH_NEEDS_PAIRING } else { crate::search::SEARCH_REFUSED }.into()),
             command if needs_receipt(&command)? => return Err("A protected provenance receipt from the installed Apex UI is required; local socket and CLI access do not establish human origin.".into()),
             command => command,
         };
-        let result=self.dispatch_command(command,capability).await;
+        let result=self.dispatch_command(command,caller).await;
         if let Some(key)=source_key {
             let folder=self.data_dir().to_path_buf();
             let reason=result.as_ref().err().cloned();
@@ -554,30 +594,33 @@ impl Host {
         if matches!(command, Command::ProvenanceExecute { .. }) { return Err("A paired phone cannot execute desktop receipts".into()); }
         // Linux has no signed Mac broker. Preserve its existing public command
         // gate: ordinary reads/chat work, protected commands still need a receipt.
+        // The session is the daemon's own id for this connection, the same one
+        // the device receipt below is bound to.
+        let caller = Caller { capability, session: Some(Arc::from(session.as_str())) };
         if cfg!(target_os = "linux") {
             // The one exception: a chat becoming a Work thread. There is no
             // receipt to check here, so the machine's own folder list is the
             // authorization — see `apex-daemon allow-root`.
             if self.device_folder_command(&command)? {
-                return self.dispatch_command(command, capability).await;
+                return self.dispatch_command(command, caller).await;
             }
             // The daemon already checked this device's full grant, and it's all a receipt would prove here.
             if matches!(command, Command::PersonalBrowserSession {}) {
-                return self.dispatch_command(command, capability).await;
+                return self.dispatch_command(command, caller).await;
             }
-            return self.call_with_client_capability(command, capability).await;
+            return self.call_from(command, caller).await;
         }
         #[cfg(feature="test-support")]
-        if crate::test_support::isolated(self.data_dir()) { return self.dispatch_command(command, capability).await; }
+        if crate::test_support::isolated(self.data_dir()) { return self.dispatch_command(command, caller).await; }
         let assistant_room = match intent["args"]["id"].as_str() {
             Some(id) => self.assistant_tasks.execution(id).map_err(|e| e.to_string())?.is_some(),
             None => false,
         };
         let protected = command.requires_provenance() || (assistant_room && matches!(command, Command::RoomPost { .. } | Command::RoomPostTo { .. } | Command::RoomTurn { .. }));
-        if !protected { return self.call_with_client_capability(command, capability).await; }
+        if !protected { return self.call_from(command, caller).await; }
         let folder = self.data_dir().to_path_buf();
         let receipt = blocking(move || apex_provenance::io::consume_device(&folder, &endpoint, &session, request_id, intent, assistant_room)).await?;
-        let result = self.dispatch_command(command, capability).await;
+        let result = self.dispatch_command(command, caller).await;
         let folder = self.data_dir().to_path_buf();
         let reason = result.as_ref().err().cloned();
         blocking(move || apex_provenance::io::finish(&folder, &receipt.key, reason.as_deref())).await
@@ -589,7 +632,7 @@ impl Host {
     /// supplied by the daemon, never deserialized from the command, and reads
     /// the current grant, trust epoch and confinement state again at mutation.
     pub async fn call_from_confined_device(
-        self: &Arc<Self>, intent: Value, capability: apex_core::GeneratedUiCapability,
+        self: &Arc<Self>, intent: Value, caller: Caller,
         check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Result<Value, String> {
         let command = Command::from_json(intent)?;
@@ -609,7 +652,7 @@ impl Host {
                 // Folder picks retain the machine's explicit allowed-root
                 // boundary; that allow-list never supplies raise authority.
                 self.device_folder_command(&command)?;
-                self.dispatch_command(command, capability).await
+                self.dispatch_command(command, caller).await
             }
         }
     }
@@ -621,9 +664,9 @@ impl Host {
     /// and a jailed process cannot create a Unix socket at all. So once that
     /// probe has really run and passed, the terminal app's typed surface is
     /// admitted here. Anything else keeps the ordinary receipt gate.
-    pub async fn call_from_local_linux_cli(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
+    pub async fn call_from_local_linux_cli(self: &Arc<Self>, command: Command, caller: Caller) -> Result<Value, String> {
         if !cfg!(target_os = "linux") || !local_linux_cli_surface(&command) {
-            return self.call_with_client_capability(command, capability).await;
+            return self.call_from(command, caller).await;
         }
         local_linux_cli_admitted()?;
         // Personal-assistant execution rooms keep their own protected route for
@@ -634,24 +677,31 @@ impl Host {
                 if matches!(&command, Command::SaveAttachment { .. }) {
                     return Err("Terminal attachment import is unavailable for a protected assistant execution room.".into());
                 }
-                return self.call_with_client_capability(command, capability).await;
+                return self.call_from(command, caller).await;
             }
         }
-        self.dispatch_command(command, capability).await
+        self.dispatch_command(command, caller).await
     }
 
     // Tests of downstream behavior explicitly assume a previously verified UI
     // intent. Admission/forgery tests use the real public call() entry point.
     #[cfg(test)]
     pub(crate) async fn call_assuming_verified_ui_for_test(self:&Arc<Self>,command:Command)->Result<Value,String>{
-        self.dispatch_command(command,apex_core::GeneratedUiCapability::Unsupported).await
+        self.dispatch_command(command,Caller::in_process(apex_core::GeneratedUiCapability::Unsupported)).await
     }
     #[cfg(test)]
     pub(crate) async fn call_with_client_capability_assuming_verified_ui_for_test(self:&Arc<Self>,command:Command,capability:apex_core::GeneratedUiCapability)->Result<Value,String>{
-        self.dispatch_command(command,capability).await
+        self.dispatch_command(command,Caller::in_process(capability)).await
     }
-    async fn dispatch_command(self:&Arc<Self>,command:Command,capability:apex_core::GeneratedUiCapability)->Result<Value,String>{
+    /// As if the installed UI's proof had been checked, for the connection
+    /// `session`. Admission tests use the real entry points instead.
+    #[cfg(test)]
+    pub(crate) async fn call_from_session_assuming_verified_ui_for_test(self:&Arc<Self>,command:Command,session:&str)->Result<Value,String>{
+        self.dispatch_command(command,Caller{capability:apex_core::GeneratedUiCapability::Unsupported,session:Some(Arc::from(session))}).await
+    }
+    async fn dispatch_command(self:&Arc<Self>,command:Command,caller:Caller)->Result<Value,String>{
         use Command::*;
+        let capability=caller.capability;
         match command {
             ProvenanceExecute { .. } => return Err("Nested provenance commands are forbidden".into()),
             SessionLoad {} => reply(self.session_load()?),
@@ -978,6 +1028,9 @@ impl Host {
             FileRead { root, path } => reply(self.file_read(root, path).await?),
             FileFind { root, query } => reply(self.file_find(root, query).await?),
             FileSearch { root, query, case_sensitive, folder } => reply(self.file_search(root, query, case_sensitive, folder).await?),
+            SearchOpen {} => reply(self.search.open(caller.session.as_ref())?),
+            Search { request } => reply(self.search_run(caller.session, request).await?),
+            SearchCancel { lane } => reply(self.search.cancel(caller.session.as_ref(), lane)?),
             FileCreate { root, parent, name, folder } => reply(self.file_create(root, parent, name, folder).await?),
             FileWrite { root, path, text, expected } => reply(self.file_write(root, path, text, expected).await?),
             FileRename { root, path, name } => reply(self.file_rename(root, path, name).await?),
@@ -1093,7 +1146,7 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         let options = serde_json::to_value(apex_core::RoomOptions::default()).unwrap();
-        let cli = |value: Value| runtime.block_on(host.call_from_local_linux_cli(Command::from_json(value).unwrap(), apex_core::GeneratedUiCapability::Unsupported));
+        let cli = |value: Value| runtime.block_on(host.call_from_local_linux_cli(Command::from_json(value).unwrap(), Caller::in_process(apex_core::GeneratedUiCapability::Unsupported)));
         let create = |id: &str| json!({"cmd":"room_create","args":{"id":id,"participants":[],"options":options,"cwd":cwd.to_string_lossy()}});
         let plan = |on: bool| json!({"cmd":"room_set_plan","args":{"id":"cli","on":on}});
         let saved_plan = || host.store().room("cli").unwrap().map(|room| room.snapshot.plan);
@@ -1352,8 +1405,11 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 245);
+        assert_eq!(names.len(), 248);
         for name in [
+            "search_open",
+            "search",
+            "search_cancel",
             "personal_handoff_select",
             "personal_handoff_control",
             "personal_handoff_options",
