@@ -11,7 +11,7 @@ import { daemonTransport } from "./daemon/transport.ts";
 import { guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore, type HostConnectionStore } from "./hostConnections.ts";
 import { guardPhoneCommands } from "./phone/commandGuard.ts";
-import { isPaired, type Machine, type RemoteAccess } from "./phoneRules.ts";
+import { isPaired, type Machine } from "./phoneRules.ts";
 
 import type { ParticipantConfig } from "./types.ts";
 import { createPersonaDrafter, type PersonaDrafter } from "./phone/personaDrafter.ts";
@@ -22,8 +22,6 @@ export interface PhoneHost {
   supports(capability: string): boolean;
   backend: Backend;
   connection: HostConnectionStore;
-  /** What the machine lets this phone do, from its latest welcome; null over WebSocket or before one. */
-  access(): RemoteAccess | null;
   start(): Promise<Welcome>;
   /** Ask the machine for any answer within `ms`; a quiet link is dropped and dialed again. */
   check(ms: number): Promise<"answered" | "replaced" | "offline">;
@@ -59,7 +57,6 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
     supports: capability => client.hasCapability(capability),
     backend,
     connection,
-    access: () => client.welcome?.access ?? null,
     start: () => client.start(),
     check: (ms) => client.check(ms),
     close: () => client.close(),

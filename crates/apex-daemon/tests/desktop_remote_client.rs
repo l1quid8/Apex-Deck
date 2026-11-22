@@ -1,6 +1,6 @@
 #![cfg(feature = "remote")]
 //! Desktop's actual stdio process pairs, reconnects, and verifies a real daemon.
-use apex_daemon::{devices::{Threads, Tier}, pairing::invites::HostInfo, protocol::Daemon, remote};
+use apex_daemon::{pairing::invites::HostInfo, protocol::Daemon, remote};
 use apex_host::{test_support::isolated_host_assuming_verified_ui, HostPaths};
 use iroh::SecretKey;
 use serde_json::{json, Value};
@@ -29,7 +29,7 @@ async fn desktop_stdio_invitation_approval_reconnect_and_hello() {
     let accept = tokio::spawn(remote::accept(daemon.clone(), endpoint.clone()));
     let port = endpoint.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0).unwrap();
     let addr = format!("127.0.0.1:{port}");
-    let invitation = daemon.invites.start(HostInfo { host: *endpoint.id().as_bytes(), name: "Studio".into(), relay: apex_pairing::RELAY.into(), addrs: vec![addr.clone()] }, Tier::Chat, Threads::ALL, apex_daemon::devices::now_ms());
+    let invitation = daemon.invites.start(HostInfo { host: *endpoint.id().as_bytes(), name: "Studio".into(), relay: apex_pairing::RELAY.into(), addrs: vec![addr.clone()] }, apex_daemon::devices::now_ms());
     let key = SecretKey::generate();
     let spawn = || tokio::process::Command::new(env!("CARGO_BIN_EXE_apex-daemon"))
         .arg("remote-client").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).kill_on_drop(true).spawn().unwrap();
@@ -46,7 +46,7 @@ async fn desktop_stdio_invitation_approval_reconnect_and_hello() {
     let inv = invitation.inv;
     tokio::task::spawn_blocking(move || d.invites.approve(&inv, &claim.claim_id, &d.devices, apex_daemon::devices::now_ms())).await.unwrap().unwrap();
     let done = event(&mut output, "pairDone").await;
-    assert_eq!(done["tier"], "chat");
+    assert_eq!(done["tier"], "full");
     assert_eq!(done["hostEndpointId"], endpoint.id().to_string());
     drop(input);
     tokio::time::timeout(Duration::from_secs(10), pair.wait()).await.unwrap().unwrap();

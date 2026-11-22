@@ -15,16 +15,16 @@ test('Code Mode controls acknowledge saves, show failures, sync host changes and
     import {CodeModeSettings} from '/src/phone/CodeModeSettings.tsx';
     const root=createRoot(document.getElementById('root'));
     const listeners=new Set(), connections=new Set();
-    const f=window.fixture={mode:'auto',kind:'connected',tier:'full',threads:'all',calls:[],fail:false,hold:false,
+    const f=window.fixture={mode:'auto',kind:'connected',calls:[],fail:false,hold:false,
       emit(mode){this.mode=mode;for(const cb of listeners)cb({apexCodeMode:mode});},
-      connection(kind,tier,threads='all'){this.kind=kind;this.tier=tier;this.threads=threads;for(const cb of connections)cb();},
-      mount(phone){root.render(React.createElement(phone?CodeModeSettings:CodeModeControl,phone?{hosts:[host]}:{backend}));}};
+      connection(kind){this.kind=kind;for(const cb of connections)cb();},
+      mount(phone){root.render(React.createElement(phone?CodeModeSettings:CodeModeControl,phone?{host}:{backend}));}};
     const backend={settingsLoad:async()=>({apexCodeMode:f.mode}),
       onSettingsChanged:async cb=>{listeners.add(cb);return()=>listeners.delete(cb);},
       async call(cmd,args){f.calls.push([cmd,args]);if(f.fail)throw Error('save refused');
         if(f.hold)await new Promise(resolve=>f.release=resolve);
         f.emit(args.enabled?'auto':'off');return {mode:f.mode};}};
-    const host={machine:{id:'mac',name:'Test Mac'},backend,access:()=>({tier:f.tier,threads:f.threads}),
+    const host={machine:{id:'mac',name:'Test Mac'},backend,
       connection:{get:()=>({status:{kind:f.kind}}),subscribe:cb=>{connections.add(cb);return()=>connections.delete(cb);}}};
     f.mount(false);window.ready=true;
   </script></body></html>`;
@@ -49,14 +49,13 @@ test('Code Mode controls acknowledge saves, show failures, sync host changes and
         assert.equal(await run(()=>document.querySelector('select').value),'off');
         await run(()=>{window.fixture.fail=false;window.fixture.emit('auto');});
         await wait(()=>document.querySelector('select').value==='auto','external host update');
-        await run(()=>window.fixture.mount(true));await wait(()=>document.body.innerText.includes('General')&&document.querySelector('select[aria-label="Apex Code Mode"]')?.value==='auto','phone load');
+        await run(()=>window.fixture.mount(true));await wait(()=>document.body.innerText.includes('Apex Code Mode')&&document.querySelector('select[aria-label="Apex Code Mode"]')?.value==='auto','phone load');
+        assert.equal(await run(()=>document.querySelector('select[aria-label="Apex Code Mode"]').disabled),false);
+        assert.doesNotMatch(await run(()=>document.body.innerText),/Full access is required/);
         await choose('off');await wait(()=>document.body.innerText.includes('Test Mac confirmed Off'),'phone acknowledged save');
-        await run(()=>window.fixture.connection('idle','full'));
+        await run(()=>window.fixture.connection('idle'));
         await wait(()=>document.body.innerText.includes('disconnected')&&document.querySelector('select[aria-label="Apex Code Mode"]').disabled,'offline phone');
-        await run(()=>window.fixture.connection('connected','chat'));
-        await wait(()=>document.body.innerText.includes('Full access is required')&&document.querySelector('select[aria-label="Apex Code Mode"]').disabled,'read-only phone');
-        await run(()=>window.fixture.connection('connected','full',['one-thread']));
-        await wait(()=>document.body.innerText.includes('access to all threads')&&document.querySelector('select[aria-label="Apex Code Mode"]').disabled,'thread-limited phone');
+        assert.doesNotMatch(await run(()=>document.body.innerText),/Full access is required/);
         const calls=await run(()=>window.fixture.calls);assert.equal(calls.length,3);assert.ok(calls.every(c=>c[0]==='settings_code_mode_set'));assert.deepEqual(calls[0][1],{enabled:false});
         console.log('CODE_MODE_CONTROLS_OK');win.destroy();app.exit(0);
       }catch(e){console.error(e.stack);win.destroy();app.exit(1);}});

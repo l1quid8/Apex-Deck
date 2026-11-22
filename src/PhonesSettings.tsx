@@ -3,15 +3,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Backend, RemoteAccessApi } from "./backend";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { PairPhoneSheet } from "./PairPhoneSheet";
-import { TIERS, devicesApi, lastSeenText, shortId, threadsText, type PairedDevice, type Tier } from "./pairedDevices";
+import { devicesApi, lastSeenText, shortId, type PairedDevice } from "./pairedDevices";
 import { pairingApi, parseAddresses, phonesStatus, type RemoteInfo } from "./pairing";
 import { TrustHostSettings } from "./TrustHostSettings";
 import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 
 // Settings → Phones: Pair phone, whether phones can connect at all, each
-// paired phone with its access level and Revoke, and under Advanced the
-// endpoint ID, UDP port and advertised addresses. Turning connections on or
-// off is live in the daemon; nothing restarts.
+// paired phone with Revoke, and under Advanced the endpoint ID, UDP port and
+// advertised addresses. Turning connections on or off is live in the daemon;
+// nothing restarts.
 
 const wordsOf = (e: unknown) => String(e instanceof Error ? e.message : e);
 
@@ -89,10 +89,6 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
     cancel: "Keep on",
     onConfirm: () => void turn(false),
   });
-  const setTier = (device: PairedDevice, tier: Tier) => {
-    // Real Face ID is on phone's own level-raise flow per Task 7, not a plain confirm on Mac
-    devicesCall.setTier(device.endpointId, tier).then(loadDevices, fail);
-  };
   const revoke = (device: PairedDevice) => setAsking({
     title: `Revoke ${device.label}?`,
     body: "It's disconnected now and can never connect again with this pairing. Anything it already started keeps running.",
@@ -137,14 +133,10 @@ export function PhonesSettings({ backend }: { backend: Backend }) {
         <div key={device.endpointId} className="settings-row">
           <div className="settings-label">
             <strong>{device.label}</strong>
-            <small className="muted">Added {new Date(device.addedAt).toLocaleDateString()} · {lastSeenText(device.lastSeen)} · {threadsText(device.threads)}</small>
+            <small className="muted">Added {new Date(device.addedAt).toLocaleDateString()} · {lastSeenText(device.lastSeen)}</small>
             <small className="mono muted" title={device.endpointId}>{shortId(device.endpointId)}</small>
-            <small className="muted">{TIERS.find((t) => t.id === device.tier)?.note}</small>
           </div>
           <span className="host-actions">
-            <select aria-label={`Access for ${device.label}`} value={device.tier} onChange={(e) => void setTier(device, e.target.value as Tier)}>
-              {TIERS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-            </select>
             <button className="ghost" onClick={() => revoke(device)}>Revoke</button>
           </span>
         </div>

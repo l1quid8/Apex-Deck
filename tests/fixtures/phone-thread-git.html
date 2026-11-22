@@ -8,7 +8,6 @@ import '/src/phone/phone.css';
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {PhoneApp} from '/src/phone/PhoneApp.tsx';
-import {canUseThreadGit} from '/src/phone/PhoneThreadGit.tsx';
 
 const root = createRoot(document.querySelector('#root'));
 const writes = [];
@@ -53,7 +52,7 @@ window.WebSocket = class extends EventTarget {
     const {id,cmd,args} = JSON.parse(frame);
     let response = {id,err:'Unsupported fixture command '+cmd};
     if (cmd === 'hello') response = {id,ok:{host_id:'fixture',boot_id:'boot',protocol:1,version:'0.9.19',last_seq:0,resumed:false,
-      capabilities:['phone_thread_git_v1'],access:{tier:'full',threads:'all'}}};
+      capabilities:['phone_thread_git_v1']}};
     if (cmd === 'session_load') response = {id,ok:session};
     if (cmd === 'room_state') response = {id,ok:{active:[],approvals:[],snapshot:{participants:[],transcript:[],options:{policy:'mention',max_bot_hops:3}}}};
     if (cmd === 'room_git_status' || cmd === 'room_thread_git_action') {
@@ -86,8 +85,6 @@ async function click(label) {
   button(label).click();
 }
 async function run() {
-  if (canUseThreadGit(null) || canUseThreadGit({tier:'chat',threads:'all'}) ||
-      canUseThreadGit({tier:'full',threads:['phone-room']}) || !canUseThreadGit({tier:'full',threads:'all'})) throw Error('Incorrect device gate');
   root.render(React.createElement(PhoneApp));
   await mount();
   failNextWrite = true;

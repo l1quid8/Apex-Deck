@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  PAIR_DEFAULT_TIER, RENEW_FOR_MS, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
+  RENEW_FOR_MS, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairingApi, pairingSession,
   parseAddresses, phonesStatus, qrSvgPath, reasonOf, revokedWarning, spacedCode, timerText,
 } from "../src/pairing.ts";
 
@@ -60,23 +60,17 @@ test("a phone removed before is named with its date, and approving says it lets 
   assert.match(revokedWarning(Date.UTC(2026, 9, 1, 12)), /^This phone was removed on .*2026.*\. Approving lets it back in\.$/);
 });
 
-test("the default tier is Chat and approvals", () => {
-  assert.equal(PAIR_DEFAULT_TIER, "chat");
-});
-
 test("the API sends the daemon's local-only pairing commands in its own words", async () => {
   const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [CLAIM], pair_approve: [{ device: { endpointId: "ab12" } }], remote_info: [{ enabled: false }], remote_advertise: [{ advertise: [] }] });
   const api = pairingApi(daemon.backend);
-  await api.start("chat", "all");
-  await api.start("read_only", ["r1", "r2"]);
+  await api.start();
   await api.wait("inv-1");
   await api.approve("inv-1", "c-1");
   await api.cancel("inv-1");
   await api.info();
   await api.advertise(["myhome.ddns.net:41641"]);
   assert.deepEqual(daemon.sent, [
-    ["pair_start", { tier: "chat", threads: "all" }],
-    ["pair_start", { tier: "read_only", threads: ["r1", "r2"] }],
+    ["pair_start", {}],
     ["pair_wait", { invitation: "inv-1" }],
     ["pair_approve", { invitation: "inv-1", claim_id: "c-1" }],
     ["pair_cancel", { invitation: "inv-1" }],
@@ -106,7 +100,7 @@ test("approve is disabled until a phone claims, and while approving", async () =
   const states = [];
   const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), timers);
   assert.equal(canApprove(session.state), false);
-  session.start("chat", "all");
+  session.start();
   assert.equal(session.state.kind, "starting");
   assert.equal(canApprove(session.state), false);
   await settle();
@@ -130,7 +124,7 @@ test("approve before a claim sends nothing", async () => {
   const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [never()] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, manualTimers());
   session.approve();
-  session.start("chat", "all");
+  session.start();
   await settle();
   assert.equal(session.state.kind, "waiting");
   session.approve();
@@ -141,7 +135,7 @@ test("closing the sheet cancels the invitation, waiting or claimed", async () =>
   for (const wait of [[never()], [CLAIM]]) {
     const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: wait });
     const session = pairingSession(pairingApi(daemon.backend), () => {}, manualTimers());
-    session.start("chat", "all");
+    session.start();
     await settle();
     session.close();
     assert.deepEqual(daemon.sent.at(-1), ["pair_cancel", { invitation: "inv-1" }]);
@@ -153,7 +147,7 @@ test("closing before the invitation arrives cancels it as soon as it does", asyn
   const daemon = fakeDaemon({ pair_start: [new Promise((r) => { started = r; })], pair_wait: [never()] });
   const states = [];
   const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), manualTimers());
-  session.start("chat", "all");
+  session.start();
   session.close();
   started(INVITE);
   await settle();
@@ -164,7 +158,7 @@ test("closing before the invitation arrives cancels it as soon as it does", asyn
 test("closing after pairing, or twice, sends no cancel", async () => {
   const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [CLAIM], pair_approve: [{ device: { endpointId: "ab12" } }] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, manualTimers());
-  session.start("chat", "all");
+  session.start();
   await settle();
   session.approve();
   await settle();
@@ -176,7 +170,7 @@ test("closing after pairing, or twice, sends no cancel", async () => {
 test("Deny cancels the invitation and says the phone was turned away", async () => {
   const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [CLAIM] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, manualTimers());
-  session.start("chat", "all");
+  session.start();
   await settle();
   session.deny();
   await settle();
@@ -191,7 +185,7 @@ test("while the approval waits, a phone that leaves ends it", async () => {
   const timers = manualTimers();
   const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [CLAIM, CLAIM, refused("phone_left")] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, timers);
-  session.start("chat", "all");
+  session.start();
   await settle();
   assert.equal(session.state.kind, "claimed");
   timers.runAll();
@@ -207,13 +201,13 @@ test("while the approval waits, a phone that leaves ends it", async () => {
 test("an invitation that expires, or a failed approval, ends with the reason", async () => {
   const expired = fakeDaemon({ pair_start: [INVITE], pair_wait: [refused("expired")] });
   const a = pairingSession(pairingApi(expired.backend), () => {}, manualTimers());
-  a.start("chat", "all");
+  a.start();
   await settle();
   assert.deepEqual([a.state.kind, a.state.reason], ["ended", "expired"]);
 
   const stale = fakeDaemon({ pair_start: [INVITE], pair_wait: [CLAIM], pair_approve: [refused("changed")] });
   const b = pairingSession(pairingApi(stale.backend), () => {}, manualTimers());
-  b.start("chat", "all");
+  b.start();
   await settle();
   b.approve();
   await settle();
@@ -221,7 +215,7 @@ test("an invitation that expires, or a failed approval, ends with the reason", a
 
   const off = fakeDaemon({ pair_start: [refused("not_remote")] });
   const c = pairingSession(pairingApi(off.backend), () => {}, manualTimers());
-  c.start("chat", "all");
+  c.start();
   await settle();
   assert.deepEqual([c.state.kind, c.state.reason], ["ended", "not_remote"]);
 });
@@ -246,23 +240,6 @@ test("Copy writes the link to the clipboard it is given, and nowhere else", asyn
 test("advertised addresses are read from text split by spaces, commas or lines", () => {
   assert.deepEqual(parseAddresses(""), []);
   assert.deepEqual(parseAddresses(" myhome.ddns.net:41641,  [2001:db8::1]:41641\n1.2.3.4:5 "), ["myhome.ddns.net:41641", "[2001:db8::1]:41641", "1.2.3.4:5"]);
-});
-
-test("the threads a phone may be given are this Mac's chat threads", () => {
-  const session = {
-    workspaces: [{ id: "w1", name: "Deck", path: "/x" }, { id: "w2", name: "Server", path: "/y", hostId: "h-1" }],
-    panes: [
-      { id: "r1", workspaceId: "w1", kind: "chat", title: "Planning" },
-      { id: "t1", workspaceId: "w1", kind: "terminal", title: "zsh" },
-      { id: "r2", workspaceId: "w2", kind: "chat", title: "Elsewhere" },
-      { id: "r3", workspaceId: "w1", kind: "chat", title: "" },
-    ],
-  };
-  assert.deepEqual(pairableThreads(session), [
-    { id: "r1", title: "Planning", workspace: "Deck" },
-    { id: "r3", title: "Untitled thread", workspace: "Deck" },
-  ]);
-  assert.deepEqual(pairableThreads(null), []);
 });
 
 test("Pair phone turns phone connections on when they're off, and says why when it can't", async () => {
@@ -341,16 +318,16 @@ const INVITE_2 = { invitation: "inv-2", link: "apexdeck://pair?p=second", expire
 const INVITE_3 = { invitation: "inv-3", link: "apexdeck://pair?p=third", expires_at: 1_600_000 };
 const clockTimers = (at) => ({ ...manualTimers(), now: () => at.now });
 
-test("a code that expires with no phone is renewed with the same access and threads", async () => {
+test("a code that expires with no phone is renewed with empty args", async () => {
   const at = { now: 0 };
   const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [refused("expired"), never()] });
   const states = [];
   const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers(at), RENEW_FOR_MS);
-  session.start("read_only", ["t1", "t2"]);
+  session.start();
   await settle();
   await settle();
   const starts = daemon.sent.filter(([cmd]) => cmd === "pair_start");
-  assert.deepEqual(starts, [["pair_start", { tier: "read_only", threads: ["t1", "t2"] }], ["pair_start", { tier: "read_only", threads: ["t1", "t2"] }]]);
+  assert.deepEqual(starts, [["pair_start", {}], ["pair_start", {}]]);
   assert.equal(session.state.kind, "waiting");
   assert.equal(session.state.invite.invitation, "inv-2");
   assert.equal(states.some((s) => s.kind === "ended"), false, "renewing never shows an ended state");
@@ -362,7 +339,7 @@ test("a claim that lands at the expiry instant shows the approval and is never r
   // The daemon decided the claim came first: pair_wait answers the claim, not "expired".
   const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [CLAIM] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, clockTimers({ now: INVITE.expires_at }), RENEW_FOR_MS);
-  session.start("chat", "all");
+  session.start();
   await settle();
   assert.equal(session.state.kind, "claimed");
   assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1, "no new code");
@@ -372,7 +349,7 @@ test("a claimed code that then expires ends; it is not renewed", async () => {
   const timers = clockTimers({ now: 0 });
   const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [CLAIM, refused("expired")] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, timers, RENEW_FOR_MS);
-  session.start("chat", "all");
+  session.start();
   await settle();
   timers.runAll();
   await settle();
@@ -385,7 +362,7 @@ test("closing during a renewal cancels the new code when it lands, and shows not
   const daemon = fakeDaemon({ pair_start: [INVITE, new Promise((r) => { second = r; })], pair_wait: [refused("expired")] });
   const states = [];
   const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers({ now: 0 }), RENEW_FOR_MS);
-  session.start("chat", "all");
+  session.start();
   await settle();
   assert.equal(session.state.kind, "starting", "renewal in flight");
   session.close();
@@ -401,7 +378,7 @@ test("a code that expires after the sheet closes is not renewed", async () => {
   const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [new Promise((_, no) => { expire = no; })] });
   const states = [];
   const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), clockTimers({ now: 0 }), RENEW_FOR_MS);
-  session.start("chat", "all");
+  session.start();
   await settle();
   session.close();
   const shown = states.length;
@@ -417,7 +394,7 @@ test("a claim that lands after the sheet closes is not shown and sets no timer",
   const daemon = fakeDaemon({ pair_start: [INVITE], pair_wait: [new Promise((r) => { claimed = r; })] });
   const states = [];
   const session = pairingSession(pairingApi(daemon.backend), (s) => states.push(s), timers, RENEW_FOR_MS);
-  session.start("chat", "all");
+  session.start();
   await settle();
   session.close();
   const shown = states.length;
@@ -433,7 +410,7 @@ test("renewals stop once the sheet has been open 30 minutes", async () => {
   const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2, INVITE_3], pair_wait: [refused("expired"), new Promise((_, no) => { secondExpires = no; })] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, clockTimers(at), RENEW_FOR_MS);
   at.now = RENEW_FOR_MS - 1;
-  session.start("chat", "all");
+  session.start();
   await settle();
   assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 2, "renewed just before the limit");
   assert.equal(session.state.invite.invitation, "inv-2");
@@ -448,7 +425,7 @@ test("renewals stop once the sheet has been open 30 minutes", async () => {
 test("without a renewal limit an expired code ends, as before", async () => {
   const daemon = fakeDaemon({ pair_start: [INVITE, INVITE_2], pair_wait: [refused("expired")] });
   const session = pairingSession(pairingApi(daemon.backend), () => {}, manualTimers());
-  session.start("chat", "all");
+  session.start();
   await settle();
   assert.deepEqual([session.state.kind, session.state.reason], ["ended", "expired"]);
   assert.equal(daemon.cmds().filter((c) => c === "pair_start").length, 1);

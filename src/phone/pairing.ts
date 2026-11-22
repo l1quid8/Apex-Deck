@@ -57,7 +57,6 @@ export interface Paired {
   hostEndpointId: string;
   addrs: string[];
   name: string;
-  tier: "read_only" | "chat" | "full";
 }
 
 export type PairState =
@@ -80,8 +79,6 @@ export function pairFailure(code: number, reason: string): string {
     default: return reason ? `Pairing didn't finish: ${reason}.` : "Pairing didn't finish.";
   }
 }
-
-const TIERS = ["read_only", "chat", "full"] as const;
 
 /**
  * Start one pairing attempt. `onState` hears every step; after "done" or
@@ -111,8 +108,7 @@ export function startPairing(plugin: RemotePlugin, link: string, label: string, 
       if (over) return;
       if (event.type === "pairCode") onState({ kind: "code", code: event.code, hostName: event.hostName });
       else if (event.type === "pairDone") {
-        const tier = TIERS.find((t) => t === event.tier) ?? "read_only";
-        done = { hostEndpointId: event.hostEndpointId, addrs: event.addrs, name: event.hostName || event.name, tier };
+        done = { hostEndpointId: event.hostEndpointId, addrs: event.addrs, name: event.hostName || event.name };
       } else if (event.type === "closed") {
         // The machine closes with BYE after its ok; any other close means it didn't finish.
         finish(done ? { kind: "done", paired: done } : { kind: "failed", message: pairFailure(event.code, event.reason) });

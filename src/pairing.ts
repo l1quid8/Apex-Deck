@@ -8,10 +8,7 @@
 
 import qrcode from "qrcode-generator";
 import type { RemoteAccessApi } from "./backend";
-import type { PairedDevice, Tier } from "./pairedDevices";
-
-/** What a new phone may do unless the person picks otherwise. */
-export const PAIR_DEFAULT_TIER: Tier = "chat";
+import type { PairedDevice } from "./pairedDevices";
 
 export interface PairInvitation {
   invitation: string;
@@ -47,7 +44,7 @@ type Caller = Pick<import("./backend").Backend, "call">;
 
 export function pairingApi(backend: Caller) {
   return {
-    start: (tier: Tier, threads: "all" | string[]) => backend.call<PairInvitation>("pair_start", { tier, threads }),
+    start: () => backend.call<PairInvitation>("pair_start", {}),
     wait: (invitation: string) => backend.call<PairClaim>("pair_wait", { invitation }),
     approve: (invitation: string, claimId: string) => backend.call<{ device: PairedDevice }>("pair_approve", { invitation, claim_id: claimId }),
     cancel: (invitation: string) => backend.call<null>("pair_cancel", { invitation }),
@@ -175,15 +172,6 @@ export function parseAddresses(text: string): string[] {
   return text.split(/[\s,]+/).map((part) => part.trim()).filter(Boolean);
 }
 
-/** This Mac's chat threads, which a phone can be limited to. */
-export function pairableThreads(session: { workspaces: { id: string; name: string; hostId?: string }[]; panes: { id: string; workspaceId: string; kind: string; title: string }[] } | null): { id: string; title: string; workspace: string }[] {
-  if (!session) return [];
-  const local = new Map(session.workspaces.filter((w) => !w.hostId).map((w) => [w.id, w.name]));
-  return session.panes
-    .filter((pane) => pane.kind === "chat" && local.has(pane.workspaceId))
-    .map((pane) => ({ id: pane.id, title: pane.title.trim() || "Untitled thread", workspace: local.get(pane.workspaceId)! }));
-}
-
 export type PairState =
   | { kind: "idle" }
   | { kind: "starting" }
@@ -267,11 +255,11 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
     );
   };
 
-  const begin = (tier: Tier, threads: "all" | string[]) => {
+  const begin = () => {
     const mine = ++attempt;
     invite = null;
     set({ kind: "starting" });
-    api.start(tier, threads).then((made) => {
+    api.start().then((made) => {
       if (closed || mine !== attempt) {
         void api.cancel(made.invitation).catch(() => {});
         return;
@@ -286,7 +274,7 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
         },
         (error) => {
           if (closed || state.kind !== "waiting" || invite !== made) return;
-          if (reasonOf(error) === "expired" && renewUntil !== null && now() < renewUntil) begin(tier, threads);
+          if (reasonOf(error) === "expired" && renewUntil !== null && now() < renewUntil) begin();
           else end(error);
         },
       );
@@ -295,9 +283,9 @@ export function pairingSession(api: PairingApi, onState: (state: PairState) => v
 
   return {
     get state() { return state; },
-    start(tier: Tier, threads: "all" | string[]) {
+    start() {
       if (closed || state.kind !== "idle") return;
-      begin(tier, threads);
+      begin();
     },
     approve() {
       if (closed || state.kind !== "claimed") return;

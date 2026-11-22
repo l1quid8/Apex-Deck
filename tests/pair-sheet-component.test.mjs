@@ -28,7 +28,7 @@ test('Pair phone shows the QR without the link, renews an expired code, and appr
         if(cmd==='pair_start'){f.n++;return {invitation:'inv'+f.n,link:'apexdeck://pair?p=SECRET'+f.n+'x'.repeat(400),expires_at:Date.now()+272000};}
         if(cmd==='pair_wait'){if(!f.waits[args.invitation]){let yes,no;const p=new Promise((a,b)=>{yes=a;no=b;});f.waits[args.invitation]={p,yes,no};}return f.waits[args.invitation].p;}
         if(cmd==='pair_cancel')return null;
-        if(cmd==='pair_approve')return {device:{endpointId:'ab',label:'iPhone 16 Pro',tier:args.tier??'chat',threads:'all',addedAt:Date.now(),lastSeen:null}};
+        if(cmd==='pair_approve')return {device:{endpointId:'ab',label:'iPhone 16 Pro',addedAt:Date.now(),lastSeen:null}};
         throw Error('unexpected '+cmd);},
       sessionLoad:async()=>({workspaces:[{id:'w',name:'apex-deck'}],panes:[{id:'t1',workspaceId:'w',kind:'chat',title:'Pairing'}]}),
       remoteAccess:{get:async()=>({on:true,owned:true}),set:async on=>({on,owned:true})},
@@ -57,46 +57,40 @@ test('Pair phone shows the QR without the link, renews an expired code, and appr
         await wait(()=>window.ready,'page');
         await run(()=>window.fixture.mount());
 
-        // Waiting: the QR, the scan line, the renew timer, Copy link, and access on one line.
+        // Waiting: the QR, the scan line, the renew timer, Copy link, and no access controls.
         await wait(()=>document.querySelector('.pair-qr svg'),'QR');
         await wait(()=>document.querySelector('.pair-timer')?.textContent.startsWith('New code in'),'timer');
         assert.match(await text(),/Scan with the iPhone camera or the Apex Deck app\\./);
         assert.match(await run(()=>document.querySelector('.pair-timer').textContent),/^New code in 4:3\\d$/);
         assert.doesNotMatch(await run(()=>document.querySelector('.pair-sheet').outerHTML),/SECRET|apexdeck:/,'the link is nowhere in the sheet');
-        assert.deepEqual(await buttons(),['Change','Copy link','Cancel']);
-        assert.match(await run(()=>document.querySelector('.pair-scope-line').innerText),/Access: Chat and approvals · All threads/);
-        assert.equal(await truthy(()=>document.querySelector('.pair-scope')),false,'access controls stay folded');
+        assert.deepEqual(await buttons(),['Copy link','Cancel']);
+        assert.equal(await run(()=>document.querySelector('[aria-label="Access for the new phone"]')),null);
+        assert.equal(await run(()=>document.querySelector('[role="radiogroup"]')),null);
+        assert.equal(await truthy(()=>document.querySelector('.pair-scope-line')),false);
+        assert.equal(await truthy(()=>document.querySelector('.pair-scope')),false);
+        assert.deepEqual(await run(()=>window.fixture.calls.filter(c=>c[0]==='pair_start').at(-1)[1]),{});
         assert.equal(await run(()=>Math.round(document.querySelector('.pair-qr').getBoundingClientRect().width)),260);
         await snap('waiting');
 
-        // Change unfolds the same controls; picking Read only starts a code with it.
-        await click('Change');
-        await wait(()=>document.querySelector('.pair-scope select'),'controls');
-        await run(()=>{const s=document.querySelector('.pair-scope select');const set=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;set.call(s,'read_only');s.dispatchEvent(new Event('change',{bubbles:true}));});
-        await wait(()=>window.fixture.count('pair_start')===2,'new code for the new access');
-        assert.deepEqual(await run(()=>window.fixture.calls.filter(c=>c[0]==='pair_start').at(-1)[1]),{tier:'read_only',threads:'all'});
-        assert.deepEqual(await run(()=>window.fixture.calls.filter(c=>c[0]==='pair_cancel').map(c=>c[1].invitation)),['inv1'],'the old code is cancelled');
-        await snap('change');
-
-        // The daemon says inv2 expired unclaimed: a new code, same access, no ended state.
-        await wait(()=>!!window.fixture.waits.inv2,'waiting on inv2');
-        await run(()=>window.fixture.expire('inv2'));
-        await wait(()=>window.fixture.count('pair_start')===3,'renewed');
-        assert.deepEqual(await run(()=>window.fixture.calls.filter(c=>c[0]==='pair_start').at(-1)[1]),{tier:'read_only',threads:'all'});
+        // The daemon says inv1 expired unclaimed: a new code with empty args, no ended state.
+        await wait(()=>!!window.fixture.waits.inv1,'waiting on inv1');
+        await run(()=>window.fixture.expire('inv1'));
+        await wait(()=>window.fixture.count('pair_start')===2,'renewed');
+        assert.deepEqual(await run(()=>window.fixture.calls.filter(c=>c[0]==='pair_start').at(-1)[1]),{});
         await wait(()=>document.querySelector('.pair-qr svg'),'renewed QR');
         assert.equal(await truthy(()=>document.querySelector('.pair-sheet [role=alert]')),false,'renewing never shows an error');
 
-        // A phone claims inv3: one card with the spaced code and the revoked-before warning.
-        await wait(()=>!!window.fixture.waits.inv3,'waiting on inv3');
-        await run(()=>window.fixture.claim('inv3',Date.UTC(2026,9,14)));
+        // A phone claims inv2: one card with the spaced code and the revoked-before warning.
+        await wait(()=>!!window.fixture.waits.inv2,'waiting on inv2');
+        await run(()=>window.fixture.claim('inv2',Date.UTC(2026,9,14)));
         await wait(()=>document.querySelector('.pair-claim-code'),'claim card');
         assert.equal(await run(()=>document.querySelector('.pair-claim-code').textContent),'673 149');
         assert.match(await text(),/iPhone 16 Pro wants to pair/);
         assert.match(await text(),/Approve if your phone shows the same code\\./);
-        assert.match(await text(),/It gets Read only on all threads\\./);
+        assert.ok((await text()).includes('Let iPhone 16 Pro use this '+(process.platform==='win32'?'PC':'Mac')+'?'));
+        assert.doesNotMatch(await text(),/Read only|Chat and approvals|All threads|It gets/);
         assert.match(await run(()=>document.querySelector('.pair-note.warn').textContent),/^This phone was removed on .*2026\\. Approving lets it back in\\.$/);
         assert.equal(await truthy(()=>document.querySelector('.pair-qr')),false,'no QR on the approval card');
-        assert.equal(await truthy(()=>document.querySelector('.pair-scope-line')),false,'access is locked once claimed');
         assert.deepEqual(await buttons(),['Deny','Approve']);
         await snap('claimed');
 
@@ -104,7 +98,8 @@ test('Pair phone shows the QR without the link, renews an expired code, and appr
         await click('Approve');
         await wait(()=>document.querySelector('.pair-done'),'paired');
         assert.match(await text(),/iPhone 16 Pro is paired/);
-        assert.match(await text(),/It has Read only on all threads\\. Change it any time in Settings → Phones\\./);
+        assert.match(await text(),/Manage it any time in Settings → Phones\\./);
+        assert.doesNotMatch(await text(),/It has|Read only|Chat and approvals|All threads/);
         assert.deepEqual(await buttons(),['Done']);
         assert.equal(await run(()=>window.fixture.paired.length),1);
         await snap('paired');
@@ -119,13 +114,13 @@ test('Pair phone shows the QR without the link, renews an expired code, and appr
         assert.deepEqual(await run(()=>window.fixture.copied),[]);
         await click('Copy link');
         await wait(()=>window.fixture.copied.length===1,'copied');
-        assert.equal(await run(()=>window.fixture.copied[0].length),'apexdeck://pair?p=SECRET4'.length+400,'the whole link, not a cut-off one');
+        assert.equal(await run(()=>window.fixture.copied[0].length),'apexdeck://pair?p=SECRET3'.length+400,'the whole link, not a cut-off one');
         await wait(()=>[...document.querySelectorAll('.pair-sheet button')].some(b=>b.textContent==='Copied'),'Copied');
 
         // Cancel closes and cancels the open code.
         await click('Cancel');
         await wait(()=>!document.querySelector('.pair-sheet'),'cancelled');
-        assert.equal(await run(()=>window.fixture.calls.filter(c=>c[0]==='pair_cancel').at(-1)[1].invitation),'inv4');
+        assert.equal(await run(()=>window.fixture.calls.filter(c=>c[0]==='pair_cancel').at(-1)[1].invitation),'inv3');
 
         console.log('Pair sheet Chromium checks passed'); app.exit(0);
       }catch(error){console.error(error.stack);app.exit(1);}

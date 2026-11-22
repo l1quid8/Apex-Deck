@@ -22,59 +22,11 @@ pub const FILE: &str = "devices.json";
 /// (and it re-reads the registry instead).
 pub const REVOKE_CAPACITY: usize = 16;
 
-/// What a device may do, least first.
-#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Tier {
-    ReadOnly,
-    Chat,
-    Full,
-}
-
-impl Tier {
-    pub fn parse(text: &str) -> Result<Tier, String> {
-        serde_json::from_value(serde_json::Value::String(text.to_string())).map_err(|_| format!("{text} is not a tier; say read_only, chat or full"))
-    }
-}
-
-/// Which threads (room IDs) a device may reach.
-#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Threads {
-    /// `"all"`.
-    All(AllThreads),
-    Only(Vec<String>),
-}
-
-/// The string `"all"`, and nothing else.
-#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AllThreads {
-    All,
-}
-
-impl Threads {
-    pub const ALL: Threads = Threads::All(AllThreads::All);
-
-    pub fn is_all(&self) -> bool {
-        matches!(self, Threads::All(_))
-    }
-
-    pub fn includes(&self, room: &str) -> bool {
-        match self {
-            Threads::All(_) => true,
-            Threads::Only(rooms) => rooms.iter().any(|r| r == room),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
     pub endpoint_id: String,
     pub label: String,
-    pub tier: Tier,
-    pub threads: Threads,
     /// ms since the epoch.
     pub added_at: u64,
     pub last_seen: Option<u64>,
@@ -316,7 +268,7 @@ impl Devices {
 
     /// Add a device. A revoked ID is refused unless `restore`, which lifts
     /// its tombstone.
-    pub fn add(&self, id: &str, label: &str, tier: Tier, threads: Threads, restore: bool) -> Result<Device, String> {
+    pub fn add(&self, id: &str, label: &str, restore: bool) -> Result<Device, String> {
         check_id(id)?;
         let confined_epoch = self.current_confined_epoch();
         self.change(|registry| {
@@ -329,7 +281,7 @@ impl Devices {
             if registry.devices.iter().any(|d| d.endpoint_id == id) {
                 return Err(format!("{id} is already paired"));
             }
-            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None, confined_epoch: confined_epoch.clone() };
+            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), added_at: now_ms(), last_seen: None, confined_epoch: confined_epoch.clone() };
             registry.devices.push(device.clone());
             registry.bump(id);
             Ok(device)
@@ -343,7 +295,7 @@ impl Devices {
     /// means the tombstone (if any) is the one the user was warned about, so
     /// it's lifted. `Ok` exactly when the device is in `devices.json`: a
     /// write whose folder sync failed but whose file landed is `Ok` too.
-    pub fn approve_pairing(&self, id: &str, label: &str, tier: Tier, threads: Threads, expect_revision: u64) -> Result<Device, ApproveError> {
+    pub fn approve_pairing(&self, id: &str, label: &str, expect_revision: u64) -> Result<Device, ApproveError> {
         check_id(id)?;
         let confined_epoch = self.current_confined_epoch();
         self.change_then(true, |registry| {
@@ -354,19 +306,11 @@ impl Devices {
             if registry.devices.iter().any(|d| d.endpoint_id == id) {
                 return Err(ApproveError::Registry(format!("{id} is already paired")));
             }
-            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None, confined_epoch: confined_epoch.clone() };
+            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), added_at: now_ms(), last_seen: None, confined_epoch: confined_epoch.clone() };
             registry.devices.push(device.clone());
             registry.bump(id);
             Ok(device)
         })
-    }
-
-    pub fn set_tier(&self, id: &str, tier: Tier) -> Result<Device, String> {
-        self.edit(id, true, |device| device.tier = tier)
-    }
-
-    pub fn set_threads(&self, id: &str, threads: Threads) -> Result<Device, String> {
-        self.edit(id, true, |device| device.threads = threads)
     }
 
     /// Note that a device just connected. Not a change to its entry, so the
@@ -443,15 +387,15 @@ pub(crate) mod tests {
     fn a_revoke_whose_folder_sync_failed_still_holds() {
         let data = folder();
         let devices = Devices::open(&data.0);
-        devices.add(&id(1), "Phone", Tier::Full, Threads::ALL, false).unwrap();
-        devices.add(&id(2), "Tablet", Tier::Full, Threads::ALL, false).unwrap();
+        devices.add(&id(1), "Phone", false).unwrap();
+        devices.add(&id(2), "Tablet", false).unwrap();
         let mut revokes = devices.subscribe();
         devices.fail_sync.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(devices.revoke(&id(1)).is_err());
         devices.fail_sync.store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(devices.get(&id(1)), None, "the revoke on disk is in force");
         assert_eq!(revokes.try_recv().unwrap(), id(1), "sessions were told");
-        devices.set_tier(&id(2), Tier::Chat).unwrap();
+        devices.seen(&id(2)).unwrap();
         assert_eq!(Devices::open(&data.0).get(&id(1)), None, "a later write didn't erase it");
     }
 
@@ -464,17 +408,32 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn devices_tiers_and_revokes_survive_a_restart() {
+    fn old_registry_with_tier_and_threads_loads() {
+        let data = folder();
+        let old = serde_json::json!({
+            "version": 1,
+            "devices": [{ "endpointId": id(1), "label": "Phone", "tier": "read_only", "threads": ["r1"], "addedAt": 1, "lastSeen": null }],
+            "revoked": []
+        });
+        std::fs::write(data.0.join(FILE), old.to_string()).unwrap();
+        let devices = Devices::open(&data.0);
+        assert_eq!(devices.get(&id(1)).unwrap().label, "Phone");
+        devices.seen(&id(1)).unwrap();
+        let saved = std::fs::read_to_string(data.0.join(FILE)).unwrap();
+        assert!(!saved.contains("tier") && !saved.contains("threads"), "{saved}");
+    }
+
+    #[test]
+    fn devices_and_revokes_survive_a_restart() {
         let data = folder();
         let devices = Devices::open(&data.0);
-        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
-        devices.add(&id(2), "Tablet", Tier::ReadOnly, Threads::Only(vec!["r1".into()]), false).unwrap();
-        devices.set_tier(&id(1), Tier::Full).unwrap();
+        devices.add(&id(1), "Phone", false).unwrap();
+        devices.add(&id(2), "Tablet", false).unwrap();
         devices.revoke(&id(2)).unwrap();
 
         let again = Devices::open(&data.0);
         let phone = again.get(&id(1)).unwrap();
-        assert_eq!((phone.label.as_str(), phone.tier, phone.threads), ("Phone", Tier::Full, Threads::ALL));
+        assert_eq!(phone.label.as_str(), "Phone");
         assert_eq!(again.get(&id(2)), None);
         assert_eq!(again.list().unwrap().revoked.iter().map(|r| r.endpoint_id.clone()).collect::<Vec<_>>(), vec![id(2)]);
         #[cfg(unix)]
@@ -488,33 +447,29 @@ pub(crate) mod tests {
     fn the_file_keeps_the_documented_shape() {
         let data = folder();
         let devices = Devices::open(&data.0);
-        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
-        devices.add(&id(2), "Tab", Tier::ReadOnly, Threads::Only(vec!["r1".into()]), false).unwrap();
+        devices.add(&id(1), "Phone", false).unwrap();
+        devices.add(&id(2), "Tab", false).unwrap();
         devices.revoke(&id(2)).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(data.0.join(FILE)).unwrap()).unwrap();
         assert_eq!(saved["version"], 1);
         assert_eq!(saved["devices"][0]["endpointId"], id(1));
-        assert_eq!(saved["devices"][0]["tier"], "chat");
-        assert_eq!(saved["devices"][0]["threads"], "all");
+        assert!(saved["devices"][0].get("tier").is_none());
+        assert!(saved["devices"][0].get("threads").is_none());
         assert_eq!(saved["devices"][0]["lastSeen"], serde_json::Value::Null);
         assert_eq!(saved["revoked"][0]["endpointId"], id(2));
         assert!(saved["revoked"][0]["revokedAt"].as_u64().unwrap() > 0);
-        let limited: Device = serde_json::from_value(serde_json::json!({ "endpointId": id(3), "label": "x", "tier": "full", "threads": ["a", "b"], "addedAt": 1, "lastSeen": null })).unwrap();
-        assert_eq!(limited.threads, Threads::Only(vec!["a".into(), "b".into()]));
-        assert!(serde_json::from_value::<Threads>(serde_json::json!("some")).is_err());
     }
 
     #[test]
     fn a_revoked_id_comes_back_only_with_restore() {
         let data = folder();
         let devices = Devices::open(&data.0);
-        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        devices.add(&id(1), "Phone", false).unwrap();
         devices.revoke(&id(1)).unwrap();
-        assert!(devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap_err().contains("revoked"));
-        assert!(devices.set_tier(&id(1), Tier::Full).is_err());
+        assert!(devices.add(&id(1), "Phone", false).unwrap_err().contains("revoked"));
         assert_eq!(devices.get(&id(1)), None);
-        devices.add(&id(1), "Phone", Tier::ReadOnly, Threads::ALL, true).unwrap();
-        assert_eq!(devices.get(&id(1)).unwrap().tier, Tier::ReadOnly);
+        devices.add(&id(1), "Phone", true).unwrap();
+        assert_eq!(devices.get(&id(1)).unwrap().label, "Phone");
         assert!(devices.list().unwrap().revoked.is_empty());
     }
 
@@ -522,7 +477,7 @@ pub(crate) mod tests {
     fn a_revoke_is_on_disk_before_sessions_hear_it() {
         let data = folder();
         let devices = std::sync::Arc::new(Devices::open(&data.0));
-        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        devices.add(&id(1), "Phone", false).unwrap();
         let mut heard = devices.subscribe();
         devices.revoke(&id(1)).unwrap();
         assert_eq!(heard.try_recv().unwrap(), id(1));
@@ -535,13 +490,11 @@ pub(crate) mod tests {
     fn mistakes_are_refused() {
         let data = folder();
         let devices = Devices::open(&data.0);
-        assert!(devices.add("ABC", "x", Tier::Chat, Threads::ALL, false).unwrap_err().contains("endpoint ID"));
-        assert!(devices.add(&id(0xab).to_uppercase(), "x", Tier::Chat, Threads::ALL, false).is_err());
-        devices.add(&id(1), "x", Tier::Chat, Threads::ALL, false).unwrap();
-        assert!(devices.add(&id(1), "x", Tier::Chat, Threads::ALL, false).unwrap_err().contains("already"));
-        assert!(devices.set_tier(&id(9), Tier::Full).unwrap_err().contains("no paired device"));
-        assert_eq!(Tier::parse("full"), Ok(Tier::Full));
-        assert!(Tier::parse("admin").is_err());
+        assert!(devices.add("ABC", "x", false).unwrap_err().contains("endpoint ID"));
+        assert!(devices.add(&id(0xab).to_uppercase(), "x", false).is_err());
+        devices.add(&id(1), "x", false).unwrap();
+        assert!(devices.add(&id(1), "x", false).unwrap_err().contains("already"));
+        assert!(devices.seen(&id(9)).unwrap_err().contains("no paired device"));
     }
 
     #[test]
@@ -549,21 +502,19 @@ pub(crate) mod tests {
         let data = folder();
         let devices = Devices::open(&data.0);
         assert_eq!(devices.revision(&id(1)), 0, "never seen");
-        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
-        devices.set_tier(&id(1), Tier::Full).unwrap();
-        devices.set_threads(&id(1), Threads::Only(vec!["r".into()])).unwrap();
-        assert_eq!(devices.revision(&id(1)), 3);
+        devices.add(&id(1), "Phone", false).unwrap();
+        assert_eq!(devices.revision(&id(1)), 1);
         devices.seen(&id(1)).unwrap();
-        assert_eq!(devices.revision(&id(1)), 3, "seen does not bump");
+        assert_eq!(devices.revision(&id(1)), 1, "seen does not bump");
         devices.revoke(&id(1)).unwrap();
-        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, true).unwrap();
-        assert_eq!(devices.revision(&id(1)), 5, "revoke and restore bump");
-        assert!(devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).is_err());
-        assert_eq!(devices.revision(&id(1)), 5, "a refused change bumps nothing");
-        assert_eq!(Devices::open(&data.0).revision(&id(1)), 5);
+        devices.add(&id(1), "Phone", true).unwrap();
+        assert_eq!(devices.revision(&id(1)), 3, "revoke and restore bump");
+        assert!(devices.add(&id(1), "Phone", false).is_err());
+        assert_eq!(devices.revision(&id(1)), 3, "a refused change bumps nothing");
+        assert_eq!(Devices::open(&data.0).revision(&id(1)), 3);
         devices.revoke(&id(1)).unwrap();
         let (revision, revoked_at) = Devices::open(&data.0).snapshot(&id(1));
-        assert_eq!(revision, 6);
+        assert_eq!(revision, 4);
         assert_eq!(revoked_at, Some(devices.list().unwrap().revoked[0].revoked_at));
         assert_eq!(devices.snapshot(&id(2)), (0, None));
 
@@ -580,17 +531,17 @@ pub(crate) mod tests {
     fn approve_pairing_compares_the_revision_and_adds() {
         let data = folder();
         let devices = Devices::open(&data.0);
-        assert_eq!(devices.approve_pairing(&id(1), "Phone", Tier::Chat, Threads::ALL, 1), Err(ApproveError::Changed));
+        assert_eq!(devices.approve_pairing(&id(1), "Phone", 1), Err(ApproveError::Changed));
         assert_eq!(devices.get(&id(1)), None);
-        let device = devices.approve_pairing(&id(1), "Phone", Tier::Chat, Threads::ALL, 0).unwrap();
+        let device = devices.approve_pairing(&id(1), "Phone", 0).unwrap();
         assert_eq!(devices.get(&id(1)), Some(device));
         assert_eq!(devices.revision(&id(1)), 1);
-        assert!(matches!(devices.approve_pairing(&id(1), "Phone", Tier::Chat, Threads::ALL, 1), Err(ApproveError::Registry(_))), "already paired");
+        assert!(matches!(devices.approve_pairing(&id(1), "Phone", 1), Err(ApproveError::Registry(_))), "already paired");
         devices.revoke(&id(1)).unwrap();
-        devices.approve_pairing(&id(1), "Phone", Tier::Full, Threads::ALL, 2).unwrap();
-        assert_eq!(devices.get(&id(1)).unwrap().tier, Tier::Full, "an approval with a matching revision lifts the tombstone");
+        devices.approve_pairing(&id(1), "Phone", 2).unwrap();
+        assert!(devices.get(&id(1)).is_some(), "an approval with a matching revision lifts the tombstone");
         assert!(devices.list().unwrap().revoked.is_empty());
-        assert!(matches!(devices.approve_pairing("ABC", "x", Tier::Chat, Threads::ALL, 0), Err(ApproveError::Registry(_))));
+        assert!(matches!(devices.approve_pairing("ABC", "x", 0), Err(ApproveError::Registry(_))));
     }
 
     #[test]
@@ -599,7 +550,7 @@ pub(crate) mod tests {
         std::fs::write(data.0.join(FILE), "{ not json").unwrap();
         let devices = Devices::open(&data.0);
         assert_eq!(devices.get(&id(1)), None);
-        assert!(devices.add(&id(1), "x", Tier::Chat, Threads::ALL, false).is_err());
+        assert!(devices.add(&id(1), "x", false).is_err());
         assert_eq!(std::fs::read_to_string(data.0.join(FILE)).unwrap(), "{ not json");
     }
 }

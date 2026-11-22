@@ -321,3 +321,37 @@ test("a failed Automatic setup fails the sheet once, never dials, and frees the 
     desk.unmount();
   }
 });
+
+test("when pairing finishes the done text is exactly Paired with {name}.", async () => {
+  let listener = null;
+  const plugin = {
+    pair: async () => 1,
+    pairCancel: async () => {},
+    listen: (_h, cb) => { listener = cb; return () => { listener = null; }; },
+  };
+  const host = createHost();
+  const paired = [];
+  function View() {
+    return createElement(PairSheet, {
+      plugin,
+      link: LINK_A,
+      label: "iPhone",
+      ready: automaticSet,
+      onPaired: (p) => paired.push(p),
+      onFailed: () => {},
+      onClose: () => {},
+    });
+  }
+  try {
+    host.draw(View);
+    await flush();
+    listener({ type: "pairDone", handle: 1, hostEndpointId: HOST, addrs: ["192.168.1.20:41641"], name: "Mac", hostName: "Tyler's Mac Studio" });
+    listener({ type: "closed", handle: 1, code: 0, reason: "bye" });
+    const tree = host.draw(View);
+    const doneParagraph = find(tree, (node) => node.type === "p" && node.props.className === "ph-sheet-text");
+    assert.equal(text(doneParagraph), "Paired with Tyler's Mac Studio.");
+    assert.deepEqual(paired, [{ hostEndpointId: HOST, addrs: ["192.168.1.20:41641"], name: "Tyler's Mac Studio" }]);
+  } finally {
+    host.unmount();
+  }
+});

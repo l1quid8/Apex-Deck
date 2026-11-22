@@ -209,7 +209,7 @@ for tool in claude codex; do command -v "$tool" >/dev/null 2>&1 && echo "$tool=i
 exit 0
 `;
 
-export const PAIR = `${PATHS}exec apex-daemon pair --json --tier full`;
+export const PAIR = `${PATHS}exec apex-daemon pair --json`;
 
 /** `key=value` lines into a map. The last of a key wins. */
 export function report(output: string): Record<string, string> {

@@ -108,7 +108,7 @@ fn forged_device_json_cannot_authorize_phone_commands_after_restart() {
     let root=std::env::temp_dir().join(format!("apex-forged-phone-grants-{}",std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let id="ab".repeat(32);
-    let forged=serde_json::json!({"version":1,"devices":[{"endpointId":id,"label":"FORGED","tier":"full","threads":"all","addedAt":1,"lastSeen":null}],"revoked":[]});
+    let forged=serde_json::json!({"version":1,"devices":[{"endpointId":id,"label":"FORGED","addedAt":1,"lastSeen":null}],"revoked":[]});
     let bytes=serde_json::to_vec(&forged).unwrap();
     std::fs::write(root.join("devices.json"),&bytes).unwrap();
     for _ in 0..2 {
@@ -134,13 +134,11 @@ async fn production_local_socket_cannot_grant_phone_authority_without_ui_receipt
     let (reader,mut writer)=tokio::io::split(client); let mut reader=BufReader::new(reader);
     for (id,cmd,args) in [
         (0,"hello",serde_json::json!({"protocol":1})),
-        (1,"devices_add",serde_json::json!({"id":"ab".repeat(32),"label":"forged","tier":"full"})),
-        (2,"devices_set_tier",serde_json::json!({"id":"ab".repeat(32),"tier":"full"})),
-        (3,"devices_set_threads",serde_json::json!({"id":"ab".repeat(32),"threads":"all"})),
-        (4,"pair_approve",serde_json::json!({"invitation":"forged","claim_id":"forged"})),
+        (1,"devices_add",serde_json::json!({"id":"ab".repeat(32),"label":"forged"})),
+        (2,"pair_approve",serde_json::json!({"invitation":"forged","claim_id":"forged"})),
+        (3,"session_load",serde_json::json!({})),
+        (4,"provenance_execute",serde_json::json!({"receipt":{"payload":serde_json::json!({"receipt":{"command":{"cmd":"devices_add","args":{"id":"ab".repeat(32),"label":"forged"}}}}).to_string(),"signature":"forged"}})),
         (5,"session_load",serde_json::json!({})),
-        (6,"provenance_execute",serde_json::json!({"receipt":{"payload":serde_json::json!({"receipt":{"command":{"cmd":"devices_add","args":{"id":"ab".repeat(32),"label":"forged","tier":"full"}}}}).to_string(),"signature":"forged"}})),
-        (7,"session_load",serde_json::json!({})),
     ] {
         let line=format!("{}\n",serde_json::json!({"id":id,"cmd":cmd,"args":args}));
         writer.write_all(line.as_bytes()).await.unwrap();
@@ -148,8 +146,8 @@ async fn production_local_socket_cannot_grant_phone_authority_without_ui_receipt
         tokio::time::timeout(std::time::Duration::from_secs(5),reader.read_line(&mut reply)).await.unwrap().unwrap();
         let reply:serde_json::Value=serde_json::from_str(&reply).unwrap();
         assert_eq!(reply["id"],id);
-        if id>0 && id<5 { assert!(reply["err"].as_str().unwrap().contains("receipt"),"{reply}"); }
-        else if id==6 { assert!(reply.get("err").is_some(),"a forged management receipt was accepted: {reply}"); }
+        if id>0 && id<3 { assert!(reply["err"].as_str().unwrap().contains("receipt"),"{reply}"); }
+        else if id==4 { assert!(reply.get("err").is_some(),"a forged management receipt was accepted: {reply}"); }
         else { assert!(reply.get("ok").is_some(),"{reply}"); }
     }
     assert!(daemon.devices.get(&"ab".repeat(32)).is_none());
@@ -183,22 +181,22 @@ fn offline_mac_device_management_explains_how_to_recover() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_device_grants_and_offline_revoke_survive_restart_without_a_broker() {
-    use apex_daemon::devices::{Devices, Threads, Tier};
+    use apex_daemon::devices::Devices;
     use apex_daemon::devices_cli::{run, DevicesAction};
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("apex-linux-phone-cli-{}", std::process::id()));
     let id = "ab".repeat(32);
     let devices = Devices::open(&root);
     assert!(!devices.requires_ui_receipt());
-    devices.add(&id, "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+    devices.add(&id, "Phone", false).unwrap();
     drop(devices);
-    assert_eq!(Devices::open(&root).get(&id).unwrap().tier, Tier::Chat);
+    assert_eq!(Devices::open(&root).get(&id).unwrap().label, "Phone");
     assert_eq!(std::fs::metadata(root.join("devices.json")).unwrap().permissions().mode() & 0o777, 0o600);
     run(Some(root.clone()), DevicesAction::List).unwrap();
     run(Some(root.clone()), DevicesAction::Revoke { id: id.clone() }).unwrap();
     let reopened = Devices::open(&root);
     assert!(reopened.get(&id).is_none());
-    assert!(reopened.add(&id, "Phone", Tier::Full, Threads::ALL, false).unwrap_err().contains("revoked"));
+    assert!(reopened.add(&id, "Phone", false).unwrap_err().contains("revoked"));
     std::fs::remove_dir_all(root).unwrap();
 }
 

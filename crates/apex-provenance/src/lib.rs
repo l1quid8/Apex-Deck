@@ -812,7 +812,7 @@ pub fn protected(name: &str) -> bool {
             // Bound to the UI's delivery ID like room actions; the host also
             // refuses changed content under the same ledger import.
             | "legacy_import_apply"
-            | "devices_add" | "devices_set_tier" | "devices_set_threads" | "pair_approve"
+            | "devices_add" | "pair_approve"
     )
 }
 fn content_bound_startup_preflight(command: &Value) -> bool {

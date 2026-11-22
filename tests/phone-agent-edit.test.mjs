@@ -179,8 +179,8 @@ test('PhoneApp saves agents through the session it reads fresh from the Mac', ()
   assert.match(source, /onNewAgent=\{newAgent\}/);
   assert.match(source, /onEditAgent=\{changeAgent\}/);
   assert.match(source, /onClick=\{\(\) => onEditAgent\(bot\.id\)\}/);
-  // Making an agent needs Full access on the Mac, and the sheet says so instead of failing on save.
-  assert.match(source, /if \(!canSeeNewThread\(macHost\.access\(\)\)\) \{ setNotice\(`Making an agent needs Full access/);
+  // Any paired phone can make agents without a level gate.
+  assert.doesNotMatch(source, /Making an agent needs Full access/);
 });
 
 test('the sheet hands back what it opened with, so the save can tell what was touched', () => {

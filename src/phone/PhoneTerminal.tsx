@@ -5,7 +5,6 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { PtySummary } from "../backend";
 import type { PhoneHost } from "../phoneBackend";
-import { canSeeNewThread } from "../phoneRules";
 import { nextTitle } from "../terminalTitle";
 import { copyText } from "../copyText";
 import { age, appendTail, askLine, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, questionText, readTerminalCache, stripAnsi, stripOrder, swipeIntent, writeTerminalCache, type PhoneTerminal as PhoneTerminalInfo } from "./phoneTerminals";
@@ -13,7 +12,7 @@ import { copyLastOutput, endTerminal, renameTerminal, resizePhoneTerminal } from
 import { Check, ChevronDown, Plus, X } from "./icons";
 
 type View = { kind: "home" } | { kind: "terminal"; machineId: string; id: string };
-type HostInfo = { host: PhoneHost; name: string; id: string; online: boolean; access: boolean };
+type HostInfo = { host: PhoneHost; name: string; id: string; online: boolean };
 type Props = {
   host: PhoneHost | null; hosts: PhoneHost[]; name: string; cwd: string | null; openSwitcher?: boolean; resumeSignal?: number; onSwitcherOpened?: () => void; onWaitingChange?: (waiting: boolean) => void; hidden?: boolean; canWriteClipboard?: (text: string) => Promise<boolean>;
   /** Bumped by the header's ‹ Code button: back to the terminal list. */
@@ -64,9 +63,9 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   const holdFired = useRef(false);
   const discoveryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
-  const infos: HostInfo[] = hosts.map((item) => ({ host: item, id: item.machine.id, name: item.machine.name, online: item.connection.get().status.kind === "connected", access: canSeeNewThread(item.access()) }));
-  const eligible = infos.filter((item) => item.online && item.access);
-  const hostSignature = infos.map((item) => `${item.id}:${item.online}:${item.access}`).join("|");
+  const infos: HostInfo[] = hosts.map((item) => ({ host: item, id: item.machine.id, name: item.machine.name, online: item.connection.get().status.kind === "connected" }));
+  const eligible = infos.filter((item) => item.online);
+  const hostSignature = infos.map((item) => `${item.id}:${item.online}`).join("|");
   const all = Object.values(summaries).flat();
   const visible = all.filter((item) => !readClosed(item.machineId).has(item.id));
   const machine = infos.find((item) => item.id === (view.kind === "terminal" ? view.machineId : host?.machine.id)) ?? null;
@@ -123,7 +122,6 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   };
   const refreshHost = async (info: HostInfo, search?: string) => {
     if (!info.online) { setHostState((s) => ({ ...s, [info.id]: "offline" })); return; }
-    if (!info.access) { setHostState((s) => ({ ...s, [info.id]: "needs-full" })); return; }
     try {
       const items = await info.host.backend.ptyList(search);
       const prior = new Map((readTerminalCache()[info.id] ?? []).map((item) => [item.id, item]));
@@ -139,7 +137,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
       const detail = String(error);
       const message = detail.toLowerCase();
       setHostErrors((s) => ({ ...s, [info.id]: detail }));
-      setHostState((s) => ({ ...s, [info.id]: message.includes("unknown command") ? "old" : message.includes("limited to some threads") ? "needs-all-threads" : message.includes("access") || message.includes("permission") ? "needs-full" : "error" }));
+      setHostState((s) => ({ ...s, [info.id]: message.includes("unknown command") ? "old" : "error" }));
     }
   };
 
@@ -148,7 +146,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     const offs: (() => void)[] = [];
     for (const info of infos) {
       void refreshHost(info);
-      if (!info.access || !info.online) continue;
+      if (!info.online) continue;
       info.host.backend.onPtyData((id, data, eventCursor) => {
         if (!live) return;
         if (!(readTerminalCache()[info.id] ?? []).some((item) => item.id === id)) { const key = `${info.id}:${id}`; const old = discoveryTimers.current.get(key); if (old) clearTimeout(old); discoveryTimers.current.set(key, setTimeout(() => void refreshHost(info), 300)); return; }
@@ -169,7 +167,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   }, [hosts, hostSignature]);
 
   useEffect(() => {
-    if (view.kind !== "terminal" || !terminal || !machine?.access || !machine.online || !xtermHost.current) return;
+    if (view.kind !== "terminal" || !terminal || !machine?.online || !xtermHost.current) return;
     let term = xterm.current;
     let fitAddon = fit.current;
     if (!term || !fitAddon) {
@@ -260,7 +258,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     {sheet === "list" && <div className="ph-sheet-back" onClick={() => setSheet(null)}><div className="ph-sheet" role="dialog" aria-modal="true" aria-label="Terminals" tabIndex={-1} ref={sheetDialog} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setSheet(null); }}><div className="ph-handle" /><div className="ph-sheet-title"><h3>Terminals</h3><button type="button" className="ph-icon" aria-label="Close" onClick={() => setSheet(null)}><X size={20} /></button></div><div className="ph-sheet-body"><div className="ph-term-sheet"><input className="ph-term-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search names and output" />
       {(query ? searchResults ?? [] : visible).length === 0 && query && <p className="ph-term-muted">No terminal name or recent output matches “{query}”.</p>}
       {(query ? groupForSheet(infos, searchResults ?? [], { machineId: machine?.id ?? "", project }) : groups).map((group) => <div key={`${group.machine.id}:${group.project}`}><h4>{group.machine.name} · {group.project}</h4>{group.terminals.map((item) => row(item, view.kind === "terminal" && item.id === view.id))}</div>)}
-      {infos.filter((info) => !info.access || !info.online || hostState[info.id] === "old" || hostState[info.id] === "needs-all-threads" || hostState[info.id] === "error").map((info) => <p className="ph-term-muted" role={!info.online || hostState[info.id] === "error" || hostState[info.id] === "old" || hostState[info.id] === "needs-all-threads" ? "status" : undefined} key={info.id}>{info.name}: {hostState[info.id] === "old" ? `Update Apex Deck on ${info.name} to see its terminals (${hostErrors[info.id]})` : hostState[info.id] === "needs-all-threads" ? `Allow this phone every thread on ${info.name} (${hostErrors[info.id]})` : hostState[info.id] === "error" ? `Couldn't load terminals: ${hostErrors[info.id]}` : !info.online ? `Couldn't load terminals: ${terminalHostIssue(info)}` : `Needs Full access on ${info.name}`}</p>)}
+      {infos.filter((info) => !info.online || hostState[info.id] === "old" || hostState[info.id] === "error").map((info) => <p className="ph-term-muted" role="status" key={info.id}>{info.name}: {hostState[info.id] === "old" ? `Update Apex Deck on ${info.name} to see its terminals (${hostErrors[info.id]})` : hostState[info.id] === "error" ? `Couldn't load terminals: ${hostErrors[info.id]}` : `Couldn't load terminals: ${terminalHostIssue(info)}`}</p>)}
       {!query && machine && <button type="button" className="ph-list-add" onClick={() => void newShell(machine)}>New shell in {project}</button>}
       <p className="ph-term-foot">Shows terminals opened in Apex Deck. Terminal.app and iTerm windows aren't listed.</p></div></div></div></div>}
     {sheet === "menu" && target && <div className="ph-sheet-back" onClick={() => setSheet(null)}><div className="ph-sheet" role="dialog" aria-modal="true" aria-label={`${target.name} actions`} tabIndex={-1} ref={sheetDialog} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setSheet(null); }}><div className="ph-handle" /><div className="ph-sheet-title"><h3><i className={`ph-term-dot ${dotState(target)}`} /> {target.name}</h3><button type="button" className="ph-icon" aria-label="Close" onClick={() => { setSheet(null); setTarget(null); }}><X size={20} /></button></div><div className="ph-sheet-body"><div className="ph-term-sheet"><p className="ph-term-muted">{target.project} · {target.machineName} · {dotText[dotState(target)]}</p>
@@ -277,7 +275,6 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
       <p className="ph-intro"><i className={`ph-dot${machine?.online ? " on" : " off"}`} />{folder ? `${folder} · ${machine?.name ?? name}` : machine?.name ?? name}</p>
       <div className="ph-section">Terminals<button type="button" className="ph-section-action" onClick={() => { setQuery(""); setSheet("list"); }}>See all</button></div>
       {machine && !machine.online ? <p className="ph-list-note" role="status">Couldn't load terminals: {terminalHostIssue(machine)}</p>
-        : (machine && !machine.access) || eligible.length === 0 ? <p className="ph-list-note">Needs Full access on {machine?.name ?? name}.</p>
         : <>
           {machine && hostErrors[machine.id] && <p className="ph-list-note" role="status">Couldn't load terminals: {hostErrors[machine.id]}</p>}
           {here.length > 0 ? <>

@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { PictureCache, pictureBlock, pictureError } from '../src/phone/pictureRules.ts';
 
-test('pictures need Full access on the machine, and say so instead of a blank gap', () => {
-  assert.equal(pictureBlock({ access: { tier: 'read' }, online: true, machine: 'Mac' }), 'Pictures need Full access on Mac');
-  assert.equal(pictureBlock({ access: { tier: 'full' }, online: true, machine: 'Mac' }), null);
-  // A WebSocket pair carries no access level and keeps what it had.
-  assert.equal(pictureBlock({ access: null, online: true, machine: 'Mac' }), null);
-  assert.equal(pictureBlock({ access: { tier: 'full' }, online: false, machine: 'Hetzner' }), 'Hetzner is offline');
+test('pictures load on any connected machine and note when offline', () => {
+  assert.equal(pictureBlock({ online: true, machine: 'Mac' }), null);
+  assert.equal(pictureBlock({ online: false, machine: 'Hetzner' }), 'Hetzner is offline');
 });
 
 test('a failed read names the reason in plain words', () => {

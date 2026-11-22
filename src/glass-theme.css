@@ -375,11 +375,9 @@
 :where(:root[data-deck-theme="glass"]) .quick-add-tools,
 :where(:root[data-deck-theme="glass"]) .artifacts-tabs,
 :where(:root[data-deck-theme="glass"]) .preview-servers,
-:where(:root[data-deck-theme="glass"]) .pair-thread-list,
 :where(:root[data-deck-theme="glass"]) .new-menu-filter,
 :where(:root[data-deck-theme="glass"]) .settings-row select,
-:where(:root[data-deck-theme="glass"]) .remote-addresses input,
-:where(:root[data-deck-theme="glass"]) .pair-scope select {
+:where(:root[data-deck-theme="glass"]) .remote-addresses input {
   background: var(--deck-well-fill);
   border-color: var(--deck-edge);
 }

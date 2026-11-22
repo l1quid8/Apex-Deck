@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addMachine, canSeeNewThread, editMachine, loadMachines, saveMachines, withHints } from "../src/phoneRules.ts";
+import { addMachine, editMachine, loadMachines, saveMachines, withHints } from "../src/phoneRules.ts";
 import { parsePairingLink, scansAtLaunch, startPairing, withPairedMachine, RELAY } from "../src/phone/pairing.ts";
 import { EventRouter } from "../src/phone/remotePlugin.ts";
 
@@ -57,13 +57,6 @@ test("an expired code says so", () => {
   assert.ok(parsePairingLink(link({ exp: now - 60 }), now));
 });
 
-test("canSeeNewThread: only Full, or a WebSocket pair with no access", () => {
-  assert.equal(canSeeNewThread({ tier: "chat", threads: "all" }), false);
-  assert.equal(canSeeNewThread({ tier: "read_only", threads: "all" }), false);
-  assert.equal(canSeeNewThread({ tier: "full", threads: "all" }), true);
-  assert.equal(canSeeNewThread(null), true);
-});
-
 test("hello.addrs replaces the saved hints", () => {
   assert.deepEqual(withHints(paired, ["myhome.ddns.net:41641"]).addrs, ["myhome.ddns.net:41641"]);
   assert.equal(withHints(paired, ["203.0.113.7:41641"]), paired, "unchanged list keeps the same object");
@@ -88,12 +81,12 @@ test("the pairing screen shows the code from pairCode, then done after the machi
   startPairing(plugin, link(), "iPhone", (state) => states.push(state));
   await tick();
   plugin.emit({ type: "pairCode", handle: 1, code: "123 456", hostName: "Tyler's Mac Studio" });
-  plugin.emit({ type: "pairDone", handle: 1, hostEndpointId: HOST, addrs: ["192.168.1.20:41641"], name: "Mac", hostName: "Tyler's Mac Studio", tier: "chat", threads: "all" });
+  plugin.emit({ type: "pairDone", handle: 1, hostEndpointId: HOST, addrs: ["192.168.1.20:41641"], name: "Mac", hostName: "Tyler's Mac Studio" });
   plugin.emit({ type: "closed", handle: 1, code: 0, reason: "bye" });
   assert.deepEqual(states, [
     { kind: "dialing" },
     { kind: "code", code: "123 456", hostName: "Tyler's Mac Studio" },
-    { kind: "done", paired: { hostEndpointId: HOST, addrs: ["192.168.1.20:41641"], name: "Tyler's Mac Studio", tier: "chat" } },
+    { kind: "done", paired: { hostEndpointId: HOST, addrs: ["192.168.1.20:41641"], name: "Tyler's Mac Studio" } },
   ]);
 });
 

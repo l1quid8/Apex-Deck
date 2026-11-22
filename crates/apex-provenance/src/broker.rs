@@ -127,7 +127,7 @@ mod tests {
         let endpoint = "ab".repeat(32);
         let session = "cd".repeat(16);
         let grant = json!({"op":"write","name":"devices.json","nonce":"ab".repeat(16),"expectedRevision":0,
-            "value":{"version":1,"devices":[{"endpointId":endpoint,"tier":"full","threads":"all"}],"revoked":[]}});
+            "value":{"version":1,"devices":[{"endpointId":endpoint}],"revoked":[]}});
         let (journal, _) = transaction(&Journal::new(), &key, FOLDER, &grant, false, true).unwrap();
         let command = json!({"cmd":"room_create","args":{"id":"phone-room"}});
         let claim = json!({"op":"phone_claim","endpoint":endpoint,"session":session,"requestId":7,

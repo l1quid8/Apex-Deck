@@ -2,19 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // The phone's Worktrees pane and its ↓ button. These run the rules that decide what each row says,
-// what its sheet offers, who sees the pane, and how many replies the ↓ counts.
-const { canManageWorktrees, newBelow, newWorktreeFolder, projectTop, shortPath, startFrom, worktreeActions, worktreeRow } = await import(new URL('../src/phone/worktrees.ts', import.meta.url).href);
+// what its sheet offers, and how many replies the ↓ counts.
+const { newBelow, newWorktreeFolder, projectTop, shortPath, startFrom, worktreeActions, worktreeRow } = await import(new URL('../src/phone/worktrees.ts', import.meta.url).href);
 
 const tree = (over = {}) => ({ path: '/Users/you/Downloads/apex-deck-worktrees/feat-x', head: 'abcdef1234', branch: 'feat/x', main: false, locked: false, prunable: false, changes: 0, task: false, copy: null, ...over });
 const copy = (over = {}) => tree({ branch: null, copy: { bot: 'Jigga', thread: 't1', threadTitle: 'Phone polish', state: 'working', reason: null, ...over }, changes: 3 });
-
-test('only Full access to every thread opens the pane, as the Mac only lists worktrees for that', () => {
-  assert.equal(canManageWorktrees(null), true); // a WebSocket pair has no access record and keeps full control
-  assert.equal(canManageWorktrees({ tier: 'full', threads: 'all' }), true);
-  assert.equal(canManageWorktrees({ tier: 'full', threads: ['t1'] }), false);
-  assert.equal(canManageWorktrees({ tier: 'chat', threads: 'all' }), false);
-  assert.equal(canManageWorktrees({ tier: 'read_only', threads: 'all' }), false);
-});
 
 test('an agent copy row names the agent, marks this thread, and says what it is doing', () => {
   const mine = worktreeRow(copy(), 't1', '/p');

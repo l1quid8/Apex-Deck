@@ -61,10 +61,9 @@ export function setPlanBeforeContinuation<T>(roomId: string, enabled: boolean, s
   return withPlanAcknowledgement(() => setPlan(roomId, enabled), continueAfterAck);
 }
 
-export function composerPlanDisabledReason(state: { pendingDraft: boolean; sending: boolean; online: boolean; readOnly: boolean; offlineReason: string }): string | null {
+export function composerPlanDisabledReason(state: { pendingDraft: boolean; sending: boolean; online: boolean; offlineReason: string }): string | null {
   if (state.sending) return "Wait for sending to finish.";
   if (!state.pendingDraft && !state.online) return state.offlineReason;
-  if (!state.pendingDraft && state.readOnly) return "Plan mode needs chat access on this machine.";
   return null;
 }
 
