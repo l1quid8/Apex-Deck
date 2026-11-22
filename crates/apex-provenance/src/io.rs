@@ -95,6 +95,35 @@ fn read_reply(stream: &mut UnixStream, budget: Duration) -> Result<Value, String
     }
 }
 
+// The serial broker takes one caller at a time. A request bigger than the
+// socket buffer (a whole ledger write) waits there until the broker reaches
+// this connection, so a send timeout means "still queued", not a failure. Keep
+// sending the SAME frame within the budget. The broker acts only on a complete
+// newline-terminated frame, so a send that never finishes changes nothing.
+fn send_request(stream: &mut UnixStream, bytes: &[u8], budget: Duration) -> Result<(), String> {
+    const UNSENT: &str = "nothing was changed. Try again in a moment.";
+    let deadline = std::time::Instant::now() + budget;
+    let idle = stream.write_timeout().map_err(|e| e.to_string())?
+        .unwrap_or(Duration::from_secs(30));
+    let mut sent = 0;
+    while sent < bytes.len() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("The protected provenance service stayed busy with other requests, so {UNSENT}"));
+        }
+        if let Err(error) = stream.set_write_timeout(Some(idle.min(remaining))) {
+            return Err(format!("Could not send to the protected provenance service ({error}), so {UNSENT}"));
+        }
+        match stream.write(&bytes[sent..]) {
+            Ok(0) => return Err(format!("The protected provenance service closed the connection, so {UNSENT}")),
+            Ok(count) => sent += count,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
+            Err(e) => return Err(format!("Could not send to the protected provenance service ({e}), so {UNSENT}")),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod reply_tests {
     use super::*;
@@ -175,6 +204,48 @@ mod reply_tests {
     }
 
     #[test]
+    fn busy_broker_receives_the_whole_request_once_after_send_timeouts() {
+        // Bigger than both socket buffers, so the send must wait for the broker.
+        let request: Vec<u8> = (0..256 * 1024).map(|i| b'a' + (i % 26) as u8).chain([b'\n']).collect();
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        let expected = request.clone();
+        let worker = std::thread::spawn(move || {
+            // Busy with other callers for several send timeouts.
+            std::thread::sleep(Duration::from_millis(80));
+            let mut received = Vec::new();
+            broker.read_to_end(&mut received).unwrap();
+            assert!(received == expected, "the request arrives once, whole and in order ({} bytes)", received.len());
+        });
+        let result = send_request(&mut client, &request, Duration::from_secs(5));
+        drop(client);
+        worker.join().unwrap();
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn stalled_send_has_bounded_wait_and_readable_error() {
+        let (mut client, _broker) = UnixStream::pair().unwrap();
+        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        let start = std::time::Instant::now();
+        let error = send_request(&mut client, &vec![b'x'; 256 * 1024], Duration::from_millis(60)).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("busy") && error.contains("nothing was changed"), "{error}");
+        assert!(!error.contains("os error"), "{error}");
+    }
+
+    #[test]
+    fn closed_broker_fails_the_send_without_waiting() {
+        let (mut client, broker) = UnixStream::pair().unwrap();
+        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        drop(broker);
+        let start = std::time::Instant::now();
+        let error = send_request(&mut client, b"request\n", Duration::from_secs(5)).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("nothing was changed"), "{error}");
+    }
+
+    #[test]
     fn complete_reply_is_accepted_after_broker_closes() {
         let (mut client, mut broker) = UnixStream::pair().unwrap();
         broker.write_all(b"{\"saved\":true}\n").unwrap();
@@ -222,7 +293,7 @@ pub fn consume(signed: &Signed, data_dir: &Path) -> Result<Receipt, String> {
     if bytes.len() > MAX_BYTES {
         return Err("Provenance request exceeds limit".into());
     }
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
+    send_request(&mut stream, &bytes, REPLY_BUDGET)?;
     let response = read_reply(&mut stream, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.to_owned());
@@ -274,7 +345,7 @@ pub fn document(
     stream
         .set_write_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
+    send_request(&mut stream, &bytes, REPLY_BUDGET)?;
     let response = read_reply(&mut stream, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.into());
@@ -325,7 +396,7 @@ pub fn finish(data_dir: &Path, key_id: &str, error: Option<&str>) -> Result<(), 
         .map_err(|e| e.to_string())?;
     let mut bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
+    send_request(&mut stream, &bytes, REPLY_BUDGET)?;
     let response = read_reply(&mut stream, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.into());
@@ -406,7 +477,7 @@ pub(crate) fn exchange(request: &Value) -> Result<Value, String> {
     stream
         .set_write_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
+    send_request(&mut stream, &bytes, REPLY_BUDGET)?;
     read_reply(&mut stream, REPLY_BUDGET)
 }
 
