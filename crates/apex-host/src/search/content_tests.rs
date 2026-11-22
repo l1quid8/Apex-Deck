@@ -200,12 +200,15 @@ async fn task_note_library_and_assistant_hits_carry_their_ids() {
     use crate::assistant_tasks::{HumanRequest, TaskOwner};
     use crate::personal_workspace::ProjectRef;
     let f = fixture("ids");
-    let owner = TaskOwner { workspace_id: "ws".into(), cwd: "/work/app".into(), host_id: "host".into(), conversation_id: "conv-1".into() };
+    let project = f.data.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = project.canonicalize().unwrap().to_string_lossy().into_owned();
+    let owner = TaskOwner { workspace_id: "ws".into(), cwd: project.clone(), host_id: "host".into(), conversation_id: "conv-1".into() };
     let task = f.host.assistant_tasks.submit_human_request(
         HumanRequest { request_id: "req-1".into(), owner: owner.clone(), text: "Check the installer on Windows".into(), destination: None },
         "Verify the installer signs correctly".into(), None).unwrap();
     let note = f.host.project_memory.save(crate::project_memory::SaveNote {
-        project: ProjectRef { host_id: "host".into(), workspace_id: "ws".into(), cwd: "/work/app".into() },
+        project: ProjectRef { host_id: "host".into(), workspace_id: "ws".into(), cwd: project.clone() },
         id: None, expected_version: None, text: "The installer needs notarization before release.".into(),
         kind: crate::personal::FactKind::Fact, author: None, source: Default::default(), expires_at: None, now: 5,
     }).unwrap();
@@ -221,7 +224,7 @@ async fn task_note_library_and_assistant_hits_carry_their_ids() {
     let reply = f.find("a", "installer").await;
     assert_eq!(targets(&hits(&reply, "task")), [json!({"type": "task", "id": task.id})]);
     assert_eq!(hits(&reply, "task")[0]["title"], "Verify the installer signs correctly");
-    assert_eq!(targets(&hits(&reply, "note")), [json!({"type": "note", "id": note.id, "project": "/work/app"})]);
+    assert_eq!(targets(&hits(&reply, "note")), [json!({"type": "note", "id": note.id, "project": project})]);
     assert_eq!(targets(&hits(&reply, "library")), [json!({"type": "library", "file": "shot-1.png"})]);
     assert_eq!(targets(&hits(&reply, "message")), [json!({"type": "message", "room": "conv-1", "roomKind": "assistant", "seq": 0, "originSeq": null, "clientMessageId": "ask-1", "speaker": "You"})]);
 }

@@ -94,8 +94,13 @@ def _fixed_shape(text):
 # entry point and the raw socket receipt gate. Never inject the legacy bypass
 # into a release with this admission architecture.
 NATIVE_REGIONS = (
-    ("pub fn local_linux_cli_surface(", "fn reply<T:", "a3704e5a993f7614d5fd51420b2feb06d6cfd341870031bb66a24a6641aa2bf3"),
-    ("    pub async fn call_with_client_capability(", "    // Tests of downstream behavior", "527fd0f45c92aa4a6c39de64832278e4041601b78fd1074828021279dc7dacb8"),
+    ("pub fn local_linux_cli_surface(", "fn reply<T:", {
+        "a3704e5a993f7614d5fd51420b2feb06d6cfd341870031bb66a24a6641aa2bf3",
+    }),
+    ("    pub async fn call_with_client_capability(", "    // Tests of downstream behavior", {
+        "527fd0f45c92aa4a6c39de64832278e4041601b78fd1074828021279dc7dacb8",  # before Search Deck
+        "c12ab17d9445b51ea339e30e998e8c198bff8b6376567d308a0a186a74eaa873",  # connection-bound search admission
+    }),
 )
 
 
@@ -109,8 +114,8 @@ def prepare_source(source_root: Path) -> dict:
     command = Path(source_root) / COMMAND
     original = command.read_text()
     if "call_from_local_linux_cli" in original:
-        for begin, end, expected in NATIVE_REGIONS:
-            if _digest(original[_one(original, begin):_one(original, end)]) != expected:
+        for begin, end, accepted in NATIVE_REGIONS:
+            if _digest(original[_one(original, begin):_one(original, end)]) not in accepted:
                 raise CompatibilityError("Unsupported native Linux admission routing")
         for module in ("apex-host", "apex-daemon"):
             if not (Path(source_root) / "crates" / module / "src/maintenance.rs").is_file():
