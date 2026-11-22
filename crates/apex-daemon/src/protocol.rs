@@ -586,6 +586,7 @@ where
                         // Windows pipes cannot close only their write half.
                         // Treat this local relay frame exactly like input EOF:
                         // stop reading and drain replies already in flight.
+                        daemon.host.search().close_session(&session);
                         voice.close_all("connection closed");
                         reading = false;
                         drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
@@ -856,6 +857,7 @@ where
                     return Ended::Closed;
                 }
                 None => {
+                    daemon.host.search().close_session(&session);
                     voice.close_all("connection closed");
                     reading = false;
                     drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
