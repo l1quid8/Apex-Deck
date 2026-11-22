@@ -4,9 +4,9 @@
 //! An entry is keyed by the file's length, modified time in nanoseconds and
 //! identity. Transcripts are saved by temp file and rename
 //! (`Store::write_bytes_held`), so a rewrite is a new file with a new
-//! identity even when its size and timestamp are unchanged. Windows has no
-//! stable identity in std, so there the creation time stands in for it; a
-//! rename-replace gives the new file a new one.
+//! identity even when its size and timestamps are unchanged. On Windows,
+//! use the volume and file ID from an open handle. If the filesystem cannot
+//! supply a file ID, read the transcript without caching it.
 //!
 //! Visibility (archived, trashed, deleted) is never stored here. It is read
 //! fresh on every query and applied after the cache.
@@ -27,7 +27,17 @@ pub const CACHE_BYTES: usize = 64 * 1024 * 1024;
 pub struct FileKey {
     len: u64,
     modified_ns: u128,
+    #[cfg(not(windows))]
     identity: u64,
+    #[cfg(windows)]
+    identity: Option<WindowsFileId>,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsFileId {
+    volume: u64,
+    id: [u8; 16],
 }
 
 pub struct Line {
@@ -124,15 +134,44 @@ fn parse(bytes: &[u8]) -> Option<RoomText> {
 }
 
 fn key(path: &Path) -> std::io::Result<FileKey> {
+    #[cfg(windows)]
+    let file = std::fs::File::open(path)?;
+    #[cfg(windows)]
+    let meta = file.metadata()?;
+    #[cfg(not(windows))]
     let meta = std::fs::metadata(path)?;
     let modified_ns = meta.modified()?.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     #[cfg(unix)]
     let identity = std::os::unix::fs::MetadataExt::ino(&meta);
     #[cfg(windows)]
-    let identity = std::os::windows::fs::MetadataExt::creation_time(&meta);
+    let identity = windows_file_id(&file);
     #[cfg(not(any(unix, windows)))]
     let identity = 0;
     Ok(FileKey { len: meta.len(), modified_ns, identity })
+}
+
+#[cfg(windows)]
+fn windows_file_id(file: &std::fs::File) -> Option<WindowsFileId> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandleEx, FileIdInfo, FILE_ID_INFO,
+    };
+
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: The file owns a live handle and the output buffer is the size
+    // and type required by FileIdInfo.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if ok == 0 || info.FileId.Identifier == [0; 16] {
+        return None;
+    }
+    Some(WindowsFileId { volume: info.VolumeSerialNumber, id: info.FileId.Identifier })
 }
 
 struct Entry {
@@ -214,6 +253,11 @@ impl Cache {
         };
         drop(bytes);
         let text = Arc::new(text);
+        #[cfg(windows)]
+        if before.identity.is_none() {
+            self.forget(path);
+            return Loaded::Text(text);
+        }
         let mut inner = self.inner.lock().unwrap();
         if let Some(old) = inner.entries.insert(path.to_path_buf(), Entry { key: before, text: Arc::clone(&text), used: scan }) {
             inner.bytes -= old.text.bytes;
@@ -325,6 +369,44 @@ mod tests {
         let cache = Cache::default();
         assert_eq!(text(cache.load(&path, cache.begin_scan(), &nothing)), "alpha");
         replace(&path, &room("omega"));
+        assert_eq!(text(cache.load(&path, cache.begin_scan(), &nothing)), "omega");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replacement_with_matching_size_and_timestamps_is_reread() {
+        use std::fs::{FileTimes, OpenOptions};
+        use std::io::Write;
+        #[cfg(windows)]
+        use std::os::windows::fs::FileTimesExt;
+
+        let dir = dir("matching-stamps");
+        let path = dir.join("a.json");
+        let temp = path.with_extension("tmp");
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let times = FileTimes::new().set_modified(time);
+        #[cfg(windows)]
+        let times = times.set_created(time);
+
+        for (file, body) in [(&path, room("alpha")), (&temp, room("omega"))] {
+            let mut handle = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(file)
+                .unwrap();
+            handle.write_all(body.as_bytes()).unwrap();
+            handle.set_times(times).unwrap();
+        }
+        let before = std::fs::metadata(&path).unwrap();
+        let cache = Cache::default();
+        assert_eq!(text(cache.load(&path, cache.begin_scan(), &nothing)), "alpha");
+
+        std::fs::rename(&temp, &path).unwrap();
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        #[cfg(windows)]
+        assert_eq!(before.created().unwrap(), after.created().unwrap());
         assert_eq!(text(cache.load(&path, cache.begin_scan(), &nothing)), "omega");
         let _ = std::fs::remove_dir_all(dir);
     }
