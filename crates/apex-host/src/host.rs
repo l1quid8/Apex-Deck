@@ -4030,7 +4030,13 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         RoomEvent::MessageAdded { message } => {
             if let Some(seq) = message.origin_seq { checkpoint.snapshot.next_origin_seq = checkpoint.snapshot.next_origin_seq.max(seq.saturating_add(1)); }
             if message.seq == checkpoint.snapshot.transcript.len() { checkpoint.snapshot.transcript.push(message.clone()); }
-            else if checkpoint.snapshot.transcript.get(message.seq) != Some(message) { return Err("message sequence disagrees with saved history".into()); }
+            else if checkpoint.snapshot.transcript.get(message.seq) != Some(message) {
+                let why = history_mismatch(&checkpoint.snapshot.transcript, message);
+                // Cause not yet found (seen 2026-11-15/16). Record who added the
+                // message and how the saved end looked, never message text.
+                eprintln!("[apex-deck] {id}: {why}; saved ends with {}; added by {}", recent_messages(&checkpoint.snapshot.transcript), apex_callers());
+                return Err(why);
+            }
             if let Some(record) = message.reply_to_client_message_id.as_ref().and_then(|id| checkpoint.snapshot.client_messages.get_mut(id)) {
                 if !record.reply_seqs.contains(&message.seq) { record.reply_seqs.push(message.seq); }
             }
@@ -4053,6 +4059,53 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
     store.save_room(id, &checkpoint)?;
     if let RoomEvent::MessageAdded { message } = event { update_chat_message_meta(store, id, checkpoint.snapshot.kind.is_chat(), message); }
     Ok(())
+}
+
+/// Why `message` doesn't fit the saved history: its position, how many are
+/// saved, and which details differ. Never message text, since this is shown
+/// in the thread and written to the daemon log.
+fn history_mismatch(saved: &[apex_core::Message], message: &apex_core::Message) -> String {
+    let detail = match saved.get(message.seq) {
+        None => format!("message {} by {}, but only {} saved, so messages {}–{} are missing", message.seq, speaker_label(&message.speaker), saved.len(), saved.len(), message.seq.saturating_sub(1)),
+        Some(existing) => {
+            let mut differs = Vec::new();
+            if existing.speaker != message.speaker { differs.push(format!("speaker {} saved, {} now", speaker_label(&existing.speaker), speaker_label(&message.speaker))); }
+            if existing.text != message.text { differs.push(format!("text {} characters saved, {} now", existing.text.chars().count(), message.text.chars().count())); }
+            if existing.at != message.at { differs.push(format!("time {:?} saved, {:?} now", existing.at, message.at)); }
+            if existing.origin_seq != message.origin_seq || existing.origin != message.origin { differs.push("origin".into()); }
+            if existing.client_message_id != message.client_message_id || existing.reply_to_client_message_id != message.reply_to_client_message_id { differs.push("client message".into()); }
+            if existing.late_reply_from != message.late_reply_from { differs.push("late reply label".into()); }
+            if existing.servers != message.servers { differs.push("tool servers".into()); }
+            format!("message {} of {} saved: {}", message.seq, saved.len(), differs.join("; "))
+        }
+    };
+    format!("message sequence disagrees with saved history ({detail})")
+}
+
+fn speaker_label(speaker: &apex_core::Speaker) -> String {
+    match speaker {
+        apex_core::Speaker::Human => "you".into(),
+        apex_core::Speaker::Bot(id) => id.as_str().into(),
+    }
+}
+
+/// The last few saved messages as position, speaker and time only.
+fn recent_messages(saved: &[apex_core::Message]) -> String {
+    let start = saved.len().saturating_sub(3);
+    let parts: Vec<String> = saved[start..].iter().map(|m| format!("{} {} {:?}", m.seq, speaker_label(&m.speaker), m.at)).collect();
+    if parts.is_empty() { "nothing".into() } else { parts.join(", ") }
+}
+
+/// This crate's functions on the current call stack, innermost first, so a
+/// log line shows which part of Deck added the message.
+fn apex_callers() -> String {
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let frames: Vec<&str> = trace.lines()
+        .filter_map(|line| line.trim_start().split_once(": ").map(|(_, name)| name))
+        .filter(|name| name.starts_with("apex_") && !name.contains("apex_callers") && !name.contains("persist_event"))
+        .take(8)
+        .collect();
+    if frames.is_empty() { "an unknown caller (no symbols)".into() } else { frames.join(" < ") }
 }
 
 /// Milliseconds since the Unix epoch, which the chat list sorts and ages by.
@@ -4751,6 +4804,34 @@ mod tests {
         assert_eq!(safe_name(".hidden").unwrap(), "hidden");
         assert!(safe_name("..").is_err());
         assert!(safe_name("✓").is_err());
+    }
+
+    #[test]
+    fn history_mismatch_says_which_message_and_what_differs_without_its_text() {
+        let (handle, store, path) = checkpoint_fixture("history-mismatch");
+        let message = |seq: usize, speaker: apex_core::Speaker, text: &str| apex_core::Message {
+            origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None,
+            late_reply_from: None, servers: vec![], seq, speaker, text: text.into(), at: Some(1_000 + seq as u64),
+        };
+        let first = message(0, apex_core::Speaker::Human, "private words");
+        persist_event(&handle, &store, "room", &RoomEvent::MessageAdded { message: first.clone() }).unwrap();
+        // The same message again is accepted: a repeat, not a disagreement.
+        persist_event(&handle, &store, "room", &RoomEvent::MessageAdded { message: first }).unwrap();
+
+        let other = message(0, apex_core::Speaker::Bot(ParticipantId::new("deck")), "secret reply");
+        let error = persist_event(&handle, &store, "room", &RoomEvent::MessageAdded { message: other }).unwrap_err();
+        assert!(error.starts_with("message sequence disagrees with saved history"), "{error}");
+        assert!(error.contains("message 0") && error.contains("1 saved"), "{error}");
+        assert!(error.contains("speaker") && error.contains("text") && !error.contains("origin"), "names only the fields that differ: {error}");
+        assert!(!error.contains("private") && !error.contains("secret"), "never repeats message text: {error}");
+
+        let gap = message(5, apex_core::Speaker::Bot(ParticipantId::new("null")), "later");
+        let error = persist_event(&handle, &store, "room", &RoomEvent::MessageAdded { message: gap }).unwrap_err();
+        assert!(error.starts_with("message sequence disagrees with saved history"), "{error}");
+        assert!(error.contains("message 5") && error.contains("1 saved") && error.contains("missing"), "{error}");
+        assert!(!error.contains("later"), "{error}");
+        assert_eq!(store.room("room").unwrap().unwrap().snapshot.transcript.len(), 1, "nothing mismatched was saved");
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
