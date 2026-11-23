@@ -12,8 +12,18 @@
 
 !include "LogicLib.nsh"
 
-!define APEX_DAEMON_TASK "ApexDeckDaemon"
-!define APEX_DAEMON_IMAGE "apex-daemon.exe"
+; The Windows packager supplies these identities from desktop/channels.json.
+; Direct builds with the repository's Stable electron-builder.yml keep the
+; historic names. A different app ID must supply its own identities.
+!ifndef APEX_DAEMON_TASK
+  !if "${APP_ID}" != "dev.apexdeck.app"
+    !error "Missing channel identities for ${APP_ID}"
+  !endif
+  !define APEX_DAEMON_TASK "ApexDeckDaemon"
+  !define APEX_DAEMON_IMAGE "apex-daemon.exe"
+  !define APEX_SERVICE "ApexDeckProvenance"
+  !define APEX_HELPER_IMAGE "apex-provenance.exe"
+!endif
 
 ; Stop the previous build's service: end the scheduled task, then end any daemon
 ; the app started itself as a child.
@@ -99,21 +109,21 @@
   ; wait for it to stop on request, and kill it only if it never does.
   StrCpy $R6 0
   ${Do}
-    nsExec::Exec '"$SYSDIR\sc.exe" stop ApexDeckProvenance'
+    nsExec::Exec '"$SYSDIR\sc.exe" stop "${APEX_SERVICE}"'
     Pop $R5
-    nsExec::Exec '"$SYSDIR\sc.exe" query ApexDeckProvenance'
+    nsExec::Exec '"$SYSDIR\sc.exe" query "${APEX_SERVICE}"'
     Pop $R5
     ${If} $R5 != 0
       ${ExitDo}
     ${EndIf}
-    nsExec::Exec `"$SYSDIR\cmd.exe" /c ""$SYSDIR\sc.exe" query ApexDeckProvenance | "$SYSDIR\find.exe" "STOPPED""`
+    nsExec::Exec `"$SYSDIR\cmd.exe" /c ""$SYSDIR\sc.exe" query "${APEX_SERVICE}" | "$SYSDIR\find.exe" "STOPPED""`
     Pop $R5
     ${If} $R5 == 0
       ${ExitDo}
     ${EndIf}
     IntOp $R6 $R6 + 1
     ${If} $R6 >= 60
-      nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "apex-provenance.exe"'
+      nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_HELPER_IMAGE}"'
       Pop $R5
       ${ExitDo}
     ${EndIf}
@@ -127,7 +137,7 @@
   ; breaks with nothing in the log to explain it.
   ${If} $R7 >= 20
     ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "Apex Deck's background service keeps restarting, so this version cannot replace it.$\n$\nClose Apex Deck, end apex-daemon.exe on Task Manager's Details tab, then run this installer again."
+      MessageBox MB_ICONSTOP|MB_OK "${PRODUCT_NAME}'s background service keeps restarting, so this version cannot replace it.$\n$\nClose ${PRODUCT_NAME}, end ${APEX_DAEMON_IMAGE} on Task Manager's Details tab, then run this installer again."
     ${EndIf}
     SetErrorLevel 2
     Quit
@@ -135,13 +145,13 @@
 !macroend
 
 !macro customInstall
-  nsExec::ExecToStack '"$INSTDIR\resources\bin\apex-provenance.exe" install'
+  nsExec::ExecToStack '"$INSTDIR\resources\bin\${APEX_HELPER_IMAGE}" install'
   Pop $R2
   Pop $R1
   ${If} $R2 != 0
     DetailPrint "$R1"
     ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "Apex Deck could not install its protected authority service.$\n$\n$R1"
+      MessageBox MB_ICONSTOP|MB_OK "${PRODUCT_NAME} could not install its protected authority service.$\n$\n$R1"
     ${EndIf}
     SetErrorLevel 2
     Quit
@@ -152,7 +162,7 @@
   ; An update replaces files and reinstalls over this service. Deleting it here
   ; would leave Deck without one if removing the old files then failed.
   ${IfNot} ${isUpdated}
-    nsExec::Exec '"$INSTDIR\resources\bin\apex-provenance.exe" uninstall'
+    nsExec::Exec '"$INSTDIR\resources\bin\${APEX_HELPER_IMAGE}" uninstall'
     Pop $R0
   ${EndIf}
   ; An uninstall must not fail on a running image either, and the logon task must

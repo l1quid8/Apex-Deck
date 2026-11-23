@@ -4,7 +4,11 @@ param([Parameter(Mandatory=$true)][string]$Unpacked)
 $ErrorActionPreference='Stop'
 $Unpacked=(Resolve-Path $Unpacked).Path
 Install-Module -Name TrustedSigning -MinimumVersion 0.5.0 -Force -Repository PSGallery -Scope CurrentUser
-$files=@('Apex Deck.exe','resources\bin\apex-daemon.exe','resources\bin\apex-provenance.exe') |
+$channels = Get-Content -Raw (Join-Path $PSScriptRoot '../desktop/channels.json') | ConvertFrom-Json
+$name = if ($null -eq $env:APEX_CHANNEL) { 'stable' } else { $env:APEX_CHANNEL }
+if ($name -cnotin @('stable', 'nightly')) { throw 'APEX_CHANNEL must be stable or nightly' }
+$channel = $channels.$name
+$files=@("$($channel.PRODUCT).exe","resources\bin\$($channel.WINDOWS_DAEMON)","resources\bin\$($channel.WINDOWS_HELPER)") |
   ForEach-Object { Join-Path $Unpacked $_ }
 foreach ($file in $files) {
   if (-not (Test-Path $file)) { throw "nothing to sign at $file" }

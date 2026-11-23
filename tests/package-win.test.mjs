@@ -9,8 +9,10 @@ import {
   installersIn,
   releaseBuildCommands,
   writeChecksum,
-  builderArgs,
+  AZURE_SIGNING,
 } from '../scripts/package-win.mjs';
+import { installerFileVersion, installerInclude, nightlyRelease, windowsBuilderConfig } from '../scripts/windows-build.mjs';
+import { load as yaml } from 'js-yaml';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
@@ -43,10 +45,42 @@ test('the daemon and authority are built as plain release builds', () => {
 });
 
 test('signing is opt-in and names only the public Azure details', () => {
-  assert.deepEqual(builderArgs({}), ['--win', 'nsis', '--publish', 'never']);
-  const signed = builderArgs({ APEX_DECK_WIN_SIGN: '1' }).join(' ');
-  assert.match(signed, /azureSignOptions\.certificateProfileName=apexdeckpublic/);
-  assert.match(signed, /azureSignOptions\.endpoint=https:\/\/eus\.codesigning\.azure\.net/);
+  assert.equal(AZURE_SIGNING.certificateProfileName, 'apexdeckpublic');
+  assert.equal(AZURE_SIGNING.endpoint, 'https://eus.codesigning.azure.net');
+  assert.match(read('scripts/package-win.mjs'), /if \(signed\) \{\s*options.win.azureSignOptions = AZURE_SIGNING/);
+});
+
+test('Nightly Setup, shortcuts, services and fixed-file version agree with the sealed build', () => {
+  const commit = 'abcdef0'.padEnd(40, '1');
+  const { nightly, stable } = JSON.parse(read('desktop/channels.json'));
+  const release = nightlyRelease(commit, '65578', '20261123');
+  assert.equal(release.asset, 'Apex-Deck-Nightly_20261123_abcdef0_x64-Setup.exe');
+  assert.equal(release.tag, 'nightly-20261123-abcdef0');
+  const base = yaml(read('electron-builder.yml'));
+  const config = windowsBuilderConfig(base, nightly, release, 'out', 'channel.nsh');
+  assert.equal(config.appId, nightly.APP_ID);
+  assert.equal(config.productName, nightly.PRODUCT);
+  assert.equal(config.nsis.shortcutName, nightly.PRODUCT);
+  assert.equal(config.nsis.artifactName, release.asset);
+  assert.equal(config.buildVersion, '0.0.1.42');
+  assert.equal(config.nsis.include, 'channel.nsh');
+  assert.deepEqual(config.win.extraResources.map(x => x.to), [nightly.WINDOWS_DAEMON, nightly.WINDOWS_HELPER].map(x => 'bin/' + x));
+  const header = installerInclude(nightly, release);
+  assert.match(header, /^VIFileVersion 0\.0\.1\.42$/m);
+  for (const field of ['WINDOWS_DAEMON', 'WINDOWS_TASK', 'WINDOWS_SERVICE', 'WINDOWS_HELPER']) {
+    assert.ok(header.includes('"' + nightly[field] + '"'));
+  }
+  const stableConfig = windowsBuilderConfig(base, stable, null, 'out', 'channel.nsh');
+  assert.equal(stableConfig.nsis.artifactName, base.nsis.artifactName);
+  assert.equal(stableConfig.productName, stable.PRODUCT);
+  assert.doesNotMatch(installerInclude(stable, null), /VIFileVersion/);
+  assert.equal(installerFileVersion(42), '0.0.0.42');
+  assert.equal(installerFileVersion(2 ** 48 + 2 ** 32 + 65578), '1.1.1.42');
+  assert.equal(installerFileVersion(Number.MAX_SAFE_INTEGER), '31.65535.65535.65535');
+  for (const value of ['0', '01', '1e2', '3.5', '9007199254740992', undefined]) {
+    assert.throws(() => nightlyRelease(commit, value, '20261123'));
+  }
+  assert.throws(() => nightlyRelease('abcdef0', '42', '20261123'));
 });
 
 test('the installer name matches the artifact electron-builder writes', () => {
@@ -131,8 +165,14 @@ test('the installer stops the old service before it copies files', () => {
   assert.match(uninstall, /schtasks\.exe" \/Delete \/TN "\$\{APEX_DAEMON_TASK\}" \/F/,
     'ending the task is not enough: the definition would outlive the binary it starts');
 
-  const task = hook.match(/!define APEX_DAEMON_TASK "([^"]+)"/)?.[1];
-  assert.equal(task, 'ApexDeckDaemon');
+  const { stable } = JSON.parse(read('desktop/channels.json'));
+  for (const [define, key] of Object.entries({
+    APEX_DAEMON_TASK: 'WINDOWS_TASK', APEX_DAEMON_IMAGE: 'WINDOWS_DAEMON',
+    APEX_SERVICE: 'WINDOWS_SERVICE', APEX_HELPER_IMAGE: 'WINDOWS_HELPER',
+  })) {
+    assert.ok(hook.includes(`!define ${define} "${stable[key]}"`), `direct Stable build uses ${key}`);
+  }
+  assert.ok(hook.includes(`!if "\${APP_ID}" != "${stable.APP_ID}"`), 'only Stable can default its identities');
   assert.match(hook, /schtasks\.exe" \/End \/TN "\$\{APEX_DAEMON_TASK\}"/,
     'ending the task first lets the service shut down in order');
   assert.match(hook, /taskkill\.exe" \/F \/IM "\$\{APEX_DAEMON_IMAGE\}"/,
@@ -155,17 +195,19 @@ test('the installer stops the old service before it copies files', () => {
   const code = hook.split('\n').filter((line) => !line.trimStart().startsWith(';')).join('\n');
   assert.ok(!/%USERNAME%/.test(code), 'cmd.exe is not in the path here, so %USERNAME% never expands');
   assert.ok(!/\$USERNAME\b/.test(code), 'NSIS has no $USERNAME: makensis warns 6000 and drops it');
-  assert.match(hook, /!define APEX_DAEMON_IMAGE "apex-daemon\.exe"/);
-
-  // After M3 the app registers the task itself; keep the two names from drifting
-  // apart, because a wrong name makes /End silently do nothing.
-  let registered;
-  try {
-    registered = read('desktop/winLogonTask.mjs').match(/TASK_NAME = '([^']+)'/)?.[1];
-  } catch {
-    registered = undefined;
+  // Every process and SCM action must use the selected identity, including
+  // the second query in the STOPPED poll and the timeout's force-kill.
+  const operations = code.split('\n').filter(line => line.includes('nsExec::'));
+  for (const operation of operations) {
+    for (const name of [stable.WINDOWS_TASK, stable.WINDOWS_DAEMON, stable.WINDOWS_SERVICE, stable.WINDOWS_HELPER]) {
+      assert.ok(!operation.includes(name), operation);
+    }
   }
-  if (registered) assert.equal(task, registered, 'the installer must end the task the app creates');
+  assert.equal(operations.filter(line => line.includes('sc.exe"')).length, 3);
+  assert.ok(operations.filter(line => line.includes('sc.exe"')).every(line => line.includes('"${APEX_SERVICE}"')));
+  assert.ok(code.includes('taskkill.exe" /F /IM "${APEX_HELPER_IMAGE}"'));
+  assert.ok(code.includes('resources\\bin\\${APEX_HELPER_IMAGE}" install'));
+  assert.ok(uninstall.includes('resources\\bin\\${APEX_HELPER_IMAGE}" uninstall'));
 
   // Bounded, so a daemon that refuses to die cannot hang the installer.
   assert.match(hook, /\$R7 >= 20/, 'the wait must be bounded');

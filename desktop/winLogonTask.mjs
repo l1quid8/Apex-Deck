@@ -7,8 +7,10 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { channel } from './channel.mjs';
 
-export const TASK_NAME = 'ApexDeckDaemon';
+export const TASK_NAME = channel.WINDOWS_TASK;
+const daemonImage = channel.WINDOWS_DAEMON;
 export const CONHOST_COMMAND = '%SystemRoot%\\System32\\conhost.exe';
 /** cmd.exe as a full path: conhost.exe is handed it literally, with no %SystemRoot% expansion. */
 export const cmdCommand = (env = process.env) =>
@@ -60,7 +62,7 @@ export function decodeTaskXml(raw) {
 }
 
 /** The launcher Deck writes next to the daemon log; the logon task runs it. */
-export const LAUNCHER_NAME = 'apex-daemon-launch.cmd';
+export const LAUNCHER_NAME = channel.WINDOWS_LAUNCHER;
 /** `paths` defaults to Windows paths for the task line; installLogonTask writes with the platform's own. */
 export const launcherFile = (logFile, paths = path.win32) => paths.join(paths.dirname(logFile), LAUNCHER_NAME);
 
@@ -122,14 +124,14 @@ export function taskCommand({ bin, dataDir, logFile = '', env = process.env }) {
 }
 
 /**
- * Task Scheduler XML for `ApexDeckDaemon`. Runs at the current user's logon
+ * Task Scheduler XML for this channel's daemon. Runs at the current user's logon
  * with no battery restrictions (`DisallowStartIfOnBatteries=false`,
  * `StopIfGoingOnBatteries=false`), no 72-hour execution cap
  * (`ExecutionTimeLimit=PT0S`), normal priority (`Priority=5`), and headless
  * `%SystemRoot%\System32\conhost.exe` so no console window flashes on screen.
  */
 export function taskXml({ bin, dataDir, logFile = '', build = '', userId, env = process.env }) {
-  const description = build ? `Apex Deck background daemon (${build})` : 'Apex Deck background daemon';
+  const description = `${channel.PRODUCT} background daemon${build ? ` (${build})` : ''}`;
   const account = userId ?? currentUserId(env);
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -302,9 +304,9 @@ const ALL_PROCESSES = 'try { $all = @(Get-Process -ErrorAction Stop) } catch { e
 export const processPathScript = (pid) =>
   `${ALL_PROCESSES}; $p = $all | Where-Object { $_.Id -eq ${Number(pid)} } | Select-Object -First 1; if ($null -eq $p) { 'NO-PROCESS' } else { 'PATH:' + $p.Path }`;
 
-/** `BEGIN`, `P:<pid>:<path>` per apex-daemon, `END`, only after the full list loaded. */
+/** Report only this channel's daemon processes, after the full list loaded. */
 export const DAEMON_LIST_SCRIPT =
-  `${ALL_PROCESSES}; 'BEGIN'; foreach ($p in $all) { if ($p.ProcessName -eq 'apex-daemon') { 'P:' + $p.Id + ':' + $p.Path } }; 'END'`;
+  `${ALL_PROCESSES}; 'BEGIN'; foreach ($p in $all) { if ($p.ProcessName -eq '${path.win32.basename(daemonImage, '.exe')}') { 'P:' + $p.Id + ':' + $p.Path } }; 'END'`;
 
 /** Runs `script` in Windows PowerShell; rejects on any non-zero exit. */
 function runPowerShell(script, env = process.env, run = execFile) {
@@ -345,7 +347,7 @@ export function killProcessTree(pid) {
 
 const samePath = (a, b) => path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase();
 const isDaemonPath = (running, bin) =>
-  Boolean(running) && path.win32.basename(running).toLowerCase() === 'apex-daemon.exe' && (!bin || samePath(running, bin));
+  Boolean(running) && path.win32.basename(running).toLowerCase() === daemonImage && (!bin || samePath(running, bin));
 
 /**
  * Whether the daemon that ran as `pid` has exited: Windows has no process
@@ -366,7 +368,7 @@ export async function daemonExited(pid, { bin = '', pathOf = processPath } = {})
 }
 
 /**
- * Every running `apex-daemon` process as `{ pid, path }`, from `Get-Process`.
+ * Every running daemon for this channel as `{ pid, path }`, from `Get-Process`.
  * `path` is `''` when Windows won't show it (another user's or an elevated
  * process). Fixed markers, never localized error text; rejects when Windows
  * can't be asked or the output isn't recognized.
@@ -395,7 +397,7 @@ export function parseDaemonList(out) {
 /**
  * Whether no apex-daemon that could share Deck's data folder is running:
  * `'none'`, `'running'` or `'unknown'`. A process counts when its path is one
- * of `bins` (any apex-daemon.exe when `bins` is empty) or Windows won't show
+ * of `bins` (any copy of this channel's image when `bins` is empty) or Windows won't show
  * its path. Only a list Windows actually returned can give `'none'`.
  */
 export async function daemonProcesses({ bins = [], list = listDaemonProcesses } = {}) {
@@ -407,9 +409,7 @@ export async function daemonProcesses({ bins = [], list = listDaemonProcesses } 
   }
   if (!Array.isArray(found)) return 'unknown';
   const wanted = bins.filter(Boolean);
-  const ours = (p) => p === '' || (wanted.length === 0
-    ? path.win32.basename(p).toLowerCase() === 'apex-daemon.exe'
-    : wanted.some((b) => isDaemonPath(p, b)));
+  const ours = (p) => p === '' || (wanted.length === 0 ? isDaemonPath(p) : wanted.some((b) => isDaemonPath(p, b)));
   return found.some((proc) => ours(String(proc?.path ?? '').trim())) ? 'running' : 'none';
 }
 
@@ -417,7 +417,7 @@ export async function daemonProcesses({ bins = [], list = listDaemonProcesses } 
  * Kill the daemon whose process ID `daemon.json` records, with everything it
  * started. Ending the task stops only conhost.exe, the program the task
  * launched, and leaves apex-daemon under it running. The ID is used only
- * when Windows says it is running `apex-daemon.exe` (at `bin`, when given),
+ * when Windows says it is running this channel's daemon (at `bin`, when given),
  * so a stale file whose ID now belongs to another program kills nothing.
  * Resolves `'killed'`, `'no-pid'`, `'not-daemon'` or `'failed'`; never throws.
  */

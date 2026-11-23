@@ -98,6 +98,31 @@ mod tests {
     use super::*;
     const FOLDER: &str = "C:/Users/test/AppData/Roaming/Apex Deck";
     #[test]
+    fn windows_broker_requires_its_own_key_and_channel_domain() {
+        let key = new_key().unwrap();
+        let other_key = new_key().unwrap();
+        let request = json!({"op":"issue","command":{"cmd":"room_create","args":{"id":"channel-test"},"provenanceRequestId":"channel-request"}});
+        let (journal, issued) =
+            transaction(&Journal::new(), &key, FOLDER, &request, true, false).unwrap();
+        let claim = |signed: &Signed| {
+            let request = json!({"op":"claim","submission":signed,"nonce":"ab".repeat(16)});
+            transaction(&journal, &key, FOLDER, &request, false, true)
+        };
+        let mut payload = verify(key.public_key().as_ref(), &issued).unwrap();
+        assert_eq!(payload["domain"], DOMAIN);
+        let other_signature = sign(&other_key, &payload).unwrap();
+        assert_eq!(claim(&other_signature).unwrap_err(), "Invalid provenance signature");
+
+        let table: Value =
+            serde_json::from_str(include_str!("../../../desktop/channels.json")).unwrap();
+        let other = if channel::NIGHTLY { "stable" } else { "nightly" };
+        payload["domain"] = table[other]["DOMAIN"].clone();
+        let other_domain = sign(&key, &payload).unwrap();
+        assert_eq!(claim(&other_domain).unwrap_err(), "Not a submission receipt");
+        assert!(claim(&issued).is_ok());
+    }
+
+    #[test]
     fn windows_ui_receipt_is_claimed_once_by_daemon_and_survives_reopen() {
         let key = new_key().unwrap();
         let command = json!({"cmd":"room_create","args":{"id":"win-room"},"provenanceRequestId":"win-request"});

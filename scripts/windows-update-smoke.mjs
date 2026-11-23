@@ -2,7 +2,11 @@
 // the installed app as the publisher to match, as an installed copy would.
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import assert from 'node:assert/strict';
 import { promisify } from 'node:util';
+import { channel } from '../desktop/channel.mjs';
 import { windowsSigner, windowsVerifier } from '../desktop/updater.mjs';
 
 const exec = promisify(execFile);
@@ -16,14 +20,29 @@ const run = async (command, args, options) => {
     throw error;
   }
 };
-const [installer, installed] = process.argv.slice(2);
-const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
-const signer = await windowsSigner(run, installed);
-if (!signer) throw new Error(`no valid signature on ${installed}`);
-const verify = windowsVerifier({ run, signer });
-await verify(installer, { version });
-await verify(installer, { version: '0.0.1' }).then(
-  () => { throw new Error('the check accepted the wrong version'); },
-  (error) => { if (!/not 0\.0\.1/.test(error.message)) throw error; },
-);
-console.log(`windows update check: ${version} signed by ${signer.subject}`);
+export async function verifyWindowsSetup(installer, app, target) {
+  const signer = await windowsSigner(run, app);
+  if (!signer || !/(?:^|,\s*)CN=Tyler Caldwell(?:,|$)/.test(signer.subject) || signer.product !== channel.PRODUCT) {
+    throw new Error(`Missing valid ${channel.PRODUCT} publisher signature on ${app}`);
+  }
+  const verify = windowsVerifier({ run, signer });
+  await verify(installer, target);
+  return verify;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [installer, app, previous] = process.argv.slice(2);
+  const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+  const buildNumber = Number(process.env.APEX_BUILD_NUMBER);
+  const verify = await verifyWindowsSetup(installer, app, {version, buildNumber});
+  // Keep the real signed bytes in place and present them as a different release.
+  await assert.rejects(verify(installer, {version: version === '0.0.1' ? '0.0.2' : '0.0.1', buildNumber}), /holds version/);
+  if (channel.nightly && buildNumber < Number.MAX_SAFE_INTEGER) {
+    await assert.rejects(verify(installer, {version, buildNumber: buildNumber + 1}), /build number mismatch/);
+  }
+  if (previous) {
+    await verify(previous, {version, buildNumber: buildNumber - 1});
+    await assert.rejects(verify(previous, {version, buildNumber}), /build number mismatch/);
+  }
+  console.log(`Windows verified the signed ${channel.PRODUCT} installer for ${version}.`);
+}

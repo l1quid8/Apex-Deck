@@ -1,6 +1,11 @@
 # CI-only: verify production IPC without administrator or SeDebugPrivilege rights.
 param([Parameter(Mandatory=$true)][string]$Daemon)
 $ErrorActionPreference='Stop'
+$channels=Get-Content (Join-Path $PSScriptRoot '../desktop/channels.json') -Raw | ConvertFrom-Json
+$channelName=if ($env:APEX_CHANNEL) { $env:APEX_CHANNEL } else { 'stable' }
+$identity=$channels.$channelName
+if (!$identity -or (Split-Path $Daemon -Leaf) -ne $identity.WINDOWS_DAEMON) { throw 'unexpected channel or daemon' }
+$pipeName=Split-Path $identity.WINDOWS_PIPE -Leaf
 $name='apexauth'+[guid]::NewGuid().ToString('N').Substring(0,8)
 $password=ConvertTo-SecureString ([guid]::NewGuid().ToString('N')+'aA!9') -AsPlainText -Force
 $probe=Join-Path $env:PUBLIC ('ApexAuthorityProbe-'+[guid]::NewGuid().ToString('N'))
@@ -19,14 +24,15 @@ try {
   $nodeLiteral=$node.Replace("'","''")
   $smokeLiteral=$smoke.Replace("'","''")
   $daemonLiteral=$Daemon.Replace("'","''")
-  $helperLiteral=(Join-Path (Split-Path $Daemon) 'apex-provenance.exe').Replace("'","''")
+  $helperLiteral=(Join-Path (Split-Path $Daemon) $identity.WINDOWS_HELPER).Replace("'","''")
   @"
 `$env:TEMP=`$PSScriptRoot
 `$env:TMP=`$PSScriptRoot
+`$env:APEX_CHANNEL='$channelName'
 & '$nodeLiteral' '$smokeLiteral' '$daemonLiteral'
 if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 try {
-  `$rogue=[System.IO.Pipes.NamedPipeServerStream]::new('ApexDeckProvenance-v1','InOut',-1)
+  `$rogue=[System.IO.Pipes.NamedPipeServerStream]::new('$pipeName','InOut',-1)
   `$rogue.Dispose()
   Write-Output 'a standard user added a server end to the authority pipe'
   exit 9
@@ -53,7 +59,7 @@ exit 0
   Get-Content (Join-Path $probe 'stdout.txt')
   Get-Content (Join-Path $probe 'stderr.txt')
   if ($process.ExitCode -ne 0) { throw "standard-user production authority failed: exit $($process.ExitCode)" }
-  $locks=Join-Path $env:ProgramData "Apex Deck Provenance\users\$($user.SID.Value)\host-locks-v2"
+  $locks=Join-Path $env:ProgramData "$($identity.WINDOWS_ROOT)\users\$($user.SID.Value)\host-locks-v2"
   $sddl=(Get-Acl $locks).Sddl
   if ($sddl -match ';BU\)' -or $sddl -notmatch [regex]::Escape($user.SID.Value)) { throw "host locks are open to other accounts: $sddl" }
 } finally {

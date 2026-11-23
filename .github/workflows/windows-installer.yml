@@ -14,12 +14,18 @@ name: windows-installer
 
 on:
   workflow_dispatch:
+    inputs:
+      nightly:
+        description: Also build and verify the Nightly channel
+        type: boolean
+        default: false
   push:
     branches:
       - feat/win-m4-installer
       - feat/windows-11
       - fix/windows-catch-up
       - feat/windows-auto-update
+      - feat/nightly-windows
 
 permissions:
   contents: read
@@ -32,7 +38,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      variants: ${{ steps.identity.outputs.variants }}
+      date: ${{ steps.identity.outputs.date }}
+      previous: ${{ steps.identity.outputs.previous }}
+      current: ${{ steps.identity.outputs.current }}
+    steps:
+      - id: identity
+        env:
+          VARIANTS: ${{ (github.ref == 'refs/heads/feat/nightly-windows' || inputs.nightly) && '["stable","nightly-previous","nightly"]' || '["stable"]' }}
+        run: |
+          echo "variants=$VARIANTS" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "previous=$((2 * GITHUB_RUN_NUMBER - 1))" >> "$GITHUB_OUTPUT"
+          echo "current=$((2 * GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
+
+  channel-tests:
+    needs: prepare
+    if: github.ref == 'refs/heads/feat/nightly-windows' || inputs.nightly
+    runs-on: windows-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, nightly]
+    env:
+      APEX_CHANNEL: ${{ matrix.channel }}
+      APEX_BUILD_NUMBER: ${{ needs.prepare.outputs.current }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: node -e "import('electron')"
+      - run: npm test
+      - if: ${{ !cancelled() }}
+        run: cargo test --locked -p apex-provenance -p apex-daemon
+
   build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+    env:
+      APEX_CHANNEL: ${{ matrix.variant == 'stable' && 'stable' || 'nightly' }}
+      APEX_BUILD_DATE: ${{ needs.prepare.outputs.date }}
+      APEX_BUILD_NUMBER: ${{ matrix.variant == 'nightly-previous' && needs.prepare.outputs.previous || needs.prepare.outputs.current }}
+      OUTPUT_DIR: ${{ matrix.variant == 'stable' && 'release' || 'release/nightly-windows' }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -55,15 +116,24 @@ jobs:
         run: cargo test --locked -p apex-provenance --lib -- --ignored
       - uses: actions/upload-artifact@v4
         with:
-          name: win-unpacked
-          path: release/win-unpacked
+          name: win-unpacked-${{ matrix.variant }}
+          path: ${{ env.OUTPUT_DIR }}/win-unpacked
           if-no-files-found: error
           retention-days: 1
 
   # Only this job can reach Azure. It runs no install scripts and no project build,
   # so nothing the dependencies add to a build can get hold of the signing login.
   sign:
-    needs: build
+    needs: [prepare, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+    env:
+      APEX_CHANNEL: ${{ matrix.variant == 'stable' && 'stable' || 'nightly' }}
+      APEX_BUILD_DATE: ${{ needs.prepare.outputs.date }}
+      APEX_BUILD_NUMBER: ${{ matrix.variant == 'nightly-previous' && needs.prepare.outputs.previous || needs.prepare.outputs.current }}
+      OUTPUT_DIR: ${{ matrix.variant == 'stable' && 'release' || 'release/nightly-windows' }}
     runs-on: windows-latest
     timeout-minutes: 20
     permissions:
@@ -79,8 +149,8 @@ jobs:
         run: npm ci --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: win-unpacked
-          path: release/win-unpacked
+          name: win-unpacked-${{ matrix.variant }}
+          path: ${{ env.OUTPUT_DIR }}/win-unpacked
       - name: Sign in to Azure
         if: env.APEX_DECK_WIN_SIGN == '1'
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
@@ -92,20 +162,39 @@ jobs:
       - name: Sign the programs
         if: env.APEX_DECK_WIN_SIGN == '1'
         shell: pwsh
-        run: scripts/sign-win-unpacked.ps1 -Unpacked release/win-unpacked
+        run: scripts/sign-win-unpacked.ps1 -Unpacked "$env:OUTPUT_DIR/win-unpacked"
       - name: Build the installer
         run: node scripts/package-win.mjs --package
       - name: Write the update feed
+        if: matrix.variant == 'stable' || (matrix.variant == 'nightly' && env.APEX_DECK_WIN_SIGN == '1')
         run: node scripts/windows-update-manifest.mjs
-      - name: Show what was built
-        run: Get-ChildItem release | Select-Object Name, Length
+      - name: Check the final Nightly Setup identity
+        if: matrix.variant != 'stable'
+        shell: pwsh
+        run: |
+          $short = $env:GITHUB_SHA.Substring(0, 7)
+          $setup = Join-Path $env:OUTPUT_DIR "Apex-Deck-Nightly_${env:APEX_BUILD_DATE}_${short}_x64-Setup.exe"
+          $info = (Get-Item -LiteralPath $setup).VersionInfo
+          $signature = Get-AuthenticodeSignature -LiteralPath $setup
+          $version = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $parts = $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart
+          $build = [int64]0
+          foreach ($part in $parts) { $build = ($build -shl 16) + $part }
+          Get-FileHash -LiteralPath $setup -Algorithm SHA256 | Format-List
+          Write-Host "ProductName=$($info.ProductName) ProductVersion=$($info.ProductVersion) FileVersion=$($parts -join '.') Build=$build Commit=$env:GITHUB_SHA Signature=$($signature.Status) Publisher=$($signature.SignerCertificate.Subject)"
+          if ($info.ProductName -cne 'Apex Deck Nightly' -or $info.ProductVersion -cne $version -or $build -ne [int64]$env:APEX_BUILD_NUMBER) { throw 'Final Setup PE resource mismatch' }
+          if ($env:APEX_DECK_WIN_SIGN -eq '1') {
+            node scripts/windows-update-smoke.mjs $setup "$env:OUTPUT_DIR/win-unpacked/Apex Deck Nightly.exe"
+            if ($LASTEXITCODE) { throw 'Signed Nightly verifier smoke failed' }
+          }
       - uses: actions/upload-artifact@v4
         with:
-          name: installer-to-verify
+          name: installer-to-verify-${{ matrix.variant }}
           path: |
-            release/Apex-Deck-Setup.exe
-            release/Apex-Deck-Setup.exe.sha256
-            release/windows-update/
+            ${{ env.OUTPUT_DIR }}/*Setup.exe
+            ${{ env.OUTPUT_DIR }}/*Setup.exe.sha256
+            ${{ env.OUTPUT_DIR }}/windows-update/
+            ${{ env.OUTPUT_DIR }}/nightly/
           if-no-files-found: error
           retention-days: 1
 
@@ -121,7 +210,7 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v4
         with:
-          name: installer-to-verify
+          name: installer-to-verify-stable
           path: release
       # The shutdown step lives inside the built .exe, so `npm run desktop:win`
       # cannot prove anything about it. An earlier version compiled, passed every
@@ -223,3 +312,34 @@ jobs:
             release/windows-update/
           if-no-files-found: error
           retention-days: 30
+
+  coexistence:
+    needs: [prepare, sign]
+    if: github.ref == 'refs/heads/feat/nightly-windows' || inputs.nightly
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-to-verify-*
+          path: installers
+      - name: Verify concurrent installations and run the previously shipped Stable installer
+        shell: pwsh
+        run: |
+          $oldStable = Join-Path $env:RUNNER_TEMP 'stable-0.9.9.exe'
+          Invoke-WebRequest https://github.com/l1quid8/Apex-Deck/releases/download/v0.9.9/Apex-Deck-0.9.9-x64-Setup.exe -OutFile $oldStable
+          if ((Get-FileHash $oldStable).Hash -ne '38630fd9f8dcfa31507684f2b559a5d73399566545ac05ff751f9420166827a8' -or
+              (Get-AuthenticodeSignature $oldStable).Status -ne 'Valid') { throw 'Historical Stable setup differs from the signed baseline' }
+          $nightly = (Get-ChildItem installers/installer-to-verify-nightly/*_x64-Setup.exe).FullName
+          $previous = (Get-ChildItem installers/installer-to-verify-nightly-previous/*_x64-Setup.exe).FullName
+          ./scripts/windows-channel-lifecycle.ps1 -StableSetup installers/installer-to-verify-stable/Apex-Deck-Setup.exe -NightlySetup $nightly -PreviousNightlySetup $previous -ExistingStableSetup $oldStable
+          if ($env:APEX_DECK_WIN_SIGN -eq '1') {
+            $env:APEX_CHANNEL = 'nightly'
+            $env:APEX_BUILD_NUMBER = '${{ needs.prepare.outputs.current }}'
+            node scripts/windows-update-smoke.mjs $nightly "$env:ProgramFiles/Apex Deck Nightly/Apex Deck Nightly.exe" $previous
+            if ($LASTEXITCODE) { throw 'Same-semver signed Nightly updater check failed' }
+          }
