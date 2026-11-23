@@ -14,6 +14,10 @@ use std::{
 pub enum ThreadGitAction {
     Push { expected: State },
     RequestMerge { expected: State },
+    /// From the decision card: merge only if the checks still pass right now.
+    MergeReady { expected: State },
+    /// From the decision card: send a check that failed before any merge to the builder.
+    FixChecks { expected: State },
     CancelMerge { expected: State },
     AskFix { expected: State },
 }
@@ -50,9 +54,23 @@ pub struct Workflow {
     pub result_oid: Option<String>,
     pub pushed: bool,
     pub fix_requested: bool,
+    /// Asked for from the decision card, where the checks had already passed:
+    /// if they no longer do, the merge stops and nothing waits.
+    #[serde(default)]
+    ready_only: bool,
+}
+
+/// What GitHub says about the reviewed commit before any merge is asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Checks {
+    /// No pull request, no required checks on main, or GitHub could not be asked.
+    Unknown(String),
+    Running,
+    Passed { pr: u64 },
+    Failed { pr: u64, detail: String },
 }
 impl Workflow {
-    fn pending(&self) -> bool {
+    pub(crate) fn pending(&self) -> bool {
         matches!(
             self.phase,
             Phase::Preparing
@@ -62,7 +80,7 @@ impl Workflow {
                 | Phase::Syncing
         )
     }
-    fn matches(&self, state: &State) -> bool {
+    pub(crate) fn matches(&self, state: &State) -> bool {
         self.head == state.head
             && self.root == state.root
             && state.branch.as_ref() == Some(&self.branch)
@@ -216,6 +234,7 @@ impl ThreadGit {
                         detail: "Waiting for review".into(),
                         pushed: false,
                         fix_requested: false,
+                        ready_only: false,
                     },
                 );
             } else if !builder && same {
@@ -232,6 +251,19 @@ impl ThreadGit {
         })
     }
     pub fn admit(&self, room: &str, expected: &State, cancel: bool) -> Result<String, String> {
+        self.admit_with(room, expected, cancel, false)
+    }
+    /// A merge asked for from the decision card, after its checks passed.
+    pub fn admit_ready(&self, room: &str, expected: &State) -> Result<String, String> {
+        self.admit_with(room, expected, false, true)
+    }
+    fn admit_with(
+        &self,
+        room: &str,
+        expected: &State,
+        cancel: bool,
+        ready_only: bool,
+    ) -> Result<String, String> {
         self.edit(|rooms| {
             let w = rooms
                 .get_mut(room)
@@ -266,7 +298,11 @@ impl ThreadGit {
                 {
                     return Err("Refresh the current branch before merging.".into());
                 }
+                let before = w.generation;
                 w.request()?;
+                if w.generation != before {
+                    w.ready_only = ready_only;
+                }
             }
             Ok(w.detail.clone())
         })
@@ -340,5 +376,6 @@ pub async fn push(data: &Path, state: &State) -> Result<(), String> {
 }
 
 mod github;
+pub use github::checks;
 #[cfg(test)]
 mod tests;

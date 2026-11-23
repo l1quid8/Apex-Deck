@@ -34,6 +34,7 @@ pub enum Command {
     SettingsLoad {},
     SettingsSave { settings: Value },
     SettingsCodeModeSet { enabled: bool },
+    SettingsReplySuggestionsSet { mode: crate::reply_suggestions::Mode },
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
     AnswersLoad { room: String },
@@ -180,6 +181,8 @@ pub enum Command {
     PtyKill { id: String },
     RoomDiff { id: String },
     RoomGitStatus { id: String },
+    RoomReplyDecision { id: String },
+    RoomReplyDecisionDismiss { id: String, key: String },
     RoomThreadGitAction { id: String, action: crate::thread_git::ThreadGitAction },
     RoomGitAction { id: String, action: crate::git_changes::Action },
     RoomFork { source: String, target: String, upto: Option<usize> },
@@ -393,13 +396,13 @@ impl Command {
             // Provenance
             ProvenanceExecute { .. } => Policy::OPEN,
             // Session
-            SessionLoad { .. } | SessionSave { .. } | SettingsLoad { .. } | SettingsSave { .. } | SettingsCodeModeSet { .. } => Policy::OPEN,
+            SessionLoad { .. } | SessionSave { .. } | SettingsLoad { .. } | SettingsSave { .. } | SettingsCodeModeSet { .. } | SettingsReplySuggestionsSet { .. } => Policy::OPEN,
             // Agent
             AgentProfileList { .. } | AgentsDetect { .. } | PersonaDraft { .. } | ModelMetrics { .. } | AgentModels { .. } | AgentBotModels { .. } => Policy::OPEN,
             // Artifacts
             ArtifactsLoad { .. } | ArtifactsSave { .. } | AnswersLoad { .. } | AnswerSave { .. } | ArtifactExport { .. } => Policy::OPEN,
             // Room
-            RoomSteps { .. } | RoomDelete { .. } | ListToolServers { .. } | RoomDiff { .. } | RoomGitStatus { .. } | RoomGitAction { .. } | RoomState { .. }
+            RoomSteps { .. } | RoomDelete { .. } | ListToolServers { .. } | RoomDiff { .. } | RoomGitStatus { .. } | RoomGitAction { .. } | RoomState { .. } | RoomReplyDecision { .. } | RoomReplyDecisionDismiss { .. }
             | RoomTargets { .. } | RoomRefreshPlans { .. } | RoomApplyAccess { .. } | RoomPostTo { .. } | PostCapabilities { .. } | VoiceCapabilities { .. }
             | RoomStopRequest { .. } | RoomTurn { .. } | RoomStop { .. } | RoomClear { .. } | RoomRewind { .. } | RoomRevertPlan { .. } | RoomRevert { .. }
             | RoomPin { .. } | RoomUnpin { .. } | RoomCompact { .. } | RoomCurate { .. } | RoomCurateUndo { .. } | RoomClose { .. } | RoomBotModels { .. }
@@ -716,6 +719,7 @@ impl Host {
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
             SettingsCodeModeSet { enabled } => reply(self.settings_code_mode_set(enabled)?),
+            SettingsReplySuggestionsSet { mode } => reply(self.settings_reply_suggestions_set(mode)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
             AnswersLoad { room } => reply(self.answers_load(room)?),
@@ -924,6 +928,8 @@ impl Host {
             PtyKill { id } => { self.pty_kill(id); reply(()) },
             RoomDiff { id } => reply(self.room_diff(id).await?),
             RoomGitStatus { id } => reply(self.room_git_status(id).await?),
+            RoomReplyDecision { id } => reply(self.room_reply_decision(id).await?),
+            RoomReplyDecisionDismiss { id, key } => reply(self.room_reply_decision_dismiss(id, key)?),
             RoomThreadGitAction { id, action } => reply(self.room_thread_git_action(id, action).await?),
             RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
@@ -1405,7 +1411,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 248);
+        assert_eq!(names.len(), 251);
         for name in [
             "search_open",
             "search",

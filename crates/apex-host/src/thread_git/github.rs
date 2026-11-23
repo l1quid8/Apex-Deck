@@ -1,4 +1,4 @@
-use super::{git, repository, run, Phase, ThreadGit, Workflow};
+use super::{git, repository, run, Checks, Phase, ThreadGit, Workflow};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -105,6 +105,104 @@ fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
         return Decision::Wait;
     }
     Decision::Submit
+}
+enum Required {
+    /// Main has no required checks, so Deck has nothing to hold a merge to.
+    None,
+    Waiting(String),
+    Passed,
+}
+/// Whether every check main requires has succeeded on this pull request.
+async fn required(
+    shell: &impl Shell,
+    w: &Workflow,
+    pr: &Pull,
+    data: &Path,
+    root: &Path,
+) -> Result<Required, String> {
+    let (owner, repo) = w.repo.split_once('/').ok_or("Invalid repository.")?;
+    let query = "query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){ref(qualifiedName:\"refs/heads/main\"){refUpdateRule{requiredStatusCheckContexts}}}}";
+    let raw = shell
+        .run(
+            data,
+            root,
+            "gh",
+            &[
+                "api",
+                "graphql",
+                "--hostname",
+                "github.com",
+                "-f",
+                &format!("query={query}"),
+                "-f",
+                &format!("owner={owner}"),
+                "-f",
+                &format!("repo={repo}"),
+            ],
+        )
+        .await?;
+    let policy: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let contexts = policy
+        .pointer("/data/repository/ref/refUpdateRule/requiredStatusCheckContexts")
+        .and_then(|contexts| contexts.as_array());
+    let Some(contexts) = contexts.filter(|contexts| !contexts.is_empty()) else {
+        return Ok(Required::None);
+    };
+    for context in contexts {
+        let name = context.as_str().ok_or("Invalid required check name.")?;
+        if !pr.status_check_rollup.iter().any(|check| {
+            (check["name"] == name && check["conclusion"] == "SUCCESS")
+                || (check["context"] == name && check["state"] == "SUCCESS")
+        }) {
+            return Ok(Required::Waiting(name.into()));
+        }
+    }
+    Ok(Required::Passed)
+}
+const PULL_FIELDS: &str = "number,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit,mergeStateStatus,statusCheckRollup";
+/// Read-only: what GitHub says about the reviewed commit's pull request. It
+/// pushes nothing, opens nothing and changes no saved state.
+pub(super) async fn probe(shell: &impl Shell, w: &Workflow, data: &Path) -> Result<Checks, String> {
+    let root = Path::new(&w.root);
+    let gh_repo = format!("github.com/{}", w.repo);
+    let list = shell
+        .run(
+            data,
+            root,
+            "gh",
+            &[
+                "pr", "list", "--repo", &gh_repo, "--base", "main", "--head", &w.branch, "--state", "open",
+                "--json", "number,isCrossRepository",
+                "--jq", "[.[] | select(.isCrossRepository == false)][0].number // empty",
+            ],
+        )
+        .await?;
+    let Ok(number) = list.trim().parse::<u64>() else {
+        return Ok(Checks::Unknown("This branch has no open pull request.".into()));
+    };
+    let raw = shell
+        .run(data, root, "gh", &["pr", "view", &number.to_string(), "--repo", &gh_repo, "--json", PULL_FIELDS])
+        .await?;
+    let pr: Pull = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    // The same reading the merge worker uses, as if the merge had been asked for.
+    let mut asked = w.clone();
+    asked.phase = Phase::Checks;
+    Ok(match reconcile(&asked, &pr, true) {
+        Decision::Finish(Phase::Failed, detail) => Checks::Failed { pr: number, detail },
+        Decision::Finish(_, detail) => Checks::Unknown(detail),
+        Decision::Wait => Checks::Running,
+        Decision::Submit => match required(shell, w, &pr, data, root).await? {
+            Required::Passed => Checks::Passed { pr: number },
+            Required::Waiting(_) => Checks::Running,
+            Required::None => Checks::Unknown("GitHub reports no required status checks for main.".into()),
+        },
+    })
+}
+/// `probe` against the real project, with a failure to ask read as unknown.
+pub async fn checks(data: &Path, w: &Workflow) -> Checks {
+    probe(&ProjectShell, w, data)
+        .await
+        .unwrap_or_else(|why| Checks::Unknown(why.chars().take(300).collect()))
 }
 pub(super) trait Shell {
     async fn run(
@@ -384,9 +482,16 @@ impl ThreadGit {
             return Ok(());
         }
         let number = w.pr.unwrap().to_string();
-        let raw=shell.run(data,root,"gh",&["pr","view",&number,"--repo",&gh_repo,"--json","number,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit,mergeStateStatus,statusCheckRollup"]).await?;
+        let raw=shell.run(data,root,"gh",&["pr","view",&number,"--repo",&gh_repo,"--json",PULL_FIELDS]).await?;
         let pr: Pull = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         match reconcile(w, &pr, local) {
+            // GitHub works mergeability out lazily; UNKNOWN is not an answer yet.
+            Decision::Wait if w.ready_only && pr.merge_state_status != "UNKNOWN" => {
+                self.update(room, w, |job| {
+                    job.phase = Phase::Cancelled;
+                    job.detail = "The checks changed after the merge was asked for. Nothing was merged.".into();
+                })?;
+            }
             Decision::Wait => {}
             Decision::Finish(phase, mut detail) => {
                 if phase == Phase::Failed {
@@ -450,50 +555,26 @@ impl ThreadGit {
                 })?;
             }
             Decision::Submit => {
-                let (owner, repo) = w.repo.split_once('/').ok_or("Invalid repository.")?;
-                let query = "query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){ref(qualifiedName:\"refs/heads/main\"){refUpdateRule{requiredStatusCheckContexts}}}}";
-                let raw = shell
-                    .run(
-                        data,
-                        root,
-                        "gh",
-                        &[
-                            "api",
-                            "graphql",
-                            "--hostname",
-                            "github.com",
-                            "-f",
-                            &format!("query={query}"),
-                            "-f",
-                            &format!("owner={owner}"),
-                            "-f",
-                            &format!("repo={repo}"),
-                        ],
-                    )
-                    .await?;
-                let policy: serde_json::Value =
-                    serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-                let required = policy
-                    .pointer("/data/repository/ref/refUpdateRule/requiredStatusCheckContexts")
-                    .and_then(|contexts| contexts.as_array());
-                let Some(required) = required.filter(|contexts| !contexts.is_empty()) else {
-                    self.update(room, w, |job| {
-                        job.phase = Phase::Blocked;
-                        job.detail = "GitHub reports no required status checks for main. Configure required checks before merging from Deck.".into();
-                    })?;
-                    return Ok(());
-                };
-                for context in required {
-                    let name = context.as_str().ok_or("Invalid required check name.")?;
-                    if !pr.status_check_rollup.iter().any(|check| {
-                        (check["name"] == name && check["conclusion"] == "SUCCESS")
-                            || (check["context"] == name && check["state"] == "SUCCESS")
-                    }) {
+                match required(shell, w, &pr, data, root).await? {
+                    Required::None => {
                         self.update(room, w, |job| {
-                            job.detail = format!("Waiting for required check: {name}.");
+                            job.phase = Phase::Blocked;
+                            job.detail = "GitHub reports no required status checks for main. Configure required checks before merging from Deck.".into();
                         })?;
                         return Ok(());
                     }
+                    Required::Waiting(name) => {
+                        self.update(room, w, |job| {
+                            if job.ready_only {
+                                job.phase = Phase::Cancelled;
+                                job.detail = format!("Required check {name} no longer passes. Nothing was merged.");
+                            } else {
+                                job.detail = format!("Waiting for required check: {name}.");
+                            }
+                        })?;
+                        return Ok(());
+                    }
+                    Required::Passed => {}
                 }
                 // Serialize dispatch with cancellation; retries use GitHub's exact-SHA compare.
                 let mut submitting = w.clone();
