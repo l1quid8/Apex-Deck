@@ -1,6 +1,7 @@
 // Settings: reorganized for usability - grouped nav, search, true black palette, explicit Light/Dark/System
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
 import { AppearanceStudio } from "./AppearanceStudio";
+import { ReplySuggestionsSetting } from "./ReplySuggestionsSetting";
 import { CodeModeControl } from "./CodeModeControl";
 import type { AppearanceStudioState } from "./useAppearanceDraft";
 import { useSystemDark } from "./useAppearance";
@@ -462,6 +463,9 @@ function General({ settings, onChange, backend: _backend, updates: _updates, onR
           <option value="open">Open the pane</option>
           <option value="notify">Just notify</option>
         </select>
+      </Row>
+      <Row id="reply-suggestions" label="Suggestions after a reply" note="Show one decision, generate a list of follow-ups, or leave replies as they are. Generating the list uses an extra model turn.">
+        <ReplySuggestionsSetting backend={_backend} />
       </Row>
       <Row id="run-buttons" label="Run buttons on code blocks" note="Shell blocks in an agent's reply get a Run button. Clicking it runs the block in the thread's folder on the thread's host.">
         <input type="checkbox" aria-label="Run buttons on code blocks" checked={settings.codeRunButtons} onChange={e=>onChange({ ...settings, codeRunButtons: e.target.checked })} />

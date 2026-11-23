@@ -1,0 +1,9 @@
+.reply-decision { position: relative; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; overflow-wrap: anywhere; }
+.reply-decision .context { margin: 0 24px 4px 0; color: var(--muted); font-size: 12px; }
+.reply-decision strong { display: block; padding-right: 20px; font-size: 13px; }
+.reply-decision .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.reply-decision button { min-height: 28px; padding: 3px 9px; font-size: 12px; }
+.reply-decision .dismiss { position: absolute; right: 3px; top: 3px; background: transparent; border: 0; }
+.reply-decision small { color: var(--muted); }
+.reply-decision details { margin-top: 6px; }
+.reply-decision pre { max-height: 14em; overflow: auto; white-space: pre-wrap; }

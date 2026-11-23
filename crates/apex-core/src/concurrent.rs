@@ -64,6 +64,7 @@ pub struct TurnBatch {
     retain_write_lease: Arc<AtomicBool>,
     answers: bool,
     generated_ui: GeneratedUiCapability,
+    reply_decisions: bool,
     runner_context: Option<(String, bool)>,
     /// A sole human request may get one private follow-up if the reply
     /// explicitly leaves work unfinished. Kept separate from runner context.
@@ -75,6 +76,16 @@ impl TurnBatch {
     pub fn with_answer_guidance(mut self, answers: Option<bool>, generated_ui: GeneratedUiCapability) -> Self {
         self.answers = answers.unwrap_or(true);
         self.generated_ui = generated_ui;
+        self
+    }
+    /// Honor an explicit one-turn decision, including private continuation attempts.
+    pub fn single_reply(mut self) -> Self {
+        self.limit = Some(0);
+        self.direct_request = None;
+        self
+    }
+    pub fn with_reply_decisions(mut self, enabled: bool) -> Self {
+        self.reply_decisions = enabled;
         self
     }
     /// Private host-supplied continuation context, bound to this batch only.
@@ -458,6 +469,7 @@ impl ConcurrentRoom {
             retain_write_lease: Arc::default(),
             answers,
             generated_ui: GeneratedUiCapability::Unsupported,
+            reply_decisions: false,
             runner_context: None,
             direct_request: None,
         }
@@ -484,7 +496,7 @@ impl ConcurrentRoom {
             if batch.sequential {
                 for ticket in tickets {
                     let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, None).await;
-                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await);
+                    next.extend(self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.reply_decisions, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -516,14 +528,14 @@ impl ConcurrentRoom {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
                             let prepared = self.admit_writer(&ticket, &batch, &mut write_lease, prepared).await;
-                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await));
+                            ids.push((index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.reply_decisions, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await));
                         }
                         ids
                     };
                     let read_turns = futures::future::join_all(readers.into_iter().map(|(index, (ticket, prepared))| {
                         let batch = &batch;
                         async move {
-                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await)
+                            (index, self.run_one(ticket, prepared, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.reply_decisions, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone()).await)
                         }
                     }));
                     let (mut results, readers) = futures::join!(write_turns, read_turns);
@@ -536,7 +548,7 @@ impl ConcurrentRoom {
                         tickets
                             .into_iter()
                             .zip(prepared)
-                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone())),
+                            .map(|(t, p)| self.run_one(t, p, sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui, batch.reply_decisions, batch.runner_context.as_ref(), batch.direct_request.as_ref(), batch.client_message_id.clone())),
                     )
                     .await
                     {
@@ -632,6 +644,7 @@ impl ConcurrentRoom {
         durable_owner: bool,
         answers: bool,
         generated_ui: GeneratedUiCapability,
+        reply_decisions: bool,
         runner_context: Option<&(String, bool)>,
         direct_request: Option<&(ParticipantId, String, usize)>,
         client_message_id: Option<String>,
@@ -825,6 +838,9 @@ impl ConcurrentRoom {
             return Vec::new();
         }
         if ticket.origin.is_some() { request.system.push_str("\nThis is a voice call. Begin with a concise speakable sentence. End with a short plain-language result. Keep code in the thread.\n"); }
+        if reply_decisions && ticket.origin.is_none() && runner_context.is_none() {
+            request.system.push_str("\nWhen the user has a genuine optional coding decision, you may end your reply with exactly one plain-text line: Deck asks: <question>? | <action label>. Use 8–160 characters for the question and 2–40 for the label. For example: Deck asks: Add a timestamp to diagnose the delay? | Add diagnostic logging. The label is sent back to you as a one-turn request. Use no backticks, extra pipes, or Git/Host actions such as push, merge or cancel. Place this line immediately before any Deck built or Deck review passed receipt. Omit it for ordinary answers.\n");
+        }
         let direct = direct_request.filter(|(id, _, _)| {
             id == &ticket.id && !request.plan && runner_context.is_none() && participant.config().media.is_none()
         });

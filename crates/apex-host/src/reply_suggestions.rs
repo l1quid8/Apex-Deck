@@ -32,8 +32,7 @@ pub enum Mode {
     Off,
 }
 impl Mode {
-    /// Today's behaviour, until the desktop card ships.
-    pub const DEFAULT: Mode = Mode::NextSteps;
+    pub const DEFAULT: Mode = Mode::DecisionCard;
     pub fn from_settings(settings: Option<&serde_json::Value>) -> Mode {
         settings
             .and_then(|s| s.get(SETTING))
@@ -181,7 +180,7 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
             card.pr = Some(*pr);
             Some(card)
         }
-        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if w.reviewer.is_some() => {
+        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if w.reviewer.is_some() && !w.fix_requested => {
             let mut card = git(
                 w,
                 Kind::FixChecks,
@@ -337,6 +336,41 @@ impl ReplySuggestions {
     }
 }
 
+impl crate::Host {
+    pub(crate) async fn post_decision_turn(
+        self: &std::sync::Arc<Self>, id: &str, text: String, target: apex_core::ParticipantId,
+        request_id: String, capability: apex_core::GeneratedUiCapability,
+        check: &(dyn Fn() -> Result<(), String> + Send + Sync),
+    ) -> Result<serde_json::Value, String> {
+        self.room_client_post_keeping_default(id.into(), text, Some(vec![target]), request_id,
+            false, true, Some(0), None, capability, true, true, check).await
+    }
+
+    /// A button can only send the validated label to the author of the displayed reply.
+    pub(crate) async fn answer_reply_question(self: &std::sync::Arc<Self>, id: String, key: String, text: String, targets: Vec<apex_core::ParticipantId>, capability: apex_core::GeneratedUiCapability) -> Result<serde_json::Value, String> {
+        use sha2::{Digest, Sha256};
+        let shown = self.room_reply_decision(id.clone()).await?;
+        let card = &shown["decision"];
+        if card["kind"] != "question" || card["key"] != key || card["prompt"] != text ||
+            targets.len() != 1 || card["to"] != targets[0].as_str() {
+            return Err("This reply decision changed. Refresh the thread.".into());
+        }
+        let handle = self.handle(&id)?;
+        let seq = shown["replySeq"].as_u64();
+        let request_id = format!("reply-choice-{:x}", Sha256::digest(key.as_bytes()));
+        let check = || {
+            let latest = handle.checkpoint.lock().unwrap().snapshot.transcript.last().map(|m| m.seq as u64);
+            if latest != seq || self.reply_suggestions.mode() != crate::reply_suggestions::Mode::DecisionCard ||
+                self.reply_suggestions.dismissed(&id)?.contains(&key) {
+                return Err("This decision is no longer current.".into());
+            }
+            Ok(())
+        };
+        self.post_decision_turn(&id, text, targets[0].clone(), request_id, capability, &check).await
+    }
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +409,9 @@ mod tests {
         assert_eq!(decided(card, Some(&workflow(Phase::Cancelled, true)), PASSED, "Done.", &[]).unwrap().kind, Kind::Merge, "a cancelled merge can be asked again");
         // A required check failed.
         let fix = decided(card, Some(&ready), Checks::Failed { pr: 42, detail: "Windows failed\nlog".into() }, "Done.", &[]).unwrap();
+        let mut requested = ready.clone();
+        requested.fix_requested = true;
+        assert!(decided(card, Some(&requested), Checks::Failed { pr: 42, detail: "Windows".into() }, "Done.", &[]).is_none());
         assert_eq!((fix.kind, fix.turns, fix.detail.as_deref()), (Kind::FixChecks, 1, Some("Windows failed\nlog")));
         let failed = decided(card, Some(&workflow(Phase::Failed, true)), Checks::Running, "Done.", &[]).unwrap();
         assert_eq!((failed.kind, failed.turns), (Kind::FixFailed, 1));
@@ -499,12 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn the_setting_defaults_to_todays_list_and_reads_only_known_values() {
-        assert_eq!(Mode::from_settings(None), Mode::NextSteps);
-        assert_eq!(Mode::from_settings(Some(&serde_json::json!({}))), Mode::NextSteps);
+    fn the_setting_defaults_to_the_decision_card_and_reads_only_known_values() {
+        assert_eq!(Mode::from_settings(None), Mode::DecisionCard);
+        assert_eq!(Mode::from_settings(Some(&serde_json::json!({}))), Mode::DecisionCard);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"decision_card"}))), Mode::DecisionCard);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"off"}))), Mode::Off);
-        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"everything"}))), Mode::NextSteps);
+        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"everything"}))), Mode::DecisionCard);
         let state = ReplySuggestions::new(TestDataDir::new().path(), Mode::DEFAULT);
         state.set_mode(Mode::Off);
         assert_eq!(state.mode().as_str(), "off");

@@ -256,7 +256,7 @@ pub enum Command {
     RoomTargets { id: String, text: String },
     RoomRefreshPlans { id: String },
     RoomApplyAccess { id: String, participant: ParticipantId },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "keep_default")] keep_default: bool, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default, alias = "keep_default")] keep_default: bool, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize>, #[serde(default, alias = "client_message_id")] client_message_id: Option<String>, #[serde(default)] decision_key: Option<String> },
     PostCapabilities {},
     VoiceCapabilities {},
     RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
@@ -983,14 +983,17 @@ impl Host {
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
             RoomRefreshPlans { id } => reply(self.room_refresh_plans(id)?),
             RoomApplyAccess { id, participant } => reply(self.room_apply_access(id, participant).await?),
-            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id, keep_default } => {
+            RoomPostTo { id, text, targets, interactive_answers, client_turn_id, max_bot_hops, client_message_id, keep_default, decision_key } => {
+                if let Some(key) = decision_key {
+                    return reply(self.answer_reply_question(id, key, text, targets, capability).await?);
+                }
                 if let Some(request_id) = client_turn_id {
                     if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
                     if client_message_id.as_ref().is_some_and(|id| id != &request_id) { return Err("voice and client message IDs must match".into()); }
-                    reply(self.room_client_post_keeping_default(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability, keep_default, &|| Ok(())).await?)
+                    reply(self.room_client_post_keeping_default(id, text, Some(targets), request_id, true, true, max_bot_hops, interactive_answers, capability, keep_default, false, &|| Ok(())).await?)
                 } else {
                     match client_message_id {
-                        Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post_keeping_default(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability, keep_default, &|| Ok(())).await?),
+                        Some(request_id) if self.store().room(&id)?.ok_or("This room has no saved data")?.snapshot.kind.is_chat() => reply(self.room_client_post_keeping_default(id, text, Some(targets), request_id, false, true, max_bot_hops, interactive_answers, capability, keep_default, false, &|| Ok(())).await?),
                         _ => reply(self.room_post_to_with_answer_guidance(id, text, targets, interactive_answers, capability, keep_default).await?),
                     }
                 }

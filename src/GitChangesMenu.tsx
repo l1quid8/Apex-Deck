@@ -1,4 +1,3 @@
-import { ThreadGitActions } from './ThreadGitActions';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
@@ -8,14 +7,13 @@ import './gitChanges.css';
 
 export interface GitMenuRequest { paths: string[] | null; nonce: number; note?: string }
 interface Props {
-  actionsTarget?: HTMLElement | null;
   onWorktrees?: () => void;
   backend: Backend; room: string; cwd: string; active: boolean; ready: boolean; revision: number;
   request: GitMenuRequest | null; target: HTMLElement | null; canOpen: boolean; onOpen: () => void; onClose: () => void; onReview: () => void; onChanged: () => void;
 }
 
 /** One live checkout card, mounted inside the selected reply. */
-export function GitChangesMenu({ backend, room, cwd, active, ready, revision, request, target, actionsTarget, canOpen, onOpen, onClose, onReview, onChanged, onWorktrees }: Props) {
+export function GitChangesMenu({ backend, room, cwd, active, ready, revision, request, target, canOpen, onOpen, onClose, onReview, onChanged, onWorktrees }: Props) {
   const id = useId();
   const open = request !== null;
   const [state, setState] = useState<GitState | null>(null);
@@ -76,25 +74,26 @@ export function GitChangesMenu({ backend, room, cwd, active, ready, revision, re
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
   }, [open, target, request?.nonce, closeCard]);
-  const perform = async (kind: 'push' | 'request_merge' | 'cancel_merge' | 'ask_fix') => {
+  const push = async () => {
     if (!ready || !state || working.current) return;
     working.current = true;
     ++serial.current;
-    setBusy(kind); setError(''); setStatus('');
+    setBusy("push"); setError(''); setStatus('');
     try {
-      const action = {kind, expected: {...state, files: []}};
+      const action = {kind: "push" as const, expected: {...state, files: []}};
       const result = await backend.call<GitOutcome>('room_thread_git_action', {id: room, action});
       setState(result.state); setStatus(result.message); onChanged();
     } catch (e) { setError(String(e)); }
     finally { working.current = false; setLoading(false); setBusy(null); }
   };
   const blocked = !ready || Boolean(busy);
-  const actions = <ThreadGitActions {...{state, blocked, perform, status, error}} />;
+  const workflow = state?.workflow;
+  const current = workflow && workflow.head === state?.head ? workflow : undefined;
+  const pending = workflow && ["preparing", "checks", "submitting", "cancelling", "syncing"].includes(workflow.phase);
   return <>
     <button ref={button} type="button" className={`ghost small git-changes-trigger${state?.clean ? ' is-clean' : ''}`} aria-label={`Changes${state ? ` · ${state.files.length}` : ''}`} aria-expanded={open} aria-controls={id} disabled={!ready || (!open && !canOpen)} title="Working tree changes" onClick={() => { button.current?.focus(); onOpen(); }}>
       <span className="git-state-dot" aria-hidden="true" /><span>{state ? state.files.length : '±'}</span><span className="count-label"> {state?.files.length === 1 ? 'change' : 'changes'}</span>
     </button>
-    {actionsTarget && createPortal(actions, actionsTarget)}
     {open && target && createPortal(<div id={id} ref={menu} tabIndex={-1} className="git-changes-menu" role="region" aria-label="Working tree changes" aria-busy={Boolean(busy)}>
       <header className="git-menu-head"><span className="git-state-dot" aria-hidden="true" /><strong>{state ? `${state.files.length} changes` : 'Changes'}</strong><span className="git-card-branch">{onWorktrees ? <button type="button" className="ghost" title="Show worktrees" onClick={onWorktrees}><code>{state?.branch ?? (state ? 'Detached HEAD' : '')}</code></button> : <code>{state?.branch ?? (state ? 'Detached HEAD' : '')}</code>}{state?.target ? ` → ${state.target}` : ''}</span><span className="git-live-label">live now</span><button type="button" className="git-icon" aria-label="Refresh changes" disabled={blocked || loading} onClick={() => void refresh()}>↻</button><button type="button" className="git-icon" aria-label="Close changes" onClick={closeCard}>×</button></header>
       {state && (() => {
@@ -123,7 +122,10 @@ export function GitChangesMenu({ backend, room, cwd, active, ready, revision, re
             </div>)}
           </div>}
         </div>
-        {!actionsTarget && actions}
+        {state.branch && !["main", "master"].includes(state.branch) && (state.ahead > 0 || current) && current?.phase !== "merged" &&
+          <div className="git-branch-actions"><button type="button" title={`Push committed changes to origin/${state.branch}`}
+            disabled={blocked || pending || current?.pushed || !state.originRepo} onClick={() => void push()}>{current?.pushed ? "Pushed" : "Push"}</button></div>}
+        {status && <p role="status">{status}</p>}
       </>; })()}
       {loading && !state && <p className="git-empty" role="status">Reading Git state…</p>}
       <div className="git-menu-foot"><span>{state ? `${state.ahead} ahead${state.behind ? ` · ${state.behind} behind` : ''}` : ''}</span><button type="button" onClick={() => { onClose(); onReview(); }}>Thread diff</button></div>
