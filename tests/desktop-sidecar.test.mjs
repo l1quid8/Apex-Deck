@@ -4,6 +4,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, developmentHostDataDir, waitForSocket, localDaemon } from '../desktop/sidecar.mjs';
+import { channel } from '../desktop/channel.mjs';
 import os from 'node:os';
 
 test('waitForSocket resolves once something listens, and again once it has stopped', async () => {
@@ -34,7 +35,7 @@ test('the daemon binary: the environment, then the bundled one, then the dev bui
   const name = process.platform === 'win32' ? 'apex-daemon.exe' : 'apex-daemon';
   const dev = path.join(repo, 'target', 'debug', name);
   assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: { APEX_DAEMON_BIN: '/x/' + name } }), '/x/' + name);
-  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: {} }), path.join('/App/Resources', 'bin', name));
+  assert.equal(daemonBinary({ packaged: true, resourcesPath: '/App/Resources', repo, env: {} }), path.join('/App/Resources', 'bin', process.platform === 'win32' ? channel.WINDOWS_DAEMON : name));
   assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: {} }), dev);
   assert.equal(daemonBinary({ packaged: false, resourcesPath: '/ignored', repo, env: { APEX_DAEMON_BIN: '' } }), dev);
 });

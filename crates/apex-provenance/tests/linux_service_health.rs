@@ -10,7 +10,7 @@ fn health_requires_exact_challenge_release_phase_and_all_expected_daemons() {
         epoch: 7,
     };
     let nonce = "b".repeat(32);
-    let good = json!({"domain":"apex-provenance-v1","kind":"linux-health","nonce":nonce,"epoch":7,"manifestSha256":"a".repeat(64),"protocol":1,"tree":"/opt/apex-deck/test","brokerInstance":"c".repeat(32),"ready":false,"daemons":[{"uid":1000,"pid":123,"processLive":true,"protocolReady":true}]});
+    let good = json!({"domain":apex_provenance::DOMAIN,"kind":"linux-health","nonce":nonce,"epoch":7,"manifestSha256":"a".repeat(64),"protocol":1,"tree":"/opt/apex-deck/test","brokerInstance":"c".repeat(32),"ready":false,"daemons":[{"uid":1000,"pid":123,"processLive":true,"protocolReady":true}]});
     assert!(validate_health(&good, &descriptor, &nonce, &[1000], false).is_ok());
     for (field, value) in [
         ("nonce", json!("stale")),

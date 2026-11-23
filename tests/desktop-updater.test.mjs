@@ -12,10 +12,18 @@ import {
   packageFor, packageVerifier, parseManifest, teamFrom, WINDOWS_FEED_URL, windowsInstaller, windowsLauncher, windowsSignerFrom, windowsVerifier,
 } from '../desktop/updater.mjs';
 
+import { channel } from '../desktop/channel.mjs';
+
+const commit = 'a'.repeat(40);
+const tag = 'nightly-20261123-aaaaaaa';
+const targetBuild = channel.nightly ? { buildNumber: 42, commit } : {};
+const manifestIdentity = channel.nightly ? { channel: 'nightly', tag, ...targetBuild } : {};
+const releaseTag = version => channel.nightly ? tag : 'v' + version;
+const cacheKey = channel.nightly ? '42-' + commit : '0.9.1';
 const bytes = Buffer.from('apex deck 0.9.1 package');
 const sha = crypto.createHash('sha256').update(bytes).digest('hex');
 const feed = (fields = {}) => ({
-  schemaVersion: 1,
+  ...manifestIdentity, schemaVersion: 1,
   version: '0.9.1',
   notes: 'Faster restarts.',
   packages: [{ arch: 'arm64', minimumSystemVersion: '13.0', name: 'Apex-Deck-0.9.1-arm64.pkg', size: bytes.length, sha256: sha }],
@@ -28,12 +36,13 @@ function fixture(t, overrides = {}) {
   const calls = { download: 0, verify: 0, install: [], changes: [] };
   const timers = { setTimeout: (fn) => { queueMicrotask(fn); return 1; }, clearTimeout: () => {} };
   const updater = new Updater({
+    installedBuild: overrides.current === '0.9.1' ? targetBuild : { buildNumber: 41, commit: 'b'.repeat(40) },
     current: '0.9.0', arch: 'arm64', osVersion: '26.1',
     cacheDir: path.join(dir, 'cache'), stateFile: path.join(dir, 'updates.json'), resultFile: path.join(dir, 'last-update.json'),
     fetchJson: async (url) => { assert.equal(url, FEED_URL); return feed(); },
     download: async (url, file, { onProgress }) => {
       calls.download += 1;
-      assert.equal(url, 'https://github.com/l1quid8/apex-deck/releases/download/v0.9.1/Apex-Deck-0.9.1-arm64.pkg');
+      assert.equal(url, 'https://github.com/l1quid8/apex-deck/releases/download/' + releaseTag('0.9.1') + '/Apex-Deck-0.9.1-arm64.pkg');
       fs.writeFileSync(file, bytes);
       onProgress(bytes.length);
       return sha;
@@ -64,7 +73,7 @@ test('the feed is read field by field and can only point at this repository', ()
     { packages: [{ ...feed().packages[0], size: 0 }] },
     { packages: [{ ...feed().packages[0], arch: 'riscv' }] },
   ]) assert.throws(() => parseManifest(feed(bad)), JSON.stringify(bad));
-  assert.equal(assetUrl('0.9.1', 'Apex-Deck-0.9.1-arm64.pkg'), 'https://github.com/l1quid8/apex-deck/releases/download/v0.9.1/Apex-Deck-0.9.1-arm64.pkg');
+  assert.equal(assetUrl('0.9.1', 'Apex-Deck-0.9.1-arm64.pkg', '.pkg', tag), 'https://github.com/l1quid8/apex-deck/releases/download/' + releaseTag('0.9.1') + '/Apex-Deck-0.9.1-arm64.pkg');
   assert.throws(() => assetUrl('0.9.1', 'a/b.pkg'));
   const manifest = parseManifest(feed());
   assert.ok(packageFor(manifest, { arch: 'arm64', osVersion: '13.0' }));
@@ -94,7 +103,7 @@ test('a newer release downloads, is checked, and waits ready in the cache', asyn
 });
 
 test('an older or equal release, or a missing feed, means up to date', async (t) => {
-  for (const fetchJson of [async () => feed({ version: '0.9.0' }), async () => feed({ version: '0.8.9' }), async () => null]) {
+  for (const fetchJson of [async () => feed({ version: '0.9.0', buildNumber: 41 }), async () => feed({ version: '0.8.9', buildNumber: 40 }), async () => null]) {
     const { updater, calls } = fixture(t, { fetchJson });
     assert.equal((await updater.check()).state, 'up-to-date');
     assert.equal(calls.download, 0);
@@ -110,7 +119,7 @@ test('a download that does not match its checksum is retried, then reported, and
   assert.equal(attempts, 3);
   assert.equal(status.state, 'error');
   assert.match(status.error, /checksum/);
-  assert.deepEqual(fs.readdirSync(path.join(updater.cacheDir, '0.9.1')), []);
+  assert.deepEqual(fs.readdirSync(path.join(updater.cacheDir, cacheKey)), []);
 });
 
 test('a package whose app fails the signature check is deleted, not offered', async (t) => {
@@ -118,7 +127,7 @@ test('a package whose app fails the signature check is deleted, not offered', as
   const status = await updater.check();
   assert.equal(status.state, 'error');
   assert.match(status.error, /team/);
-  assert.deepEqual(fs.readdirSync(path.join(updater.cacheDir, '0.9.1')), []);
+  assert.deepEqual(fs.readdirSync(path.join(updater.cacheDir, cacheKey)), []);
 });
 
 test('when GitHub can’t be reached, Settings gets a plain sentence instead of Chromium’s error code', async (t) => {
@@ -166,8 +175,8 @@ test('restart hands over exactly the checked package and records the request; a 
   await assert.rejects(updater.restart(), /No update is ready/);
   await updater.check();
   assert.equal(await updater.restart(), '12345678-1234-4234-8234-123456789abc');
-  assert.deepEqual(calls.install, [{ version: '0.9.1', package: updater.ready.package, sha256: sha, size: bytes.length }]);
-  assert.deepEqual(JSON.parse(fs.readFileSync(updater.stateFile, 'utf8')).requested, { id: '12345678-1234-4234-8234-123456789abc', version: '0.9.1', from: '0.9.0', at: 1_000_000 });
+  assert.deepEqual(calls.install, [{ ...targetBuild, version: '0.9.1', package: updater.ready.package, sha256: sha, size: bytes.length }]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(updater.stateFile, 'utf8')).requested, { ...targetBuild, id: '12345678-1234-4234-8234-123456789abc', version: '0.9.1', from: '0.9.0', at: 1_000_000 });
   assert.equal(updater.status().state, 'installing');
 
   const refused = fixture(t, { requestInstall: async () => { throw new Error('An update is already being installed.'); } }).updater;
@@ -198,7 +207,7 @@ test('after relaunch Deck says once how the requested update went', (t) => {
   ];
   for (const [written, current, age, expected] of cases) {
     const { updater } = fixture(t, { current, now: () => 1_000_000 + age });
-    fs.writeFileSync(updater.stateFile, JSON.stringify({ requested: { id, version: '0.9.1', from: '0.9.0', at: 1_000_000 } }));
+    fs.writeFileSync(updater.stateFile, JSON.stringify({ requested: { ...targetBuild, id, version: '0.9.1', from: '0.9.0', at: 1_000_000 } }));
     if (written) fs.writeFileSync(updater.resultFile, JSON.stringify(written));
     updater.reconcile();
     assert.deepEqual(updater.status().result, expected, JSON.stringify(written));
@@ -213,7 +222,7 @@ const longCommandError = `launchctl bootstrap failed: ${'Bootstrap failed: 5: In
 function reconciled(t, current, written) {
   const id = '12345678-1234-4234-8234-123456789abc';
   const { updater } = fixture(t, { current });
-  fs.writeFileSync(updater.stateFile, JSON.stringify({ requested: { id, version: '0.9.1', from: '0.9.0', at: Date.now() } }));
+  fs.writeFileSync(updater.stateFile, JSON.stringify({ requested: { ...targetBuild, id, version: '0.9.1', from: '0.9.0', at: Date.now() } }));
   fs.writeFileSync(updater.resultFile, JSON.stringify({ id, ...written }));
   updater.reconcile();
   return updater.status().result;
@@ -325,29 +334,30 @@ test('the package check pins this app’s team and the promised version', async 
   const run = async (command, args) => {
     commands.push([command, ...args]);
     if (command === '/usr/bin/codesign' && !signed) throw new Error('failed');
+    if (args.includes('CFBundleVersion')) return '42';
     return command === '/usr/bin/plutil' ? `${version}\n` : '';
   };
   const verify = packageVerifier({ run, team: 'TEAM123456', scratch });
-  await verify('/cache/u.pkg', { version: '0.9.1' });
+  await verify('/cache/u.pkg', { ...targetBuild, version: '0.9.1' });
   assert.equal(commands[0][0], '/usr/sbin/pkgutil');
   assert.equal(commands[0][1], '--expand-full');
-  assert.ok(commands[1].includes('-R=identifier "dev.apexdeck.app" and anchor apple generic and certificate leaf[subject.OU] = "TEAM123456"'));
+  assert.ok(commands[1].includes('-R=identifier "' + channel.APP_ID + '" and anchor apple generic and certificate leaf[subject.OU] = "TEAM123456"'));
   version = '0.9.0';
-  await assert.rejects(verify('/cache/u.pkg', { version: '0.9.1' }), /holds version 0.9.0/);
+  await assert.rejects(verify('/cache/u.pkg', { ...targetBuild, version: '0.9.1' }), /holds version 0.9.0/);
   signed = false;
-  await assert.rejects(verify('/cache/u.pkg', { version: '0.9.1' }), /signed by the team/);
+  await assert.rejects(verify('/cache/u.pkg', { ...targetBuild, version: '0.9.1' }), /signed by the team/);
   assert.deepEqual(fs.readdirSync(scratch), [], 'each check clears its unpacked copy');
 });
 
 
 test('the Windows feed takes only installers, and a Mac feed never does', () => {
-  const windows = { schemaVersion: 1, version: '0.9.8', packages: [{ arch: 'x64', minimumSystemVersion: '10.0.22000', name: 'Apex-Deck-0.9.8-x64-Setup.exe', size: 10, sha256: 'a'.repeat(64) }] };
+  const windows = { ...manifestIdentity, schemaVersion: 1, version: '0.9.8', packages: [{ arch: 'x64', minimumSystemVersion: '10.0.22000', name: 'Apex-Deck-0.9.8-x64-Setup.exe', size: 10, sha256: 'a'.repeat(64) }] };
   const manifest = parseManifest(windows, { extension: '.exe' });
   assert.ok(packageFor(manifest, { arch: 'x64', osVersion: '10.0.26100' }));
   assert.equal(packageFor(manifest, { arch: 'x64', osVersion: '10.0.19045' }), null);
   assert.throws(() => parseManifest(windows));
   assert.throws(() => parseManifest({ ...windows, packages: [{ ...windows.packages[0], name: 'Apex.pkg' }] }, { extension: '.exe' }));
-  assert.match(assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe'), /\/v0\.9\.8\/Apex-Deck-0\.9\.8-x64-Setup\.exe$/);
+  assert.ok(assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe', tag).endsWith('/' + releaseTag('0.9.8') + '/Apex-Deck-0.9.8-x64-Setup.exe'));
   assert.throws(() => assetUrl('0.9.8', 'a/b.exe', '.exe'));
   assert.notEqual(WINDOWS_FEED_URL, FEED_URL);
 });
@@ -360,7 +370,7 @@ test('Windows updates run only from a signed, installed copy', () => {
 });
 
 const signature = (fields = {}) => JSON.stringify({
-  status: 'Valid', subject: 'CN=Tyler Caldwell, O=Tyler Caldwell, L=Rancho Cucamonga, S=ca, C=US',
+  status: 'Valid', product: channel.PRODUCT, fileVersion: '0.0.0.42', subject: 'CN=Tyler Caldwell, O=Tyler Caldwell, L=Rancho Cucamonga, S=ca, C=US',
   issuer: 'CN=Microsoft ID Verified CS AOC CA 01, O=Microsoft Corporation, C=US', version: '0.9.8', ...fields,
 });
 
@@ -374,12 +384,13 @@ test('a Windows signature counts only when Windows calls it valid', () => {
 test('an installer must match this app\'s publisher and the promised version', async () => {
   const signer = windowsSignerFrom(signature());
   const verifying = (output) => windowsVerifier({ run: async () => output, signer });
-  await verifying(signature())('C:/x.exe', { version: '0.9.8' });
-  await assert.rejects(verifying(signature({ subject: 'CN=Tyler Caldwell, O=Someone Else' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
-  await assert.rejects(verifying(signature({ issuer: 'CN=Other, O=Other CA' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
-  await assert.rejects(verifying(signature({ status: 'NotSigned' }))('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
-  await assert.rejects(verifying(signature({ version: '0.9.7' }))('C:/x.exe', { version: '0.9.8' }), /holds version 0\.9\.7/);
-  await assert.rejects(windowsVerifier({ run: async () => signature(), signer: null })('C:/x.exe', { version: '0.9.8' }), /isn’t signed by the publisher/);
+  await verifying(signature())('C:/x.exe', { ...targetBuild, version: '0.9.8' });
+  await assert.rejects(verifying(signature({ product: channel.nightly ? 'Apex Deck' : 'Apex Deck Nightly' }))('C:/x.exe', { ...targetBuild, version: '0.9.8' }), /product/);
+  await assert.rejects(verifying(signature({ subject: 'CN=Tyler Caldwell, O=Someone Else' }))('C:/x.exe', { ...targetBuild, version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ issuer: 'CN=Other, O=Other CA' }))('C:/x.exe', { ...targetBuild, version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ status: 'NotSigned' }))('C:/x.exe', { ...targetBuild, version: '0.9.8' }), /isn’t signed by the publisher/);
+  await assert.rejects(verifying(signature({ version: '0.9.7' }))('C:/x.exe', { ...targetBuild, version: '0.9.8' }), /holds version 0\.9\.7/);
+  await assert.rejects(windowsVerifier({ run: async () => signature(), signer: null })('C:/x.exe', { ...targetBuild, version: '0.9.8' }), /isn’t signed by the publisher/);
 });
 
 test('Restart to update checks again, waits for Windows, and survives a No', async () => {

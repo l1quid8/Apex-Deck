@@ -1,3 +1,4 @@
+import { channel } from '../desktop/channel.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
@@ -38,7 +39,7 @@ test('approval grants, permission edits, trash and action labels bind exact sign
     {id:35,cmd:'computer_set_app_prompts',args:{skip:true}},
   ];
   const response=command=>{
-    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});
+    const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});
     return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
   };
   for(const frame of frames){
@@ -70,7 +71,7 @@ test('provenance wrapper binds actual command and rejects a substituted signed r
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
   const frame={id:5,cmd:'personal_send',args:{assistantId:'a',requestId:'r',text:'hello'}};
   function response(command){
-    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});
+    const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});
     return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
   }
   const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async()=>response({cmd:frame.cmd,args:frame.args})});
@@ -116,7 +117,7 @@ test('delivery IDs stay outside strict command argument objects',async()=>{
   let issued;
   await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
     issued=request.command;
-    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
+    const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
     return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
   }});
   assert.deepEqual(issued.args,frame.args);
@@ -133,7 +134,7 @@ test('legacy import apply is a protected UI intent; its preview and history are 
   let issued;
   const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
     issued=request.command;
-    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
+    const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
     return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
   }});
   assert.equal(result.cmd,'provenance_execute');
@@ -151,7 +152,7 @@ test('explicit project delegation is signed with its exact brief, worker and pro
   let issued;
   const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
     issued=request.command;
-    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
+    const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
     return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
   }});
   assert.equal(result.cmd,'provenance_execute');
@@ -161,14 +162,14 @@ test('explicit project delegation is signed with its exact brief, worker and pro
 
 test('task actions use stable distinct action-qualified submissions at the same task revision',async()=>{
  const {publicKey,privateKey}=generateKeyPairSync('ed25519');const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);const issued=[];
- const signRequest=async request=>{issued.push(request.command);const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:request.command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+ const signRequest=async request=>{issued.push(request.command);const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command:request.command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
  for(const action of ['retry','cancel','retry'])await mod.attestFrame({id:20,cmd:'assistant_task_action',args:{taskId:'task-1',revision:2,action}},{dataDir:'/data',uid:501,publicKey:raw,issue:signRequest});
  assert.equal(issued[0].provenanceRequestId,'task-action:retry');assert.equal(issued[1].provenanceRequestId,'task-action:cancel');assert.deepEqual(issued[0],issued[2]);
 });
 
 test('only revised startup checks request the versioned content-bound submission format',async()=>{
  const {publicKey,privateKey}=generateKeyPairSync('ed25519');const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);const issued=[];
- const signRequest=async request=>{issued.push(request.command);const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:request.command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+ const signRequest=async request=>{issued.push(request.command);const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command:request.command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
  for(const action of ['revise_startup','approve']){
   const args={taskId:'task-1',revision:2,action,owner:{hostId:'host',workspaceId:'project',cwd:'/project',conversationId:'monitor'},mode:'isolated',destination:{threadId:'worker-a',workers:['worker'],newThread:false}};
   await mod.attestFrame({id:20,cmd:'assistant_task_action',args},{dataDir:'/data',uid:501,publicKey:raw,issue:signRequest});
@@ -186,7 +187,7 @@ test('device grants and pairing approval bind exact installed UI receipts', asyn
     let issued;
     const result=await mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>{
       issued=request.command;
-      const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
+      const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command:issued,key:'k'}});
       return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
     }});
     assert.equal(result.cmd,'provenance_execute'); assert.equal(issued.cmd,cmd); assert.deepEqual(issued.args,frame.args);
@@ -220,7 +221,7 @@ test('Windows receipt admission uses native authority identity without a POSIX U
   const options = {platform:'win32', uid:undefined, dataDir:'C:\\Users\\test\\AppData\\Roaming\\Apex Deck',
     identity:async () => ({uid:0, dataDir:'C:/Users/test/AppData/Roaming/Apex Deck', publicKey:raw.toString('base64')}),
     issue:async request => {
-      const payload = JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}});
+      const payload = JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}});
       return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
     }};
   const result = await mod.attestFrame(frame, options);
@@ -240,7 +241,7 @@ test('Windows transport does not disclose a submission to an unauthenticated pip
   const received=[];
   const server=net.createServer(socket=>socket.on('data',data=>{
     received.push(JSON.parse(data.toString()));
-    const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'hello',nonce:'wrong-challenge'});
+    const payload=JSON.stringify({domain:channel.DOMAIN,kind:'hello',nonce:'wrong-challenge'});
     socket.write(JSON.stringify({payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')})+'\n');
   }));
   await new Promise(resolve=>server.listen(endpoint,resolve));
@@ -260,7 +261,7 @@ test('Windows transport authenticates the pipe before delivering an exactly boun
   const server=net.createServer(socket=>{
     let buffer='';socket.on('data',data=>{buffer+=data;while(buffer.includes('\n')){
       const end=buffer.indexOf('\n');const request=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);seen.push(request.op);
-      const value=request.op==='hello'?{domain:'apex-provenance-v1',kind:'hello',nonce:request.nonce}:{domain:'apex-provenance-v1',kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}};
+      const value=request.op==='hello'?{domain:channel.DOMAIN,kind:'hello',nonce:request.nonce}:{domain:channel.DOMAIN,kind:'submission',receipt:{uid:0,dataDir:request.dataDir,command:request.command,key:'k'}};
       const payload=JSON.stringify(value);socket.write(JSON.stringify({payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')})+'\n');
     }});
   });
@@ -278,7 +279,7 @@ test('update requests carry only the package facts and accept only a matching si
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
   const update={version:'0.9.1',package:'/Users/a/Library/Caches/dev.apexdeck.desktop/updates/0.9.1/Apex-Deck-0.9.1-arm64.pkg',sha256:'f'.repeat(64),size:42};
   const id='12345678-1234-4234-8234-123456789abc';
-  const reply=(fields)=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'update',uid:501,id,version:'0.9.1',...fields});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  const reply=(fields)=>{const payload=JSON.stringify({domain:channel.DOMAIN,kind:'update',uid:501,id,version:'0.9.1',...fields});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
   let sent;
   assert.equal(await mod.requestUpdate(update,{uid:501,publicKey:raw,issue:async(request)=>{sent=request;return reply({});}}),id);
   assert.deepEqual(sent,{op:'update_install',...update});
@@ -302,7 +303,7 @@ test('human todo edits require protected UI attestation',()=>{
 test('handoff selections and controls attest one stable request and reject changed signed bindings',async()=>{
   const {publicKey,privateKey}=generateKeyPairSync('ed25519');
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
-  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  const response=command=>{const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
   for(const cmd of ['personal_handoff_select','personal_handoff_control']){
     const frame={id:91,cmd,args:{assistantId:'a',requestId:'handoff-1',taskId:'task-1',expectedTaskRevision:7,action:'stop'}};
     const issued=[];
@@ -320,7 +321,7 @@ test('handoff selections and controls attest one stable request and reject chang
 test('shared agent, provider setup, and backend lifecycle intents bind exact protected submissions', async () => {
   const {publicKey,privateKey}=generateKeyPairSync('ed25519');
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
-  const response=command=>{const payload=JSON.stringify({domain:'apex-provenance-v1',kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
+  const response=command=>{const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command,key:'k'}});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
   for (const [cmd,args] of [
     ['agent_profile_save',{handle:'null',name:'Null',provider:'codex',instructions:'shared agent',access:'ask',expectedRevision:2}],
     ['provider_setup_begin',{provider:'codex',method:'reuse'}],

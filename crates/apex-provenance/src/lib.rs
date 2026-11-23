@@ -54,14 +54,12 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub mod channel;
+pub use channel::DOMAIN;
 #[cfg(target_os = "linux")]
-pub const ROOT: &str = "/var/lib/apex-deck-provenance";
-#[cfg(target_os = "linux")]
-pub const SOCKET: &str = "/run/apex-deck/provenance.sock";
+pub use channel::{LINUX_ROOT as ROOT, LINUX_SOCKET as SOCKET};
 #[cfg(not(target_os = "linux"))]
-pub const ROOT: &str = "/Library/Application Support/Apex Deck Provenance";
-#[cfg(not(target_os = "linux"))]
-pub const SOCKET: &str = "/var/run/dev.apexdeck.provenance.sock";
+pub use channel::{MAC_ROOT as ROOT, MAC_SOCKET as SOCKET};
 pub const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub const JOURNAL_BYTES: usize = 128 * 1024 * 1024;
 pub const COMPACT_AT: usize = 75_000;
@@ -70,7 +68,7 @@ pub const COMPACT_AT: usize = 75_000;
 pub const MAX_CHECKPOINT_CLAIMS: usize = 200_000;
 pub const ORPHAN_GRACE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const UNCLAIMED_TTL_MS: u64 = 24 * 60 * 60 * 1000;
-pub const DOMAIN: &str = "apex-provenance-v1";
+
 // Appended changes since the last full snapshot. Past this size the broker
 // rewrites journal.json once and starts a fresh log.
 pub const LOG_BYTES: usize = 8 * 1024 * 1024;

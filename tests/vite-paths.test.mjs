@@ -8,6 +8,8 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 test('Vite entry paths decode spaces in bot-copy directories', async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'deck config spaces '));
   try {
+    fs.mkdirSync(path.join(temp, 'desktop'));
+    fs.copyFileSync(new URL('../desktop/channelIdentity.mjs', import.meta.url), path.join(temp, 'desktop/channelIdentity.mjs'));
     fs.copyFileSync(new URL('../vite.config.ts', import.meta.url), path.join(temp, 'vite.config.ts'));
     fs.writeFileSync(path.join(temp, 'package.json'), JSON.stringify({type:'module',version:'0.0.0'}));
     fs.symlinkSync(fileURLToPath(new URL('../node_modules', import.meta.url)), path.join(temp, 'node_modules'), 'dir');

@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fixedPackage } from './release-artifacts.mjs';
+import { channel } from '../desktop/channel.mjs';
 import { MANIFEST_NAME, parseManifest, REPO } from '../desktop/updater.mjs';
 
 const RELEASE = '/Users/tylercaldwell/Downloads/apex-deck/release';
@@ -62,6 +63,7 @@ export function linuxDaemons(flags, folder) {
 }
 
 export function publishSteps(version, folder, name, daemons = []) {
+  if (channel.nightly) throw new Error("Nightly cannot publish to the Stable release feed.");
   const tag = `v${version}`;
   const pkg = path.join(folder, name);
   const feed = path.join(folder, MANIFEST_NAME);

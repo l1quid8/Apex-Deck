@@ -1,3 +1,4 @@
+import { channel, packaged } from './channel.mjs';
 // Exact UI commands go to a separate root service. Full-access shells retain
 // their ordinary daemon tools but cannot make a submission count as human.
 import fs from 'node:fs';
@@ -8,7 +9,8 @@ import path from 'node:path';
 import { createPublicKey, verify, randomUUID, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 export function authorityPaths(platform=process.platform){
-  return {root:platform==='linux'?'/var/lib/apex-deck-provenance':'/Library/Application Support/Apex Deck Provenance',socket:platform==='win32'?'\\\\.\\pipe\\ApexDeckProvenance-v1':platform==='linux'?'/run/apex-deck/provenance.sock':'/var/run/dev.apexdeck.provenance.sock'};
+  if (platform === 'win32') return {root:path.win32.join(process.env.ProgramData ?? 'C:\\ProgramData', channel.WINDOWS_ROOT),socket:channel.WINDOWS_PIPE};
+  return platform === 'linux' ? {root:channel.LINUX_ROOT,socket:channel.LINUX_SOCKET} : {root:channel.MAC_ROOT,socket:channel.MAC_SOCKET};
 }
 export const {root:ROOT,socket:SOCKET}=authorityPaths();
 const LIMIT=1024*1024;
@@ -84,7 +86,7 @@ export function issue(request,{publicKey:key,platform=process.platform,endpoint=
           if(result.error)throw new Error(result.error);
           if(!authenticated){
             const hello=verifyEnvelope(result,key);
-            if(!isDeepStrictEqual(hello,{domain:'apex-provenance-v1',kind:'hello',nonce}))throw new Error('Windows authority authentication challenge mismatch.');
+            if(!isDeepStrictEqual(hello,{domain:channel.DOMAIN,kind:'hello',nonce}))throw new Error('Windows authority authentication challenge mismatch.');
             authenticated=true;write(request);
           }else finish(null,result);
         }catch(error){finish(error);}
@@ -93,7 +95,8 @@ export function issue(request,{publicKey:key,platform=process.platform,endpoint=
     connect();
   });
 }
-const windowsHelper=()=>path.join(process.resourcesPath??path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../target/release'),'bin','apex-provenance.exe');
+const windowsHelper = () => packaged ? path.join(process.resourcesPath, 'bin', channel.WINDOWS_HELPER)
+  : fileURLToPath(new URL('../target/debug/apex-provenance.exe', import.meta.url));
 
 /** Discovery is signed and challenged; it grants no role to an ordinary caller. */
 export async function linuxIdentity({uid=process.getuid?.(),publicKey=protectedPublicKey({platform:'linux'}),send=issue,dataDir}={}) {
@@ -101,9 +104,11 @@ export async function linuxIdentity({uid=process.getuid?.(),publicKey=protectedP
   const signed=await send({op:'scope',nonce},{publicKey,platform:'linux'});
   const value=verifyEnvelope(signed,publicKey);
   const canonical=text=>typeof text==='string' && path.posix.isAbsolute(text) && path.posix.normalize(text)===text && !/[\x00-\x1f\x7f]/.test(text);
-  if(value.domain!=='apex-provenance-v1' || value.kind!=='linux-scope' || value.nonce!==nonce || value.uid!==uid || !Number.isSafeInteger(uid) || uid<=0
+  const treeName = typeof value.tree === 'string' ? path.posix.basename(value.tree) : '';
+  const validTree = /^[a-zA-Z0-9][a-zA-Z0-9.-]{0,199}$/.test(treeName) && value.tree === path.posix.join(channel.LINUX_TREE, treeName);
+  if(value.domain!==channel.DOMAIN || value.kind!=='linux-scope' || value.nonce!==nonce || value.uid!==uid || !Number.isSafeInteger(uid) || uid<=0
     || !Number.isSafeInteger(value.epoch) || value.epoch<=0 || value.protocol!==1 || !/^[a-f0-9]{64}$/.test(value.manifestSha256??'')
-    || !/^\/opt\/apex-deck\/[a-zA-Z0-9][a-zA-Z0-9.-]{0,199}$/.test(value.tree??'') || !/^[a-f0-9]{32}$/.test(value.brokerInstance??'')
+    || !validTree || !/^[a-f0-9]{32}$/.test(value.brokerInstance??'')
     || !canonical(value.dataDir) || value.daemonEndpoint!==path.posix.join(value.dataDir,'daemon.sock')
     || ![null,'app'].includes(value.role) || (value.daemonPid!==null && (!Number.isSafeInteger(value.daemonPid) || value.daemonPid<=0))
     || (dataDir!==undefined && dataDir!==value.dataDir)) throw new Error('Authenticated Linux scope does not match this account, release or data folder.');
@@ -143,7 +148,7 @@ export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKe
   const key=rawKey??protectedPublicKey({platform});
   const signed=await send({op:'issue',dataDir,command},{publicKey:key,platform});
   const payload=verifyEnvelope(signed,key),receipt=payload.receipt;
-  if(payload.domain!=='apex-provenance-v1' || payload.kind!=='submission' || receipt?.uid!==uid || receipt.dataDir!==dataDir || !isDeepStrictEqual(receipt.command,command) || (linuxScope && receipt.installationEpoch!==linuxScope.epoch))throw new Error('Receipt does not match the submitted command.');
+  if(payload.domain!==channel.DOMAIN || payload.kind!=='submission' || receipt?.uid!==uid || receipt.dataDir!==dataDir || !isDeepStrictEqual(receipt.command,command) || (linuxScope && receipt.installationEpoch!==linuxScope.epoch))throw new Error('Receipt does not match the submitted command.');
   return {id:frame.id,cmd:'provenance_execute',args:{receipt:signed}};
 }
 
@@ -158,6 +163,6 @@ export async function requestUpdate(update,{uid=process.getuid(),publicKey:rawKe
   const spki=Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),key]);
   if(!verify(null,Buffer.from(signed.payload),createPublicKey({key:spki,type:'spki',format:'der'}),Buffer.from(signed.signature,'base64')))throw new Error('Invalid provenance signature.');
   const payload=JSON.parse(signed.payload);
-  if(payload.domain!=='apex-provenance-v1' || payload.kind!=='update' || payload.uid!==uid || payload.version!==update.version || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(payload.id ?? ''))throw new Error('The protected service did not accept this update.');
+  if(payload.domain!==channel.DOMAIN || payload.kind!=='update' || payload.uid!==uid || payload.version!==update.version || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(payload.id ?? ''))throw new Error('The protected service did not accept this update.');
   return payload.id;
 }

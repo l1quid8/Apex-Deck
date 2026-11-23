@@ -5,6 +5,7 @@ import path from 'node:path';
 import { TRUSTED_APP, TRUSTED_DAEMON, TRUSTED_ROOT, bundlePath, bundleVersion, isProtectedCopy, launchPlan, plistDaemonBin, rootProtected } from '../desktop/trustedInstall.mjs';
 import { LABEL, agentPlist, installAgent } from '../desktop/launchAgent.mjs';
 import * as trustedInstall from '../desktop/trustedInstall.mjs';
+import { channel } from '../desktop/channel.mjs';
 import os from 'node:os';
 
 // macOS-only: codesign, /Applications and the LaunchAgent. Windows has no such API, and the app refuses
@@ -51,6 +52,7 @@ function fakeFiles({ version = '0.8.2', trusted = true, trustedVersion = version
 
 const plist = (version) => `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
+<key>CFBundleVersion</key><string>41</string>
 <key>CFBundleShortVersionString</key>
 <string>${version}</string>
 </dict></plist>`;
@@ -61,6 +63,7 @@ const plan = (files, over = {}) => launchPlan({
   platform: 'darwin',
   bundle: APP,
   version: '0.8.2',
+  buildNumber: 41,
   daemon: `${APP}/Contents/Resources/bin/apex-daemon`,
   plist: null,
   files,
@@ -73,6 +76,15 @@ test('the /Applications copy hands off to the protected copy when both are the s
   assert.equal(got.app, TRUSTED);
   assert.equal(got.daemon, TRUSTED_DAEMON, 'the agent keeps the protected daemon');
   assert.match(got.notice.detail, /could not be opened/i, 'a notice is ready if the handoff will not open');
+});
+
+test('Nightly compares builds and preserves its protected daemon across a mismatch', {skip: !channel.nightly || process.platform !== 'darwin'}, () => {
+  const files = fakeFiles();
+  assert.equal(plan(files).kind, 'handoff');
+  const mismatch = plan(files, {buildNumber: 42});
+  assert.equal(mismatch.kind, 'notice');
+  assert.match(mismatch.notice.detail, /build 41.*build 42/);
+  assert.equal(plan(files, {bundle: TRUSTED, buildNumber: 42}).daemon, TRUSTED_DAEMON);
 });
 
 test('a missing protected copy is no handoff: the running daemon, and a notice saying what to do', () => {

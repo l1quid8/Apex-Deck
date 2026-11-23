@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {generateKeyPairSync,sign} from 'node:crypto';
+import { channel } from '../desktop/channel.mjs';
 import * as provenance from '../desktop/provenance.mjs';
 import * as service from '../desktop/linuxService.mjs';
 
@@ -24,11 +25,12 @@ test('installed UI waits for a restarting engine without retrying invalid identi
 });
 test('Linux scope verifies signatures, fresh challenge, enrolled UID and exact paths',async()=>{
   assert.equal(typeof provenance.linuxIdentity,'function');
-  const options={uid:1000,publicKey,send:async request=>envelope(scope(request.nonce))};
+  const activeScope = nonce => ({...scope(nonce), domain: channel.DOMAIN, tree: channel.LINUX_TREE + '/test'});
+  const options={uid:1000,publicKey,send:async request=>envelope(activeScope(request.nonce))};
   const identity=await provenance.linuxIdentity(options);
   assert.equal(identity.dataDir,'/home/dev/deck');
-  for(const change of [{nonce:'stale'},{uid:1001},{epoch:0},{protocol:2},{tree:'/tmp/fake'},{dataDir:'/home/dev/../other'},{daemonEndpoint:'/tmp/fake.sock'},{role:'daemon'}]){
-    await assert.rejects(provenance.linuxIdentity({...options,send:async request=>envelope({...scope(request.nonce),...change})}));
+  for(const change of [{nonce:'stale'},{uid:1001},{epoch:0},{protocol:2},{tree:'/tmp/fake'},{tree:channel.nightly ? '/opt/apex-deck/test' : '/opt/apex-deck-nightly/test'},{dataDir:'/home/dev/../other'},{daemonEndpoint:'/tmp/fake.sock'},{role:'daemon'}]){
+    await assert.rejects(provenance.linuxIdentity({...options,send:async request=>envelope({...activeScope(request.nonce),...change})}));
   }
   await assert.rejects(provenance.linuxIdentity({...options,send:async request=>({...envelope(scope(request.nonce)),signature:Buffer.alloc(64).toString('base64')})}));
 });

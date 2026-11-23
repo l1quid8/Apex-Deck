@@ -1,4 +1,16 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=APEX_CHANNEL");
+    let channel = std::env::var_os("APEX_CHANNEL").unwrap_or_else(|| "stable".into());
+    let channel = channel.to_str().expect("APEX_CHANNEL must be stable or nightly");
+    assert!(matches!(channel, "stable" | "nightly"), "Invalid APEX_CHANNEL");
+    println!("cargo:rerun-if-changed=../../desktop/channels.json");
+    let table: serde_json::Value = serde_json::from_str(include_str!("../../desktop/channels.json")).unwrap();
+    let mut source = format!("pub const NIGHTLY: bool = {};\n", channel == "nightly");
+    for (name, value) in table[channel].as_object().unwrap() {
+        source.push_str(&format!("pub const {name}: &str = {:?};\n", value.as_str().unwrap()));
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out.join("channel.rs"), source).unwrap();
     println!("cargo:rerun-if-env-changed=APEX_LINUX_EVALUATION_PUBLIC_KEY");
     if std::env::var_os("CARGO_FEATURE_LINUX_EVALUATION_VERIFIER").is_some() {
         let key = std::env::var("APEX_LINUX_EVALUATION_PUBLIC_KEY")

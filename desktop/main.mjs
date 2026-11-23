@@ -1,3 +1,4 @@
+import { channel } from './channel.mjs';
 // Apex Deck's Electron main process: the windows, the app:// protocol that
 // serves the built UI, and a byte pipe between each window and apex-daemon.
 // A window speaks the protocol itself (src/daemon/client.ts); main only
@@ -58,9 +59,9 @@ const originOf = (url) => {
 };
 const UI_ORIGINS = new Set(['app://deck', devUrl && originOf(devUrl)].filter(Boolean));
 
-app.setName('Apex Deck');
+app.setName(channel.PRODUCT);
 // The browser profile and the saved hosts live here, apart from the host's data.
-app.setPath('userData', dataDir ? `${dataDir}-desktop` : path.join(app.getPath('appData'), 'dev.apexdeck.desktop'));
+app.setPath('userData', dataDir ? `${dataDir}-desktop` : path.join(app.getPath('appData'), channel.PROFILE_ID));
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
@@ -391,7 +392,7 @@ let tauriItems = null;
 ipcMain.on('apex:tauriStorage', (event) => {
   // A test's data folder never takes this Mac's; APEX_DECK_TAURI_HOME gives it a home to read instead.
   const home = dataDir ? env.APEX_DECK_TAURI_HOME : app.getPath('home');
-  if (fromUi(event) && home) tauriItems ??= tauriStorage(home);
+  if (!channel.nightly && fromUi(event) && home) tauriItems ??= tauriStorage(home);
   event.returnValue = (fromUi(event) && tauriItems) || {};
 });
 
@@ -415,7 +416,7 @@ function handle(channel, run) {
 }
 
 const localVoice = new VoiceRuntimeManager({
-  root: path.join(app.getPath('appData'), 'dev.apexdeck.app', 'voice'),
+  root: path.join(app.getPath('appData'), channel.APP_ID, 'voice'),
   source: app.isPackaged ? path.join(process.resourcesPath, 'voice-sidecar') : path.join(repo, 'voice-sidecar'),
   origins: ['app://deck', 'null', ...(devUrl ? [new URL(devUrl).origin] : [])],
   progress: (value) => { for (const {win} of windows.values()) win.webContents.send('voice:progress', value); },
@@ -819,7 +820,7 @@ let updater = null;
 /** The options that differ on Windows: its feed, its signature check and its installer. */
 async function windowsUpdates() {
   const signer = app.isPackaged ? await windowsSigner(runCommand, process.execPath) : null;
-  const installed = path.join(process.env.ProgramW6432 ?? process.env.ProgramFiles ?? '', 'Apex Deck', 'Apex Deck.exe');
+  const installed = path.join(process.env.ProgramW6432 ?? process.env.ProgramFiles ?? '', channel.PRODUCT, `${channel.PRODUCT}.exe`);
   const verify = windowsVerifier({ run: runCommand, signer });
   const resultFile = path.join(app.getPath('userData'), 'windows-update-result.json');
   return {
@@ -841,7 +842,7 @@ async function startUpdates() {
   const signed = app.isPackaged && process.platform === 'darwin';
   const win32 = onWindows ? await windowsUpdates() : null;
   const team = win32 ? win32.team : signed ? teamFrom(await runCommand('/usr/bin/codesign', ['-d', '--verbose=2', running]).catch(() => '')) : null;
-  const folder = path.join(app.getPath('cache'), 'dev.apexdeck.desktop', 'updates');
+  const folder = path.join(app.getPath('cache'), channel.PROFILE_ID, 'updates');
   const fetchWithNet = (url, init) => net.fetch(url, init);
   updater = new Updater({
     current: app.getVersion(),
@@ -981,7 +982,7 @@ function createWindow(host, beside) {
     ...(near ? { x: near.x + 28, y: near.y + 28 } : {}),
     minWidth: 900,
     minHeight: 600,
-    title: 'Apex Deck',
+    title: channel.PRODUCT,
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
     webPreferences: {
@@ -1301,7 +1302,7 @@ app.whenReady().then(async () => {
     if (!file) return new Response('Not found', { status: 404 });
     return net.fetch(pathToFileURL(file).toString());
   });
-  if (!dataDir && !oldAppClosed()) {
+  if (!channel.nightly && !dataDir && !oldAppClosed()) {
     app.exit(0);
     return;
   }

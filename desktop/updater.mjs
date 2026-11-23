@@ -1,3 +1,5 @@
+import { channel } from './channel.mjs';
+import { nightlyIdentity } from './channelIdentity.mjs';
 // Automatic updates for the packaged Mac and Windows apps.
 //
 // Deck reads apex-deck-update.json from the latest public GitHub release, and
@@ -24,12 +26,14 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 
 export const REPO = 'l1quid8/apex-deck';
-export const MANIFEST_NAME = 'apex-deck-update.json';
-export const FEED_URL = `https://github.com/${REPO}/releases/latest/download/${MANIFEST_NAME}`;
-export const WINDOWS_MANIFEST_NAME = 'apex-deck-update-windows.json';
-export const WINDOWS_FEED_URL = `https://github.com/${REPO}/releases/latest/download/${WINDOWS_MANIFEST_NAME}`;
+const feed = channel.nightly ? 'download/nightly' : 'latest/download';
+const prefix = channel.nightly ? 'apex-deck-nightly-update' : 'apex-deck-update';
+export const MANIFEST_NAME = `${prefix}.json`;
+export const FEED_URL = `https://github.com/${REPO}/releases/${feed}/${MANIFEST_NAME}`;
+export const WINDOWS_MANIFEST_NAME = `${prefix}-windows.json`;
+export const WINDOWS_FEED_URL = `https://github.com/${REPO}/releases/${feed}/${WINDOWS_MANIFEST_NAME}`;
 /** Written by the update job; root-owned and readable by everyone. */
-export const RESULT_FILE = '/Library/Application Support/Apex Deck Updates/last-update.json';
+export const RESULT_FILE = channel.RESULT_FILE;
 export const FIRST_CHECK_MS = 30_000;
 export const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 /** Waits before the second and third download attempts. */
@@ -73,6 +77,14 @@ export function compareVersions(a, b) {
  */
 export function parseManifest(value, { extension = '.pkg' } = {}) {
   if (!value || typeof value !== 'object' || value.schemaVersion !== 1) throw new Error('The update feed is not one this version understands.');
+  if ((value.channel === undefined ? 'stable' : value.channel) !== channel.name) throw new Error('Update channel mismatch.');
+  let identity = {};
+  if (channel.nightly) {
+    const build = nightlyIdentity(value);
+    if (typeof value.tag !== 'string' || !/^nightly-[0-9]{8}-[a-f0-9]{7}$/.test(value.tag) ||
+        !value.tag.endsWith('-' + build.commit.slice(0, 7))) throw new Error('Invalid immutable Nightly tag.');
+    identity = { ...build, tag: value.tag };
+  }
   if (!versionParts(value.version)) throw new Error('The update feed names no valid version.');
   if (value.notes !== undefined && (typeof value.notes !== 'string' || value.notes.length > 4000)) throw new Error('The update notes are malformed.');
   if (!Array.isArray(value.packages) || value.packages.length === 0 || value.packages.length > 8) throw new Error('The update feed lists no packages.');
@@ -84,7 +96,7 @@ export function parseManifest(value, { extension = '.pkg' } = {}) {
     if (!ok) throw new Error('The update feed has a malformed package.');
     return { arch: entry.arch, minimumSystemVersion: entry.minimumSystemVersion, name: entry.name, size: entry.size, sha256: entry.sha256 };
   });
-  return { version: value.version, notes: value.notes ?? '', packages };
+  return { ...identity, version: value.version, notes: value.notes ?? '', packages };
 }
 
 /** The package for this Mac, or null when the release has none it can run. */
@@ -94,9 +106,10 @@ export function packageFor(manifest, { arch, osVersion }) {
 }
 
 /** Always a file of this repository's release for `version`: the feed never chooses the host. */
-export function assetUrl(version, name, extension = '.pkg') {
+export function assetUrl(version, name, extension = '.pkg', tag) {
   if (!versionParts(version) || !PACKAGE_NAME[extension].test(name)) throw new Error('Invalid update asset.');
-  return `https://github.com/${REPO}/releases/download/v${version}/${name}`;
+  if (channel.nightly && (typeof tag !== 'string' || !/^nightly-[0-9]{8}-[a-f0-9]{7}$/.test(tag))) throw new Error('Invalid Nightly asset tag.');
+  return `https://github.com/${REPO}/releases/download/${channel.nightly ? tag : 'v' + version}/${name}`;
 }
 
 /** Why this copy never updates itself, or null when it can. */
@@ -182,19 +195,23 @@ export function fetchDownload(fetchImpl, files = fs) {
  * `team`, Apex Deck's identifier, and the version the feed promised.
  */
 export function packageVerifier({ run, team, scratch, files = fs }) {
-  return async (file, { version }) => {
+  return async (file, { version, buildNumber }) => {
     files.mkdirSync(scratch, { recursive: true });
     const dir = files.mkdtempSync(path.join(scratch, 'check-'));
     const expanded = path.join(dir, 'expanded');
     try {
       await run('/usr/sbin/pkgutil', ['--expand-full', file, expanded]);
-      const app = path.join(expanded, 'Payload', 'Apex Deck.app');
+      const app = path.join(expanded, 'Payload', `${channel.PRODUCT}.app`);
       try {
-        await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', `-R=identifier "dev.apexdeck.app" and anchor apple generic and certificate leaf[subject.OU] = "${team}"`, app]);
+        await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', `-R=identifier "${channel.APP_ID}" and anchor apple generic and certificate leaf[subject.OU] = "${team}"`, app]);
       } catch {
         throw new Error('The update isn’t signed by the team that signed this app.');
       }
       const found = String(await run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', path.join(app, 'Contents', 'Info.plist')])).trim();
+      if (channel.nightly) {
+        const build = await run('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', path.join(app, 'Contents', 'Info.plist')]);
+        if (!Number.isSafeInteger(buildNumber) || buildNumber <= 0 || String(build).trim() !== String(buildNumber)) throw new Error('Nightly package build number mismatch.');
+      }
       if (found !== version) throw new Error(`The package holds version ${found || 'unknown'}, not ${version}.`);
     } finally {
       files.rmSync(dir, { recursive: true, force: true });
@@ -205,7 +222,8 @@ export function packageVerifier({ run, team, scratch, files = fs }) {
 const SIGNATURE_SCRIPT = [
   '$file = $env:APEX_UPDATE_FILE',
   '$signature = Get-AuthenticodeSignature -LiteralPath $file',
-  '[pscustomobject]@{ status = "$($signature.Status)"; subject = $signature.SignerCertificate.Subject; issuer = $signature.SignerCertificate.Issuer; version = (Get-Item -LiteralPath $file).VersionInfo.ProductVersion } | ConvertTo-Json -Compress',
+  '$info = (Get-Item -LiteralPath $file).VersionInfo',
+  '[pscustomobject]@{ status = "$($signature.Status)"; subject = $signature.SignerCertificate.Subject; issuer = $signature.SignerCertificate.Issuer; product = $info.ProductName; version = $info.ProductVersion; fileVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)" } | ConvertTo-Json -Compress',
 ].join('; ');
 /**
  * Outlives Deck: starts the installer, says whether Windows allowed it, then
@@ -246,7 +264,7 @@ export function windowsSignerFrom(output) {
   try { found = JSON.parse(String(output)); } catch { return null; }
   const issuer = /(?:^|,\s*)O=([^,]+)/.exec(found?.issuer ?? '')?.[1];
   if (found?.status !== 'Valid' || typeof found.subject !== 'string' || !found.subject || !issuer) return null;
-  return { subject: found.subject, issuer, version: typeof found.version === 'string' ? found.version.trim() : '' };
+  return { subject: found.subject, issuer, product: found.product, fileVersion: found.fileVersion, version: typeof found.version === 'string' ? found.version.trim() : '' };
 }
 
 /** Who signed `file`, as Windows sees it. Null when it can't say: an unsigned copy never updates. */
@@ -254,10 +272,18 @@ export const windowsSigner = async (run, file) => windowsSignerFrom(await powers
 
 /** The installer must be validly signed by this app's own publisher, at the promised version. */
 export function windowsVerifier({ run, signer }) {
-  return async (file, { version }) => {
+  return async (file, { version, buildNumber }) => {
     const found = await windowsSigner(run, file);
     if (!found || found.subject !== signer?.subject || found.issuer !== signer?.issuer) {
       throw new Error('The update isn’t signed by the publisher that signed this app.');
+    }
+    if (found.product !== channel.PRODUCT) throw new Error('The installer product does not match this channel.');
+    if (channel.nightly) {
+      if (!Number.isSafeInteger(buildNumber) || buildNumber <= 0) throw new Error('Invalid Nightly build number.');
+      // PE FileVersion stores the monotonic build number as four big-endian 16-bit words.
+      // ProductVersion independently carries the release semver.
+      const fileVersion = [48, 32, 16, 0].map(bits => Math.floor(buildNumber / 2 ** bits) % 65536).join('.');
+      if (found.fileVersion !== fileVersion) throw new Error('Nightly installer build number mismatch.');
     }
     if (found.version !== version) throw new Error(`The installer holds version ${found.version || 'unknown'}, not ${version}.`);
   };
@@ -269,7 +295,7 @@ export function windowsVerifier({ run, signer }) {
  */
 export function windowsInstaller({ launch, verify, resultFile, app, files = fs, timers = globalThis, now = () => Date.now(), promptWait = PROMPT_WAIT_MS }) {
   return async (ready) => {
-    await verify(ready.package, { version: ready.version });
+    await verify(ready.package, { version: ready.version, buildNumber: ready.buildNumber });
     const id = crypto.randomUUID();
     const started = `${resultFile}.started`;
     files.rmSync(started, { force: true });
@@ -318,13 +344,13 @@ const failure = (error) => (message(error).includes('net::ERR_')
 
 export class Updater {
   constructor({
-    current, arch, osVersion, cacheDir, stateFile, resultFile = RESULT_FILE, disabled = null,
+    current, installedBuild = channel, arch, osVersion, cacheDir, stateFile, resultFile = RESULT_FILE, disabled = null,
     feedUrl = FEED_URL, extension = '.pkg',
     fetchJson, download, verify, requestInstall,
     files = fs, now = () => Date.now(), timers = globalThis, onChange = () => {},
     retryDelays = RETRY_DELAYS_MS,
   }) {
-    Object.assign(this, { current, arch, osVersion, cacheDir, stateFile, resultFile, feedUrl, extension, fetchJson, download, verify, requestInstall, files, now, timers, onChange, retryDelays });
+    Object.assign(this, { current, installedBuild, arch, osVersion, cacheDir, stateFile, resultFile, feedUrl, extension, fetchJson, download, verify, requestInstall, files, now, timers, onChange, retryDelays });
     this.view = {
       current,
       state: disabled ? 'disabled' : 'idle',
@@ -389,15 +415,18 @@ export class Updater {
     if (!asked || typeof asked.id !== 'string') return;
     let found = null;
     try { found = JSON.parse(this.files.readFileSync(this.resultFile, 'utf8')); } catch { /* not written yet */ }
+    const installed = this.current === asked.version && (!channel.nightly ||
+      (Number.isSafeInteger(asked.buildNumber) && asked.buildNumber > 0 && asked.buildNumber === this.installedBuild?.buildNumber &&
+       typeof asked.commit === 'string' && asked.commit === this.installedBuild.commit));
     let result = null;
     if (found?.id === asked.id) {
       // An install can succeed and still have something to say, such as another account's service that didn't start again.
       const { message, notes } = resultParts(found);
       const told = { ...(message ? { message } : {}), ...(notes.length ? { notes } : {}) };
-      result = found.outcome === 'installed' && this.current === asked.version
+      result = found.outcome === 'installed' && installed
         ? { outcome: 'installed', version: asked.version, ...told }
         : { outcome: found.outcome === 'needs-attention' ? 'needs-attention' : 'failed', version: asked.version, message: 'The update did not install.', ...told };
-    } else if (this.current === asked.version) {
+    } else if (installed) {
       result = { outcome: 'installed', version: asked.version };
     } else if (this.now() - Number(asked.at) > RESULT_WAIT_MS) {
       result = { outcome: 'failed', version: asked.version, message: 'The update did not run. Nothing was changed.' };
@@ -432,17 +461,23 @@ export class Updater {
     const readyView = ready ? { available: this.view.available } : null;
     if (!ready) this.set({ state: 'checking', error: null });
     try {
+      if (channel.nightly && (!Number.isSafeInteger(this.installedBuild?.buildNumber) || this.installedBuild.buildNumber <= 0)) {
+        throw new Error('Invalid installed Nightly build number.');
+      }
       const raw = await this.fetchJson(this.feedUrl);
       if (raw === null) {
         if (!ready) this.set({ state: 'up-to-date', checkedAt: this.now() });
         return this.status();
       }
       const manifest = parseManifest(raw, { extension: this.extension });
-      if (compareVersions(manifest.version, this.current) <= 0) {
+      if (channel.nightly ? manifest.buildNumber <= this.installedBuild.buildNumber : compareVersions(manifest.version, this.current) <= 0) {
         this.set({ state: 'up-to-date', checkedAt: this.now(), available: null });
         return this.status();
       }
-      if (ready && this.ready?.version === manifest.version) {
+      if (ready && channel.nightly && this.ready.buildNumber === manifest.buildNumber && this.ready.commit !== manifest.commit) {
+        throw new Error('Nightly build number was reused for a different commit.');
+      }
+      if (ready && (channel.nightly ? this.ready.buildNumber >= manifest.buildNumber : this.ready?.version === manifest.version)) {
         this.set({ checkedAt: this.now() });
         return this.status();
       }
@@ -461,7 +496,9 @@ export class Updater {
   }
 
   async fetchPackage(manifest, entry) {
-    const folder = path.join(this.cacheDir, manifest.version);
+    const identity = channel.nightly ? { buildNumber: manifest.buildNumber, commit: manifest.commit } : {};
+    const cacheKey = channel.nightly ? `${manifest.buildNumber}-${manifest.commit}` : manifest.version;
+    const folder = path.join(this.cacheDir, cacheKey);
     const file = path.join(folder, entry.name);
     const available = { version: manifest.version, notes: manifest.notes };
     let last = null;
@@ -475,7 +512,7 @@ export class Updater {
           const partial = `${file}.partial`;
           this.files.rmSync(partial, { force: true });
           this.set({ state: 'downloading', available, progress: { received: 0, total: entry.size }, error: null });
-          const sha = await this.download(assetUrl(manifest.version, entry.name, this.extension), partial, {
+          const sha = await this.download(assetUrl(manifest.version, entry.name, this.extension, manifest.tag), partial, {
             size: entry.size,
             onProgress: (received) => this.set({ progress: { received, total: entry.size } }),
           });
@@ -487,13 +524,13 @@ export class Updater {
         }
         this.set({ state: 'verifying', available, progress: null });
         try {
-          await this.verify(file, { version: manifest.version });
+          await this.verify(file, { ...identity, version: manifest.version });
         } catch (error) {
           this.files.rmSync(file, { force: true });
           throw error;
         }
-        this.ready = { version: manifest.version, package: file, sha256: entry.sha256, size: entry.size };
-        this.pruneCache(manifest.version);
+        this.ready = { ...identity, version: manifest.version, package: file, sha256: entry.sha256, size: entry.size };
+        this.pruneCache(cacheKey);
         this.set({ state: 'ready', available, progress: null, error: null, dismissed: false, checkedAt: this.now() });
         return;
       } catch (error) {
@@ -523,7 +560,7 @@ export class Updater {
     this.set({ state: 'installing', error: null });
     try {
       const id = await this.requestInstall(ready);
-      this.writeState({ ...this.readState(), requested: { id, version: ready.version, from: this.current, at: this.now() } });
+      this.writeState({ ...this.readState(), requested: { id, ...(channel.nightly ? { buildNumber: ready.buildNumber, commit: ready.commit } : {}), version: ready.version, from: this.current, at: this.now() } });
       return id;
     } catch (error) {
       this.set({ state: 'ready', error: message(error) });
