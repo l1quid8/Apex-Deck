@@ -1,3 +1,4 @@
+import { channel } from './channel.mjs';
 // What a launch of the packaged app does about the protected copy.
 //
 // The provenance broker trusts a peer only when every component of the peer's
@@ -17,14 +18,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** Where the protected tree is installed. A constant: no env var or argument may move it. */
-export const TRUSTED_ROOT = '/Library/Application Support/Apex Deck Provenance';
+export const TRUSTED_ROOT = channel.MAC_ROOT;
 /** The protected copy of the app itself. */
-export const TRUSTED_APP = path.join(TRUSTED_ROOT, 'TrustedUI', 'Apex Deck.app');
+export const TRUSTED_APP = path.join(TRUSTED_ROOT, 'TrustedUI', `${channel.PRODUCT}.app`);
 /** The daemon inside a bundle; the LaunchAgent runs this one. */
 export const daemonIn = (app) => path.join(app, 'Contents', 'Resources', 'bin', 'apex-daemon');
 /** The daemon of the protected copy: the only one the broker will trust. */
 export const TRUSTED_DAEMON = daemonIn(TRUSTED_APP);
-export const LINUX_AUTHORITY_ROOT = '/var/lib/apex-deck-provenance';
+export const LINUX_AUTHORITY_ROOT = channel.LINUX_ROOT;
 export const LINUX_SAFETY_DISCLOSURE = 'On Linux, unrestricted programs running under the same account can potentially inject into or automate the trusted UI. Protected Linux approvals cannot provide macOS dynamic code-signature guarantees.';
 
 /** Private installation state cannot select a UI, engine or enrolled data folder. */
@@ -73,11 +74,13 @@ export function rootProtected(target, files = fs, paths = path) {
 }
 
 /** `CFBundleShortVersionString` from a bundle's Info.plist, which Electron writes as XML, or null. */
-export function bundleVersion(app, files = fs) {
+export function bundleVersion(app, files = fs, build = false) {
   try {
     const text = String(files.readFileSync(path.join(app, 'Contents', 'Info.plist'), 'utf8'));
-    const found = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(text);
-    return found ? found[1] : null;
+    const field = build
+      ? /<key>CFBundleVersion<\/key>\s*<string>([^<]*)<\/string>/
+      : /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/;
+    return field.exec(text)?.[1] ?? null;
   } catch {
     return null;
   }
@@ -129,18 +132,21 @@ const isDirectory = (app, files) => {
  * always when the LaunchAgent already runs it: an existing protected agent is
  * never rewritten to a path the broker would refuse.
  */
-export function launchPlan({ packaged, platform, dataDir, bundle, version, daemon, plist = null, files = fs, trustedApp = TRUSTED_APP }) {
+export function launchPlan({ packaged, platform, dataDir, bundle, version, buildNumber = channel.buildNumber, daemon, plist = null, files = fs, trustedApp = TRUSTED_APP }) {
   if (packaged && platform === 'linux') return linuxLaunchPlan({ files, daemon });
   const running = bundlePath(bundle);
   const current = plistDaemonBin(plist);
   const installed = isDirectory(trustedApp, files);
   const protectedInstall = installed && rootProtected(trustedApp, files);
-  const sameVersion = protectedInstall && version != null && bundleVersion(trustedApp, files) === version;
+  const protectedVersion = protectedInstall && bundleVersion(trustedApp, files);
+  const protectedBuild = protectedInstall && channel.nightly && bundleVersion(trustedApp, files, true);
+  const sameVersion = protectedInstall && version != null && protectedVersion === version
+    && (!channel.nightly || (Number.isSafeInteger(buildNumber) && buildNumber > 0 && protectedBuild === String(buildNumber)));
   const keepsProtectedAgent = current === TRUSTED_DAEMON;
   const agentDaemon = keepsProtectedAgent || sameVersion ? TRUSTED_DAEMON : daemon;
   const base = { app: trustedApp, daemon: agentDaemon };
   if (!packaged || platform !== 'darwin' || dataDir) return { kind: 'run', ...base, daemon };
-  if (isProtectedCopy(running, files, trustedApp)) return { kind: 'run', ...base };
+  if (isProtectedCopy(running, files, trustedApp)) return { kind: 'run', ...base, daemon: TRUSTED_DAEMON };
   if (sameVersion) {
     return {
       kind: 'handoff',
@@ -151,11 +157,14 @@ export function launchPlan({ packaged, platform, dataDir, bundle, version, daemo
       },
     };
   }
+  const describeVersion = (number, build) => channel.nightly
+    ? `${number ?? 'unknown'} (build ${build ?? 'unknown'})`
+    : number ?? 'unknown';
   const detail = !installed
     ? `Apex Deck's protected copy isn't installed at ${trustedApp}, so assistants, tasks and conversations kept in the protected store can't be opened. Ask for the trusted install to be run (scripts/install-provenance.sh, then scripts/repin-provenance.sh), then open Apex Deck again.`
     : !protectedInstall
       ? `The copy at ${trustedApp} is not owned by root with group and world writes closed, so the protected service will not trust it. Re-run the trusted install (scripts/install-provenance.sh, then scripts/repin-provenance.sh).`
-      : `The protected copy at ${trustedApp} is version ${bundleVersion(trustedApp, files) ?? 'unknown'}, and this app is version ${version ?? 'unknown'}. Ask for the trusted install to be updated and re-pinned (scripts/repin-provenance.sh), then open Apex Deck again.`;
+      : `The protected copy at ${trustedApp} is version ${describeVersion(protectedVersion, protectedBuild)}, and this app is version ${describeVersion(version, buildNumber)}. Ask for the trusted install to be updated and re-pinned (scripts/repin-provenance.sh), then open Apex Deck again.`;
   return {
     kind: 'notice',
     ...base,

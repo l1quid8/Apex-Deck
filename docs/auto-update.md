@@ -138,3 +138,12 @@ with this updater is installed by hand.
 - Automatic resume after a power cut mid-install (it stops and asks for a
   look instead).
 - `/usr/bin/python3` must be present, as it already must for the `.pkg`.
+
+## Windows Nightly installer identity
+
+The Windows packager must stamp the signed Nightly installer with
+`ProductName = Apex Deck Nightly` and the manifest's semantic version as
+`ProductVersion`. Encode the manifest's positive safe-integer `buildNumber`
+in the numeric PE `FileVersion`, most significant 16-bit word first. For
+example, build 42 is `0.0.0.42` and build 65578 is `0.0.1.42`. The updater
+compares all four numeric parts after download and again before launch.

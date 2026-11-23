@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { channel } from '../desktop/channel.mjs';
 import { assetName, buildManifest, publishSteps, teamOf } from '../scripts/release-update-manifest.mjs';
 import { assetUrl, packageFor, parseManifest } from '../desktop/updater.mjs';
 import { buildWindowsManifest, windowsAssetName } from '../scripts/windows-update-manifest.mjs';
@@ -7,6 +8,10 @@ import { buildWindowsManifest, windowsAssetName } from '../scripts/windows-updat
 const facts = { version: '0.9.1', notes: 'Restart to update.', minimumSystemVersion: '13.0', archs: ['arm64'], name: assetName('0.9.1', 'arm64'), size: 1234, sha256: 'a'.repeat(64) };
 
 test('the feed a release writes is exactly what installed copies accept', () => {
+  if (channel.nightly) {
+    assert.throws(() => buildManifest(facts), /channel mismatch/);
+    return;
+  }
   const manifest = buildManifest(facts);
   const parsed = parseManifest(JSON.parse(JSON.stringify(manifest)));
   const entry = packageFor(parsed, { arch: 'arm64', osVersion: '26.1' });
@@ -23,6 +28,10 @@ test('an ad hoc build is never published as an update', () => {
 });
 
 test('publishing uploads to a draft and checks it before any Deck can see the feed', { skip: process.platform === 'win32' && 'releases are published from a Mac' }, () => {
+  if (channel.nightly) {
+    assert.throws(() => publishSteps('0.9.1', '/r/v0.9.1-assets', facts.name), /cannot publish/);
+    return;
+  }
   const steps = publishSteps('0.9.1', '/r/v0.9.1-assets', 'Apex-Deck-0.9.1-arm64.pkg');
   assert.match(steps[0], /--draft/);
   assert.match(steps[1], /Apex-Deck-0\.9\.1-arm64\.pkg' '\/r\/v0\.9\.1-assets\/apex-deck-update\.json'/);
@@ -31,7 +40,12 @@ test('publishing uploads to a draft and checks it before any Deck can see the fe
 });
 
 test('the Windows feed a release writes is what installed copies accept', () => {
-  const manifest = buildWindowsManifest({ version: '0.9.8', size: 10, sha256: 'a'.repeat(64) });
+  const windows = { version: '0.9.8', size: 10, sha256: 'a'.repeat(64) };
+  if (channel.nightly) {
+    assert.throws(() => buildWindowsManifest(windows), /channel mismatch/);
+    return;
+  }
+  const manifest = buildWindowsManifest(windows);
   const entry = packageFor(parseManifest(JSON.parse(JSON.stringify(manifest)), { extension: '.exe' }), { arch: 'x64', osVersion: '10.0.26100' });
   assert.equal(entry.name, windowsAssetName('0.9.8'));
   assert.throws(() => buildWindowsManifest({ version: '0.9.8', size: 10, sha256: 'nope' }));

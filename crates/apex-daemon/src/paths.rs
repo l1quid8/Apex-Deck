@@ -4,7 +4,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 /// The desktop app's identifier, which names its Unix data folder.
-pub const APP_ID: &str = "dev.apexdeck.app";
+pub use apex_provenance::channel::APP_ID;
+use apex_provenance::channel::{NIGHTLY, PRODUCT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -45,7 +46,7 @@ pub fn default_data_dir(os: Os, home: &Path, platform_data_home: Option<&OsStr>)
                 .filter(|dir| !dir.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("AppData/Roaming"))
-                .join("Apex Deck");
+                .join(PRODUCT);
         }
     };
     base.join(APP_ID)
@@ -65,7 +66,7 @@ pub fn data_dir(
         (None, Some(home)) => Ok(default_data_dir(os, home, platform_data_home)),
         (None, None) if os == Os::Windows => platform_data_home
             .filter(|dir| !dir.is_empty())
-            .map(|dir| PathBuf::from(dir).join("Apex Deck"))
+            .map(|dir| PathBuf::from(dir).join(PRODUCT))
             .ok_or_else(|| "there is no home folder to keep data in; pass --data-dir".into()),
         (None, None) => Err("there is no home folder to keep data in; pass --data-dir".into()),
     }
@@ -88,19 +89,28 @@ fn data_dir_from_env(
     data_dir(flag, os, home.as_deref(), platform_data_home.as_deref())
 }
 
+fn selected_data_dir(
+    flag: Option<PathBuf>,
+    os: Os,
+    mut env: impl FnMut(&str) -> Option<OsString>,
+) -> Result<PathBuf, String> {
+    let explicit = flag.is_some();
+    let data = data_dir_from_env(flag, os, &mut env)?;
+    if !explicit && !NIGHTLY {
+        if let Some(home) = env("HOME").filter(|h| !h.is_empty())
+            .or_else(|| env("USERPROFILE").filter(|h| !h.is_empty()))
+        {
+            return crate::shared_store::select(&data, &PathBuf::from(home).join(".apex"));
+        }
+    }
+    Ok(data)
+}
+
 /// The host's folders for this process: the data folder from `--data-dir`
 /// or the environment, and the Downloads folder when it exists (headless
 /// servers usually have none, and exports then say so).
 pub fn host_paths(flag: Option<PathBuf>) -> Result<apex_host::HostPaths, String> {
-    let explicit = flag.is_some();
-    let mut data = data_dir_from_env(flag, Os::current(), |key| std::env::var_os(key))?;
-    if !explicit {
-        let home = std::env::var_os("HOME").filter(|h| !h.is_empty())
-            .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()));
-        if let Some(home) = home {
-            data = crate::shared_store::select(&data, &PathBuf::from(home).join(".apex"))?;
-        }
-    }
+    let data = selected_data_dir(flag, Os::current(), |key| std::env::var_os(key))?;
     let downloads = dirs::download_dir().filter(|d| d.is_dir());
     Ok(apex_host::HostPaths { data, downloads })
 }
@@ -108,6 +118,21 @@ pub fn host_paths(flag: Option<PathBuf>) -> Result<apex_host::HostPaths, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_stable_reuses_a_populated_legacy_store() {
+        let home = std::env::temp_dir().join(format!("deck-channel-store-{}", std::process::id()));
+        let legacy = home.join(".apex");
+        let chats = legacy.join("saved-chats-v1");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(chats.join("session.json"), "{}").unwrap();
+        let selected = selected_data_dir(None, Os::Xdg, |key| {
+            (key == "HOME").then(|| home.clone().into_os_string())
+        }).unwrap();
+        let expected = if NIGHTLY { home.join(".local/share").join(APP_ID) } else { legacy };
+        assert_eq!(selected, expected);
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn the_data_dir_flag_wins() {
@@ -124,7 +149,7 @@ mod tests {
         assert_eq!(data_dir(Some(flag.clone()), Os::Mac, None, None), Ok(flag));
         assert_eq!(
             data_dir(None, Os::Xdg, Some(Path::new("/home/me")), None),
-            Ok(PathBuf::from("/home/me/.local/share/dev.apexdeck.app"))
+            Ok(PathBuf::from("/home/me/.local/share").join(APP_ID))
         );
     }
 
@@ -143,7 +168,7 @@ mod tests {
                 Path::new("/Users/me"),
                 Some(OsStr::new("/ignored"))
             ),
-            PathBuf::from("/Users/me/Library/Application Support/dev.apexdeck.app")
+            PathBuf::from("/Users/me/Library/Application Support").join(APP_ID)
         );
     }
 
@@ -164,13 +189,13 @@ mod tests {
                 Path::new("/home/me"),
                 Some(OsStr::new("/srv/data"))
             ),
-            PathBuf::from("/srv/data/dev.apexdeck.app")
+            PathBuf::from("/srv/data").join(APP_ID)
         );
     }
 
     #[test]
     fn on_linux_a_missing_empty_or_relative_xdg_data_home_falls_back_to_local_share() {
-        let fallback = PathBuf::from("/home/me/.local/share/dev.apexdeck.app");
+        let fallback = PathBuf::from("/home/me/.local/share").join(APP_ID);
         assert_eq!(
             default_data_dir(Os::Xdg, Path::new("/home/me"), None),
             fallback
@@ -192,7 +217,7 @@ mod tests {
             "XDG_DATA_HOME" => Some("/ignored".into()),
             _ => None,
         });
-        assert_eq!(data, Ok(PathBuf::from("/roaming/Apex Deck")));
+        assert_eq!(data, Ok(PathBuf::from("/roaming").join(PRODUCT)));
     }
 
     #[test]
@@ -206,7 +231,7 @@ mod tests {
             });
             assert_eq!(
                 data,
-                Ok(PathBuf::from("/Users/me/AppData/Roaming/Apex Deck"))
+                Ok(PathBuf::from("/Users/me/AppData/Roaming").join(PRODUCT))
             );
         }
     }
@@ -220,9 +245,7 @@ mod tests {
         });
         assert_eq!(
             data,
-            Ok(PathBuf::from(
-                "/Users/home/Library/Application Support/dev.apexdeck.app"
-            ))
+            Ok(PathBuf::from("/Users/home/Library/Application Support").join(APP_ID))
         );
     }
 

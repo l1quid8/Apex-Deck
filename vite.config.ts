@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { checkedChannel, nightlyIdentity } from "./desktop/channelIdentity.mjs";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -23,7 +24,20 @@ const dirty = process.env.APEX_BUILD_DIRTY !== undefined
 const build = { commit, dirty };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), {
+    name: "release-channel",
+    generateBundle() {
+      const channel = checkedChannel(process.env.APEX_CHANNEL ?? "stable");
+      const stamp = { channel };
+      if (channel === "nightly") {
+        const full = git(["rev-parse", "--verify", "HEAD"]);
+        if (!full || !full.startsWith(commit)) throw new Error("Nightly build revision mismatch");
+        if (!/^[1-9]\d*$/.test(process.env.APEX_BUILD_NUMBER ?? "")) throw new Error("APEX_BUILD_NUMBER must be a positive decimal integer");
+        Object.assign(stamp, nightlyIdentity({ commit: full, buildNumber: Number(process.env.APEX_BUILD_NUMBER) }));
+      }
+      this.emitFile({ type: "asset", fileName: "channel.json", source: JSON.stringify(stamp) });
+    },
+  }],
   // Shown in Settings › General.
   define: { __APP_VERSION__: JSON.stringify(version), __APP_BUILD__: JSON.stringify(build) },
   clearScreen: false,

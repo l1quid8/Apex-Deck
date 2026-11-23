@@ -1,3 +1,4 @@
+import { channel } from './channel.mjs';
 // The apex-daemon this Mac's Deck runs on: find the binary, ask it which data
 // folder it would use, and start `serve` when nothing answers there.
 
@@ -12,7 +13,7 @@ import crypto from 'node:crypto';
 export function daemonBinary({ packaged, resourcesPath, repo, env, platform = process.platform }) {
   if (env.APEX_DAEMON_BIN) return env.APEX_DAEMON_BIN;
   const name = platform === 'win32' ? 'apex-daemon.exe' : 'apex-daemon';
-  if (packaged) return path.join(resourcesPath, 'bin', name);
+  if (packaged) return path.join(resourcesPath, 'bin', platform === 'win32' ? channel.WINDOWS_DAEMON : name);
   return path.join(repo, 'target', 'debug', name);
 }
 

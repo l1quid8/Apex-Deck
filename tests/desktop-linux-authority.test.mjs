@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { channel } from '../desktop/channel.mjs';
 import * as provenance from '../desktop/provenance.mjs';
 import { launchPlan, runLaunchPlan } from '../desktop/trustedInstall.mjs';
 const linuxService=await import('../desktop/linuxService.mjs').catch(()=>({}));
 
-const root = '/var/lib/apex-deck-provenance';
-const descriptor = () => ({schema:1,epoch:7,phase:'ready',active:{tree:'/opt/apex-deck/0.9.9-test-arm64',manifestSha256:'a'.repeat(64),protocol:1,epoch:7},pending:null});
+const root = channel.LINUX_ROOT;
+const descriptor = () => ({schema:1,epoch:7,phase:'ready',active:{tree:channel.LINUX_TREE + '/0.9.9-test-arm64',manifestSha256:'a'.repeat(64),protocol:1,epoch:7},pending:null});
 function filesFor(state=descriptor()) {
   const nodes=new Map();
   for (const file of [`${root}/public-key`,`${root}/installation.json`]) {
@@ -22,9 +23,9 @@ const plan = files => launchPlan({packaged:true,platform:'linux',bundle:'/tmp/ap
 
 test('Linux desktop uses fixed Linux broker paths while Mac and Windows retain theirs',()=>{
   assert.equal(typeof provenance.authorityPaths,'function');
-  assert.deepEqual(provenance.authorityPaths('linux'),{root,socket:'/run/apex-deck/provenance.sock'});
-  assert.equal(provenance.authorityPaths('darwin').root,'/Library/Application Support/Apex Deck Provenance');
-  assert.equal(provenance.authorityPaths('win32').socket,'\\\\.\\pipe\\ApexDeckProvenance-v1');
+  assert.deepEqual(provenance.authorityPaths('linux'),{root,socket:channel.LINUX_SOCKET});
+  assert.equal(provenance.authorityPaths('darwin').root,channel.MAC_ROOT);
+  assert.equal(provenance.authorityPaths('win32').socket,channel.WINDOWS_PIPE);
 });
 
 test('Linux authority key refuses unsafe ancestors and substituted key file types',()=>{

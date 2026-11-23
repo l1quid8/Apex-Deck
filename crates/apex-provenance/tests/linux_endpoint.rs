@@ -1,15 +1,15 @@
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_uses_the_system_service_authority_paths() {
-    assert_eq!(apex_provenance::ROOT, "/var/lib/apex-deck-provenance");
-    assert_eq!(apex_provenance::SOCKET, "/run/apex-deck/provenance.sock");
+    assert_eq!(apex_provenance::ROOT, if apex_provenance::channel::NIGHTLY { "/var/lib/apex-deck-nightly-provenance" } else { "/var/lib/apex-deck-provenance" });
+    assert_eq!(apex_provenance::SOCKET, if apex_provenance::channel::NIGHTLY { "/run/apex-deck-nightly/provenance.sock" } else { "/run/apex-deck/provenance.sock" });
 }
 
 #[test]
 #[cfg(target_os = "macos")]
 fn macos_keeps_its_existing_authority_paths() {
-    assert_eq!(apex_provenance::ROOT, "/Library/Application Support/Apex Deck Provenance");
-    assert_eq!(apex_provenance::SOCKET, "/var/run/dev.apexdeck.provenance.sock");
+    assert_eq!(apex_provenance::ROOT, if apex_provenance::channel::NIGHTLY { "/Library/Application Support/Apex Deck Nightly Provenance" } else { "/Library/Application Support/Apex Deck Provenance" });
+    assert_eq!(apex_provenance::SOCKET, if apex_provenance::channel::NIGHTLY { "/var/run/dev.apexdeck.provenance.nightly.sock" } else { "/var/run/dev.apexdeck.provenance.sock" });
 }
 
 #[test]
