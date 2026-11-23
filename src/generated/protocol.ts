@@ -6,7 +6,7 @@
 export const PROTOCOL = 1 as const;
 
 /** What a daemon may list in its welcome; clients gate features on these. */
-export const CAPABILITIES = ["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1", "voice_server_v1", "maintenance_v1", "phone_thread_git_v1"] as const;
+export const CAPABILITIES = ["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1", "search_v1", "voice_server_v1", "maintenance_v1", "phone_thread_git_v1"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** What a participant is allowed to do to the workspace it runs in. */
@@ -898,6 +898,10 @@ export type Scope = {
   kind: "thread";
   thread: string;
 };
+
+export type SearchKind = "project" | "thread" | "agent" | "message" | "task" | "note" | "library" | "file_name" | "file_text" | "step";
+
+export type SearchLane = "content" | "steps" | "files";
 
 export type Selection = {
   assetId: string;
@@ -2602,6 +2606,31 @@ export type Command = {
     root: string;
   };
   cmd: "file_search";
+} | {
+  args: Record<string, never>;
+  cmd: "search_open";
+} | {
+  args: {
+    includeArchived?: boolean;
+    includeTrashed?: boolean;
+    /** Empty means every kind the lane has. */
+    kinds?: Array<SearchKind>;
+    lane: SearchLane;
+    /** Hits per kind; 20 when left out, 200 at most. */
+    limit?: number | null;
+    /**
+     * A registered project's folder. It is compared with the project list
+     * and never opened as given.
+     */
+    project?: string | null;
+    query: string;
+  };
+  cmd: "search";
+} | {
+  args: {
+    lane: SearchLane;
+  };
+  cmd: "search_cancel";
 } | {
   args: {
     folder: boolean;
@@ -4312,6 +4341,25 @@ export interface Commands {
     name: string;
     room: string;
   };
+  search: {
+    includeArchived?: boolean;
+    includeTrashed?: boolean;
+    /** Empty means every kind the lane has. */
+    kinds?: Array<SearchKind>;
+    lane: SearchLane;
+    /** Hits per kind; 20 when left out, 200 at most. */
+    limit?: number | null;
+    /**
+     * A registered project's folder. It is compared with the project list
+     * and never opened as given.
+     */
+    project?: string | null;
+    query: string;
+  };
+  search_cancel: {
+    lane: SearchLane;
+  };
+  search_open: Record<string, never>;
   session_load: Record<string, never>;
   session_save: {
     session: unknown;

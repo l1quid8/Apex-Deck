@@ -813,6 +813,10 @@ pub fn protected(name: &str) -> bool {
             // refuses changed content under the same ledger import.
             | "legacy_import_apply"
             | "devices_add" | "pair_approve"
+            // Marks one daemon connection as allowed to search. The receipt is
+            // one-use and bound to a fresh delivery id; the host ties the
+            // grant to the connection that executes it.
+            | "search_open"
     )
 }
 fn content_bound_startup_preflight(command: &Value) -> bool {

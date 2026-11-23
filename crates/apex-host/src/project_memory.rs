@@ -253,6 +253,22 @@ impl ProjectMemory {
 
     /// All project history, including expired/superseded/deleted metadata.
     /// Use `current` for context retrieval. Forgotten records contain no text.
+    /// Every saved note that is still current, across projects, for Search.
+    /// The caller holds a search grant; nothing here is owner-scoped.
+    pub(crate) fn all_current(&self) -> Result<Vec<ProjectNote>, TaskError> {
+        let document = self
+            .inner
+            .document
+            .lock()
+            .map_err(|_| storage("Project memory lock is unavailable."))?;
+        Ok(document
+            .notes
+            .values()
+            .filter(|n| n.deleted_at.is_none() && n.superseded_by.is_none())
+            .cloned()
+            .collect())
+    }
+
     pub fn list(&self, project: &ProjectRef, _now: u64) -> Result<Vec<ProjectNote>, TaskError> {
         validate_project(project)?;
         let document = self

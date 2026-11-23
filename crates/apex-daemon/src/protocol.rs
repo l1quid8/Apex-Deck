@@ -39,7 +39,7 @@ pub const PROTOCOL: u64 = 1;
 /// names rather than on the version, so an older server degrades a feature at a
 /// time. Append-only within a protocol number; `voice_server_v1` is added at
 /// runtime where the platform supports local voice (see `OPTIONAL_CAPABILITIES`).
-pub const CAPABILITIES: &[&str] = &["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1"];
+pub const CAPABILITIES: &[&str] = &["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1", "search_v1"];
 /// Capabilities a daemon lists only when it has them.
 pub const OPTIONAL_CAPABILITIES: &[&str] = &["voice_server_v1", "maintenance_v1", "phone_thread_git_v1"];
 
@@ -409,7 +409,12 @@ where
     E: std::fmt::Display,
     O: Sink<String> + Unpin,
 {
-    let phone_session = crate::identity::random_hex(16);
+    // This connection's id. It is made here and handed to the host with every
+    // command; nothing a client sends can name it, or another connection's.
+    let session: Arc<str> = Arc::from(crate::identity::random_hex(16));
+    // However this function returns (closed, refused, revoked, a resync), the
+    // connection's search grant goes with it and its scans are cancelled.
+    let _search = SearchSession { host: Arc::clone(&daemon.host), session: Arc::clone(&session) };
     // A device hears of revokes from before its registry check, so one that
     // lands between the check and `hello` is caught by one or the other.
     let mut guard = match &trust {
@@ -827,9 +832,10 @@ where
                                 in_flight += 1;
                                 let device_intent = guard.as_ref().map(|g| {
                                     let frame: Value = serde_json::from_str(&text).expect("request already parsed");
-                                    (g.id.clone(), phone_session.clone(), json!({"cmd":frame["cmd"],"args":frame.get("args").cloned().unwrap_or(json!({}))}))
+                                    (g.id.clone(), session.to_string(), json!({"cmd":frame["cmd"],"args":frame.get("args").cloned().unwrap_or(json!({}))}))
                                 });
-                                run(Arc::clone(&daemon), id, *command, context, replies_tx.clone(), hello.client_capability, device_intent, local_linux_cli);
+                                let caller = apex_host::Caller { capability: hello.client_capability, session: Some(Arc::clone(&session)) };
+                                run(Arc::clone(&daemon), id, *command, context, replies_tx.clone(), caller, device_intent, local_linux_cli);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -948,9 +954,21 @@ where
     Ended::Closed
 }
 
+/// Ends a connection's search grant when `serve` returns, whichever way.
+struct SearchSession {
+    host: Arc<Host>,
+    session: Arc<str>,
+}
+
+impl Drop for SearchSession {
+    fn drop(&mut self) {
+        self.host.search().close_session(&self.session);
+    }
+}
+
 /// Run `command` on its own task and send its result to `replies`.
 #[allow(clippy::too_many_arguments)]
-fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability, device_intent: Option<(String, String, Value)>, local_linux_cli: bool) {
+fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, replies: mpsc::UnboundedSender<Reply>, caller: apex_host::Caller, device_intent: Option<(String, String, Value)>, local_linux_cli: bool) {
     let host = Arc::clone(&daemon.host);
     // Every log line written while the command runs ends in `cmd=… room=…`.
     let span = tracing::info_span!("cmd", cmd = %context.cmd, room = tracing::field::Empty);
@@ -963,11 +981,11 @@ fn run(daemon: Arc<Daemon>, id: u64, command: Command, context: CommandContext, 
             match device_intent {
                 Some((endpoint, _session, intent)) if daemon.uses_linux_device_policy() => {
                     let check = Arc::new(move || daemon.authorize_linux_device(&endpoint, &command));
-                    host.call_from_confined_device(intent, client_capability, check).await
+                    host.call_from_confined_device(intent, caller, check).await
                 }
-                Some((endpoint, session, intent)) => host.call_from_device(intent, endpoint, session, id, client_capability).await,
-                None if local_linux_cli => host.call_from_local_linux_cli(command, client_capability).await,
-                None => host.call_with_client_capability(command, client_capability).await,
+                Some((endpoint, session, intent)) => host.call_from_device(intent, endpoint, session, id, caller.capability).await,
+                None if local_linux_cli => host.call_from_local_linux_cli(command, caller).await,
+                None => host.call_from(command, caller).await,
             }
         }.instrument(span))
     };
@@ -1225,6 +1243,7 @@ mod tests {
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
 
     include!("protocol_device_access_tests.rs");
+    include!("protocol_search_tests.rs");
 
     struct Client {
         read: FramedRead<ReadHalf<DuplexStream>, LinesCodec>,
