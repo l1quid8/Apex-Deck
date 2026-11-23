@@ -10,12 +10,32 @@ import {createRoot} from 'react-dom/client';
 import {PhoneApp} from '/src/phone/PhoneApp.tsx';
 
 const root = createRoot(document.querySelector('#root'));
+const params = new URLSearchParams(location.search);
+const suggestions = params.has('suggestions');
 const writes = [];
+let mode = 'decision_card';
+let decisionKind = 'merge';
+const checkout = {generation:1, root:'/fixture', branch:'fix/alert', repo:'test/repo'};
+const decisions = {
+  merge: {context:'PR #42 · Review and required checks passed for abc', question:'Merge the alert fix into main?', primary:'Merge to main', turns:0, dismissible:true},
+  merging: {question:'Waiting for checks', turns:0, cancellable:true},
+  fix_checks: {question:'Send the Windows failure to the agent?', primary:'Ask agent to fix', detail:'expected 0 alerts', turns:1, dismissible:true},
+  question: {question:'Add diagnostic logging?', primary:'Add logging', to:'builder', prompt:'Add diagnostic logging.', turns:1, dismissible:true},
+};
+function currentOffer() {
+  const card = decisions[decisionKind];
+  const visible = card && (mode === 'decision_card' || decisionKind === 'merging');
+  return {mode, checkout, replySeq:1, decision:visible ? {...card, kind:decisionKind, head:'abc', key:'phone-room/1/'+decisionKind} : null};
+}
+const transcript = [
+  {seq:0, speaker:{kind:'human'}, text:'Fix the sticky alert.'},
+  {seq:1, speaker:{kind:'bot',id:'builder'}, text:'The alert now clears after eight seconds.\nDeck asks: Add diagnostic logging? | Add logging'}
+];
 let reads = 0;
 let failNextRead = false;
 let failNextWrite = false;
 let workflow = {head:'abc', reviewer:'reviewer', phase:'ready', detail:'Reviewed abc', pushed:false};
-const state = () => ({root:'/fixture', branch:'fix/alert', originRepo:'test/repo', head:'abc', ahead:1, files:[], workflow:{...workflow}});
+const state = () => ({root:'/fixture', branch:'fix/alert', originRepo:'test/repo', head:'abc', ahead:1, files:[], workflow:{...checkout,...workflow}});
 const backend = {async call(cmd, {id, action}) {
   if (id !== 'phone-room') throw Error('Wrong thread');
   if (cmd === 'room_git_status') {
@@ -27,9 +47,11 @@ const backend = {async call(cmd, {id, action}) {
   if (failNextWrite) { failNextWrite = false; throw Error('Push rejected by remote'); }
   writes.push(action.kind);
   switch (action.kind) {
+    case 'merge_ready': decisionKind = 'merging'; break;
+    case 'fix_checks': decisionKind = null; break;
     case 'push': workflow.pushed = true; break;
     case 'request_merge': workflow.phase = 'checks'; break;
-    case 'cancel_merge': workflow.phase = 'cancelled'; break;
+    case 'cancel_merge': decisionKind = null; workflow.phase = 'cancelled'; break;
     case 'ask_fix': workflow.fix_requested = true; break;
     default: throw Error('Unexpected action');
   }
@@ -51,10 +73,22 @@ window.WebSocket = class extends EventTarget {
   async send(frame) {
     const {id,cmd,args} = JSON.parse(frame);
     let response = {id,err:'Unsupported fixture command '+cmd};
-    if (cmd === 'hello') response = {id,ok:{host_id:'fixture',boot_id:'boot',protocol:1,version:'0.9.19',last_seq:0,resumed:false,
-      capabilities:['phone_thread_git_v1']}};
+    if (cmd === 'hello') response = {id,ok:{host_id:'fixture',boot_id:'boot',protocol:1,version:__APP_VERSION__,build_commit:__APP_BUILD__.commit,build_dirty:__APP_BUILD__.dirty,last_seq:0,resumed:false,
+      capabilities:[...(params.has('textOnly') ? [] : ['phone_thread_git_v1']), ...(suggestions ? ['reply_suggestions_v1'] : [])]}};
     if (cmd === 'session_load') response = {id,ok:session};
-    if (cmd === 'room_state') response = {id,ok:{active:[],approvals:[],snapshot:{participants:[],transcript:[],options:{policy:'mention',max_bot_hops:3}}}};
+    if (cmd === 'room_state') response = {id,ok:{active:[],approvals:[],next_steps:suggestions ? {id:'builder',pending:false,steps:[{label:'Add logging',prompt:'Add diagnostic logging.'}]} : null,snapshot:{participants:[],transcript:suggestions ? transcript : [],options:{policy:'mention',max_bot_hops:3}}}};
+    if (cmd === 'room_reply_decision' && args.id === 'phone-room') response = {id,ok:currentOffer()};
+    if (cmd === 'room_reply_decision_dismiss' && args.key === currentOffer().decision?.key) {
+      decisionKind = null;
+      response = {id,ok:null};
+    }
+    if (cmd === 'room_post_to' && args.id === 'phone-room' && args.targets.join() === 'builder' && args.text === 'Add diagnostic logging.' && args.decisionKey === currentOffer().decision?.key) {
+      writes.push(cmd);
+      decisionKind = null;
+      response = {id,ok:null};
+    }
+    if (cmd === 'settings_load') response = {id,ok:{replySuggestions:mode}};
+    if (cmd === 'settings_reply_suggestions_set') {mode = args.mode; response = {id,ok:{mode}};}
     if (cmd === 'room_git_status' || cmd === 'room_thread_git_action') {
       try { response = {id,ok:await backend.call(cmd,args)}; }
       catch (error) { response = {id,err:error instanceof Error ? error.message : String(error)}; }
@@ -113,5 +147,62 @@ async function run() {
   await wait(() => button('Fix requested')?.disabled);
   if (writes.join(',') !== 'push,request_merge,cancel_merge,request_merge,ask_fix') throw Error('Unexpected writes ' + writes);
 }
-run().then(() => result.textContent='PASS', e => result.textContent='FAIL '+e.message);
+async function runSuggestions() {
+  root.render(React.createElement(PhoneApp));
+  await mount();
+  const card = () => document.querySelector('.reply-decision');
+  const list = () => document.querySelector('.reply-next-steps');
+  if (params.has('textOnly')) {
+    await wait(() => document.querySelector('[data-seq="1"]'));
+    if (button('Merge to main') || button('Push')) throw Error('Git unavailable on this transport');
+    await leave(); decisionKind = 'question'; await mount();
+    await click('Add logging');
+    await wait(() => !card());
+    if (writes.join(',') !== 'room_post_to') throw Error('Expected one agent request');
+    return;
+  }
+  await wait(() => card() && button('Merge to main'));
+  if (!card().closest('[data-seq="1"]') || list() || button('Push') || document.querySelector('[data-seq="1"] .ph-md').innerText.includes('Deck asks:')) throw Error('Incorrect decision placement');
+  if (params.has('preview')) return;
+  await click('Merge to main');
+  await click('Cancel');
+  await wait(() => !card());
+  async function reopen(kind) {
+    await leave(); decisionKind = kind; await mount();
+  }
+  await reopen('fix_checks');
+  await wait(() => card()?.textContent.includes('1 model turn') && card().querySelector('pre')?.textContent.includes('expected 0 alerts'));
+  await click('Ask agent to fix');
+  await wait(() => !card());
+  await reopen('question');
+  await click('Not yet');
+  await wait(() => !card());
+  await leave(); await mount();
+  await wait(() => document.querySelector('[data-seq="1"]'));
+  if (card()) throw Error('Dismissal did not survive reopening');
+  await reopen('question');
+  await click('Add logging');
+  await wait(() => !card());
+  async function selectMode(next) {
+    await leave();
+    document.querySelector('button[aria-label="Settings"]').click();
+    const select = () => document.querySelector('select[aria-label="Suggestions after a reply"]');
+    await wait(() => select() && !select().disabled);
+    select().value = next; select().dispatchEvent(new Event('change',{bubbles:true}));
+    await wait(() => mode === next && !select().disabled);
+    const back = [...document.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.startsWith('Back to'));
+    back.click(); await mount();
+  }
+  await selectMode('next_steps');
+  await wait(list);
+  if (card()) throw Error('List showed a decision card');
+  decisionKind = 'merging';
+  await selectMode('off');
+  await wait(() => card() && button('Cancel'));
+  if (list()) throw Error('Off showed a next steps list');
+  await click('Cancel');
+  await wait(() => !card() && !list());
+  if (writes.join(',') !== 'merge_ready,cancel_merge,fix_checks,room_post_to,cancel_merge') throw Error('Unexpected writes '+writes);
+}
+(suggestions ? runSuggestions() : run()).then(() => result.textContent=params.has('preview')?'':'PASS', e => result.textContent='FAIL '+e.message);
 </script>

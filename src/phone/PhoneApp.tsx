@@ -144,6 +144,9 @@ import { mergePhoneSessionChange } from "../sessionSync";
 import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
 import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText } from "../threadCopy";
+import { ReplyDecisionCard, useReplyOffer } from "../ReplyDecisionCard";
+import { ReplySuggestionsSetting } from "../ReplySuggestionsSetting";
+import { visibleReply } from "../replyDecision";
 import { PhoneThreadGit } from "./PhoneThreadGit";
 import { WorktreesPane, copyNeedsYou, useWorktrees } from "./WorktreesPane";
 import { newBelow } from "./worktrees";
@@ -2702,6 +2705,8 @@ export function PhoneApp() {
   // finishes, for the icon's amber dot; the folder in use comes from the thread already loaded.
   const [worktreesOpen, setWorktreesOpen] = useState(false);
   useEffect(() => { setWorktreesOpen(false); }, [openId, openHostId]);
+  const suggestionHost = phoneHost(openHostId);
+  const supportsSuggestions = suggestionHost?.supports("reply_suggestions_v1");
   const gitHost = openPane && !openChat && !viewingPending && !openPane.assistantTaskId && openPath ? phoneHost(openHostId) : null;
   const worktreeHost = openPane && !openChat && !openWork && !viewingPending && !openPane.assistantTaskId && openWorkspace?.path ? phoneHost(openHostId) : null;
   const worktreesShown = Boolean(worktreeHost);
@@ -2895,7 +2900,9 @@ export function PhoneApp() {
         {inChat && openWorkspace && openLink ? (
           <ThreadView
             call={!openChat && openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? (button: boolean) => <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} button={button} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={true} disabled={openLink.status!=='online'} Sheet={Sheet} /> : undefined}
-            gitActions={gitHost && openPane && openLink.status === "online" && gitHost.supports("phone_thread_git_v1") &&
+            suggestionHost={supportsSuggestions && !viewingPending ? suggestionHost : null}
+            onDecisionResult={setNotice}
+            gitActions={!supportsSuggestions && gitHost && openPane && openLink.status === "online" && gitHost.supports("phone_thread_git_v1") &&
               <PhoneThreadGit key={queueKey(openHostId, openPane.id)} backend={gitHost.backend} room={openPane.id} />}
             callSlot={callSlot}
             callStrip={openPane ? <PhoneCallStrip voice={phoneVoice} hostId={openHostId} roomId={openPane.id} who={callWho} /> : null}
@@ -3082,6 +3089,14 @@ export function PhoneApp() {
             <div className="ph-list">
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
               <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections, paired devices and machine settings</small></span><ChevronRight size={15} /></button>
+              {links.map(link => {
+                const host = phoneHost(link.id);
+                return link.status === "online" && host?.supports("reply_suggestions_v1") &&
+                  <div className="ph-srow ph-preference ph-suggestion-setting" key={link.id}>
+                    <span className="ph-grow"><strong>Suggestions after a reply</strong><small>{link.name} · Shared with desktop</small></span>
+                    <ReplySuggestionsSetting backend={host.backend} />
+                  </div>;
+              })}
               <LockRow />
               <button type="button" className="ph-srow ph-preference" onClick={() => setTab("log")}><span className="ph-grow"><strong>Connection log</strong><small>Leaving and coming back, and thread load times</small></span><ChevronRight size={15} /></button>
             </div>
@@ -4039,6 +4054,8 @@ interface SwipeRow { id: string; hostId: string; title: string; where: string; w
 
 function ThreadView(props: {
   gitActions?: ReactNode;
+  suggestionHost: PhoneHost | null;
+  onDecisionResult(message: string): void;
   /** The mic beside Send and the call's sheet; `button` is false while the box shows Send in its place. */
   call?: (button: boolean) => ReactNode;
   callSlot: { live: boolean; look: CallLook; hint: string };
@@ -4117,6 +4134,21 @@ function ThreadView(props: {
   worktrees?: { needsYou: boolean; open: boolean; onOpen(): void };
 }) {
   const paused = props.link.status !== "online";
+  const decisionBackend = props.suggestionHost?.backend ?? null;
+  const latest = props.messages.at(-1);
+  const busy = Object.keys(props.working).length > 0;
+  const { offer, refresh } = useReplyOffer(decisionBackend, props.paneId, !paused && !props.stale, latest?.seq ?? null, busy);
+  const decisionSeq = latest?.speaker.kind === "bot" && latest.seq === offer?.replySeq ? latest.seq : null;
+  const pendingMerge = offer?.decision?.kind === "merging";
+  // Runner replies are folded into a closed disclosure. Keep their decision reachable.
+  const foldedDecision = decisionSeq !== null && props.runner?.replySeqs?.includes(decisionSeq);
+  // Older transports and some platforms cannot admit phone Git writes.
+  const canShowDecision = offer?.decision?.kind === "question" || offer?.decision?.kind === "merged" ||
+    props.suggestionHost?.supports("phone_thread_git_v1");
+  const decisionCard = decisionBackend && offer?.decision && canShowDecision && (pendingMerge || (!busy && decisionSeq !== null)) &&
+    <ReplyDecisionCard key={offer.decision.key} backend={decisionBackend} room={props.paneId}
+      offer={offer} refresh={refresh} focused={false} report={props.onDecisionResult} />;
+  const showList = !props.suggestionHost || offer?.mode === "next_steps";
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composerHistory = useComposerHistory(
     JSON.stringify([props.link.id, props.paneId]), props.draft.text,
@@ -4566,10 +4598,11 @@ function ThreadView(props: {
                 ? <ThreadCard threadId={props.paneId} hostId={props.link.id} source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
                 : undefined)} /></div>;
                 const saved = savedEntry(props.stepsIndex, message.seq);
-                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={message.text} renderText={renderText} /> : renderText(message.text);
+                return saved ? <SavedSteps key={`${props.link.id}:${props.paneId}:${message.seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} finalText={visibleReply(message.text)} renderText={renderText} /> : renderText(visibleReply(message.text));
               })()}
               <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
-              {props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
+              {!foldedDecision && message.seq === decisionSeq && decisionCard}
+              {showList && props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
                 <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} startCollapsed onStep={fillStep} />}
             </div>
             {actionsFor(message, message.text)}
@@ -4644,6 +4677,7 @@ function ThreadView(props: {
             </section>
           );
         })}
+        {(foldedDecision || (pendingMerge && decisionSeq === null)) && decisionCard}
         {props.gitActions}
         {props.approvals.map((card) => (
           <div key={card.request} className="ph-approval">
