@@ -4,9 +4,7 @@ import fs from 'node:fs';
 import { transform } from 'sucrase';
 import { gitGates, reconcileSelection, selectTurnFiles } from '../src/gitChanges.ts';
 const source = fs.readFileSync(new URL('../src/GitChangesMenu.tsx', import.meta.url), 'utf8');
-const actionSource = fs.readFileSync(new URL('../src/ThreadGitActions.tsx', import.meta.url), 'utf8');
-const actionCode = transform(actionSource.replace(/^import .*;\n/gm, '').replace('export function ThreadGitActions', 'function ThreadGitActions'), { transforms: ['typescript','jsx'], jsxRuntime: 'classic', production: true }).code;
-const compiled = actionCode + '\n' + transform(source.replace(/^import .*;\n/gm, '').replace(/^import '\.\/gitChanges.css';\n/m, '').replace('export function GitChangesMenu', 'function GitChangesMenu'), {transforms:['typescript','jsx'], jsxRuntime:'classic'}).code;
+const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^import '\.\/gitChanges.css';\n/m, '').replace('export function GitChangesMenu', 'function GitChangesMenu'), {transforms:['typescript','jsx'], jsxRuntime:'classic'}).code;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const state = () => ({root:'/repo',originRepo:'test/repo',head:'abc',tree:'tree',branch:'feat/test',target:'main',targetHead:'base',ahead:2,behind:0,checksPassed:false,clean:false,files:[{path:'a.ts',added:2,removed:1,patch:'+a',stagedOnly:false},{path:'b.ts',added:1,removed:0,patch:'+b',stagedOnly:false}]});
 function harness(backend) {
@@ -40,27 +38,10 @@ test('a turn can show a scoped diff, with Commit removed and direct Push',async(
   await loaded(h);h.setProps({request:{paths:['/repo/a.ts'],nonce:1}});let tree=await loaded(h);
   assert.deepEqual(listed(tree),['a.ts']);button(tree,'▶ 1 unselected file').props.onClick();tree=h.render();
   assert.deepEqual(listed(tree),['a.ts','b.ts']);assert.equal(find(tree,n=>n.type==='form'),undefined);
-  assert.equal(button(tree,'Waiting for review').props.disabled,true);
+  assert.equal(button(tree,'Waiting for review'),undefined);
   button(tree,'Push').props.onClick();button(tree,'Push').props.onClick();await tick();
   assert.deepEqual(actions.map(a=>a.kind),['push']);assert.equal(actions[0].expected.originRepo,'test/repo');
   h.unmount();
-});
-
-test('review applies only to the current head, checks can be cancelled and a failure can request a fix',async()=>{
-  let live={...state(),workflow:{head:'abc',reviewer:'other',phase:'ready',detail:'Reviewed',pushed:true}};
-  const actions=[];const h=harness({call:async(cmd,args)=>cmd==='room_git_status'?live:(actions.push(args.action.kind),{state:live,message:'Saved'})});
-  h.setProps({actionsTarget:{}});let tree=await loaded(h);
-  button(tree,'Merge to main').props.onClick();await tick();tree=h.render();
-  live={...live,workflow:{...live.workflow,phase:'checks'}};h.poll();await tick();tree=h.render();
-  assert.ok(button(tree,'Waiting for checks…').props.disabled);
-  button(tree,'Cancel').props.onClick();await tick();tree=h.render();
-  live={...live,workflow:{...live.workflow,phase:'failed',detail:'Windows failed'}};h.poll();await tick();tree=h.render();
-  assert.ok(find(tree,n=>n.type==='details' && text(n).includes('Windows failed')));
-  button(tree,'Ask agent to fix · uses one model turn').props.onClick();await tick();tree=h.render();
-  live={...live,head:'new'};h.poll();await tick();tree=h.render();
-  assert.ok(button(tree,'Waiting for review').props.disabled);
-  assert.equal(button(tree,'Ask agent to fix · uses one model turn'),undefined);
-  assert.deepEqual(actions,['request_merge','cancel_merge','ask_fix']);h.unmount();
 });
 
 test('slow status polls are coalesced and still populate the open menu', async()=>{
@@ -77,7 +58,7 @@ test('a disconnected host disables actions on an already-open menu', async()=>{
   const h=harness({call:async(cmd,args)=>cmd==='room_git_status'?live:(actions.push(args.action),{state:live,message:'done'})});
   await loaded(h);h.setProps({request:{paths:null,nonce:1}});let tree=await loaded(h);
   h.setProps({ready:false});tree=h.render();
-  assert.equal(button(tree,'Push').props.disabled,true);assert.equal(button(tree,'Waiting for review').props.disabled,true);h.unmount();
+  assert.equal(button(tree,'Push').props.disabled,true);assert.equal(button(tree,'Waiting for review'),undefined);h.unmount();
 });
 
 test('read errors remove actionable state and Escape closes the inline card', async()=>{

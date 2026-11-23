@@ -26,7 +26,7 @@ const writes = new Set([
   "botCopiesSetCheck", "worktreeAdd", "worktreeRemove", "worktreeForget", "worktreePrune",
 ]);
 const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
-rawWrites.add("settings_code_mode_set");
+for (const command of ["settings_code_mode_set", "settings_reply_suggestions_set", "room_reply_decision_dismiss", "room_thread_git_action"]) rawWrites.add(command);
 for (const command of ["monitor_assign", "monitor_connect", "monitor_watch_save", "monitor_watch_stop", "monitor_message", "monitor_react", "monitor_pause", "monitor_check_now", "monitor_resolve",
   "chat_create", "chat_update_meta", "chat_add_participant", "chat_update_participant", "chat_remove_participant",
   "chat_import", "chat_message_claim", "chat_merge_history", "chat_promote", "chat_promote_abandon",

@@ -90,6 +90,7 @@ export const CATALOG_ENTRIES: CatalogEntry[] = [
   { id: 'user-name', section: 'general', label: 'Name', keywords: ['name','profile','you','me'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'user-name' },
   { id: 'user-nickname', section: 'general', label: 'What agents should call you', keywords: ['nickname','name','profile','call','address'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'user-nickname' },
   { id: 'artifacts', section: 'general', label: 'New artifacts Open pane / Just notify', keywords: ['artifacts','files','pane','open','notify','new'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'artifacts' },
+  { id: 'reply-suggestions', section: 'general', label: 'Suggestions after a reply', keywords: ['decision','card','next','steps','off','merge'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'reply-suggestions' },
   { id: 'run-buttons', section: 'general', label: 'Run buttons on code blocks', keywords: ['run','code','blocks','shell'], scope: 'all', scopeLabel: SCOPE_LABEL.all, anchorId: 'run-buttons' },
   { id: 'storage', section: 'general', label: 'Saved in / Show in Finder', keywords: ['saved','folder','location','finder','storage','data'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'storage' },
   { id: 'remembered', section: 'general', label: 'Remembered models', keywords: ['remembered','models','clear','suggestions'], scope: 'host', scopeLabel: SCOPE_LABEL.host, anchorId: 'remembered' },

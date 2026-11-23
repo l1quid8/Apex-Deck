@@ -93,6 +93,8 @@ import { HexColorPicker } from "./HexColorPicker";
 import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { QuestionForm } from "./QuestionForm";
+import { ReplyDecisionCard, useReplyOffer } from "./ReplyDecisionCard";
+import { visibleReply } from "./replyDecision";
 import { ReplyNextSteps } from "./ReplyNextSteps";
 import { CLEAR_BUSY, CLEARED, commandRefusal, imageLabel, imageMessage, unknownCommand } from "./commandRules";
 import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, type FormView } from "./questions";
@@ -753,7 +755,6 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [gitMenuRequest, setGitMenuRequest] = useState<GitMenuRequest | null>(null);
   const [gitCardSeq, setGitCardSeq] = useState<number | null>(null);
   const [gitCardTarget, setGitCardTarget] = useState<HTMLDivElement | null>(null);
-  const [gitActionsTarget, setGitActionsTarget] = useState<HTMLDivElement | null>(null);
   const closeGitCard = useCallback(() => { setGitMenuRequest(null); setGitCardSeq(null); }, []);
   const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && (turnFiles.get(entry.message.seq)?.length || /(?:^|\n)Deck built [0-9a-f]{40}\s*$/.test(entry.message.text)));
   const latestGitSeq = latestGitReply?.kind === "message" ? latestGitReply.message.seq : null;
@@ -1034,7 +1035,16 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const setPlan = (on: boolean) => backend.roomSetPlan(pane.id, on).catch((error) => notify(`Could not ${on ? "turn Plan on" : "turn Plan off"}: ${String(error)}`, "error"));
   // Questions stay with the composer; follow-ups live beneath their reply.
   const questionState = useSyncExternalStore(subscribeQuestions, questionSnapshot);
-  const form = formView(questionState[pane.id]);
+  const lastMessage = useMemo(() => messagesOf(entries).at(-1), [entries]);
+  const { offer, refresh: refreshDecision } = useReplyOffer(backend, pane.id, visible && ready && !profileMode && !chatReadOnly && !chatBlocked, lastMessage?.seq ?? null, busy);
+  const pendingMerge = offer?.decision?.kind === "merging";
+  const decisionSeq = lastMessage?.speaker.kind === "bot" && offer?.replySeq === lastMessage.seq ? lastMessage.seq : null;
+  const decisionCard = offer?.decision && (pendingMerge || (!busy && decisionSeq !== null)) ?
+    <ReplyDecisionCard key={offer.decision.key} offer={offer} backend={backend} room={pane.id} refresh={refreshDecision}
+      focused={focused} report={(message, error) => notify(message, error ? "error" : "info")} /> : null;
+  const rawForm = formView(questionState[pane.id]);
+  const allowList = backend.demo || offer?.mode === "next_steps";
+  const form: FormView = rawForm.kind === "steps" && !allowList ? { kind: "none" } : rawForm;
   const composerForm: FormView = form.kind === "question" ? form : { kind: "none" };
   const [highlighted, setHighlighted] = useState(-1);
   const [formFolded, setFormFolded] = useState(false);
@@ -3807,7 +3817,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${liveView ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={liveView !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={toggleArtifacts}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
-      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length + entries.length} actionsTarget={gitActionsTarget} request={gitMenuRequest} target={gitCardTarget} canOpen={true} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else openStandaloneGitCard(); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
+      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length + entries.length} request={gitMenuRequest} target={gitCardTarget} canOpen={true} onOpen={() => { if (latestGitSeq !== null && turnFiles.get(latestGitSeq)?.length) openGitCard(latestGitSeq, null); else openStandaloneGitCard(); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
     </div>
   );
   // The bots sit in their own row under the message box.
@@ -4039,7 +4049,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   const renderText = (text: string) => <Markdown text={text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}{terminalOpenAction(code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />;
                   const seq = entry.message.seq;
                   const saved = savedEntry(stepsIndex, seq);
-                  if (!saved) return renderText(entry.message.text);
+                  const replyText = visibleReply(entry.message.text);
+                  if (!saved) return renderText(replyText);
                   const load = async () => {
                     const cache = loadedSteps.current;
                     const reply = readReplySteps(await backend.roomSteps(pane.id, seq));
@@ -4047,9 +4058,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                     if (reply) cache.set(seq, reply);
                     return reply;
                   };
-                  return <SavedSteps key={`${pane.id}:${seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={loadedSteps.current.get(seq) ?? null} load={load} finalText={entry.message.text} renderText={renderText} />;
+                  return <SavedSteps key={`${pane.id}:${seq}`} count={saved.count} todoCount={saved.todo_count} todoCompleted={saved.todo_completed} cached={loadedSteps.current.get(seq) ?? null} load={load} finalText={replyText} renderText={renderText} />;
                 })()}
-                {entry.message.seq === latestGitSeq && <div ref={setGitActionsTarget} />}
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(agentName(entry.message.speaker.id))} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(agentName(entry.message.speaker.id))} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 {(() => {
@@ -4057,8 +4067,9 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   if (!files?.length) return null;
                   return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
                 })()}
-                {form.kind === "steps" && form.offer.by === entry.message.speaker.id && newestReply.get(entry.message.speaker.id) === entry.message.seq &&
+                {form.kind === "steps" && entry.message.seq === lastMessage?.seq && form.offer.by === entry.message.speaker.id && newestReply.get(entry.message.speaker.id) === entry.message.seq &&
                   <ReplyNextSteps key={formKeyId} offer={form.offer} onStep={fillStep} />}
+                {entry.message.seq === decisionSeq && decisionCard}
               </div>
               {messageActions(entry.message)}
             </div>
@@ -4079,6 +4090,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item, ...after]
             : [item, ...after];
         })}
+        {pendingMerge && decisionSeq === null && decisionCard}
         {Object.entries(turnProgress).filter(([, turn]) => turn.outcome).map(([id, turn]) => <InterruptedSteps key={`ended-${id}`} name={agentName(id)} turn={turn} renderText={(text) => <Markdown text={text} onOpen={openTarget} />} />)}
         {transcriptMounted.current && Object.entries(drafts).map(([id, partial]) => {
           const turn = working[id];

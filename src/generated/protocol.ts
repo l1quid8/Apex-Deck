@@ -2384,6 +2384,7 @@ export type Command = {
   args: {
     clientMessageId?: string | null;
     clientTurnId?: string | null;
+    decisionKey?: string | null;
     id: string;
     interactiveAnswers?: boolean | null;
     keepDefault?: boolean;
@@ -4265,6 +4266,7 @@ export interface Commands {
   room_post_to: {
     clientMessageId?: string | null;
     clientTurnId?: string | null;
+    decisionKey?: string | null;
     id: string;
     interactiveAnswers?: boolean | null;
     keepDefault?: boolean;

@@ -51,7 +51,7 @@ test('Inline Git card toggles and moves between replies, clears top-bar scope, a
       assert.equal(await run(()=>document.activeElement.classList.contains('git-changes-trigger')),true,'close restores focus to the opener');
       await run(()=>document.querySelector('#reply-1 .turn-files-strip').click());await wait(()=>document.querySelector('#reply-1 .git-changes-menu'));
       assert.equal(await run(()=>!!document.querySelector('.git-commit-row')),false);
-      assert.equal(await run(()=>Array.from(document.querySelectorAll('.git-branch-actions button')).find(b=>b.textContent==='Waiting for review').disabled),true);
+      assert.equal(await run(()=>Array.from(document.querySelectorAll('.git-branch-actions button')).some(b=>b.textContent==='Waiting for review')),false);
       await run(()=>Array.from(document.querySelectorAll('.git-branch-actions button')).find(b=>b.textContent==='Push').click());
       await wait(()=>window.actions.length===1);assert.equal(await run(()=>window.actions[0].kind),'push');
       console.log('Git menu DOM flow passed');app.exit(0);
