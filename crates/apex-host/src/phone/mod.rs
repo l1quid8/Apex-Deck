@@ -921,8 +921,7 @@ esac
         let phone=Phone::with_tools(data,tokio::runtime::Handle::current(),tools.clone());
         phone.bot(ann(),BotRequest::Start).await.unwrap();
         let helper=tools.axe.parent().unwrap().join("touch");
-        std::fs::write(&helper,"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/touch-args\"\n").unwrap();
-        std::fs::set_permissions(&helper,std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_fixture_tool(&helper,"#!/bin/sh\n[ \"$1\" = --fixture-ready ] && exit 0\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/touch-args\"\n");
         phone.state().touch=Some((helper,"developer".into()));
         { let mut frame=locked(&phone.frame); let frame=frame.as_mut().unwrap(); frame.width=1000; frame.height=600; frame.screen=Some(screens::Screen { id:3,orientation:3, ..Default::default() }); }
         phone.act(&Input::Tap {x:400,y:480}).await.unwrap();
