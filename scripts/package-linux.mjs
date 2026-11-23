@@ -15,7 +15,10 @@ export function assertLinuxHost(platform = process.platform, arch = process.arch
 }
 
 export function builderArgs(arch = process.arch, nightly) {
-  const args = ['--linux', 'AppImage', `--${arch}`, '--publish', 'never'];
+  const args = [
+    '--linux', 'AppImage', `--${arch}`, '--publish', 'never',
+    '--config.electronFuses.grantFileProtocolExtraPrivileges=false',
+  ];
   if (nightly) args.push(
     `--config.appId=${nightly.appId}`,
     `--config.productName=${nightly.product}`,
