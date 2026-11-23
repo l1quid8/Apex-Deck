@@ -61,7 +61,9 @@ pub fn read_frame(stream: &mut UnixStream) -> Result<Value, String> {
 // an uncertain mutation could duplicate a claim or overwrite a newer revision.
 const REPLY_BUDGET: Duration = Duration::from_secs(120);
 fn read_reply(stream: &mut UnixStream, budget: Duration) -> Result<Value, String> {
-    let deadline = std::time::Instant::now() + budget;
+    read_reply_until(stream, std::time::Instant::now() + budget)
+}
+fn read_reply_until(stream: &mut UnixStream, deadline: std::time::Instant) -> Result<Value, String> {
     let idle = stream.read_timeout().map_err(|e| e.to_string())?
         .unwrap_or(Duration::from_secs(30));
     let mut reader = BufReader::new(stream);
@@ -93,6 +95,49 @@ fn read_reply(stream: &mut UnixStream, budget: Duration) -> Result<Value, String
         if line.len() > MAX_BYTES { return Err("Oversized provenance reply frame".into()); }
         if newline.is_some() { return serde_json::from_slice(&line).map_err(|e| e.to_string()); }
     }
+}
+
+// The serial broker takes one caller at a time. A request bigger than the
+// socket buffer (a whole ledger write) waits there until the broker reaches
+// this connection, so a send timeout means "still queued", not a failure. Keep
+// sending the SAME frame until the deadline. The broker acts only on a complete
+// newline-terminated frame, so a send that never finishes changes nothing.
+fn send_request(stream: &mut UnixStream, bytes: &[u8], budget: Duration) -> Result<(), String> {
+    send_request_until(stream, bytes, std::time::Instant::now() + budget)
+}
+fn send_request_until(stream: &mut UnixStream, bytes: &[u8], deadline: std::time::Instant) -> Result<(), String> {
+    const UNSENT: &str = "nothing was changed. Try again in a moment.";
+    let closed = || format!("The protected provenance service closed the connection, so {UNSENT}");
+    let idle = stream.write_timeout().map_err(|e| e.to_string())?
+        .unwrap_or(Duration::from_secs(30));
+    let mut sent = 0;
+    while sent < bytes.len() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("The protected provenance service stayed busy with other requests, so {UNSENT}"));
+        }
+        if let Err(error) = stream.set_write_timeout(Some(idle.min(remaining))) {
+            // Darwin rejects SO_SNDTIMEO with EINVAL once the peer has closed.
+            if cfg!(target_os = "macos") && error.raw_os_error() == Some(libc::EINVAL) { return Err(closed()); }
+            return Err(format!("Could not send to the protected provenance service ({error}), so {UNSENT}"));
+        }
+        match stream.write(&bytes[sent..]) {
+            Ok(0) => return Err(closed()),
+            Ok(count) => sent += count,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::NotConnected) => return Err(closed()),
+            Err(e) => return Err(format!("Could not send to the protected provenance service ({e}), so {UNSENT}")),
+        }
+    }
+    Ok(())
+}
+
+/// One request and its reply within a single `budget`, however the wait is
+/// split between queueing to send and waiting for the answer.
+fn transact(stream: &mut UnixStream, bytes: &[u8], budget: Duration) -> Result<Value, String> {
+    let deadline = std::time::Instant::now() + budget;
+    send_request_until(stream, bytes, deadline)?;
+    read_reply_until(stream, deadline)
 }
 
 #[cfg(test)]
@@ -174,6 +219,89 @@ mod reply_tests {
         assert!(read_reply(&mut client, Duration::from_secs(1)).is_err());
     }
 
+    /// A request that cannot fit in the socket's send buffer, so sending it
+    /// must wait for the reader. Linux defaults to ~208 KiB where macOS has
+    /// 8 KiB, and a host may raise it, so size from the socket itself.
+    fn oversized_request(stream: &UnixStream) -> Vec<u8> {
+        use std::os::unix::io::AsRawFd;
+        let mut size: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        let got = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF, (&mut size as *mut libc::c_int).cast(), &mut len) };
+        assert_eq!(got, 0, "SO_SNDBUF");
+        let bytes = (size.max(0) as usize * 8).max(4 * 1024 * 1024);
+        assert!(bytes < MAX_BYTES, "stays a valid frame size: {bytes}");
+        (0..bytes - 1).map(|i| b'a' + (i % 26) as u8).chain([b'\n']).collect()
+    }
+
+    #[test]
+    fn busy_broker_receives_the_whole_request_once_after_send_timeouts() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        let request = oversized_request(&client);
+        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        let worker = std::thread::spawn(move || {
+            // Busy with other callers for several send timeouts.
+            std::thread::sleep(Duration::from_millis(80));
+            let mut received = Vec::new();
+            broker.read_to_end(&mut received).unwrap();
+            received
+        });
+        let result = send_request(&mut client, &request, Duration::from_secs(10));
+        drop(client);
+        let received = worker.join().unwrap();
+        assert_eq!(result, Ok(()));
+        assert!(received == request, "the request arrives once, whole and in order ({} of {} bytes)", received.len(), request.len());
+    }
+
+    #[test]
+    fn stalled_send_has_bounded_wait_and_readable_error() {
+        let (mut client, _broker) = UnixStream::pair().unwrap();
+        let request = oversized_request(&client);
+        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        let start = std::time::Instant::now();
+        let error = send_request(&mut client, &request, Duration::from_millis(60)).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("busy") && error.contains("nothing was changed"), "{error}");
+        assert!(!error.contains("os error"), "{error}");
+    }
+
+    #[test]
+    fn closed_broker_fails_the_send_without_waiting() {
+        let (mut client, broker) = UnixStream::pair().unwrap();
+        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        drop(broker);
+        let start = std::time::Instant::now();
+        let error = send_request(&mut client, b"request\n", Duration::from_secs(5)).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("closed the connection") && error.contains("nothing was changed"), "{error}");
+        assert!(!error.contains("os error"), "{error}");
+    }
+
+    #[test]
+    fn send_and_reply_share_one_budget() {
+        let (mut client, mut broker) = UnixStream::pair().unwrap();
+        let request = oversized_request(&client);
+        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+        let worker = std::thread::spawn(move || {
+            // Takes the request late, then never answers.
+            std::thread::sleep(Duration::from_millis(300));
+            let mut received = Vec::new();
+            let mut partial = [0u8; 65536];
+            loop {
+                match broker.read(&mut partial) { Ok(0) | Err(_) => break, Ok(n) => received.extend_from_slice(&partial[..n]) }
+                if received.ends_with(b"\n") { break; }
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        let start = std::time::Instant::now();
+        let error = transact(&mut client, &request, Duration::from_millis(400)).unwrap_err();
+        // Separate budgets would wait 300 ms to send and then 400 ms more for the reply.
+        assert!(start.elapsed() < Duration::from_millis(550), "one 400 ms budget covers send and reply together: {:?}", start.elapsed());
+        assert!(error.contains("reply timed out"), "{error}");
+        drop(client);
+        worker.join().unwrap();
+    }
+
     #[test]
     fn complete_reply_is_accepted_after_broker_closes() {
         let (mut client, mut broker) = UnixStream::pair().unwrap();
@@ -222,8 +350,7 @@ pub fn consume(signed: &Signed, data_dir: &Path) -> Result<Receipt, String> {
     if bytes.len() > MAX_BYTES {
         return Err("Provenance request exceeds limit".into());
     }
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    let response = read_reply(&mut stream, REPLY_BUDGET)?;
+    let response = transact(&mut stream, &bytes, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.to_owned());
     }
@@ -274,8 +401,7 @@ pub fn document(
     stream
         .set_write_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    let response = read_reply(&mut stream, REPLY_BUDGET)?;
+    let response = transact(&mut stream, &bytes, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.into());
     }
@@ -325,8 +451,7 @@ pub fn finish(data_dir: &Path, key_id: &str, error: Option<&str>) -> Result<(), 
         .map_err(|e| e.to_string())?;
     let mut bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    let response = read_reply(&mut stream, REPLY_BUDGET)?;
+    let response = transact(&mut stream, &bytes, REPLY_BUDGET)?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.into());
     }
@@ -406,8 +531,7 @@ pub(crate) fn exchange(request: &Value) -> Result<Value, String> {
     stream
         .set_write_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
-    stream.write_all(&bytes).map_err(|e| e.to_string())?;
-    read_reply(&mut stream, REPLY_BUDGET)
+    transact(&mut stream, &bytes, REPLY_BUDGET)
 }
 
 /// Only the authenticated device branch of the pinned daemon calls this.
