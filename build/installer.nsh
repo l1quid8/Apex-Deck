@@ -11,6 +11,10 @@
 ; the service first fixes both.
 
 !include "LogicLib.nsh"
+!include "getProcessInfo.nsh"
+Var pid
+
+!define APEX_INSTALL_DIR "$PROGRAMFILES64\${PRODUCT_FILENAME}"
 
 ; The Windows packager supplies these identities from desktop/channels.json.
 ; Direct builds with the repository's Stable electron-builder.yml keep the
@@ -24,6 +28,79 @@
   !define APEX_SERVICE "ApexDeckProvenance"
   !define APEX_HELPER_IMAGE "apex-provenance.exe"
 !endif
+
+!macro RefuseInstallLocation REASON
+  DetailPrint "${REASON}"
+  MessageBox MB_ICONSTOP|MB_OK "${REASON}" /SD IDOK
+  SetErrorLevel 2
+  Quit
+!macroend
+
+; Both channels ship only per-machine x64 installations. The assisted NSIS
+; template resolves /D= and old registrations even with no directory page.
+!macro PinInstallLocation
+  ${If} $INSTDIR != "${APEX_INSTALL_DIR}"
+    !insertmacro RefuseInstallLocation "${PRODUCT_NAME} requires the installation folder ${APEX_INSTALL_DIR}."
+  ${EndIf}
+  StrCpy $INSTDIR "${APEX_INSTALL_DIR}"
+!macroend
+
+!macro CheckInstallRegistration
+  !ifdef UNINSTALL_REGISTRY_KEY_2
+    !error "An additional uninstall key requires its own location check"
+  !endif
+  ReadRegStr $R4 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ReadRegStr $R5 HKCU "${UNINSTALL_REGISTRY_KEY}" UninstallString
+  ${If} $R4 != ""
+  ${OrIf} $R5 != ""
+    !insertmacro RefuseInstallLocation "${PRODUCT_NAME} has a conflicting per-user installation. Remove that registration before continuing."
+  ${EndIf}
+
+  ReadRegStr $R4 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ReadRegStr $R5 HKLM "${UNINSTALL_REGISTRY_KEY}" UninstallString
+  ${If} $R4 != ""
+  ${OrIf} $R5 != ""
+    ${If} $R4 != "${APEX_INSTALL_DIR}"
+    ${OrIf} $R5 != '"${APEX_INSTALL_DIR}\${UNINSTALL_FILENAME}" /allusers'
+    ${OrIfNot} ${FileExists} "${APEX_INSTALL_DIR}\${UNINSTALL_FILENAME}"
+      !insertmacro RefuseInstallLocation "${PRODUCT_NAME}'s registered installation folder or uninstaller is incorrect. Repair its registration before continuing."
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro customHeader
+  !include "${PROJECT_DIR}\build\channelProcesses.nsh"
+!macroend
+
+!macro customCheckAppRunning
+  !ifndef BUILD_UNINSTALLER
+    !include "${PROJECT_DIR}\build\machineUpgrade.nsh"
+  !else
+    ; A silent uninstall checks running apps before un.onInit resolves the
+    ; install mode. Never feed its initial caller-supplied path to PowerShell.
+    !insertmacro GetDParameter $R3
+    ${If} $R3 != ""
+    ${AndIf} $R3 != "${APEX_INSTALL_DIR}"
+      !insertmacro RefuseInstallLocation "${PRODUCT_NAME} requires the installation folder ${APEX_INSTALL_DIR}."
+    ${EndIf}
+    !insertmacro PinInstallLocation
+    !insertmacro CheckInstallRegistration
+  !endif
+  ; NSIS strips trailing separators when it expands $INSTDIR. Pass a literal
+  ; separator outside the variable, as data to the child PowerShell process.
+  System::Call 'kernel32::SetEnvironmentVariableW(w "APEX_NSIS_PROCESS_DIR", w "${APEX_INSTALL_DIR}\") i.r0'
+  ${If} $0 == 0
+    !insertmacro RefuseInstallLocation "Could not resolve the running processes for ${PRODUCT_NAME}."
+  ${EndIf}
+  !insertmacro IS_POWERSHELL_AVAILABLE
+  !insertmacro _CHECK_APP_RUNNING
+  System::Call 'kernel32::SetEnvironmentVariableW(w "APEX_NSIS_PROCESS_DIR", p 0)'
+!macroend
+
+!macro customUnInit
+  !insertmacro PinInstallLocation
+  !insertmacro CheckInstallRegistration
+!macroend
 
 ; Stop the previous build's service: end the scheduled task, then end any daemon
 ; the app started itself as a child.
@@ -103,6 +180,8 @@
 !macroend
 
 !macro customInit
+  !insertmacro PinInstallLocation
+  !insertmacro CheckInstallRegistration
   ; Stop the protected service before replacing its executable or pinned UI.
   ; A first install has no service; sc returns 1060 and needs no repair.
   ; A kill counts as a crash, so Windows would restart the service mid-install:

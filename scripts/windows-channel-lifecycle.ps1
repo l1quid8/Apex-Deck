@@ -18,8 +18,19 @@ function InstalledEntry($identity) {
 }
 
 function Setup([string]$exe, [string[]]$arguments = @('/S')) {
-  $process = Start-Process -FilePath (Resolve-Path -LiteralPath $exe).Path -ArgumentList $arguments -PassThru
-  if (!$process.WaitForExit(180000) -or $process.ExitCode -ne 0) { throw "Failed running $exe ($($process.ExitCode))" }
+  function RecordState($stage) {
+    foreach ($id in $channels.stable, $channels.nightly) {
+      $service = Get-CimInstance Win32_Service -Filter "Name='$($id.WINDOWS_SERVICE)'"
+      $names = @("$($id.PRODUCT).exe", $id.WINDOWS_DAEMON, $id.WINDOWS_HELPER)
+      $processes = @(Get-CimInstance Win32_Process | Where-Object Name -in $names | Select-Object Name,ProcessId)
+      Write-Host (@{stage=$stage; installer=$exe; product=$id.PRODUCT; service=$service.State; pid=$service.ProcessId; processes=$processes} | ConvertTo-Json -Compress)
+    }
+  }
+  RecordState before
+  try {
+    $process = Start-Process -FilePath (Resolve-Path -LiteralPath $exe).Path -ArgumentList $arguments -PassThru
+    if (!$process.WaitForExit(180000) -or $process.ExitCode -ne 0) { throw "Failed running $exe ($($process.ExitCode))" }
+  } finally { RecordState after }
 }
 
 function StartChannel($identity) {
@@ -45,6 +56,22 @@ function TestAuthority([string]$name) {
   } finally { Remove-Item Env:APEX_CHANNEL }
 }
 
+function AssertNightlyBuild([string]$setup) {
+  $identity = $channels.nightly
+  $root = Join-Path $env:ProgramFiles $identity.PRODUCT
+  $version = (Get-Item -LiteralPath $setup).VersionInfo
+  $stamp = node --input-type=module -e "import {extractFile} from '@electron/asar'; const read = f => JSON.parse(extractFile(process.argv[1], f)); console.log(JSON.stringify({...read('dist/channel.json'), version: read('package.json').version}))" "$root\resources\app.asar" | ConvertFrom-Json
+  $number = [int64]0
+  foreach ($part in $version.FileMajorPart,$version.FileMinorPart,$version.FileBuildPart,$version.FilePrivatePart) { $number = ($number -shl 16) + $part }
+  if ($LASTEXITCODE -or $stamp.channel -ne 'nightly' -or $stamp.buildNumber -ne $number -or
+      $number -lt 1 -or ($env:GITHUB_SHA -and $stamp.commit -ne $env:GITHUB_SHA) -or
+      $stamp.version -ne $version.ProductVersion) {
+    throw "Installed Nightly stamp differs from $setup"
+  }
+  Write-Host "Installed Nightly $($version.ProductVersion) build $number ($($stamp.commit))"
+  return $number
+}
+
 function Snapshot($identity, $stage) {
   $product = $identity.PRODUCT
   $root = Join-Path $env:ProgramFiles $product
@@ -54,6 +81,10 @@ function Snapshot($identity, $stage) {
   $broker = Get-CimInstance Win32_Service -Filter "Name='$($identity.WINDOWS_SERVICE)'"
   $task = Get-ScheduledTask -TaskName $identity.WINDOWS_TASK
   $entry = @(InstalledEntry $identity)
+  $shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) "$product.lnk"
+  if (!(Test-Path -LiteralPath $shortcut) -or (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath -ne "$root\$product.exe") {
+    throw "Invalid $product Start menu shortcut"
+  }
   $data = & $daemon data-dir
   $endpoint = & $daemon endpoint
   $pipes = [IO.Directory]::GetFiles('\\.\pipe\')
@@ -69,6 +100,12 @@ function Snapshot($identity, $stage) {
     $file = $files[$role]
     if ($pins.$role.path -ne "\\?\$file" -or $pins.$role.sha256 -ne (Get-FileHash -LiteralPath $file).Hash) {
       throw "$product has an incorrect $role pin"
+    }
+    if ($verifySignatures -and $role -ne 'asar') {
+      $signature = Get-AuthenticodeSignature -LiteralPath $file
+      if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?:^|,\s*)CN=Tyler Caldwell(?:,|$)') {
+        throw "Invalid installed signature on $file"
+      }
     }
   }
   $info = Get-Content "$data\daemon.json" -Raw | ConvertFrom-Json
@@ -91,6 +128,13 @@ function Survived($before, $after) {
   }
 }
 
+function Relaunch($view, $identity) {
+  $window = Get-Process -Id $view.app[0]
+  if (!$window.CloseMainWindow() -or !$window.WaitForExit(30000)) { throw "Could not relaunch $($view.product)" }
+  StartChannel $identity
+  Snapshot $identity 'after relaunch'
+}
+
 foreach ($identity in $channels.stable, $channels.nightly) {
   if ((InstalledEntry $identity) -or (Get-Service $identity.WINDOWS_SERVICE -ErrorAction SilentlyContinue)) {
     throw 'This test requires a fresh disposable machine'
@@ -98,33 +142,94 @@ foreach ($identity in $channels.stable, $channels.nightly) {
 }
 # Packaged clients refuse developer overrides inherited from a build shell.
 $buildEnvironment = @(Get-ChildItem Env:APEX_*)
+$verifySignatures = $env:APEX_DECK_WIN_SIGN -eq '1'
+$uiScript = Join-Path $PSScriptRoot 'windows-channel-ui.ps1'
+$run = [guid]::NewGuid().ToString('N').Substring(0,8)
+$uiErrors = [Collections.Generic.List[string]]::new()
+# Continue the installer checks when an interactive desktop is unavailable.
+function CheckUI($action) {
+  try { & $action } catch { $uiErrors.Add($_.Exception.Message); Write-Warning $_ }
+}
 try {
   foreach ($variable in $buildEnvironment) { Remove-Item -LiteralPath "Env:$($variable.Name)" }
   Setup $StableSetup
   StartChannel $channels.stable
   $stable = Snapshot $channels.stable 'before first Nightly install'
-  if ($PreviousNightlySetup) { Setup $PreviousNightlySetup } else { Setup $NightlySetup }
+  $unusedFolder = Join-Path $env:TEMP "noncanonical-nightly-$run"
+  $refused = Start-Process -FilePath (Resolve-Path $NightlySetup).Path -ArgumentList @('/S', "/D=$unusedFolder") -PassThru
+  if (!$refused.WaitForExit(30000) -or $refused.ExitCode -ne 2 -or (Test-Path "$unusedFolder\resources\app.asar")) {
+    throw 'Nightly Setup accepted an unexpected destination'
+  }
+  $first = if ($PreviousNightlySetup) { $PreviousNightlySetup } else { $NightlySetup }
+  Setup $first
+  $previous = AssertNightlyBuild $first
   StartChannel $channels.nightly
   $nightly = Snapshot $channels.nightly 'before Nightly upgrade'
   Survived $stable (Snapshot $channels.stable 'after first Nightly install')
   if ($stable.endpoint -eq $nightly.endpoint -or $stable.uninstall -eq $nightly.uninstall) { throw 'Channel identity collision' }
+  CheckUI {
+    & $uiScript -Channel stable -AppId $stable.app[0] -CreateSample -Post "stable-$run"
+    & $uiScript -Channel nightly -AppId $nightly.app[0] -CreateSample -Post "nightly-$run" -Exclude "stable-$run"
+  }
+  $stable = Relaunch $stable $channels.stable
+  $nightly = Relaunch $nightly $channels.nightly
+  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Expect "stable-$run" -Exclude "nightly-$run" }
+  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect "nightly-$run" -Exclude "stable-$run" }
   Setup $NightlySetup
+  $current = AssertNightlyBuild $NightlySetup
+  if ($PreviousNightlySetup -and ($current -le $previous -or
+      (Get-Item $first).VersionInfo.ProductVersion -ne (Get-Item $NightlySetup).VersionInfo.ProductVersion)) {
+    throw 'Expected a higher Nightly build at the same semver'
+  }
+  if ($verifySignatures -and $PreviousNightlySetup) {
+    $env:APEX_CHANNEL = 'nightly'
+    $env:APEX_BUILD_NUMBER = [string]$current
+    try {
+      $product = $channels.nightly.PRODUCT
+      node "$PSScriptRoot/windows-update-smoke.mjs" $NightlySetup "$env:ProgramFiles/$product/$product.exe" $PreviousNightlySetup
+      if ($LASTEXITCODE) { throw 'Signed Nightly pair failed verification' }
+    } finally { Remove-Item Env:APEX_CHANNEL,Env:APEX_BUILD_NUMBER }
+  }
   Survived $stable (Snapshot $channels.stable 'after Nightly upgrade')
+  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Post "stable-after-upgrade-$run" }
   StartChannel $channels.nightly
   $null = Snapshot $channels.nightly 'before Nightly uninstall'
   $nightlyRoot = Join-Path $env:ProgramFiles $channels.nightly.PRODUCT
-  Setup "$nightlyRoot\Uninstall $($channels.nightly.PRODUCT).exe" @('/S', "/allusers", "_?=$nightlyRoot")
+  # Run the actual uninstaller outside the tree it removes, as Setup does when upgrading.
+  $uninstaller = Join-Path $env:TEMP "uninstall-nightly-$run.exe"
+  Copy-Item -LiteralPath "$nightlyRoot\Uninstall $($channels.nightly.PRODUCT).exe" -Destination $uninstaller
+  Setup $uninstaller @('/S', '/allusers', "_?=$nightlyRoot")
   Survived $stable (Snapshot $channels.stable 'after Nightly uninstall')
   TestAuthority stable
+  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Post "stable-after-uninstall-$run" -Expect "stable-$run" }
   if ((InstalledEntry $channels.nightly) -or (Get-Service $channels.nightly.WINDOWS_SERVICE -ErrorAction SilentlyContinue) -or
       (Get-ScheduledTask -TaskName $channels.nightly.WINDOWS_TASK -ErrorAction SilentlyContinue)) { throw 'Nightly registration survived uninstall' }
   Setup $NightlySetup
   StartChannel $channels.nightly
   $nightly = Snapshot $channels.nightly 'before Stable upgrade'
   $null = Snapshot $channels.stable 'before Stable upgrade'
+  Setup $StableSetup
+  Survived $nightly (Snapshot $channels.nightly 'after candidate Stable installer')
+  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Post "nightly-after-stable-$run" -Expect "nightly-$run" }
+  StartChannel $channels.stable
   Setup $ExistingStableSetup
-  Survived $nightly (Snapshot $channels.nightly 'after Stable upgrade')
+  Survived $nightly (Snapshot $channels.nightly 'after shipped Stable installer')
   TestAuthority nightly
+  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Post "nightly-after-historical-$run" }
+  StartChannel $channels.stable
+  $null = Snapshot $channels.stable 'before Stable upgrade from shipped build'
+  Setup $StableSetup
+  Survived $nightly (Snapshot $channels.nightly 'after Stable upgrade from shipped build')
+  StartChannel $channels.stable
+  $stable = Snapshot $channels.stable 'after Stable upgrade from shipped build'
+  TestAuthority stable
+  $stable = Relaunch $stable $channels.stable
+  $nightly = Relaunch $nightly $channels.nightly
+  $stableMessages = @("stable-$run","stable-after-upgrade-$run","stable-after-uninstall-$run")
+  $nightlyMessages = @("nightly-$run","nightly-after-stable-$run","nightly-after-historical-$run")
+  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Expect $stableMessages -Exclude $nightlyMessages }
+  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect $nightlyMessages -Exclude $stableMessages }
+  if ($uiErrors.Count) { throw ($uiErrors -join [Environment]::NewLine) }
 } finally {
   foreach ($variable in $buildEnvironment) { Set-Item -LiteralPath "Env:$($variable.Name)" -Value $variable.Value }
 }

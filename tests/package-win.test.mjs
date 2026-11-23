@@ -99,8 +99,42 @@ test('Windows gets an installer with the service beside the app', () => {
   assert.match(win, /from: target\/release\/apex-provenance\.exe\s*\n\s*to: bin\/apex-provenance\.exe/);
 
   const nsis = section(yml, 'nsis');
-  assert.match(nsis, /oneClick: false/, 'the Human picks the install folder');
+  assert.match(nsis, /oneClick: false/, 'install interactively at the fixed per-machine destination');
+  assert.match(nsis, /perMachine: true/);
   assert.match(nsis, /allowToChangeInstallationDirectory: false/);
+});
+
+test('Setup pins each channel before stopping services and only invokes the machine uninstaller', () => {
+  const hook = read('build/installer.nsh').replaceAll('\r\n', '\n');
+  const macro = name => hook.split(`!macro ${name}\n`).at(1)?.split('!macroend')[0];
+  const source = name => read(`node_modules/app-builder-lib/templates/nsis/${name}`);
+  const setup = source('installSection.nsh');
+  assert.match(hook, /!define APEX_INSTALL_DIR "\$PROGRAMFILES64\\\$\{PRODUCT_FILENAME\}"/);
+  for (const name of ['customInit', 'customUnInit']) {
+    assert.match(macro(name), /^\s*!insertmacro PinInstallLocation\s+!insertmacro CheckInstallRegistration/);
+  }
+  const registration = macro('CheckInstallRegistration');
+  for (const hive of ['HKCU', 'HKLM']) {
+    assert.ok(registration.includes(hive + ' "${INSTALL_REGISTRY_KEY}" InstallLocation'));
+    assert.ok(registration.includes(hive + ' "${UNINSTALL_REGISTRY_KEY}" UninstallString'));
+  }
+  assert.ok(registration.includes('"${APEX_INSTALL_DIR}\\${UNINSTALL_FILENAME}" /allusers'));
+  const running = macro('customCheckAppRunning');
+  assert.ok(running.includes('SetEnvironmentVariableW(w "APEX_NSIS_PROCESS_DIR", w "${APEX_INSTALL_DIR}\\"'));
+  const processes = read('build/channelProcesses.nsh');
+  assert.ok(processes.includes('StartsWith($$env:APEX_NSIS_PROCESS_DIR, [StringComparison]::OrdinalIgnoreCase)'));
+  assert.ok(running.indexOf('!insertmacro PinInstallLocation') < running.indexOf('!insertmacro _CHECK_APP_RUNNING'));
+
+  // The include replaces an upstream macro during compilation of the install
+  // section. Catch template changes that would put a registry lookup ahead of it.
+  assert.match(source('installer.nsi'), /!include "installUtil\.nsh"[\s\S]+!include "installSection\.nsh"/);
+  assert.match(source('include/allowOnlyOneInstallerInstance.nsh'), /!ifmacrodef customCheckAppRunning\s+!insertmacro customCheckAppRunning/);
+  assert.match(setup, /!insertmacro CHECK_APP_RUNNING[\s\S]+!insertmacro uninstallOldVersion SHELL_CONTEXT[\s\S]+!insertmacro uninstallOldVersion HKEY_CURRENT_USER/);
+  assert.ok(running.includes('!include "${PROJECT_DIR}\\build\\machineUpgrade.nsh"'));
+  const upgrade = read('build/machineUpgrade.nsh');
+  assert.match(upgrade, /!macroundef uninstallOldVersion/);
+  assert.match(upgrade, /== "SHELL_CONTEXT"\s+Push "HKEY_LOCAL_MACHINE"\s+Call uninstallOldVersion/);
+  assert.match(upgrade, /== "HKEY_CURRENT_USER"\s+ClearErrors\s+StrCpy \$R0 0\s+!else/);
 });
 
 test('the Mac package is unchanged and does not leak onto Windows', () => {

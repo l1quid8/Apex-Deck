@@ -79,9 +79,10 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: node -e "import('electron')"
-      - run: npm test
       - if: ${{ !cancelled() }}
         run: cargo test --locked -p apex-provenance -p apex-daemon
+      - if: ${{ !cancelled() }}
+        run: npm test
 
   build:
     needs: prepare
@@ -327,7 +328,21 @@ jobs:
         with:
           pattern: installer-to-verify-*
           path: installers
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        if: env.APEX_DECK_WIN_SIGN != '1'
+        with:
+          name: win-unpacked-nightly
+          path: nightly-app
+      - name: Exercise Authenticode verification with a disposable QA publisher
+        if: env.APEX_DECK_WIN_SIGN != '1'
+        shell: pwsh
+        run: |
+          $current = (Get-ChildItem installers/installer-to-verify-nightly/*_x64-Setup.exe).FullName
+          $previous = (Get-ChildItem installers/installer-to-verify-nightly-previous/*_x64-Setup.exe).FullName
+          ./scripts/windows-nightly-authenticode-qa.ps1 -PreviousSetup $previous -CurrentSetup $current -App 'nightly-app/Apex Deck Nightly.exe' -PreviousBuild '${{ needs.prepare.outputs.previous }}' -CurrentBuild '${{ needs.prepare.outputs.current }}'
       - name: Verify concurrent installations and run the previously shipped Stable installer
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $oldStable = Join-Path $env:RUNNER_TEMP 'stable-0.9.9.exe'
@@ -337,9 +352,10 @@ jobs:
           $nightly = (Get-ChildItem installers/installer-to-verify-nightly/*_x64-Setup.exe).FullName
           $previous = (Get-ChildItem installers/installer-to-verify-nightly-previous/*_x64-Setup.exe).FullName
           ./scripts/windows-channel-lifecycle.ps1 -StableSetup installers/installer-to-verify-stable/Apex-Deck-Setup.exe -NightlySetup $nightly -PreviousNightlySetup $previous -ExistingStableSetup $oldStable
-          if ($env:APEX_DECK_WIN_SIGN -eq '1') {
-            $env:APEX_CHANNEL = 'nightly'
-            $env:APEX_BUILD_NUMBER = '${{ needs.prepare.outputs.current }}'
-            node scripts/windows-update-smoke.mjs $nightly "$env:ProgramFiles/Apex Deck Nightly/Apex Deck Nightly.exe" $previous
-            if ($LASTEXITCODE) { throw 'Same-semver signed Nightly updater check failed' }
-          }
+      - name: Keep the verified Nightly installer and its release-owner artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apex-Deck-Nightly-windows-x64
+          path: installers/installer-to-verify-nightly/
+          if-no-files-found: error
+          retention-days: 30
