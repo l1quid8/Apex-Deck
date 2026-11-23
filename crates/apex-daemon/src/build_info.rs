@@ -22,6 +22,26 @@ pub fn version_line() -> String {
     format!("apex-daemon {} ({}{dirty})", env!("CARGO_PKG_VERSION"), commit())
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_channel() -> &'static str {
+    if apex_provenance::channel::NIGHTLY { "nightly" } else { "stable" }
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_build_identity() -> serde_json::Value {
+    let nightly = linux_channel() == "nightly";
+    let commit = option_env!("APEX_LINUX_BUILD_SOURCE_COMMIT").filter(|_| nightly);
+    let build_number = option_env!("APEX_LINUX_BUILD_NUMBER")
+        .filter(|_| nightly)
+        .and_then(|value| value.parse::<u64>().ok());
+    serde_json::json!({
+        "channel": linux_channel(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "commit": commit,
+        "buildNumber": build_number,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

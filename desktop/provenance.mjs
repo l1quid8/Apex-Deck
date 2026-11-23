@@ -106,9 +106,16 @@ export async function linuxIdentity({uid=process.getuid?.(),publicKey=protectedP
   const canonical=text=>typeof text==='string' && path.posix.isAbsolute(text) && path.posix.normalize(text)===text && !/[\x00-\x1f\x7f]/.test(text);
   const treeName = typeof value.tree === 'string' ? path.posix.basename(value.tree) : '';
   const validTree = /^[a-zA-Z0-9][a-zA-Z0-9.-]{0,199}$/.test(treeName) && value.tree === path.posix.join(channel.LINUX_TREE, treeName);
+  const release = value.release;
+  const validRelease = channel.nightly
+    ? release?.channel === channel.name && typeof release.version === 'string' && /^[a-zA-Z0-9.-]{1,64}$/.test(release.version)
+      && typeof release.commit === 'string' && /^[a-f0-9]{40}$/.test(release.commit)
+      && Number.isSafeInteger(release.buildNumber) && release.buildNumber > 0
+      && (!packaged || value.role !== 'app' || (release.commit === channel.commit && release.buildNumber === channel.buildNumber))
+    : release === undefined;
   if(value.domain!==channel.DOMAIN || value.kind!=='linux-scope' || value.nonce!==nonce || value.uid!==uid || !Number.isSafeInteger(uid) || uid<=0
     || !Number.isSafeInteger(value.epoch) || value.epoch<=0 || value.protocol!==1 || !/^[a-f0-9]{64}$/.test(value.manifestSha256??'')
-    || !validTree || !/^[a-f0-9]{32}$/.test(value.brokerInstance??'')
+    || !validTree || !validRelease || !/^[a-f0-9]{32}$/.test(value.brokerInstance??'')
     || !canonical(value.dataDir) || value.daemonEndpoint!==path.posix.join(value.dataDir,'daemon.sock')
     || ![null,'app'].includes(value.role) || (value.daemonPid!==null && (!Number.isSafeInteger(value.daemonPid) || value.daemonPid<=0))
     || (dataDir!==undefined && dataDir!==value.dataDir)) throw new Error('Authenticated Linux scope does not match this account, release or data folder.');

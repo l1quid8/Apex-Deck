@@ -33,6 +33,7 @@ class CandidateAcceptanceTests(unittest.TestCase):
 class FakeSystem:
     def __init__(self):
         self.events = []
+        self.channel = "stable"
         self.current = {"version": "0.9.3", "build_commit": "02f3a24f8659", "boot_id": "old"}
         self.release = {"tag_name": "v0.9.4", "draft": False, "prerelease": False}
         self.busy = False
@@ -80,6 +81,8 @@ class FakeSystem:
         if self.fail_health:
             raise RuntimeError("new daemon failed health")
         self.current = {"version": candidate["version"], "build_commit": candidate["commit"][:12], "boot_id": "new"}
+        if self.channel == "nightly":
+            self.current["build_identity"] = {key: candidate[key] for key in ("channel", "version", "buildNumber", "commit")}
 
     def restore(self, backup):
         self.events.append("restore")
@@ -252,7 +255,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_configured_unit_cannot_target_unrelated_services_or_accounts(self):
         for unit in ("sshd.service", "../apex-daemon@root.service", "--all",
-                     "apex-daemon-managed@someoneelse.service", "", None, 123):
+                     "apex-daemon-managed@someoneelse.service", "apex-daemon-nightly@root.service", "", None, 123):
             with self.subTest(unit=unit), self.assertRaisesRegex(ValueError, "service unit"):
                 self.mod.System({"user": "root", "unit": unit}, self.root)
 
@@ -362,6 +365,114 @@ class UpdateTests(unittest.TestCase):
             system.restore({"path": "/backup", "sha256": "hash"})
         self.assertEqual(len(calls), 1)
         self.assertIn("MainPID", calls[0])
+
+
+class NightlyTests(unittest.TestCase):
+    def setUp(self):
+        self.mod = load_updater()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.system = FakeSystem()
+        self.system.channel = "nightly"
+        self.system.current.update(version="0.9.4", build_commit="a" * 12,
+                                   build_identity=self.identity(100, "a"))
+        self.system.release = self.manifest(101, "b")
+        self.system.candidate.update(self.system.release)
+
+    def identity(self, number, sha):
+        return {"channel": "nightly", "version": "0.9.4", "buildNumber": number, "commit": sha * 40}
+
+    def manifest(self, number, sha):
+        return {**self.identity(number, sha), "schemaVersion": 1, "tag": "nightly-20261123-" + sha * 7}
+
+    def test_build_number_drives_same_version_updates_and_rollback_floor(self):
+        self.assertEqual(self.mod.update(self.system, self.root)["status"], "updated")
+        state = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(state["highest_build_number"], 101)
+        self.assertEqual(state["highest_commit"], "b" * 40)
+        self.assertNotIn("highest_version", state)
+        self.system.events.clear()
+        self.system.current = state["backup"]["live"]
+        self.assertEqual(self.mod.update(self.system, self.root)["status"], "current")
+        self.assertEqual(self.system.events, [])
+
+    def test_rolled_back_build_number_quarantines_its_identity_and_blocks_replays(self):
+        self.system.current["build_identity"] = self.identity(99, "a")
+        self.system.fail_health = True
+        self.assertEqual(self.mod.update(self.system, self.root)["status"], "rolled_back")
+        state = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(state["failed_build_number"], 101)
+        self.assertEqual(state["failed_commit"], "b" * 40)
+        self.system.events.clear()
+
+        self.assertEqual(self.mod.update(self.system, self.root)["status"], "quarantined")
+        self.system.release = {**self.manifest(101, "b"), "commit": "b" * 7 + "c" * 33}
+        with self.assertRaisesRegex(ValueError, "two source commits"):
+            self.mod.update(self.system, self.root)
+        self.system.release = self.manifest(100, "c")
+        self.assertEqual(self.mod.update(self.system, self.root)["status"], "current")
+        self.assertEqual(self.system.events, [])
+
+        self.system.fail_health = False
+        self.system.release = self.manifest(102, "d")
+        self.system.candidate.update(self.system.release)
+        self.assertEqual(self.mod.update(self.system, self.root)["status"], "updated")
+        state = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(state["highest_build_number"], 102)
+        self.assertNotIn("failed_build_number", state)
+        self.assertNotIn("failed_commit", state)
+
+    def test_rejects_conflicting_and_malformed_builds_before_mutation(self):
+        for fields in ({"buildNumber": 100}, {"buildNumber": True}, {"buildNumber": 2**53}, {"buildNumber": 0},
+                       {"commit": "b" * 7}, {"tag": "nightly"}, {"tag": "nightly-20261123-aaaaaaa"},
+                       {"tag": "v0.9.4"}, {"channel": "stable"}, {"schemaVersion": 2}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                self.system.release = {**self.manifest(101, "b"), **fields}
+                self.mod.update(self.system, self.root)
+        self.assertEqual(self.system.events, [])
+
+    def test_rejects_candidate_identity_mismatch_before_reserving_maintenance(self):
+        self.system.candidate["buildNumber"] = 102
+        with self.assertRaisesRegex(ValueError, "candidate identity"):
+            self.mod.update(self.system, self.root)
+        self.assertEqual(self.system.events, ["prepare"])
+
+    def test_tag_must_resolve_to_full_manifest_commit_before_candidate_build(self):
+        system = self.mod.System({"user": "root"}, self.root, "nightly")
+        system.source = self.root / "source"
+        (system.source / ".git").mkdir(parents=True)
+        called = []
+
+        def command(argv, **kwargs):
+            called.append(argv)
+            if argv[:3] == ["git", "remote", "get-url"]:
+                return self.mod.REPOSITORY
+            if argv[:2] == ["git", "rev-parse"]:
+                return "b" * 7 + "c" * 33
+            return ""
+
+        system.command = command
+        with self.assertRaisesRegex(ValueError, "different source commit"):
+            system.prepare(self.system.release)
+        self.assertEqual(called[-2][-1], "refs/tags/nightly-20261123-bbbbbbb")
+        self.assertEqual(called[-1], ["git", "rev-parse", "FETCH_HEAD^{commit}"])
+
+    def test_daemon_unit_binary_data_cache_and_request_are_separate(self):
+        stable = self.mod.System({"user": "root"}, self.root)
+        nightly = self.mod.System({"user": "root"}, self.root, "nightly")
+        self.assertEqual(nightly.unit, "apex-daemon-nightly@root.service")
+        self.assertEqual(nightly.binary, Path("/usr/local/bin/apex-daemon-nightly"))
+        self.assertEqual(nightly.data.name, "dev.apexdeck.app.nightly")
+        self.assertEqual(nightly.work.name, "apex-deck-nightly-update")
+        self.assertEqual(nightly.request, Path("/run/apex-deck-nightly-update/0.request"))
+        for unit in (stable.unit, "apex-daemon-managed@root.service", "apex-daemon-nightly@another.service"):
+            with self.subTest(unit=unit), self.assertRaisesRegex(ValueError, "service unit"):
+                self.mod.System({"user": "root", "unit": unit}, self.root, "nightly")
+        with self.assertRaisesRegex(ValueError, "own absolute daemon data directory"):
+            self.mod.System({"user": "root", "data_dir": str(stable.data)}, self.root, "nightly")
+        with self.assertRaisesRegex(ValueError, "socket path"):
+            self.mod.System({"user": "root", "data_dir": "/" + "é" * 60}, self.root, "nightly")
 
 
 if __name__ == "__main__":

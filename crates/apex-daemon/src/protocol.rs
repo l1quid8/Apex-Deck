@@ -65,12 +65,23 @@ pub struct Welcome {
     /// The exact build, so a UI can tell two builds of the same version apart.
     pub build_commit: &'static str,
     pub build_dirty: bool,
+    /// Full Nightly release identity for Linux desktop readiness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_identity: Option<Value>,
     /// What a paired device may do now, so the phone can hide what it can't use; the host still checks everything.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<DeviceAccess>,
     /// The addresses advertised for this machine, for a paired device to refresh its saved hints.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addrs: Option<Vec<String>>,
+}
+
+fn linux_nightly_build_identity() -> Option<Value> {
+    #[cfg(target_os = "linux")]
+    if apex_provenance::channel::NIGHTLY {
+        return Some(crate::build_info::linux_build_identity());
+    }
+    None
 }
 
 /// Wire tolerance: installed iPhone builds hide the Tasks tab without this.
@@ -494,6 +505,7 @@ where
         host_id: daemon.host_id.clone(), boot_id: daemon.boot_id.clone(), protocol: PROTOCOL, last_seq: written, resumed,
         version: env!("CARGO_PKG_VERSION"), capabilities,
         build_commit: crate::build_info::commit(), build_dirty: crate::build_info::dirty(),
+        build_identity: linux_nightly_build_identity(),
         // Wire tolerance: installed iPhone builds hide the Tasks tab without `"access": {"tier":"full","threads":"all"}`.
         // Delete once every iPhone is on a TestFlight build containing Task 4.
         access: device.as_ref().map(|_| DeviceAccess::FULL),
@@ -1501,7 +1513,11 @@ mod tests {
     async fn hello_names_the_host_and_this_boot() {
         let mut client = connect(Trust::Local);
         let reply = client.hello().await;
-        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "max_frame_bytes": MAX_FRAME, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
+        let mut expected = json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "max_frame_bytes": MAX_FRAME, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } });
+        if let Some(identity) = linux_nightly_build_identity() {
+            expected["ok"]["build_identity"] = identity;
+        }
+        assert_eq!(reply, expected);
     }
 
     /// The fields a client reads from a welcome; the build ones may be missing from an older daemon.
@@ -1549,7 +1565,11 @@ mod tests {
 
         let mut back = connect_to(&daemon, Trust::Local);
         back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 1 } } })).await;
-        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "max_frame_bytes": MAX_FRAME, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
+        let mut expected = json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "max_frame_bytes": MAX_FRAME, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": hello_capabilities(), "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() });
+        if let Some(identity) = linux_nightly_build_identity() {
+            expected["build_identity"] = identity;
+        }
+        assert_eq!(back.next().await.unwrap()["ok"], expected);
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 2, "event": "session-changed", "payload": { "version": 2 } }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 3, "event": "session-changed", "payload": { "version": 3 } }));
         // Then live events, with nothing doubled.

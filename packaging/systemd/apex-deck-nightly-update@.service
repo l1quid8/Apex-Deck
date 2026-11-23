@@ -1,0 +1,13 @@
+[Unit]
+Description=Check and safely install published Apex Deck Nightly builds for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/apex-deck-nightly-update/vps_update.py --channel nightly %i
+TimeoutStartSec=3h
+TimeoutStopSec=90
+UMask=0022
+# Root owns the transaction. Git, Cargo and binary probes run as %i.
+KillMode=control-group

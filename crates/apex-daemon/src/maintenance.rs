@@ -101,8 +101,8 @@ fn trusted_parent(parent: &std::path::Path) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn authorize(nonce: &str, boot_id: &str, now: u64) -> Result<u64, String> {
-    let parent = std::path::Path::new("/run/apex-deck-update");
-    trusted_parent(parent)?;
+    let parent = std::path::Path::new("/run").join(apex_provenance::channel::VPS_UPDATE);
+    trusted_parent(&parent)?;
     let path = parent.join(format!("{}.request", unsafe { libc::geteuid() }));
     authorization(&read_root_request(&path)?, nonce, boot_id, now)
 }

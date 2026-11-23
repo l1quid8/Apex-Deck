@@ -1,8 +1,15 @@
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_uses_the_system_service_authority_paths() {
-    assert_eq!(apex_provenance::ROOT, if apex_provenance::channel::NIGHTLY { "/var/lib/apex-deck-nightly-provenance" } else { "/var/lib/apex-deck-provenance" });
-    assert_eq!(apex_provenance::SOCKET, if apex_provenance::channel::NIGHTLY { "/run/apex-deck-nightly/provenance.sock" } else { "/run/apex-deck/provenance.sock" });
+    let (root, runtime) = if apex_provenance::channel::NIGHTLY {
+        ("/var/lib/apex-deck-nightly-provenance", "/run/apex-deck-nightly")
+    } else {
+        ("/var/lib/apex-deck-provenance", "/run/apex-deck")
+    };
+    assert_eq!(apex_provenance::ROOT, root);
+    assert_eq!(apex_provenance::channel::LINUX_RUNTIME, runtime);
+    assert_eq!(apex_provenance::SOCKET, format!("{runtime}/provenance.sock"));
+    assert_eq!(apex_provenance::channel::LINUX_ENROLL, format!("{runtime}/enroll.sock"));
 }
 
 #[test]

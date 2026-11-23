@@ -1,5 +1,6 @@
 //! Enrollment records derive account identity from kernel peers, never JSON or
 //! SUDO_UID. Only an explicit administrator enrollment may persist a record.
+use crate::channel::{LINUX_OTHER_ROOT, LINUX_ROOT};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -89,7 +90,7 @@ pub struct RegistrationStore {
 }
 impl RegistrationStore {
     pub fn open() -> Result<Self, String> {
-        let root = PathBuf::from("/var/lib/apex-deck-provenance");
+        let root = PathBuf::from(LINUX_ROOT);
         crate::linux_install::protected_path(&root)?;
         let store = Self {
             root,
@@ -100,7 +101,7 @@ impl RegistrationStore {
     }
     pub fn initialize() -> Result<Self, String> {
         require_administrator()?;
-        let root = PathBuf::from("/var/lib/apex-deck-provenance");
+        let root = PathBuf::from(LINUX_ROOT);
         crate::linux_install::protected_path(&root)?;
         let store = Self {
             root,
@@ -149,6 +150,9 @@ impl RegistrationStore {
             .ok_or("Desktop UID is not enrolled")?;
         let r = enrollment.registration;
         r.validate_scope(uid, r.data_dir())?;
+        if matches!(overlaps_other_registration(uid, r.data_dir()), Ok(true)) {
+            return Err("Data directory or desktop profile overlaps another Apex Deck channel".into());
+        }
         if !enrollment.allow_linger && lingering(uid)? {
             return Err(
                 "Account linger policy changed; explicit administrator enrollment required".into(),
@@ -193,7 +197,11 @@ impl RegistrationStore {
             return Err("Enrollment capacity reached".into());
         }
         peer.validate()?;
+        reject_overlapping_registration(&registration)?;
         self.publish_scope_records(std::slice::from_ref(&registration))?;
+        // Recheck after our marker is durable. Concurrent channels cannot
+        // both commit after observing the other's marker as missing.
+        reject_overlapping_registration(&registration)?;
         registry.enrollments.push(Enrollment {
             registration: registration.clone(),
             same_account_limit_accepted: true,
@@ -672,6 +680,31 @@ impl ScopeMarker {
         }
         Ok(false)
     }
+    fn overlaps_registration(&self, data_dir: &Path) -> Result<bool, String> {
+        let profile = desktop_profile(data_dir);
+        if self.covers(data_dir)? || self.covers(&profile)? {
+            return Ok(true);
+        }
+        for scope in &self.scopes {
+            let other_profile = desktop_profile(&scope.data_dir);
+            for other in [&scope.data_dir, &other_profile] {
+                if other.starts_with(data_dir)
+                    || other.starts_with(&profile)
+                    || data_dir.starts_with(other)
+                    || profile.starts_with(other)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+fn desktop_profile(data_dir: &Path) -> PathBuf {
+    let mut profile = data_dir.as_os_str().to_os_string();
+    profile.push("-desktop");
+    profile.into()
 }
 
 /// Decide only whether local storage must use protected broker semantics.
@@ -679,14 +712,54 @@ impl ScopeMarker {
 /// A missing whole installation or a missing UID in a healthy public marker
 /// directory means that account's unrelated Linux scopes retain plain policy.
 pub fn protected_scope(path: &Path) -> Result<bool, String> {
-    protected_scope_at(Path::new(crate::ROOT), unsafe { libc::geteuid() }, path)
+    let uid = unsafe { libc::geteuid() };
+    protected_scope_for_channels(
+        Path::new(LINUX_ROOT),
+        Path::new(LINUX_OTHER_ROOT),
+        uid,
+        path,
+    )
+}
+fn protected_scope_for_channels(
+    own_root: &Path,
+    other_root: &Path,
+    uid: u32,
+    path: &Path,
+) -> Result<bool, String> {
+    let owned = protected_scope_at(own_root, uid, path)?;
+    match (owned, protected_scope_at(other_root, uid, path)) {
+        (_, Ok(true)) => Err("Data directory belongs to another Apex Deck channel".into()),
+        // A proven own-channel scope stays protected while the other channel
+        // repairs its independent marker. Unproven scopes must fail closed.
+        (true, _) | (false, Ok(false)) => Ok(owned),
+        (false, Err(error)) => Err(error),
+    }
 }
 fn protected_scope_at(root: &Path, uid: u32, path: &Path) -> Result<bool, String> {
     if !path.is_absolute() {
         return Err("Authority scope must be absolute".into());
     }
+    match read_scope_marker(root, uid)? {
+        Some(marker) => marker.covers(path),
+        None => Ok(false),
+    }
+}
+fn overlaps_other_registration(uid: u32, data_dir: &Path) -> Result<bool, String> {
+    match read_scope_marker(Path::new(LINUX_OTHER_ROOT), uid)? {
+        Some(marker) => marker.overlaps_registration(data_dir),
+        None => Ok(false),
+    }
+}
+#[cfg(target_os = "linux")]
+fn reject_overlapping_registration(registration: &LinuxRegistration) -> Result<(), String> {
+    if overlaps_other_registration(registration.uid(), registration.data_dir())? {
+        return Err("Data directory or desktop profile overlaps another Apex Deck channel".into());
+    }
+    Ok(())
+}
+fn read_scope_marker(root: &Path, uid: u32) -> Result<Option<ScopeMarker>, String> {
     match std::fs::symlink_metadata(root) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
         Ok(_) => crate::linux_install::protected_path(root)?,
     }
@@ -711,15 +784,15 @@ fn protected_scope_at(root: &Path, uid: u32, path: &Path) -> Result<bool, String
     }
     let marker = directory.join(format!("{uid}.json"));
     match std::fs::symlink_metadata(&marker) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
         Ok(_) => (),
     }
     ScopeMarker::restore(
         &crate::io::root_file_limit(&marker, REGISTRATION_LIMIT)?,
         uid,
-    )?
-    .covers(path)
+    )
+    .map(Some)
 }
 impl RegistrationStore {
     /// Root-only upgrade/repair publication. Preserve orphaned marker scopes
@@ -853,6 +926,11 @@ mod availability_tests {
                 inode: meta.ino(),
             }],
         };
+        assert!(marker.overlaps_registration(&enrolled).unwrap());
+        assert!(marker.overlaps_registration(&enrolled.join("nested")).unwrap());
+        assert!(marker.overlaps_registration(&root).unwrap());
+        assert!(marker.overlaps_registration(&desktop_profile(&enrolled)).unwrap());
+        assert!(!marker.overlaps_registration(&unrelated).unwrap());
         assert!(marker
             .covers(&enrolled.join("saved-chats-v1/not-created.json"))
             .unwrap());
@@ -915,6 +993,26 @@ mod availability_tests {
         )
         .unwrap());
         assert!(!protected_scope_at(&root, 1002, Path::new("/home/another/data")).unwrap());
+        let other_root = root.join("other-channel");
+        let other = RegistrationStore {
+            root: other_root.clone(),
+            poisoned: false.into(),
+        };
+        std::fs::create_dir(&other_root).unwrap();
+        std::fs::set_permissions(&other_root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        other.publish_scope_records(&[]).unwrap();
+        let unrelated = Path::new("/home/dev/unrelated-scope/ledger.json");
+        assert!(!protected_scope_for_channels(&root, &other_root, 1001, unrelated).unwrap());
+        std::fs::write(other_root.join("scopes.pending"), b"interrupted").unwrap();
+        assert!(protected_scope_for_channels(&root, &other_root, 1001, &data).unwrap());
+        assert!(protected_scope_for_channels(&root, &other_root, 1001, unrelated).is_err());
+        other.publish_scope_records(&[]).unwrap();
+        std::fs::write(other_root.join("scopes/1001.json"), b"malformed").unwrap();
+        assert!(protected_scope_for_channels(&root, &other_root, 1001, &data).unwrap());
+        assert!(protected_scope_for_channels(&root, &other_root, 1001, unrelated).is_err());
+        std::fs::remove_file(other_root.join("scopes/1001.json")).unwrap();
+        other.publish_scope_records(std::slice::from_ref(&registration)).unwrap();
+        assert!(protected_scope_for_channels(&root, &other_root, 1001, &data).is_err());
         assert_eq!(
             std::fs::metadata(root.join("scopes/1001.json"))
                 .unwrap()

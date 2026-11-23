@@ -1,0 +1,19 @@
+[Unit]
+Description=Apex Deck Nightly daemon for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+UnsetEnvironment=APEX_DECK_DATA_DIR XDG_DATA_HOME
+# Nightly's default data folder contains its owner lock and local socket. The
+# kernel picks its loopback WebSocket port; the HTTP gateway remains opt-in.
+ExecStart=/usr/local/bin/apex-daemon-nightly serve --require-channel nightly
+Restart=on-failure
+RestartSec=2
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

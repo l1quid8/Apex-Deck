@@ -1,6 +1,7 @@
 //! Durable installation selection. This never grants peer trust or starts services.
 //! The orchestrator must stop all clients before switching and verify health
 //! before reopening admissions. Incomplete transactions remain closed on restart.
+use crate::channel::{LINUX_ROOT, LINUX_TREE};
 use serde::{Deserialize, Serialize};
 use std::{
     io::Write,
@@ -20,7 +21,8 @@ impl Descriptor {
     pub(crate) fn validate(&self) -> Result<(), String> {
         let text = self.tree.to_str().ok_or("Invalid install path")?;
         let name = text
-            .strip_prefix("/opt/apex-deck/")
+            .strip_prefix(LINUX_TREE)
+            .and_then(|suffix| suffix.strip_prefix('/'))
             .ok_or("Wrong install root")?;
         if name.is_empty()
             || name.len() > 200
@@ -108,7 +110,7 @@ impl AdmissionGuard {
 /// installer, pending writes and non-ready phases close admissions. This never
 /// initializes or repairs missing history.
 pub fn admission() -> Result<AdmissionGuard, String> {
-    admitted_at(Path::new("/var/lib/apex-deck-provenance"))
+    admitted_at(Path::new(LINUX_ROOT))
 }
 fn admitted_at(root: &Path) -> Result<AdmissionGuard, String> {
     match std::fs::symlink_metadata(root.join("service.pending")) {
@@ -309,12 +311,12 @@ impl Store {
     /// Explicit first-install initialization only. Any pre-existing authority
     /// material or installation state forbids creating a fresh epoch history.
     pub fn initialize() -> Result<Self, String> {
-        let root = Path::new("/var/lib/apex-deck-provenance");
+        let root = Path::new(LINUX_ROOT);
         Self::check_root(root)?;
         Self::initialize_at(root)
     }
     pub fn open() -> Result<Self, String> {
-        let root = Path::new("/var/lib/apex-deck-provenance");
+        let root = Path::new(LINUX_ROOT);
         Self::check_root(root)?;
         Self::open_at(root)
     }
@@ -322,7 +324,7 @@ impl Store {
     /// Complete pending records contribute their epoch even before rename.
     /// Torn records require investigation, never deletion or initialization.
     pub fn recover_interrupted(candidate: Descriptor) -> Result<Self, String> {
-        let root = Path::new("/var/lib/apex-deck-provenance");
+        let root = Path::new(LINUX_ROOT);
         Self::check_root(root)?;
         crate::linux_install::protected_path(&candidate.tree)?;
         Self::recover_at(root, candidate)
@@ -524,7 +526,7 @@ mod tests {
     }
     fn candidate() -> Descriptor {
         Descriptor {
-            tree: "/opt/apex-deck/test".into(),
+            tree: Path::new(LINUX_TREE).join("test"),
             manifest_sha256: "a".repeat(64),
             protocol: 1,
             epoch: 0,
