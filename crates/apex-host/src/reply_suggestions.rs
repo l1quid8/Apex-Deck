@@ -290,7 +290,8 @@ impl ReplySuggestions {
     pub fn set_mode(&self, mode: Mode) {
         self.mode.store(mode.code(), Ordering::SeqCst);
     }
-    fn with<T>(&self, f: impl FnOnce(&mut Ledger) -> T) -> Result<(T, Ledger), String> {
+    /// The saved ledger, read once. The caller holds the lock for as long as it uses it.
+    fn ledger(&self) -> Result<std::sync::MutexGuard<'_, Option<Ledger>>, String> {
         let mut cache = self.ledger.lock().map_err(|e| e.to_string())?;
         if cache.is_none() {
             *cache = Some(
@@ -299,31 +300,28 @@ impl ReplySuggestions {
                     .unwrap_or(Ledger { version: 1, rooms: BTreeMap::new() }),
             );
         }
-        let mut next = cache.clone().unwrap();
-        let result = f(&mut next);
-        Ok((result, next))
+        Ok(cache)
     }
     pub fn dismissed(&self, room: &str) -> Result<Vec<String>, String> {
-        Ok(self.with(|l| l.rooms.get(room).cloned().unwrap_or_default())?.0)
+        Ok(self.ledger()?.as_ref().and_then(|l| l.rooms.get(room).cloned()).unwrap_or_default())
     }
     pub fn dismiss(&self, room: &str, key: &str) -> Result<(), String> {
         if key.len() > 400 || key_room(key) != Some(room) {
             return Err("That decision belongs to another thread.".into());
         }
-        let (changed, next) = self.with(|l| {
-            let keys = l.rooms.entry(room.to_owned()).or_default();
-            if keys.iter().any(|k| k == key) {
-                return false;
-            }
-            keys.push(key.to_owned());
-            let extra = keys.len().saturating_sub(KEPT);
-            keys.drain(..extra);
-            true
-        })?;
-        if changed {
-            next.write_to(&self.path).map_err(|e| e.to_string())?;
-            *self.ledger.lock().map_err(|e| e.to_string())? = Some(next);
+        // One lock covers the change, the save and the swap, so two taps at
+        // once build on each other. A failed save leaves the cache as it was.
+        let mut cache = self.ledger()?;
+        let mut next = cache.clone().unwrap_or_default();
+        let keys = next.rooms.entry(room.to_owned()).or_default();
+        if keys.iter().any(|k| k == key) {
+            return Ok(());
         }
+        keys.push(key.to_owned());
+        let extra = keys.len().saturating_sub(KEPT);
+        keys.drain(..extra);
+        next.write_to(&self.path).map_err(|e| e.to_string())?;
+        *cache = Some(next);
         Ok(())
     }
     /// GitHub's last answer for this commit, while it is still fresh.
@@ -471,6 +469,33 @@ mod tests {
         ] {
             assert_eq!(ask(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn dismissals_made_at_the_same_moment_are_all_kept() {
+        let data = TestDataDir::new();
+        let state = std::sync::Arc::new(ReplySuggestions::new(data.path(), Mode::DEFAULT));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let key = |n: usize| format!("test/repo|r|{n}|question|");
+        let taps: Vec<_> = (0..16)
+            .map(|n| {
+                let (state, start, key) = (state.clone(), start.clone(), key(n));
+                std::thread::spawn(move || {
+                    start.wait();
+                    state.dismiss("r", &key).unwrap();
+                })
+            })
+            .collect();
+        taps.into_iter().for_each(|tap| tap.join().unwrap());
+        let mut expected: Vec<_> = (0..16).map(key).collect();
+        expected.sort();
+        let sorted = |mut keys: Vec<String>| {
+            keys.sort();
+            keys
+        };
+        assert_eq!(sorted(state.dismissed("r").unwrap()), expected, "in memory");
+        let restarted = ReplySuggestions::new(data.path(), Mode::DEFAULT);
+        assert_eq!(sorted(restarted.dismissed("r").unwrap()), expected, "on disk");
     }
 
     #[test]
