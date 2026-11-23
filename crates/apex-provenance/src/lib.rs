@@ -555,7 +555,7 @@ impl Journal {
                 return Err("Invalid live/checkpoint state".into());
             }
             if *key
-                != command_key(
+                != stored_command_key(
                     entry.receipt.uid,
                     &entry.receipt.data_dir,
                     &entry.receipt.command,
@@ -679,6 +679,9 @@ impl Journal {
         receipt: &Receipt,
         nonce: &str,
     ) -> Result<Value, String> {
+        if retired_device_command(&receipt.command) {
+            return Err("Retired device command cannot be claimed".into());
+        }
         if uid != receipt.uid || data_dir != receipt.data_dir {
             return Err("Receipt belongs to another user or data directory".into());
         }
@@ -824,9 +827,22 @@ fn content_bound_startup_preflight(command: &Value) -> bool {
         && command["args"]["action"] == "revise_startup"
         && command["provenanceRequestId"] == "task-action:revise_startup:content-v1"
 }
+fn retired_device_command(command: &Value) -> bool {
+    matches!(command["cmd"].as_str(), Some("devices_set_tier" | "devices_set_threads"))
+}
+
 fn command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, String> {
     let name = command["cmd"].as_str().ok_or("Missing command")?;
     if !protected(name) {
+        return Err("Command cannot acquire submission authority".into());
+    }
+    stored_command_key(uid, data_dir, command)
+}
+
+// Historical entries retain their original binding after command retirement.
+fn stored_command_key(uid: u32, data_dir: &str, command: &Value) -> Result<String, String> {
+    let name = command["cmd"].as_str().ok_or("Missing command")?;
+    if !protected(name) && !retired_device_command(command) {
         return Err("Command cannot acquire submission authority".into());
     }
     if command
@@ -915,6 +931,24 @@ mod tests {
     }
 
     const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn retired_device_receipts_load_without_granting_authority() {
+        let key = new_key().unwrap();
+        for name in ["devices_set_tier", "devices_set_threads"] {
+            let mut journal = Journal::new();
+            let command = json!({"cmd":name,"args":{},"provenanceRequestId":"old-id"});
+            let binding = serde_json::to_vec(&(DOMAIN, 501, "/data", name, "old-id")).unwrap();
+            let id = format!("{:x}", Sha256::digest(binding));
+            let receipt = Receipt { uid: 501, data_dir: "/data".into(), command: command.clone(),
+                key: id.clone(), issuance_id: None, installation_epoch: None };
+            journal.entries.insert(id, Entry { receipt: receipt.clone(), claimed: false,
+                issued_at: now_ms(), claimed_at: 0, outcome: None });
+            let mut reopened = Journal::open(&serde_json::to_vec(&journal).unwrap(), key.public_key().as_ref()).unwrap();
+            assert!(reopened.issue(501, "/data", command, true).is_err());
+            assert!(reopened.claim(501, "/data", &receipt, NONCE).is_err());
+        }
+    }
 
     fn claimed(journal: &mut Journal) -> Receipt {
         let receipt = journal.issue(501, "/data", command("hello"), true).unwrap();
