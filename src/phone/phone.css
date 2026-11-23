@@ -1609,3 +1609,8 @@
 .ph-thread-git summary { display: flex; align-items: center; min-height: 44px; color: var(--mint); font-weight: 500; cursor: pointer; }
 .ph-thread-git p, .ph-thread-git pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .ph-thread-git pre { margin: 4px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 16em; overflow: auto; }
+
+.ph-suggestion-setting { flex-wrap: wrap; }
+.ph-suggestion-setting select { max-width: 100%; }
+.ph-app .reply-decision .actions button { min-height: 32px; position: relative; }
+.ph-app .reply-decision .actions button::before { content: ""; position: absolute; inset: -6px 0; }

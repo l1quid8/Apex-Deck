@@ -7,12 +7,16 @@ import electron from 'electron';
 import {createServer} from 'vite';
 import {runElectronScenario} from './helpers/electron-test.mjs';
 
-test('phone Git controls recover a pending wait on reopen, cancel, and request a fix once', {timeout:90000}, async () => {
+for (const [name, query] of [
+  ['phone Git controls recover a pending wait on reopen, cancel, and request a fix once', ''],
+  ['phone reply suggestions share the Host setting, decisions, and active merge across modes', '?suggestions'],
+  ['phone agent suggestions work on connections without native Git actions', '?suggestions&textOnly'],
+]) test(name, {timeout:90000}, async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'phone-thread-git-'));
   const server = await createServer({cacheDir:path.join(temp,'cache'), server:{port:0}, logLevel:'error'});
   try {
     await server.listen();
-    const url = new URL('/tests/fixtures/phone-thread-git.html', server.resolvedUrls.local[0]);
+    const url = new URL('/tests/fixtures/phone-thread-git.html'+query, server.resolvedUrls.local[0]);
     const main = path.join(temp, 'main.cjs');
     await fs.writeFile(main, `
       const {app, BrowserWindow} = require('electron');

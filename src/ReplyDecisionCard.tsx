@@ -3,17 +3,17 @@ import type { Backend } from "./backend";
 import { actOnDecision, suggestionsMode, type ReplyOffer } from "./replyDecision";
 import "./replyDecision.css";
 
-export function useReplyOffer(backend: Backend, id: string, enabled: boolean, seq: number | null, busy: boolean) {
+export function useReplyOffer(backend: Backend | null, id: string, enabled: boolean, seq: number | null, busy: boolean) {
   const [snapshot, setSnapshot] = useState<{ backend: Backend; room: string; offer: ReplyOffer } | null>(null);
   const [revision, setRevision] = useState(0);
   const refresh = () => setRevision(n => n + 1);
   useEffect(() => {
     setSnapshot(null);
-    if (!enabled || backend.demo) return;
+    if (!enabled || !backend || backend.demo) return;
     let live = true;
     let version = 0;
     let timer: number;
-    async function read() {
+    const read = async () => {
       const ticket = ++version;
       window.clearTimeout(timer);
       try {
@@ -24,7 +24,7 @@ export function useReplyOffer(backend: Backend, id: string, enabled: boolean, se
       } finally {
         if (live && version === ticket) timer = window.setTimeout(read, 5000);
       }
-    }
+    };
     const subscription = backend.onSettingsChanged?.(raw => {
       if (!live) return;
       setSnapshot({ backend, room: id, offer: { mode: suggestionsMode(raw), decision: null, replySeq: null, checkout: null } });
@@ -37,7 +37,7 @@ export function useReplyOffer(backend: Backend, id: string, enabled: boolean, se
       void subscription?.then(off => off()).catch(() => {});
     };
   }, [backend, id, enabled, seq, busy, revision]);
-  return { offer: enabled && snapshot?.backend === backend && snapshot.room === id ? snapshot.offer : null, refresh };
+  return { offer: enabled && snapshot && snapshot.backend === backend && snapshot.room === id ? snapshot.offer : null, refresh };
 }
 
 export function ReplyDecisionCard({ offer, backend, room, refresh, focused, report }: {
