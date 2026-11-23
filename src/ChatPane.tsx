@@ -39,7 +39,7 @@ import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteL
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, Curation, NextStep, PlanRun, PlanWindow, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
-import { parseQuery, resolveMessage, type MessageTarget } from "./globalSearch.ts";
+import { resolveMessage, type MessageTarget } from "./globalSearch.ts";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -239,7 +239,7 @@ interface Props {
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared after it is taken. */
   menuRequest?: { id: string; action: ThreadMenuRequest };
   /** A message Search Deck landed on: scroll to it and outline it, once per `id`. */
-  reveal?: { id: string; target: MessageTarget; query: string };
+  reveal?: { id: string; target: MessageTarget };
   /** `changed` when that message is gone or no longer the one that was found. */
   onRevealed?(id: string, changed: boolean): void;
   /** Copy › text this thread built (as Markdown, or its last reply), for App to put on the clipboard. */
@@ -3117,7 +3117,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   useEffect(() => {
     if (!reveal || reveal.id === revealed.current || !roomReady) return;
     revealed.current = reveal.id;
-    const found = resolveMessage(messagesOf(entries), reveal.target, parseQuery(reveal.query), names);
+    const found = resolveMessage(messagesOf(entries), reveal.target, names);
     const row = "seq" in found ? scroller.current?.querySelector<HTMLElement>(`[data-seq="${found.seq}"]`) : null;
     if (!row) {
       scroller.current?.scrollTo({ top: scroller.current.scrollHeight });

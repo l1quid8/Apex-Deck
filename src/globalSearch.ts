@@ -353,28 +353,16 @@ export function queryMatches(query: Query | null, text: string): boolean {
 
 interface Said { seq: number; text: string; speaker: { kind: string; id?: string }; clientMessageId?: string | null; originSeq?: number | null }
 
-/**
- * Where a message hit is now. A hit that carries a saved id (its client id or
- * its source position) is found by that id or not at all: when the id is gone
- * the message was deleted, and whatever sits at its old position is a
- * different message. Only a hit saved without any id falls back to its old
- * position, and then only when the same speaker said it and it still matches.
- * `names` maps an agent's id to its display name, which is how the daemon
- * names the speaker; without it any agent counts as the same speaker.
- */
-export function resolveMessage(messages: Said[], target: MessageTarget, query: Query | null, names?: ReadonlyMap<string, string>): { seq: number } | { changed: true } {
+/** Transcript positions can be reused after deletion. Only saved identities can verify a hit. */
+export function resolveMessage(messages: Said[], target: MessageTarget, names?: ReadonlyMap<string, string>): { seq: number } | { changed: true } {
   const fits = (m: Said) => {
     if (m.speaker.kind === "human" || target.speaker === "You") return m.speaker.kind === "human" && target.speaker === "You";
     if (!names || m.speaker.id == null) return true;
     return (names.get(m.speaker.id)?.trim() || m.speaker.id) === target.speaker;
   };
   const one = (same: Said[]): { seq: number } | { changed: true } => (same.length === 1 ? { seq: same[0].seq } : { changed: true });
-  if (target.clientMessageId) return one(messages.filter((m) => m.clientMessageId === target.clientMessageId && fits(m)));
+  if (target.clientMessageId) return one(messages.filter((m) => m.clientMessageId === target.clientMessageId && (target.originSeq == null || m.originSeq === target.originSeq) && fits(m)));
   if (target.originSeq != null) return one(messages.filter((m) => m.originSeq === target.originSeq));
-  // No saved id (history from before ids): the old position, checked. A message
-  // that carries an id of its own is not the one this hit was made from.
-  const at = messages.filter((m) => m.seq === target.seq);
-  if (at.length === 1 && at[0].originSeq == null && !at[0].clientMessageId && fits(at[0]) && queryMatches(query, at[0].text)) return { seq: at[0].seq };
   return { changed: true };
 }
 

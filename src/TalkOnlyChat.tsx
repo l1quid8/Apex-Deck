@@ -14,7 +14,7 @@ import { deckClipboard } from "./copyText";
 
 interface Props {
   /** A message Search Deck landed on in this chat. */
-  reveal?: { id: string; target: import("./globalSearch.ts").MessageTarget; query: string };
+  reveal?: { id: string; target: import("./globalSearch.ts").MessageTarget };
   onRevealed?(id: string, changed: boolean): void;
   row: ChatEntry; chats: DesktopChats; settings: AppSettings; agents: AgentInfo[];
   profiles: ParticipantConfig[]; onProfilesChange(profiles: ParticipantConfig[]): void;

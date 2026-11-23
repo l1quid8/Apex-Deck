@@ -239,34 +239,43 @@ test('the query matches as the daemon does', () => {
 
 const said = (seq, text, extra = {}) => ({ seq, text, speaker: { kind: 'human' }, ...extra });
 const bot = (seq, text, extra = {}) => ({ seq, text, speaker: { kind: 'bot', id: 'null', name: 'Null' }, ...extra });
-const q = parseQuery('installer');
 
 test('duplicate_phrase_lands_on_the_clicked_one', () => {
   const messages = [said(0, 'run the installer', { clientMessageId: 'a' }), bot(1, 'ok'), said(2, 'run the installer', { clientMessageId: 'b' })];
-  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 2, originSeq: null, clientMessageId: 'b', speaker: 'You' }, q), { seq: 2 });
-  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 0, originSeq: null, clientMessageId: 'a', speaker: 'You' }, q), { seq: 0 });
+  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 2, originSeq: null, clientMessageId: 'b', speaker: 'You' }), { seq: 2 });
+  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 0, originSeq: null, clientMessageId: 'a', speaker: 'You' }), { seq: 0 });
 });
 
 test('curated_thread_resolves_by_origin_seq', () => {
   // The thread was tidied: the message that was at 7 now sits at 3.
   const messages = [said(0, 'hello'), bot(1, 'the installer is ready', { originSeq: 4 }), said(2, 'thanks'), bot(3, 'try the installer', { originSeq: 7 })];
-  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 7, originSeq: 7, clientMessageId: null, speaker: 'Null' }, q), { seq: 3 });
+  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 7, originSeq: 7, clientMessageId: null, speaker: 'Null' }), { seq: 3 });
 });
 
-test('old_message_without_ids_uses_checked_seq', () => {
-  const messages = [said(0, 'hello'), bot(1, 'try the installer')];
-  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 1, originSeq: null, clientMessageId: null, speaker: 'Null' }, q), { seq: 1 });
-  // Same position, but a different speaker now: never guess.
-  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 1, originSeq: null, clientMessageId: null, speaker: 'You' }, q), { changed: true });
+test('deleting one of two identical project replies from the same agent never selects its replacement', () => {
+  const text = 'try the installer';
+  const [first, second] = [bot(0, text, { originSeq: 8 }), bot(1, text, { originSeq: 9 })];
+  const target = { type: 'message', room: 'r', roomKind: 'work', seq: 0, originSeq: first.originSeq, clientMessageId: null, speaker: 'Null' };
+  const remaining = [{ ...second, seq: 0 }];
+  assert.deepEqual(resolveMessage(remaining, target), { changed: true });
+  assert.deepEqual(resolveMessage(remaining, { ...target, seq: 1, originSeq: second.originSeq }), { seq: 0 });
+  // For older snapshots even a unique remaining match cannot prove identity.
+  assert.deepEqual(resolveMessage([bot(0, text)], { ...target, originSeq: null }), { changed: true });
+});
+
+test('a client ID paired with a different origin cannot verify the reply', () => {
+  const messages = [said(0, 'try the installer', { clientMessageId: 'a', originSeq: 5 })];
+  const target = { type: 'message', room: 'r', roomKind: 'work', seq: 0, clientMessageId: 'a', originSeq: 4, speaker: 'You' };
+  assert.deepEqual(resolveMessage(messages, target), { changed: true });
 });
 
 test('deleted_message_reports_changed', () => {
   const messages = [said(0, 'hello'), bot(1, 'nothing here')];
-  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 1, originSeq: null, clientMessageId: null, speaker: 'Null' }, q), { changed: true });
-  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 9, originSeq: 9, clientMessageId: 'gone', speaker: 'Null' }, q), { changed: true });
+  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 1, originSeq: null, clientMessageId: null, speaker: 'Null' }), { changed: true });
+  assert.deepEqual(resolveMessage(messages, { type: 'message', room: 'r', roomKind: 'work', seq: 9, originSeq: 9, clientMessageId: 'gone', speaker: 'Null' }), { changed: true });
   // Two candidates share a client id (a prompt and its reply never do, but a merge can): never guess.
   const twins = [said(0, 'the installer', { clientMessageId: 'x' }), said(1, 'the installer', { clientMessageId: 'x' })];
-  assert.deepEqual(resolveMessage(twins, { type: 'message', room: 'r', roomKind: 'work', seq: 5, originSeq: null, clientMessageId: 'x', speaker: 'You' }, q), { changed: true });
+  assert.deepEqual(resolveMessage(twins, { type: 'message', room: 'r', roomKind: 'work', seq: 5, originSeq: null, clientMessageId: 'x', speaker: 'You' }), { changed: true });
 });
 
 // ---- Review round 2 (Null, 2026-11-22) ----
@@ -275,20 +284,10 @@ test('a_saved_id_that_is_gone_never_falls_back_to_the_old_position', () => {
   // The hit was deleted; another agent's reply with the same word now sits at its old position.
   const messages = [said(0, 'hello'), { seq: 1, text: 'try the installer', speaker: { kind: 'bot', id: 'jigga' } }];
   const target = { type: 'message', room: 'r', roomKind: 'chat', seq: 1, clientMessageId: null, originSeq: null, speaker: 'Null' };
-  assert.deepEqual(resolveMessage(messages, { ...target, originSeq: 7 }, q), { changed: true });
-  assert.deepEqual(resolveMessage(messages, { ...target, clientMessageId: 'gone' }, q), { changed: true });
+  assert.deepEqual(resolveMessage(messages, { ...target, originSeq: 7 }), { changed: true });
+  assert.deepEqual(resolveMessage(messages, { ...target, clientMessageId: 'gone' }), { changed: true });
   const mine = [said(0, 'run the installer')];
-  assert.deepEqual(resolveMessage(mine, { ...target, seq: 0, clientMessageId: 'gone', speaker: 'You' }, q), { changed: true });
-});
-
-test('a_hit_without_ids_lands_only_on_the_same_agent', () => {
-  const messages = [said(0, 'hello'), { seq: 1, text: 'try the installer', speaker: { kind: 'bot', id: 'jigga' } }];
-  const target = { type: 'message', room: 'r', roomKind: 'work', seq: 1, clientMessageId: null, originSeq: null, speaker: 'Null' };
-  const names = new Map([['jigga', 'Jigga'], ['null', 'Null']]);
-  assert.deepEqual(resolveMessage(messages, target, q, names), { changed: true });
-  assert.deepEqual(resolveMessage(messages, { ...target, speaker: 'Jigga' }, q, names), { seq: 1 });
-  // An agent that has left the thread is named by its id, as the daemon does.
-  assert.deepEqual(resolveMessage(messages, { ...target, speaker: 'jigga' }, q, new Map()), { seq: 1 });
+  assert.deepEqual(resolveMessage(mine, { ...target, seq: 0, clientMessageId: 'gone', speaker: 'You' }), { changed: true });
 });
 
 function gate() { let open; const wait = new Promise((resolve) => { open = resolve; }); return { wait, open }; }

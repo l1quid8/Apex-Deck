@@ -425,7 +425,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
             },
             &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None, cost_estimated: false, cached_input_tokens: None },
             &RoomEvent::MessageAdded {
-                message: apex_core::Message { origin_seq: None, origin: None, client_message_id: None, reply_to_client_message_id: None, late_reply_from: None, servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into(), at: None }
+                message: apex_core::Message { origin_seq: Some(1), origin: None, client_message_id: None, reply_to_client_message_id: None, late_reply_from: None, servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into(), at: None }
             },
         ]
     );

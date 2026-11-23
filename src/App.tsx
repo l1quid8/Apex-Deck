@@ -246,7 +246,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
   /** Search Deck: the setting to mark, the message to land on, and a counter that focuses the field. */
   const [settingsJump, setSettingsJump] = useState<{ id: string; nonce: number } | undefined>();
-  const [reveal, setReveal] = useState<{ id: string; hostId: string; room: string; target: MessageTarget; query: string } | null>(null);
+  const [reveal, setReveal] = useState<{ id: string; hostId: string; room: string; target: MessageTarget } | null>(null);
   const [searchFocus, setSearchFocus] = useState(0);
   /** False until settings.json has been read, so a file that can't be read is never overwritten. */
   const settingsRead = useRef(false);
@@ -2815,7 +2815,7 @@ export function App() {
       return { supports: (capability) => route.supports?.(capability) === true, call: (cmd, args) => route.call(...([cmd, args] as unknown as Parameters<typeof route.call>)) };
     } catch { return null; }
   };
-  const openSearchPlace = (place: RecentPlace, query: string) => {
+  const openSearchPlace = (place: RecentPlace) => {
     const target = place.target, hostId = place.machineId;
     if (target.type === "setting") {
       setSettingsOpen(target.section as SettingsSection);
@@ -2839,7 +2839,7 @@ export function App() {
     const message: MessageTarget | null = target.type === "message" ? target : null;
     // Search hides Assistant conversations until it can land on the exact reply; this covers a recent place saved before that.
     if (target.roomKind === "assistant") { toast("Assistant conversations can't be opened from search yet."); return; }
-    const ask = () => { if (message) setReveal({ id: `${Date.now()}:${place.key}`, hostId, room: target.room, target: message, query }); };
+    const ask = () => { if (message) setReveal({ id: `${Date.now()}:${place.key}`, hostId, room: target.room, target: message }); };
     const hostOf = (pane: Pane) => { const w = workspaces.find((x) => x.id === pane.workspaceId); return w ? workspaceHost(w) : "local"; };
     const pane = viewPanes.find((p) => p.id === target.room && p.kind === "chat" && hostOf(p) === hostId);
     if (pane) { setOpenChat(null); focusPane(pane); ask(); return; }
@@ -2853,7 +2853,7 @@ export function App() {
   };
   const onRevealed = (id: string, changed: boolean) => {
     setReveal((current) => (current?.id === id ? null : current));
-    if (changed) toast("That message has changed since the search.");
+    if (changed) toast("Search Deck couldn’t verify the exact reply.");
   };
   const createTaskWorkerThread = async (project:ProjectRef, profile:ParticipantConfig, assistant:AssistantRef) => {
     const workspace = resolveAssistantProject(project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace);

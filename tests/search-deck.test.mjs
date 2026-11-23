@@ -21,10 +21,10 @@ test('Search Deck keeps focus in the field, opens the chosen duplicate, and outl
     const dup='Try the installer on a clean Mac before signing off.';
     const bot={id:'null',display_name:'Null',persona:'',access:'read',effort:null,backend:{kind:'scripted',lines:['[pass]']}};
     const lines=['Morning. Where are we on the release?','Two checks left.',dup,'Which Mac?','The spare one in the lab.',dup,'On it.','Signing next.','Notarization passed.','Uploading the disk image.','Upload finished.','Release notes are drafted.','Anything else before we ship?','No, that is everything.'];
-    const transcript=lines.map((text,seq)=>({seq,text,at:1000+seq,speaker:seq%2?{kind:'bot',id:'null'}:{kind:'human'},clientMessageId:'c'+seq}));
+    const transcript=lines.map((text,seq)=>({seq,text,at:1000+seq,speaker:seq%2?{kind:'bot',id:'null'}:{kind:'human'},originSeq:100+seq}));
     const snapshot={participants:[bot],options:{policy:'mention',max_bot_hops:3},transcript};
     const hit=(kind,title,snippet,ranges,at,target,extra={})=>({kind,title,snippet,ranges,at,project:'/Users/me/apex-deck',roomTitle:null,archived:false,trashed:false,target,...extra});
-    const msg=(room,title,seq,text,at,speaker)=>hit('message',title,text,[[text.toLowerCase().indexOf('installer'),text.toLowerCase().indexOf('installer')+9]],at,{type:'message',room,roomKind:'work',seq,originSeq:null,clientMessageId:'c'+seq,speaker},{roomTitle:title});
+    const msg=(room,title,seq,text,at,speaker)=>hit('message',title,text,[[text.toLowerCase().indexOf('installer'),text.toLowerCase().indexOf('installer')+9]],at,{type:'message',room,roomKind:'work',seq,originSeq:100+seq,clientMessageId:null,speaker},{roomTitle:title});
     const now=Date.now();
     const all=[hit('thread','Installer QA','Installer QA',[[0,9]],now-3600e3,{type:'room',room:'qa',roomKind:'work'}),
       msg('handoff','Release handoff',5,dup,now-120e3,'Null'),msg('handoff','Release handoff',2,dup,now-7200e3,'You'),
