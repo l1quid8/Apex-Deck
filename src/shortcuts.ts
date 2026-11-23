@@ -11,6 +11,8 @@ export type DeckAction =
   | { kind: "new_thread" }
   | { kind: "next_attention" }
   | { kind: "assistant" }
+  /** Put the cursor in the sidebar's Search Deck field. */
+  | { kind: "search" }
   | { kind: "cycle_pane"; step: 1 | -1 }
   | { kind: "maximize" }
   | { kind: "side_panel_full" }
@@ -52,6 +54,7 @@ const BINDINGS: Binding[] = [
   { code: "KeyN", key: "N", label: "New thread", action: { kind: "new_thread" } },
   { code: "KeyJ", key: "J", label: "Next thing that needs you", action: { kind: "next_attention" } },
   { code: "KeyK", key: "K", label: "Open Assistant", action: { kind: "assistant" } },
+  { code: "KeyP", key: "P", label: "Search Deck", action: { kind: "search" } },
   { code: "BracketLeft", key: "[", label: "Previous pane", action: { kind: "cycle_pane", step: -1 } },
   { code: "BracketRight", key: "]", label: "Next pane", action: { kind: "cycle_pane", step: 1 } },
   { code: "Enter", key: "↩", label: "Maximize or restore pane", action: { kind: "maximize" }, macShift: true },
@@ -68,9 +71,9 @@ const BINDINGS: Binding[] = [
 export function shortcutFor(press: KeyPress, mac: boolean): DeckAction | null {
   const command = mac ? press.metaKey && !press.ctrlKey : press.ctrlKey && press.shiftKey && !press.metaKey;
   if (!command) return null;
-  const binding = BINDINGS.find((b) => b.code === press.code);
-  if (!binding || press.altKey !== !!binding.macAlt || (mac && press.shiftKey !== !!binding.macShift)) return null;
-  return binding.action;
+  // Two bindings may share a key and differ by Option or Shift: ⌘P searches, ⌥⌘P pins.
+  const binding = BINDINGS.find((b) => b.code === press.code && press.altKey === !!b.macAlt && (!mac || press.shiftKey === !!b.macShift));
+  return binding?.action ?? null;
 }
 
 /** A binding as printed, modifiers in Apple's order on macOS: ⌥⇧⌘. */

@@ -68,6 +68,8 @@ export interface ProjectSidebarProps {
   appearanceDraftCount?: number;
   onOpenSettings(): void;
   onRestore(pane: Pane): void;
+  /** The Search Deck field, pinned above the lists. */
+  search?: ReactNode;
   /** The Chats section, drawn above Projects. */
   chats?: ReactNode;
   /** Host-owned recoverable thread Trash, distinct from the local archive. */
@@ -325,6 +327,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
   return (
     <aside ref={rail} className="rail" style={props.style}>
+      {props.search}
       {/* Only the lists scroll; the preferences row below stays at the bottom. */}
       <div className="rail-scroll" onScroll={hover.hide}>
       <div className="rail-sec"><span>Your team</span><button type="button" className="icon" aria-label="Add teammate" onClick={props.onCreateAssistant}>+</button></div>

@@ -94,6 +94,8 @@ interface Props {
   updates?: UpdateStatus | null;
   onRestartToUpdate?: () => void;
   onClose: () => void;
+  /** A setting to open and mark, from Search Deck. A new `nonce` asks again. */
+  jump?: { id: string; nonce: number };
 }
 
 function Row({ id, label, note, children, highlight }: { id?: string; label: string; note?: ReactNode; children?: ReactNode; highlight?: boolean }) {
@@ -115,7 +117,7 @@ function ScopeBadge({ label }: { label: string }) {
   return <span className="settings-scope-badge">{label}</span>;
 }
 
-export function SettingsPage({ section, onSection, settings, onChange, appearanceStudio, agents, profiles, backend, updates = null, onRestartToUpdate, onClose }: Props) {
+export function SettingsPage({ section, onSection, settings, onChange, appearanceStudio, agents, profiles, backend, updates = null, onRestartToUpdate, onClose, jump }: Props) {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const settingsShortcut = shortcutList(mac).find(binding => binding.label === 'Settings')!.keys;
   const systemDark = useSystemDark();
@@ -264,6 +266,15 @@ export function SettingsPage({ section, onSection, settings, onChange, appearanc
       }
     });
   }, [onSection, resolvedSection]);
+
+  // Search Deck asked for one setting: open it and mark it, once per request.
+  const jumped = useRef(0);
+  useEffect(() => {
+    if (!jump || jump.nonce === jumped.current) return;
+    jumped.current = jump.nonce;
+    const entry = CATALOG_ENTRIES.find((e) => e.id === jump.id);
+    if (entry) navigateToResult(entry);
+  }, [jump, navigateToResult]);
 
   // Save feedback — tied to actual versioned persistence operations.
   // Never synthesize "Saved" from elapsed time (no timer-based success claim).

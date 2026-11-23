@@ -97,6 +97,9 @@ import { TAB_LABEL } from "./RightPanel";
 import type { PanelTab } from "./rightPanelModel";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
+import { SearchDeck } from "./SearchDeck.tsx";
+import type { MessageTarget, RecentPlace, SearchPort } from "./globalSearch.ts";
+import { CATALOG_ENTRIES, CATALOG_SECTIONS, searchSettings } from "./settingsCatalog.ts";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
@@ -241,6 +244,10 @@ export function App() {
   const disabledProviders = settings.disabledProviders;
   /** The settings section shown, or null while the deck is. */
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
+  /** Search Deck: the setting to mark, the message to land on, and a counter that focuses the field. */
+  const [settingsJump, setSettingsJump] = useState<{ id: string; nonce: number } | undefined>();
+  const [reveal, setReveal] = useState<{ id: string; hostId: string; room: string; target: MessageTarget; query: string } | null>(null);
+  const [searchFocus, setSearchFocus] = useState(0);
   /** False until settings.json has been read, so a file that can't be read is never overwritten. */
   const settingsRead = useRef(false);
   const settingsQueue = useRef<Promise<void>>(Promise.resolve());
@@ -2798,6 +2805,56 @@ export function App() {
     if (maximized && maximized !== pane.id) setMaximized(null);
     revealPane(pane.id);
   };
+  // ---- Search Deck: open what a result points at ----
+  const searchMachines = [{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote && h.id !== "local").map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))];
+  const settingMatches = (query: string) => searchSettings(query, CATALOG_ENTRIES).slice(0, 20).map((entry) => ({ id: entry.id, label: entry.label, section: entry.section, sectionLabel: CATALOG_SECTIONS.find((sec) => sec.id === entry.section)?.label ?? entry.section }));
+  const searchPort = (hostId: string): SearchPort | null => {
+    if (!backend) return null;
+    try {
+      const route = hostBackend(hostId);
+      return { supports: (capability) => route.supports?.(capability) === true, call: (cmd, args) => route.call(...([cmd, args] as unknown as Parameters<typeof route.call>)) };
+    } catch { return null; }
+  };
+  const openSearchPlace = (place: RecentPlace, query: string) => {
+    const target = place.target, hostId = place.machineId;
+    if (target.type === "setting") {
+      setSettingsOpen(target.section as SettingsSection);
+      setSettingsJump({ id: target.id, nonce: Date.now() });
+      return;
+    }
+    setSettingsOpen(null);
+    if (target.type === "project") {
+      const workspace = workspaces.find((w) => workspaceHost(w) === hostId && w.path === target.path);
+      if (!workspace) { toast(`${folderName(target.path)} isn't in the sidebar on this Mac. Add it to open it.`); return; }
+      setOpenChat(null); setMainView({kind:"workspace"}); setCreatingAssistant(false);
+      setActiveWorkspace(workspace.id);
+      setWorkspaces((list) => setCollapsed(list, workspace.id, false));
+      return;
+    }
+    if (target.type === "agent") {
+      setOpenChat(null); setMainView({kind:"workspace"}); setCreatingAssistant(false); setSection("agents"); setPicking(false); setMaximized(null);
+      return;
+    }
+    if (target.type !== "room" && target.type !== "message") { toast("Opening this kind of result comes in a later part of Search Deck."); return; }
+    const message: MessageTarget | null = target.type === "message" ? target : null;
+    // Search hides Assistant conversations until it can land on the exact reply; this covers a recent place saved before that.
+    if (target.roomKind === "assistant") { toast("Assistant conversations can't be opened from search yet."); return; }
+    const ask = () => { if (message) setReveal({ id: `${Date.now()}:${place.key}`, hostId, room: target.room, target: message, query }); };
+    const hostOf = (pane: Pane) => { const w = workspaces.find((x) => x.id === pane.workspaceId); return w ? workspaceHost(w) : "local"; };
+    const pane = viewPanes.find((p) => p.id === target.room && p.kind === "chat" && hostOf(p) === hostId);
+    if (pane) { setOpenChat(null); focusPane(pane); ask(); return; }
+    const row = findRoom(chats.catalog, hostId, target.room);
+    if (!row) { toast(`${chats.machineName(hostId)} hasn't listed that thread yet. Try again once it's connected.`); return; }
+    if (row.trashedAt) { toast("That thread is in Trash. Restore it from Trash to open it."); return; }
+    if (row.kind === "work") { openWorkThread(row, row.id); ask(); return; }
+    setMainView({kind:"workspace"}); setCreatingAssistant(false);
+    setOpenChat({ hostId, room: row.id });
+    ask();
+  };
+  const onRevealed = (id: string, changed: boolean) => {
+    setReveal((current) => (current?.id === id ? null : current));
+    if (changed) toast("That message has changed since the search.");
+  };
   const createTaskWorkerThread = async (project:ProjectRef, profile:ParticipantConfig, assistant:AssistantRef) => {
     const workspace = resolveAssistantProject(project, workspaces, authenticatedProjectHost, canonicalProjectForWorkspace);
     if (!workspace || project.hostId !== assistant.hostId) throw new Error('Reconnect this project before choosing a worker.');
@@ -2869,6 +2926,7 @@ export function App() {
     event.preventDefault();
     event.stopPropagation();
     if (action.kind === "settings") { setSettingsOpen((open) => (open ? null : "general")); return; }
+    if (action.kind === "search") { setRailOpen(true); setSearchFocus((n) => n + 1); return; }
     if (action.kind === "assistant") {
       if (assistants.selected) openAssistant(assistants.selected);
       else setCreatingAssistant(true);
@@ -3120,6 +3178,8 @@ export function App() {
       <div className={`body${sidePanelFull && !chatShown ? " right-panel-expanded" : ""}${planStacked && !chatShown ? " plan-stacked" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
+            search={backend ? <SearchDeck machines={searchMachines} portOf={searchPort} settings={settingMatches} onOpen={openSearchPlace} focusRequest={searchFocus}
+              shortcut={/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘P" : "Ctrl+Shift+P"} /> : undefined}
             backend={backend}
             assistants={assistants.assistants}
             assistantStatusFor={ref=>{const summary=assistants.assistants.find(item=>assistantIdentityKey(item.ref)===assistantIdentityKey(ref));return assistantStatus({offline:summary?.offline??false,paused:summary?.paused??false,personalTasks:summary?.personalTasks??[],delegatedTasks:summary?delegatedTasksForAssistant(currentAssistantRegistry.owners,ref,summary.projects):[]});}}
@@ -3186,7 +3246,7 @@ export function App() {
           {chatShown && (openChatRow
             ? <TalkOnlyChat onOpenChat={id => setOpenChat({hostId:openChat!.hostId,room:id})} settings={settings} agents={agents} profiles={profiles} onProfilesChange={saveAgents} key={chatKey(openChat!)} row={openChatRow} chats={chats} onClose={() => setOpenChat(null)}
                 draft={chatDrafts[chatKey(openChat!)] ?? ""} onDraft={(text) => { const key = chatKey(openChat!); setChatDrafts((all) => ({ ...all, [key]: text })); }}
-                onOpenWork={openWorkThread} />
+                onOpenWork={openWorkThread} reveal={reveal && reveal.room === openChat!.room && reveal.hostId === openChat!.hostId ? reveal : undefined} onRevealed={onRevealed} />
             : <div className="picker"><p role="status">Opening the chat…</p><button onClick={() => setOpenChat(null)}>Close</button></div>)}
           <div className="workspace-canvas-content" style={{display:mainView.kind==='workspace'&&!creatingAssistant&&!chatShown?'flex':'none'}} inert={mainView.kind!=='workspace'||creatingAssistant||chatShown?true:undefined}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}
@@ -3282,7 +3342,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane tagThreads={(multiAllowed ? [...multiThreads.values()] : []).map(t => ({paneId:t.paneId,hostId:t.hostId,title:t.title,project:t.project??"",outside:!t.open}))} onTagThread={onTagThread} multiWaiting={multiAllowed && !multiDraft.on && multiDraft.doc.some(line => line.some(token => token.kind !== "text" || token.text.trim()))} onOpenMulti={openMulti} multiBlocked={batches.failed.length > 0} onSendApi={sendApis.register} dock={{ target: !multiOn && composerTarget?.id === pane.id, slot: composerSlot, since: dockSince.current, multi: multiOn }} onWantComposer={onWantComposer} onPlanRuns={onPlanRuns} onOpenPlan={openPlan} voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane tagThreads={(multiAllowed ? [...multiThreads.values()] : []).map(t => ({paneId:t.paneId,hostId:t.hostId,title:t.title,project:t.project??"",outside:!t.open}))} onTagThread={onTagThread} multiWaiting={multiAllowed && !multiDraft.on && multiDraft.doc.some(line => line.some(token => token.kind !== "text" || token.text.trim()))} onOpenMulti={openMulti} multiBlocked={batches.failed.length > 0} onSendApi={sendApis.register} dock={{ target: !multiOn && composerTarget?.id === pane.id, slot: composerSlot, since: dockSince.current, multi: multiOn }} onWantComposer={onWantComposer} onPlanRuns={onPlanRuns} onOpenPlan={openPlan} voiceSettings={settings.voice} onVoiceSettings={voice => setSettings(s => ({...s,voice}))} onVoiceFocus={id => { const target=viewPanes.find(p=>p.id===id); if(target)focusPane(target); }} visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} reveal={reveal && reveal.room === pane.id && reveal.hostId === (workspace ? workspaceHost(workspace) : "local") ? reveal : undefined} onRevealed={onRevealed} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={chatFolder(pane, workspace)} onFolder={cwd => setChatFolder(pane.id, cwd)} onWorktrees={() => setPanel(p => openTab({...p, open:true}, "worktrees", Date.now()))} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
@@ -3459,7 +3519,7 @@ export function App() {
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
-        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} appearanceStudio={appearanceStudio} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} />}
+        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} appearanceStudio={appearanceStudio} agents={agents} profiles={profiles} backend={backend} updates={updates} onRestartToUpdate={restartToUpdate} onClose={closeSettings} jump={settingsJump} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       {connectionDialog && backend.hosts && <ConnectionDialog mode={connectionDialog} hosts={hostList} api={backend.hosts}
