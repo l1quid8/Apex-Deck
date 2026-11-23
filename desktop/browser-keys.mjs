@@ -10,6 +10,7 @@ export const DECK_KEYS = [
   { code: 'KeyN', shift: false },
   { code: 'KeyJ', shift: false },
   { code: 'KeyK', shift: false },
+  { code: 'KeyP', shift: false },
   { code: 'BracketLeft', shift: false },
   { code: 'BracketRight', shift: false },
   { code: 'Enter', shift: true },

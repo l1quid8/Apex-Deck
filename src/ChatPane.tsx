@@ -39,6 +39,7 @@ import { CURATE_WORKING, curateNotice, failedNotice, isCurating, isSealed, noteL
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, Curation, NextStep, PlanRun, PlanWindow, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import { resolveMessage, type MessageTarget } from "./globalSearch.ts";
 import { QuickResets } from "./PlanResets";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
@@ -237,6 +238,10 @@ interface Props {
   moveAsk?: { stays: string; project: string; host: string; why?: string; onNew(): void; onFork?(): void; onCancel(): void };
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared after it is taken. */
   menuRequest?: { id: string; action: ThreadMenuRequest };
+  /** A message Search Deck landed on: scroll to it and outline it, once per `id`. */
+  reveal?: { id: string; target: MessageTarget };
+  /** `changed` when that message is gone or no longer the one that was found. */
+  onRevealed?(id: string, changed: boolean): void;
   /** Copy › text this thread built (as Markdown, or its last reply), for App to put on the clipboard. */
   onCopy?: (text: string, kind: "markdown" | "reply") => void;
   /** The request was taken, so a remount must not run it again. */
@@ -616,7 +621,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiBlocked = false, onOpenMulti, onSendApi, dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiBlocked = false, onOpenMulti, onSendApi, dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, reveal, onRevealed, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -3106,6 +3111,29 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const canCompact = !chatReadOnly && ready && !busy && participants.length > 0;
   const compactedUpto = compactionOf(entries)?.upto ?? 0;
   const jumpToMessage = (seq: number) => scroller.current?.querySelector<HTMLElement>(`[data-seq="${seq}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  // Search Deck: land on the exact message once the saved thread has loaded.
+  const revealed = useRef("");
+  useEffect(() => {
+    if (!reveal || reveal.id === revealed.current || !roomReady) return;
+    revealed.current = reveal.id;
+    const found = resolveMessage(messagesOf(entries), reveal.target, names);
+    const row = "seq" in found ? scroller.current?.querySelector<HTMLElement>(`[data-seq="${found.seq}"]`) : null;
+    if (!row) {
+      scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+      onRevealed?.(reveal.id, true);
+      return;
+    }
+    const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    row.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "center" });
+    // Your own message's row also holds its actions; outline the bubble alone.
+    const mark = row.querySelector<HTMLElement>(":scope > .bubble") ?? row;
+    mark.classList.remove("search-found");
+    void mark.offsetWidth;
+    mark.classList.add("search-found");
+    setTimeout(() => mark.classList.remove("search-found"), 2100);
+    onRevealed?.(reveal.id, false);
+  }, [reveal, roomReady, entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** The quick menu's Resets row for `p`'s provider, when it has granted any. */
   const resetsFor = (p: ParticipantConfig | undefined) => {

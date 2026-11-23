@@ -13,6 +13,9 @@ import type { AppSettings } from './settings';
 import { deckClipboard } from "./copyText";
 
 interface Props {
+  /** A message Search Deck landed on in this chat. */
+  reveal?: { id: string; target: import("./globalSearch.ts").MessageTarget };
+  onRevealed?(id: string, changed: boolean): void;
   row: ChatEntry; chats: DesktopChats; settings: AppSettings; agents: AgentInfo[];
   profiles: ParticipantConfig[]; onProfilesChange(profiles: ParticipantConfig[]): void;
   draft: string; onDraft(text: string): void; onClose(): void;
@@ -116,7 +119,7 @@ export function TalkOnlyChat(props: Props) {
     <div className="pane-body">{backend ? <ChatPane key={key} talkOnly attach pane={{id:row.id,kind:'chat',workspaceId:'',title:row.title}} cwd="" backend={backend}
       chatDraft={props.draft} onChatDraft={props.onDraft} onChatSend={send} chatBlocked={blocked} chatReadOnly={!!row.promotedTo || !!ticket || moving} onChatAddBot={online?addBot:undefined} chatDelivery={delivery} onChatParticipants={setBots}
       agents={props.agents} profiles={props.profiles} onProfilesChange={props.onProfilesChange} disabledProviders={settings.disabledProviders} focused onActivity={()=>{}} onStatus={(_id,s)=>setStatus(s.text)}
-      onFork={fork} menuRequest={request} onMenuDone={()=>setRequest(undefined)} onCopy={text=>act(deckClipboard.writeText(text))}
+      reveal={props.reveal} onRevealed={props.onRevealed} onFork={fork} menuRequest={request} onMenuDone={()=>setRequest(undefined)} onCopy={text=>act(deckClipboard.writeText(text))}
       chipParts={settings.botChips} confirmSteer={settings.confirmSteer} landingTexture={settings.landingTexture} codeRunButtons={false} /> : <p role="status">The chat's machine is unavailable.</p>}</div>
   </section>;
 }

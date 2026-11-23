@@ -714,7 +714,9 @@ impl Room {
         let desk = ApprovalDesk::default();
         desk.set_allowed(snapshot.allowed);
         let plan = !snapshot.kind.is_chat() && snapshot.plan;
-        let next_origin_seq = if snapshot.kind.is_chat() { snapshot.next_origin_seq.max(snapshot.transcript.iter().map(|message| message.origin_seq.unwrap_or(message.seq).saturating_add(1)).max().unwrap_or(0)) } else { 0 };
+        let next_origin_seq = snapshot.next_origin_seq.max(
+            snapshot.transcript.iter().map(|message| message.origin_seq.unwrap_or(message.seq).saturating_add(1)).max().unwrap_or(0),
+        );
         Self {
             next_origin_seq,
             client_messages: snapshot.client_messages,
@@ -1247,8 +1249,8 @@ impl Room {
         let servers = if speaker == Speaker::Human { crate::server_request::parse_server_requests(&text) } else { vec![] };
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64);
         let reply_to_client_message_id = self.reply_client_message_id.clone();
-        let origin_seq = self.kind.is_chat().then_some(self.next_origin_seq);
-        if self.kind.is_chat() { self.next_origin_seq = self.next_origin_seq.saturating_add(1); }
+        let origin_seq = Some(self.next_origin_seq);
+        self.next_origin_seq = self.next_origin_seq.saturating_add(1);
         let message = Message { origin_seq, origin: None, client_message_id: None, reply_to_client_message_id: reply_to_client_message_id.clone(), late_reply_from: None, servers, seq: self.transcript.len(), speaker, text, at };
         if let Some(record) = reply_to_client_message_id.and_then(|id| self.client_messages.get_mut(&id)) { record.reply_seqs.push(message.seq); }
         self.transcript.push(message.clone());
@@ -1309,12 +1311,14 @@ impl Room {
         let previous_targets = self.last_targets.clone();
         if !keep_default { self.last_targets = request.targets.clone(); }
         let seq = self.transcript.len();
+        let previous_origin = self.next_origin_seq;
         self.client_messages.insert(id.into(), ClientMessageRecord { state: ClientMessageState::Running, reply_seqs: vec![], human_seq: Some(seq), request: Some(request.clone()) });
         self.push(Speaker::Human, text.into(), &|_| {});
         self.transcript.last_mut().unwrap().client_message_id = Some(id.into());
         if let Err(error) = commit(&self.snapshot()) {
             self.transcript.pop();
             self.last_targets = previous_targets;
+            self.next_origin_seq = previous_origin;
             self.client_messages.remove(id);
             return Err(error);
         }
@@ -1704,6 +1708,24 @@ fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
 #[cfg(test)]
 mod approver_tests {
     use crate::view::ANSWERS_SYSTEM;
+    #[test]
+    fn project_search_reply_ids_survive_deletion_and_restore() {
+        let mut room = Room::new(vec![], RoomOptions::default());
+        let speaker = Speaker::Bot(ParticipantId::new("null"));
+        for _ in 0..2 {
+            room.push(speaker.clone(), "try the installer".into(), &|_| {});
+        }
+        let first = room.transcript[0].origin_seq.unwrap();
+        let second = room.transcript[1].origin_seq.unwrap();
+        assert_ne!(first, second);
+        room.rewind(1);
+        let mut reopened = Room::restore(vec![], room.snapshot());
+        reopened.push(speaker, "try the installer".into(), &|_| {});
+        let messages = reopened.snapshot().transcript;
+        assert_eq!(messages[0].origin_seq, Some(first));
+        assert!(messages[1].origin_seq.unwrap() > second);
+    }
+
     #[test]
     fn interactive_answers_join_the_instructions_before_plan_mode() {
         let bot = Arc::new(crate::testing::ScriptedParticipant::new("null", &["done"]));
