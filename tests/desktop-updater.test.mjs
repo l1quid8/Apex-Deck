@@ -455,8 +455,10 @@ function Start-Process {
     })(installer, { APEX_UPDATE_ID: `request-${exitCode}`, APEX_UPDATE_RESULT: resultFile, APEX_UPDATE_STARTED: startedFile, APEX_UPDATE_APP: app });
     const args = [...launch.args];
     args[args.length - 1] = stub + args.at(-1);
+    // A cold Windows PowerShell on a shared CI runner can take most of 15 s just
+    // to start (run 45043630078 hit 15.04 s), so allow a minute per launch.
     execFileSync(launch.command, args, {
-      ...launch.options, detached: false, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 15_000,
+      ...launch.options, detached: false, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 60_000,
       env: { ...launch.options.env, APEX_DECK_DATA_DIR: folder, UPDATER_TEST_KEEP: 'preserved', UPDATER_TEST_EXIT_CODE: String(exitCode), UPDATER_TEST_CHILDREN: childrenFile },
     });
     const children = fs.readFileSync(childrenFile, 'utf8').replace(/^\uFEFF/, '').trim().split(/\r?\n/).map(line => JSON.parse(line));
