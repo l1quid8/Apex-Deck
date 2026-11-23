@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::SearchLane;
 
@@ -14,7 +14,21 @@ pub const SCANS_PER_LANE: usize = 2;
 
 pub struct Lanes {
     permits: [Arc<Semaphore>; 3],
-    current: Mutex<HashMap<(Arc<str>, SearchLane), Arc<AtomicBool>>>,
+    current: Mutex<HashMap<(Arc<str>, SearchLane), Arc<RequestState>>>,
+}
+
+#[derive(Default)]
+struct RequestState {
+    cancelled: Arc<AtomicBool>,
+    wake: Notify,
+}
+
+impl RequestState {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        // One waiter per request. notify_one retains the wake if it has yet to poll.
+        self.wake.notify_one();
+    }
 }
 
 /// The right to run one scan. Dropping it frees the lane's slot.
@@ -48,22 +62,25 @@ impl Lanes {
     /// one, then wait for a slot. `None` when a newer request (or a cancel, or
     /// the session closing) replaced this one while it waited.
     pub async fn enter(&self, session: &Arc<str>, lane: SearchLane) -> Option<Ticket> {
-        let cancel = Arc::new(AtomicBool::new(false));
-        if let Some(previous) = self.current.lock().unwrap().insert((Arc::clone(session), lane), Arc::clone(&cancel)) {
-            previous.store(true, Ordering::SeqCst);
+        let request = Arc::new(RequestState::default());
+        if let Some(previous) = self.current.lock().unwrap().insert((Arc::clone(session), lane), Arc::clone(&request)) {
+            previous.cancel();
         }
-        let permit = Arc::clone(self.permits(lane)).acquire_owned().await.ok()?;
-        if cancel.load(Ordering::SeqCst) {
+        let permit = tokio::select! {
+            _ = request.wake.notified() => return None,
+            permit = Arc::clone(self.permits(lane)).acquire_owned() => permit.ok()?,
+        };
+        if request.cancelled.load(Ordering::SeqCst) {
             return None;
         }
-        Some(Ticket { cancel, _permit: permit })
+        Some(Ticket { cancel: Arc::clone(&request.cancelled), _permit: permit })
     }
 
     /// Forget a finished request, unless a newer one already took its place.
     pub fn finish(&self, session: &Arc<str>, lane: SearchLane, ticket: &Ticket) {
         let mut current = self.current.lock().unwrap();
         let key = (Arc::clone(session), lane);
-        if current.get(&key).is_some_and(|held| Arc::ptr_eq(held, &ticket.cancel)) {
+        if current.get(&key).is_some_and(|held| Arc::ptr_eq(&held.cancelled, &ticket.cancel)) {
             current.remove(&key);
         }
     }
@@ -71,8 +88,8 @@ impl Lanes {
     /// Cancel `session`'s own request in `lane`. Says whether there was one.
     pub fn cancel(&self, session: &Arc<str>, lane: SearchLane) -> bool {
         match self.current.lock().unwrap().remove(&(Arc::clone(session), lane)) {
-            Some(cancel) => {
-                cancel.store(true, Ordering::SeqCst);
+            Some(request) => {
+                request.cancel();
                 true
             }
             None => false,
@@ -81,9 +98,9 @@ impl Lanes {
 
     /// Cancel everything `session` has in every lane.
     pub fn close(&self, session: &str) {
-        self.current.lock().unwrap().retain(|(owner, _), cancel| {
+        self.current.lock().unwrap().retain(|(owner, _), request| {
             if &**owner == session {
-                cancel.store(true, Ordering::SeqCst);
+                request.cancel();
                 false
             } else {
                 true
@@ -149,14 +166,16 @@ mod tests {
         let one = lanes.enter(&id("a"), SearchLane::Content).await.unwrap();
         let two = lanes.enter(&id("b"), SearchLane::Content).await.unwrap();
         let c = id("c");
-        let older = { let (lanes, c) = (Arc::clone(&lanes), Arc::clone(&c)); tokio::spawn(async move { lanes.enter(&c, SearchLane::Content).await.is_some() }) };
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        let newer = { let (lanes, c) = (Arc::clone(&lanes), Arc::clone(&c)); tokio::spawn(async move { lanes.enter(&c, SearchLane::Content).await.is_some() }) };
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let mut older = Box::pin(lanes.enter(&c, SearchLane::Content));
+        let mut newer = Box::pin(lanes.enter(&c, SearchLane::Content));
+        assert!(futures::poll!(&mut older).is_pending());
+        assert!(futures::poll!(&mut newer).is_pending());
+        let replaced = tokio::time::timeout(std::time::Duration::from_secs(1), older)
+            .await.expect("replacement must wake the waiter while both slots are occupied");
+        assert!(replaced.is_none(), "the replaced request answers Busy");
         drop(one);
+        assert!(newer.await.is_some());
         drop(two);
-        assert!(!older.await.unwrap(), "the replaced request answers Busy");
-        assert!(newer.await.unwrap());
     }
 
     #[tokio::test]

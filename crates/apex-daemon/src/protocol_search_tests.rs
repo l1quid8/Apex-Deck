@@ -84,6 +84,53 @@ mod search_sessions {
         assert!(ask(&mut staying, 2, "search", query()).await.get("ok").is_some(), "the other connection is untouched");
     }
 
+    async fn input_close_cancels_active_scan(relay_frame: bool) {
+        use apex_host::search::Hooks;
+
+        let (daemon, _data) = daemon();
+        daemon.host.room_create("release".into(), vec![], Default::default(), None).unwrap();
+
+        // Hold the worker inside a real scan so its reply cannot finish the drain.
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&entered);
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
+        daemon.host.search().set_hooks(Hooks {
+            before_room: Some(Arc::new(move |_| {
+                started.notify_one();
+                let _ = wait.lock().unwrap().recv();
+            })),
+            ..Default::default()
+        });
+
+        let mut client = connect_to(&daemon, Trust::Local);
+        client.hello().await;
+        assert!(ask(&mut client, 1, "search_open", json!({})).await.get("ok").is_some());
+        client.send(json!({"id": 2, "cmd": "search", "args": query()})).await;
+        tokio::time::timeout(Duration::from_secs(3), entered.notified()).await.expect("scan started");
+        if relay_frame {
+            client.send(json!({"id": 3, "cmd": "input_closed"})).await;
+        } else {
+            client.write.get_mut().shutdown().await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(1), grants_reach(&daemon, 0))
+            .await.expect("input close must revoke search before draining replies");
+        assert_eq!(daemon.host.search().scans(), 0);
+        drop(release);
+        let reply = client.until_reply(2).await.pop().unwrap();
+        assert_eq!(reply["ok"]["skipped"][0]["reason"], "busy");
+    }
+
+    #[tokio::test]
+    async fn eof_cancels_active_search_before_draining() {
+        input_close_cancels_active_scan(false).await;
+    }
+
+    #[tokio::test]
+    async fn local_input_closed_cancels_active_search_before_draining() {
+        input_close_cancels_active_scan(true).await;
+    }
+
     #[tokio::test]
     async fn paired_devices_may_search_but_do_not_share_grants() {
         let (daemon, _data) = daemon();
