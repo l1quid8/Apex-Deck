@@ -1,6 +1,8 @@
 ; Preserve electron-builder's prompts, retries, and exact image fallback.
 ; Its default PowerShell filter matches "Apex Deck Nightly" under "Apex Deck".
-!define APEX_PROCESSES 'Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$env:APEX_NSIS_PROCESS_DIR, [StringComparison]::OrdinalIgnoreCase) }'
+; The stock check supplies its PID. An in-place uninstaller runs from this
+; same directory and must stay alive to finish removing the application.
+!define APEX_PROCESSES 'Get-CimInstance Win32_Process | Where-Object { $$_.ProcessId -ne $pid -and $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$env:APEX_NSIS_PROCESS_DIR, [StringComparison]::OrdinalIgnoreCase) }'
 
 !macroundef FIND_PROCESS
 !macro FIND_PROCESS IMAGE RESULT

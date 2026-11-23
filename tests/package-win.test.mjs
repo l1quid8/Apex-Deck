@@ -122,6 +122,7 @@ test('Setup pins each channel before stopping services and only invokes the mach
   const running = macro('customCheckAppRunning');
   assert.ok(running.includes('SetEnvironmentVariableW(w "APEX_NSIS_PROCESS_DIR", w "${APEX_INSTALL_DIR}\\"'));
   const processes = read('build/channelProcesses.nsh');
+  assert.ok(processes.includes('$$_.ProcessId -ne $pid'));
   assert.ok(processes.includes('StartsWith($$env:APEX_NSIS_PROCESS_DIR, [StringComparison]::OrdinalIgnoreCase)'));
   assert.ok(running.indexOf('!insertmacro PinInstallLocation') < running.indexOf('!insertmacro _CHECK_APP_RUNNING'));
 
