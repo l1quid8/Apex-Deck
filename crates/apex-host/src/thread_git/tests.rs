@@ -94,6 +94,8 @@ struct Github {
     fail: AtomicBool,
     pause: AtomicBool,
     required: Option<Vec<String>>,
+    /// The builder already opened the pull request.
+    listed: bool,
     dispatch: tokio::sync::Notify,
     resume: tokio::sync::Notify,
 }
@@ -112,7 +114,7 @@ impl Shell for Github {
             return run(data, cwd, program, args).await;
         }
         match &args[..2] {
-            ["pr", "list"] => Ok(String::new()),
+            ["pr", "list"] => Ok(if self.listed { "42".into() } else { String::new() }),
             ["pr", "create"] => {
                 self.creates.fetch_add(1, Ordering::SeqCst);
                 Ok("https://github.com/test/repo/pull/42".into())
@@ -303,4 +305,112 @@ async fn a_green_check_requires_a_complete_nonempty_required_set() {
         assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
         assert_eq!(f.store.get("r").unwrap().unwrap().phase, expected);
     }
+}
+
+fn listed(required: &[&str]) -> Github {
+    Github {
+        listed: true,
+        required: Some(required.iter().map(|name| name.to_string()).collect()),
+        ..Github::default()
+    }
+}
+
+#[tokio::test]
+async fn the_probe_reads_github_and_changes_nothing() {
+    let f = Fixture::new();
+    f.reviewed();
+    let w = f.store.get("r").unwrap().unwrap();
+    let probe = |remote: Github| {
+        let w = w.clone();
+        let data = f.data.path().to_owned();
+        async move {
+            let answer = super::github::probe(&remote, &w, &data).await.unwrap();
+            assert_eq!(remote.creates.load(Ordering::SeqCst) + remote.puts.load(Ordering::SeqCst), 0);
+            answer
+        }
+    };
+    assert!(matches!(probe(Github::default()).await, Checks::Unknown(_)), "no pull request yet");
+    assert_eq!(probe(listed(&["Windows"])).await, Checks::Passed { pr: 42 });
+    assert_eq!(probe(listed(&["Windows", "Linux"])).await, Checks::Running, "a required check has not reported");
+    assert!(matches!(probe(listed(&[])).await, Checks::Unknown(_)), "main requires no checks");
+    let failing = listed(&["Windows"]);
+    failing.fail.store(true, Ordering::SeqCst);
+    assert!(matches!(probe(failing).await, Checks::Failed { pr: 42, .. }));
+    // A newer commit than the reviewed one is not this workflow's pull request.
+    f.git(&["commit", "--allow-empty", "-qm", "more"]);
+    assert!(matches!(probe(listed(&["Windows"])).await, Checks::Unknown(_)));
+    assert_eq!(f.store.get("r").unwrap().unwrap(), w, "nothing saved changed");
+}
+
+#[tokio::test]
+async fn a_card_merge_double_tapped_merges_once() {
+    let f = Fixture::new();
+    let remote = listed(&["Windows"]);
+    let shown = f.reviewed();
+    f.store.admit_ready("r", &shown).unwrap();
+    f.store.admit_ready("r", &shown).unwrap();
+    assert_eq!(f.store.get("r").unwrap().unwrap().generation, 1);
+    for _ in 0..4 {
+        if f.store.get("r").unwrap().unwrap().pending() {
+            f.tick(&f.store, &remote).await;
+        }
+    }
+    assert_eq!(remote.puts.load(Ordering::SeqCst), 1);
+    assert_eq!(remote.creates.load(Ordering::SeqCst), 0, "the builder's pull request is reused");
+    assert!(matches!(f.store.get("r").unwrap().unwrap().phase, Phase::Syncing | Phase::Merged));
+}
+
+#[tokio::test]
+async fn a_card_merge_stops_instead_of_waiting_when_checks_changed_even_across_a_restart() {
+    // Main now requires a check that has not reported: stop, do not wait.
+    let f = Fixture::new();
+    f.store.admit_ready("r", &f.reviewed()).unwrap();
+    f.tick(&f.store, &listed(&["Windows"])).await;
+    assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Checks);
+    let restarted = ThreadGit::new(f.data.path());
+    let changed = listed(&["Windows", "Linux"]);
+    f.tick(&restarted, &changed).await;
+    let stopped = restarted.get("r").unwrap().unwrap();
+    assert_eq!(stopped.phase, Phase::Cancelled);
+    assert!(stopped.detail.contains("Nothing was merged"), "{}", stopped.detail);
+    assert_eq!(changed.puts.load(Ordering::SeqCst), 0);
+    // The same merge asked for from the old bar still waits, as before.
+    let g = Fixture::new();
+    g.store.admit("r", &g.reviewed(), false).unwrap();
+    g.tick(&g.store, &changed).await;
+    g.tick(&g.store, &changed).await;
+    assert_eq!(g.store.get("r").unwrap().unwrap().phase, Phase::Checks);
+    // After a restart with the checks still green, the card's merge goes through once.
+    let h = Fixture::new();
+    h.store.admit_ready("r", &h.reviewed()).unwrap();
+    let green = listed(&["Windows"]);
+    h.tick(&h.store, &green).await;
+    let again = ThreadGit::new(h.data.path());
+    h.tick(&again, &green).await;
+    assert_eq!(green.puts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancel_reaches_a_card_merge_and_reports_one_that_already_landed() {
+    let f = Fixture::new();
+    let remote = listed(&["Windows"]);
+    let shown = f.reviewed();
+    f.store.admit_ready("r", &shown).unwrap();
+    f.tick(&f.store, &remote).await;
+    let shown = f.state();
+    f.store.admit("r", &shown, true).unwrap();
+    f.tick(&f.store, &remote).await;
+    assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Cancelled);
+    assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
+    // GitHub merged before the cancel was confirmed: the result is the merge.
+    let g = Fixture::new();
+    let landed = listed(&["Windows"]);
+    g.store.admit_ready("r", &g.reviewed()).unwrap();
+    g.tick(&g.store, &landed).await;
+    landed.merged.store(true, Ordering::SeqCst);
+    g.store.admit("r", &g.state(), true).unwrap();
+    g.tick(&g.store, &landed).await;
+    let result = g.store.get("r").unwrap().unwrap();
+    assert!(matches!(result.phase, Phase::Syncing | Phase::Merged), "{:?}", result.phase);
+    assert!(result.detail.contains("Merged PR #42"), "{}", result.detail);
 }

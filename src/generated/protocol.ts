@@ -525,6 +525,8 @@ export type MessageOrigin = {
   seq: number;
 };
 
+export type Mode = "decision_card" | "next_steps" | "off";
+
 /** One suggestion: a short label for the button and the prompt it sends. */
 export type NextStep = {
   label: string;
@@ -1000,6 +1002,12 @@ export type ThreadGitAction = {
   kind: "request_merge";
 } | {
   expected: State;
+  kind: "merge_ready";
+} | {
+  expected: State;
+  kind: "fix_checks";
+} | {
+  expected: State;
   kind: "cancel_merge";
 } | {
   expected: State;
@@ -1089,6 +1097,11 @@ export type Workflow = {
   phase: Phase;
   pr?: number | null;
   pushed: boolean;
+  /**
+   * Asked for from the decision card, where the checks had already passed:
+   * if they no longer do, the merge stops and nothing waits.
+   */
+  ready_only?: boolean;
   repo: string;
   result_oid?: string | null;
   reviewer?: string | null;
@@ -1148,6 +1161,11 @@ export type Command = {
     enabled: boolean;
   };
   cmd: "settings_code_mode_set";
+} | {
+  args: {
+    mode: Mode;
+  };
+  cmd: "settings_reply_suggestions_set";
 } | {
   args: {
     room: string;
@@ -2082,6 +2100,17 @@ export type Command = {
     id: string;
   };
   cmd: "room_git_status";
+} | {
+  args: {
+    id: string;
+  };
+  cmd: "room_reply_decision";
+} | {
+  args: {
+    id: string;
+    key: string;
+  };
+  cmd: "room_reply_decision_dismiss";
 } | {
   args: {
     action: ThreadGitAction;
@@ -4250,6 +4279,13 @@ export interface Commands {
     id: string;
     participant: ParticipantId;
   };
+  room_reply_decision: {
+    id: string;
+  };
+  room_reply_decision_dismiss: {
+    id: string;
+    key: string;
+  };
   room_revert: {
     at: number;
     bot?: ParticipantId | null;
@@ -4368,6 +4404,9 @@ export interface Commands {
     enabled: boolean;
   };
   settings_load: Record<string, never>;
+  settings_reply_suggestions_set: {
+    mode: Mode;
+  };
   settings_save: {
     settings: unknown;
   };

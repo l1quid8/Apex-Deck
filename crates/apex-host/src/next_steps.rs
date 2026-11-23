@@ -18,6 +18,9 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 /// message or another turn since then means there is nothing to suggest.
 /// `answers` is the finished chain's interactive-answers preference.
 pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
+    // Only the list costs this extra turn; the decision card and Off never ask for it.
+    let listed = |host: &Host| host.reply_suggestions.mode() == crate::reply_suggestions::Mode::NextSteps;
+    if !listed(&host) { return; }
     let Ok(maintenance) = host.maintenance.enter() else { return; };
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
@@ -46,7 +49,7 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
         let quiet = |_: Progress<'_>| {};
         let superseded = async {
             loop {
-                if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
+                if revision != handle.observation_revision.load(Ordering::SeqCst) || !listed(&host) { return; }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         };
@@ -62,6 +65,8 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
         // events already cleared the placeholder, and these are stale.
         let stale = handle.deleted.load(Ordering::SeqCst) || revision != handle.observation_revision.load(Ordering::SeqCst) || handle.has_open_questions();
         if !stale {
+            // The setting changed while the list was being written: throw it away.
+            let steps = if listed(&host) { steps } else { Vec::new() };
             host.room_event(&room, RoomEvent::NextSteps { id, steps, pending: false });
         }
     });
