@@ -51,7 +51,13 @@ pub fn report(data: &Path, home: Option<&Path>, answers: &dyn Fn(&Path) -> bool)
     line(&mut out, "logs:".into());
     let mut candidates = vec![data.join("desktop-daemon.log")];
     if let Some(home) = home {
-        if cfg!(target_os = "macos") { candidates.push(home.join("Library/Logs/Apex Deck/apex-daemon.log")); }
+        if cfg!(target_os = "macos") {
+            candidates.push(
+                home.join("Library/Logs")
+                    .join(apex_provenance::channel::PRODUCT)
+                    .join("apex-daemon.log"),
+            );
+        }
     }
     let mut any = false;
     for path in candidates {

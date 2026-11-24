@@ -9,7 +9,7 @@
 # staged copy can never be pinned more weakly than a fresh install would be.
 #
 # Usage:
-#   /bin/bash scripts/verify-protected-bundle.sh '/path/to/Apex Deck.app' \
+#   /bin/bash scripts/verify-protected-bundle.sh [--channel stable|nightly] '/path/to/Apex Deck.app' \
 #       <expected-ui-cdhash> <expected-daemon-cdhash> [broker-binary expected-broker-cdhash [expected-cli-cdhash]]
 #
 # Exit 0: every check passed and both CDHashes matched. Exit 1: something is
@@ -18,6 +18,32 @@
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
+EXPECTED_CHANNEL='stable'
+EXPECTED_APP_ID='dev.apexdeck.app'
+EXPECTED_CLI_ID='dev.apexdeck.cli'
+
+case "${1:-}" in
+  -h|--help) /usr/bin/sed -n '2,17p' "${BASH_SOURCE[0]}" | /usr/bin/cut -c3-; exit 0 ;;
+  --channel)
+    shift
+    case "${1:-}" in
+      stable)
+        EXPECTED_CHANNEL='stable'
+        EXPECTED_APP_ID='dev.apexdeck.app'
+        EXPECTED_CLI_ID='dev.apexdeck.cli'
+        ;;
+      nightly)
+        EXPECTED_CHANNEL='nightly'
+        EXPECTED_APP_ID='dev.apexdeck.app.nightly'
+        EXPECTED_CLI_ID='dev.apexdeck.cli.nightly'
+        ;;
+      *)
+        echo "FAIL invalid channel: ${1:-}" >&2; exit 1 ;;
+    esac
+    shift
+    ;;
+esac
+
 APP="${1:-}"
 EXPECT_UI="$(/usr/bin/printf '%s' "${2:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 EXPECT_DAEMON="$(/usr/bin/printf '%s' "${3:-}" | /usr/bin/tr 'A-Z' 'a-z')"
@@ -25,9 +51,6 @@ BROKER="${4:-}"
 EXPECT_CLI="${6:-}"
 EXPECT_BROKER="$(/usr/bin/printf '%s' "${5:-}" | /usr/bin/tr 'A-Z' 'a-z')"
 
-case "${1:-}" in
-  -h|--help) /usr/bin/sed -n '2,17p' "${BASH_SOURCE[0]}" | /usr/bin/cut -c3-; exit 0 ;;
-esac
 [[ $# == 3 || $# == 5 || $# == 6 ]] || {
   echo 'FAIL expected app/UI/daemon hashes, optionally followed by broker path and its expected hash' >&2; exit 1; }
 
@@ -46,9 +69,11 @@ DAEMON="$APP/Contents/Resources/bin/apex-daemon"
 
 # Electron fuses, application identity, ASAR integrity metadata and bundle
 # symlink containment. Identical to the first-install check.
-if ! /usr/bin/python3 -I - "$APP" <<'PY'
-import os,sys,plistlib
+if ! /usr/bin/python3 -I - "$APP" "$EXPECTED_APP_ID" "$EXPECTED_CHANNEL" <<'PY'
+import os,re,sys,plistlib
 root=os.path.realpath(sys.argv[1])
+expected_app_id=sys.argv[2]
+expected_channel=sys.argv[3]
 framework=os.path.join(root,'Contents/Frameworks/Electron Framework.framework/Electron Framework')
 blob=open(framework,'rb').read(); sentinel=b'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'
 start=0; count=0
@@ -63,8 +88,12 @@ while True:
     start=at+2+blob[at+1]
 if not count: raise SystemExit('FAIL Electron fuse wire absent')
 with open(os.path.join(root,'Contents/Info.plist'),'rb') as f: info=plistlib.load(f)
-if info.get('CFBundleIdentifier')!='dev.apexdeck.app' or not info.get('ElectronAsarIntegrity'):
+if info.get('CFBundleIdentifier')!=expected_app_id or not info.get('ElectronAsarIntegrity'):
     raise SystemExit('FAIL app identity or ASAR integrity metadata absent')
+if expected_channel=='nightly':
+    build=str(info.get('CFBundleVersion') or '').strip()
+    if not re.fullmatch(r'[1-9][0-9]*', build) or int(build) > 9007199254740991:
+        raise SystemExit('FAIL Nightly bundle requires a positive integer CFBundleVersion')
 for base,dirs,files in os.walk(root,followlinks=False):
     for name in dirs+files:
         p=os.path.join(base,name)
@@ -151,7 +180,7 @@ if [[ -n "$EXPECT_CLI" ]]; then
   CLI="$APP/Contents/Resources/bin/apex"
   [[ "$EXPECT_CLI" =~ ^[0-9a-f]{40}$ && -f "$CLI" && ! -L "$CLI" ]] || {
     echo 'FAIL CLI pin requires a regular binary and 40 hex digit hash' >&2; exit 1; }
-  /usr/bin/codesign --verify --strict -R='anchor apple generic and identifier "dev.apexdeck.cli"' "$CLI" 2>/dev/null || {
+  /usr/bin/codesign --verify --strict -R="anchor apple generic and identifier \"${EXPECTED_CLI_ID}\"" "$CLI" 2>/dev/null || {
     echo 'FAIL CLI signature or identifier is invalid' >&2; exit 1; }
   cli_details=$(/usr/bin/codesign -d --verbose=4 "$CLI" 2>&1)
   [[ "$cli_details" == *'(runtime)'* ]] || { echo 'FAIL CLI hardened runtime absent' >&2; exit 1; }

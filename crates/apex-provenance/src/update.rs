@@ -16,7 +16,9 @@ use std::{
 
 /// Largest package the job will copy; the same limit is in upgrade.py.
 pub const PACKAGE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
-const FIELDS: [&str; 5] = ["op", "version", "package", "sha256", "size"];
+const MAX_BUILD_NUMBER: u64 = 9_007_199_254_740_991;
+const STABLE_FIELDS: [&str; 5] = ["op", "version", "package", "sha256", "size"];
+const NIGHTLY_FIELDS: [&str; 6] = ["op", "version", "package", "sha256", "size", "buildNumber"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpdateRequest {
@@ -24,6 +26,7 @@ pub struct UpdateRequest {
     pub package: String,
     pub sha256: String,
     pub size: u64,
+    pub build_number: Option<u64>,
 }
 
 /// Where the queue and the job live. Fixed in production; tests pass their own
@@ -38,10 +41,12 @@ pub struct Paths {
 impl Paths {
     pub fn system() -> Self {
         Paths {
-            upgrades: "/Library/Application Support/Apex Deck Upgrade".into(),
-            service: "/Library/LaunchDaemons/dev.apexdeck.update.plist".into(),
-            updater: Path::new(crate::ROOT)
-                .join("TrustedUI/Apex Deck.app/Contents/Resources/updater/upgrade.py"),
+            upgrades: crate::channel::MAC_UPGRADES.into(),
+            service: format!("/Library/LaunchDaemons/{}.plist", crate::channel::MAC_UPDATE).into(),
+            updater: Path::new(crate::ROOT).join(format!(
+                "TrustedUI/{}.app/Contents/Resources/updater/upgrade.py",
+                crate::channel::PRODUCT
+            )),
             owner: 0,
         }
     }
@@ -60,15 +65,30 @@ fn version(value: &str) -> bool {
 
 pub fn parse_request(value: &Value) -> Result<UpdateRequest, String> {
     let object = value.as_object().ok_or("Malformed update request")?;
-    if object.keys().any(|key| !FIELDS.contains(&key.as_str())) {
+    let fields: &[&str] = if crate::channel::NIGHTLY {
+        &NIGHTLY_FIELDS
+    } else {
+        &STABLE_FIELDS
+    };
+    if object.keys().any(|key| !fields.contains(&key.as_str())) {
         return Err("Malformed update request".into());
     }
     let text = |key: &str| value[key].as_str().ok_or(format!("Missing update {key}"));
+    let build_number = if crate::channel::NIGHTLY {
+        let number = value["buildNumber"]
+            .as_u64()
+            .filter(|&n| (1..=MAX_BUILD_NUMBER).contains(&n))
+            .ok_or("Invalid update build number")?;
+        Some(number)
+    } else {
+        None
+    };
     let request = UpdateRequest {
         version: text("version")?.to_string(),
         package: text("package")?.to_string(),
         sha256: text("sha256")?.to_string(),
         size: value["size"].as_u64().ok_or("Missing update size")?,
+        build_number,
     };
     if !version(&request.version) {
         return Err("Invalid update version".into());
@@ -117,7 +137,11 @@ pub fn new_id() -> Result<String, String> {
 
 /// The request as upgrade.py's read_request expects it, byte for byte in shape.
 pub fn document(id: &str, uid: u32, request: &UpdateRequest) -> Value {
-    json!({"id":id,"version":request.version,"package":request.package,"sha256":request.sha256,"size":request.size,"uid":uid})
+    let mut doc = json!({"id":id,"version":request.version,"package":request.package,"sha256":request.sha256,"size":request.size,"uid":uid});
+    if let Some(build_number) = request.build_number {
+        doc["buildNumber"] = json!(build_number);
+    }
+    doc
 }
 
 fn closed(path: &Path, owner: u32, private: bool) -> Result<std::fs::Metadata, String> {
@@ -183,7 +207,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn good() -> Value {
-        json!({"op":"update_install","version":"0.9.1","package":"/Users/a/Library/Caches/dev.apexdeck.desktop/updates/Apex-Deck-0.9.1-arm64.pkg","sha256":"f".repeat(64),"size":123})
+        let mut request = json!({"op":"update_install","version":"0.9.1","package":"/Users/a/Library/Caches/dev.apexdeck.desktop/updates/Apex-Deck-0.9.1-arm64.pkg","sha256":"f".repeat(64),"size":123});
+        if crate::channel::NIGHTLY {
+            request["buildNumber"] = json!(42);
+        }
+        request
     }
 
     fn fixture() -> (PathBuf, Paths) {
@@ -298,5 +326,41 @@ mod tests {
             .contains("queue is unavailable"));
         assert_eq!(std::fs::read_dir(paths.queue()).unwrap().count(), 0);
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn system_paths_and_build_number_follow_active_channel() {
+        let paths = Paths::system();
+        assert_eq!(paths.upgrades, Path::new(crate::channel::MAC_UPGRADES));
+        assert_eq!(
+            paths.service,
+            PathBuf::from(format!("/Library/LaunchDaemons/{}.plist", crate::channel::MAC_UPDATE))
+        );
+        assert_eq!(
+            paths.updater,
+            Path::new(crate::ROOT).join(format!(
+                "TrustedUI/{}.app/Contents/Resources/updater/upgrade.py",
+                crate::channel::PRODUCT
+            ))
+        );
+        let request = parse_request(&good()).unwrap();
+        if crate::channel::NIGHTLY {
+            assert_eq!(request.build_number, Some(42));
+            assert_eq!(document("id-1", 501, &request)["buildNumber"], json!(42));
+            let mut missing = good();
+            missing.as_object_mut().unwrap().remove("buildNumber");
+            assert!(parse_request(&missing).is_err());
+            for bad in [json!(0), json!(-1), json!("42"), json!(MAX_BUILD_NUMBER + 1)] {
+                let mut invalid = good();
+                invalid["buildNumber"] = bad;
+                assert!(parse_request(&invalid).is_err());
+            }
+        } else {
+            assert_eq!(request.build_number, None);
+            assert!(document("id-1", 501, &request).get("buildNumber").is_none());
+            let mut extra = good();
+            extra["buildNumber"] = json!(42);
+            assert!(parse_request(&extra).is_err());
+        }
     }
 }

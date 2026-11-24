@@ -13,6 +13,17 @@ pub struct Isolation {
     bwrap: PathBuf,
 }
 
+#[cfg(target_os = "macos")]
+fn computer_helper_folder(bundle: &Path) -> &'static str {
+    const NIGHTLY_ID: &[u8] = b"dev.apexdeck.unified-computer-use.nightly";
+    if let Ok(bytes) = std::fs::read(bundle.join("Contents/Info.plist")) {
+        if bytes.windows(NIGHTLY_ID.len()).any(|w| w == NIGHTLY_ID) {
+            return "Apex Unified Computer Use Nightly";
+        }
+    }
+    "Apex Unified Computer Use"
+}
+
 fn failed(message: &str) -> ParticipantError {
     ParticipantError::Failed(format!("Gateway isolation: {message}"))
 }
@@ -285,7 +296,10 @@ impl Isolation {
                 let bundle = relay.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
                     .ok_or_else(|| failed("invalid computer relay"))?;
                 let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| failed("no home folder"))?;
-                let socket = home.join("Library/Application Support/Apex Unified Computer Use/control.sock");
+                let socket = home
+                    .join("Library/Application Support")
+                    .join(computer_helper_folder(bundle))
+                    .join("control.sock");
                 let folder = socket.parent().ok_or_else(|| failed("invalid computer socket"))?;
                 read.push_str(&format!(" (subpath {}) (subpath {})", quote(bundle)?, quote(folder)?));
                 computer = format!("(allow network-outbound (literal {}))\n", quote(&socket)?);
@@ -949,5 +963,45 @@ printf 'DIRECTORIES_OK_PRIVATE_MCP_AND_KEYCHAIN_BLOCKED'
             !run_root.exists(),
             "staged model credentials must be removed after the turn"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn computer_helper_sandbox_grants_only_matching_channel_socket() {
+        for (bundle_id, expected_folder, other_folder) in [
+            (
+                "dev.apexdeck.unified-computer-use",
+                "Apex Unified Computer Use",
+                "Apex Unified Computer Use Nightly",
+            ),
+            (
+                "dev.apexdeck.unified-computer-use.nightly",
+                "Apex Unified Computer Use Nightly",
+                "Apex Unified Computer Use",
+            ),
+        ] {
+            let isolation = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap();
+            let bundle = isolation.root.dir.join("Unified Computer Use.app");
+            let relay = bundle.join("Contents/Helpers/SpikeMCP");
+            std::fs::create_dir_all(relay.parent().unwrap()).unwrap();
+            std::fs::write(
+                bundle.join("Contents/Info.plist"),
+                format!("<plist><dict><key>CFBundleIdentifier</key><string>{bundle_id}</string></dict></plist>"),
+            )
+            .unwrap();
+            std::fs::write(&relay, "#!/bin/sh\n").unwrap();
+            assert_eq!(computer_helper_folder(&bundle), expected_folder);
+            let open = isolation.with_computer(Some(relay));
+            let _ = open.command("/bin/sh", &["-c".into(), "true".into()], None).unwrap();
+            let profile = std::fs::read_to_string(open.root.dir.join("sandbox.sb")).unwrap();
+            assert!(
+                profile.contains(&format!("Library/Application Support/{expected_folder}/control.sock")),
+                "missing expected socket in profile:\n{profile}"
+            );
+            assert!(
+                !profile.contains(&format!("Library/Application Support/{other_folder}/control.sock")),
+                "profile must not allow the other channel's helper socket:\n{profile}"
+            );
+        }
     }
 }

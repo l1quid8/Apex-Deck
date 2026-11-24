@@ -5,7 +5,10 @@ import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { upgradeScripts } from '../scripts/package-mac-upgrade.mjs';
+import { loadChannel } from '../desktop/channel.mjs';
+import { renderUpgradeScript, upgradeScripts } from '../scripts/package-mac-upgrade.mjs';
+const stableChannel = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'stable' } });
+const nightlyChannel = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'nightly' } });
 
 // The job is macOS's (root launchd, /usr/bin/python3); Windows updates through its installer.
 const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
@@ -30,7 +33,7 @@ assert u.M is None and u.STAGED is None
 assert u.REQUIREMENT==u.DEVELOPER_ID
 `);
   const manifest = { id: '12345678-1234-1234-1234-123456789abc', version: '0.9.1', ui: 'a'.repeat(40), daemon: 'b'.repeat(40), broker: 'c'.repeat(40) };
-  const worker = upgradeScripts(manifest).worker;
+  const worker = upgradeScripts(manifest, stableChannel).worker;
   assert.match(worker, /^MANIFEST_JSON = "\{\\"id\\":\\"12345678/m);
   assert.doesNotMatch(worker, /^MANIFEST_JSON = ''$/m);
 });
@@ -400,3 +403,58 @@ with tempfile.TemporaryDirectory() as directory:
  assert u.repair_broker_plist() is False
  assert u.BROKER_PLIST.read_bytes()==before
 `));
+
+test('Nightly update job enforces buildNumber ordering across same-semver builds and rejects Stable bundles', () => {
+  const rendered = renderUpgradeScript(nightlyChannel);
+  const result = spawnSync('/usr/bin/python3', ['-I', '-c', `import importlib.util,pathlib,tempfile,types,json,os,shutil,subprocess,plistlib
+with tempfile.TemporaryDirectory() as td:
+ worker=pathlib.Path(td)/'upgrade.py'
+ worker.write_text(${JSON.stringify(rendered)})
+ spec=importlib.util.spec_from_file_location('upgrade_nightly',str(worker))
+ u=importlib.util.module_from_spec(spec);spec.loader.exec_module(u)
+ def raises(call,text):
+  try: call()
+  except RuntimeError as error: assert text in str(error),str(error)
+  else: raise AssertionError('expected refusal mentioning '+text)
+ assert u.CHANNEL=='nightly'
+ assert u.JOB_LABEL=='dev.apexdeck.update.nightly'
+ assert u.UPDATE_LOG=='/var/log/apex-deck-nightly-update.log'
+ plist=plistlib.loads(u.update_service_plist())
+ assert plist['Label']=='dev.apexdeck.update.nightly'
+ assert plist['StandardOutPath']=='/var/log/apex-deck-nightly-update.log'
+ u.protected=lambda p:None
+ req_path=pathlib.Path(td)/'request.json'
+ good={'id':'12345678-1234-1234-1234-123456789abc','version':'0.9.19','buildNumber':43,'package':'/Users/a/Library/Caches/x/Apex-Deck-Nightly.pkg','sha256':'f'*64,'size':10,'uid':501}
+ req_path.write_text(json.dumps(good)); assert u.read_request(req_path)==good
+ missing_bn=dict(good); del missing_bn['buildNumber']
+ req_path.write_text(json.dumps(missing_bn)); raises(lambda:u.read_request(req_path),'Malformed')
+ req_path.write_text(json.dumps(dict(good,buildNumber=0))); raises(lambda:u.read_request(req_path),'Invalid')
+ info={'trusted':{'CFBundleShortVersionString':'0.9.19','CFBundleVersion':'42','CFBundleIdentifier':'dev.apexdeck.app.nightly'},'staged':{'CFBundleShortVersionString':'0.9.19','CFBundleVersion':'43','CFBundleIdentifier':'dev.apexdeck.app.nightly','LSMinimumSystemVersion':'13.0'}}
+ u.TRUSTED=pathlib.Path('/trusted/Apex Deck Nightly.app')
+ u.bundle_info=lambda app:info['trusted' if str(app).startswith('/trusted') else 'staged']
+ u.macos_version=lambda:'26.1'
+ u.platform.machine=lambda:'arm64'
+ calls=[]
+ def fake_run(*args,required=True):
+  args=[str(a) for a in args];calls.append(args)
+  if args[:2]==['/usr/bin/codesign','-d']:
+   out='TeamIdentifier=TEAM123456\\n' if args[2]=='--verbose=2' else 'CDHash='+('A'*40)+'\\n'
+   return subprocess.CompletedProcess(args,0,'',out)
+  if args[0]=='/usr/bin/lipo':return subprocess.CompletedProcess(args,0,'arm64\\n','')
+  return subprocess.CompletedProcess(args,0,'','')
+ u.run=fake_run
+ m=u.identify('/staged/Apex Deck Nightly.app',{'id':good['id'],'version':'0.9.19','buildNumber':43})
+ assert m['channel']=='nightly' and m['buildNumber']==43
+ assert any('-R=identifier "dev.apexdeck.app.nightly" and ' in c[-2] for c in calls if c[:2]==['/usr/bin/codesign','--verify'])
+ # Same buildNumber or older buildNumber must be refused even with same semver.
+ info['staged']['CFBundleVersion']='42'
+ raises(lambda:u.identify('/staged/Apex Deck Nightly.app',{'id':good['id'],'version':'0.9.19','buildNumber':42}),'not newer')
+ # Mismatched buildNumber vs request refused.
+ info['staged']['CFBundleVersion']='44'
+ raises(lambda:u.identify('/staged/Apex Deck Nightly.app',{'id':good['id'],'version':'0.9.19','buildNumber':43}),'not 43')
+ # Stable bundle ID rejected by Nightly.
+ info['staged']['CFBundleVersion']='43'; info['staged']['CFBundleIdentifier']='dev.apexdeck.app'
+ raises(lambda:u.identify('/staged/Apex Deck Nightly.app',{'id':good['id'],'version':'0.9.19','buildNumber':43}),'not Apex Deck Nightly')
+`], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});

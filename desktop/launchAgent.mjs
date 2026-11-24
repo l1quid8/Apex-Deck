@@ -9,9 +9,10 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { channel } from './channel.mjs';
 import { TRUSTED_DAEMON, plistDaemonBin } from './trustedInstall.mjs';
 
-export const LABEL = 'dev.apexdeck.daemon';
+export const LABEL = channel.MAC_AGENT;
 
 /** Where the agent's plist lives: the user's LaunchAgents folder. */
 export const agentPlistPath = (home = os.homedir()) => path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);

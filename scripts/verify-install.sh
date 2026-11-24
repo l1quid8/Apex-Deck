@@ -4,21 +4,46 @@
 #
 # Checks: installed app version and signature, sha256 of the bundled UI
 # (app.asar) and daemon, a freshly built app (hashes compared with the
-# installed one), and every running apex-daemon (start time, executable path,
-# hash, and whether it runs from the installed app).
+# installed one), and every running apex-daemon for this channel (start time,
+# executable path, hash, and whether it runs from the installed app).
 #
-# Usage: scripts/verify-install.sh [path/to/Apex Deck.app]
-#   Default fresh build: release/mac-arm64/Apex Deck.app under the repo.
+# Usage: scripts/verify-install.sh [--channel stable|nightly] [path/to/Apex Deck.app]
+#   Default fresh build: release/mac-arm64/Apex Deck[ Nightly].app under the repo.
 #   An explicit path that does not exist is an error; the default is optional.
 # Exits 1 on any mismatch or failed check. It installs, restarts and kills nothing.
 set -euo pipefail
 
-APP="/Applications/Apex Deck.app"
-TRUSTED_APP="/Library/Application Support/Apex Deck Provenance/TrustedUI/Apex Deck.app"
+CHANNEL="stable"
+if [[ "${1:-}" == "--channel" ]]; then
+  shift
+  CHANNEL="${1:-}"
+  shift || true
+fi
+case "$CHANNEL" in
+  stable)
+    PRODUCT="Apex Deck"
+    TRUSTED_ROOT="/Library/Application Support/Apex Deck Provenance"
+    OTHER_APP="/Applications/Apex Deck Nightly.app"
+    OTHER_TRUSTED="/Library/Application Support/Apex Deck Nightly Provenance/TrustedUI/Apex Deck Nightly.app"
+    ;;
+  nightly)
+    PRODUCT="Apex Deck Nightly"
+    TRUSTED_ROOT="/Library/Application Support/Apex Deck Nightly Provenance"
+    OTHER_APP="/Applications/Apex Deck.app"
+    OTHER_TRUSTED="/Library/Application Support/Apex Deck Provenance/TrustedUI/Apex Deck.app"
+    ;;
+  *)
+    echo "Invalid channel: $CHANNEL (expected stable or nightly)" >&2
+    exit 1
+    ;;
+esac
+
+APP="/Applications/${PRODUCT}.app"
+TRUSTED_APP="${TRUSTED_ROOT}/TrustedUI/${PRODUCT}.app"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRESH_ARG="${1:-}"
 if [[ -z "$FRESH_ARG" ]]; then
-  FRESH="$ROOT/release/mac-arm64/Apex Deck.app"
+  FRESH="$ROOT/release/mac-arm64/${PRODUCT}.app"
   FRESH_REQUIRED=0
 else
   FRESH="$FRESH_ARG"
@@ -50,7 +75,7 @@ bin_version() {
 INST_BIN="$APP/Contents/Resources/bin/apex-daemon"
 INST_UI="$APP/Contents/Resources/app.asar"
 
-echo "Installed app: $APP"
+echo "Installed app ($CHANNEL): $APP"
 if [[ ! -d "$APP" ]]; then
   row "installed app" "missing" "FAIL"; bad
   INST_SHA_BIN=""; INST_SHA_UI=""
@@ -106,18 +131,17 @@ else
   row "fresh build" "not built here (skipped)" "warn"; warn
 fi
 
-echo "Running apex-daemon processes"
+echo "Running apex-daemon processes ($CHANNEL)"
 # pgrep misses the app's daemon here (its args are not visible to it), and
 # pgrep -x sees only a truncated name. ps sees the full command line, so match
-# that, then keep only processes whose executable is apex-daemon (see below).
-# Only the shared service counts: `serve` without `--data-dir`. Test daemons
-# and dev builds use their own data folder and don't serve the installed app.
+# that, then keep only processes whose executable belongs to this channel.
 CANDIDATES=$(ps -axo pid=,args= | grep -E '/apex-daemon serve( |$)' | grep -v -e grep -e '--data-dir' | awk '{print $1}' || true)
 PIDS=""
 for pid in $CANDIDATES; do
   exe=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | awk '/^n/ {print substr($0, 2); exit}' || true)
   [[ -n "$exe" ]] || exe=$(ps -o comm= -p "$pid" | sed 's/^ *//' || true)
   case "$exe" in
+    "$OTHER_APP/"*|"$OTHER_TRUSTED/"*) continue ;;
     */apex-daemon|*/apex-daemon" (deleted)") PIDS="$PIDS $pid" ;;
   esac
 done

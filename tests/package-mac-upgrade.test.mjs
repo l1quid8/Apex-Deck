@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
-import {upgradeScripts,validateManifest,validateOutput} from '../scripts/package-mac-upgrade.mjs';
+import {execFileSync, spawnSync} from 'node:child_process';
+import {loadChannel} from '../desktop/channel.mjs';
+import {renderVerifierScript,upgradeScripts,validateManifest,validateOutput} from '../scripts/package-mac-upgrade.mjs';
+const stableChannel = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'stable' } });
+const nightlyChannel = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'nightly' } });
 
 // macOS-only: the signed .pkg upgrade. Windows has no such API, and the app refuses
 // protected records there instead of pretending the check passed.
@@ -18,10 +21,10 @@ import plistlib
 u.BROKER_PLIST=base/'dev.apexdeck.provenance.plist'
 u.BROKER_PLIST.write_bytes(plistlib.dumps({'Label':'dev.apexdeck.provenance','ProgramArguments':[str(u.ROOT/'apex-provenance')],'UserName':'root','RunAtLoad':True,'KeepAlive':True,'StandardErrorPath':'/var/log/apex-provenance.log','ProcessType':'Background'}))
 `;
-function python(program){
+function python(program, { target = stableChannel, input = manifest } = {}){
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'apex-upgrade-test-'));
  try{
-  const worker=path.join(temp,'upgrade.py');fs.writeFileSync(worker,upgradeScripts(manifest).worker);
+  const worker=path.join(temp,'upgrade.py');fs.writeFileSync(worker,upgradeScripts(input, target).worker);
   const result=spawnSync('/usr/bin/python3',['-I','-c',`import importlib.util,pathlib,tempfile,types,json,os,shutil,subprocess\nspec=importlib.util.spec_from_file_location('upgrade',${JSON.stringify(worker)})\nu=importlib.util.module_from_spec(spec);spec.loader.exec_module(u)\n${program}`],{encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
  }finally{fs.rmSync(temp,{recursive:true,force:true});}
@@ -165,9 +168,9 @@ loaded={501:True,502:True};running={501:True,502:True};stray=[False];fail=[];ref
 events=[]
 def fake_run(*args,required=True):
  args=list(map(str,args));command=args[0]
- if command=='/usr/bin/pgrep':
-  assert args[1:]==['-x','apex-daemon'],args
-  return subprocess.CompletedProcess(args,0 if any(running.values()) or stray[0] else 1,'','')
+ if command=='/bin/ps' and args[1:]==['-axo','pid=,comm=']:
+  daemon=str(u.TRUSTED/'Contents/Resources/bin/apex-daemon')
+  return subprocess.CompletedProcess(args,0,('  999 '+daemon+'\n') if any(running.values()) or stray[0] else '','')
  if command=='/bin/launchctl':
   verb,target=args[1],args[2]
   if target.startswith('gui/'):
@@ -525,3 +528,85 @@ with tempfile.TemporaryDirectory() as directory:
  u.update_config(config,'next-ui','next-daemon')
  assert json.loads(config.read_bytes())=={'uiCdhash':'next-ui','daemonCdhash':'next-daemon','future':42}
 `));
+
+test('Nightly upgrade uses Nightly paths/services and ignores a live Stable daemon', POSIX_ONLY, () => {
+ const nightlyManifest = { ...manifest, channel: 'nightly', buildNumber: 42 };
+ python(String.raw`
+import plistlib
+assert u.CHANNEL == 'nightly'
+assert u.APP_ID == 'dev.apexdeck.app.nightly'
+assert u.PRODUCT == 'Apex Deck Nightly'
+assert u.CLI_ID == 'dev.apexdeck.cli.nightly'
+assert u.BROKER_LABEL == 'dev.apexdeck.provenance.nightly'
+assert u.AGENT_LABEL == 'dev.apexdeck.daemon.nightly'
+assert u.JOB_LABEL == 'dev.apexdeck.update.nightly'
+assert str(u.ROOT) == '/Library/Application Support/Apex Deck Nightly Provenance'
+assert str(u.UPGRADES) == '/Library/Application Support/Apex Deck Nightly Upgrade'
+assert str(u.BROKER_SOCKET) == '/var/run/dev.apexdeck.provenance.nightly.sock'
+assert str(u.RESULTS) == '/Library/Application Support/Apex Deck Nightly Updates'
+assert u.UPDATE_LOG == '/var/log/apex-deck-nightly-update.log'
+
+# A live Stable daemon must NOT count as a running Nightly daemon.
+stable_daemon = '/Library/Application Support/Apex Deck Provenance/TrustedUI/Apex Deck.app/Contents/Resources/bin/apex-daemon'
+nightly_daemon = str(u.TRUSTED / 'Contents/Resources/bin/apex-daemon')
+u.run = lambda *args, required=True: subprocess.CompletedProcess(list(map(str, args)), 0, '  15649 ' + stable_daemon + '\n', '')
+assert u.channel_daemon_running() is False
+u.run = lambda *args, required=True: subprocess.CompletedProcess(list(map(str, args)), 0, '  15649 ' + stable_daemon + '\n  22222 ' + nightly_daemon + '\n', '')
+assert u.channel_daemon_running() is True
+
+# Full Nightly install succeeds while Stable daemon stays running untouched.
+with tempfile.TemporaryDirectory() as directory:
+  base = pathlib.Path(directory)
+  u.ROOT = base/'nightly-authority'; u.UPGRADES = base/'nightly-upgrades'; u.ROOT.mkdir(); u.UPGRADES.mkdir()
+  u.TRUSTED = u.ROOT/'TrustedUI/Apex Deck Nightly.app'; u.TRUSTED.parent.mkdir(); u.TRUSTED.mkdir(); (u.TRUSTED/'version').write_text('41')
+  u.APPLICATION = base/'Applications/Apex Deck Nightly.app'; u.APPLICATION.parent.mkdir(); u.APPLICATION.mkdir()
+  u.STAGED = base/'staged.app'; (u.STAGED/'Contents/Resources/bin').mkdir(parents=True); (u.STAGED/'version').write_text('42'); (u.STAGED/'Contents/Resources/bin/apex-provenance').write_text('new-broker')
+  (u.ROOT/'apex-provenance').write_text('old-broker'); (u.ROOT/'config.json').write_text(json.dumps({'uiCdhash':'old','daemonCdhash':'old'}))
+  for name in u.AUTHORITY: (u.ROOT/name).write_bytes(('old-'+name).encode())
+  agent = base/'dev.apexdeck.daemon.nightly.plist'; agent.write_text('nightly agent')
+  u.BROKER_PLIST = base/'dev.apexdeck.provenance.nightly.plist'
+  u.BROKER_PLIST.write_bytes(plistlib.dumps({'Label':'dev.apexdeck.provenance.nightly','ProgramArguments':[str(u.ROOT/'apex-provenance')],'UserName':'root','RunAtLoad':True,'KeepAlive':True,'ProcessType':'Interactive'}))
+  u.preflight = lambda payload=False: (types.SimpleNamespace(pw_uid=501), agent)
+  u.pwd.getpwall = lambda: []
+  u.protected = lambda p: None; u.validate_bundle = lambda p: None; u.app_running = lambda uid=None: False
+  u.wait_for_broker = lambda pid, socket: 333; u.install_update_service = lambda: None
+  u.Path = lambda p: pathlib.Path(base/'Applications') if str(p)=='/Applications' else pathlib.Path(p)
+  u.time.sleep = lambda s: None
+  launchctl_targets = []
+  def fake_run(*args, required=True):
+    args = list(map(str, args)); cmd = args[0]
+    if cmd == '/bin/ps' and args[1:] == ['-axo', 'pid=,comm=']:
+      return subprocess.CompletedProcess(args, 0, '  15649 ' + stable_daemon + '\n', '')
+    if cmd == '/bin/ps':
+      return subprocess.CompletedProcess(args, 0, '', '')
+    if cmd == '/bin/launchctl':
+      launchctl_targets.append((args[1], args[2]))
+      assert 'nightly' in args[2] or args[2] == 'system', f'touched non-nightly target: {args}'
+      return subprocess.CompletedProcess(args, 0, 'state = running\npid = 111\n', '')
+    if cmd == '/usr/bin/ditto':
+      source, dest = map(pathlib.Path, args[1:]); shutil.copytree(source, dest, symlinks=True) if source.is_dir() else shutil.copy2(source, dest)
+    if cmd == '/usr/bin/install':
+      shutil.copy2(args[-2], args[-1])
+    return subprocess.CompletedProcess(args, 0, '', '')
+  u.run = fake_run
+  u.install()
+  assert (u.TRUSTED/'version').read_text() == '42'
+  assert ('bootout', 'gui/501/dev.apexdeck.daemon.nightly') in launchctl_targets
+  assert ('bootout', 'system/dev.apexdeck.provenance.nightly') in launchctl_targets
+`, { target: nightlyChannel, input: nightlyManifest });
+});
+
+test('renderVerifierScript stamps Nightly defaults once without altering explicit --channel stable', () => {
+ const stableRendered = renderVerifierScript(stableChannel);
+ const nightlyRendered = renderVerifierScript(nightlyChannel);
+ assert.match(stableRendered, /^EXPECTED_CHANNEL='stable'\nEXPECTED_APP_ID='dev\.apexdeck\.app'\nEXPECTED_CLI_ID='dev\.apexdeck\.cli'$/m);
+ assert.match(nightlyRendered, /^EXPECTED_CHANNEL='nightly'\nEXPECTED_APP_ID='dev\.apexdeck\.app\.nightly'\nEXPECTED_CLI_ID='dev\.apexdeck\.cli\.nightly'$/m);
+ assert.match(nightlyRendered, /^\s+EXPECTED_CHANNEL='stable'$/m);
+ // git --exec-path locates Git for Windows even outside Program Files.
+ const bash = process.platform === 'win32'
+  ? path.resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe')
+  : '/bin/bash';
+ const syntax = spawnSync(bash, ['-n'], { input: nightlyRendered, encoding: 'utf8' });
+ assert.ifError(syntax.error);
+ assert.equal(syntax.status, 0, syntax.stderr);
+});

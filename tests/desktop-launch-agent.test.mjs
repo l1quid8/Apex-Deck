@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { channel } from '../desktop/channel.mjs';
 import { LABEL, agentPlist, agentPlistPath, agentState, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from '../desktop/launchAgent.mjs';
 import os from 'node:os';
 
@@ -42,7 +43,7 @@ test('the plist runs serve with no --remote and no stdin tie, stays up, and logs
     bin: '/Applications/Apex Deck.app/Contents/Resources/bin/apex-daemon',
     logFile: '/Users/me/Library/Logs/Apex Deck/apex-daemon.log',
   });
-  assert.match(plist, /<key>Label<\/key>\s*<string>dev\.apexdeck\.daemon<\/string>/);
+  assert.match(plist, new RegExp(`<key>Label</key>\\s*<string>${channel.MAC_AGENT.replaceAll('.', '\\.')}</string>`));
   assert.match(plist, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/Applications\/Apex Deck\.app\/Contents\/Resources\/bin\/apex-daemon<\/string>\s*<string>serve<\/string>\s*<\/array>/);
   assert.doesNotMatch(plist, /--remote/);
   assert.doesNotMatch(plist, /exit-on-stdin-close/);
@@ -70,7 +71,7 @@ test('every string in the plist is XML-escaped', () => {
 
 test('the agent plist sits in the user LaunchAgents folder', MAC_ONLY, () => {
   assert.equal(agentPlistPath('/Users/me'), `/Users/me/Library/LaunchAgents/${LABEL}.plist`);
-  assert.equal(LABEL, 'dev.apexdeck.daemon');
+  assert.equal(LABEL, channel.MAC_AGENT);
 });
 
 test('install writes the plist and loads it when the agent is not loaded yet', async () => {

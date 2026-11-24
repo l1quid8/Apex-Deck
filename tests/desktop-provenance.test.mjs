@@ -277,7 +277,7 @@ test('Windows transport authenticates the pipe before delivering an exactly boun
 test('update requests carry only the package facts and accept only a matching signed receipt', async () => {
   const {publicKey,privateKey}=generateKeyPairSync('ed25519');
   const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
-  const update={version:'0.9.1',package:'/Users/a/Library/Caches/dev.apexdeck.desktop/updates/0.9.1/Apex-Deck-0.9.1-arm64.pkg',sha256:'f'.repeat(64),size:42};
+  const update={version:'0.9.1',package:'/Users/a/Library/Caches/dev.apexdeck.desktop/updates/0.9.1/Apex-Deck-0.9.1-arm64.pkg',sha256:'f'.repeat(64),size:42,...(channel.nightly?{buildNumber:42}:{})};
   const id='12345678-1234-4234-8234-123456789abc';
   const reply=(fields)=>{const payload=JSON.stringify({domain:channel.DOMAIN,kind:'update',uid:501,id,version:'0.9.1',...fields});return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};};
   let sent;

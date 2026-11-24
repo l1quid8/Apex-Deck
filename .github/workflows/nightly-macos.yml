@@ -1,0 +1,229 @@
+# Scheduled Nightly release workflow for macOS + Linux VPS daemons.
+#
+# Runs once a night (or on manual dispatch) and:
+#   1. Picks the latest green `daemon.yml` push commit on `main`.
+#   2. Skips cleanly when that SHA already matches the rolling `nightly` feed.
+#   3. Builds signed/notarized Apex Deck Nightly (macOS) plus Linux Nightly
+#      daemons from that exact commit with a strictly monotonic buildNumber.
+#   4. Uploads to an immutable draft `--prerelease` tag (`nightly-YYYYMMDD-<sha7>`),
+#      downloads every asset back and verifies exact sizes + SHA-256 checksums,
+#      and only advances the rolling `nightly` prerelease feed once every check
+#      passes. Nightly never advances GitHub's `--latest` Stable release.
+name: nightly-macos
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run planning, build, and verification without publishing or advancing the rolling Nightly feed'
+        type: boolean
+        default: false
+      force:
+        description: 'Build even when the green main SHA already matches the rolling Nightly feed'
+        type: boolean
+        default: false
+      sha:
+        description: 'Optional 40-character green main commit SHA to build'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-macos
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      reason: ${{ steps.decide.outputs.reason }}
+      commit: ${{ steps.decide.outputs.commit }}
+      sha7: ${{ steps.decide.outputs.sha7 }}
+      date: ${{ steps.decide.outputs.date }}
+      tag: ${{ steps.decide.outputs.tag }}
+      build_number: ${{ steps.decide.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          args=(plan --repo "${{ github.repository }}" --github-output "$GITHUB_OUTPUT")
+          if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
+          if [ -n "$INPUT_SHA" ]; then args+=(--sha "$INPUT_SHA"); fi
+          node scripts/nightly-release.mjs "${args[@]}"
+
+  build-linux-daemons:
+    needs: plan
+    if: needs.plan.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      APEX_CHANNEL: nightly
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p apex-daemon --features remote
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apex-daemon-nightly-linux-${{ matrix.arch }}
+          path: target/release/apex-daemon
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    needs: [plan, build-linux-daemons]
+    if: needs.plan.outputs.should_build == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      APEX_CHANNEL: nightly
+      APEX_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+      APEX_NIGHTLY_DATE: ${{ needs.plan.outputs.date }}
+      APEX_BUILD_COMMIT: ${{ needs.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: apex-daemon-nightly-linux-arm64
+          path: build/linux-daemons/arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: apex-daemon-nightly-linux-x86_64
+          path: build/linux-daemons/x86_64
+      - name: Import Developer ID certificate and notarization credentials
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          if [ -n "$MACOS_CERT_P12_BASE64" ]; then
+            keychain="$RUNNER_TEMP/nightly-build.keychain-db"
+            kc_pass="$(openssl rand -hex 24)"
+            p12="$RUNNER_TEMP/dev-id.p12"
+            printf '%s' "$MACOS_CERT_P12_BASE64" | base64 --decode > "$p12"
+            security create-keychain -p "$kc_pass" "$keychain"
+            security set-keychain-settings -lut 3600 "$keychain"
+            security unlock-keychain -p "$kc_pass" "$keychain"
+            security import "$p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$keychain"
+            security list-keychains -d user -s "$keychain" login.keychain-db
+            rm -f "$p12"
+          elif [ "$DRY_RUN" != "true" ]; then
+            echo "MACOS_CERT_P12_BASE64 is required to publish signed Nightly macOS builds." >&2
+            exit 1
+          fi
+          if [ -n "$APPLE_API_KEY_BASE64" ] && [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_ISSUER" ]; then
+            key_file="$RUNNER_TEMP/AuthKey.p8"
+            printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$key_file"
+            chmod 600 "$key_file"
+            {
+              echo "APPLE_API_KEY=$key_file"
+              echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID"
+              echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+              echo "APEX_DECK_NOTARIZE=1"
+            } >> "$GITHUB_ENV"
+          elif [ "$DRY_RUN" = "true" ]; then
+            echo "APEX_DECK_NOTARIZE=0" >> "$GITHUB_ENV"
+          else
+            echo "APPLE_API_KEY_BASE64, APPLE_API_KEY_ID, and APPLE_API_ISSUER are required to notarize Nightly builds." >&2
+            exit 1
+          fi
+      - name: Build Nightly macOS DMG and upgrade package
+        run: npm run desktop:dmg
+      - name: Build Nightly release manifest and verify package
+        run: |
+          node scripts/release-update-manifest.mjs \
+            --release release \
+            --date "${{ needs.plan.outputs.date }}" \
+            --commit "${{ needs.plan.outputs.commit }}" \
+            --build-number "${{ needs.plan.outputs.build_number }}" \
+            --linux "arm64=build/linux-daemons/arm64/apex-daemon" \
+            --linux "x86_64=build/linux-daemons/x86_64/apex-daemon" \
+            --notes "Nightly build ${{ needs.plan.outputs.build_number }} (${{ needs.plan.outputs.tag }})."
+      - name: Clean up signing keychain and key material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/nightly-build.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/dev-id.p12" "$RUNNER_TEMP/AuthKey.p8"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macos-assets
+          path: |
+            release/${{ needs.plan.outputs.tag }}-assets/
+            release/Apex-Deck-Nightly_${{ needs.plan.outputs.date }}_${{ needs.plan.outputs.sha7 }}_*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [plan, build-macos]
+    if: needs.plan.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-macos-assets
+          path: release
+      - name: Verify immutable assets and advance rolling Nightly feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          args=(
+            publish
+            --repo "${{ github.repository }}"
+            --assets-dir "release/${{ needs.plan.outputs.tag }}-assets"
+            --manifest "release/${{ needs.plan.outputs.tag }}-assets/apex-deck-nightly-update.json"
+            --extra-dir release
+          )
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
+          node scripts/nightly-release.mjs "${args[@]}"

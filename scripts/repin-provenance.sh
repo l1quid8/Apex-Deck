@@ -13,33 +13,59 @@
 # records are NOT migrated forward, so this script copies the directory aside
 # before deleting it.
 #
-# Usage: sudo /bin/bash scripts/repin-provenance.sh [--yes] [--dry-run]
+# Usage: sudo /bin/bash scripts/repin-provenance.sh [--channel stable|nightly] [--yes] [--dry-run]
+#   --channel   select stable (default) or nightly authority
 #   --yes       skip the confirmation prompt (for scripted rebuilds)
 #   --dry-run   print what would happen; requires no root, changes nothing
 # Exits nonzero if installation or verification fails.
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
-LABEL='dev.apexdeck.provenance'
-ROOT='/Library/Application Support/Apex Deck Provenance'
+CHANNEL='stable'
+DRY=0
+ASSUME_YES=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --channel)
+      shift
+      CHANNEL="${1:-}"
+      ;;
+    --dry-run) DRY=1 ;;
+    --yes|-y) ASSUME_YES=1 ;;
+    -h|--help) /usr/bin/sed -n '2,21p' "${BASH_SOURCE[0]}" | /usr/bin/cut -c3-; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; exit 1 ;;
+  esac
+  shift || true
+done
+
+case "$CHANNEL" in
+  stable)
+    LABEL='dev.apexdeck.provenance'
+    ROOT='/Library/Application Support/Apex Deck Provenance'
+    SOCKET='/var/run/dev.apexdeck.provenance.sock'
+    APP='/Applications/Apex Deck.app'
+    CLI_ID='dev.apexdeck.cli'
+    LOG_PATH='/var/log/apex-provenance.log'
+    ;;
+  nightly)
+    LABEL='dev.apexdeck.provenance.nightly'
+    ROOT='/Library/Application Support/Apex Deck Nightly Provenance'
+    SOCKET='/var/run/dev.apexdeck.provenance.nightly.sock'
+    APP='/Applications/Apex Deck Nightly.app'
+    CLI_ID='dev.apexdeck.cli.nightly'
+    LOG_PATH='/var/log/apex-provenance-nightly.log'
+    ;;
+  *)
+    echo "Invalid channel: $CHANNEL (expected stable or nightly)." >&2
+    exit 1
+    ;;
+esac
+
 PLIST="/Library/LaunchDaemons/$LABEL.plist"
-SOCKET='/var/run/dev.apexdeck.provenance.sock'
-APP='/Applications/Apex Deck.app'
 BROKER="$APP/Contents/Resources/bin/apex-provenance"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALLER="$HERE/install-provenance.sh"
 VERIFIER="$HERE/verify-install.sh"
-
-DRY=0
-ASSUME_YES=0
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY=1 ;;
-    --yes|-y) ASSUME_YES=1 ;;
-    -h|--help) /usr/bin/sed -n '2,20p' "${BASH_SOURCE[0]}" | /usr/bin/cut -c3-; exit 0 ;;
-    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
-  esac
-done
 
 run() {
   if (( DRY )); then
@@ -56,7 +82,7 @@ cdhash() {
 }
 
 # A future edit must not be able to widen this into a destructive rm.
-[[ "$ROOT" == '/Library/Application Support/Apex Deck Provenance' ]] || {
+[[ "$ROOT" == '/Library/Application Support/Apex Deck Provenance' || "$ROOT" == '/Library/Application Support/Apex Deck Nightly Provenance' ]] || {
   echo 'Refusing: unexpected authority path.' >&2; exit 1; }
 
 if (( ! DRY )); then
@@ -112,14 +138,14 @@ if [[ -e "$ROOT" ]]; then
 fi
 
 # --- 4. Hand off to the real installer, which re-runs every check -----------
-say 'Reinstalling authority pinned to the installed app'
-run /bin/bash "$INSTALLER" "$APP" "$BROKER"
+say "Reinstalling $CHANNEL authority pinned to the installed app"
+run /bin/bash "$INSTALLER" --channel "$CHANNEL" "$APP" "$BROKER"
 
 # --- 5. Verify -------------------------------------------------------------
 say ''
 say 'Verifying the installed app against the build in release/'
 VERIFY_STATUS=0
-run /bin/bash "$VERIFIER" || VERIFY_STATUS=$?
+run /bin/bash "$VERIFIER" --channel "$CHANNEL" || VERIFY_STATUS=$?
 
 # verify-install.sh does not look at the provenance broker at all, so check the
 # thing this script exists to change: that the pin matches the app you will run.
@@ -141,7 +167,7 @@ else
     pinned_cli=$(/usr/bin/python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("cliCdhash", ""))' "$ROOT/config.json")
     if [[ -n "$pinned_cli" ]]; then
       cli="$APP/Contents/Resources/bin/apex"
-      if [[ -f "$cli" && ! -L "$cli" ]] && /usr/bin/codesign --verify --strict -R='anchor apple generic and identifier "dev.apexdeck.cli"' "$cli" 2>/dev/null && [[ "$(cdhash "$cli")" == "$pinned_cli" ]]; then
+      if [[ -f "$cli" && ! -L "$cli" ]] && /usr/bin/codesign --verify --strict -R="anchor apple generic and identifier \"$CLI_ID\"" "$cli" 2>/dev/null && [[ "$(cdhash "$cli")" == "$pinned_cli" ]]; then
         say '  OK: pinned CLI identity and CDHash'
       else
         say '  FAIL: pinned CLI is missing or differs from installed binary'
@@ -174,8 +200,8 @@ else
     say "  FAIL: broker socket missing at $SOCKET"
     PIN_STATUS=1
   fi
-  if [[ -f /var/log/apex-provenance.log ]]; then
-    say "  log: /var/log/apex-provenance.log"
+  if [[ -f "$LOG_PATH" ]]; then
+    say "  log: $LOG_PATH"
   fi
 fi
 

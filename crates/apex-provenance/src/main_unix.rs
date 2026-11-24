@@ -42,9 +42,9 @@ enum Peer { App, Daemon, Cli }
 fn peer_requirement(role: Peer, hash: Option<&str>) -> Option<String> {
     let hash = hash.filter(|hash| hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))?;
     let identity = match role {
-        Peer::App => "identifier \"dev.apexdeck.app\" and ",
-        Peer::Cli => "identifier \"dev.apexdeck.cli\" and ",
-        Peer::Daemon => "",
+        Peer::App => format!("identifier \"{}\" and ", channel::APP_ID),
+        Peer::Cli => format!("identifier \"{}\" and ", channel::CLI_ID),
+        Peer::Daemon => String::new(),
     };
     Some(format!("anchor apple generic and {identity}cdhash H\"{hash}\""))
 }
@@ -362,7 +362,7 @@ fn run() -> Result<(), String> {
             if request["op"] == "update_install" {
                 // Only the pinned UI, never its daemon or a shell, can start an install.
                 if !trusted {
-                    return Err("Only the installed Apex Deck app can install updates".into());
+                    return Err(format!("Only the installed {} app can install updates", channel::PRODUCT));
                 }
                 let update = update::parse_request(&request)?;
                 let id = update::new_id()?;
@@ -790,9 +790,9 @@ mod cli_admission_tests {
         let coexist:Config=serde_json::from_value(json!({"uiCdhash":"a".repeat(40),"daemonCdhash":"b".repeat(40),"cliStandaloneCdhash":"c".repeat(40),"daemonStandaloneCdhash":"d".repeat(40)})).unwrap();
         assert!(coexist.cli_standalone_cdhash.is_some());assert!(coexist.daemon_standalone_cdhash.is_some());
         assert_eq!(peer_requirement(Peer::Cli, None), None);
-        assert_eq!(peer_requirement(Peer::Cli, Some(&"c".repeat(40))).unwrap(), format!("anchor apple generic and identifier \"dev.apexdeck.cli\" and cdhash H\"{}\"", "c".repeat(40)));
+        assert_eq!(peer_requirement(Peer::Cli, Some(&"c".repeat(40))).unwrap(), format!("anchor apple generic and identifier \"{}\" and cdhash H\"{}\"", channel::CLI_ID, "c".repeat(40)));
         assert!(peer_requirement(Peer::Cli, Some("bad\" or true")).is_none());
-        assert!(peer_requirement(Peer::App, Some(&"a".repeat(40))).unwrap().contains("dev.apexdeck.app"));
+        assert!(peer_requirement(Peer::App, Some(&"a".repeat(40))).unwrap().contains(&format!("identifier \"{}\"", channel::APP_ID)));
     }
     #[test]
     fn cli_can_only_issue_first_build_submissions() {
