@@ -195,9 +195,10 @@ function CaptureReceipt([string]$name) {
     Start-Process -FilePath "$root\$product.exe"
     $app = MainWindowProcess $product
     # The relay refuses the post, so the driver is expected to report it missing.
-    # The profile already holds workspaces, so the first-run sample button is absent.
+    # The profile keeps its workspace but the scratch host has no threads, so the
+    # first-run sample button is absent and the group-chat picker is shown.
     $marker = "receipt-$name-$run"
-    try { & $uiScript -Channel $name -AppId $app -NewChat -Post $marker } catch {
+    try { & $uiScript -Channel $name -AppId $app -GroupChat -Post $marker } catch {
       # Only the posted marker may be missing; an earlier UI failure means nothing was sent.
       if ($_.Exception.Message -notlike "*'$marker'*") { throw }
       Write-Host "UI post held as expected: $($_.Exception.Message)"
