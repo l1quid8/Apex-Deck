@@ -384,7 +384,7 @@ export class PersonalAssistantsCollection {
         const candidate = typeof info?.pushTopic === "string" ? info.pushTopic : typeof info?.bundleId === "string" ? info.bundleId : undefined;
         return candidate && ALLOWED_PUSH_TOPICS.has(candidate) ? candidate : undefined;
       },
-      () => undefined,
+      () => { this.pushTopicPromise = undefined; return undefined; },
     );
     return this.pushTopicPromise;
   }

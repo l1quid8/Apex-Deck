@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { ConnectFailure, olderThan, readFeed, runSetup } from "../src/phone/sshRun.ts";
 import { PAIR, findService, pairCommand, report, shellQuote, startPlain, startUser, stopUserService } from "../src/phone/sshScripts.ts";
-import { channelFromAppInfo, resolveAppChannel } from "../src/phone/appChannel.ts";
+import { channelFromAppInfo, resolveAppChannel, verifiedChannelFromAppInfo } from "../src/phone/appChannel.ts";
 import { loadMachines, saveMachines } from "../src/phoneRules.ts";
 
 test("PAIR script omits --tier", () => {
@@ -738,4 +738,140 @@ test("Nightly SSH helper scripts isolate user units, plain-process detection, an
   }]));
   assert.equal(machines.length, 1);
   assert.equal(machines[0].setup?.channel, "nightly");
+});
+
+test("native iOS bridge failure stops SSH setup with zero remote commands and a retry selects Nightly", async () => {
+  const vps = twoChannelVps();
+  const saved = [];
+  let connectCalls = 0;
+  let infoCalls = 0;
+  let failBridge = true;
+  const plugin = {
+    async getInfo() {
+      infoCalls += 1;
+      if (failBridge) throw new Error("native bridge unavailable");
+      return { bundleId: "dev.apexdeck.phone.nightly", channel: "nightly", pushTopic: "dev.apexdeck.phone.nightly" };
+    },
+  };
+  const prevCap = globalThis.Capacitor;
+  globalThis.Capacitor = {
+    isNativePlatform: () => true,
+    Plugins: { ApexAppInfo: plugin },
+  };
+  try {
+    const makeDeps = () => ({
+      connect: async () => {
+        connectCalls += 1;
+        return vps.session;
+      },
+      channel: resolveAppChannel,
+      knownKey: () => null,
+      rememberKey: () => {},
+      keep: async () => {},
+      save: (paired, req) => saved.push({ paired, req }),
+      pair(link, onCode) {
+        const endpointId = link.startsWith("apexdeck-nightly://") ? NIGHTLY_ENDPOINT : STABLE_ENDPOINT;
+        const done = (async () => {
+          const ack = onCode("777888");
+          vps.state.onLine(JSON.stringify({ event: "claim", code: "777888", label: "iPhone" }));
+          await ack;
+          return { hostEndpointId: endpointId, addrs: [], name: "vps-nightly" };
+        })();
+        return { done, cancel() {} };
+      },
+    });
+
+    // Attempt 1: transient bridge rejection must fail closed before connecting or running any remote command.
+    const firstEvents = [];
+    const firstAsk = request({ label: "VPS Nightly" });
+    const firstRun = runSetup(firstAsk, makeDeps(), (event) => firstEvents.push(event));
+    await firstRun.done;
+
+    const failed = firstEvents.find((event) => event.kind === "failed");
+    assert.ok(failed, "bridge rejection must emit a failed event");
+    assert.equal(failed.id, "channel");
+    assert.equal(failed.label, "Couldn't verify app channel");
+    assert.match(failed.message, /native bridge unavailable/);
+    assert.equal(connectCalls, 0, "must not open an SSH connection when app channel cannot be verified");
+    assert.deepEqual(vps.ran, [], "must issue zero remote exec commands on bridge failure");
+    assert.deepEqual(vps.opened, [], "must issue zero remote open commands on bridge failure");
+    assert.equal(saved.length, 0);
+    assert.equal(firstAsk.password, "", "failed attempt still wipes secrets");
+
+    // Attempt 2: same plugin instance recovers — rejection must NOT have been cached, so retry selects Nightly.
+    failBridge = false;
+    const retryEvents = [];
+    const retryRun = runSetup(request({ label: "VPS Nightly" }), makeDeps(), (event) => {
+      retryEvents.push(event);
+      if (event.kind === "trust") retryRun.decideTrust(true);
+    });
+    await retryRun.done;
+
+    assert.equal(retryEvents.find((event) => event.kind === "failed"), undefined, JSON.stringify(retryEvents));
+    assert.equal(infoCalls, 2, "retry must re-query ApexAppInfo instead of using a cached rejection");
+    assert.equal(connectCalls, 1);
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].req.channel, "nightly");
+    assert.equal(saved[0].paired.hostEndpointId, NIGHTLY_ENDPOINT);
+    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update.json")));
+    assert.ok(vps.ran.every((cmd) => !cmd.includes("apex-deck-update.json")));
+    assert.equal(vps.state.stable.installs, 0);
+    assert.equal(vps.state.stable.pairCalls, 0);
+  } finally {
+    if (prevCap === undefined) delete globalThis.Capacitor;
+    else globalThis.Capacitor = prevCap;
+  }
+});
+
+test("missing or malformed ApexAppInfo on native iOS fails closed with zero remote commands and allows retry", async () => {
+  const vps = twoChannelVps();
+  let connectCalls = 0;
+  const prevCap = globalThis.Capacitor;
+  try {
+    // 1. Plugin missing entirely on native iOS -> fails closed, zero remote commands.
+    globalThis.Capacitor = {
+      isNativePlatform: () => true,
+      Plugins: {},
+    };
+    const missingEvents = [];
+    const runMissing = runSetup(request(), {
+      connect: async () => { connectCalls += 1; return vps.session; },
+      channel: resolveAppChannel,
+      knownKey: () => null,
+      rememberKey: () => {},
+      keep: async () => {},
+      save: () => {},
+      pair: () => { throw new Error("must not pair"); },
+    }, (event) => missingEvents.push(event));
+    await runMissing.done;
+
+    assert.equal(missingEvents.find((e) => e.kind === "failed")?.id, "channel");
+    assert.equal(connectCalls, 0);
+    assert.deepEqual(vps.ran, []);
+    assert.deepEqual(vps.opened, []);
+
+    // 2. Malformed / contradictory payload fails closed and is not cached.
+    assert.equal(verifiedChannelFromAppInfo(null), null);
+    assert.equal(verifiedChannelFromAppInfo({}), null);
+    assert.equal(verifiedChannelFromAppInfo({ channel: "preview" }), null);
+    assert.equal(verifiedChannelFromAppInfo({ bundleId: "dev.apexdeck.phone.nightly", channel: "stable" }), null);
+    assert.equal(verifiedChannelFromAppInfo({ bundleId: "dev.apexdeck.phone.nightly", channel: "nightly" }), "nightly");
+
+    let badPayload = true;
+    const flakyPlugin = {
+      async getInfo() {
+        return badPayload ? {} : { bundleId: "dev.apexdeck.phone.nightly", channel: "nightly" };
+      },
+    };
+    globalThis.Capacitor = {
+      isNativePlatform: () => true,
+      Plugins: { ApexAppInfo: flakyPlugin },
+    };
+    await assert.rejects(() => resolveAppChannel(), /verify/);
+    badPayload = false;
+    assert.equal(await resolveAppChannel(), "nightly");
+  } finally {
+    if (prevCap === undefined) delete globalThis.Capacitor;
+    else globalThis.Capacitor = prevCap;
+  }
 });

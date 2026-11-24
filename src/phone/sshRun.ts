@@ -190,6 +190,39 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
   const releases = deps.releases ?? REPO_RELEASES;
 
   const run = async () => {
+    // Verify the target host channel BEFORE touching SSH so a native app-identity
+    // bridge failure stops cleanly and never runs any remote command.
+    let resolvedChannel: unknown = request.channel;
+    if (resolvedChannel === undefined) {
+      if (typeof deps.channel === "function") {
+        try {
+          const resolving = Promise.resolve().then(() => (deps.channel as () => HostChannel | Promise<HostChannel>)());
+          resolvedChannel = await Promise.race([resolving, new Promise<never>((_, reject) => {
+            stopConnect = () => {
+              reject(stopFailure());
+              resolving.catch(() => {});
+            };
+          })]);
+        } catch (failure) {
+          if (failure instanceof StepFailure) throw failure;
+          throw new StepFailure(
+            "channel",
+            "Couldn't verify app channel",
+            String(failure).replace(/^Error: /, "") || "Couldn't verify whether this app is Stable or Nightly. Try again.",
+          );
+        }
+      } else {
+        resolvedChannel = deps.channel ?? "stable";
+      }
+    }
+    stopIfCancelled();
+    if (resolvedChannel !== "stable" && resolvedChannel !== "nightly") {
+      throw new StepFailure("channel", "Couldn't verify app channel", `Unknown Deck channel: ${String(resolvedChannel)}.`);
+    }
+    const channel: HostChannel = resolvedChannel;
+    const cfg = hostChannelConfig(channel);
+    const labelName = channel === "nightly" ? cfg.product : "Deck";
+
     const known = deps.knownKey(hostPort);
     try {
       const connecting = deps.connect(request, known).then((opened) => {
@@ -221,15 +254,6 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     step("reach", `Reached ${where}`);
     step("key", `Server key ${known ? "matches" : "saved"} (${ssh.fingerprint.slice(0, 15)}…)`);
     step("signin", `Signed in as ${request.user}${request.key ? ` with ${request.key.name}` : " with password"}`);
-
-    const resolvedChannel = request.channel ?? (typeof deps.channel === "function" ? await deps.channel() : deps.channel) ?? "stable";
-    stopIfCancelled();
-    if (resolvedChannel !== "stable" && resolvedChannel !== "nightly") {
-      throw new StepFailure("system", "Unsupported channel", `Unknown Deck channel: ${String(resolvedChannel)}.`);
-    }
-    const channel: HostChannel = resolvedChannel;
-    const cfg = hostChannelConfig(channel);
-    const labelName = channel === "nightly" ? cfg.product : "Deck";
 
     const probe = report((await ssh.exec(probeScript(channel))).stdout);
     if (probe.os !== "Linux") throw new StepFailure("system", "Not a Linux server", probe.os === "Darwin" ? SERVER_ONLY : `This is ${probe.os || "an unknown system"}. ${SERVER_ONLY}`);
