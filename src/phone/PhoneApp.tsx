@@ -93,6 +93,7 @@ import { clearRemoteMode, defaultAddHow, PAIR_MACHINE_HINT, startAutomatic, when
 import { AddHowPicker } from "./AddHow";
 import { RemoteSsh } from "./RemoteSsh";
 import { setupRuns, signInId, sshPlugin, type SetupRuns } from "./sshNative";
+import { resolveAppChannel } from "./appChannel";
 import type { SetupDeps } from "./sshRun";
 import { PairSheet } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
@@ -450,6 +451,7 @@ export function PhoneApp() {
   /** Add a machine over SSH. Lives here so the run outlasts the sheet it started in. */
   const sshRuns = useMemo<SetupRuns | null>(() => (ssh && plugin ? setupRuns((): SetupDeps => ({
     connect: (request, known) => ssh.connect(request, known),
+    channel: resolveAppChannel,
     releaseTag: import.meta.env.VITE_SSH_RELEASE_TAG || undefined,
     knownKey: (hostPort) => readServerKeys()[hostPort] ?? null,
     rememberKey: (hostPort, fingerprint) => { try { localStorage.setItem(SERVER_KEYS, JSON.stringify({ ...readServerKeys(), [hostPort]: fingerprint })); } catch { /* the next connect trusts it again */ } },
@@ -470,7 +472,7 @@ export function PhoneApp() {
     },
     save(paired, request, os) {
       setMachines((list) => {
-        const made: PairedMachine = { ...identityFor(list, { name: request.label || paired.name, host: paired.hostEndpointId, os }), transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now(), setup: { host: request.host, port: request.port, user: request.user, kept: request.keep } };
+        const made: PairedMachine = { ...identityFor(list, { name: request.label || paired.name, host: paired.hostEndpointId, os }), transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now(), setup: { host: request.host, port: request.port, user: request.user, kept: request.keep, ...(request.channel ? { channel: request.channel } : {}) } };
         try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; }
       });
     },
@@ -3136,7 +3138,7 @@ export function PhoneApp() {
               const setup = machine.setup!;
               const saved = await ssh.saved(signInId(setup));
               sshRuns.clear();
-              sshRuns.start({ label: machine.name, host: setup.host, port: setup.port, user: setup.user, keep: true, ...saved });
+              sshRuns.start({ label: machine.name, host: setup.host, port: setup.port, user: setup.user, keep: true, ...(setup.channel ? { channel: setup.channel } : {}), ...saved });
               setRepairSshOpen((n) => n + 1);
               setTab("machines");
             } : undefined}

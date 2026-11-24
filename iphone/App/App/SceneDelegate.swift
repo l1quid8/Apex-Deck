@@ -10,7 +10,36 @@ class AppBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(ApexSshPlugin())
         bridge?.registerPluginInstance(ApexScannerPlugin())
         bridge?.registerPluginInstance(ApexAppearancePlugin())
+        bridge?.registerPluginInstance(ApexAppInfoPlugin())
         bridge?.registerPluginInstance(AppLockPlugin())
+    }
+}
+
+/// Exposes the sealed iOS bundle identity (bundle ID, channel, URL scheme, push topic) to JS.
+@objc(ApexAppInfoPlugin)
+public class ApexAppInfoPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "ApexAppInfoPlugin"
+    public let jsName = "ApexAppInfo"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func getInfo(_ call: CAPPluginCall) {
+        let bundle = Bundle.main
+        let bundleId = bundle.bundleIdentifier ?? "dev.apexdeck.phone"
+        let nightly = bundleId == "dev.apexdeck.phone.nightly"
+        let channel = (bundle.object(forInfoDictionaryKey: "APEXChannel") as? String)
+            ?? (nightly ? "nightly" : "stable")
+        let displayName = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (nightly ? "Deck Nightly" : "Apex Deck")
+        let urlScheme = nightly ? "apexdeck-nightly" : "apexdeck"
+        call.resolve([
+            "bundleId": bundleId,
+            "channel": channel,
+            "displayName": displayName,
+            "urlScheme": urlScheme,
+            "pushTopic": bundleId,
+        ])
     }
 }
 

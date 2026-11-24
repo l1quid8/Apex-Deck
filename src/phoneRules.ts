@@ -46,6 +46,8 @@ export interface MachineSetup {
   user: string;
   /** A sign-in is in the Keychain, behind Face ID. */
   kept: boolean;
+  /** Host channel set up on this server ("stable" | "nightly"). */
+  channel?: "stable" | "nightly";
 }
 
 export type Machine = DirectMachine | PairedMachine;
@@ -255,7 +257,8 @@ export function machinesKey(): string {
 
 const validSetup = (value: unknown): value is MachineSetup => {
   const setup = value as MachineSetup | null | undefined;
-  return !!setup && typeof setup.host === "string" && typeof setup.port === "number" && typeof setup.user === "string" && typeof setup.kept === "boolean";
+  return !!setup && typeof setup.host === "string" && typeof setup.port === "number" && typeof setup.user === "string" && typeof setup.kept === "boolean"
+    && (setup.channel === undefined || setup.channel === "stable" || setup.channel === "nightly");
 };
 
 /** Saved pairs, by WebSocket or QR. A bad entry is dropped; the rest are kept. */

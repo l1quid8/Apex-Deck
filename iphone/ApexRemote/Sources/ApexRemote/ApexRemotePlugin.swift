@@ -105,7 +105,9 @@ private enum Native {
 /// The endpoint key: 32 random bytes in the Keychain, this device only.
 private enum IdentityKey {
     private static let lock = NSLock()
-    private static let service = "dev.apexdeck.remote.identity"
+    private static let service = Bundle.main.bundleIdentifier == "dev.apexdeck.phone.nightly"
+        ? "dev.apexdeck.nightly.remote.identity"
+        : "dev.apexdeck.remote.identity"
     private static let account = "endpoint-key"
     private static let size = 32
 

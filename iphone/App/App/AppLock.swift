@@ -29,7 +29,14 @@ final class AppLock {
     static let grace: TimeInterval = 60
     /// A successful unlock is not immediately undone by the scene notices the Face ID sheet itself sends.
     private static let settle: TimeInterval = 2
-    private static let enabledKey = "dev.apexdeck.phone.lock.enabled"
+    private static var isNightly: Bool { Bundle.main.bundleIdentifier == "dev.apexdeck.phone.nightly" }
+    private static var appDisplayName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (isNightly ? "Deck Nightly" : "Apex Deck")
+    }
+    private static let enabledKey = isNightly
+        ? "dev.apexdeck.phone.nightly.lock.enabled"
+        : "dev.apexdeck.phone.lock.enabled"
 
     weak var window: UIWindow?
     private(set) var locked = false
@@ -132,7 +139,7 @@ final class AppLock {
         let context = LAContext()
         context.localizedCancelTitle = "Cancel"
         context.localizedFallbackTitle = "Use Passcode"
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock Apex Deck") { [weak self] success, _ in
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock \(AppLock.appDisplayName)") { [weak self] success, _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { done?(false); return }
                 self.asking = false
@@ -194,7 +201,7 @@ final class AppLock {
     private func setRetryVisible() {
         retry?.isHidden = !(locked && available && !asking)
         note?.text = locked && !available
-            ? "Apex Deck can't lock without a passcode on this iPhone."
+            ? "\(AppLock.appDisplayName) can't lock without a passcode on this iPhone."
             : "Locked"
     }
 
@@ -203,7 +210,7 @@ final class AppLock {
         view.backgroundColor = UIColor(red: 0.035, green: 0.051, blue: 0.071, alpha: 1) // the app's own #090d12
         view.isUserInteractionEnabled = true
         view.accessibilityViewIsModal = true
-        view.accessibilityLabel = "Apex Deck is locked"
+        view.accessibilityLabel = "\(AppLock.appDisplayName) is locked"
 
         let icon = UIImageView(image: UIImage(systemName: "lock.fill"))
         icon.tintColor = UIColor(red: 0.35, green: 0.85, blue: 0.69, alpha: 1)  // mint, as in the app
@@ -213,7 +220,7 @@ final class AppLock {
         icon.heightAnchor.constraint(equalToConstant: 34).isActive = true
 
         let title = UILabel()
-        title.text = "Apex Deck"
+        title.text = AppLock.appDisplayName
         title.textColor = .white
         title.font = .systemFont(ofSize: 20, weight: .semibold)
 

@@ -71,6 +71,7 @@ export class PersonalAssistantsCollection {
   private clock = 0;
   private bridges = new Set<string>();
   private pushRegistered = new Set<string>();
+  private pushTopicPromise?: Promise<string | undefined>;
   private token?: string;
   private zones = new Set<string>();
   localHostId?: string;
@@ -374,14 +375,30 @@ export class PersonalAssistantsCollection {
       finally { this.bridges.delete(key); }
     }));
   };
+  private pushTopic(): Promise<string | undefined> {
+    if (this.pushTopicPromise) return this.pushTopicPromise;
+    const plugin = (globalThis as unknown as { Capacitor?: { Plugins?: { ApexAppInfo?: AppInfoPlugin } } }).Capacitor?.Plugins?.ApexAppInfo;
+    if (!plugin?.getInfo) return Promise.resolve(undefined);
+    this.pushTopicPromise = plugin.getInfo().then(
+      info => {
+        const candidate = typeof info?.pushTopic === "string" ? info.pushTopic : typeof info?.bundleId === "string" ? info.bundleId : undefined;
+        return candidate && ALLOWED_PUSH_TOPICS.has(candidate) ? candidate : undefined;
+      },
+      () => { this.pushTopicPromise = undefined; return undefined; },
+    );
+    return this.pushTopicPromise;
+  }
   registerPushToken = async (token: string) => {
     this.token = token;
+    const topic = await this.pushTopic();
     await Promise.all([...this.rows.values()].map(async row => {
-      const key = JSON.stringify([assistantIdentityKey(row.ref), token]);
+      const key = JSON.stringify([assistantIdentityKey(row.ref), token, topic ?? ""]);
       if (row.assistant.archivedAt!=null || this.pushRegistered.has(key) || this.offline(row)) return;
       const bound = this.captured(row.ref); if (!bound) return;
       this.pushRegistered.add(key);
-      try { await bound.route.call("personal_push_register", { assistantId: bound.need(), token }); }
+      try {
+        await bound.route.call("personal_push_register", topic ? { assistantId: bound.need(), token, topic } : { assistantId: bound.need(), token });
+      }
       catch { this.pushRegistered.delete(key); }
     }));
   };
@@ -421,6 +438,10 @@ export class PersonalAssistantsCollection {
   };
 }
 
+const ALLOWED_PUSH_TOPICS = new Set(["dev.apexdeck.phone", "dev.apexdeck.phone.nightly"]);
+type AppInfoPlugin = {
+  getInfo(): Promise<{ bundleId?: string; pushTopic?: string; channel?: string }>;
+};
 type PushPlugin = {
   requestPermissions(): Promise<{ receive: string }>; register(): Promise<void>;
   addListener(event: string, callback: (data: unknown) => void): Promise<{ remove(): Promise<void> | void }>;

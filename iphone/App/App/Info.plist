@@ -2,14 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>APEXChannel</key>
+	<string>$(APP_CHANNEL)</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Unlocks Apex Deck when it opens, and opens SSH sign-ins you chose to keep.</string>
+	<string>Unlocks $(APP_DISPLAY_NAME) when it opens, and opens SSH sign-ins you chose to keep.</string>
 	<key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Apex Deck</string>
+	<string>$(APP_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -42,7 +44,7 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Your words are turned into text on this iPhone so you can talk to your assistant.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Apex Deck connects to your Mac and servers on this network.</string>
+	<string>$(APP_DISPLAY_NAME) connects to your Mac and servers on this network.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -74,10 +76,10 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>Apex Deck</string>
+			<string>$(APP_DISPLAY_NAME)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>apexdeck</string>
+				<string>$(APP_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>

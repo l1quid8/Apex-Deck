@@ -91,7 +91,9 @@ private actor Connections {
 
 /// Key, passphrase and password as JSON, in the Keychain behind Face ID.
 private enum SavedSignIn {
-    private static let service = "dev.apexdeck.ssh.signin"
+    private static let service = Bundle.main.bundleIdentifier == "dev.apexdeck.phone.nightly"
+        ? "dev.apexdeck.nightly.ssh.signin"
+        : "dev.apexdeck.ssh.signin"
 
     private static func query(_ id: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,

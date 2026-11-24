@@ -281,3 +281,15 @@ test("an expired link uses the existing expired words", async () => {
   assert.deepEqual(run.invalid, ["This code has expired. Press Pair phone on the machine for a new one."]);
   assert.deepEqual(run.started, []);
 });
+
+test("an apexdeck-nightly:// cold-start and warm link starts pairing cleanly", async () => {
+  const app = fakeApp();
+  const nightlyUrl = link().replace(/^apexdeck:\/\//, "apexdeck-nightly://");
+  app.setLaunch({ url: nightlyUrl });
+  const run = session(app, async () => "paired");
+  const launch = await run.launch;
+  await flush();
+  assert.equal(launch, nightlyUrl);
+  assert.deepEqual(run.started, [nightlyUrl]);
+  assert.deepEqual(run.invalid, []);
+});

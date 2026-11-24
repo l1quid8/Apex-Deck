@@ -1661,6 +1661,7 @@ export type Command = {
   args: {
     assistantId: string;
     token: string;
+    topic?: string | null;
   };
   cmd: "personal_push_register";
 } | {
@@ -3968,6 +3969,7 @@ export interface Commands {
   personal_push_register: {
     assistantId: string;
     token: string;
+    topic?: string | null;
   };
   personal_react: {
     assistantId: string;

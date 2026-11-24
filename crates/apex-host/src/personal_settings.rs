@@ -244,12 +244,19 @@ impl crate::Host {
         })
     }
 
-    pub fn personal_push_register(&self, id: &str, token: &str) -> Result<Changed, String> {
+    pub fn personal_push_register(&self, id: &str, token: &str, topic: Option<&str>) -> Result<Changed, String> {
         let token = token.trim();
         if token.len() < 32 || token.len() > 200 || !token.chars().all(|c| c.is_ascii_hexdigit()) { return Err("That isn't an Apple push token.".into()); }
+        let topic = match topic.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) if matches!(t, "dev.apexdeck.phone" | "dev.apexdeck.phone.nightly") => Some(t.to_owned()),
+            Some(_) => return Err("That isn't a recognized Apple push topic.".into()),
+            None => None,
+        };
         self.changed(id, |assistant| {
-            if !assistant.push_devices.iter().any(|d| d.token == token) {
-                assistant.push_devices.push(PushDevice { token: token.to_owned(), added_at: now() });
+            if let Some(existing) = assistant.push_devices.iter_mut().find(|d| d.token == token) {
+                if topic.is_some() { existing.topic = topic; }
+            } else {
+                assistant.push_devices.push(PushDevice { token: token.to_owned(), added_at: now(), topic });
                 if assistant.push_devices.len() > 10 { assistant.push_devices.remove(0); }
             }
             Ok(())
@@ -556,6 +563,32 @@ mod personal_workspace_tests {
         assert!(error.contains("nothing was sent"),"{error}");
         assert_eq!(host.personal_get("asst-1").unwrap(),before);
         let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn personal_push_register_stores_validated_channel_topics_and_rejects_unknown_ones() {
+        let (root, host, _) = fixture().await;
+        let stable_token = "a".repeat(64);
+        let nightly_token = "b".repeat(64);
+        let legacy_token = "c".repeat(64);
+
+        host.personal_push_register("asst-1", &legacy_token, None).unwrap();
+        host.personal_push_register("asst-1", &stable_token, Some("dev.apexdeck.phone")).unwrap();
+        host.personal_push_register("asst-1", &nightly_token, Some("dev.apexdeck.phone.nightly")).unwrap();
+        assert!(host.personal_push_register("asst-1", &nightly_token, Some("com.example.other")).is_err());
+
+        let devices = host.personal_get("asst-1").unwrap().push_devices;
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0].topic, None);
+        assert_eq!(devices[1].topic.as_deref(), Some("dev.apexdeck.phone"));
+        assert_eq!(devices[2].topic.as_deref(), Some("dev.apexdeck.phone.nightly"));
+
+        // Re-registering an existing token with a topic updates it in place.
+        host.personal_push_register("asst-1", &legacy_token, Some("dev.apexdeck.phone.nightly")).unwrap();
+        let updated = host.personal_get("asst-1").unwrap().push_devices;
+        assert_eq!(updated.len(), 3);
+        assert_eq!(updated[0].topic.as_deref(), Some("dev.apexdeck.phone.nightly"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
 }

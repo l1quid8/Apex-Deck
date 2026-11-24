@@ -467,7 +467,7 @@ mod tests {
         async fn link_from(screen: &mut mpsc::UnboundedReceiver<String>) -> Invite {
             loop {
                 let line = tokio::time::timeout(std::time::Duration::from_secs(10), screen.recv()).await.expect("the link in time").expect("the CLI printed a link");
-                if line.starts_with("apexdeck://pair?p=") {
+                if line.starts_with("apexdeck://pair?p=") || line.starts_with("apexdeck-nightly://pair?p=") {
                     return Invite::parse_link(&line, crate::devices::now_ms() / 1000).unwrap();
                 }
             }
