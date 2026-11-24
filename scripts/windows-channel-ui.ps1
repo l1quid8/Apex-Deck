@@ -30,6 +30,84 @@ function Find-Control([string]$name, $type) {
   $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
+function Write-UiFailureContext([string]$name) {
+  $app.Refresh()
+  $hwnd = $app.MainWindowHandle
+  Write-Host "UIA client session $([Diagnostics.Process]::GetCurrentProcess().SessionId), app session $($app.SessionId), HWND $hwnd, title '$($app.MainWindowTitle)'"
+  if ($hwnd -eq [IntPtr]::Zero) { return }
+  $window = [Windows.Automation.AutomationElement]::FromHandle($hwnd)
+  $scope = [Windows.Automation.TreeScope]::Descendants
+  $named = $window.FindFirst($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $name))
+  if ($named) { Write-Host "First '$name' match has type $($named.Current.ControlType.ProgrammaticName), enabled $($named.Current.IsEnabled), offscreen $($named.Current.IsOffscreen)" }
+  $windows = [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,
+    [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty, $AppId))
+  foreach ($top in $windows | Select-Object -First 8) {
+    Write-Host "App window $($top.Current.NativeWindowHandle) class '$($top.Current.ClassName)' title '$($top.Current.Name)'"
+  }
+  $document = $window.FindFirst($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document))
+  $start = if ($document) { $document } else { $window }
+  Write-Host "UIA document present: $([bool]$document). Raw accessibility tree (up to 64 nodes):"
+  $walker = [Windows.Automation.TreeWalker]::RawViewWalker
+  $rows = [Collections.Generic.List[string]]::new()
+  function Add-UiNode($node, [int]$depth) {
+    $current = $node.Current
+    $label = ($current.Name -replace '\s+', ' ').Trim()
+    if ($label.Length -gt 120) { $label = $label.Substring(0,120) }
+    $rows.Add(("{0}{1} [{2}/{3}] enabled={4} '{5}'" -f (' ' * $depth), $current.ControlType.ProgrammaticName, $current.FrameworkId, $current.ClassName, $current.IsEnabled, $label))
+    if ($rows.Count -ge 64) { return }
+    $child = $walker.GetFirstChild($node)
+    while ($child) {
+      Add-UiNode $child ($depth + 1)
+      if ($rows.Count -ge 64) { return }
+      $child = $walker.GetNextSibling($child)
+    }
+  }
+  Add-UiNode $start 0
+  foreach ($row in $rows) { Write-Host $row }
+}
+
+function Save-UiWindow {
+  if (!$env:RUNNER_TEMP -or !$env:GITHUB_ACTIONS) { return }
+  $folder = Join-Path $env:RUNNER_TEMP 'apex-channel-ui'
+  $file = Join-Path $folder "$Channel.png"
+  $hwnd = $app.MainWindowHandle
+  if ($hwnd -eq [IntPtr]::Zero -or (Test-Path -LiteralPath $file)) { return }
+  Add-Type -AssemblyName System.Drawing
+  if (!('ChannelUiCapture' -as [type])) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class ChannelUiCapture {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Rect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr window, out Rect bounds);
+    [DllImport("user32.dll")]
+    public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+}
+'@
+  }
+  $rect = [ChannelUiCapture+Rect]::new()
+  if (![ChannelUiCapture]::GetWindowRect($hwnd, [ref]$rect)) { throw "No bounds for HWND $hwnd" }
+  $width = $rect.Right - $rect.Left
+  $height = $rect.Bottom - $rect.Top
+  if ($width -lt 1 -or $height -lt 1 -or $width -gt 4096 -or $height -gt 4096) { throw "Unexpected window dimensions ${width}x$height" }
+  $bitmap = [Drawing.Bitmap]::new($width, $height)
+  try {
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+      $dc = $graphics.GetHdc()
+      try {
+        # PW_RENDERFULLCONTENT captures only this HWND, including when the other channel covers it.
+        if (![ChannelUiCapture]::PrintWindow($hwnd, $dc, 2)) { throw "PrintWindow failed for HWND $hwnd" }
+      } finally { $graphics.ReleaseHdc($dc) }
+    } finally { $graphics.Dispose() }
+    $null = [IO.Directory]::CreateDirectory($folder)
+    $bitmap.Save($file, [Drawing.Imaging.ImageFormat]::Png)
+    Write-Host "Saved $Channel window to $file"
+  } finally { $bitmap.Dispose() }
+}
+
 function Wait-Control([string]$name, $type) {
   $deadline = [DateTime]::UtcNow.AddSeconds(45)
   do {
@@ -40,6 +118,8 @@ function Wait-Control([string]$name, $type) {
     } catch [Windows.Automation.ElementNotAvailableException] { }
     Start-Sleep -Milliseconds 300
   } while ([DateTime]::UtcNow -lt $deadline)
+  try { Save-UiWindow } catch { Write-Warning "Window capture failed: $_" }
+  try { Write-UiFailureContext $name } catch { Write-Warning "UIA diagnosis failed: $_" }
   throw "UI Automation could not find enabled '$name' in $Channel PID $AppId, HWND $($app.MainWindowHandle), session $($app.SessionId)"
 }
 

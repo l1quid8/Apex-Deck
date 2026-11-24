@@ -145,10 +145,11 @@ $buildEnvironment = @(Get-ChildItem Env:APEX_*)
 $verifySignatures = $env:APEX_DECK_WIN_SIGN -eq '1'
 $uiScript = Join-Path $PSScriptRoot 'windows-channel-ui.ps1'
 $run = [guid]::NewGuid().ToString('N').Substring(0,8)
-$uiErrors = [Collections.Generic.List[string]]::new()
+$uiErrors = @{}
 # Continue the installer checks when an interactive desktop is unavailable.
-function CheckUI($action) {
-  try { & $action } catch { $uiErrors.Add($_.Exception.Message); Write-Warning $_ }
+function CheckUI([string]$channelName, $action) {
+  if ($uiErrors.ContainsKey($channelName)) { return }
+  try { & $action } catch { $uiErrors[$channelName] = $_.Exception.Message; Write-Warning $_ }
 }
 try {
   foreach ($variable in $buildEnvironment) { Remove-Item -LiteralPath "Env:$($variable.Name)" }
@@ -167,14 +168,12 @@ try {
   $nightly = Snapshot $channels.nightly 'before Nightly upgrade'
   Survived $stable (Snapshot $channels.stable 'after first Nightly install')
   if ($stable.endpoint -eq $nightly.endpoint -or $stable.uninstall -eq $nightly.uninstall) { throw 'Channel identity collision' }
-  CheckUI {
-    & $uiScript -Channel stable -AppId $stable.app[0] -CreateSample -Post "stable-$run"
-    & $uiScript -Channel nightly -AppId $nightly.app[0] -CreateSample -Post "nightly-$run" -Exclude "stable-$run"
-  }
+  CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -CreateSample -Post "stable-$run" }
+  CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -CreateSample -Post "nightly-$run" -Exclude "stable-$run" }
   $stable = Relaunch $stable $channels.stable
   $nightly = Relaunch $nightly $channels.nightly
-  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Expect "stable-$run" -Exclude "nightly-$run" }
-  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect "nightly-$run" -Exclude "stable-$run" }
+  CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -Expect "stable-$run" -Exclude "nightly-$run" }
+  CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect "nightly-$run" -Exclude "stable-$run" }
   Setup $NightlySetup
   $current = AssertNightlyBuild $NightlySetup
   if ($PreviousNightlySetup -and ($current -le $previous -or
@@ -191,7 +190,7 @@ try {
     } finally { Remove-Item Env:APEX_CHANNEL,Env:APEX_BUILD_NUMBER }
   }
   Survived $stable (Snapshot $channels.stable 'after Nightly upgrade')
-  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Post "stable-after-upgrade-$run" }
+  CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -Post "stable-after-upgrade-$run" }
   StartChannel $channels.nightly
   $null = Snapshot $channels.nightly 'before Nightly uninstall'
   $nightlyRoot = Join-Path $env:ProgramFiles $channels.nightly.PRODUCT
@@ -201,7 +200,7 @@ try {
   Setup $uninstaller @('/S', '/allusers', "_?=$nightlyRoot")
   Survived $stable (Snapshot $channels.stable 'after Nightly uninstall')
   TestAuthority stable
-  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Post "stable-after-uninstall-$run" -Expect "stable-$run" }
+  CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -Post "stable-after-uninstall-$run" -Expect "stable-$run" }
   if ((InstalledEntry $channels.nightly) -or (Get-Service $channels.nightly.WINDOWS_SERVICE -ErrorAction SilentlyContinue) -or
       (Get-ScheduledTask -TaskName $channels.nightly.WINDOWS_TASK -ErrorAction SilentlyContinue)) { throw 'Nightly registration survived uninstall' }
   Setup $NightlySetup
@@ -210,12 +209,12 @@ try {
   $null = Snapshot $channels.stable 'before Stable upgrade'
   Setup $StableSetup
   Survived $nightly (Snapshot $channels.nightly 'after candidate Stable installer')
-  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Post "nightly-after-stable-$run" -Expect "nightly-$run" }
+  CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -Post "nightly-after-stable-$run" -Expect "nightly-$run" }
   StartChannel $channels.stable
   Setup $ExistingStableSetup
   Survived $nightly (Snapshot $channels.nightly 'after shipped Stable installer')
   TestAuthority nightly
-  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Post "nightly-after-historical-$run" }
+  CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -Post "nightly-after-historical-$run" }
   StartChannel $channels.stable
   $null = Snapshot $channels.stable 'before Stable upgrade from shipped build'
   Setup $StableSetup
@@ -227,9 +226,9 @@ try {
   $nightly = Relaunch $nightly $channels.nightly
   $stableMessages = @("stable-$run","stable-after-upgrade-$run","stable-after-uninstall-$run")
   $nightlyMessages = @("nightly-$run","nightly-after-stable-$run","nightly-after-historical-$run")
-  CheckUI { & $uiScript -Channel stable -AppId $stable.app[0] -Expect $stableMessages -Exclude $nightlyMessages }
-  CheckUI { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect $nightlyMessages -Exclude $stableMessages }
-  if ($uiErrors.Count) { throw ($uiErrors -join [Environment]::NewLine) }
+  CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -Expect $stableMessages -Exclude $nightlyMessages }
+  CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect $nightlyMessages -Exclude $stableMessages }
+  if ($uiErrors.Count) { throw ($uiErrors.Values -join [Environment]::NewLine) }
 } finally {
   foreach ($variable in $buildEnvironment) { Set-Item -LiteralPath "Env:$($variable.Name)" -Value $variable.Value }
 }

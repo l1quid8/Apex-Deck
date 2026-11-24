@@ -352,6 +352,14 @@ jobs:
           $nightly = (Get-ChildItem installers/installer-to-verify-nightly/*_x64-Setup.exe).FullName
           $previous = (Get-ChildItem installers/installer-to-verify-nightly-previous/*_x64-Setup.exe).FullName
           ./scripts/windows-channel-lifecycle.ps1 -StableSetup installers/installer-to-verify-stable/Apex-Deck-Setup.exe -NightlySetup $nightly -PreviousNightlySetup $previous -ExistingStableSetup $oldStable
+      - name: Keep failed UI window captures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-channel-ui
+          path: ${{ runner.temp }}/apex-channel-ui/*.png
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Keep the verified Nightly installer and its release-owner artifacts
         uses: actions/upload-artifact@v4
         with:
