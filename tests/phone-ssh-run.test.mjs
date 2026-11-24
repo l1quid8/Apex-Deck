@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { ConnectFailure, olderThan, readFeed, runSetup } from "../src/phone/sshRun.ts";
-import { PAIR, findService, pairCommand, report, shellQuote, startPlain, startUser, stopUserService } from "../src/phone/sshScripts.ts";
+import { PAIR, dataFolderCheck, findService, pairCommand, report, shellQuote, startPlain, startUser, stopUserService, trustCheckScript } from "../src/phone/sshScripts.ts";
 import { channelFromAppInfo, resolveAppChannel, verifiedChannelFromAppInfo } from "../src/phone/appChannel.ts";
 import { loadMachines, saveMachines } from "../src/phoneRules.ts";
 
@@ -39,7 +43,7 @@ function server(over = {}) {
     if (command.includes("show -p ControlGroup")) return { stdout: `switched=${over.switched ?? "now"}\n` };
     if (command.includes("remote on")) return { stdout: "remote=on\n" };
     if (command.includes("claude-login")) return { stdout: answers.tools };
-    if (command.includes("dev.apexdeck.app") && command.includes("ls -d")) {
+    if (command.includes("dev.apexdeck.app") && command.includes("__nodata__")) {
       // fresh server override: if over.fresh true, return __nodata__
       if (over.fresh) return { stdout: "__nodata__\n" };
       // existing server: return folder path
@@ -505,10 +509,10 @@ function twoChannelVps(initial = {}) {
         }
         return { code: 0, stdout: "installed=yes\n", stderr: "" };
       }
-      if (command.includes("ls -d") && command.includes("dev.apexdeck.app.nightly")) {
+      if (command.includes("__nodata__") && command.includes("dev.apexdeck.app.nightly")) {
         return { code: 0, stdout: state.nightly.hasDataFolder ? "/home/demo/.local/share/dev.apexdeck.app.nightly\n" : "__nodata__\n", stderr: "" };
       }
-      if (command.includes("ls -d") && command.includes("dev.apexdeck.app")) {
+      if (command.includes("__nodata__") && command.includes("dev.apexdeck.app")) {
         return { code: 0, stdout: state.stable.hasDataFolder ? "/home/demo/.local/share/dev.apexdeck.app\n" : "__nodata__\n", stderr: "" };
       }
       if (command.includes("apex-daemon-nightly@demo.service") && command.includes("cat >")) {
@@ -538,10 +542,10 @@ function twoChannelVps(initial = {}) {
         state.stable.remoteOnCalls += 1;
         return { code: 0, stdout: "remote=on\n", stderr: "" };
       }
-      if (command.includes("dev.apexdeck.app.nightly/host-trust.json")) {
+      if (command.includes("host-trust.json") && command.includes("dev.apexdeck.app.nightly")) {
         return { code: 0, stdout: state.nightly.trusted ? JSON.stringify({ trusted: true, trusted_at_ms: 1700000000000 }) : "__notrust__\n", stderr: "" };
       }
-      if (command.includes("dev.apexdeck.app/host-trust.json")) {
+      if (command.includes("host-trust.json") && command.includes("dev.apexdeck.app")) {
         return { code: 0, stdout: state.stable.trusted ? JSON.stringify({ trusted: true, trusted_at_ms: 1700000000000 }) : "__notrust__\n", stderr: "" };
       }
       if (command.includes("apex-daemon-nightly trust-host")) {
@@ -873,5 +877,166 @@ test("missing or malformed ApexAppInfo on native iOS fails closed with zero remo
   } finally {
     if (prevCap === undefined) delete globalThis.Capacitor;
     else globalThis.Capacitor = prevCap;
+  }
+});
+
+function runPosixShell(script, env) {
+  const cleanEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env };
+  if (env.XDG_DATA_HOME === undefined) delete cleanEnv.XDG_DATA_HOME;
+  const result = spawnSync("/bin/sh", ["-c", script], { env: cleanEnv, encoding: "utf8" });
+  assert.equal(result.error, undefined);
+  return { code: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+test("generated dataFolderCheck and trustCheckScript resolve XDG_DATA_HOME once when unset, set, empty, or relative", { skip: process.platform === "win32" && "POSIX sh check" }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "apex-ssh-xdg-"));
+  try {
+    const home = path.join(root, "home with spaces");
+    const xdg = path.join(root, "custom xdg");
+    const homeStable = path.join(home, ".local", "share", "dev.apexdeck.app");
+    const homeNightly = path.join(home, ".local", "share", "dev.apexdeck.app.nightly");
+    const xdgNightly = path.join(xdg, "dev.apexdeck.app.nightly");
+    fs.mkdirSync(homeStable, { recursive: true });
+    fs.writeFileSync(path.join(homeStable, "host-trust.json"), JSON.stringify({ trusted: true, source: "home-stable" }));
+
+    // 1. XDG_DATA_HOME unset: existing Stable dir must NOT make Nightly look existing.
+    const missingNightly = runPosixShell(dataFolderCheck("nightly"), { HOME: home });
+    assert.equal(missingNightly.code, 0);
+    assert.equal(missingNightly.stdout.trim(), "__nodata__");
+    const missingTrust = runPosixShell(trustCheckScript("nightly"), { HOME: home });
+    assert.equal(missingTrust.code, 0);
+    assert.equal(missingTrust.stdout.trim(), "__notrust__");
+
+    // 2. XDG_DATA_HOME unset with existing Nightly dir: must print ONLY the directory (never __nodata__).
+    fs.mkdirSync(homeNightly, { recursive: true });
+    const existingHome = runPosixShell(dataFolderCheck("nightly"), { HOME: home });
+    assert.equal(existingHome.code, 0);
+    assert.equal(existingHome.stdout.trim(), homeNightly);
+    assert.equal(existingHome.stdout.includes("__nodata__"), false, "existing dir with unset XDG_DATA_HOME must not print __nodata__");
+
+    // Existing Nightly dir without host-trust.json reports __notrust__ (does not bleed from Stable).
+    assert.equal(runPosixShell(trustCheckScript("nightly"), { HOME: home }).stdout.trim(), "__notrust__");
+    fs.writeFileSync(path.join(homeNightly, "host-trust.json"), JSON.stringify({ trusted: true, source: "home-nightly" }));
+    assert.deepEqual(JSON.parse(runPosixShell(trustCheckScript("nightly"), { HOME: home }).stdout), { trusted: true, source: "home-nightly" });
+
+    // Stable with XDG_DATA_HOME unset also resolves cleanly with no __nodata__.
+    const existingStable = runPosixShell(dataFolderCheck("stable"), { HOME: home });
+    assert.equal(existingStable.stdout.trim(), homeStable);
+    assert.equal(existingStable.stdout.includes("__nodata__"), false);
+    assert.deepEqual(JSON.parse(runPosixShell(trustCheckScript("stable"), { HOME: home }).stdout), { trusted: true, source: "home-stable" });
+
+    // 3. XDG_DATA_HOME set to absolute path where Nightly dir does NOT exist: must ignore $HOME/.local/share.
+    fs.mkdirSync(xdg, { recursive: true });
+    const xdgAbsent = runPosixShell(dataFolderCheck("nightly"), { HOME: home, XDG_DATA_HOME: xdg });
+    assert.equal(xdgAbsent.code, 0);
+    assert.equal(xdgAbsent.stdout.trim(), "__nodata__");
+    const xdgTrustAbsent = runPosixShell(trustCheckScript("nightly"), { HOME: home, XDG_DATA_HOME: xdg });
+    assert.equal(xdgTrustAbsent.stdout.trim(), "__notrust__");
+
+    // 4. XDG_DATA_HOME set (with and without trailing slash) where Nightly dir + trust file DO exist.
+    fs.mkdirSync(xdgNightly, { recursive: true });
+    fs.writeFileSync(path.join(xdgNightly, "host-trust.json"), JSON.stringify({ trusted: true, source: "xdg-nightly" }));
+    for (const xdgValue of [xdg, `${xdg}/`]) {
+      const xdgFound = runPosixShell(dataFolderCheck("nightly"), { HOME: home, XDG_DATA_HOME: xdgValue });
+      assert.equal(xdgFound.code, 0);
+      assert.equal(xdgFound.stdout.trim(), xdgNightly);
+      assert.equal(xdgFound.stdout.includes("__nodata__"), false);
+      const xdgTrust = runPosixShell(trustCheckScript("nightly"), { HOME: home, XDG_DATA_HOME: xdgValue });
+      assert.equal(xdgTrust.code, 0);
+      assert.deepEqual(JSON.parse(xdgTrust.stdout), { trusted: true, source: "xdg-nightly" });
+    }
+
+    // 5. Empty or relative XDG_DATA_HOME falls back to $HOME/.local/share, matching apex-daemon paths.rs.
+    for (const fallbackXdg of ["", "relative/xdg"]) {
+      const fallbackDir = runPosixShell(dataFolderCheck("nightly"), { HOME: home, XDG_DATA_HOME: fallbackXdg });
+      assert.equal(fallbackDir.stdout.trim(), homeNightly);
+      assert.equal(fallbackDir.stdout.includes("__nodata__"), false);
+      assert.deepEqual(
+        JSON.parse(runPosixShell(trustCheckScript("nightly"), { HOME: home, XDG_DATA_HOME: fallbackXdg }).stdout),
+        { trusted: true, source: "home-nightly" },
+      );
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runSetup with real generated directory and trust shell avoids fresh trust reset on existing Nightly hosts with XDG unset or set", { skip: process.platform === "win32" && "POSIX sh check" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "apex-ssh-run-xdg-"));
+  try {
+    const home = path.join(root, "home");
+    const xdg = path.join(root, "xdg");
+    fs.mkdirSync(path.join(home, ".local", "share", "dev.apexdeck.app"), { recursive: true });
+    fs.mkdirSync(path.join(home, ".local", "share", "dev.apexdeck.app.nightly"), { recursive: true });
+    fs.mkdirSync(path.join(xdg, "dev.apexdeck.app.nightly"), { recursive: true });
+    fs.writeFileSync(
+      path.join(xdg, "dev.apexdeck.app.nightly", "host-trust.json"),
+      JSON.stringify({ trusted: true, trusted_at_ms: 1700000000000 }),
+    );
+
+    const runWithShellEnv = async (env) => {
+      const vps = twoChannelVps({
+        nightly: {
+          bin: "/usr/local/bin/apex-daemon-nightly",
+          version: `apex-daemon 0.9.19 (${NIGHTLY_COMMIT.slice(0, 12)})`,
+          sha256: NIGHTLY_SHA,
+          serviceActive: true,
+        },
+      });
+      const baseExec = vps.session.exec;
+      vps.session.exec = async (command, options) => {
+        if (command.includes("__nodata__") || command.includes("__notrust__")) {
+          vps.ran.push(command);
+          return runPosixShell(command, env);
+        }
+        return baseExec(command, options);
+      };
+      const events = [];
+      const started = runSetup(request({ label: "VPS Nightly" }), {
+        connect: async () => vps.session,
+        channel: "nightly",
+        knownKey: () => null,
+        rememberKey: () => {},
+        keep: async () => {},
+        save: () => {},
+        pair(_link, onCode) {
+          const done = (async () => {
+            const ack = onCode("222333");
+            vps.state.onLine(JSON.stringify({ event: "claim", code: "222333" }));
+            await ack;
+            return { hostEndpointId: NIGHTLY_ENDPOINT, addrs: [], name: "vps-nightly" };
+          })();
+          return { done, cancel() {} };
+        },
+      }, (event) => {
+        events.push(event);
+        if (event.kind === "trust") started.decideTrust(true);
+      });
+      await started.done;
+      return { events, vps };
+    };
+
+    // Case 1: Existing Nightly dir (untrusted) with XDG_DATA_HOME unset -> MUST NOT prompt fresh trust reset.
+    const unsetRun = await runWithShellEnv({ HOME: home });
+    assert.equal(unsetRun.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(unsetRun.events));
+    assert.equal(unsetRun.events.some((e) => e.kind === "trust"), false, "existing Nightly folder with XDG unset must not trigger fresh trust prompt");
+    assert.equal(unsetRun.vps.state.nightly.trustHostCalls, 0);
+
+    // Case 2: Existing Nightly dir (trusted) under XDG_DATA_HOME -> MUST NOT prompt fresh trust reset and logs existing trust.
+    const xdgRun = await runWithShellEnv({ HOME: home, XDG_DATA_HOME: xdg });
+    assert.equal(xdgRun.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(xdgRun.events));
+    assert.equal(xdgRun.events.some((e) => e.kind === "trust"), false, "existing Nightly folder under XDG_DATA_HOME must not trigger fresh trust prompt");
+    assert.ok(xdgRun.events.some((e) => e.kind === "step" && e.id === "trust" && e.text.startsWith("Host trusted on")));
+    assert.equal(xdgRun.vps.state.nightly.trustHostCalls, 0);
+
+    // Case 3: Fresh Nightly under a new XDG_DATA_HOME (even though $HOME has Stable + Nightly) -> DOES prompt fresh trust.
+    const freshXdg = path.join(root, "fresh-xdg");
+    fs.mkdirSync(freshXdg, { recursive: true });
+    const freshRun = await runWithShellEnv({ HOME: home, XDG_DATA_HOME: freshXdg });
+    assert.equal(freshRun.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(freshRun.events));
+    assert.equal(freshRun.events.some((e) => e.kind === "trust" && e.fresh === true), true, "fresh Nightly host must still offer trust");
+    assert.equal(freshRun.vps.state.nightly.trustHostCalls, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

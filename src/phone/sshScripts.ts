@@ -283,16 +283,20 @@ exit 5
 
 export const REMOTE_ON = remoteOn("stable");
 
+/** Resolve the channel's Linux data directory once, matching apex-daemon's XDG rule. */
+const channelDataDir = (cfg: ChannelScripts): string =>
+  `data_root="\${XDG_DATA_HOME:-$HOME/.local/share}"; case "$data_root" in /*) ;; *) data_root="$HOME/.local/share" ;; esac; data_dir="\${data_root%/}/${cfg.dataDirName}"`;
+
 /** Check whether this channel's data folder already exists before Deck starts. */
 export const dataFolderCheck = (channel: HostChannel = "stable"): string => {
   const cfg = hostChannelConfig(channel);
-  return `ls -d ~/.local/share/${cfg.dataDirName} $XDG_DATA_HOME/${cfg.dataDirName} $HOME/.local/share/${cfg.dataDirName} 2>/dev/null || echo __nodata__`;
+  return `${channelDataDir(cfg)}; if [ -d "$data_dir" ]; then printf '%s\\n' "$data_dir"; else echo __nodata__; fi`;
 };
 
 /** Read this channel's host-trust.json, if present. */
 export const trustCheckScript = (channel: HostChannel = "stable"): string => {
   const cfg = hostChannelConfig(channel);
-  return `cat ~/.local/share/${cfg.dataDirName}/host-trust.json 2>/dev/null || cat $HOME/.local/share/${cfg.dataDirName}/host-trust.json 2>/dev/null || cat $XDG_DATA_HOME/${cfg.dataDirName}/host-trust.json 2>/dev/null || echo __notrust__`;
+  return `${channelDataDir(cfg)}; if [ -r "$data_dir/host-trust.json" ]; then cat "$data_dir/host-trust.json" || echo __notrust__; else echo __notrust__; fi`;
 };
 
 /** Mark this channel's host trusted without rebooting. */
