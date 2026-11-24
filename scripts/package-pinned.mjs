@@ -31,12 +31,53 @@ import {
 
 const log = (message) => console.log(`package-pinned: ${message}`);
 
+const FULL_SHA_RE = /^[a-f0-9]{40}$/i;
+const SHORT_SHA_RE = /^[a-f0-9]{7,39}$/i;
+
 function git(args) {
   try {
     return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     return null;
   }
+}
+
+/// Resolve the full 40-char checkout HEAD and validate any pinned
+/// APEX_BUILD_COMMIT before packaging begins. The stamp exported to vite and
+/// cargo always uses the canonical 12-char prefix so macOS UI/daemon builds
+/// agree with Linux daemons built from the same commit.
+export function resolvePinnedCheckout({ env = process.env, git: runGit = git } = {}) {
+  const fullCommit = (runGit(['rev-parse', '--verify', 'HEAD']) ?? '').trim().toLowerCase();
+  const pinned = (env.APEX_BUILD_COMMIT ?? '').trim().toLowerCase();
+  if (pinned) {
+    if (!FULL_SHA_RE.test(fullCommit)) {
+      throw new Error(`unable to verify checkout HEAD against pinned commit ${pinned}; refusing to ship an unverified build`);
+    }
+    const matches = FULL_SHA_RE.test(pinned)
+      ? fullCommit === pinned
+      : (SHORT_SHA_RE.test(pinned) && fullCommit.startsWith(pinned));
+    if (!matches) {
+      throw new Error(`pinned commit ${pinned} does not match checkout HEAD ${fullCommit}; refusing to ship a mismatched build`);
+    }
+  }
+  const stamp = readStamp({
+    env: FULL_SHA_RE.test(pinned) ? { ...env, APEX_BUILD_COMMIT: pinned.slice(0, 12) } : env,
+    git: runGit,
+  });
+  return { fullCommit: FULL_SHA_RE.test(fullCommit) ? fullCommit : null, stamp };
+}
+
+/// Confirm HEAD did not move during the build by comparing full 40-char SHAs.
+export function assertCheckoutUnchanged(beforeFullCommit, { git: runGit = git } = {}) {
+  const before = (beforeFullCommit ?? '').trim().toLowerCase();
+  const after = (runGit(['rev-parse', '--verify', 'HEAD']) ?? '').trim().toLowerCase();
+  if (!FULL_SHA_RE.test(before) || !FULL_SHA_RE.test(after)) {
+    throw new Error('unable to verify full HEAD commit after build; refusing to ship an unverified build');
+  }
+  if (after !== before) {
+    throw new Error(`the checkout moved during the build (${before} -> ${after}); artifacts are mixed, do not install them`);
+  }
+  return after;
 }
 
 /// Every .app that electron-builder left in release/, wherever it put it.
@@ -86,10 +127,17 @@ export function assertStamped(apps, commit, { target = activeChannel, buildNumbe
 
 function main() {
   const release = resolve('release');
-  const buildNumber = activeChannel.nightly ? nightlyBuildNumber(process.env) : null;
-  const stamp = readStamp({ env: process.env, git });
-  const fullCommit = git(['rev-parse', '--verify', 'HEAD']);
-  if (stamp.commit === 'unknown') {
+  let buildNumber;
+  let fullCommit;
+  let stamp;
+  try {
+    buildNumber = activeChannel.nightly ? nightlyBuildNumber(process.env) : null;
+    ({ fullCommit, stamp } = resolvePinnedCheckout({ env: process.env, git }));
+  } catch (error) {
+    console.error(`package-pinned: ${error.message}`);
+    return 1;
+  }
+  if (stamp.commit === 'unknown' || !fullCommit) {
     console.error('package-pinned: no commit to stamp; refusing to ship an unlabelled build.');
     return 1;
   }
@@ -113,10 +161,7 @@ function main() {
     });
     if (result.status !== 0) throw new Error(`the app build failed (${result.status ?? 'signal'})`);
 
-    const after = git(['rev-parse', '--short=12', 'HEAD']);
-    if (after !== stamp.commit) {
-      throw new Error(`the checkout moved during the build (${stamp.commit} -> ${after}); artifacts are mixed, do not install them`);
-    }
+    assertCheckoutUnchanged(fullCommit, { git });
 
     const apps = packagedApps(release);
     log(`read ${stamp.commit} back out of ${assertStamped(apps, stamp.commit, { target: activeChannel, buildNumber })} built artifact(s).`);

@@ -40,6 +40,9 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     outputs:
       should_build: ${{ steps.decide.outputs.should_build }}
       reason: ${{ steps.decide.outputs.reason }}

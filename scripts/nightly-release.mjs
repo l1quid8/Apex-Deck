@@ -265,11 +265,39 @@ export function verifyAssetFiles(manifest, dir, { verifyPackage = null } = {}) {
   return { ok: errors.length === 0, checked, errors };
 }
 
+function formatRunnerFailure(command, args, result) {
+  return `${command} ${args.join(' ')} failed (${result.status}): ${(result.stderr || result.stdout || '').trim()}`;
+}
+
+export function isApiNotFound(result) {
+  if (!result || result.status === 0) return false;
+  const stderr = String(result.stderr ?? '');
+  const stdout = String(result.stdout ?? '').trim();
+  if (stdout) {
+    try {
+      const body = JSON.parse(stdout);
+      const isNotFoundBody = body?.message === 'Not Found'
+        && (body?.status === undefined || String(body.status) === '404');
+      if (isNotFoundBody && (!stderr || /\bHTTP 404\b/.test(stderr))) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+  return /\bHTTP 404\b/.test(stderr);
+}
+
+function isReleaseNotFound(result) {
+  if (!result || result.status === 0) return false;
+  const text = `${result.stderr ?? ''}\n${result.stdout ?? ''}`;
+  return /\brelease not found\b/i.test(text) || isApiNotFound(result);
+}
+
 function defaultRunner(command, args, { allowFailure = false } = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8' });
   if (result.error) throw result.error;
   if (result.status !== 0 && !allowFailure) {
-    throw new Error(`${command} ${args.join(' ')} failed (${result.status}): ${(result.stderr || result.stdout || '').trim()}`);
+    throw new Error(formatRunnerFailure(command, args, result));
   }
   return result;
 }
@@ -368,7 +396,8 @@ export function publishNightlyRelease({
   // Create or reuse a draft immutable prerelease; never clobber an already published immutable tag.
   let existingDraft = false;
   if (!dryRun) {
-    const view = runner('gh', ['release', 'view', manifest.tag, '--repo', repo, '--json', 'isDraft,isPrerelease'], { allowFailure: true });
+    const viewArgs = ['release', 'view', manifest.tag, '--repo', repo, '--json', 'isDraft,isPrerelease'];
+    const view = runner('gh', viewArgs, { allowFailure: true });
     if (view.status === 0) {
       const info = JSON.parse(view.stdout || '{}');
       if (!info.isDraft) {
@@ -385,6 +414,18 @@ export function publishNightlyRelease({
         };
       }
       existingDraft = true;
+    } else if (!isReleaseNotFound(view)) {
+      return {
+        published: false,
+        feedAdvanced: false,
+        skipped: false,
+        stage: 'immutable-tag-check',
+        errors: [formatRunnerFailure('gh', viewArgs, view)],
+        tag: manifest.tag,
+        commit: manifest.commit,
+        buildNumber: manifest.buildNumber,
+        commands,
+      };
     }
   }
 
@@ -435,8 +476,15 @@ export function publishNightlyRelease({
 
   let rollingExists = true;
   if (!dryRun) {
-    const rolling = runner('gh', ['release', 'view', ROLLING_TAG, '--repo', repo, '--json', 'tagName'], { allowFailure: true });
-    rollingExists = rolling.status === 0;
+    const rollingArgs = ['release', 'view', ROLLING_TAG, '--repo', repo, '--json', 'tagName'];
+    const rolling = runner('gh', rollingArgs, { allowFailure: true });
+    if (rolling.status === 0) {
+      rollingExists = true;
+    } else if (isReleaseNotFound(rolling)) {
+      rollingExists = false;
+    } else {
+      throw new Error(formatRunnerFailure('gh', rollingArgs, rolling));
+    }
   }
   if (!rollingExists) {
     execStep([
@@ -476,49 +524,67 @@ function hasFlag(argv, name) {
   return argv.includes(name);
 }
 
-function fetchGitHubState({ repo, workflow, runner = defaultRunner }) {
+/**
+ * Read the published rolling Nightly feed.
+ *
+ * Returns `null` ONLY after confirming the repository's releases API is
+ * accessible (proving authorization and network health) AND either the rolling
+ * `nightly` release tag returns HTTP 404 or it exists without the Nightly
+ * manifest asset yet. Any authorization, network, server, download, or parse
+ * failure throws so callers never reset `buildNumber` to 1 on a transient error.
+ */
+export function fetchCurrentFeed({ repo = DEFAULT_REPO, runner = defaultRunner } = {}) {
+  // Step 1: Confirm repo visibility and `contents: read` access before
+  // interpreting a 404 on the `nightly` tag as an absent release.
+  const listArgs = ['api', `repos/${repo}/releases?per_page=1`];
+  const listResult = runner('gh', listArgs);
+  const listBody = JSON.parse(listResult.stdout || 'null');
+  if (!Array.isArray(listBody)) {
+    throw new Error(`Unexpected response from ${listArgs[1]} while checking release history.`);
+  }
+
+  // Step 2: Check whether the rolling `nightly` tag and its manifest exist.
+  const tagArgs = ['api', `repos/${repo}/releases/tags/${ROLLING_TAG}`];
+  const tagResult = runner('gh', tagArgs, { allowFailure: true });
+  if (tagResult.status !== 0) {
+    if (isApiNotFound(tagResult)) return null;
+    throw new Error(`Failed to read rolling Nightly release metadata: ${formatRunnerFailure('gh', tagArgs, tagResult)}`);
+  }
+
+  const release = JSON.parse(tagResult.stdout || 'null');
+  if (!release || typeof release !== 'object' || !Array.isArray(release.assets)) {
+    throw new Error(`Malformed release metadata for tag ${ROLLING_TAG}.`);
+  }
+  const hasFeedAsset = release.assets.some((asset) => asset?.name === NIGHTLY_MANIFEST_NAME);
+  if (!hasFeedAsset) return null;
+
+  // Step 3: Asset is confirmed present; download and validate it strictly.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-nightly-feed-'));
+  try {
+    runner('gh', [
+      'release', 'download', ROLLING_TAG,
+      '--repo', repo,
+      '--dir', scratch,
+      '--pattern', NIGHTLY_MANIFEST_NAME,
+    ]);
+    const feedPath = path.join(scratch, NIGHTLY_MANIFEST_NAME);
+    if (!fs.existsSync(feedPath)) {
+      throw new Error(`Rolling Nightly release listed ${NIGHTLY_MANIFEST_NAME}, but download produced no file.`);
+    }
+    return parseNightlyFeed(JSON.parse(fs.readFileSync(feedPath, 'utf8')));
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+export function fetchGitHubState({ repo = DEFAULT_REPO, workflow = DEFAULT_WORKFLOW, runner = defaultRunner } = {}) {
   const runsResult = runner('gh', [
     'api',
     `repos/${repo}/actions/workflows/${workflow}/runs?branch=main&status=completed&per_page=30`,
   ]);
   const runs = JSON.parse(runsResult.stdout || '{}').workflow_runs ?? [];
-
-  let currentFeed = null;
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-nightly-feed-'));
-  try {
-    const dl = runner('gh', [
-      'release', 'download', ROLLING_TAG,
-      '--repo', repo,
-      '--dir', scratch,
-      '--pattern', NIGHTLY_MANIFEST_NAME,
-    ], { allowFailure: true });
-    const feedPath = path.join(scratch, NIGHTLY_MANIFEST_NAME);
-    if (dl.status === 0 && fs.existsSync(feedPath)) {
-      currentFeed = JSON.parse(fs.readFileSync(feedPath, 'utf8'));
-    }
-  } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
-  }
+  const currentFeed = fetchCurrentFeed({ repo, runner });
   return { runs, currentFeed };
-}
-
-function fetchCurrentFeed({ repo, runner = defaultRunner }) {
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-nightly-feed-'));
-  try {
-    const dl = runner('gh', [
-      'release', 'download', ROLLING_TAG,
-      '--repo', repo,
-      '--dir', scratch,
-      '--pattern', NIGHTLY_MANIFEST_NAME,
-    ], { allowFailure: true });
-    const feedPath = path.join(scratch, NIGHTLY_MANIFEST_NAME);
-    if (dl.status === 0 && fs.existsSync(feedPath)) {
-      return JSON.parse(fs.readFileSync(feedPath, 'utf8'));
-    }
-    return null;
-  } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
-  }
 }
 
 function writeGitHubOutputs(outputPath, plan) {
