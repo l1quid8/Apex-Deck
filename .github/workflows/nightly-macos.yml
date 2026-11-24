@@ -117,7 +117,9 @@ jobs:
       APEX_CHANNEL: nightly
       APEX_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
       APEX_NIGHTLY_DATE: ${{ needs.plan.outputs.date }}
-      APEX_BUILD_COMMIT: ${{ needs.plan.outputs.commit }}
+      # Not APEX_BUILD_COMMIT: package-linux.mjs derives its 12-character build
+      # stamp from the checkout and only checks this full SHA against HEAD.
+      APEX_NIGHTLY_COMMIT: ${{ needs.plan.outputs.commit }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -145,7 +147,7 @@ jobs:
           "./$name" --appimage-extract >/dev/null
           squashfs-root/resources/bin/apex-daemon --build-identity | node -e '
             const id = JSON.parse(require("fs").readFileSync(0, "utf8"));
-            const want = { channel: "nightly", commit: process.env.APEX_BUILD_COMMIT, buildNumber: Number(process.env.APEX_BUILD_NUMBER) };
+            const want = { channel: "nightly", commit: process.env.APEX_NIGHTLY_COMMIT, buildNumber: Number(process.env.APEX_BUILD_NUMBER) };
             for (const [key, value] of Object.entries(want)) {
               if (id[key] !== value) throw new Error(`embedded daemon ${key} is ${id[key]}, expected ${value}`);
             }'

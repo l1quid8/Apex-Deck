@@ -58,6 +58,6 @@ test('Nightly AppImages take the planner date and refuse a different commit', ()
   assert.equal(nightlySourceDate({ APEX_NIGHTLY_DATE: '20261124' }, commitSeconds), '20261124');
   assert.throws(() => linuxNightlyRelease(commit, '1', nightlySourceDate({ APEX_NIGHTLY_DATE: '2026-11-24' }, commitSeconds)), /source date/);
   assert.doesNotThrow(() => assertPlannedCommit({}, commit));
-  assert.doesNotThrow(() => assertPlannedCommit({ APEX_BUILD_COMMIT: commit }, commit));
-  assert.throws(() => assertPlannedCommit({ APEX_BUILD_COMMIT: 'f'.repeat(40) }, commit), /does not match/);
+  assert.doesNotThrow(() => assertPlannedCommit({ APEX_NIGHTLY_COMMIT: commit }, commit));
+  assert.throws(() => assertPlannedCommit({ APEX_NIGHTLY_COMMIT: 'f'.repeat(40) }, commit), /does not match/);
 });

@@ -809,7 +809,8 @@ test('nightly-macos workflow schedules green main builds, grants plan actions: r
   const appImage = parsed.jobs?.['build-linux-appimage'];
   assert.equal(appImage?.env?.APEX_BUILD_NUMBER, '${{ needs.plan.outputs.build_number }}', 'AppImages take the planned build number');
   assert.equal(appImage?.env?.APEX_NIGHTLY_DATE, '${{ needs.plan.outputs.date }}', 'AppImage names match the planned tag date');
-  assert.equal(appImage?.env?.APEX_BUILD_COMMIT, '${{ needs.plan.outputs.commit }}');
+  assert.equal(appImage?.env?.APEX_NIGHTLY_COMMIT, '${{ needs.plan.outputs.commit }}');
+  assert.equal(appImage?.env?.APEX_BUILD_COMMIT, undefined, 'a full-SHA build stamp fails package-linux.mjs clean-checkout check');
   assert.deepEqual(appImage?.strategy?.matrix?.include?.map((entry) => entry.arch), ['x86_64', 'arm64']);
   assert.ok(parsed.jobs?.publish?.needs?.includes('build-linux-appimage'), 'the feed cannot advance before the AppImages exist');
   assert.match(codeOnly, /--appimage-dir release\/appimage/);

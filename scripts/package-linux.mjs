@@ -51,10 +51,12 @@ export function nightlySourceDate(env, commitSeconds) {
   return planned || new Date(commitSeconds * 1000).toISOString().slice(0, 10).replaceAll('-', '');
 }
 
+// APEX_NIGHTLY_COMMIT, not APEX_BUILD_COMMIT: the latter is the build stamp
+// (scripts/build-stamp.mjs), which this script expects at 12 characters.
 export function assertPlannedCommit(env, sourceCommit) {
-  const planned = (env.APEX_BUILD_COMMIT ?? '').trim();
+  const planned = (env.APEX_NIGHTLY_COMMIT ?? '').trim();
   if (planned && planned !== sourceCommit) {
-    throw new Error(`APEX_BUILD_COMMIT ${planned} does not match the checked-out commit ${sourceCommit}`);
+    throw new Error(`APEX_NIGHTLY_COMMIT ${planned} does not match the checked-out commit ${sourceCommit}`);
   }
 }
 
