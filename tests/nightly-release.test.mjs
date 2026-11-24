@@ -514,7 +514,7 @@ test('live-mode publish refuses overwriting an immutable published tag and holds
       dryRun: false,
       runner: (_cmd, args) => {
         if (args[0] === 'release' && args[1] === 'view' && args[2] === next.manifest.tag) {
-          return { status: 0, stdout: JSON.stringify({ isDraft: false, isPrerelease: true }), stderr: '' };
+          return { status: 0, stdout: JSON.stringify({ isDraft: false, isPrerelease: true, targetCommitish: SHA_NEW, assets: [{ name: next.pkgName }] }), stderr: '' };
         }
         throw new Error(`Unexpected gh call: ${args.join(' ')}`);
       },
@@ -522,6 +522,48 @@ test('live-mode publish refuses overwriting an immutable published tag and holds
     assert.equal(alreadyPublished.published, false);
     assert.equal(alreadyPublished.feedAdvanced, false);
     assert.equal(alreadyPublished.stage, 'immutable-tag');
+
+    // A published release without asset details, or for another commit, is also refused.
+    for (const info of [{ isDraft: false }, { isDraft: false, targetCommitish: SHA_OLD, assets: [] }]) {
+      const refused = publishNightlyRelease({
+        manifestPath: next.manifestPath, assetsDir: next.assetsDir, dmgDir: next.dmgDir, currentFeed: prev.manifest, dryRun: false,
+        runner: (_cmd, args) => {
+          if (args[0] === 'release' && args[1] === 'view') return { status: 0, stdout: JSON.stringify(info), stderr: '' };
+          throw new Error(`Unexpected gh call: ${args.join(' ')}`);
+        },
+      });
+      assert.equal(refused.stage, 'immutable-tag');
+    }
+
+    // Linux already published this commit's immutable release: macOS adds only its own
+    // files, never clobbers, never re-edits the release, and still advances its own feed.
+    const attached = [];
+    const attach = publishNightlyRelease({
+      manifestPath: next.manifestPath,
+      assetsDir: next.assetsDir,
+      dmgDir: next.dmgDir,
+      currentFeed: prev.manifest,
+      dryRun: false,
+      runner: (_cmd, args) => {
+        attached.push(args.join(' '));
+        if (args[0] === 'release' && args[1] === 'view' && args[2] === next.manifest.tag) {
+          return { status: 0, stdout: JSON.stringify({ isDraft: false, targetCommitish: SHA_NEW, assets: [{ name: 'Apex-Deck-Nightly_20261124_4170256_x86_64.AppImage' }, { name: 'apex-deck-nightly-update-linux.json' }] }), stderr: '' };
+        }
+        if (args[0] === 'release' && args[1] === 'view') return { status: 0, stdout: '{}', stderr: '' };
+        if (args[0] === 'release' && args[1] === 'download') {
+          const dir = args[args.indexOf('--dir') + 1];
+          const pattern = args[args.indexOf('--pattern') + 1];
+          fs.copyFileSync(pattern === next.dmgName ? next.dmgPath : path.join(next.assetsDir, pattern), path.join(dir, pattern));
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    });
+    assert.equal(attach.published, true, attach.errors?.join('; '));
+    assert.ok(!attached.some((line) => line.startsWith(`release create ${next.manifest.tag}`)));
+    assert.ok(!attached.some((line) => line.startsWith(`release edit ${next.manifest.tag}`)));
+    const upload = attached.find((line) => line.startsWith(`release upload ${next.manifest.tag}`));
+    assert.doesNotMatch(upload, /--clobber/);
+    assert.ok(!attached.some((line) => line.includes('apex-deck-nightly-update-linux.json') && line.includes('upload')), 'macOS never writes the Linux feed');
 
     // Download-back returns tampered pkg bytes -> must hold feed (no --draft=false, no nightly upload).
     const seen = [];
