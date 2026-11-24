@@ -477,3 +477,25 @@ class NightlyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LinuxNightlyFeedTests(unittest.TestCase):
+    """The VPS reads Linux's own Nightly feed, never the macOS or Windows one."""
+
+    def test_nightly_reads_only_the_linux_feed(self):
+        updater = load_updater()
+        self.assertTrue(updater.NIGHTLY_FEED.endswith("/releases/download/nightly/apex-deck-nightly-update-linux.json"))
+
+    def test_linux_feed_shape_passes_the_nightly_checks(self):
+        updater = load_updater()
+        commit = "41702564203e86e178dedda3887abc117a13d246"
+        feed = {
+            "schemaVersion": 1, "channel": "nightly", "platform": "linux", "version": "0.9.19",
+            "buildNumber": 2, "commit": commit, "tag": "nightly-20261125-4170256", "notes": "",
+            "daemons": [{"arch": "x86_64", "name": "apex-daemon-nightly-linux-x86_64", "size": 1, "sha256": "0" * 64}],
+            "appImages": [{"arch": "x86_64", "name": "Apex-Deck-Nightly_20261125_4170256_x86_64.AppImage", "size": 1, "sha256": "0" * 64}],
+        }
+        parsed = updater.nightly_manifest(feed)
+        self.assertEqual((parsed["buildNumber"], parsed["commit"], parsed["tag"]), (2, commit, "nightly-20261125-4170256"))
+        with self.assertRaises(ValueError):
+            updater.nightly_manifest({**feed, "channel": "stable"})

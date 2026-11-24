@@ -1,0 +1,162 @@
+# Scheduled Linux Nightly. Independent of macOS and Windows: no Apple or
+# Windows secrets, no shared jobs, and it reads and writes only
+# apex-deck-nightly-update-linux.json on the rolling `nightly` prerelease.
+#
+#   1. plan: newest green `daemon.yml` push on main; skip when the Linux feed
+#      already has that commit. buildNumber is the Linux feed's + 1.
+#   2. build: x86_64 and arm64 Nightly AppImages, each with the daemon built
+#      into it (same binary the VPS and phone installers download).
+#   3. publish: verify every file locally, attach to the immutable
+#      nightly-YYYYMMDD-<sha7> prerelease (creating it if no platform has),
+#      download everything back and verify again, then advance the Linux feed.
+#      Any failure holds the feed where it is.
+name: nightly-linux
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Plan, build and verify without publishing or moving the Linux Nightly feed'
+        type: boolean
+        default: false
+      force:
+        description: 'Build even when the Linux feed already has the newest green main commit'
+        type: boolean
+        default: false
+      sha:
+        description: 'Optional 40-character green main commit to build'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-linux
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      commit: ${{ steps.decide.outputs.commit }}
+      date: ${{ steps.decide.outputs.date }}
+      tag: ${{ steps.decide.outputs.tag }}
+      build_number: ${{ steps.decide.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          args=(plan --repo "${{ github.repository }}" --github-output "$GITHUB_OUTPUT")
+          if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
+          if [ -n "$INPUT_SHA" ]; then args+=(--sha "$INPUT_SHA"); fi
+          node scripts/nightly-linux-release.mjs "${args[@]}"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.should_build == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    env:
+      APEX_CHANNEL: nightly
+      APEX_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+      APEX_NIGHTLY_DATE: ${{ needs.plan.outputs.date }}
+      APEX_NIGHTLY_COMMIT: ${{ needs.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly
+      - run: npm ci
+      - run: node --test tests/package-linux.test.mjs tests/nightly-linux-release.test.mjs
+      - name: Build the Nightly AppImage and its daemon
+        run: npm run desktop:linux
+      - name: Check the AppImage and keep the daemon beside it
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp target/release/apex-daemon release/nightly/apex-daemon
+          cd release/nightly
+          sha256sum --check ./*.AppImage.sha256
+          ./apex-daemon --build-identity
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux-${{ matrix.arch }}
+          path: |
+            release/nightly/*.AppImage
+            release/nightly/*.AppImage.sha256
+            release/nightly/*.AppImage.json
+            release/nightly/apex-daemon
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [plan, build]
+    if: needs.plan.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-linux-x86_64
+          path: build/x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-linux-arm64
+          path: build/arm64
+      - name: Assemble the Linux Nightly feed
+        run: |
+          node scripts/nightly-linux-release.mjs assemble \
+            --out release/linux-nightly \
+            --date "${{ needs.plan.outputs.date }}" \
+            --commit "${{ needs.plan.outputs.commit }}" \
+            --build-number "${{ needs.plan.outputs.build_number }}" \
+            --build x86_64=build/x86_64 \
+            --build arm64=build/arm64
+      - name: Verify, publish the immutable assets, then advance the Linux feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          args=(publish --repo "${{ github.repository }}" --assets-dir release/linux-nightly)
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
+          node scripts/nightly-linux-release.mjs "${args[@]}"

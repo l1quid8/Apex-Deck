@@ -14,10 +14,17 @@ APEX_CHANNEL=nightly APEX_BUILD_NUMBER=<build-number> npm run desktop:linux
 
 Protected desktop installation is separate. Its tree is under `/opt/apex-deck-nightly`, its private authority is under `/var/lib/apex-deck-nightly-provenance`, and its sockets are under `/run/apex-deck-nightly`. For evaluation, add the matching Linux `apex-provenance` build to `resources/bin` in a copy of the unpacked AppImage payload, then use `scripts/package-linux-protected.mjs` with the same channel, build number and full commit. The signed manifest binds the channel and Nightly build number. A Stable verifier can also read legacy signed manifests with no channel field. Linux's existing production publisher trust provisioning is tracked in [Linux provenance acceptance](security/linux-provenance-acceptance.md).
 
-## Release handoff
+## Release
 
-The `linux-appimage` workflow takes the channel and the release owner's build number. It uploads Linux artifacts to the workflow run. The release owner verifies that the Linux, macOS and Windows outputs all agree on the full source commit, version, build number and immutable release tag.
+Linux Nightly publishes on its own. It needs no macOS or Windows build, secret or feed, and they don't need Linux.
 
-1. Upload the verified Linux AppImages and their companions alongside the other platform assets on the immutable release named in the metadata. Verify the release tag resolves to the full source commit before promoting it.
-2. The feed owner advances the rolling `nightly` prerelease after the immutable release is ready. The shared `apex-deck-nightly-update.json` keeps its macOS `packages` array. The VPS updater reads `channel`, `version`, `buildNumber`, `commit` and `tag` from that same manifest and builds from the pinned Git source.
-3. Use a higher build number for the next promoted source, including if its semantic version is unchanged. The Linux workflow supplies independent per-architecture sidecars for the handoff.
+The scheduled `nightly-linux` workflow picks the newest green `daemon.yml` push on `main` and skips when the Linux feed already has that commit. It builds the x86_64 and arm64 Nightly AppImages. Each AppImage carries the daemon built with it, and that same binary is published for the VPS and phone installers.
+
+`scripts/nightly-linux-release.mjs` checks every AppImage, checksum, metadata file and daemon. It then attaches them to the immutable `nightly-YYYYMMDD-<sha7>` prerelease, creating it if no other platform has. It downloads everything back and checks it again. Only then does it advance `apex-deck-nightly-update-linux.json` on the rolling `nightly` prerelease. Any failure leaves the feed where it was.
+
+- **Feed.** `apex-deck-nightly-update-linux.json` carries `channel`, `platform: "linux"`, `version`, `buildNumber`, the full `commit`, the immutable `tag`, plus `daemons` and `appImages` entries with sizes and SHA-256 hashes. A pinned copy also lives on the immutable release.
+- **Build numbers.** They count up per platform. Linux's next build is the Linux feed's build number plus one, including when the version is unchanged. Linux readers only compare against the Linux feed.
+- **Sharing a release.** Another platform may publish the same commit's immutable release first. Linux then adds only its own assets. It never replaces an asset on a published release, and it refuses a release that points at a different commit.
+- **Readers.** The VPS updater reads the identity fields and builds from the tag's source. The phone SSH installer downloads the listed daemon. Linux desktop has no automatic updates; install the AppImage from the immutable release.
+
+`linux-appimage.yml` still builds AppImages on demand for CI and evaluation. It never publishes.

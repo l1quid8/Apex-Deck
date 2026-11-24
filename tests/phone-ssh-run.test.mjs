@@ -483,7 +483,7 @@ function twoChannelVps(initial = {}) {
         return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
       }
       if (command.includes("sudo -n true")) return { code: 0, stdout: "", stderr: "" };
-      if (command.includes("apex-deck-nightly-update.json")) {
+      if (command.includes("apex-deck-nightly-update-linux.json")) {
         return { code: 0, stdout: initial.nightlyFeed ?? NIGHTLY_FEED, stderr: "" };
       }
       if (command.includes("apex-deck-update.json")) {
@@ -631,7 +631,7 @@ test("Nightly Add server over SSH on a two-channel VPS installs, trusts, starts,
     assert.equal(saved[0].req.channel, "nightly");
 
     // Verify Nightly feed, immutable download URL, unit, trust, and pair commands ran.
-    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update.json")));
+    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update-linux.json")));
     assert.ok(vps.ran.every((cmd) => !cmd.includes("apex-deck-update.json")));
     assert.ok(vps.ran.some((cmd) => cmd.includes(`/download/${NIGHTLY_TAG}/apex-daemon-nightly-linux-x86_64`)));
     assert.ok(vps.ran.some((cmd) => cmd.includes("/usr/local/bin/apex-daemon-nightly")));
@@ -817,7 +817,7 @@ test("native iOS bridge failure stops SSH setup with zero remote commands and a 
     assert.equal(saved.length, 1);
     assert.equal(saved[0].req.channel, "nightly");
     assert.equal(saved[0].paired.hostEndpointId, NIGHTLY_ENDPOINT);
-    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update.json")));
+    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update-linux.json")));
     assert.ok(vps.ran.every((cmd) => !cmd.includes("apex-deck-update.json")));
     assert.equal(vps.state.stable.installs, 0);
     assert.equal(vps.state.stable.pairCalls, 0);

@@ -224,7 +224,7 @@ A client that reconnects after a restart gets `resumed: false` and reloads.
 ## Run Nightly alongside Stable
 
 Use a Linux daemon from the immutable Nightly release, or check out that
-release's tag and build it with the `buildNumber` from `apex-deck-nightly-update.json`.
+release's tag and build it with the `buildNumber` from `apex-deck-nightly-update-linux.json`.
 For example, with `BUILD_NUMBER` set to that published number:
 
 ```sh
@@ -264,7 +264,7 @@ both phone listeners. For a home path that makes `daemon.sock` longer than
 set the same absolute `data_dir` in the Nightly updater configuration and
 attach command.
 
-The timer checks the rolling [Nightly manifest](https://github.com/l1quid8/apex-deck/releases/download/nightly/apex-deck-nightly-update.json).
+The timer checks the rolling [Linux Nightly manifest](https://github.com/l1quid8/apex-deck/releases/download/nightly/apex-deck-nightly-update-linux.json).
 It orders updates by build number, so two builds can have the same version.
 If an installation rolls back, the failed build stays quarantined and only
 a higher build number is eligible for installation.
