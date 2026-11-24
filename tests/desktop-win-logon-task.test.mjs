@@ -38,11 +38,33 @@ import {
   processPathScript,
   DAEMON_LIST_SCRIPT,
 } from '../desktop/winLogonTask.mjs';
+import { channel } from '../desktop/channel.mjs';
 import { daemonBuild } from '../desktop/launchAgent.mjs';
 import { answers, daemonBinary, daemonEndpoint, waitForSocket } from '../desktop/sidecar.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
+const imageAt = directory => path.win32.join(directory, channel.WINDOWS_DAEMON);
+const taskEnd = `/End /TN ${TASK_NAME}`;
+
+test('the selected channel never counts or kills the sibling daemon, even for a stale PID', async () => {
+  const identities = JSON.parse(fs.readFileSync(new URL('../desktop/channels.json', import.meta.url), 'utf8'));
+  const sibling = channel.nightly ? identities.stable : identities.nightly;
+  const siblingBin = path.win32.join('C:\\Program Files', sibling.PRODUCT, 'resources', 'bin', sibling.WINDOWS_DAEMON);
+  const ownBin = imageAt('C:\\Apex');
+  assert.equal(TASK_NAME, channel.WINDOWS_TASK);
+  assert.equal(LAUNCHER_NAME, channel.WINDOWS_LAUNCHER);
+  assert.ok(DAEMON_LIST_SCRIPT.includes(`$p.ProcessName -eq '${path.win32.basename(ownBin, '.exe')}'`));
+  for (const bin of [ownBin, '', siblingBin]) {
+    const pathOf = async () => siblingBin;
+    assert.equal(await killTaskDaemon({
+      bin, infoFile: 'i', readInfo: () => ({ pid: 4242 }), pathOf,
+      kill: () => assert.fail('sibling daemon killed'),
+    }), 'not-daemon');
+    assert.equal(await daemonExited(4242, { bin, pathOf }), true);
+    assert.equal(await daemonProcesses({ bins: [bin], list: async () => [{ pid: 4242, path: siblingBin }] }), 'none');
+  }
+});
 
 function fakeSchtasks({ loaded = false, fail = {}, running = () => false, code = null, queryFails = () => false, onEnd = () => {}, onCreate = () => {}, stateOutput = null, listFails = false, nameQueryFails = false, listOutput = null } = {}) {
   const calls = [];
@@ -54,7 +76,7 @@ function fakeSchtasks({ loaded = false, fail = {}, running = () => false, code =
     if (verb === '/Query' && !args.includes('/TN')) {
       if (listFails) throw new Error('ERROR: Access is denied.');
       if (listOutput !== null) return listOutput;
-      return `"\\Other","N/A","Ready"\r\n${isLoaded ? '"\\ApexDeckDaemon","N/A","Running"\r\n' : ''}`;
+      return `"\\Other","N/A","Ready"\r\n${isLoaded ? `"\\${TASK_NAME}","N/A","Running"\r\n` : ''}`;
     }
     if (verb === '/Query' && nameQueryFails) throw new Error('ERROR: Access is denied.');
     if (verb === '/Query' || verb === '/Delete') {
@@ -124,8 +146,8 @@ test('taskXml sets UTF-16 encoding, per-user UserId on LogonTrigger and Principa
   assert.match(xml, /<Arguments>--headless &quot;C:\\Program Files\\Apex Deck\\resources\\bin\\apex-daemon\.exe&quot; serve<\/Arguments>/);
   assert.doesNotMatch(xml, /--data-dir/);
   assert.equal(
-    taskCommand({ bin: 'C:\\Apex\\apex-daemon.exe', dataDir: 'C:\\Data' }),
-    `${CONHOST_COMMAND} ${taskArguments({ bin: 'C:\\Apex\\apex-daemon.exe', dataDir: 'C:\\Data' })}`,
+    taskCommand({ bin: imageAt('C:\\Apex'), dataDir: 'C:\\Data' }),
+    `${CONHOST_COMMAND} ${taskArguments({ bin: imageAt('C:\\Apex'), dataDir: 'C:\\Data' })}`,
   );
 });
 
@@ -136,14 +158,14 @@ test('taskXml escapes special XML characters in paths, build stamps, and UserId'
     build: 'v1&2<3>',
     userId: `DOM&AIN\\u"s'e<r>`,
   });
-  assert.match(xml, /<Description>Apex Deck background daemon \(v1&amp;2&lt;3&gt;\)<\/Description>/);
+  assert.ok(xml.includes(`<Description>${channel.PRODUCT} background daemon (v1&amp;2&lt;3&gt;)</Description>`));
   assert.match(xml, /<UserId>DOM&amp;AIN\\u&quot;s&apos;e&lt;r&gt;<\/UserId>/);
   assert.match(xml, /--data-dir &quot;C:\\data&amp;dir&quot;/);
   assert.doesNotMatch(xml, /&(?!amp;|lt;|gt;|quot;|apos;)/, 'no bare ampersand');
 });
 
 test('encodeTaskXml writes UTF-16LE with a BOM and decodeTaskXml round-trips it', () => {
-  const sample = taskXml({ bin: 'C:\\Apex\\apex-daemon.exe', userId: 'PC\\me' });
+  const sample = taskXml({ bin: imageAt('C:\\Apex'), userId: 'PC\\me' });
   const encoded = encodeTaskXml(sample);
   assert.equal(encoded[0], 0xff);
   assert.equal(encoded[1], 0xfe);
@@ -196,7 +218,7 @@ test('installLogonTask writes UTF-16LE XML with BOM, registers when missing, and
 test('installLogonTask re-registers when stampFile matches but Task Scheduler does not have the task loaded', async () => {
   const { dir, stampFile } = scratchStamp();
   try {
-    const bin = 'C:\\Apex\\apex-daemon.exe';
+    const bin = imageAt('C:\\Apex');
     const env = { USERDOMAIN: 'PC', USERNAME: 'me' };
     fs.writeFileSync(stampFile, encodeTaskXml(taskXml({ bin, build: 'b1', env })));
     const { calls, run } = fakeSchtasks({ loaded: false });
@@ -213,7 +235,7 @@ test('installLogonTask wraps schtasks failures with a clear message', async () =
   try {
     const { run, state } = fakeSchtasks({ fail: { '/Create': 'ERROR: Access is denied.' } });
     await assert.rejects(
-      installLogonTask({ bin: 'C:\\Apex\\apex-daemon.exe', stampFile, run }),
+      installLogonTask({ bin: imageAt('C:\\Apex'), stampFile, run }),
       /The background service didn't start: ERROR: Access is denied\./,
     );
   } finally {
@@ -303,7 +325,7 @@ test('a slow start is waited for past 15 seconds while the task is still running
 test('a task still running at the long limit is ended, not deleted, and a fallback is allowed once it is confirmed stopped', async () => {
   let ended = false;
   let killed = false;
-  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const bin = imageAt('C:\\Apex');
   const { run, calls, state } = fakeSchtasks({ loaded: true, running: () => !ended, onEnd: () => { ended = true; } });
   const error = await startLogonTaskDaemon({
     socket: 'p', infoFile: 'i', bin, run, queryState: state, timeout: 15_000, slowTimeout: 120_000,
@@ -313,12 +335,12 @@ test('a task still running at the long limit is ended, not deleted, and a fallba
   }).catch((e) => e);
   assert.match(error.message, /didn't start within 120 seconds$/);
   assert.notEqual(error.fallback, false, 'confirmed stopped: the fallback daemon may start');
-  assert.ok(calls.includes('/End /TN ApexDeckDaemon'));
+  assert.ok(calls.includes(taskEnd));
   assert.ok(!calls.some((c) => c.startsWith('/Delete')));
 });
 
 test('killTaskDaemon kills the daemon.json process tree only when Windows says it is apex-daemon', async () => {
-  const bin = 'C:\\Program Files\\Apex Deck\\apex-daemon.exe';
+  const bin = imageAt('C:\\Program Files\\Apex Deck');
   const run = async (over) => {
     const killed = [];
     const got = await killTaskDaemon({
@@ -329,18 +351,18 @@ test('killTaskDaemon kills the daemon.json process tree only when Windows says i
   };
   assert.deepEqual(await run({}), { got: 'killed', killed: [4242] });
   // Same program, different case and a redundant segment.
-  assert.deepEqual(await run({ pathOf: async () => 'c:\\program files\\APEX DECK\\.\\APEX-DAEMON.EXE\r\n' }), { got: 'killed', killed: [4242] });
+  assert.deepEqual(await run({ pathOf: async () => `C:\\PROGRAM FILES\\APEX DECK\\.\\${channel.WINDOWS_DAEMON.toUpperCase()}\r\n` }), { got: 'killed', killed: [4242] });
   // No usable process ID in daemon.json.
   for (const info of [null, {}, { pid: 0 }, { pid: -1 }, { pid: '4242' }, { pid: 1.5 }]) {
     assert.deepEqual(await run({ readInfo: () => info }), { got: 'no-pid', killed: [] }, JSON.stringify(info));
   }
   // A stale ID now used by another program, an apex-daemon from elsewhere, a gone process, or no answer.
   assert.deepEqual(await run({ pathOf: async () => 'C:\\Windows\\notepad.exe' }), { got: 'not-daemon', killed: [] });
-  assert.deepEqual(await run({ pathOf: async () => 'D:\\Other\\apex-daemon.exe' }), { got: 'not-daemon', killed: [] });
+  assert.deepEqual(await run({ pathOf: async () => imageAt('D:\\Other') }), { got: 'not-daemon', killed: [] });
   assert.deepEqual(await run({ pathOf: async () => { throw new Error('Cannot find a process with the process identifier 4242.'); } }), { got: 'not-daemon', killed: [] });
   assert.deepEqual(await run({ pathOf: async () => '' }), { got: 'not-daemon', killed: [] });
   // Without bin, the program name alone must still be apex-daemon.exe.
-  assert.deepEqual(await run({ bin: '', pathOf: async () => 'D:\\Other\\apex-daemon.exe' }), { got: 'killed', killed: [4242] });
+  assert.deepEqual(await run({ bin: '', pathOf: async () => imageAt('D:\\Other') }), { got: 'killed', killed: [4242] });
   assert.deepEqual(await run({ bin: '', pathOf: async () => 'D:\\Other\\apex-daemon-helper.exe' }), { got: 'not-daemon', killed: [] });
   // taskkill failing is reported, not thrown.
   assert.deepEqual(await run({ kill: async () => { throw new Error('ERROR: Access is denied.'); } }), { got: 'failed', killed: [] });
@@ -350,7 +372,7 @@ test('endLogonTaskDaemon ends the task first, then kills the daemon under it, ev
   const order = [];
   const got = await endLogonTaskDaemon({
     taskName: 'T', run: async (args) => { order.push(args.join(' ')); throw new Error('ERROR: Access is denied.'); },
-    infoFile: 'i', readInfo: () => ({ pid: 7 }), pathOf: async () => 'C:\\x\\apex-daemon.exe',
+    infoFile: 'i', readInfo: () => ({ pid: 7 }), pathOf: async () => imageAt('C:\\x'),
     kill: async (pid) => { order.push(`kill ${pid}`); },
   });
   assert.equal(got, 'killed');
@@ -359,8 +381,8 @@ test('endLogonTaskDaemon ends the task first, then kills the daemon under it, ev
 
 test('at the slow limit the daemon under the task is killed by its daemon.json ID before a fallback is allowed', async () => {
   // The daemon wrote daemon.json, then hung: it never answers. /End stops only the task.
-  const { run, calls, state } = fakeSchtasks({ loaded: true, running: () => !calls.includes('/End /TN ApexDeckDaemon') });
-  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const { run, calls, state } = fakeSchtasks({ loaded: true, running: () => !calls.includes(taskEnd) });
+  const bin = imageAt('C:\\Apex');
   const error = await startLogonTaskDaemon({
     socket: 'p', infoFile: 'i', bin, run, queryState: state, timeout: 15_000, slowTimeout: 120_000,
     answers: async () => false, install: async () => {}, readInfo: () => ({ pid: 4242 }),
@@ -369,10 +391,10 @@ test('at the slow limit the daemon under the task is killed by its daemon.json I
     wait: async () => {}, now: fakeClock(1_000),
   }).catch((e) => e);
   assert.notEqual(error.fallback, false, 'killed, confirmed exited and quiet: the fallback may start');
-  const end = calls.indexOf('/End /TN ApexDeckDaemon');
+  const end = calls.indexOf(taskEnd);
   assert.ok(end >= 0 && calls.indexOf('KILL 4242') > end, 'the daemon is killed after /End');
   // A daemon.json ID that now belongs to another program is never killed.
-  const other = fakeSchtasks({ loaded: true, running: () => !other.calls.includes('/End /TN ApexDeckDaemon') });
+  const other = fakeSchtasks({ loaded: true, running: () => !other.calls.includes(taskEnd) });
   let killed = false;
   await startLogonTaskDaemon({
     socket: 'p', infoFile: 'i', bin, run: other.run, queryState: other.state, timeout: 15_000, slowTimeout: 120_000,
@@ -384,27 +406,27 @@ test('at the slow limit the daemon under the task is killed by its daemon.json I
 });
 
 test('daemonExited needs Windows to confirm the process is gone or now another program', async () => {
-  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const bin = imageAt('C:\\Apex');
   const exited = (pathOf, pid = 4242, over = {}) => daemonExited(pid, { bin, pathOf, ...over });
   assert.equal(await exited(async () => null), true, 'no process with that ID');
   assert.equal(await exited(async () => 'C:\\Windows\\notepad.exe'), true, 'the ID now belongs to another program');
-  assert.equal(await exited(async () => 'D:\\Other\\apex-daemon.exe'), true, 'an apex-daemon somewhere else is not ours');
+  assert.equal(await exited(async () => imageAt('D:\\Other')), true, 'an apex-daemon somewhere else is not ours');
   assert.equal(await exited(async () => bin), false, 'still our daemon');
-  assert.equal(await exited(async () => 'c:\\apex\\APEX-DAEMON.EXE\r\n'), false, 'capital letters and line ends do not matter');
+  assert.equal(await exited(async () => `${bin.toUpperCase()}\r\n`), false, 'capital letters and line ends do not matter');
   assert.equal(await exited(async () => ''), false, 'a process whose path cannot be read may still be ours');
   assert.equal(await exited(async () => { throw new Error('Access is denied.'); }), false, 'a failed query proves nothing');
-  assert.equal(await exited(async () => 'D:\\Other\\apex-daemon.exe', 4242, { bin: '' }), false, 'without bin, any apex-daemon may be ours');
+  assert.equal(await exited(async () => imageAt('D:\\Other'), 4242, { bin: '' }), false, 'without bin, any apex-daemon may be ours');
   for (const pid of [undefined, null, 0, -1, 1.5, '4242']) {
     assert.equal(await daemonExited(pid, { bin, pathOf: async () => null }), false, `no usable ID: ${pid}`);
   }
 });
 
 test('at the slow limit a daemon that was not killed, or did not exit, forbids the fallback', async () => {
-  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const bin = imageAt('C:\\Apex');
   // In every case /End works and the task reads as stopped with nothing answering:
   // only the process check stands between the hung daemon and a second one.
   const attempt = async (over) => {
-    const fake = fakeSchtasks({ loaded: true, running: () => !fake.calls.includes('/End /TN ApexDeckDaemon') });
+    const fake = fakeSchtasks({ loaded: true, running: () => !fake.calls.includes(taskEnd) });
     const error = await startLogonTaskDaemon({
       socket: 'p', infoFile: 'i', bin, run: fake.run, queryState: fake.state, timeout: 15_000, slowTimeout: 120_000,
       answers: async () => false, install: async () => {}, readInfo: () => ({ pid: 4242 }),
@@ -529,7 +551,7 @@ test('a queued task is never taken as stopped: no fallback at 15 seconds, after 
     wait: async () => {}, now: fakeClock(1_000),
   }).catch((e) => e);
   assert.equal(slow.fallback, false, 'a task still queued after /End is not confirmed stopped');
-  assert.ok(queued.calls.includes('/End /TN ApexDeckDaemon'), 'it was not given up on at 15 seconds');
+  assert.ok(queued.calls.includes(taskEnd), 'it was not given up on at 15 seconds');
   // The install fails while the sign-in run is queued: no fallback at once either.
   const failedInstall = fakeSchtasks({ loaded: true, code: () => TASK_STATE.QUEUED });
   let polls = 0;
@@ -600,7 +622,7 @@ test('a failed install falls back at once only when no task daemon can be runnin
   const fresh = fakeSchtasks({ loaded: false, queryFails: () => true });
   const c = await startLogonTaskDaemon({
     socket: 'p', infoFile: 'i', run: fresh.run, queryState: fresh.state, answers: async () => false,
-    install: async () => { await fresh.run(['/Create', '/TN', 'ApexDeckDaemon', '/XML', 'x', '/F']); throw new Error('ERROR: /Run failed'); },
+    install: async () => { await fresh.run(['/Create', '/TN', TASK_NAME, '/XML', 'x', '/F']); throw new Error('ERROR: /Run failed'); },
     readInfo: () => null, wait: async () => {}, now: fakeClock(1_000),
   }).catch((e) => e);
   assert.equal(c.fallback, false);
@@ -654,7 +676,7 @@ test('when every query and the install fail, a starting login daemon is waited f
     readInfo: () => null, wait: async () => {}, now: fakeClock(1_000),
   }).catch((e) => e);
   assert.equal(err.fallback, false);
-  assert.ok(blind.calls.includes('/End /TN ApexDeckDaemon'), 'it waited out the slow limit before giving up');
+  assert.ok(blind.calls.includes(taskEnd), 'it waited out the slow limit before giving up');
   // Same, but the login daemon answers while Deck waits.
   let reads = 0;
   const later = fakeSchtasks({ loaded: true, nameQueryFails: true, listFails: true, queryFails: () => true });
@@ -672,7 +694,7 @@ test('with a log file the task runs cmd.exe on one quoted launcher path, never q
   const args = taskArguments({ bin: 'C:\\Program Files\\Apex Deck\\apex-daemon.exe', logFile, env });
   assert.equal(
     args,
-    '--headless "C:\\Windows\\System32\\cmd.exe" /d /c "C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\apex-daemon-launch.cmd"',
+    `--headless "C:\\Windows\\System32\\cmd.exe" /d /c "C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\${LAUNCHER_NAME}"`,
   );
   // conhost.exe broke the nested ""bin" serve >>"log"" form at a real sign-in.
   assert.doesNotMatch(args, /""/);
@@ -680,14 +702,14 @@ test('with a log file the task runs cmd.exe on one quoted launcher path, never q
   assert.equal(launcherFile(logFile), `C:\\Users\\a b\\AppData\\Roaming\\Apex Deck\\logs\\${LAUNCHER_NAME}`);
   assert.equal(cmdCommand({ windir: 'D:\\Win' }), 'D:\\Win\\System32\\cmd.exe');
   const xmlText = taskXml({ bin: 'C:\\a.exe', logFile: 'C:\\l\\l.log', env: { ...env, USERNAME: 'u' } });
-  assert.match(xmlText, /<Arguments>--headless &quot;C:\\Windows\\System32\\cmd\.exe&quot; \/d \/c &quot;C:\\l\\apex-daemon-launch\.cmd&quot;<\/Arguments>/);
+  assert.ok(xmlText.includes(`<Arguments>--headless &quot;C:\\Windows\\System32\\cmd.exe&quot; /d /c &quot;C:\\l\\${LAUNCHER_NAME}&quot;</Arguments>`));
   // Without a log file the task keeps the original single-path form.
   assert.equal(taskArguments({ bin: 'C:\\Program Files\\a.exe', env }), '--headless "C:\\Program Files\\a.exe" serve');
 });
 
 test('a launcher folder with %, &, ^ or other cmd syntax keeps the plain unlogged task line and writes no launcher', async () => {
   const env = { SystemRoot: 'C:\\Windows', USERDOMAIN: 'PC', USERNAME: 'me' };
-  const bin = 'C:\\Program Files\\Apex Deck\\apex-daemon.exe';
+  const bin = imageAt('C:\\Program Files\\Apex Deck');
   assert.equal(launcherUsable('C:\\Users\\a b\\logs\\apex-daemon.log'), true);
   assert.equal(launcherUsable(''), false);
   for (const folder of ['%TEMP%', 'a&b', 'a^b', '50%', 'a(b)', 'a@b', 'a!b', 'a|b', 'a<b>']) {
@@ -754,7 +776,7 @@ test('a launcher that cannot be written is an install failure, before the task i
   };
   await assert.rejects(
     installLogonTask({ bin: 'C:\\a.exe', logFile: 'C:\\l\\apex-daemon.log', stampFile: 'C:\\s.stamp', env: { USERNAME: 'u' }, run, fs: files }),
-    /The background service didn't start: couldn't write .*apex-daemon-launch\.cmd: EACCES/,
+    error => error.message.startsWith("The background service didn't start: couldn't write ") && error.message.endsWith(`${LAUNCHER_NAME}: EACCES`),
   );
   assert.deepEqual(calls, []);
 });
@@ -767,7 +789,7 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
   // Every path has spaces, like a real install (C:\Program Files\Apex Deck\...):
   // the VM's sign-in task failed on exactly that, and paths without spaces hid it.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck win sched '));
-  const bin = path.join(dir, 'Apex Deck', 'resources', 'bin', 'apex-daemon.exe');
+  const bin = path.join(dir, 'Apex Deck', 'resources', 'bin', channel.WINDOWS_DAEMON);
   fs.mkdirSync(path.dirname(bin), { recursive: true });
   fs.copyFileSync(built, bin);
   const dataDir = path.join(dir, 'Deck Data');
@@ -775,7 +797,7 @@ test('Windows Task Scheduler registers real taskXml, launches apex-daemon via he
   const infoFile = path.join(dataDir, 'daemon.json');
   const logFile = path.join(dir, 'Roaming Apex', 'logs', 'apex-daemon.log');
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  const taskName = `ApexDeckDaemonTest-${process.pid}`;
+  const taskName = `${TASK_NAME}Test-${process.pid}`;
   let socket = '';
   try {
     socket = await daemonEndpoint(bin, dataDir);
@@ -845,14 +867,14 @@ test('Windows: a log folder named %TEMP%, with & or with ^ still starts the daem
   }
   for (const [i, folder] of ['%TEMP%', 'a & b', 'a ^ b'].entries()) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck win special '));
-    const bin = path.join(dir, 'Apex Deck', 'resources', 'bin', 'apex-daemon.exe');
+    const bin = path.join(dir, 'Apex Deck', 'resources', 'bin', channel.WINDOWS_DAEMON);
     fs.mkdirSync(path.dirname(bin), { recursive: true });
     fs.copyFileSync(built, bin);
     const dataDir = path.join(dir, 'Deck Data');
     const infoFile = path.join(dataDir, 'daemon.json');
     const logFile = path.join(dir, folder, 'logs', 'apex-daemon.log');
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
-    const taskName = `ApexDeckDaemonSpecial-${process.pid}-${i}`;
+    const taskName = `${TASK_NAME}Special-${process.pid}-${i}`;
     let socket = '';
     try {
       socket = await daemonEndpoint(bin, dataDir);
@@ -884,7 +906,7 @@ test('Windows: a log folder named %TEMP%, with & or with ^ still starts the daem
 });
 
 test('a stopped task whose daemon is still running is not taken as exited: no fallback before the guarded kill', async () => {
-  const bin = 'C:\\Apex\\apex-daemon.exe';
+  const bin = imageAt('C:\\Apex');
   const failing = async () => { throw new Error("The background service didn't start: ERROR: Access is denied."); };
   // The task reads Ready, nothing answers, but apex-daemon 4242 outlived it (as on Windows CI).
   const scenario = (over = {}) => {
@@ -939,9 +961,9 @@ test('a stopped task with no daemon left still falls back at once', async () => 
   const fake = fakeSchtasks({ loaded: true, running: () => false });
   let lists = 0;
   const error = await startReal({
-    socket: 'p', infoFile: 'i', bin: 'C:\\Apex\\apex-daemon.exe', run: fake.run, queryState: fake.state,
+    socket: 'p', infoFile: 'i', bin: imageAt('C:\\Apex'), run: fake.run, queryState: fake.state,
     timeout: 15_000, slowTimeout: 120_000, answers: async () => false, install: async () => {}, readInfo: () => null,
-    listDaemons: async () => { lists += 1; return [{ pid: 9, path: 'D:\\Other\\apex-daemon.exe' }]; },
+    listDaemons: async () => { lists += 1; return [{ pid: 9, path: imageAt('D:\\Other') }]; },
     wait: async () => {}, now: fakeClock(1_000),
   }).catch((e) => e);
   assert.match(error.message, /stopped before it answered/);
@@ -951,15 +973,15 @@ test('a stopped task with no daemon left still falls back at once', async () => 
 });
 
 test('daemonProcesses counts apex-daemon at Deck\'s paths or with a hidden path, and only a real list is none', async () => {
-  const bin = 'C:\\Apex\\apex-daemon.exe';
-  const other = 'C:\\Users\\u\\AppData\\Local\\Apex Deck\\apex-daemon.exe';
+  const bin = imageAt('C:\\Apex');
+  const other = imageAt('C:\\Users\\u\\AppData\\Local\\Apex Deck');
   const at = (found, bins = [bin, other]) => daemonProcesses({ bins, list: async () => found });
   assert.equal(await at([]), 'none');
-  assert.equal(await at([{ pid: 1, path: 'c:\\apex\\APEX-DAEMON.EXE' }]), 'running');
+  assert.equal(await at([{ pid: 1, path: bin.toUpperCase() }]), 'running');
   assert.equal(await at([{ pid: 1, path: other }]), 'running', 'the fallback copy counts too');
   assert.equal(await at([{ pid: 1, path: '' }]), 'running', 'a path Windows hides counts as ours');
-  assert.equal(await at([{ pid: 1, path: 'D:\\Other\\apex-daemon.exe' }]), 'none');
-  assert.equal(await at([{ pid: 1, path: 'D:\\Other\\apex-daemon.exe' }], ['', '']), 'running', 'no known path: any apex-daemon counts');
+  assert.equal(await at([{ pid: 1, path: imageAt('D:\\Other') }]), 'none');
+  assert.equal(await at([{ pid: 1, path: imageAt('D:\\Other') }], ['', '']), 'running', 'no known path: any apex-daemon counts');
   assert.equal(await daemonProcesses({ bins: [bin], list: async () => { throw new Error('denied'); } }), 'unknown');
   assert.equal(await daemonProcesses({ bins: [bin], list: async () => null }), 'unknown');
 });

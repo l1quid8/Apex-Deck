@@ -1,5 +1,8 @@
 //! LocalSystem Windows broker. No shell execution or general filesystem RPC.
-use apex_provenance::{windows as win, *};
+use apex_provenance::{
+    channel::{PRODUCT, WINDOWS_DAEMON, WINDOWS_HELPER, WINDOWS_SERVICE as NAME},
+    windows as win, *,
+};
 use ring::{
     rand::SystemRandom,
     signature::{Ed25519KeyPair, KeyPair},
@@ -8,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     ffi::{OsStr, OsString},
-    os::windows::io::AsRawHandle,
+    os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -31,14 +34,13 @@ use windows_service::{
 use windows_sys::Win32::{
     Security::SECURITY_ATTRIBUTES, System::Pipes::GetNamedPipeClientProcessId,
 };
-const NAME: &str = "ApexDeckProvenance";
 // Requests run side by side so one slow client cannot hold up the rest. The cap
 // bounds what a flood of connections can cost.
 const MAX_CLIENTS: usize = 64;
 // 0x12019b is read/write access without FILE_CREATE_PIPE_INSTANCE, which GW would
 // grant: clients can connect, but only SYSTEM can add a server end to this name.
 const PIPE_SDDL: &str = "O:SYG:SYD:P(A;;GA;;;SY)(A;;0x12019b;;;AU)";
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Pin {
     path: PathBuf,
@@ -46,7 +48,12 @@ struct Pin {
 }
 impl Pin {
     fn new(path: PathBuf) -> Result<Self, String> {
-        let path = path.canonicalize().map_err(|e| e.to_string())?;
+        if path.canonicalize().map_err(|e| e.to_string())? != path {
+            return Err(format!(
+                "Installed file resolves outside its expected path: {}",
+                path.display()
+            ));
+        }
         let sha256 = win::digest(&path)?;
         Ok(Self { path, sha256 })
     }
@@ -55,7 +62,7 @@ impl Pin {
             && win::digest(path).is_ok_and(|hash| hash == self.sha256)
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Config {
     ui: Pin,
@@ -63,6 +70,45 @@ struct Config {
     helper: Pin,
     asar: Pin,
 }
+impl Config {
+    fn installed(program_files: &Path, executable: &Path) -> Result<Self, String> {
+        let app = program_files.join(PRODUCT);
+        let resources = app.join("resources");
+        let bin = resources.join("bin");
+        let helper = bin.join(WINDOWS_HELPER);
+        if executable != helper {
+            return Err(format!(
+                "The protected Windows helper must be installed at {}",
+                helper.display()
+            ));
+        }
+        win::protected_ancestry(&app)?;
+        for folder in [&app, &resources, &bin] {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(
+                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS
+                        | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+                )
+                .open(folder)
+                .map_err(|e| e.to_string())?;
+            win::protected_handle(&file)?;
+        }
+        Ok(Self {
+            ui: Pin::new(app.join(format!("{PRODUCT}.exe")))?,
+            daemon: Pin::new(bin.join(WINDOWS_DAEMON))?,
+            helper: Pin::new(helper)?,
+            asar: Pin::new(resources.join("app.asar"))?,
+        })
+    }
+}
+
+fn current_helper() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .and_then(|path| path.canonicalize())
+        .map_err(|e| e.to_string())
+}
+
 struct State {
     key: Ed25519KeyPair,
     journal: Journal,
@@ -201,10 +247,10 @@ async fn serve(
     let config: Config =
         serde_json::from_slice(&win::root_file(&win::root()?.join("config.json"), 65536)?)
             .map_err(|e| e.to_string())?;
-    for pin in [&config.ui, &config.daemon, &config.helper, &config.asar] {
-        if !pin.matches(&pin.path) {
-            return Err("Installed authority build does not match protected pins".into());
-        }
+    // Bind the protected configuration to this channel's installed paths as
+    // well as the hashes, including when an old configuration is restored.
+    if config != Config::installed(&win::program_files()?, &current_helper()?)? {
+        return Err("Installed authority build does not match protected pins".into());
     }
     let config = Arc::new(config);
     let clients = Arc::new(Semaphore::new(MAX_CLIENTS));
@@ -401,43 +447,12 @@ fn stop_service(service: &Service) -> Result<(), String> {
     }
 }
 fn install() -> Result<(), String> {
-    let executable = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let bin = executable.parent().ok_or("Missing bin folder")?;
-    let resources = bin.parent().ok_or("Missing resources")?;
-    let app = resources.parent().ok_or("Missing install folder")?;
-    let program_files = win::program_files()?;
-    if app != program_files.join("Apex Deck") {
-        return Err(
-            "The protected Windows build must be installed in Program Files/Apex Deck".into(),
-        );
-    }
-    win::protected_ancestry(app)?;
-    let config = Config {
-        ui: Pin::new(app.join("Apex Deck.exe"))?,
-        daemon: Pin::new(bin.join("apex-daemon.exe"))?,
-        helper: Pin::new(executable.clone())?,
-        asar: Pin::new(resources.join("app.asar"))?,
-    };
-    // Also reject user-writable install directories: pinning a file in AppData is
-    // not a trusted installation, even if its current contents happen to match.
-    for folder in [app, resources, bin] {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(
-                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS
-                    | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
-            )
-            .open(folder)
-            .map_err(|e| e.to_string())?;
-        win::protected_handle(&file)?;
-    }
+    let executable = current_helper()?;
+    let config = Config::installed(&win::program_files()?, &executable)?;
     let manager = manager()?;
     let info = ServiceInfo {
         name: NAME.into(),
-        display_name: "Apex Deck Protected Authority".into(),
+        display_name: format!("{PRODUCT} Protected Authority").into(),
         service_type: ServiceType::OWN_PROCESS,
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
@@ -493,13 +508,15 @@ fn install() -> Result<(), String> {
             break;
         }
         if state == ServiceState::Stopped || Instant::now() > deadline {
-            return Err("Installed authority failed to start; inspect ProgramData/Apex Deck Provenance/service-error.txt".into());
+            return Err(format!(
+                "Installed authority failed to start; inspect {}",
+                root.join("service-error.txt").display()
+            ));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     Ok(())
 }
-use std::os::windows::fs::OpenOptionsExt;
 pub fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.first().and_then(|s| s.to_str()) {
@@ -534,5 +551,26 @@ pub fn run() -> Result<(), String> {
             }
         }
         _ => Err("Expected install, stop, uninstall, service, or identity <data directory>".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_rejects_other_channel_root_and_helper_before_accessing_files() {
+        let table: Value = serde_json::from_str(include_str!("../../../desktop/channels.json")).unwrap();
+        let other = &table[if channel::NIGHTLY { "stable" } else { "nightly" }];
+        let program_files = Path::new(r"C:\Program Files");
+        let other_product = other["PRODUCT"].as_str().unwrap();
+        let other_helper = other["WINDOWS_HELPER"].as_str().unwrap();
+        for (product, helper) in [(other_product, WINDOWS_HELPER), (PRODUCT, other_helper)] {
+            let path = program_files.join(product).join("resources").join("bin").join(helper);
+            assert!(Config::installed(program_files, &path)
+                .err()
+                .unwrap()
+                .contains("helper must be installed at"));
+        }
     }
 }

@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { channel } from '../desktop/channel.mjs';
 import { assetName, buildManifest, nightlyTag, publishSteps, teamOf } from '../scripts/release-update-manifest.mjs';
-import { assetUrl, packageFor, parseManifest } from '../desktop/updater.mjs';
+import { assetUrl, packageFor, parseManifest, WINDOWS_FEED_URL } from '../desktop/updater.mjs';
 import { buildWindowsManifest, windowsAssetName } from '../scripts/windows-update-manifest.mjs';
+import { nightlyRelease } from '../scripts/windows-build.mjs';
 
 const commit = '11c1ade33ad9f6dc2d80ff32a68e159d501fde38';
 const date = '20261123';
@@ -61,10 +62,18 @@ test('publishing uploads to a draft and checks it before any Deck can see the fe
 
 test('the Windows feed a release writes is what installed copies accept', () => {
   const windows = { version: '0.9.8', size: 10, sha256: 'a'.repeat(64) };
+  const nightly = nightlyRelease('abcdef0'.padEnd(40, '1'), '65578', '20261123');
   if (channel.nightly) {
     assert.throws(() => buildWindowsManifest(windows), /channel mismatch/);
+    const feed = buildWindowsManifest(windows, nightly);
+    assert.deepEqual([feed.channel, feed.tag, feed.buildNumber, feed.commit], ['nightly', nightly.tag, nightly.buildNumber, nightly.commit]);
+    const parsed = parseManifest(feed, {extension: '.exe'});
+    assert.equal(assetUrl(parsed.version, parsed.packages[0].name, '.exe', parsed.tag),
+      'https://github.com/l1quid8/apex-deck/releases/download/nightly-20261123-abcdef0/Apex-Deck-Nightly_20261123_abcdef0_x64-Setup.exe');
+    assert.match(WINDOWS_FEED_URL, /\/download\/nightly\/apex-deck-nightly-update-windows\.json$/);
     return;
   }
+  assert.throws(() => buildWindowsManifest(windows, nightly), /channel mismatch/);
   const manifest = buildWindowsManifest(windows);
   const entry = packageFor(parseManifest(JSON.parse(JSON.stringify(manifest)), { extension: '.exe' }), { arch: 'x64', osVersion: '10.0.26100' });
   assert.equal(entry.name, windowsAssetName('0.9.8'));

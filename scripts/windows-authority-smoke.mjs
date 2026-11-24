@@ -6,9 +6,10 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import {createInterface} from 'node:readline';
+import {channel} from '../desktop/channel.mjs';
 const daemon=process.argv[2];
-assert.equal(process.platform,'win32');assert.ok(daemon?.endsWith('apex-daemon.exe'));
-const helper=path.join(path.dirname(daemon),'apex-provenance.exe');
+assert.equal(process.platform,'win32');assert.equal(path.basename(daemon),channel.WINDOWS_DAEMON);
+const helper=path.join(path.dirname(daemon),channel.WINDOWS_HELPER);
 const root=mkdtempSync(path.join(tmpdir(),'apex-installed-authority-'));
 mkdirSync(path.join(root,'saved-chats-v1'));
 const identity=()=>JSON.parse(execFileSync(helper,['identity',root],{encoding:'utf8',windowsHide:true,timeout:35000}));
@@ -39,7 +40,7 @@ try{
  // An ordinary same-user Node process cannot issue receipts or read ledgers.
  let heldSocket;
  const refusal=await new Promise((resolve,reject)=>{
-  const socket=net.createConnection('\\\\.\\pipe\\ApexDeckProvenance-v1');heldSocket=socket;let bytes='';
+  const socket=net.createConnection(channel.WINDOWS_PIPE);heldSocket=socket;let bytes='';
   socket.setTimeout(15000,()=>{socket.destroy();reject(new Error('untrusted peer did not receive a bounded refusal'));});
   socket.on('error',reject);socket.on('connect',()=>socket.write(JSON.stringify({op:'issue',dataDir:initial.dataDir,command:{cmd:'room_create',args:{id:'forged'},provenanceRequestId:'forged'}})+'\n'));
   socket.on('data',data=>{bytes+=data;if(bytes.includes('\n')){resolve(JSON.parse(bytes.split('\n')[0]));}});
@@ -48,7 +49,7 @@ try{
  // A rejected client retaining its handle cannot break subsequent service IO.
  assert.equal(identity().publicKey,initial.publicKey);heldSocket.destroy();
  // Clients that vanish at once or sit silent cannot stop or starve the service.
- const pipe='\\\\.\\pipe\\ApexDeckProvenance-v1';
+ const pipe=channel.WINDOWS_PIPE;
  for(let i=0;i<100;i++)net.createConnection(pipe).on('error',()=>{}).destroy();
  const silent=Array.from({length:32},()=>net.createConnection(pipe).on('error',()=>{}));
  assert.equal(identity().publicKey,initial.publicKey);

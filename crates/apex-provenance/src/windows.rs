@@ -2,6 +2,7 @@
 #[cfg(test)]
 #[path = "windows_module_tests.rs"]
 mod module_tests;
+use crate::channel::{WINDOWS_ROOT, WINDOWS_SERVICE};
 use crate::signature_cache::{ModuleIdentity, SignatureCache};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
@@ -29,7 +30,7 @@ use windows_sys::Win32::{
         Diagnostics::Debug::CheckRemoteDebuggerPresent, Pipes::*, ProcessStatus::*, Threading::*,
     },
 };
-pub const PIPE: &str = r"\\.\pipe\ApexDeckProvenance-v1";
+pub use crate::channel::WINDOWS_PIPE as PIPE;
 pub const SYSTEM: &str = "S-1-5-18";
 pub const ADMIN: &str = "S-1-5-32-544";
 const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
@@ -162,7 +163,7 @@ pub fn root() -> Result<PathBuf, String> {
     unsafe {
         CoTaskMemFree(raw.cast());
     }
-    Ok(path.join("Apex Deck Provenance"))
+    Ok(path.join(WINDOWS_ROOT))
 }
 pub fn user_root(sid: &str) -> Result<PathBuf, String> {
     if !sid.starts_with("S-1-")
@@ -398,7 +399,7 @@ fn verify_pipe_owner(handle: RawHandle) -> Result<(), String> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|e| e.to_string())?;
     let service = manager
-        .open_service("ApexDeckProvenance", ServiceAccess::QUERY_STATUS)
+        .open_service(WINDOWS_SERVICE, ServiceAccess::QUERY_STATUS)
         .map_err(|e| e.to_string())?;
     let status = service.query_status().map_err(|e| e.to_string())?;
     if status.current_state != ServiceState::Running || status.process_id != Some(pid) {
@@ -1050,6 +1051,17 @@ pub fn identity(path: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authority_files_and_host_locks_use_the_compiled_channel_root() {
+        let root = root().unwrap();
+        assert!(root.ends_with(WINDOWS_ROOT));
+        let sid = current_sid().unwrap();
+        let user = root.join("users").join(&sid);
+        assert_eq!(public_path().unwrap(), user.join("public-key"));
+        assert_eq!(host_locks(&sid).unwrap(), user.join("host-locks-v2"));
+    }
+
     #[test]
     #[ignore = "requires an elevated Windows token; run by installer CI"]
     fn system_code_is_protected_and_a_users_file_is_not() {
