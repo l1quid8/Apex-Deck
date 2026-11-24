@@ -55,7 +55,7 @@ function assembled({ buildNumber = 1 } = {}) {
 const greenRun = (sha, created = '2026-11-25T06:00:00Z') => ({ head_branch: 'main', status: 'completed', conclusion: 'success', event: 'push', head_sha: sha, created_at: created, id: 1 });
 
 /** A fake `gh` that keeps releases in memory and serves uploaded bytes back. */
-function fakeGitHub({ releases = {}, tags = {}, corrupt = null } = {}) {
+function fakeGitHub({ releases = {}, tags = {}, corrupt = null, tagCreateFails = false, tagRaceWinner = null } = {}) {
   const store = structuredClone(releases);
   const refs = { ...tags };
   const files = {};
@@ -70,6 +70,8 @@ function fakeGitHub({ releases = {}, tags = {}, corrupt = null } = {}) {
     }
     if (group === 'api' && action === '-X' && args[3].endsWith('/git/refs')) {
       const name = flagOf(args, '-f').replace('ref=refs/tags/', '');
+      if (tagCreateFails) return { status: 1, stdout: '', stderr: 'HTTP 500: Internal Server Error' };
+      if (tagRaceWinner) refs[name] = tagRaceWinner;
       if (refs[name]) return { status: 1, stdout: '', stderr: 'HTTP 422: Reference already exists' };
       refs[name] = args[args.lastIndexOf('-f') + 1].replace('sha=', '');
       return { status: 0, stdout: '', stderr: '' };
@@ -289,6 +291,24 @@ test('a corrupted upload holds the Linux feed, leaves the Linux release a draft,
   assert.equal(gh.store[ASSET].isDraft, true);
   assert.equal(gh.store.nightly, undefined);
   assert.equal(gh.refs[TAG], undefined);
+});
+
+test('a first publish whose source tag cannot be created leaves the Linux release unpublished and the feed unmoved', () => {
+  const { out } = assembled();
+  for (const [mode, options] of [['create fails', { tagCreateFails: true }], ['another commit wins the race', { tagRaceWinner: SHA_OLD }]]) {
+    const gh = fakeGitHub(options);
+    const result = publishLinuxNightly({ assetsDir: out, runner: gh.runner });
+    assert.equal(result.stage, 'source-tag', mode);
+    assert.equal(result.published, false);
+    assert.equal(gh.store[ASSET].isDraft, true, `${mode}: the Linux release stays a draft`);
+    assert.ok(!gh.calls.some((call) => call.startsWith(`release edit ${ASSET}`)), `${mode}: never un-drafted`);
+    assert.equal(gh.store.nightly, undefined, `${mode}: the rolling feed is never written`);
+    // A draft is not Linux release history, so feed recovery has nothing to point VPS clients at.
+    const listed = (command, args) => (args[1] === '--paginate'
+      ? { status: 0, stdout: Object.entries(gh.store).filter(([, release]) => !release.isDraft).map(([tag]) => `${tag}\n`).join(''), stderr: '' }
+      : { status: 1, stdout: '', stderr: 'HTTP 404: Not Found' });
+    assert.equal(fetchLinuxFeed({ runner: listed }), null, `${mode}: recovery sees no published Linux release`);
+  }
 });
 
 test('a missing local sidecar is caught before anything is uploaded', () => {

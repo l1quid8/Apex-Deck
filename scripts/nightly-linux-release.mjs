@@ -324,8 +324,8 @@ function tagCommit(runner, repo, tag) {
 
 /**
  * Publish one Linux Nightly. Order: local verify -> Linux-only draft release
- * -> upload -> download back and verify -> publish the Linux release -> make
- * sure the shared source tag points at this commit -> advance only the Linux
+ * -> upload -> download back and verify -> make sure the shared source tag
+ * points at this commit -> publish the Linux release -> advance only the Linux
  * feed. The Linux release is never shared, so a retry may replace its files
  * freely until the Linux feed points at it; after that they are immutable.
  */
@@ -404,10 +404,10 @@ export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFA
     if (!dryRun) fs.rmSync(scratch, { recursive: true, force: true });
   }
 
-  if (release.isDraft) step(['release', 'edit', feed.assetTag, '--repo', repo, '--draft=false', '--prerelease']);
-
-  // Create the shared source tag if no platform has yet. A lost race is fine
-  // as long as the winner points at the same commit.
+  // The shared source tag must point at this commit before the Linux release
+  // goes public, so a published Linux release (the history the feed recovery
+  // trusts) always names a tag VPS clients can build from. Create it if no
+  // platform has yet; a lost race is fine only if the winner names this commit.
   if (!dryRun && !sourceCommit) {
     const create = step(['api', '-X', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/tags/${feed.tag}`, '-f', `sha=${feed.commit}`], { allowFailure: true });
     if (create.status !== 0) {
@@ -417,6 +417,8 @@ export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFA
       }
     }
   }
+
+  if (release.isDraft) step(['release', 'edit', feed.assetTag, '--repo', repo, '--draft=false', '--prerelease']);
 
   let rolling = dryRun ? true : viewRelease(runner, repo, ROLLING_TAG);
   if (!rolling) {
