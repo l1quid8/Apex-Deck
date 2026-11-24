@@ -302,19 +302,35 @@ export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFA
       if (!release) throw new Error(failure('gh', commands.at(-1).slice(1), create));
     }
   }
+  let toUpload = expected;
   if (release) {
     if (release.targetCommitish && release.targetCommitish !== feed.commit) {
       return result('immutable-tag', { errors: [`Release ${feed.tag} targets ${release.targetCommitish}, not ${feed.commit}.`] });
     }
     const existing = new Set((release.assets ?? []).map((asset) => asset?.name));
-    const clash = expected.map((entry) => entry.name).filter((name) => existing.has(name));
+    const clash = expected.filter((entry) => existing.has(entry.name));
     if (!release.isDraft && clash.length) {
-      return result('immutable-tag', { errors: [`Release ${feed.tag} is published and already has ${clash.join(', ')}; refusing to overwrite.`] });
+      // A retry after a partial publish finds its own files already there.
+      // Keep them only if they are byte-identical; never replace them.
+      const check = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-linux-nightly-existing-'));
+      try {
+        for (const entry of clash) runner('gh', ['release', 'download', feed.tag, '--repo', repo, '--dir', check, '--pattern', entry.name, '--clobber']);
+        const differ = verifyFiles(clash, check);
+        if (differ.length) {
+          return result('immutable-tag', { errors: [`Release ${feed.tag} is published and already has different ${clash.map((entry) => entry.name).join(', ')}; refusing to overwrite. ${differ.join('; ')}`] });
+        }
+      } finally {
+        fs.rmSync(check, { recursive: true, force: true });
+      }
+      const kept = new Set(clash.map((entry) => entry.name));
+      toUpload = expected.filter((entry) => !kept.has(entry.name));
     }
   }
   const draft = !release || release.isDraft;
-  step(['release', 'upload', feed.tag, '--repo', repo, ...(draft ? ['--clobber'] : []),
-    ...expected.map((entry) => path.join(assetsDir, entry.name))]);
+  if (toUpload.length) {
+    step(['release', 'upload', feed.tag, '--repo', repo, ...(draft ? ['--clobber'] : []),
+      ...toUpload.map((entry) => path.join(assetsDir, entry.name))]);
+  }
 
   const scratch = dryRun ? assetsDir : fs.mkdtempSync(path.join(os.tmpdir(), 'apex-linux-nightly-verify-'));
   try {

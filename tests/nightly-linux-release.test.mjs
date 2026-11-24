@@ -181,6 +181,7 @@ test('Linux refuses to overwrite its own asset on a published release, or attach
   const { out } = assembled();
   const name = appImageName(TAG, 'x86_64');
   const clash = fakeGitHub({ releases: { [TAG]: { isDraft: false, targetCommitish: SHA_NEW, assets: [{ name }] } } });
+  clash.files[`${TAG}/${name}`] = Buffer.from('a different AppImage');
   const held = publishLinuxNightly({ assetsDir: out, runner: clash.runner });
   assert.equal(held.stage, 'immutable-tag');
   assert.match(held.errors[0], /refusing to overwrite/);
@@ -188,6 +189,28 @@ test('Linux refuses to overwrite its own asset on a published release, or attach
   const other = fakeGitHub({ releases: { [TAG]: { isDraft: true, targetCommitish: SHA_OLD, assets: [] } } });
   assert.equal(publishLinuxNightly({ assetsDir: out, runner: other.runner }).stage, 'immutable-tag');
   for (const gh of [clash, other]) assert.ok(!gh.calls.some((call) => call.includes('release upload')));
+  assert.ok(!clash.calls.some((call) => call.startsWith('release edit')));
+});
+
+test('a retry keeps identical Linux files already on a published release and refuses different ones', () => {
+  const { out } = assembled();
+  const first = fakeGitHub({ releases: { [TAG]: { isDraft: false, targetCommitish: SHA_NEW, assets: [{ name: 'Apex-Deck-Nightly_arm64.pkg' }] } } });
+  // The first attempt uploaded and verified everything but failed before the feed moved.
+  assert.equal(publishLinuxNightly({ assetsDir: out, runner: first.runner }).published, true);
+  delete first.store.nightly;
+  first.calls.length = 0;
+  const retry = publishLinuxNightly({ assetsDir: out, runner: first.runner });
+  assert.equal(retry.published, true, retry.errors.join('; '));
+  assert.ok(!first.calls.some((call) => call.startsWith(`release upload ${TAG}`)), 'nothing is re-uploaded');
+  assert.deepEqual(first.store.nightly.assets.map((asset) => asset.name), [LINUX_FEED_NAME]);
+
+  const name = 'apex-daemon-nightly-linux-x86_64';
+  first.files[`${TAG}/${name}`] = Buffer.from('someone else');
+  delete first.store.nightly;
+  const held = publishLinuxNightly({ assetsDir: out, runner: first.runner });
+  assert.equal(held.stage, 'immutable-tag');
+  assert.match(held.errors[0], /different .*refusing to overwrite/);
+  assert.equal(first.store.nightly, undefined);
 });
 
 test('a corrupted upload holds the Linux feed and leaves the release a draft', () => {
