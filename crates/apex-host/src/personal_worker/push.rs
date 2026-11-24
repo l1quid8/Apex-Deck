@@ -11,12 +11,24 @@ use serde_json::json;
 use crate::personal::Notice;
 use crate::Host;
 
+fn default_topic() -> String {
+    apex_provenance::channel::IOS_ID.to_owned()
+}
+
+fn device_topic<'a>(device: &'a crate::personal::PushDevice, config: &'a Apns) -> &'a str {
+    match device.topic.as_deref() {
+        Some(topic @ ("dev.apexdeck.phone" | "dev.apexdeck.phone.nightly")) => topic,
+        _ => config.topic.as_str(),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Apns {
     key_path: String,
     key_id: String,
     team_id: String,
+    #[serde(default = "default_topic")]
     topic: String,
     #[serde(default)]
     sandbox: bool,
@@ -77,7 +89,7 @@ impl Host {
                 let payload = notice_payload(&assistant.host_id, &id, &assistant.name, &body);
                 let sent = client.post(format!("{base}/3/device/{}", device.token))
                     .header("authorization", format!("bearer {jwt}"))
-                    .header("apns-topic", &config.topic)
+                    .header("apns-topic", device_topic(device, &config))
                     .header("apns-push-type", "alert")
                     .json(&payload).send().await;
                 match sent {
@@ -100,5 +112,21 @@ mod tests {
         assert_eq!(payload["aps"]["alert"]["body"], "Update");
         let other = super::notice_payload("beta", "asst-1", "Helper", "Update");
         assert_ne!(payload["hostId"], other["hostId"]);
+    }
+
+    #[test]
+    fn apns_topic_defaults_to_active_channel_and_honors_per_device_topic() {
+        let config: super::Apns = serde_json::from_str(
+            r#"{"keyPath":"/tmp/key.p8","keyId":"ABC","teamId":"TEAM123"}"#
+        ).unwrap();
+        assert_eq!(config.topic, apex_provenance::channel::IOS_ID);
+        let legacy = crate::personal::PushDevice { token: "a".repeat(64), added_at: 1, topic: None };
+        let stable = crate::personal::PushDevice { token: "b".repeat(64), added_at: 2, topic: Some("dev.apexdeck.phone".into()) };
+        let nightly = crate::personal::PushDevice { token: "c".repeat(64), added_at: 3, topic: Some("dev.apexdeck.phone.nightly".into()) };
+        let unknown = crate::personal::PushDevice { token: "d".repeat(64), added_at: 4, topic: Some("com.example.rogue".into()) };
+        assert_eq!(super::device_topic(&legacy, &config), apex_provenance::channel::IOS_ID);
+        assert_eq!(super::device_topic(&stable, &config), "dev.apexdeck.phone");
+        assert_eq!(super::device_topic(&nightly, &config), "dev.apexdeck.phone.nightly");
+        assert_eq!(super::device_topic(&unknown, &config), apex_provenance::channel::IOS_ID);
     }
 }

@@ -18,6 +18,8 @@ pub struct Invite {
 }
 
 const PREFIX: &str = "apexdeck://pair?p=";
+const NIGHTLY_PREFIX: &str = "apexdeck-nightly://pair?p=";
+const PREFIXES: &[&str] = &[PREFIX, NIGHTLY_PREFIX];
 const SKEW_S: u64 = 120;
 
 #[derive(Serialize, Deserialize)]
@@ -56,6 +58,10 @@ fn unb64<const N: usize>(field: &str, s: &str) -> Result<[u8; N], String> {
 
 impl Invite {
     pub fn to_link(&self) -> String {
+        self.to_link_with_scheme("apexdeck")
+    }
+
+    pub fn to_link_with_scheme(&self, scheme: &str) -> String {
         let w = Wire {
             v: self.v,
             host: hex(&self.host),
@@ -68,11 +74,15 @@ impl Invite {
             os: self.os.clone(),
         };
         let json = serde_json::to_vec(&w).expect("wire struct serializes");
-        format!("{PREFIX}{}", B64.encode(json))
+        format!("{scheme}://pair?p={}", B64.encode(json))
     }
 
     pub fn parse_link(link: &str, now_s: u64) -> Result<Invite, String> {
-        let p = link.trim().strip_prefix(PREFIX).ok_or("not an Apex Deck pairing link")?;
+        let trimmed = link.trim();
+        let p = PREFIXES
+            .iter()
+            .find_map(|prefix| trimmed.strip_prefix(prefix))
+            .ok_or("not an Apex Deck pairing link")?;
         let raw = B64.decode(p).map_err(|_| "pairing link is not valid base64")?;
         let w: Wire = serde_json::from_slice(&raw).map_err(|e| format!("pairing link is malformed: {e}"))?;
         if w.v != 1 {
@@ -168,6 +178,16 @@ mod tests {
         assert!(Invite::parse_link("apexdeck://pair?p=!!!", 0).is_err());
         assert!(Invite::parse_link("https://pair?p=abc", 0).is_err());
         assert!(Invite::parse_link("apexdeck://pair", 0).is_err());
+    }
+
+    #[test]
+    fn round_trip_nightly_scheme() {
+        let i = invite();
+        let l = i.to_link_with_scheme("apexdeck-nightly");
+        assert!(l.starts_with("apexdeck-nightly://pair?p="));
+        assert_eq!(Invite::parse_link(&l, 1_000_000).unwrap(), i);
+        let other = i.to_link_with_scheme("apexdeck-other");
+        assert!(Invite::parse_link(&other, 1_000_000).is_err());
     }
 
     #[test]

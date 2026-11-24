@@ -73,6 +73,52 @@ test('the phone asks for notifications once, sends its token to the assistant ho
   }
 });
 
+test('the phone sends its bundle APNs topic when ApexAppInfo reports Nightly or Stable', async () => {
+  for (const [bundleId, expectedTopic] of [
+    ['dev.apexdeck.phone.nightly', 'dev.apexdeck.phone.nightly'],
+    ['dev.apexdeck.phone', 'dev.apexdeck.phone'],
+  ]) {
+    const savedInterval = globalThis.setInterval;
+    globalThis.setInterval = () => 0;
+    const listeners = {};
+    const push = {
+      requestPermissions: async () => ({ receive: 'granted' }),
+      register: async () => {},
+      addListener: async (event, callback) => { (listeners[event] ??= []).push(callback); return { remove() {} }; },
+    };
+    globalThis.Capacitor = {
+      Plugins: {
+        PushNotifications: push,
+        ApexAppInfo: { getInfo: async () => ({ bundleId, pushTopic: bundleId, channel: bundleId.endsWith('.nightly') ? 'nightly' : 'stable' }) },
+      },
+    };
+    const assistant = { id: 'asst-1', name: 'Assistant', hostId: 'vps', revision: 1, messages: [], tasks: [], timezone: 'UTC' };
+    const calls = [];
+    const backend = {
+      host: { connection: { get: () => ({ status: { kind: 'connected', hostId: 'vps' } }) } },
+      call: async (cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === 'personal_list') return [assistant];
+        if (cmd === 'personal_push_register') return {};
+        throw new Error(`unexpected ${cmd}`);
+      },
+    };
+    try {
+      const h = harness({ hosts: [{ id: 'vps', name: 'VPS', remote: true }], hostBackend: () => backend, offlineHost: () => false, open: true, device: 'phone' });
+      h.render(); await settle();
+      h.render(); await settle();
+      listeners.registration.forEach((callback) => callback({ value: 'token-abc' }));
+      await settle();
+      await settle();
+      const registered = calls.filter(([cmd]) => cmd === 'personal_push_register').map(([, args]) => args);
+      assert.deepEqual(registered, [{ assistantId: 'asst-1', token: 'token-abc', topic: expectedTopic }]);
+    } finally {
+      globalThis.setInterval = savedInterval;
+      delete globalThis.Capacitor;
+    }
+  }
+});
+
 test('a completed import refreshes assistant discovery immediately and unsubscribes on unmount', async () => {
  const savedInterval=globalThis.setInterval;globalThis.setInterval=()=>0;
  let reads=0;let imported=false;
