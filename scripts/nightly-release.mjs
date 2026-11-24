@@ -7,15 +7,16 @@
 //     [--dry-run] [--github-output PATH]
 //
 //   node scripts/nightly-release.mjs publish --assets-dir DIR --manifest PATH
-//     [--dmg-dir DIR | --extra-dir DIR] [--repo OWNER/REPO] [--current-feed PATH]
+//     [--dmg-dir DIR | --extra-dir DIR] [--appimage-dir DIR]
+//     [--repo OWNER/REPO] [--current-feed PATH]
 //     [--verify-dir DIR] [--force] [--dry-run]
 //
 // Safety invariants:
 // 1. Only a green `daemon.yml` run on `main` can be selected for Nightly.
 // 2. If that green SHA already matches the published rolling `nightly` feed,
 //    `plan` skips building and publishing (unless `--force`).
-// 3. `publish` verifies every listed package, daemon, and required macOS DMG
-//    locally, uploads to an immutable draft `--prerelease` tag
+// 3. `publish` verifies every listed package, daemon, required macOS DMG, and
+//    required Linux AppImage (with its checksum and metadata sidecars) locally, uploads to an immutable draft `--prerelease` tag
 //    (`nightly-YYYYMMDD-<sha7>`), downloads every uploaded asset back, and
 //    re-verifies exact byte size + SHA-256 (plus optional package verification)
 //    BEFORE publishing the immutable release or advancing the rolling `nightly`
@@ -46,6 +47,8 @@ const DAEMON_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const PKG_ARCHES = new Set(['arm64', 'x64']);
 const DAEMON_ARCHES = new Set(['arm64', 'x86_64']);
 const PACKAGE_LIMIT = 4 * 1024 ** 3;
+const APPIMAGE_ARCHES = ['x86_64', 'arm64'];
+const APPIMAGE_METADATA_LIMIT = 64 * 1024;
 
 export function formatNightlyTag(date, commit) {
   if (!DATE_RE.test(date ?? '')) throw new Error('Nightly date must be YYYYMMDD.');
@@ -328,8 +331,94 @@ export function resolveRequiredDmgs(manifest, { assetsDir, dmgDir = null, extraA
   return { ok: errors.length === 0, dmgs, errors };
 }
 
+/**
+ * Desktop Linux ships one Nightly AppImage per architecture. AppImages are
+ * release assets only, not feed entries, so the shared feed schema and the
+ * macOS updater are unchanged.
+ */
+export function expectedAppImageNames(manifest) {
+  const parsed = parseNightlyFeed(manifest);
+  const [, date, sha7] = /^nightly-([0-9]{8})-([a-f0-9]{7})$/.exec(parsed.tag);
+  return APPIMAGE_ARCHES.map((arch) => `Apex-Deck-Nightly_${date}_${sha7}_${arch}.AppImage`);
+}
+
+function regularFileError(filePath, name, limit) {
+  const stat = lstatOrNull(filePath);
+  if (!stat) return `Missing required AppImage asset: ${name}`;
+  if (!stat.isFile()) return `Asset is not a regular file: ${name}`;
+  if (stat.size <= 0 || stat.size > limit) return `Invalid size for AppImage asset ${name}: ${stat.size}`;
+  return null;
+}
+
+/**
+ * Locate every required Nightly AppImage with its `.sha256` and `.json`
+ * sidecars. Fails closed unless the checksum matches and the metadata names
+ * this exact Nightly channel, version, commit, buildNumber, and file.
+ *
+ * Returns one entry per uploaded file (AppImage plus both sidecars) so the
+ * post-upload download check covers all three.
+ */
+export function resolveRequiredAppImages(manifest, { appImageDir }) {
+  const parsed = parseNightlyFeed(manifest);
+  const errors = [];
+  const appImages = [];
+  for (const name of expectedAppImageNames(parsed)) {
+    const filePath = path.join(path.resolve(appImageDir), name);
+    const sidecarPath = `${filePath}.sha256`;
+    const metadataPath = `${filePath}.json`;
+    const fileErrors = [
+      regularFileError(filePath, name, PACKAGE_LIMIT),
+      regularFileError(sidecarPath, `${name}.sha256`, APPIMAGE_METADATA_LIMIT),
+      regularFileError(metadataPath, `${name}.json`, APPIMAGE_METADATA_LIMIT),
+    ].filter(Boolean);
+    if (fileErrors.length > 0) {
+      errors.push(...fileErrors);
+      continue;
+    }
+    const size = fs.statSync(filePath).size;
+    const sha256 = sha256File(filePath);
+    const [sidecarHash, sidecarName] = fs.readFileSync(sidecarPath, 'utf8').trim().split(/\s+/);
+    if (sidecarHash?.toLowerCase() !== sha256 || sidecarName !== name) {
+      errors.push(`AppImage checksum sidecar mismatch for ${name}`);
+      continue;
+    }
+    let metadata;
+    try {
+      metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    } catch (error) {
+      errors.push(`AppImage metadata is not JSON for ${name}: ${error.message}`);
+      continue;
+    }
+    const expected = {
+      channel: 'nightly',
+      version: parsed.version,
+      commit: parsed.commit,
+      sourceCommit: parsed.commit,
+      buildNumber: parsed.buildNumber,
+      tag: parsed.tag,
+      name,
+      size,
+      sha256,
+    };
+    const wrong = Object.keys(expected).filter((key) => metadata?.[key] !== expected[key]);
+    if (wrong.length > 0) {
+      errors.push(`AppImage metadata for ${name} does not match this Nightly build: ${wrong.join(', ')}`);
+      continue;
+    }
+    for (const entryPath of [filePath, sidecarPath, metadataPath]) {
+      appImages.push({
+        name: path.basename(entryPath),
+        filePath: entryPath,
+        size: fs.statSync(entryPath).size,
+        sha256: sha256File(entryPath),
+      });
+    }
+  }
+  return { ok: errors.length === 0, appImages, errors };
+}
+
 /** Verify every package, daemon, and required DMG listed exists in `dir` with matching size & SHA-256. */
-export function verifyAssetFiles(manifest, dir, { dmgs = [], verifyPackage = null } = {}) {
+export function verifyAssetFiles(manifest, dir, { dmgs = [], appImages = [], verifyPackage = null } = {}) {
   const checked = [];
   const errors = [];
   const seen = new Set();
@@ -337,6 +426,7 @@ export function verifyAssetFiles(manifest, dir, { dmgs = [], verifyPackage = nul
     ...manifest.packages.map((entry) => ({ kind: 'package', entry })),
     ...manifest.daemons.map((entry) => ({ kind: 'daemon', entry })),
     ...dmgs.map((entry) => ({ kind: 'dmg', entry })),
+    ...appImages.map((entry) => ({ kind: 'appimage', entry })),
   ];
   for (const { kind, entry } of entries) {
     const key = `${kind}:${entry.name}`;
@@ -411,14 +501,14 @@ function defaultRunner(command, args, { allowFailure = false } = {}) {
   return result;
 }
 
-function uniqueAssetPaths(manifest, assetsDir, requiredDmgs = []) {
+function uniqueAssetPaths(manifest, assetsDir, requiredDmgs = [], requiredAppImages = []) {
   const names = new Set([
     ...manifest.packages.map((entry) => entry.name),
     ...manifest.daemons.map((entry) => entry.name),
   ]);
   const files = [...names].map((name) => path.join(assetsDir, name));
-  for (const dmg of requiredDmgs) {
-    if (dmg?.filePath && !files.includes(dmg.filePath)) files.push(dmg.filePath);
+  for (const extra of [...requiredDmgs, ...requiredAppImages]) {
+    if (extra?.filePath && !files.includes(extra.filePath)) files.push(extra.filePath);
   }
   return files;
 }
@@ -435,6 +525,7 @@ export function publishNightlyRelease({
   manifestPath,
   assetsDir,
   dmgDir = null,
+  appImageDir = null,
   extraAssets = [],
   currentFeed = null,
   repo = DEFAULT_REPO,
@@ -478,10 +569,12 @@ export function publishNightlyRelease({
     }
   }
 
-  // Gate 1: Verify every local package, daemon, and required macOS DMG before touching GitHub.
+  // Gate 1: Verify every local package, daemon, required macOS DMG, and
+  // required Linux AppImage before touching GitHub.
   const localCheck = verifyAssetFiles(manifest, assetsDir, { verifyPackage });
   const localDmgs = resolveRequiredDmgs(manifest, { assetsDir, dmgDir, extraAssets });
-  const localErrors = [...localCheck.errors, ...localDmgs.errors];
+  const localAppImages = resolveRequiredAppImages(manifest, { appImageDir: appImageDir ?? dmgDir ?? assetsDir });
+  const localErrors = [...localCheck.errors, ...localDmgs.errors, ...localAppImages.errors];
   if (localErrors.length > 0) {
     return {
       published: false,
@@ -496,7 +589,7 @@ export function publishNightlyRelease({
     };
   }
 
-  const uploadFiles = uniqueAssetPaths(manifest, assetsDir, localDmgs.dmgs);
+  const uploadFiles = uniqueAssetPaths(manifest, assetsDir, localDmgs.dmgs, localAppImages.appImages);
   const title = `Apex Deck Nightly ${manifest.version} (build ${manifest.buildNumber}, ${manifest.tag})`;
   const notes = manifest.notes || `Nightly build ${manifest.buildNumber} from ${manifest.commit}.`;
 
@@ -564,6 +657,7 @@ export function publishNightlyRelease({
       ...manifest.packages.map((entry) => entry.name),
       ...manifest.daemons.map((entry) => entry.name),
       ...localDmgs.dmgs.map((entry) => entry.name),
+      ...localAppImages.appImages.map((entry) => entry.name),
     ])];
     for (const name of listedNames) {
       execStep(['release', 'download', manifest.tag, '--repo', repo, '--dir', checkDir, '--pattern', name]);
@@ -571,7 +665,10 @@ export function publishNightlyRelease({
     const verifyDmgs = dryRun && !verifyDir
       ? localDmgs.dmgs.map(({ name, size, sha256, filePath }) => ({ name, size, sha256, verifyPath: filePath }))
       : localDmgs.dmgs.map(({ name, size, sha256 }) => ({ name, size, sha256 }));
-    const downloadCheck = verifyAssetFiles(manifest, checkDir, { dmgs: verifyDmgs, verifyPackage });
+    const verifyAppImages = dryRun && !verifyDir
+      ? localAppImages.appImages.map(({ name, size, sha256, filePath }) => ({ name, size, sha256, verifyPath: filePath }))
+      : localAppImages.appImages.map(({ name, size, sha256 }) => ({ name, size, sha256 }));
+    const downloadCheck = verifyAssetFiles(manifest, checkDir, { dmgs: verifyDmgs, appImages: verifyAppImages, verifyPackage });
     if (!downloadCheck.ok) {
       return {
         published: false,
@@ -755,6 +852,7 @@ function main(argv) {
     const manifestPath = path.resolve(flagValue(rest, '--manifest') || path.join(assetsDir, NIGHTLY_MANIFEST_NAME));
     const dmgDirFlag = flagValue(rest, '--dmg-dir') || flagValue(rest, '--extra-dir');
     const dmgDir = dmgDirFlag ? path.resolve(dmgDirFlag) : null;
+    const appImageDir = flagValue(rest, '--appimage-dir') ? path.resolve(flagValue(rest, '--appimage-dir')) : null;
     const currentFeedFile = flagValue(rest, '--current-feed');
     const verifyDir = flagValue(rest, '--verify-dir') ? path.resolve(flagValue(rest, '--verify-dir')) : null;
     const dryRun = hasFlag(rest, '--dry-run');
@@ -769,6 +867,7 @@ function main(argv) {
       manifestPath,
       assetsDir,
       dmgDir,
+      appImageDir,
       currentFeed,
       repo,
       dryRun,

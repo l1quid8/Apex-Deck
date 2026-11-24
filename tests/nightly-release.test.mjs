@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   NIGHTLY_MANIFEST_NAME,
+  expectedAppImageNames,
   expectedDmgNames,
   fetchCurrentFeed,
   fetchGitHubState,
@@ -18,6 +19,7 @@ import {
   pickGreenMainCommit,
   planNightlyRelease,
   publishNightlyRelease,
+  resolveRequiredAppImages,
   resolveRequiredDmgs,
   verifyAssetFiles,
 } from '../scripts/nightly-release.mjs';
@@ -38,6 +40,7 @@ function makeFixture({
   buildNumber = 43,
   version = '0.9.19',
   withDmg = true,
+  withAppImages = true,
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-nightly-release-'));
   const assetsDir = path.join(dir, 'assets');
@@ -78,7 +81,32 @@ function makeFixture({
   };
   const manifestPath = path.join(assetsDir, NIGHTLY_MANIFEST_NAME);
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  return { dir, assetsDir, dmgDir, manifestPath, manifest, pkgName, dmgName, dmgPath, dmgBytes };
+  const appImageNames = withAppImages ? writeAppImages(dmgDir, manifest) : [];
+  return { dir, assetsDir, dmgDir, manifestPath, manifest, pkgName, dmgName, dmgPath, dmgBytes, appImageNames };
+}
+
+// Where a fake `gh release download` finds the bytes publish uploaded.
+function uploadedSource(fixture, name) {
+  const fromRelease = path.join(fixture.dmgDir, name);
+  return fs.existsSync(fromRelease) ? fromRelease : path.join(fixture.assetsDir, name);
+}
+
+// Mirrors the sidecars scripts/package-linux.mjs writes next to each AppImage.
+function writeAppImages(dir, manifest, overrides = {}) {
+  const [, date, sha7] = /^nightly-(\d{8})-([a-f0-9]{7})$/.exec(manifest.tag);
+  return ['x86_64', 'arm64'].map((arch) => {
+    const name = `Apex-Deck-Nightly_${date}_${sha7}_${arch}.AppImage`;
+    const bytes = Buffer.from(`fake-appimage-${arch}-${manifest.tag}-${manifest.buildNumber}`);
+    fs.writeFileSync(path.join(dir, name), bytes);
+    fs.writeFileSync(path.join(dir, `${name}.sha256`), `${sha256(bytes)}  ${name}\n`);
+    fs.writeFileSync(path.join(dir, `${name}.json`), `${JSON.stringify({
+      commit: manifest.commit, dirty: false, sourceCommit: manifest.commit,
+      buildNumber: manifest.buildNumber, date, tag: manifest.tag, channel: 'nightly',
+      version: manifest.version, arch: arch === 'x86_64' ? 'x64' : arch, name,
+      size: bytes.length, sha256: sha256(bytes), ...overrides,
+    }, null, 2)}\n`);
+    return name;
+  });
 }
 
 test('pickGreenMainCommit chooses only the newest completed green push on main', () => {
@@ -180,6 +208,7 @@ test('dry-run publish holds the rolling Nightly feed when local or downloaded as
     const badDownloadDir = path.join(next.dir, 'bad-download');
     fs.cpSync(next.assetsDir, badDownloadDir, { recursive: true });
     fs.copyFileSync(next.dmgPath, path.join(badDownloadDir, next.dmgName));
+    fs.cpSync(next.dmgDir, badDownloadDir, { recursive: true });
     fs.writeFileSync(path.join(badDownloadDir, next.pkgName), Buffer.from('corrupted-pkg-bytes'));
     const heldDownload = publishNightlyRelease({
       manifestPath: next.manifestPath,
@@ -444,7 +473,7 @@ test('publish verifies downloaded DMG size and SHA-256 before advancing the roll
             const pattern = args[args.indexOf('--pattern') + 1];
             const payload = pattern === next.dmgName
               ? corruptBytes
-              : fs.readFileSync(path.join(next.assetsDir, pattern));
+              : fs.readFileSync(uploadedSource(next, pattern));
             fs.writeFileSync(path.join(dir, pattern), payload);
             return { status: 0, stdout: '', stderr: '' };
           }
@@ -478,7 +507,7 @@ test('publish verifies downloaded DMG size and SHA-256 before advancing the roll
         if (args[0] === 'release' && args[1] === 'download') {
           const dir = args[args.indexOf('--dir') + 1];
           const pattern = args[args.indexOf('--pattern') + 1];
-          const source = pattern === next.dmgName ? next.dmgPath : path.join(next.assetsDir, pattern);
+          const source = uploadedSource(next, pattern);
           fs.writeFileSync(path.join(dir, pattern), fs.readFileSync(source));
           return { status: 0, stdout: '', stderr: '' };
         }
@@ -537,7 +566,7 @@ test('live-mode publish refuses overwriting an immutable published tag and holds
         if (args[0] === 'release' && args[1] === 'download') {
           const dir = args[args.indexOf('--dir') + 1];
           const pattern = args[args.indexOf('--pattern') + 1];
-          const source = pattern === next.dmgName ? next.dmgPath : path.join(next.assetsDir, pattern);
+          const source = uploadedSource(next, pattern);
           fs.writeFileSync(path.join(dir, pattern), pattern === next.pkgName ? Buffer.from('bad-download') : fs.readFileSync(source));
           return { status: 0, stdout: '', stderr: '' };
         }
@@ -777,6 +806,102 @@ test('nightly-macos workflow schedules green main builds, grants plan actions: r
   assert.match(codeOnly, /scripts\/release-update-manifest\.mjs/);
   assert.match(codeOnly, /Apex-Deck-Nightly_\$\{\{ needs\.plan\.outputs\.date \}\}_\$\{\{ needs\.plan\.outputs\.sha7 \}\}_\*\.dmg/);
   assert.match(codeOnly, /APEX_CHANNEL:\s*nightly/);
+  const appImage = parsed.jobs?.['build-linux-appimage'];
+  assert.equal(appImage?.env?.APEX_BUILD_NUMBER, '${{ needs.plan.outputs.build_number }}', 'AppImages take the planned build number');
+  assert.equal(appImage?.env?.APEX_NIGHTLY_DATE, '${{ needs.plan.outputs.date }}', 'AppImage names match the planned tag date');
+  assert.equal(appImage?.env?.APEX_BUILD_COMMIT, '${{ needs.plan.outputs.commit }}');
+  assert.deepEqual(appImage?.strategy?.matrix?.include?.map((entry) => entry.arch), ['x86_64', 'arm64']);
+  assert.ok(parsed.jobs?.publish?.needs?.includes('build-linux-appimage'), 'the feed cannot advance before the AppImages exist');
+  assert.match(codeOnly, /--appimage-dir release\/appimage/);
   assert.match(codeOnly, /should_build == 'true'/);
   assert.doesNotMatch(codeOnly, /--latest/, 'workflow must never mark a Nightly release as --latest');
+});
+
+test('publish requires both Nightly AppImages with matching checksum and metadata sidecars', () => {
+  const prev = makeFixture({ commit: SHA_OLD, date: '20261123', buildNumber: 42 });
+  const next = makeFixture({ commit: SHA_NEW, date: '20261124', buildNumber: 43 });
+  const publish = (extra = {}) => publishNightlyRelease({
+    manifestPath: next.manifestPath,
+    assetsDir: next.assetsDir,
+    dmgDir: next.dmgDir,
+    currentFeed: prev.manifest,
+    dryRun: true,
+    ...extra,
+  });
+  try {
+    assert.deepEqual(expectedAppImageNames(next.manifest), [
+      'Apex-Deck-Nightly_20261124_4170256_x86_64.AppImage',
+      'Apex-Deck-Nightly_20261124_4170256_arm64.AppImage',
+    ]);
+    const ok = resolveRequiredAppImages(next.manifest, { appImageDir: next.dmgDir });
+    assert.equal(ok.ok, true, ok.errors.join('; '));
+    assert.equal(ok.appImages.length, 6, 'each AppImage uploads with its .sha256 and .json');
+
+    // Clean dry run uploads and downloads every AppImage file before the feed moves.
+    const clean = publish();
+    assert.equal(clean.published, true, clean.errors.join('; '));
+    const flat = clean.commands.map((args) => args.join(' ')).join('\n');
+    for (const name of next.appImageNames) {
+      for (const file of [name, `${name}.sha256`, `${name}.json`]) {
+        const escaped = file.replaceAll('.', '\\.');
+        assert.match(flat, new RegExp(`release upload nightly-20261124-4170256 .*${escaped}`));
+        assert.match(flat, new RegExp(`release download nightly-20261124-4170256 .*--pattern ${escaped}$`, 'm'));
+      }
+    }
+    assert.ok(flat.indexOf('--pattern Apex-Deck-Nightly_20261124_4170256_arm64.AppImage.json') < flat.indexOf('release upload nightly --repo'));
+
+    // A separate --appimage-dir is honored.
+    const appImageDir = path.join(next.dir, 'appimage');
+    fs.mkdirSync(appImageDir);
+    for (const name of next.appImageNames) {
+      for (const file of [name, `${name}.sha256`, `${name}.json`]) {
+        fs.renameSync(path.join(next.dmgDir, file), path.join(appImageDir, file));
+      }
+    }
+    assert.equal(publish().stage, 'local-verify', 'AppImages missing from the default location must hold the feed');
+    assert.equal(publish({ appImageDir }).published, true);
+
+    // Missing arch, stale build, cross-channel metadata, or a bad checksum hold the feed.
+    const held = (mutate, pattern) => {
+      const scratch = fs.mkdtempSync(path.join(next.dir, 'case-'));
+      fs.cpSync(appImageDir, scratch, { recursive: true });
+      mutate(scratch);
+      const result = publish({ appImageDir: scratch });
+      assert.equal(result.published, false);
+      assert.equal(result.feedAdvanced, false);
+      assert.equal(result.stage, 'local-verify');
+      assert.deepEqual(result.commands, []);
+      assert.ok(result.errors.some((line) => pattern.test(line)), result.errors.join('; '));
+    };
+    const [x64Name] = next.appImageNames;
+    held((dir) => fs.rmSync(path.join(dir, next.appImageNames[1])), /Missing required AppImage asset: .*arm64\.AppImage$/);
+    held((dir) => fs.rmSync(path.join(dir, `${x64Name}.json`)), /Missing required AppImage asset: .*x86_64\.AppImage\.json/);
+    held((dir) => fs.writeFileSync(path.join(dir, `${x64Name}.sha256`), `${'0'.repeat(64)}  ${x64Name}\n`), /checksum sidecar mismatch/);
+    held((dir) => fs.writeFileSync(path.join(dir, x64Name), Buffer.from('rebuilt-bytes')), /checksum sidecar mismatch/);
+    for (const [key, value] of [['channel', 'stable'], ['buildNumber', 42], ['commit', SHA_OLD], ['tag', prev.manifest.tag]]) {
+      held((dir) => {
+        const file = path.join(dir, `${x64Name}.json`);
+        fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), [key]: value }));
+      }, new RegExp(`does not match this Nightly build: .*${key}`));
+    }
+    // An older build's AppImages alone never satisfy the new manifest.
+    const staleDir = path.join(next.dir, 'stale');
+    fs.mkdirSync(staleDir);
+    writeAppImages(staleDir, prev.manifest);
+    assert.equal(publish({ appImageDir: staleDir }).stage, 'local-verify');
+
+    // A corrupted post-upload AppImage download holds the feed.
+    const badDownloadDir = path.join(next.dir, 'bad-appimage-download');
+    fs.cpSync(next.assetsDir, badDownloadDir, { recursive: true });
+    fs.copyFileSync(next.dmgPath, path.join(badDownloadDir, next.dmgName));
+    fs.cpSync(appImageDir, badDownloadDir, { recursive: true });
+    fs.writeFileSync(path.join(badDownloadDir, `${x64Name}.json`), '{}');
+    const heldDownload = publish({ appImageDir, verifyDir: badDownloadDir });
+    assert.equal(heldDownload.stage, 'download-verify');
+    assert.ok(heldDownload.errors.some((line) => line.includes(`${x64Name}.json`)));
+    assert.doesNotMatch(heldDownload.commands.map((args) => args.join(' ')).join('\n'), /--draft=false|release upload nightly --repo/);
+  } finally {
+    fs.rmSync(prev.dir, { recursive: true, force: true });
+    fs.rmSync(next.dir, { recursive: true, force: true });
+  }
 });

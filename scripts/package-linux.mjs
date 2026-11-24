@@ -44,6 +44,20 @@ export function linuxNightlyRelease(commit, buildNumber, date) {
   return { ...identity, date, tag: `nightly-${date}-${commit.slice(0, 7)}` };
 }
 
+// The scheduled Nightly planner owns the release date and commit, so the
+// AppImage name matches the immutable nightly-<date>-<sha7> tag it ships under.
+export function nightlySourceDate(env, commitSeconds) {
+  const planned = (env.APEX_NIGHTLY_DATE ?? '').trim();
+  return planned || new Date(commitSeconds * 1000).toISOString().slice(0, 10).replaceAll('-', '');
+}
+
+export function assertPlannedCommit(env, sourceCommit) {
+  const planned = (env.APEX_BUILD_COMMIT ?? '').trim();
+  if (planned && planned !== sourceCommit) {
+    throw new Error(`APEX_BUILD_COMMIT ${planned} does not match the checked-out commit ${sourceCommit}`);
+  }
+}
+
 async function main() {
   assertLinuxHost();
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -58,11 +72,11 @@ async function main() {
     }
   };
   checkSource();
+  if (channel.nightly) assertPlannedCommit(process.env, sourceCommit);
   const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
   const nightly = channel.nightly ? linuxNightlyRelease(
     sourceCommit, process.env.APEX_BUILD_NUMBER,
-    new Date(Number(git(['show', '-s', '--format=%ct', sourceCommit])) * 1000)
-      .toISOString().slice(0, 10).replaceAll('-', ''),
+    nightlySourceDate(process.env, Number(git(['show', '-s', '--format=%ct', sourceCommit]))),
   ) : undefined;
   const name = artifactName(version, process.arch, nightly);
   const env = stampEnv(stamp, {

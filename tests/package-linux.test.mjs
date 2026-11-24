@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertLinuxHost, builderArgs, artifactName, linuxNightlyRelease } from '../scripts/package-linux.mjs';
+import { assertLinuxHost, builderArgs, artifactName, linuxNightlyRelease, nightlySourceDate, assertPlannedCommit } from '../scripts/package-linux.mjs';
 import { usesLaunchAgent } from '../desktop/launchAgent.mjs';
 import { assertTrustedStartup } from '../desktop/provenance.mjs';
 
@@ -49,4 +49,15 @@ test('Nightly AppImage and immutable tag share the source date and commit', () =
   assert(args.includes('--publish') && args.includes('never'));
   assert(args.includes('--config.directories.output=release/nightly'));
   assert(args.includes('--config.extraMetadata.desktopName=dev.apexdeck.app.nightly.desktop'));
+});
+
+test('Nightly AppImages take the planner date and refuse a different commit', () => {
+  const commit = '1234567890abcdef1234567890abcdef12345678';
+  const commitSeconds = Date.UTC(2026, 10, 23, 23, 59) / 1000;
+  assert.equal(nightlySourceDate({}, commitSeconds), '20261123');
+  assert.equal(nightlySourceDate({ APEX_NIGHTLY_DATE: '20261124' }, commitSeconds), '20261124');
+  assert.throws(() => linuxNightlyRelease(commit, '1', nightlySourceDate({ APEX_NIGHTLY_DATE: '2026-11-24' }, commitSeconds)), /source date/);
+  assert.doesNotThrow(() => assertPlannedCommit({}, commit));
+  assert.doesNotThrow(() => assertPlannedCommit({ APEX_BUILD_COMMIT: commit }, commit));
+  assert.throws(() => assertPlannedCommit({ APEX_BUILD_COMMIT: 'f'.repeat(40) }, commit), /does not match/);
 });

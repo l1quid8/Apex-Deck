@@ -1,10 +1,12 @@
-# Scheduled Nightly release workflow for macOS + Linux VPS daemons.
+# Scheduled Nightly release workflow for macOS, Linux VPS daemons, and the
+# Linux desktop AppImages.
 #
 # Runs once a night (or on manual dispatch) and:
 #   1. Picks the latest green `daemon.yml` push commit on `main`.
 #   2. Skips cleanly when that SHA already matches the rolling `nightly` feed.
-#   3. Builds signed/notarized Apex Deck Nightly (macOS) plus Linux Nightly
-#      daemons from that exact commit with a strictly monotonic buildNumber.
+#   3. Builds signed/notarized Apex Deck Nightly (macOS), Linux Nightly
+#      daemons, and Linux Nightly AppImages from that exact commit with one
+#      strictly monotonic buildNumber.
 #   4. Uploads to an immutable draft `--prerelease` tag (`nightly-YYYYMMDD-<sha7>`),
 #      downloads every asset back and verifies exact sizes + SHA-256 checksums,
 #      and only advances the rolling `nightly` prerelease feed once every check
@@ -95,6 +97,68 @@ jobs:
           path: target/release/apex-daemon
           if-no-files-found: error
           retention-days: 7
+
+  # Desktop Linux. The AppImages ship as assets on the immutable tag, not as
+  # feed entries, so the feed schema the macOS updater reads is unchanged.
+  build-linux-appimage:
+    needs: plan
+    if: needs.plan.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    env:
+      APEX_CHANNEL: nightly
+      APEX_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+      APEX_NIGHTLY_DATE: ${{ needs.plan.outputs.date }}
+      APEX_BUILD_COMMIT: ${{ needs.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-appimage
+      - run: npm ci
+      - name: Build the Nightly AppImage with its Linux daemon
+        run: npm run desktop:linux
+      - name: Check the AppImage name, checksum, and embedded daemon identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release/nightly
+          name="Apex-Deck-Nightly_${APEX_NIGHTLY_DATE}_${{ needs.plan.outputs.sha7 }}_${{ matrix.arch }}.AppImage"
+          test -s "$name"
+          sha256sum --check "$name.sha256"
+          chmod +x "$name"
+          "./$name" --appimage-extract >/dev/null
+          squashfs-root/resources/bin/apex-daemon --build-identity | node -e '
+            const id = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const want = { channel: "nightly", commit: process.env.APEX_BUILD_COMMIT, buildNumber: Number(process.env.APEX_BUILD_NUMBER) };
+            for (const [key, value] of Object.entries(want)) {
+              if (id[key] !== value) throw new Error(`embedded daemon ${key} is ${id[key]}, expected ${value}`);
+            }'
+          rm -rf squashfs-root
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux-appimage-${{ matrix.arch }}
+          path: |
+            release/nightly/Apex-Deck-Nightly_${{ needs.plan.outputs.date }}_${{ needs.plan.outputs.sha7 }}_${{ matrix.arch }}.AppImage
+            release/nightly/Apex-Deck-Nightly_${{ needs.plan.outputs.date }}_${{ needs.plan.outputs.sha7 }}_${{ matrix.arch }}.AppImage.sha256
+            release/nightly/Apex-Deck-Nightly_${{ needs.plan.outputs.date }}_${{ needs.plan.outputs.sha7 }}_${{ matrix.arch }}.AppImage.json
+          if-no-files-found: error
+          retention-days: 14
 
   build-macos:
     needs: [plan, build-linux-daemons]
@@ -194,7 +258,7 @@ jobs:
           retention-days: 14
 
   publish:
-    needs: [plan, build-macos]
+    needs: [plan, build-macos, build-linux-appimage]
     if: needs.plan.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -211,6 +275,11 @@ jobs:
         with:
           name: nightly-macos-assets
           path: release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-linux-appimage-*
+          merge-multiple: true
+          path: release/appimage
       - name: Verify immutable assets and advance rolling Nightly feed
         env:
           GH_TOKEN: ${{ github.token }}
@@ -223,6 +292,7 @@ jobs:
             --assets-dir "release/${{ needs.plan.outputs.tag }}-assets"
             --manifest "release/${{ needs.plan.outputs.tag }}-assets/apex-deck-nightly-update.json"
             --extra-dir release
+            --appimage-dir release/appimage
           )
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
