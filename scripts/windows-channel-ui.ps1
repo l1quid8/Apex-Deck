@@ -4,6 +4,9 @@ param(
   [Parameter(Mandatory)][int]$AppId,
   [switch]$CreateSample,
   [switch]$GroupChat,
+  # Click 'Start a group chat' and stop. Its protected room_create is the receipt
+  # the cross-channel test captures; the held room never enables a composer.
+  [switch]$IssueOnly,
   [string]$Post,
   [string[]]$Expect = @(),
   [string[]]$Exclude = @()
@@ -18,7 +21,8 @@ $app = Get-Process -Id $AppId
 if ($app.ProcessName -ne $identity.PRODUCT -or ($app.Path -and $app.Path -ne (Join-Path $install "$($identity.PRODUCT).exe"))) {
   throw "Wrong UI executable for $Channel at PID $AppId"
 }
-if (!$Post -and !$Expect.Count) { throw 'Supply a marker to post or recover.' }
+if ($IssueOnly -and ($Post -or $Expect.Count -or !$GroupChat)) { throw '-IssueOnly needs -GroupChat and no markers.' }
+if (!$IssueOnly -and !$Post -and !$Expect.Count) { throw 'Supply a marker to post or recover.' }
 Write-Host "Testing $Channel UI PID $AppId in Windows session $($app.SessionId) as $([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
 
 $activator = New-Object -ComObject WScript.Shell
@@ -148,6 +152,7 @@ if ($CreateSample) { Invoke-Button 'Try a sample thread' }
 # 'Try a sample thread' only appears on a profile with no workspaces. A workspace
 # whose host has no threads shows the group-chat picker, which opens a Work thread.
 if ($GroupChat) { Invoke-Button 'Start a group chat Different models. One shared conversation.' }
+if ($IssueOnly) { Write-Host "Started a $Channel group chat to issue its room_create receipt"; return }
 if ($Post) {
   $inputBox = Wait-Control 'Message the room' ([Windows.Automation.ControlType]::Edit)
   $value = $inputBox.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
