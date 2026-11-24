@@ -3,6 +3,7 @@ param(
   [Parameter(Mandatory)][ValidateSet('stable','nightly')][string]$Channel,
   [Parameter(Mandatory)][int]$AppId,
   [switch]$CreateSample,
+  [switch]$NewChat,
   [string]$Post,
   [string[]]$Expect = @(),
   [string[]]$Exclude = @()
@@ -144,6 +145,8 @@ function Invoke-Button([string]$name) {
 }
 
 if ($CreateSample) { Invoke-Button 'Try a sample thread' }
+# 'Try a sample thread' only appears on a profile with no workspaces.
+if ($NewChat) { Invoke-Button 'New chat' }
 if ($Post) {
   $inputBox = Wait-Control 'Message the room' ([Windows.Automation.ControlType]::Edit)
   $value = $inputBox.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)

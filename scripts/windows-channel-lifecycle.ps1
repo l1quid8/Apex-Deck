@@ -195,7 +195,13 @@ function CaptureReceipt([string]$name) {
     Start-Process -FilePath "$root\$product.exe"
     $app = MainWindowProcess $product
     # The relay refuses the post, so the driver is expected to report it missing.
-    try { & $uiScript -Channel $name -AppId $app -CreateSample -Post "receipt-$name-$run" } catch { Write-Host "UI post held as expected: $($_.Exception.Message)" }
+    # The profile already holds workspaces, so the first-run sample button is absent.
+    $marker = "receipt-$name-$run"
+    try { & $uiScript -Channel $name -AppId $app -NewChat -Post $marker } catch {
+      # Only the posted marker may be missing; an earlier UI failure means nothing was sent.
+      if ($_.Exception.Message -notlike "*'$marker'*") { throw }
+      Write-Host "UI post held as expected: $($_.Exception.Message)"
+    }
     $deadline = (Get-Date).AddSeconds(60)
     while (!(Test-Path -LiteralPath $capture) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
     if (!(Test-Path -LiteralPath $capture)) { throw "The installed $product UI issued no receipt" }
