@@ -147,13 +147,16 @@ export function launchPlan({ packaged, platform, dataDir, bundle, version, build
   const base = { app: trustedApp, daemon: agentDaemon };
   if (!packaged || platform !== 'darwin' || dataDir) return { kind: 'run', ...base, daemon };
   if (isProtectedCopy(running, files, trustedApp)) return { kind: 'run', ...base, daemon: TRUSTED_DAEMON };
+  const product = channel.PRODUCT;
+  const installCmd = channel.nightly ? 'scripts/install-provenance.sh --channel nightly' : 'scripts/install-provenance.sh';
+  const repinCmd = channel.nightly ? 'scripts/repin-provenance.sh --channel nightly' : 'scripts/repin-provenance.sh';
   if (sameVersion) {
     return {
       kind: 'handoff',
       ...base,
       notice: {
-        message: 'Protected assistant data needs the trusted Apex Deck install',
-        detail: `The protected copy at ${trustedApp} could not be opened from this copy. Open it from Finder, or ask for the trusted install to be re-pinned (scripts/repin-provenance.sh).`,
+        message: `Protected assistant data needs the trusted ${product} install`,
+        detail: `The protected copy at ${trustedApp} could not be opened from this copy. Open it from Finder, or ask for the trusted install to be re-pinned (${repinCmd}).`,
       },
     };
   }
@@ -161,14 +164,14 @@ export function launchPlan({ packaged, platform, dataDir, bundle, version, build
     ? `${number ?? 'unknown'} (build ${build ?? 'unknown'})`
     : number ?? 'unknown';
   const detail = !installed
-    ? `Apex Deck's protected copy isn't installed at ${trustedApp}, so assistants, tasks and conversations kept in the protected store can't be opened. Ask for the trusted install to be run (scripts/install-provenance.sh, then scripts/repin-provenance.sh), then open Apex Deck again.`
+    ? `${product}'s protected copy isn't installed at ${trustedApp}, so assistants, tasks and conversations kept in the protected store can't be opened. Ask for the trusted install to be run (${installCmd}, then ${repinCmd}), then open ${product} again.`
     : !protectedInstall
-      ? `The copy at ${trustedApp} is not owned by root with group and world writes closed, so the protected service will not trust it. Re-run the trusted install (scripts/install-provenance.sh, then scripts/repin-provenance.sh).`
-      : `The protected copy at ${trustedApp} is version ${describeVersion(protectedVersion, protectedBuild)}, and this app is version ${describeVersion(version, buildNumber)}. Ask for the trusted install to be updated and re-pinned (scripts/repin-provenance.sh), then open Apex Deck again.`;
+      ? `The copy at ${trustedApp} is not owned by root with group and world writes closed, so the protected service will not trust it. Re-run the trusted install (${installCmd}, then ${repinCmd}).`
+      : `The protected copy at ${trustedApp} is version ${describeVersion(protectedVersion, protectedBuild)}, and this app is version ${describeVersion(version, buildNumber)}. Ask for the trusted install to be updated and re-pinned (${repinCmd}), then open ${product} again.`;
   return {
     kind: 'notice',
     ...base,
-    notice: { message: 'Protected assistant data needs the trusted Apex Deck install', detail },
+    notice: { message: `Protected assistant data needs the trusted ${product} install`, detail },
   };
 }
 
