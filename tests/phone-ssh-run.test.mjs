@@ -1202,3 +1202,212 @@ test("Stable runSetup skips the fresh-host trust prompt on a populated ~/.apex l
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("runSetup skips the fresh-host trust prompt when directory or trust probes time out, fail, return empty, or are ambiguous", async () => {
+  const runProbeCase = async ({ channel, dataProbe, trustProbe }) => {
+    const vps = twoChannelVps({
+      stable: {
+        bin: "/usr/local/bin/apex-daemon",
+        version: "apex-daemon 0.9.19 (aaaaaaaaaaaa)",
+        sha256: STABLE_SHA,
+        serviceActive: true,
+        trusted: false,
+      },
+      nightly: {
+        bin: "/usr/local/bin/apex-daemon-nightly",
+        version: `apex-daemon 0.9.19 (${NIGHTLY_COMMIT.slice(0, 12)})`,
+        sha256: NIGHTLY_SHA,
+        serviceActive: true,
+        trusted: false,
+      },
+    });
+    const baseExec = vps.session.exec;
+    vps.session.exec = async (command, options) => {
+      if (command.includes("__nodata__")) {
+        vps.ran.push(command);
+        return typeof dataProbe === "function" ? await dataProbe(command) : dataProbe;
+      }
+      if (trustProbe !== undefined && command.includes("__notrust__")) {
+        vps.ran.push(command);
+        return typeof trustProbe === "function" ? await trustProbe(command) : trustProbe;
+      }
+      return baseExec(command, options);
+    };
+    const events = [];
+    const saved = [];
+    const started = runSetup(request({ label: `Probe ${channel}` }), {
+      connect: async () => vps.session,
+      channel,
+      knownKey: () => null,
+      rememberKey: () => {},
+      keep: async () => {},
+      save: (paired, req) => saved.push({ paired, req }),
+      pair(link, onCode) {
+        const endpointId = link.startsWith("apexdeck-nightly://") ? NIGHTLY_ENDPOINT : STABLE_ENDPOINT;
+        const done = (async () => {
+          const ack = onCode("444555");
+          vps.state.onLine(JSON.stringify({ event: "claim", code: "444555" }));
+          await ack;
+          return { hostEndpointId: endpointId, addrs: [], name: `vps-${channel}` };
+        })();
+        return { done, cancel() {} };
+      },
+    }, (event) => {
+      events.push(event);
+      if (event.kind === "trust") started.decideTrust(true);
+    });
+    await started.done;
+    return { events, saved, vps };
+  };
+
+  const skipDataProbes = [
+    ["timeout rejection", async () => { throw new Error("Command timed out"); }],
+    ["non-zero exit with marker", { code: 1, stdout: "__nodata__\n", stderr: "shell error" }],
+    ["empty stdout", { code: 0, stdout: "", stderr: "" }],
+    ["whitespace-only stdout", { code: 0, stdout: "   \n", stderr: "" }],
+    ["banner before marker", { code: 0, stdout: "Welcome\n__nodata__\n", stderr: "" }],
+    ["trailing tokens after marker", { code: 0, stdout: "__nodata__ extra\n", stderr: "" }],
+    ["leading spaces before marker", { code: 0, stdout: " __nodata__\n", stderr: "" }],
+    ["extra blank line after marker", { code: 0, stdout: "__nodata__\n\n", stderr: "" }],
+    ["path plus marker on two lines", { code: 0, stdout: "/home/demo/.local/share/dev.apexdeck.app.nightly\n__nodata__\n", stderr: "" }],
+  ];
+
+  for (const channel of ["nightly", "stable"]) {
+    for (const [label, dataProbe] of skipDataProbes) {
+      const { events, saved, vps } = await runProbeCase({ channel, dataProbe });
+      assert.equal(events.find((e) => e.kind === "failed"), undefined, `${channel} ${label}: ${JSON.stringify(events)}`);
+      assert.equal(events.some((e) => e.kind === "trust"), false, `${channel} ${label} must not trigger fresh trust prompt`);
+      assert.equal(vps.state[channel].trustHostCalls, 0, `${channel} ${label} must not invoke trust-host`);
+      assert.equal(saved.length, 1, `${channel} ${label} should still finish pairing`);
+    }
+  }
+
+  // Even when the directory probe confirms fresh (__nodata__), a failed, empty, or ambiguous trust probe must skip prompting.
+  const skipTrustProbes = [
+    ["trust timeout", async () => { throw new Error("Trust probe timed out"); }],
+    ["trust non-zero exit", { code: 1, stdout: "__notrust__\n", stderr: "err" }],
+    ["trust empty stdout", { code: 0, stdout: "", stderr: "" }],
+    ["trust banner + marker", { code: 0, stdout: "banner\n__notrust__\n", stderr: "" }],
+  ];
+  for (const [label, trustProbe] of skipTrustProbes) {
+    const { events, vps } = await runProbeCase({
+      channel: "nightly",
+      dataProbe: { code: 0, stdout: "__nodata__\n", stderr: "" },
+      trustProbe,
+    });
+    assert.equal(events.find((e) => e.kind === "failed"), undefined, `${label}: ${JSON.stringify(events)}`);
+    assert.equal(events.some((e) => e.kind === "trust"), false, `${label} must not trigger fresh trust prompt`);
+    assert.equal(vps.state.nightly.trustHostCalls, 0);
+  }
+
+  // Exact marker outputs (LF, CRLF, or bare) on exit 0 still offer the fresh-host trust prompt.
+  for (const exactStdout of ["__nodata__\n", "__nodata__\r\n", "__nodata__"]) {
+    const { events, vps } = await runProbeCase({
+      channel: "nightly",
+      dataProbe: { code: 0, stdout: exactStdout, stderr: "" },
+      trustProbe: { code: 0, stdout: "__notrust__\n", stderr: "" },
+    });
+    assert.equal(events.find((e) => e.kind === "failed"), undefined, JSON.stringify(events));
+    assert.equal(events.some((e) => e.kind === "trust" && e.fresh === true), true, `exact ${JSON.stringify(exactStdout)} must offer fresh trust`);
+    assert.equal(vps.state.nightly.trustHostCalls, 1);
+  }
+});
+
+test("runSetup skips the fresh-host trust prompt when an existing data directory path contains __nodata__", { skip: process.platform === "win32" && "POSIX sh check" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "apex-ssh-marker-path-"));
+  try {
+    const markerHome = path.join(root, "__nodata__", "home");
+    const markerXdg = path.join(root, "xdg__nodata__root");
+    const homeNightly = path.join(markerHome, ".local", "share", "dev.apexdeck.app.nightly");
+    const homeStable = path.join(markerHome, ".local", "share", "dev.apexdeck.app");
+    const xdgNightly = path.join(markerXdg, "dev.apexdeck.app.nightly");
+    fs.mkdirSync(homeNightly, { recursive: true });
+    fs.mkdirSync(homeStable, { recursive: true });
+    fs.mkdirSync(xdgNightly, { recursive: true });
+    fs.writeFileSync(
+      path.join(xdgNightly, "host-trust.json"),
+      JSON.stringify({ trusted: true, trusted_at_ms: 1700000000000 }),
+    );
+
+    const runWithRealProbe = async (channel, env) => {
+      const observedDataOutputs = [];
+      const vps = twoChannelVps({
+        stable: {
+          bin: "/usr/local/bin/apex-daemon",
+          version: "apex-daemon 0.9.19 (aaaaaaaaaaaa)",
+          sha256: STABLE_SHA,
+          serviceActive: true,
+        },
+        nightly: {
+          bin: "/usr/local/bin/apex-daemon-nightly",
+          version: `apex-daemon 0.9.19 (${NIGHTLY_COMMIT.slice(0, 12)})`,
+          sha256: NIGHTLY_SHA,
+          serviceActive: true,
+        },
+      });
+      const baseExec = vps.session.exec;
+      vps.session.exec = async (command, options) => {
+        if (command.includes("__nodata__") || command.includes("__notrust__")) {
+          vps.ran.push(command);
+          const result = runPosixShell(command, env);
+          if (command.includes("__nodata__")) observedDataOutputs.push(result);
+          return result;
+        }
+        return baseExec(command, options);
+      };
+      const events = [];
+      const started = runSetup(request({ label: `Marker path ${channel}` }), {
+        connect: async () => vps.session,
+        channel,
+        knownKey: () => null,
+        rememberKey: () => {},
+        keep: async () => {},
+        save: () => {},
+        pair(link, onCode) {
+          const endpointId = link.startsWith("apexdeck-nightly://") ? NIGHTLY_ENDPOINT : STABLE_ENDPOINT;
+          const done = (async () => {
+            const ack = onCode("555666");
+            vps.state.onLine(JSON.stringify({ event: "claim", code: "555666" }));
+            await ack;
+            return { hostEndpointId: endpointId, addrs: [], name: `vps-${channel}` };
+          })();
+          return { done, cancel() {} };
+        },
+      }, (event) => {
+        events.push(event);
+        if (event.kind === "trust") started.decideTrust(true);
+      });
+      await started.done;
+      return { events, vps, observedDataOutputs };
+    };
+
+    // 1. Existing untrusted Nightly directory under HOME containing __nodata__ (XDG unset).
+    const nightlyHomeRun = await runWithRealProbe("nightly", { HOME: markerHome });
+    assert.equal(nightlyHomeRun.observedDataOutputs.length, 1);
+    assert.equal(nightlyHomeRun.observedDataOutputs[0].code, 0);
+    assert.equal(nightlyHomeRun.observedDataOutputs[0].stdout.trim(), homeNightly);
+    assert.ok(nightlyHomeRun.observedDataOutputs[0].stdout.includes("__nodata__"), "test setup must exercise a path containing __nodata__");
+    assert.equal(nightlyHomeRun.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(nightlyHomeRun.events));
+    assert.equal(nightlyHomeRun.events.some((e) => e.kind === "trust"), false, "existing Nightly dir whose path contains __nodata__ must not offer trust reset");
+    assert.equal(nightlyHomeRun.vps.state.nightly.trustHostCalls, 0);
+
+    // 2. Existing trusted Nightly directory under XDG_DATA_HOME containing __nodata__.
+    const nightlyXdgRun = await runWithRealProbe("nightly", { HOME: markerHome, XDG_DATA_HOME: markerXdg });
+    assert.equal(nightlyXdgRun.observedDataOutputs[0].stdout.trim(), xdgNightly);
+    assert.ok(nightlyXdgRun.observedDataOutputs[0].stdout.includes("__nodata__"));
+    assert.equal(nightlyXdgRun.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(nightlyXdgRun.events));
+    assert.equal(nightlyXdgRun.events.some((e) => e.kind === "trust"), false);
+    assert.ok(nightlyXdgRun.events.some((e) => e.kind === "step" && e.id === "trust" && e.text.startsWith("Host trusted on")));
+    assert.equal(nightlyXdgRun.vps.state.nightly.trustHostCalls, 0);
+
+    // 3. Existing untrusted Stable directory under HOME containing __nodata__.
+    const stableHomeRun = await runWithRealProbe("stable", { HOME: markerHome });
+    assert.equal(stableHomeRun.observedDataOutputs[0].stdout.trim(), homeStable);
+    assert.ok(stableHomeRun.observedDataOutputs[0].stdout.includes("__nodata__"));
+    assert.equal(stableHomeRun.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(stableHomeRun.events));
+    assert.equal(stableHomeRun.events.some((e) => e.kind === "trust"), false);
+    assert.equal(stableHomeRun.vps.state.stable.trustHostCalls, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

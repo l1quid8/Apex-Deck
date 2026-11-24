@@ -166,6 +166,10 @@ const stopFailure = () => new StepFailure("cancel", "Stopped", "Setup was stoppe
 
 const tail = (result: ExecResult): string => (result.stderr || result.stdout).trim().split("\n").slice(-2).join(" ").slice(0, 300);
 
+/** True only when a remote probe exited cleanly and printed exactly `marker` (allowing one trailing line ending). */
+const isExactProbeMarker = (result: ExecResult, marker: string): boolean =>
+  result.code === 0 && typeof result.stdout === "string" && result.stdout.replace(/\r?\n$/, "") === marker;
+
 /**
  * Runs the whole list. `emit` hears each step; a failed step stops the run and
  * nothing after it happens. `wipe` runs last whatever happened, so no path
@@ -298,14 +302,17 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
       throw new StepFailure("install", `Couldn't check for ${labelName}`, "The release list couldn't be reached from the server.");
     }
 
-    // Check for this channel's data folder before Deck starts, per Task 4
-    let hadDataFolder = false;
+    // Check for this channel's data folder before Deck starts, per Task 4.
+    // Default to unknown (not fresh) so a failed, timed-out, or ambiguous probe
+    // never triggers a fresh-host trust reset on an existing server.
+    let isFreshHost = false;
     try {
       const dataCheck = await ssh.exec(dataFolderCheck(channel), { timeoutS: 10 });
-      hadDataFolder = !dataCheck.stdout.includes("__nodata__") && dataCheck.stdout.trim() !== "";
+      isFreshHost = isExactProbeMarker(dataCheck, "__nodata__");
     } catch {
       if (cancelled) throw stopFailure();
     }
+    stopIfCancelled();
 
     let bwrap = Boolean(probe.bwrap);
     if (!bwrap && root.ok) {
@@ -354,61 +361,44 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     if (remote.code !== 0) throw new StepFailure("start", `Couldn't start ${labelName}`, tail(remote) || `${labelName} didn't answer on the server.`);
 
     // ---- Task 10: Trust this machine? ----
-    // hadDataFolder already checked before Deck start
-    if (!hadDataFolder) {
-      // Fresh server for this channel: no data folder before, offer trust
-      try {
-        const trustCheck = await ssh.exec(trustCheckScript(channel), { timeoutS: 10 });
-        const isNotTrusted = trustCheck.stdout.includes("__notrust__") || trustCheck.stdout.trim() === "";
-        if (isNotTrusted) {
-          const freshTrustMessage = "Trust this machine? Your phone can press Allow here only if you trust what has run on this account. Deck can't check that. Pick Trust for a new server, or one you know.";
-          const trustPromise = new Promise<boolean>((resolve) => {
-            trustDecision = { resolve };
-          });
-          emit({ kind: "trust", fresh: true, message: freshTrustMessage });
-          const shouldTrust = await trustPromise;
-          trustDecision = null;
+    // Offer the fresh-host trust prompt only when the pre-start directory probe
+    // succeeded with exact `__nodata__` and the trust probe confirms `__notrust__`.
+    // Failed, timed-out, or ambiguous probes stay unknown and skip the prompt.
+    try {
+      const trustCheck = await ssh.exec(trustCheckScript(channel), { timeoutS: 10 });
+      if (isFreshHost && isExactProbeMarker(trustCheck, "__notrust__")) {
+        const freshTrustMessage = "Trust this machine? Your phone can press Allow here only if you trust what has run on this account. Deck can't check that. Pick Trust for a new server, or one you know.";
+        const trustPromise = new Promise<boolean>((resolve) => {
+          trustDecision = { resolve };
+        });
+        emit({ kind: "trust", fresh: true, message: freshTrustMessage });
+        const shouldTrust = await trustPromise;
+        trustDecision = null;
+        stopIfCancelled();
+        if (shouldTrust) {
+          const trustResult = await ssh.exec(trustHostCommand(channel), { timeoutS: 30 });
           stopIfCancelled();
-          if (shouldTrust) {
-            const trustResult = await ssh.exec(trustHostCommand(channel), { timeoutS: 30 });
-            stopIfCancelled();
-            if (trustResult.code === 0) {
-              step("trust", "Trusted this machine — new epoch, old devices must pair again");
-            } else {
-              step("trust", `Not trusted yet — ${trustResult.stdout.trim() || trustResult.stderr.trim() || "trust-host failed"}, pairing without epoch`);
-            }
+          if (trustResult.code === 0) {
+            step("trust", "Trusted this machine — new epoch, old devices must pair again");
           } else {
-            step("trust", `Not trusted yet — paired device can't act until you run ${cfg.daemon} trust-host on the server`);
+            step("trust", `Not trusted yet — ${trustResult.stdout.trim() || trustResult.stderr.trim() || "trust-host failed"}, pairing without epoch`);
           }
         } else {
-          try {
-            const parsed = JSON.parse(trustCheck.stdout);
-            if (parsed.trusted) {
-              step("trust", `Host trusted on ${new Date(parsed.trusted_at_ms || Date.now()).toLocaleDateString()}`);
-            }
-          } catch {
-            if (cancelled) throw stopFailure();
+          step("trust", `Not trusted yet — paired device can't act until you run ${cfg.daemon} trust-host on the server`);
+        }
+      } else if (trustCheck.code === 0 && !isExactProbeMarker(trustCheck, "__notrust__") && trustCheck.stdout.trim() !== "") {
+        try {
+          const parsed = JSON.parse(trustCheck.stdout);
+          if (parsed?.trusted) {
+            step("trust", `Host trusted on ${new Date(parsed.trusted_at_ms || Date.now()).toLocaleDateString()}`);
           }
+        } catch {
+          if (cancelled) throw stopFailure();
         }
-      } catch {
-        if (cancelled) throw stopFailure();
-        // Trust check failure non-fatal unless cancelled
       }
-    } else {
-      // Existing data folder for this channel: check if already trusted and log, but don't offer again (avoid voiding devices)
-      try {
-        const trustCheck = await ssh.exec(trustCheckScript(channel), { timeoutS: 10 });
-        if (!trustCheck.stdout.includes("__notrust__") && trustCheck.stdout.trim() !== "") {
-          try {
-            const parsed = JSON.parse(trustCheck.stdout);
-            if (parsed.trusted) {
-              step("trust", `Host trusted on ${new Date(parsed.trusted_at_ms || Date.now()).toLocaleDateString()}`);
-            }
-          } catch {}
-        }
-      } catch {
-        if (cancelled) throw stopFailure();
-      }
+    } catch {
+      if (cancelled) throw stopFailure();
+      // Trust check failure non-fatal unless cancelled
     }
 
     const tools = report((await ssh.exec(AI_TOOLS, { timeoutS: 500 })).stdout);
