@@ -144,6 +144,110 @@ function Relaunch($view, $identity) {
   Snapshot $identity 'after relaunch'
 }
 
+function WaitPipe([string]$pipe, [bool]$present) {
+  $deadline = (Get-Date).AddSeconds(60)
+  while ((([IO.Directory]::GetFiles('\\.\pipe\') -contains $pipe) -ne $present)) {
+    if ((Get-Date) -gt $deadline) { throw "Pipe $pipe did not become present=$present" }
+    Start-Sleep -Milliseconds 250
+  }
+}
+
+function MainWindowProcess([string]$product) {
+  $deadline = (Get-Date).AddMinutes(2)
+  do {
+    Start-Sleep -Milliseconds 500
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='$product.exe'")
+    $main = @($processes | Where-Object { $processes.ProcessId -notcontains $_.ParentProcessId })
+    $ready = $main.Count -eq 1 -and (Get-Process -Id $main[0].ProcessId).MainWindowHandle -ne [IntPtr]::Zero
+  } until ($ready -or (Get-Date) -gt $deadline)
+  if (!$ready) { throw "No $product window" }
+  return [int]$main[0].ProcessId
+}
+
+# The installed UI is the only Windows client its broker will issue receipts to,
+# and the signed envelope exists only in transit. Stand a recording relay in for the
+# stopped installed daemon, let the real UI issue a receipt, and hold it unspent.
+function CaptureReceipt([string]$name) {
+  $identity = $channels.$name
+  $product = $identity.PRODUCT
+  $root = Join-Path $env:ProgramFiles $product
+  $daemon = "$root\resources\bin\$($identity.WINDOWS_DAEMON)"
+  $view = Snapshot $identity "before $name receipt capture"
+  $capture = Join-Path $env:TEMP "receipt-$name-$run.json"
+  $scratch = Join-Path $env:TEMP "receipt-host-$name-$run"
+  $null = New-Item -ItemType Directory -Path "$scratch\saved-chats-v1"
+  $scratchHost = $null; $relay = $null; $app = $null
+  $window = Get-Process -Id $view.app[0]
+  if (!$window.CloseMainWindow() -or !$window.WaitForExit(30000)) { throw "Could not close $product" }
+  $null = Disable-ScheduledTask -TaskName $identity.WINDOWS_TASK
+  try {
+    Stop-ScheduledTask -TaskName $identity.WINDOWS_TASK
+    Stop-Process -Id $view.daemon -Force -ErrorAction SilentlyContinue
+    WaitPipe $view.endpoint $false
+    $scratchEndpoint = & $daemon endpoint --data-dir $scratch
+    $scratchHost = Start-Process -FilePath $daemon -ArgumentList @('serve', '--data-dir', "`"$scratch`"") -PassThru `
+      -RedirectStandardOutput "$scratch.out" -RedirectStandardError "$scratch.err"
+    WaitPipe $scratchEndpoint $true
+    $relay = Start-Process -FilePath (Get-Command node).Source -PassThru `
+      -ArgumentList @("`"$PSScriptRoot\windows-cross-receipt.mjs`"", 'relay', "`"$($view.endpoint)`"", "`"$scratchEndpoint`"", "`"$capture`"") `
+      -RedirectStandardOutput "$scratch.relay.out" -RedirectStandardError "$scratch.relay.err"
+    WaitPipe $view.endpoint $true
+    Start-Process -FilePath "$root\$product.exe"
+    $app = MainWindowProcess $product
+    # The relay refuses the post, so the driver is expected to report it missing.
+    try { & $uiScript -Channel $name -AppId $app -CreateSample -Post "receipt-$name-$run" } catch { Write-Host "UI post held as expected: $($_.Exception.Message)" }
+    $deadline = (Get-Date).AddSeconds(60)
+    while (!(Test-Path -LiteralPath $capture) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    if (!(Test-Path -LiteralPath $capture)) { throw "The installed $product UI issued no receipt" }
+    $payload = (Get-Content -LiteralPath $capture -Raw | ConvertFrom-Json).payload | ConvertFrom-Json
+    Write-Host ("RECEIPT-CAPTURED " + (@{source=$name; uiPid=$app; command=$payload.receipt.command.cmd; key=$payload.receipt.key; dataDir=$payload.receipt.dataDir} | ConvertTo-Json -Compress))
+  } finally {
+    foreach ($file in "$scratch.relay.out", "$scratch.relay.err", "$scratch.err") {
+      if (Test-Path -LiteralPath $file) { Write-Host "--- $file"; Get-Content -LiteralPath $file | Write-Host }
+    }
+    if ($app) {
+      $window = Get-Process -Id $app -ErrorAction SilentlyContinue
+      if ($window -and !($window.CloseMainWindow() -and $window.WaitForExit(30000))) { Stop-Process -Id $app -Force }
+    }
+    foreach ($process in $relay, $scratchHost) { if ($process -and !$process.HasExited) { Stop-Process -Id $process.Id -Force } }
+    $null = Enable-ScheduledTask -TaskName $identity.WINDOWS_TASK
+    StartChannel $identity
+  }
+  return $capture
+}
+
+function SendReceipt([string]$endpoint, [string]$capture, [string]$variant) {
+  $line = node "$PSScriptRoot/windows-cross-receipt.mjs" send $endpoint $capture $variant
+  if ($LASTEXITCODE) { throw "Receipt send failed at $endpoint" }
+  return $line | ConvertFrom-Json
+}
+
+function CrossReceipt([string]$source, [string]$target) {
+  $capture = CaptureReceipt $source
+  $sourceView = Snapshot $channels.$source "after $source receipt capture"
+  $before = Snapshot $channels.$target "before $source receipt to $target"
+  $results = [ordered]@{}
+  foreach ($variant in 'genuine', 'tampered', 'garbage') { $results[$variant] = SendReceipt $before.endpoint $capture $variant }
+  Survived $before (Snapshot $channels.$target "after $source receipt to $target")
+  foreach ($variant in $results.Keys) {
+    $r = $results[$variant]
+    Write-Host ("CROSS-RECEIPT " + (@{source=$source; target=$target; variant=$variant; command=$r.command; reply=$r.reply; catalogUnchanged=$r.unchanged; before=$r.before; after=$r.after} | ConvertTo-Json -Compress -Depth 20))
+    if ($null -ne $r.reply.ok -or !$r.reply.err -or !$r.unchanged) { throw "$target executed or changed state for a $variant $source receipt" }
+  }
+  if ($results.genuine.reply.err -notmatch 'Invalid provenance signature') {
+    throw "$target refused the genuine $source receipt for an unexpected reason: $($results.genuine.reply.err)"
+  }
+  # Controls, after the cross-channel sends: the issuing daemon accepts the same
+  # envelope once (so it was genuine and unspent), then refuses its replay.
+  $accepted = SendReceipt $sourceView.endpoint $capture genuine
+  Write-Host ("RECEIPT-CONTROL " + (@{daemon=$source; attempt='first'; reply=$accepted.reply} | ConvertTo-Json -Compress -Depth 20))
+  if ($accepted.reply.err -match 'signature|another user|Not a submission|already consumed') { throw "$source refused its own genuine receipt: $($accepted.reply.err)" }
+  $replayed = SendReceipt $sourceView.endpoint $capture genuine
+  Write-Host ("RECEIPT-CONTROL " + (@{daemon=$source; attempt='replay'; reply=$replayed.reply} | ConvertTo-Json -Compress -Depth 20))
+  if ($replayed.reply.err -notmatch 'already consumed') { throw "$source did not refuse a replayed receipt" }
+  Write-Host "CROSS-RECEIPT PASS: installed $target refused a genuine $source receipt and its catalog was unchanged."
+}
+
 foreach ($identity in $channels.stable, $channels.nightly) {
   if ((InstalledEntry $identity) -or (Get-Service $identity.WINDOWS_SERVICE -ErrorAction SilentlyContinue)) {
     throw 'This test requires a fresh disposable machine'
@@ -241,6 +345,9 @@ try {
   $nightlyMessages = @("nightly-$run","nightly-after-stable-$run","nightly-after-historical-$run")
   CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -Expect $stableMessages -Exclude $nightlyMessages }
   CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect $nightlyMessages -Exclude $stableMessages }
+  if ($uiErrors.Count) { throw ($uiErrors.Values -join [Environment]::NewLine) }
+  CrossReceipt stable nightly
+  CrossReceipt nightly stable
   if ($uiErrors.Count) { throw ($uiErrors.Values -join [Environment]::NewLine) }
 } finally {
   foreach ($variable in $buildEnvironment) { Set-Item -LiteralPath "Env:$($variable.Name)" -Value $variable.Value }

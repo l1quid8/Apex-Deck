@@ -318,7 +318,7 @@ jobs:
     needs: [prepare, sign]
     if: github.ref == 'refs/heads/feat/nightly-windows' || inputs.nightly
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
