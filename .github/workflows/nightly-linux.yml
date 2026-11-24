@@ -2,14 +2,16 @@
 # Windows secrets, no shared jobs, and it reads and writes only
 # apex-deck-nightly-update-linux.json on the rolling `nightly` prerelease.
 #
-#   1. plan: newest green `daemon.yml` push on main; skip when the Linux feed
+#   1. plan: newest `daemon.yml` push on main whose Linux and shared jobs are
+#      green (macOS and Windows jobs are ignored); skip when the Linux feed
 #      already has that commit. buildNumber is the Linux feed's + 1.
 #   2. build: x86_64 and arm64 Nightly AppImages, each with the daemon built
 #      into it (same binary the VPS and phone installers download).
-#   3. publish: verify every file locally, attach to the immutable
-#      nightly-YYYYMMDD-<sha7> prerelease (creating it if no platform has),
-#      download everything back and verify again, then advance the Linux feed.
-#      Any failure holds the feed where it is.
+#   3. publish: verify every file locally, upload to the Linux-only
+#      nightly-linux-YYYYMMDD-<sha7> prerelease, download everything back and
+#      verify again, publish it, make sure the shared nightly-YYYYMMDD-<sha7>
+#      source tag points at the commit, then advance the Linux feed. Linux never
+#      touches another platform's release. Any failure holds the feed.
 name: nightly-linux
 
 on:

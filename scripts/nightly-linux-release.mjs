@@ -12,11 +12,13 @@
 // Linux owns its feed. It reads and writes only `apex-deck-nightly-update-linux.json`
 // on the rolling `nightly` prerelease, keeps its own monotonic buildNumber, and
 // never reads, rewrites or waits on the macOS or Windows feeds. Platforms share
-// the channel contract (channels.json, the nightly-YYYYMMDD-<sha7> tag, signing
-// domains) and may attach assets to the same immutable release, because every
-// Linux asset name is Linux-specific. A Linux run never overwrites an asset on a
-// published release, and never moves the rolling feed until every Linux asset
-// has been verified locally and again after downloading it back from GitHub.
+// the channel contract (channels.json, signing domains) and the immutable git
+// tag nightly-YYYYMMDD-<sha7>, which names the source commit and is created by
+// whichever platform gets there first. Linux assets live on a Linux-only
+// release, nightly-linux-YYYYMMDD-<sha7> (the feed's `assetTag`), so no
+// platform ever publishes, edits or waits on another platform's release. The
+// rolling feed moves only after every Linux asset has been verified locally and
+// again after downloading it back from GitHub.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -35,6 +37,7 @@ const SHA40_RE = /^[a-f0-9]{40}$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const DATE_RE = /^[0-9]{8}$/;
 const TAG_RE = /^nightly-([0-9]{8})-([a-f0-9]{7})$/;
+const ASSET_TAG_PREFIX = 'nightly-linux-';
 const VERSION_RE = /^\d+\.\d+\.\d+$/;
 const ASSET_LIMIT = 4 * 1024 ** 3;
 const SIDECAR_LIMIT = 64 * 1024;
@@ -44,6 +47,12 @@ export function appImageName(tag, arch) {
   const [, date, sha7] = TAG_RE.exec(tag) ?? [];
   if (!date) throw new Error(`Invalid Nightly tag: ${tag}`);
   return `Apex-Deck-Nightly_${date}_${sha7}_${arch}.AppImage`;
+}
+/** The Linux-only release that holds this Nightly's Linux assets. */
+export function linuxAssetTag(tag) {
+  const [, date, sha7] = TAG_RE.exec(tag ?? '') ?? [];
+  if (!date) throw new Error(`Invalid Nightly tag: ${tag}`);
+  return `${ASSET_TAG_PREFIX}${date}-${sha7}`;
 }
 export function formatNightlyTag(date, commit) {
   if (!DATE_RE.test(date ?? '')) throw new Error('Nightly date must be YYYYMMDD.');
@@ -81,6 +90,7 @@ export function parseLinuxFeed(value) {
   if (typeof value.tag !== 'string' || !TAG_RE.test(value.tag) || !value.tag.endsWith(`-${value.commit.slice(0, 7)}`)) {
     throw new Error('Linux Nightly feed tag must be nightly-YYYYMMDD-<sha7> for its commit.');
   }
+  if (value.assetTag !== linuxAssetTag(value.tag)) throw new Error(`Linux Nightly feed assetTag must be ${linuxAssetTag(value.tag)}.`);
   if (value.notes !== undefined && typeof value.notes !== 'string') throw new Error('Linux Nightly feed notes are malformed.');
   return {
     schemaVersion: 1,
@@ -90,32 +100,67 @@ export function parseLinuxFeed(value) {
     buildNumber: value.buildNumber,
     commit: value.commit,
     tag: value.tag,
+    assetTag: value.assetTag,
     notes: value.notes ?? '',
     daemons: assetList(value.daemons, 'daemon', daemonName),
     appImages: assetList(value.appImages, 'appImage', (arch) => appImageName(value.tag, arch)),
   };
 }
 
-/** Pick the newest green push run on `main`, or require the exact target SHA to be green. */
-export function pickGreenMainCommit(runs, { targetSha = '' } = {}) {
-  if (targetSha && !SHA40_RE.test(targetSha)) throw new Error(`Invalid target SHA: ${targetSha}`);
-  const green = (Array.isArray(runs) ? runs : []).filter((run) => run && typeof run === 'object' &&
-    run.head_branch === 'main' && run.status === 'completed' && run.conclusion === 'success' &&
-    SHA40_RE.test(run.head_sha ?? '') && (targetSha || !run.event || run.event === 'push'));
-  green.sort((a, b) => (Date.parse(b.created_at ?? '') || 0) - (Date.parse(a.created_at ?? '') || 0) ||
+// daemon.yml runs Linux, macOS and Windows jobs in one run. Linux eligibility
+// looks only at the jobs that are not macOS or Windows, so another platform's
+// failure or cancellation never holds a healthy Linux commit out of Nightly.
+const OTHER_PLATFORM_JOB = /windows|macos/i;
+
+/** True when every platform-neutral and Linux job finished green (skipped counts) and at least one succeeded. */
+export function linuxJobsGreen(jobs) {
+  if (!Array.isArray(jobs)) return false;
+  const linux = jobs.filter((job) => job && typeof job.name === 'string' && !OTHER_PLATFORM_JOB.test(job.name));
+  return linux.length > 0 &&
+    linux.every((job) => job.status === 'completed' && (job.conclusion === 'success' || job.conclusion === 'skipped')) &&
+    linux.some((job) => job.conclusion === 'success');
+}
+
+function candidateRuns(runs, targetSha) {
+  const list = (Array.isArray(runs) ? runs : []).filter((run) => run && typeof run === 'object' &&
+    run.head_branch === 'main' && run.status === 'completed' && SHA40_RE.test(run.head_sha ?? '') &&
+    (targetSha ? run.head_sha === targetSha : (!run.event || run.event === 'push')));
+  return list.sort((a, b) => (Date.parse(b.created_at ?? '') || 0) - (Date.parse(a.created_at ?? '') || 0) ||
     Number(b.id ?? 0) - Number(a.id ?? 0));
-  const picked = targetSha ? green.find((run) => run.head_sha === targetSha) : green[0];
+}
+
+const runGreenForLinux = (run, jobsByRun) => run.conclusion === 'success' || linuxJobsGreen(jobsByRun?.[run.id]);
+
+/**
+ * Pick the newest completed push run on `main` whose Linux jobs are green, or
+ * require the exact target SHA to have one. `jobsByRun` maps run id to its jobs
+ * and is consulted only for runs whose overall conclusion is not success.
+ */
+export function pickGreenMainCommit(runs, { targetSha = '', jobsByRun = {} } = {}) {
+  if (targetSha && !SHA40_RE.test(targetSha)) throw new Error(`Invalid target SHA: ${targetSha}`);
+  const picked = candidateRuns(runs, targetSha).find((run) => runGreenForLinux(run, jobsByRun));
   return picked ? { commit: picked.head_sha, runId: picked.id ?? null } : null;
 }
 
+/** Fetch jobs, newest run first, only for runs that need them, stopping at the first Linux-green run. */
+export function loadJobsUntilGreen(runs, { targetSha = '', fetchJobs }) {
+  const jobsByRun = {};
+  for (const run of candidateRuns(runs, targetSha)) {
+    if (run.conclusion === 'success') break;
+    jobsByRun[run.id] = fetchJobs(run.id);
+    if (linuxJobsGreen(jobsByRun[run.id])) break;
+  }
+  return jobsByRun;
+}
+
 /** Decide whether to build, using only the Linux feed for the previous commit and build number. */
-export function planLinuxNightly({ runs, currentFeed = null, date = utcDateStamp(), targetSha = '', force = false }) {
+export function planLinuxNightly({ runs, jobsByRun = {}, currentFeed = null, date = utcDateStamp(), targetSha = '', force = false }) {
   if (!DATE_RE.test(date ?? '')) throw new Error('Nightly date must be YYYYMMDD.');
   const published = currentFeed ? parseLinuxFeed(currentFeed) : null;
   const lastCommit = published?.commit ?? null;
   const lastBuildNumber = published?.buildNumber ?? 0;
   const base = { date, lastCommit, lastBuildNumber };
-  const candidate = pickGreenMainCommit(runs, { targetSha });
+  const candidate = pickGreenMainCommit(runs, { targetSha, jobsByRun });
   if (!candidate) {
     return { ...base, shouldBuild: false, reason: targetSha ? 'target_not_green' : 'no_green_main', commit: targetSha || null, tag: null, buildNumber: null };
   }
@@ -208,7 +253,7 @@ export function assembleLinuxRelease({ out, date, commit, buildNumber, version, 
   if (errors.length) throw new Error(`Linux Nightly build check failed: ${errors.join('; ')}`);
   const feed = parseLinuxFeed({
     schemaVersion: 1, channel: 'nightly', platform: 'linux', version, buildNumber, commit, tag,
-    notes: notes || `Linux Nightly build ${buildNumber} (${tag}).`, daemons, appImages,
+    assetTag: linuxAssetTag(tag), notes: notes || `Linux Nightly build ${buildNumber} (${tag}).`, daemons, appImages,
   });
   fs.writeFileSync(path.join(out, LINUX_FEED_NAME), `${JSON.stringify(feed, null, 2)}\n`);
   return feed;
@@ -252,7 +297,7 @@ function defaultRunner(command, args, { allowFailure = false } = {}) {
   return result;
 }
 
-/** Read the immutable release, or null when it doesn't exist yet. */
+/** Read a release, or null when it doesn't exist yet. */
 function viewRelease(runner, repo, tag) {
   const args = ['release', 'view', tag, '--repo', repo, '--json', 'isDraft,targetCommitish,assets'];
   const result = runner('gh', args, { allowFailure: true });
@@ -261,16 +306,32 @@ function viewRelease(runner, repo, tag) {
   throw new Error(failure('gh', args, result));
 }
 
+/** The commit a tag points at, peeling an annotated tag, or null when the tag is absent. */
+function tagCommit(runner, repo, tag) {
+  const args = ['api', `repos/${repo}/git/ref/tags/${tag}`];
+  const result = runner('gh', args, { allowFailure: true });
+  if (result.status !== 0) {
+    if (/HTTP 404|Not Found/i.test(`${result.stderr ?? ''}${result.stdout ?? ''}`)) return null;
+    throw new Error(failure('gh', args, result));
+  }
+  let object = JSON.parse(result.stdout || 'null')?.object;
+  if (object?.type === 'tag') object = JSON.parse(runner('gh', ['api', `repos/${repo}/git/tags/${object.sha}`]).stdout || 'null')?.object;
+  if (object?.type !== 'commit' || !SHA40_RE.test(object.sha ?? '')) throw new Error(`Tag ${tag} does not resolve to a commit.`);
+  return object.sha;
+}
+
 /**
- * Publish one Linux Nightly. Order: local verify -> immutable release (create,
- * or attach to one another platform already made) -> upload -> download back
- * and verify -> publish the immutable release -> advance only the Linux feed.
+ * Publish one Linux Nightly. Order: local verify -> Linux-only draft release
+ * -> upload -> download back and verify -> publish the Linux release -> make
+ * sure the shared source tag points at this commit -> advance only the Linux
+ * feed. The Linux release is never shared, so a retry may replace its files
+ * freely until the Linux feed points at it; after that they are immutable.
  */
 export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFAULT_REPO, dryRun = false, force = false, runner = defaultRunner }) {
   const feed = parseLinuxFeed(JSON.parse(fs.readFileSync(path.join(assetsDir, LINUX_FEED_NAME), 'utf8')));
   const published = currentFeed ? parseLinuxFeed(currentFeed) : null;
   const commands = [];
-  const result = (stage, extra = {}) => ({ stage, tag: feed.tag, commit: feed.commit, buildNumber: feed.buildNumber, published: false, skipped: false, errors: [], commands, ...extra });
+  const result = (stage, extra = {}) => ({ stage, tag: feed.tag, assetTag: feed.assetTag, commit: feed.commit, buildNumber: feed.buildNumber, published: false, skipped: false, errors: [], commands, ...extra });
 
   if (published && !force && published.commit === feed.commit) {
     return result('unchanged', { skipped: true, reason: `Commit ${feed.commit} is already on the Linux Nightly feed.` });
@@ -288,54 +349,35 @@ export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFA
     return dryRun ? { status: 0, stdout: '', stderr: '' } : runner('gh', args, opts);
   };
 
-  // The immutable release may already exist because another platform published
-  // the same commit first. Attach to it, but never replace an existing asset on
-  // a published release, and refuse a release that points at another commit.
-  let release = dryRun ? null : viewRelease(runner, repo, feed.tag);
+  // The shared source tag must already point at this commit, or be absent.
+  const sourceCommit = dryRun ? null : tagCommit(runner, repo, feed.tag);
+  if (sourceCommit && sourceCommit !== feed.commit) {
+    return result('source-tag', { errors: [`Tag ${feed.tag} points at ${sourceCommit}, not ${feed.commit}.`] });
+  }
+
+  let release = dryRun ? null : viewRelease(runner, repo, feed.assetTag);
+  if (release && release.targetCommitish && release.targetCommitish !== feed.commit) {
+    return result('immutable-tag', { errors: [`Release ${feed.assetTag} targets ${release.targetCommitish}, not ${feed.commit}.`] });
+  }
+  // Files the live Linux feed already points at are immutable. A forced
+  // rebuild of the same commit on the same day would reuse their names with a
+  // new build number inside, so it must wait for another day or commit.
+  if (published?.assetTag === feed.assetTag) {
+    return result('immutable-tag', { errors: [`The Linux feed already points at ${feed.assetTag}; refusing to overwrite it. Rebuild on a later commit or day.`] });
+  }
   if (!release) {
-    const create = step(['release', 'create', feed.tag, '--repo', repo, '--target', feed.commit, '--draft', '--prerelease',
-      '--title', `Apex Deck Nightly ${feed.tag}`,
-      '--notes', `Nightly assets for ${feed.commit}. Each platform lists its own assets in its own feed on the rolling nightly prerelease.`],
-    { allowFailure: true });
-    if (create.status !== 0) {
-      release = viewRelease(runner, repo, feed.tag);
-      if (!release) throw new Error(failure('gh', commands.at(-1).slice(1), create));
-    }
+    const create = step(['release', 'create', feed.assetTag, '--repo', repo, '--target', feed.commit, '--draft', '--prerelease',
+      '--title', `Apex Deck Nightly ${feed.tag} (Linux)`,
+      '--notes', `Linux Nightly assets for ${feed.commit}, listed in ${LINUX_FEED_NAME} on the rolling nightly prerelease.`]);
+    if (create.status !== 0) throw new Error(failure('gh', commands.at(-1).slice(1), create));
+    release = { isDraft: true };
   }
-  let toUpload = expected;
-  if (release) {
-    if (release.targetCommitish && release.targetCommitish !== feed.commit) {
-      return result('immutable-tag', { errors: [`Release ${feed.tag} targets ${release.targetCommitish}, not ${feed.commit}.`] });
-    }
-    const existing = new Set((release.assets ?? []).map((asset) => asset?.name));
-    const clash = expected.filter((entry) => existing.has(entry.name));
-    if (!release.isDraft && clash.length) {
-      // A retry after a partial publish finds its own files already there.
-      // Keep them only if they are byte-identical; never replace them.
-      const check = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-linux-nightly-existing-'));
-      try {
-        for (const entry of clash) runner('gh', ['release', 'download', feed.tag, '--repo', repo, '--dir', check, '--pattern', entry.name, '--clobber']);
-        const differ = verifyFiles(clash, check);
-        if (differ.length) {
-          return result('immutable-tag', { errors: [`Release ${feed.tag} is published and already has different ${clash.map((entry) => entry.name).join(', ')}; refusing to overwrite. ${differ.join('; ')}`] });
-        }
-      } finally {
-        fs.rmSync(check, { recursive: true, force: true });
-      }
-      const kept = new Set(clash.map((entry) => entry.name));
-      toUpload = expected.filter((entry) => !kept.has(entry.name));
-    }
-  }
-  const draft = !release || release.isDraft;
-  if (toUpload.length) {
-    step(['release', 'upload', feed.tag, '--repo', repo, ...(draft ? ['--clobber'] : []),
-      ...toUpload.map((entry) => path.join(assetsDir, entry.name))]);
-  }
+  step(['release', 'upload', feed.assetTag, '--repo', repo, '--clobber', ...expected.map((entry) => path.join(assetsDir, entry.name))]);
 
   const scratch = dryRun ? assetsDir : fs.mkdtempSync(path.join(os.tmpdir(), 'apex-linux-nightly-verify-'));
   try {
     for (const entry of expected) {
-      step(['release', 'download', feed.tag, '--repo', repo, '--dir', scratch, '--pattern', entry.name, '--clobber']);
+      step(['release', 'download', feed.assetTag, '--repo', repo, '--dir', scratch, '--pattern', entry.name, '--clobber']);
     }
     const downloadErrors = verifyFiles(expected, scratch);
     if (downloadErrors.length) return result('download-verify', { errors: downloadErrors });
@@ -343,12 +385,24 @@ export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFA
     if (!dryRun) fs.rmSync(scratch, { recursive: true, force: true });
   }
 
-  if (draft) step(['release', 'edit', feed.tag, '--repo', repo, '--draft=false', '--prerelease']);
+  if (release.isDraft) step(['release', 'edit', feed.assetTag, '--repo', repo, '--draft=false', '--prerelease']);
+
+  // Create the shared source tag if no platform has yet. A lost race is fine
+  // as long as the winner points at the same commit.
+  if (!dryRun && !sourceCommit) {
+    const create = step(['api', '-X', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/tags/${feed.tag}`, '-f', `sha=${feed.commit}`], { allowFailure: true });
+    if (create.status !== 0) {
+      const now = tagCommit(runner, repo, feed.tag);
+      if (now !== feed.commit) {
+        return result('source-tag', { errors: [now ? `Tag ${feed.tag} points at ${now}, not ${feed.commit}.` : failure('gh', commands.at(-1).slice(1), create)] });
+      }
+    }
+  }
 
   let rolling = dryRun ? true : viewRelease(runner, repo, ROLLING_TAG);
   if (!rolling) {
     const create = step(['release', 'create', ROLLING_TAG, '--repo', repo, '--prerelease', '--title', 'Apex Deck Nightly',
-      '--notes', 'Rolling Nightly feeds, one per platform. Assets live on immutable nightly-YYYYMMDD-<sha7> prereleases.'],
+      '--notes', 'Rolling Nightly feeds, one per platform. Each feed names the release that holds its assets.'],
     { allowFailure: true });
     if (create.status !== 0 && !viewRelease(runner, repo, ROLLING_TAG)) throw new Error(failure('gh', commands.at(-1).slice(1), create));
   }
@@ -396,11 +450,19 @@ function main(argv) {
     const workflow = flag(rest, '--workflow') || DEFAULT_WORKFLOW;
     const targetSha = flag(rest, '--sha').trim();
     const stateFile = flag(rest, '--state-file');
-    const state = stateFile ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {
-      runs: JSON.parse(defaultRunner('gh', ['api', `repos/${repo}/actions/workflows/${workflow}/runs?branch=main&status=completed&per_page=30`]).stdout || '{}').workflow_runs ?? [],
-      currentFeed: fetchLinuxFeed({ repo }),
-    };
-    const plan = planLinuxNightly({ runs: state.runs ?? [], currentFeed: state.currentFeed ?? null, date: flag(rest, '--date') || utcDateStamp(), targetSha, force: has(rest, '--force') });
+    let state;
+    if (stateFile) {
+      state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    } else {
+      const runs = JSON.parse(defaultRunner('gh', ['api', `repos/${repo}/actions/workflows/${workflow}/runs?branch=main&status=completed&per_page=30`]).stdout || '{}').workflow_runs ?? [];
+      const fetchJobs = (id) => {
+        const body = JSON.parse(defaultRunner('gh', ['api', `repos/${repo}/actions/runs/${id}/jobs?filter=latest&per_page=100`]).stdout || 'null');
+        if (!body || !Array.isArray(body.jobs)) throw new Error(`Malformed job list for run ${id}.`);
+        return body.jobs.map(({ name, status, conclusion }) => ({ name, status, conclusion }));
+      };
+      state = { runs, jobsByRun: loadJobsUntilGreen(runs, { targetSha, fetchJobs }), currentFeed: fetchLinuxFeed({ repo }) };
+    }
+    const plan = planLinuxNightly({ runs: state.runs ?? [], jobsByRun: state.jobsByRun ?? {}, currentFeed: state.currentFeed ?? null, date: flag(rest, '--date') || utcDateStamp(), targetSha, force: has(rest, '--force') });
     const output = flag(rest, '--github-output');
     if (output) {
       fs.appendFileSync(output, `${[

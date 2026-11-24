@@ -10,6 +10,8 @@ import {
   appImageName,
   assembleLinuxRelease,
   fetchLinuxFeed,
+  linuxJobsGreen,
+  loadJobsUntilGreen,
   parseLinuxFeed,
   planLinuxNightly,
   publishLinuxNightly,
@@ -20,6 +22,7 @@ const SHA_OLD = '11c1ade33ad9f6dc2d80ff32a68e159d501fde38';
 const SHA_NEW = '41702564203e86e178dedda3887abc117a13d246';
 const DATE = '20261125';
 const TAG = `nightly-${DATE}-${SHA_NEW.slice(0, 7)}`;
+const ASSET = `nightly-linux-${DATE}-${SHA_NEW.slice(0, 7)}`;
 const VERSION = '0.9.19';
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'linux-nightly-test-'));
@@ -52,14 +55,25 @@ function assembled({ buildNumber = 1 } = {}) {
 const greenRun = (sha, created = '2026-11-25T06:00:00Z') => ({ head_branch: 'main', status: 'completed', conclusion: 'success', event: 'push', head_sha: sha, created_at: created, id: 1 });
 
 /** A fake `gh` that keeps releases in memory and serves uploaded bytes back. */
-function fakeGitHub({ releases = {}, corrupt = null } = {}) {
+function fakeGitHub({ releases = {}, tags = {}, corrupt = null } = {}) {
   const store = structuredClone(releases);
+  const refs = { ...tags };
   const files = {};
   const calls = [];
   const flagOf = (args, name) => args[args.indexOf(name) + 1];
   const runner = (command, args) => {
     calls.push(args.join(' '));
     const [group, action, tag] = args;
+    if (group === 'api' && /\/git\/ref\/tags\//.test(action)) {
+      const name = action.split('/git/ref/tags/')[1];
+      return refs[name] ? { status: 0, stdout: JSON.stringify({ object: { type: 'commit', sha: refs[name] } }), stderr: '' } : { status: 1, stdout: '', stderr: 'HTTP 404: Not Found' };
+    }
+    if (group === 'api' && action === '-X' && args[3].endsWith('/git/refs')) {
+      const name = flagOf(args, '-f').replace('ref=refs/tags/', '');
+      if (refs[name]) return { status: 1, stdout: '', stderr: 'HTTP 422: Reference already exists' };
+      refs[name] = args[args.lastIndexOf('-f') + 1].replace('sha=', '');
+      return { status: 0, stdout: '', stderr: '' };
+    }
     if (group === 'release' && action === 'view') {
       const release = store[tag];
       return release ? { status: 0, stdout: JSON.stringify(release), stderr: '' } : { status: 1, stdout: '', stderr: 'release not found' };
@@ -90,7 +104,7 @@ function fakeGitHub({ releases = {}, corrupt = null } = {}) {
     }
     throw new Error(`unexpected gh ${args.join(' ')}`);
   };
-  return { runner, store, files, calls };
+  return { runner, store, files, calls, refs };
 }
 
 test('the Linux feed is strict and platform-scoped', () => {
@@ -104,12 +118,15 @@ test('the Linux feed is strict and platform-scoped', () => {
   assert.throws(() => parseLinuxFeed({ ...feed, buildNumber: 0 }), /positive/);
   assert.throws(() => parseLinuxFeed({ ...feed, commit: SHA_NEW.slice(0, 12) }), /full lowercase SHA/);
   assert.throws(() => parseLinuxFeed({ ...feed, tag: `nightly-${DATE}-${SHA_OLD.slice(0, 7)}` }), /tag/);
+  assert.equal(feed.assetTag, ASSET);
+  assert.throws(() => parseLinuxFeed({ ...feed, assetTag: TAG }), /assetTag/);
+  assert.throws(() => parseLinuxFeed({ ...feed, assetTag: undefined }), /assetTag/);
   assert.throws(() => parseLinuxFeed({ ...feed, appImages: feed.appImages.slice(1) }), /exactly one appImage/);
   assert.throws(() => parseLinuxFeed({ ...feed, daemons: [...feed.daemons, feed.daemons[0]] }), /exactly one daemon/);
 });
 
 test('a macOS-shaped feed is not mistaken for the Linux feed', () => {
-  const mac = { schemaVersion: 1, channel: 'nightly', version: VERSION, buildNumber: 9, commit: SHA_NEW, tag: TAG, packages: [{ arch: 'arm64' }] };
+  const mac = { schemaVersion: 1, channel: 'nightly', version: VERSION, buildNumber: 9, commit: SHA_NEW, tag: TAG, assetTag: ASSET, packages: [{ arch: 'arm64' }] };
   assert.throws(() => parseLinuxFeed(mac), /platform mismatch/);
 });
 
@@ -145,81 +162,112 @@ test('assemble refuses a build whose metadata or checksum is wrong', () => {
   assert.throws(() => assembleLinuxRelease({ out: tmp(), date: DATE, commit: SHA_NEW, buildNumber: 1, version: VERSION, builds: { x86_64: fakeBuild('x86_64') } }), /one --build for each/);
 });
 
-test('first publish creates the immutable release and the rolling feed, and writes only the Linux feed', () => {
+const job = (name, conclusion = 'success') => ({ name, status: 'completed', conclusion });
+const linuxGreen = [job('changes'), job('versions-agree'), job('test (ubuntu-22.04, daemon)'), job('test (ubuntu-22.04-arm, host)'), job('build (ubuntu-22.04, x86_64)')];
+
+test('Linux eligibility ignores macOS and Windows jobs in daemon.yml', () => {
+  assert.equal(linuxJobsGreen([...linuxGreen, job('test (macos-latest, daemon)', 'cancelled'), job('test-windows-app (2/4)', 'failure')]), true);
+  assert.equal(linuxJobsGreen([...linuxGreen.slice(1), job('changes', 'failure')]), false, 'a shared job still gates Linux');
+  assert.equal(linuxJobsGreen([...linuxGreen, job('test (ubuntu-22.04, updater)', 'cancelled')]), false);
+  assert.equal(linuxJobsGreen([job('changes'), job('test (ubuntu-22.04, daemon)', 'skipped')]), true, 'skipped Rust suites are fine when Rust did not change');
+  assert.equal(linuxJobsGreen([job('test (macos-latest, daemon)')]), false, 'a run with no Linux jobs is not Linux evidence');
+  assert.equal(linuxJobsGreen(undefined), false);
+
+  const macCancelled = { ...greenRun(SHA_NEW), conclusion: 'cancelled', id: 2 };
+  const runs = [greenRun(SHA_OLD, '2026-11-24T06:00:00Z'), macCancelled];
+  const fetched = [];
+  const jobsByRun = loadJobsUntilGreen(runs, { fetchJobs: (id) => { fetched.push(id); return [...linuxGreen, job('test (macos-latest, daemon)', 'cancelled')]; } });
+  assert.deepEqual(fetched, [2], 'jobs are fetched only for the newest run that is not wholly green');
+  const plan = planLinuxNightly({ runs, jobsByRun, date: DATE });
+  assert.equal(plan.commit, SHA_NEW, 'a macOS cancellation does not hold a healthy Linux commit out of Nightly');
+
+  const linuxFailed = loadJobsUntilGreen(runs, { fetchJobs: () => [...linuxGreen, job('test (ubuntu-22.04, host)', 'failure')] });
+  assert.equal(planLinuxNightly({ runs, jobsByRun: linuxFailed, date: DATE }).commit, SHA_OLD, 'a Linux failure falls back to the last Linux-green commit');
+  assert.equal(planLinuxNightly({ runs, jobsByRun, date: DATE, targetSha: SHA_NEW }).commit, SHA_NEW);
+});
+
+const releaseCalls = (gh, tag) => gh.calls.filter((call) => call.startsWith('release ') && call.split(' ')[2] === tag);
+
+test('first publish uses a Linux-only release, creates the source tag, and writes only the Linux feed', () => {
   const { out } = assembled();
   const gh = fakeGitHub();
   const result = publishLinuxNightly({ assetsDir: out, runner: gh.runner });
   assert.equal(result.published, true, result.errors.join('; '));
-  assert.equal(gh.store[TAG].isDraft, false);
-  assert.equal(gh.store[TAG].targetCommitish, SHA_NEW);
-  const names = gh.store[TAG].assets.map((asset) => asset.name);
+  assert.equal(gh.store[ASSET].isDraft, false);
+  assert.equal(gh.store[ASSET].targetCommitish, SHA_NEW);
+  assert.equal(gh.store[TAG], undefined, 'Linux never creates the shared nightly-YYYYMMDD-<sha7> release');
+  assert.equal(gh.refs[TAG], SHA_NEW, 'the shared source tag the VPS updater builds from points at the commit');
+  const names = gh.store[ASSET].assets.map((asset) => asset.name);
   for (const arch of ['x86_64', 'arm64']) {
     for (const suffix of ['', '.sha256', '.json']) assert.ok(names.includes(`${appImageName(TAG, arch)}${suffix}`));
     assert.ok(names.includes(`apex-daemon-nightly-linux-${arch}`));
   }
-  assert.ok(names.includes(LINUX_FEED_NAME), 'the immutable release keeps a pinned copy of the Linux feed');
+  assert.ok(names.includes(LINUX_FEED_NAME), 'the Linux release keeps a pinned copy of the Linux feed');
   assert.deepEqual(gh.store.nightly.assets.map((asset) => asset.name), [LINUX_FEED_NAME]);
   assert.ok(gh.calls.every((call) => !call.includes('apex-deck-nightly-update.json')), 'never touches the macOS feed');
 });
 
-test('Linux attaches to a release another platform already published, without touching its assets', () => {
+test('an overlapping macOS publication is never touched, published or blocked by Linux', () => {
   const { out } = assembled();
-  const gh = fakeGitHub({ releases: {
-    [TAG]: { isDraft: false, targetCommitish: SHA_NEW, assets: [{ name: 'Apex-Deck-Nightly_arm64.pkg' }] },
-    nightly: { isDraft: false, assets: [{ name: 'apex-deck-nightly-update.json' }] },
-  } });
+  // macOS has uploaded to its draft and is still verifying when Linux runs.
+  const macDraft = { isDraft: true, targetCommitish: SHA_NEW, assets: [{ name: 'Apex-Deck-Nightly_arm64.pkg' }] };
+  const gh = fakeGitHub({ releases: { [TAG]: macDraft, nightly: { isDraft: false, assets: [{ name: 'apex-deck-nightly-update.json' }] } } });
   const result = publishLinuxNightly({ assetsDir: out, runner: gh.runner });
   assert.equal(result.published, true, result.errors.join('; '));
-  const upload = gh.calls.find((call) => call.startsWith(`release upload ${TAG}`));
-  assert.doesNotMatch(upload, /--clobber/, 'a published release is never clobbered');
-  assert.ok(!gh.calls.some((call) => call.startsWith(`release edit ${TAG}`)), 'leaves another platform\'s published release alone');
-  assert.ok(!gh.calls.some((call) => call.startsWith('release create')));
+  assert.deepEqual(releaseCalls(gh, TAG), [], 'Linux never views, uploads to, or publishes the macOS release');
+  assert.deepEqual(gh.store[TAG], macDraft, 'the macOS draft stays a draft with only its own assets');
   assert.deepEqual(gh.store.nightly.assets.map((asset) => asset.name).sort(), [LINUX_FEED_NAME, 'apex-deck-nightly-update.json'].sort());
+
+  // macOS published first: the source tag already exists at the same commit, so Linux only checks it.
+  const after = fakeGitHub({ releases: { [TAG]: { isDraft: false, targetCommitish: SHA_NEW, assets: [] } }, tags: { [TAG]: SHA_NEW } });
+  assert.equal(publishLinuxNightly({ assetsDir: out, runner: after.runner }).published, true);
+  assert.ok(!after.calls.some((call) => call.includes('/git/refs')));
+  assert.deepEqual(releaseCalls(after, TAG), []);
 });
 
-test('Linux refuses to overwrite its own asset on a published release, or attach to another commit', () => {
+test('Linux holds when the shared source tag or its own release points at another commit', () => {
   const { out } = assembled();
-  const name = appImageName(TAG, 'x86_64');
-  const clash = fakeGitHub({ releases: { [TAG]: { isDraft: false, targetCommitish: SHA_NEW, assets: [{ name }] } } });
-  clash.files[`${TAG}/${name}`] = Buffer.from('a different AppImage');
-  const held = publishLinuxNightly({ assetsDir: out, runner: clash.runner });
-  assert.equal(held.stage, 'immutable-tag');
-  assert.match(held.errors[0], /refusing to overwrite/);
+  const moved = fakeGitHub({ tags: { [TAG]: SHA_OLD } });
+  const held = publishLinuxNightly({ assetsDir: out, runner: moved.runner });
+  assert.equal(held.stage, 'source-tag');
+  assert.ok(!moved.calls.some((call) => call.startsWith('release ')), 'nothing is created or uploaded');
 
-  const other = fakeGitHub({ releases: { [TAG]: { isDraft: true, targetCommitish: SHA_OLD, assets: [] } } });
+  const other = fakeGitHub({ releases: { [ASSET]: { isDraft: true, targetCommitish: SHA_OLD, assets: [] } } });
   assert.equal(publishLinuxNightly({ assetsDir: out, runner: other.runner }).stage, 'immutable-tag');
-  for (const gh of [clash, other]) assert.ok(!gh.calls.some((call) => call.includes('release upload')));
-  assert.ok(!clash.calls.some((call) => call.startsWith('release edit')));
+  assert.ok(!other.calls.some((call) => call.includes('release upload')));
 });
 
-test('a retry keeps identical Linux files already on a published release and refuses different ones', () => {
-  const { out } = assembled();
-  const first = fakeGitHub({ releases: { [TAG]: { isDraft: false, targetCommitish: SHA_NEW, assets: [{ name: 'Apex-Deck-Nightly_arm64.pkg' }] } } });
-  // The first attempt uploaded and verified everything but failed before the feed moved.
-  assert.equal(publishLinuxNightly({ assetsDir: out, runner: first.runner }).published, true);
-  delete first.store.nightly;
-  first.calls.length = 0;
-  const retry = publishLinuxNightly({ assetsDir: out, runner: first.runner });
-  assert.equal(retry.published, true, retry.errors.join('; '));
-  assert.ok(!first.calls.some((call) => call.startsWith(`release upload ${TAG}`)), 'nothing is re-uploaded');
-  assert.deepEqual(first.store.nightly.assets.map((asset) => asset.name), [LINUX_FEED_NAME]);
-
+test('a retry replaces Linux files the feed never pointed at, and refuses files the feed already points at', () => {
+  const { out, feed } = assembled();
+  // An earlier attempt published the Linux release but failed before the feed moved; the rerun rebuilt different bytes.
+  const gh = fakeGitHub();
+  assert.equal(publishLinuxNightly({ assetsDir: out, runner: gh.runner }).published, true);
+  delete gh.store.nightly;
   const name = 'apex-daemon-nightly-linux-x86_64';
-  first.files[`${TAG}/${name}`] = Buffer.from('someone else');
-  delete first.store.nightly;
-  const held = publishLinuxNightly({ assetsDir: out, runner: first.runner });
-  assert.equal(held.stage, 'immutable-tag');
-  assert.match(held.errors[0], /different .*refusing to overwrite/);
-  assert.equal(first.store.nightly, undefined);
+  gh.files[`${ASSET}/${name}`] = Buffer.from('an earlier, unreferenced build');
+  gh.calls.length = 0;
+  const retry = publishLinuxNightly({ assetsDir: out, runner: gh.runner });
+  assert.equal(retry.published, true, retry.errors.join('; '));
+  assert.match(gh.calls.find((call) => call.startsWith(`release upload ${ASSET}`)), /--clobber/);
+  assert.deepEqual(gh.store.nightly.assets.map((asset) => asset.name), [LINUX_FEED_NAME]);
+
+  // Once the live Linux feed points at this release, a forced same-day rebuild is refused before anything changes.
+  const forced = assembled({ buildNumber: 2 });
+  gh.calls.length = 0;
+  const refused = publishLinuxNightly({ assetsDir: forced.out, currentFeed: feed, force: true, runner: gh.runner });
+  assert.equal(refused.stage, 'immutable-tag');
+  assert.match(refused.errors[0], /already points at .*refusing to overwrite/);
+  assert.ok(!gh.calls.some((call) => call.includes('release upload') || call.includes('release edit')));
 });
 
-test('a corrupted upload holds the Linux feed and leaves the release a draft', () => {
+test('a corrupted upload holds the Linux feed, leaves the Linux release a draft, and creates no source tag', () => {
   const { out } = assembled();
   const gh = fakeGitHub({ corrupt: 'apex-daemon-nightly-linux-arm64' });
   const result = publishLinuxNightly({ assetsDir: out, runner: gh.runner });
   assert.equal(result.stage, 'download-verify');
-  assert.equal(gh.store[TAG].isDraft, true);
+  assert.equal(gh.store[ASSET].isDraft, true);
   assert.equal(gh.store.nightly, undefined);
+  assert.equal(gh.refs[TAG], undefined);
 });
 
 test('a missing local sidecar is caught before anything is uploaded', () => {
@@ -233,7 +281,8 @@ test('a missing local sidecar is caught before anything is uploaded', () => {
 
 test('build numbers only move forward on the Linux feed', () => {
   const { out } = assembled({ buildNumber: 3 });
-  const published = { ...assembled({ buildNumber: 3 }).feed, commit: SHA_OLD, tag: `nightly-${DATE}-${SHA_OLD.slice(0, 7)}` };
+  const oldTag = `nightly-${DATE}-${SHA_OLD.slice(0, 7)}`;
+  const published = { ...assembled({ buildNumber: 3 }).feed, commit: SHA_OLD, tag: oldTag, assetTag: `nightly-linux-${DATE}-${SHA_OLD.slice(0, 7)}` };
   published.appImages = published.appImages.map((entry) => ({ ...entry, name: appImageName(published.tag, entry.arch) }));
   assert.equal(publishLinuxNightly({ assetsDir: out, currentFeed: published, runner: fakeGitHub().runner }).stage, 'monotonic-check');
   const same = assembled({ buildNumber: 3 });
