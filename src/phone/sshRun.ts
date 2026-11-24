@@ -3,7 +3,29 @@
 // detaches from it and sign-out and the wipe still happen.
 
 import type { Paired } from "./pairing.ts";
-import { AI_TOOLS, FIND_SERVICE, INSTALL_BWRAP, install, PAIR, PROBE, readUrl, REMOTE_ON, report, shellQuote, startPlain, startSystem, startUser, STOP_USER_SERVICE, switchVersion } from "./sshScripts.ts";
+import {
+  AI_TOOLS,
+  dataFolderCheck,
+  findService,
+  hostChannelConfig,
+  INSTALL_BWRAP,
+  install,
+  pairCommand,
+  probeBin,
+  probeScript,
+  readUrl,
+  remoteOn,
+  report,
+  shellQuote,
+  startPlain,
+  startSystem,
+  startUser,
+  stopUserService,
+  switchVersion,
+  trustCheckScript,
+  trustHostCommand,
+  type HostChannel,
+} from "./sshScripts.ts";
 import type { ServerKey, SetupEvent, SshRequest } from "./sshSetup.ts";
 
 export const REPO_RELEASES = "https://github.com/l1quid8/Apex-Deck/releases";
@@ -50,31 +72,60 @@ export interface SetupDeps {
   save(paired: Paired, request: SshRequest, os: string): void;
   /** Keep with Face ID. Runs before the wipe. */
   keep(request: SshRequest): Promise<void>;
+  /** Target host channel ("stable" | "nightly"), or async resolver from the sealed iOS app identity. */
+  channel?: HostChannel | (() => HostChannel | Promise<HostChannel>);
   /** Where to find the release feed. Tests point this at a local server. */
   releases?: string;
-  /** Read the feed from this tag, not the latest release. A pre-release is never "latest". */
+  /** Read the feed from this tag, not the channel's default release. A pre-release is never "latest". */
   releaseTag?: string;
 }
-
 
 const LINUX_ARCH: Record<string, string> = { x86_64: "x86_64", amd64: "x86_64", aarch64: "arm64", arm64: "arm64" };
 
 export interface DaemonAsset { arch: string; name: string; sha256: string }
-export interface Feed { version: string; daemons: DaemonAsset[] }
+export interface Feed {
+  channel: HostChannel;
+  version: string;
+  buildNumber?: number;
+  commit?: string;
+  tag?: string;
+  daemons: DaemonAsset[];
+}
 
-/** The release feed's Linux half. Throws when this release has none. */
-export function readFeed(text: string): Feed {
-  let value: { version?: unknown; daemons?: unknown };
+/** The release feed's Linux half, verified against the target channel. Throws when invalid or mismatched. */
+export function readFeed(text: string, channel: HostChannel = "stable"): Feed {
+  let value: { channel?: unknown; version?: unknown; buildNumber?: unknown; commit?: unknown; tag?: unknown; daemons?: unknown };
   try { value = JSON.parse(text); } catch { throw new Error("The release list couldn't be read."); }
-  if (typeof value?.version !== "string" || !/^\d+\.\d+\.\d+$/.test(value.version)) throw new Error("The release list couldn't be read.");
+  if (!value || typeof value !== "object") throw new Error("The release list couldn't be read.");
+  if (typeof value.version !== "string" || !/^\d+\.\d+\.\d+$/.test(value.version)) throw new Error("The release list couldn't be read.");
+  const feedChannel = value.channel === undefined ? "stable" : value.channel;
+  if (feedChannel !== channel) throw new Error(`The release list is for ${String(feedChannel)}, not ${channel}.`);
+  let nightlyMeta: { buildNumber?: number; commit?: string; tag?: string } = {};
+  if (channel === "nightly") {
+    if (typeof value.buildNumber !== "number" || !Number.isSafeInteger(value.buildNumber) || value.buildNumber <= 0) {
+      throw new Error("The Nightly release list has no valid build number.");
+    }
+    if (typeof value.commit !== "string" || !/^[a-f0-9]{40}$/.test(value.commit)) {
+      throw new Error("The Nightly release list has no valid commit.");
+    }
+    if (typeof value.tag !== "string" || !/^nightly-[0-9]{8}-[a-f0-9]{7}$/.test(value.tag) || !value.tag.endsWith(`-${value.commit.slice(0, 7)}`)) {
+      throw new Error("The Nightly release list has no valid immutable tag.");
+    }
+    nightlyMeta = { buildNumber: value.buildNumber, commit: value.commit, tag: value.tag };
+  }
   const daemons = Array.isArray(value.daemons) ? value.daemons.filter((entry): entry is DaemonAsset =>
     typeof entry?.arch === "string" && typeof entry?.name === "string" && /^[A-Za-z0-9._-]+$/.test(entry.name) && /^[a-f0-9]{64}$/.test(entry?.sha256)) : [];
-  return { version: value.version, daemons };
+  return { channel, version: value.version, ...nightlyMeta, daemons };
 }
 
 const versionOf = (text: string | undefined): number[] | null => {
   const found = /(\d+)\.(\d+)\.(\d+)/.exec(text ?? "");
   return found ? found.slice(1).map(Number) : null;
+};
+
+const commitOf = (text: string | undefined): string | null => {
+  const found = /\(([a-f0-9]{7,40})(?:-dirty)?\)/.exec(text ?? "");
+  return found ? found[1] : null;
 };
 
 /** Whether `have` is older than `want`. No version counts as older. */
@@ -83,6 +134,19 @@ export function olderThan(have: string | undefined, want: string): boolean {
   if (!b) return false;
   if (!a) return true;
   for (let at = 0; at < 3; at += 1) if (a[at] !== b[at]) return a[at] < b[at];
+  return false;
+}
+
+function needsInstall(channel: HostChannel, probe: Record<string, string>, feed: Feed, arch: string): boolean {
+  if (!probe.bin || olderThan(probe.version, feed.version)) return true;
+  if (channel === "nightly" && !olderThan(feed.version, probe.version)) {
+    const installedCommit = commitOf(probe.version);
+    if (feed.commit && installedCommit) return !feed.commit.startsWith(installedCommit);
+    if (probe.sha256_bin) {
+      const asset = feed.daemons.find((entry) => entry.arch === arch);
+      if (asset) return probe.sha256_bin !== asset.sha256;
+    }
+  }
   return false;
 }
 
@@ -158,7 +222,16 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     step("key", `Server key ${known ? "matches" : "saved"} (${ssh.fingerprint.slice(0, 15)}…)`);
     step("signin", `Signed in as ${request.user}${request.key ? ` with ${request.key.name}` : " with password"}`);
 
-    const probe = report((await ssh.exec(PROBE)).stdout);
+    const resolvedChannel = request.channel ?? (typeof deps.channel === "function" ? await deps.channel() : deps.channel) ?? "stable";
+    stopIfCancelled();
+    if (resolvedChannel !== "stable" && resolvedChannel !== "nightly") {
+      throw new StepFailure("system", "Unsupported channel", `Unknown Deck channel: ${String(resolvedChannel)}.`);
+    }
+    const channel: HostChannel = resolvedChannel;
+    const cfg = hostChannelConfig(channel);
+    const labelName = channel === "nightly" ? cfg.product : "Deck";
+
+    const probe = report((await ssh.exec(probeScript(channel))).stdout);
     if (probe.os !== "Linux") throw new StepFailure("system", "Not a Linux server", probe.os === "Darwin" ? SERVER_ONLY : `This is ${probe.os || "an unknown system"}. ${SERVER_ONLY}`);
     const arch = LINUX_ARCH[probe.arch];
     if (!arch) throw new StepFailure("system", "No Deck build for this system", `Deck has no build for ${probe.arch || "this processor"}.`);
@@ -167,44 +240,46 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     const root = await adminRights(ssh, request.password, probe);
     const asRoot = (script: string, timeoutS = 300) => root.run(ssh, script, timeoutS);
 
-    const running = report((await ssh.exec(FIND_SERVICE)).stdout);
+    const running = report((await ssh.exec(findService(channel))).stdout);
     const versionNow = probe.version;
-    const feed = await fetchFeed(ssh, releases, deps.releaseTag).catch((failure: Error) => {
+    const feed = await fetchFeed(ssh, releases, channel, deps.releaseTag).catch((failure: Error) => {
       if (probe.bin) return null;
-      throw new StepFailure("install", "Couldn't check for Deck", failure.message);
+      throw new StepFailure("install", `Couldn't check for ${labelName}`, failure.message);
     });
     let replaced = false;
-    if (feed && olderThan(versionNow, feed.version)) {
+    if (feed && needsInstall(channel, probe, feed, arch)) {
       if (probe.updater) {
-        if (olderThan(versionNow, MINIMUM)) throw new StepFailure("install", "Deck here is out of date", `This server updates Deck by itself and is on ${versionOfText(versionNow)}. Try again once it reaches ${feed.version}.`);
+        if (olderThan(versionNow, MINIMUM)) throw new StepFailure("install", `${labelName} here is out of date`, `This server updates ${labelName} by itself and is on ${versionOfText(versionNow)}. Try again once it reaches ${feed.version}.`);
       } else {
         const asset = feed.daemons.find((entry) => entry.arch === arch);
-        if (!asset) throw new StepFailure("install", "No Deck download yet", `Deck ${feed.version} has no Linux ${arch} download yet.`);
-        const url = `${releases}/download/v${feed.version}/${asset.name}`;
-        const systemBin = probe.bin === "/usr/local/bin/apex-daemon" || (!probe.bin && root.ok);
-        if (systemBin && !root.ok) throw new StepFailure("install", "Needs admin rights", "Deck is installed for everyone here, so updating it needs a password with sudo.");
-        const target = systemBin ? "/usr/local/bin/apex-daemon" : probe.bin || "$HOME/.local/bin/apex-daemon";
+        if (!asset) throw new StepFailure("install", "No Deck download yet", `${labelName} ${feed.version} has no Linux ${arch} download yet.`);
+        const downloadTag = channel === "nightly" ? feed.tag! : `v${feed.version}`;
+        const url = `${releases}/download/${downloadTag}/${asset.name}`;
+        const systemBin = probe.bin === cfg.systemBin || (!probe.bin && root.ok);
+        if (systemBin && !root.ok) throw new StepFailure("install", "Needs admin rights", `${labelName} is installed for everyone here, so updating it needs a password with sudo.`);
+        const target = systemBin ? cfg.systemBin : probe.bin || cfg.userBin;
         const script = install({ url, sha256: asset.sha256, target: target.replace("$HOME", ".") });
         const result = systemBin ? await asRoot(script, 700) : await ssh.exec(`cd "$HOME" && ${script}`, { timeoutS: 700 });
         if (report(result.stdout).checksum === "bad") throw new StepFailure("install", "Download failed its check", "The download didn't match the release's checksum, so it wasn't installed.");
-        if (result.code !== 0) throw new StepFailure("install", "Couldn't install Deck", tail(result) || "The download failed.");
+        if (result.code !== 0) throw new StepFailure("install", `Couldn't install ${labelName}`, tail(result) || "The download failed.");
         replaced = Boolean(probe.bin);
-        step("install", replaced ? `Updated Deck to ${feed.version}` : `Installed Deck ${feed.version}`);
+        const targetVersion = channel === "nightly" ? `${feed.version} (build ${feed.buildNumber})` : feed.version;
+        step("install", replaced ? `Updated ${labelName} to ${targetVersion}` : `Installed ${labelName} ${targetVersion}`);
       }
     }
     if (!replaced && versionNow) {
-      if (olderThan(versionNow, MINIMUM)) throw new StepFailure("install", "Deck here is out of date", `This server has Deck ${versionOfText(versionNow)}, which can't pair this way yet.`);
-      step("install", `Deck ${versionOfText(versionNow)} is up to date`);
+      if (olderThan(versionNow, MINIMUM)) throw new StepFailure("install", `${labelName} here is out of date`, `This server has ${labelName} ${versionOfText(versionNow)}, which can't pair this way yet.`);
+      step("install", `${labelName} ${versionOfText(versionNow)} is up to date`);
     } else if (!replaced && !feed) {
-      throw new StepFailure("install", "Couldn't check for Deck", "The release list couldn't be reached from the server.");
+      throw new StepFailure("install", `Couldn't check for ${labelName}`, "The release list couldn't be reached from the server.");
     }
 
-    // Check for data folder before Deck starts, per Task 4
+    // Check for this channel's data folder before Deck starts, per Task 4
     let hadDataFolder = false;
     try {
-      const dataCheck = await ssh.exec("ls -d ~/.local/share/dev.apexdeck.app $XDG_DATA_HOME/dev.apexdeck.app $HOME/.local/share/dev.apexdeck.app 2>/dev/null || echo __nodata__", { timeoutS: 10 });
+      const dataCheck = await ssh.exec(dataFolderCheck(channel), { timeoutS: 10 });
       hadDataFolder = !dataCheck.stdout.includes("__nodata__") && dataCheck.stdout.trim() !== "";
-    } catch (e) {
+    } catch {
       if (cancelled) throw stopFailure();
     }
 
@@ -222,59 +297,56 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     let notes = "";
     if (running.service) {
       if (replaced) {
-        if (running.scope === "plain") notes += " Deck switches to the new version the next time it starts.";
+        if (running.scope === "plain") notes += ` ${labelName} switches to the new version the next time it starts.`;
         else {
           const scope = running.scope === "user" ? "user" : "system";
-          const script = switchVersion(scope, running.service);
+          const script = switchVersion(scope, running.service, channel);
           const switched = report((scope === "system" ? await asRoot(script) : await ssh.exec(script)).stdout).switched;
           if (switched === "later") notes += ` ${where} shows "Updating Deck" until its agents finish.`;
         }
       }
-      step("start", "Deck is running, set to start on boot");
+      step("start", `${labelName} is running, set to start on boot`);
     } else {
-      const bin = (await ssh.exec(`${PROBE_BIN}`)).stdout.trim();
+      const bin = (await ssh.exec(probeBin(channel))).stdout.trim();
       if (probe.systemd && root.ok) {
-        const started = await asRoot(startSystem(request.user));
-        if (!report(started.stdout).service) throw new StepFailure("start", "Couldn't start Deck", tail(started));
+        const started = await asRoot(startSystem(request.user, channel));
+        if (!report(started.stdout).service) throw new StepFailure("start", `Couldn't start ${labelName}`, tail(started));
       } else if (probe.systemd) {
-        const started = await ssh.exec(startUser(bin));
+        const started = await ssh.exec(startUser(bin, channel));
         const found = report(started.stdout);
-        if (!found.service) throw new StepFailure("start", "Couldn't start Deck", tail(started));
+        if (!found.service) throw new StepFailure("start", `Couldn't start ${labelName}`, tail(started));
         if (found.linger !== "yes") {
-          await ssh.exec(STOP_USER_SERVICE);
-          const plain = report((await ssh.exec(startPlain(bin))).stdout);
-          if (!plain.boot) notes += ` Deck won't start by itself after a reboot until an admin runs: loginctl enable-linger ${request.user}.`;
+          await ssh.exec(stopUserService(channel));
+          const plain = report((await ssh.exec(startPlain(bin, channel))).stdout);
+          if (!plain.boot) notes += ` ${labelName} won't start by itself after a reboot until an admin runs: loginctl enable-linger ${request.user}.`;
         }
       } else {
-        const found = report((await ssh.exec(startPlain(bin))).stdout);
-        if (!found.boot) notes += " This server has no way to start Deck on boot.";
+        const found = report((await ssh.exec(startPlain(bin, channel))).stdout);
+        if (!found.boot) notes += ` This server has no way to start ${labelName} on boot.`;
       }
-      step("start", "Started Deck, set to start on boot");
+      step("start", `Started ${labelName}, set to start on boot`);
     }
-    const remote = await ssh.exec(REMOTE_ON, { timeoutS: 40 });
-    if (remote.code !== 0) throw new StepFailure("start", "Couldn't start Deck", tail(remote) || "Deck didn't answer on the server.");
+    const remote = await ssh.exec(remoteOn(channel), { timeoutS: 40 });
+    if (remote.code !== 0) throw new StepFailure("start", `Couldn't start ${labelName}`, tail(remote) || `${labelName} didn't answer on the server.`);
 
     // ---- Task 10: Trust this machine? ----
     // hadDataFolder already checked before Deck start
-
-    // (Deck start already happened above, remote check below)
-    // For trust, read correct path dev.apexdeck.app, not apex-deck
     if (!hadDataFolder) {
-      // Fresh server: no data folder before, offer trust
+      // Fresh server for this channel: no data folder before, offer trust
       try {
-        const trustCheck = await ssh.exec("cat ~/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || cat $HOME/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || cat $XDG_DATA_HOME/dev.apexdeck.app/host-trust.json 2>/dev/null || echo __notrust__", { timeoutS: 10 });
+        const trustCheck = await ssh.exec(trustCheckScript(channel), { timeoutS: 10 });
         const isNotTrusted = trustCheck.stdout.includes("__notrust__") || trustCheck.stdout.trim() === "";
         if (isNotTrusted) {
           const freshTrustMessage = "Trust this machine? Your phone can press Allow here only if you trust what has run on this account. Deck can't check that. Pick Trust for a new server, or one you know.";
-          emit({ kind: "trust", fresh: true, message: freshTrustMessage });
-          const shouldTrust = await new Promise<boolean>((resolve) => {
+          const trustPromise = new Promise<boolean>((resolve) => {
             trustDecision = { resolve };
           });
+          emit({ kind: "trust", fresh: true, message: freshTrustMessage });
+          const shouldTrust = await trustPromise;
           trustDecision = null;
           stopIfCancelled();
           if (shouldTrust) {
-            const trustCmd = `${PROBE_BIN} >/dev/null 2>&1 && apex-daemon trust-host --no-reboot 2>&1 || $HOME/.local/bin/apex-daemon trust-host --no-reboot 2>&1 || /usr/local/bin/apex-daemon trust-host --no-reboot 2>&1`;
-            const trustResult = await ssh.exec(trustCmd, { timeoutS: 30 });
+            const trustResult = await ssh.exec(trustHostCommand(channel), { timeoutS: 30 });
             stopIfCancelled();
             if (trustResult.code === 0) {
               step("trust", "Trusted this machine — new epoch, old devices must pair again");
@@ -282,7 +354,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
               step("trust", `Not trusted yet — ${trustResult.stdout.trim() || trustResult.stderr.trim() || "trust-host failed"}, pairing without epoch`);
             }
           } else {
-            step("trust", "Not trusted yet — paired device can't act until you run apex-daemon trust-host on the server");
+            step("trust", `Not trusted yet — paired device can't act until you run ${cfg.daemon} trust-host on the server`);
           }
         } else {
           try {
@@ -294,14 +366,14 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
             if (cancelled) throw stopFailure();
           }
         }
-      } catch (e) {
+      } catch {
         if (cancelled) throw stopFailure();
         // Trust check failure non-fatal unless cancelled
       }
     } else {
-      // Existing data folder: check if already trusted and log, but don't offer again (avoid voiding devices)
+      // Existing data folder for this channel: check if already trusted and log, but don't offer again (avoid voiding devices)
       try {
-        const trustCheck = await ssh.exec("cat ~/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || cat $HOME/.local/share/dev.apexdeck.app/host-trust.json 2>/dev/null || echo __notrust__", { timeoutS: 10 });
+        const trustCheck = await ssh.exec(trustCheckScript(channel), { timeoutS: 10 });
         if (!trustCheck.stdout.includes("__notrust__") && trustCheck.stdout.trim() !== "") {
           try {
             const parsed = JSON.parse(trustCheck.stdout);
@@ -310,7 +382,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
             }
           } catch {}
         }
-      } catch (e) {
+      } catch {
         if (cancelled) throw stopFailure();
       }
     }
@@ -321,7 +393,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
     const named = (list: string[]) => list.map((tool) => tool[0].toUpperCase() + tool.slice(1)).join(" and ");
     step("tools", [`AI tools ready`, signIn.length ? `${named(signIn)} need${signIn.length === 1 ? "s" : ""} sign-in` : "", missing.length ? `${named(missing)} couldn't be installed` : "", !bwrap && tools.codex === "installed" ? "Codex needs bubblewrap (admin)" : ""].filter(Boolean).join("; "));
 
-    const made = await pairOverSsh(ssh, deps, { onCancel: (cancel) => { stopPair = cancel; }, onCommit: () => { committed = true; emit({ kind: "step", id: "pair", text: "Finishing pairing" }); emit({ kind: "finishing" }); } });
+    const made = await pairOverSsh(ssh, deps, channel, { onCancel: (cancel) => { stopPair = cancel; }, onCommit: () => { committed = true; emit({ kind: "step", id: "pair", text: "Finishing pairing" }); emit({ kind: "finishing" }); } });
     paired = true;
     if (request.keep) {
       await deps.keep(request).catch((failure: Error) => {
@@ -329,7 +401,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
         notes += ` The sign-in wasn't kept: ${failure.message}`;
       });
     }
-    deps.save(made, request, "linux");
+    deps.save(made, { ...request, channel }, "linux");
     emit({ kind: "paired", name: made.name });
     emit({ kind: "step", id: "pair", text: `Paired and saved as ${request.label || made.name}` });
     return notes.trim();
@@ -386,7 +458,6 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
 /** The oldest Deck that has `pair --json`. */
 const MINIMUM = "0.9.8";
 const versionOfText = (text: string | undefined): string => versionOf(text)?.join(".") ?? "an old version";
-const PROBE_BIN = `export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; command -v apex-daemon`;
 
 interface Admin { ok: boolean; run(ssh: SshSession, script: string, timeoutS: number): Promise<ExecResult> }
 
@@ -407,11 +478,12 @@ async function adminRights(ssh: SshSession, password: string, probe: Record<stri
 }
 const refused = async (): Promise<ExecResult> => ({ code: 1, stdout: "", stderr: "No admin rights." });
 
-async function fetchFeed(ssh: SshSession, releases: string, tag?: string): Promise<Feed> {
-  const from = tag ? `download/${tag}` : "latest/download";
-  const result = await ssh.exec(readUrl(`${releases}/${from}/apex-deck-update.json`), { timeoutS: 45 });
+async function fetchFeed(ssh: SshSession, releases: string, channel: HostChannel, tag?: string): Promise<Feed> {
+  const cfg = hostChannelConfig(channel);
+  const path = tag ? `download/${tag}/${cfg.feedName}` : cfg.defaultFeedPath;
+  const result = await ssh.exec(readUrl(`${releases}/${path}`), { timeoutS: 45 });
   if (result.code !== 0) throw new Error("The release list couldn't be reached from the server.");
-  return readFeed(result.stdout);
+  return readFeed(result.stdout, channel);
 }
 
 /**
@@ -420,7 +492,7 @@ async function fetchFeed(ssh: SshSession, releases: string, tag?: string): Promi
  * can't pair: their code wouldn't match this dial's. Stopping works at any point
  * up to the approve, and settles straight away; `onCommit` marks that point.
  */
-function pairOverSsh(ssh: SshSession, deps: SetupDeps, control: { onCancel(cancel: () => void): void; onCommit(): void }): Promise<Paired> {
+function pairOverSsh(ssh: SshSession, deps: SetupDeps, channel: HostChannel, control: { onCancel(cancel: () => void): void; onCommit(): void }): Promise<Paired> {
   return new Promise((resolve, reject) => {
     let attempt: { done: Promise<Paired>; cancel(): void } | null = null;
     let stream: SshStream | null = null;
@@ -437,7 +509,7 @@ function pairOverSsh(ssh: SshSession, deps: SetupDeps, control: { onCancel(cance
       void stream?.close();
       if (!finished) { finished = true; reject(stopFailure()); }
     });
-    ssh.open(PAIR).then((opened) => {
+    ssh.open(pairCommand(channel)).then((opened) => {
       if (stopped) { void opened.close(); return; }
       stream = opened;
       opened.listen((line) => {

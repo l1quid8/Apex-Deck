@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ConnectFailure, olderThan, readFeed, runSetup } from "../src/phone/sshRun.ts";
-import { PAIR, report, shellQuote } from "../src/phone/sshScripts.ts";
+import { PAIR, findService, pairCommand, report, shellQuote, startPlain, startUser, stopUserService } from "../src/phone/sshScripts.ts";
+import { channelFromAppInfo, resolveAppChannel } from "../src/phone/appChannel.ts";
+import { loadMachines, saveMachines } from "../src/phoneRules.ts";
 
 test("PAIR script omits --tier", () => {
   assert.equal(PAIR.includes("--tier"), false);
@@ -383,4 +385,357 @@ test("versions compare by number", () => {
 test("quoting and reports survive awkward text", () => {
   assert.equal(shellQuote("it's"), "'it'\\''s'");
   assert.deepEqual(report("a=1\nnoise\nb=x=y\n"), { a: "1", b: "x=y" });
+});
+
+const NIGHTLY_COMMIT = "11c1ade33ad9f6dc2d80ff32a68e159d501fde38";
+const NIGHTLY_TAG = "nightly-20261124-11c1ade";
+const NIGHTLY_SHA = "b".repeat(64);
+const STABLE_SHA = "c".repeat(64);
+const STABLE_ENDPOINT = "1".repeat(64);
+const NIGHTLY_ENDPOINT = "2".repeat(64);
+
+const NIGHTLY_FEED = JSON.stringify({
+  schemaVersion: 1,
+  channel: "nightly",
+  version: "0.9.19",
+  buildNumber: 43,
+  commit: NIGHTLY_COMMIT,
+  tag: NIGHTLY_TAG,
+  daemons: [{ arch: "x86_64", name: "apex-daemon-nightly-linux-x86_64", sha256: NIGHTLY_SHA }],
+});
+const STABLE_FEED_0919 = JSON.stringify({
+  schemaVersion: 1,
+  version: "0.9.19",
+  daemons: [{ arch: "x86_64", name: "apex-daemon-linux-x86_64", sha256: STABLE_SHA }],
+});
+
+/**
+ * Stateful two-channel VPS fixture where Stable and Nightly binaries, systemd
+ * units, updater configs, data directories, trust files, and pairing endpoints
+ * coexist on the same Linux host.
+ */
+function twoChannelVps(initial = {}) {
+  const ran = [];
+  const opened = [];
+  const state = {
+    closed: false,
+    stable: {
+      bin: "/usr/local/bin/apex-daemon",
+      version: "apex-daemon 0.9.19 (aaaaaaaaaaaa)",
+      sha256: STABLE_SHA,
+      serviceActive: true,
+      updater: true,
+      hasDataFolder: true,
+      trusted: true,
+      restarts: 0,
+      installs: 0,
+      remoteOnCalls: 0,
+      trustHostCalls: 0,
+      pairCalls: 0,
+      link: "apexdeck://pair?p=stable-token",
+      endpointId: STABLE_ENDPOINT,
+      ...(initial.stable ?? {}),
+    },
+    nightly: {
+      bin: "",
+      version: "",
+      sha256: "",
+      serviceActive: false,
+      updater: false,
+      hasDataFolder: false,
+      trusted: false,
+      restarts: 0,
+      installs: 0,
+      remoteOnCalls: 0,
+      trustHostCalls: 0,
+      pairCalls: 0,
+      link: "apexdeck-nightly://pair?p=nightly-token",
+      endpointId: NIGHTLY_ENDPOINT,
+      ...(initial.nightly ?? {}),
+    },
+  };
+
+  const session = {
+    fingerprint: "SHA256:twochannelvpskeyfingerprint",
+    async exec(command) {
+      ran.push(command);
+      if (command.includes("uname -s")) {
+        const ch = command.includes("command -v apex-daemon-nightly") ? state.nightly : state.stable;
+        const lines = [
+          "os=Linux",
+          "arch=x86_64",
+          "user=demo",
+          "uid=1000",
+          "sudo=yes",
+          "bwrap=yes",
+          "sha256=yes",
+          "fetch=curl",
+          "systemd=yes",
+          `bin=${ch.bin}`,
+        ];
+        if (ch.bin && ch.version) lines.push(`version=${ch.version}`);
+        if (ch.bin && ch.sha256) lines.push(`sha256_bin=${ch.sha256}`);
+        if (ch.updater) lines.push("updater=yes");
+        return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
+      }
+      if (command.includes("sudo -n true")) return { code: 0, stdout: "", stderr: "" };
+      if (command.includes("apex-deck-nightly-update.json")) {
+        return { code: 0, stdout: initial.nightlyFeed ?? NIGHTLY_FEED, stderr: "" };
+      }
+      if (command.includes("apex-deck-update.json")) {
+        return { code: 0, stdout: initial.stableFeed ?? STABLE_FEED_0919, stderr: "" };
+      }
+      if (command.includes("is-active \"apex-daemon-nightly@$user.service\"")) {
+        return { code: 0, stdout: state.nightly.serviceActive ? "service=apex-daemon-nightly@demo.service\nscope=system\n" : "", stderr: "" };
+      }
+      if (command.includes("is-active \"apex-daemon@$user.service\"")) {
+        return { code: 0, stdout: state.stable.serviceActive ? "service=apex-daemon@demo.service\nscope=system\n" : "", stderr: "" };
+      }
+      if (command.includes("sha256sum") && command.includes("setup-new")) {
+        if (command.includes("/usr/local/bin/apex-daemon-nightly")) {
+          state.nightly.installs += 1;
+          state.nightly.bin = "/usr/local/bin/apex-daemon-nightly";
+          state.nightly.version = `apex-daemon 0.9.19 (${NIGHTLY_COMMIT.slice(0, 12)})`;
+          state.nightly.sha256 = NIGHTLY_SHA;
+        } else if (command.includes("/usr/local/bin/apex-daemon")) {
+          state.stable.installs += 1;
+          state.stable.bin = "/usr/local/bin/apex-daemon";
+          state.stable.version = "apex-daemon 0.9.19 (stabl1111111)";
+          state.stable.sha256 = STABLE_SHA;
+        }
+        return { code: 0, stdout: "installed=yes\n", stderr: "" };
+      }
+      if (command.includes("ls -d") && command.includes("dev.apexdeck.app.nightly")) {
+        return { code: 0, stdout: state.nightly.hasDataFolder ? "/home/demo/.local/share/dev.apexdeck.app.nightly\n" : "__nodata__\n", stderr: "" };
+      }
+      if (command.includes("ls -d") && command.includes("dev.apexdeck.app")) {
+        return { code: 0, stdout: state.stable.hasDataFolder ? "/home/demo/.local/share/dev.apexdeck.app\n" : "__nodata__\n", stderr: "" };
+      }
+      if (command.includes("apex-daemon-nightly@demo.service") && command.includes("cat >")) {
+        state.nightly.serviceActive = true;
+        return { code: 0, stdout: "service=apex-daemon-nightly@demo.service\n", stderr: "" };
+      }
+      if (command.includes("apex-daemon@demo.service") && command.includes("cat >")) {
+        state.stable.serviceActive = true;
+        return { code: 0, stdout: "service=apex-daemon@demo.service\n", stderr: "" };
+      }
+      if (command.includes("show -p ControlGroup")) {
+        if (command.includes("apex-daemon-nightly@demo.service")) state.nightly.restarts += 1;
+        else if (command.includes("apex-daemon@demo.service")) state.stable.restarts += 1;
+        return { code: 0, stdout: "switched=now\n", stderr: "" };
+      }
+      if (command.includes("command -v apex-daemon-nightly") && !command.includes("trust-host")) {
+        return { code: 0, stdout: `${state.nightly.bin}\n`, stderr: "" };
+      }
+      if (command.includes("command -v apex-daemon") && !command.includes("apex-daemon-nightly") && !command.includes("trust-host")) {
+        return { code: 0, stdout: `${state.stable.bin}\n`, stderr: "" };
+      }
+      if (command.includes("apex-daemon-nightly remote on")) {
+        state.nightly.remoteOnCalls += 1;
+        return { code: 0, stdout: "remote=on\n", stderr: "" };
+      }
+      if (command.includes("apex-daemon remote on")) {
+        state.stable.remoteOnCalls += 1;
+        return { code: 0, stdout: "remote=on\n", stderr: "" };
+      }
+      if (command.includes("dev.apexdeck.app.nightly/host-trust.json")) {
+        return { code: 0, stdout: state.nightly.trusted ? JSON.stringify({ trusted: true, trusted_at_ms: 1700000000000 }) : "__notrust__\n", stderr: "" };
+      }
+      if (command.includes("dev.apexdeck.app/host-trust.json")) {
+        return { code: 0, stdout: state.stable.trusted ? JSON.stringify({ trusted: true, trusted_at_ms: 1700000000000 }) : "__notrust__\n", stderr: "" };
+      }
+      if (command.includes("apex-daemon-nightly trust-host")) {
+        state.nightly.trustHostCalls += 1;
+        state.nightly.trusted = true;
+        return { code: 0, stdout: "trusted\n", stderr: "" };
+      }
+      if (command.includes("apex-daemon trust-host")) {
+        state.stable.trustHostCalls += 1;
+        state.stable.trusted = true;
+        return { code: 0, stdout: "trusted\n", stderr: "" };
+      }
+      if (command.includes("claude-login")) return { code: 0, stdout: "claude=installed\ncodex=installed\n", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    async open(command) {
+      opened.push(command);
+      const isNightly = command.includes("apex-daemon-nightly pair --json");
+      const ch = isNightly ? state.nightly : state.stable;
+      ch.pairCalls += 1;
+      return {
+        listen(onLine, onEnd) {
+          state.onLine = onLine;
+          state.onEnd = onEnd;
+          onLine(JSON.stringify({ event: "link", link: ch.link }));
+        },
+        async write() {},
+        async close() {},
+      };
+    },
+    async close() { state.closed = true; },
+  };
+
+  return { session, ran, opened, state };
+}
+
+test("Nightly Add server over SSH on a two-channel VPS installs, trusts, starts, and pairs Nightly without touching Stable", async () => {
+  const vps = twoChannelVps();
+  const saved = [];
+  let dialedLink = "";
+  const prevCap = globalThis.Capacitor;
+  globalThis.Capacitor = {
+    Plugins: {
+      ApexAppInfo: {
+        async getInfo() {
+          return { bundleId: "dev.apexdeck.phone.nightly", channel: "nightly", pushTopic: "dev.apexdeck.phone.nightly" };
+        },
+      },
+    },
+  };
+  try {
+    const events = [];
+    const dependency = {
+      connect: async () => vps.session,
+      channel: resolveAppChannel,
+      knownKey: () => null,
+      rememberKey: () => {},
+      keep: async () => {},
+      save: (paired, req) => saved.push({ paired, req }),
+      pair(link, onCode) {
+        dialedLink = link;
+        const endpointId = link.startsWith("apexdeck-nightly://") ? NIGHTLY_ENDPOINT : STABLE_ENDPOINT;
+        const done = (async () => {
+          const ack = onCode("654321");
+          vps.state.onLine(JSON.stringify({ event: "claim", code: "654321", label: "iPhone" }));
+          await ack;
+          return { hostEndpointId: endpointId, addrs: [], name: "vps-nightly" };
+        })();
+        return { done, cancel() {} };
+      },
+    };
+    const started = runSetup(request({ label: "VPS Nightly" }), dependency, (event) => {
+      events.push(event);
+      if (event.kind === "trust") started.decideTrust(true);
+    });
+    await started.done;
+
+    assert.equal(events.find((e) => e.kind === "failed"), undefined, JSON.stringify(events));
+    assert.ok(events.some((e) => e.kind === "trust"), "fresh Nightly data dir must prompt for trust even when Stable is trusted");
+    assert.equal(dialedLink, "apexdeck-nightly://pair?p=nightly-token");
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].paired.hostEndpointId, NIGHTLY_ENDPOINT);
+    assert.equal(saved[0].req.channel, "nightly");
+
+    // Verify Nightly feed, immutable download URL, unit, trust, and pair commands ran.
+    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update.json")));
+    assert.ok(vps.ran.every((cmd) => !cmd.includes("apex-deck-update.json")));
+    assert.ok(vps.ran.some((cmd) => cmd.includes(`/download/${NIGHTLY_TAG}/apex-daemon-nightly-linux-x86_64`)));
+    assert.ok(vps.ran.some((cmd) => cmd.includes("/usr/local/bin/apex-daemon-nightly")));
+    assert.ok(vps.ran.some((cmd) => cmd.includes("apex-daemon-nightly@.service")));
+    assert.deepEqual(vps.opened.map((cmd) => cmd.trim().split("\n").at(-1)), ["exec apex-daemon-nightly pair --json"]);
+
+    // Verify Stable state on the two-channel VPS was completely untouched.
+    assert.equal(vps.state.nightly.installs, 1);
+    assert.equal(vps.state.nightly.serviceActive, true);
+    assert.equal(vps.state.nightly.remoteOnCalls, 1);
+    assert.equal(vps.state.nightly.trustHostCalls, 1);
+    assert.equal(vps.state.nightly.pairCalls, 1);
+    assert.equal(vps.state.stable.installs, 0);
+    assert.equal(vps.state.stable.restarts, 0);
+    assert.equal(vps.state.stable.remoteOnCalls, 0);
+    assert.equal(vps.state.stable.trustHostCalls, 0);
+    assert.equal(vps.state.stable.pairCalls, 0);
+  } finally {
+    if (prevCap === undefined) delete globalThis.Capacitor;
+    else globalThis.Capacitor = prevCap;
+  }
+});
+
+test("Nightly same-semver update on a two-channel VPS switches only Nightly while Stable stays untouched, and Stable stays isolated from Nightly", async () => {
+  const vps = twoChannelVps({
+    nightly: {
+      bin: "/usr/local/bin/apex-daemon-nightly",
+      version: "apex-daemon 0.9.19 (000000000000)",
+      sha256: "0".repeat(64),
+      serviceActive: true,
+      hasDataFolder: true,
+      trusted: true,
+    },
+  });
+  const savedNightly = [];
+  const makeDeps = (channel, out) => ({
+    connect: async () => vps.session,
+    channel,
+    knownKey: () => null,
+    rememberKey: () => {},
+    keep: async () => {},
+    save: (paired, req) => out.push({ paired, req }),
+    pair(link, onCode) {
+      const endpointId = link.startsWith("apexdeck-nightly://") ? NIGHTLY_ENDPOINT : STABLE_ENDPOINT;
+      const done = (async () => {
+        const ack = onCode("111222");
+        vps.state.onLine(JSON.stringify({ event: "claim", code: "111222" }));
+        await ack;
+        return { hostEndpointId: endpointId, addrs: [], name: "vps" };
+      })();
+      return { done, cancel() {} };
+    },
+  });
+
+  const nightlyEvents = [];
+  const runNightly = runSetup(request(), makeDeps("nightly", savedNightly), (e) => nightlyEvents.push(e));
+  await runNightly.done;
+  assert.equal(nightlyEvents.find((e) => e.kind === "failed"), undefined);
+  assert.equal(vps.state.nightly.installs, 1, "older same-semver Nightly commit should update");
+  assert.equal(vps.state.nightly.restarts, 1, "only Nightly service should switch");
+  assert.ok(vps.ran.some((cmd) => cmd.includes("--unit=apex-deck-nightly-switch")));
+  assert.equal(vps.state.stable.installs, 0);
+  assert.equal(vps.state.stable.restarts, 0);
+  assert.equal(savedNightly[0].paired.hostEndpointId, NIGHTLY_ENDPOINT);
+
+  // Now run Stable against the same two-channel VPS; it must pair with Stable and never restart or reinstall Nightly.
+  const savedStable = [];
+  const stableEvents = [];
+  const runStable = runSetup(request(), makeDeps("stable", savedStable), (e) => stableEvents.push(e));
+  await runStable.done;
+  assert.equal(stableEvents.find((e) => e.kind === "failed"), undefined);
+  assert.equal(savedStable[0].paired.hostEndpointId, STABLE_ENDPOINT);
+  assert.equal(savedStable[0].req.channel, "stable");
+  assert.equal(vps.state.stable.pairCalls, 1);
+  assert.equal(vps.state.nightly.installs, 1, "Stable run must not reinstall Nightly");
+  assert.equal(vps.state.nightly.restarts, 1, "Stable run must not restart Nightly");
+});
+
+test("readFeed rejects cross-channel and malformed Nightly feeds", () => {
+  assert.equal(readFeed(NIGHTLY_FEED, "nightly").tag, NIGHTLY_TAG);
+  assert.throws(() => readFeed(FEED, "nightly"), /not nightly/);
+  assert.throws(() => readFeed(NIGHTLY_FEED, "stable"), /not stable/);
+  assert.throws(() => readFeed(JSON.stringify({ ...JSON.parse(NIGHTLY_FEED), buildNumber: 0 }), "nightly"), /build number/);
+  assert.throws(() => readFeed(JSON.stringify({ ...JSON.parse(NIGHTLY_FEED), tag: "v0.9.19" }), "nightly"), /immutable tag/);
+  assert.throws(() => readFeed(JSON.stringify({ ...JSON.parse(NIGHTLY_FEED), tag: "nightly-20261124-0000000" }), "nightly"), /immutable tag/);
+});
+
+test("Nightly SSH helper scripts isolate user units, plain-process detection, and pairing commands", () => {
+  assert.match(pairCommand("nightly"), /exec apex-daemon-nightly pair --json$/);
+  assert.match(startUser("/home/demo/.local/bin/apex-daemon-nightly", "nightly"), /apex-daemon-nightly\.service/);
+  assert.match(stopUserService("nightly"), /apex-daemon-nightly\.service/);
+  assert.match(startPlain("/home/demo/.local/bin/apex-daemon-nightly", "nightly"), /pgrep -u "\$\(id -u\)" -f '\(\^\|\/\)apex-daemon-nightly serve/);
+  assert.match(findService("nightly"), /pgrep -u "\$\(id -u\)" -f '\(\^\|\/\)apex-daemon-nightly serve/);
+  assert.equal(channelFromAppInfo({ bundleId: "dev.apexdeck.phone.nightly" }), "nightly");
+  assert.equal(channelFromAppInfo({ bundleId: "dev.apexdeck.phone", channel: "stable" }), "stable");
+  assert.equal(channelFromAppInfo(null), "stable");
+
+  // Saved machine setup preserves channel for later SSH repair.
+  const machines = loadMachines(saveMachines([{
+    id: "h-222222222222",
+    name: "VPS Nightly",
+    kind: "server",
+    transport: "iroh",
+    hostEndpointId: NIGHTLY_ENDPOINT,
+    addrs: [],
+    pairedAt: 100,
+    setup: { host: "203.0.113.1", port: 22, user: "demo", kept: true, channel: "nightly" },
+  }]));
+  assert.equal(machines.length, 1);
+  assert.equal(machines[0].setup?.channel, "nightly");
 });
