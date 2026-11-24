@@ -112,13 +112,15 @@ export function parseLinuxFeed(value) {
 // failure or cancellation never holds a healthy Linux commit out of Nightly.
 const OTHER_PLATFORM_JOB = /windows|macos/i;
 
-/** True when every platform-neutral and Linux job finished green (skipped counts) and at least one succeeded. */
+/** True when every platform-neutral and Linux job finished green (skipped counts) and Linux tests and builds actually ran and passed. */
 export function linuxJobsGreen(jobs) {
   if (!Array.isArray(jobs)) return false;
   const linux = jobs.filter((job) => job && typeof job.name === 'string' && !OTHER_PLATFORM_JOB.test(job.name));
-  return linux.length > 0 &&
-    linux.every((job) => job.status === 'completed' && (job.conclusion === 'success' || job.conclusion === 'skipped')) &&
-    linux.some((job) => job.conclusion === 'success');
+  const passed = (prefix) => linux.some((job) => job.name.startsWith(prefix) && job.conclusion === 'success');
+  // Skipped shared jobs are fine, but this path is only used when the run as a
+  // whole did not pass, so it needs real Linux test and build evidence.
+  return linux.every((job) => job.status === 'completed' && (job.conclusion === 'success' || job.conclusion === 'skipped')) &&
+    passed('test (ubuntu') && passed('build (ubuntu');
 }
 
 function candidateRuns(runs, targetSha) {
@@ -288,7 +290,7 @@ export function verifyFiles(expected, dir) {
 function failure(command, args, result) {
   return `${command} ${args.join(' ')} failed (${result.status}): ${(result.stderr || result.stdout || '').trim()}`;
 }
-const notFound = (result) => /not found|HTTP 404|release not found/i.test(`${result.stderr ?? ''}${result.stdout ?? ''}`);
+const notFound = (result) => /release not found|HTTP 404/i.test(`${result.stderr ?? ''}${result.stdout ?? ''}`);
 
 function defaultRunner(command, args, { allowFailure = false } = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -364,6 +366,23 @@ export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFA
   // new build number inside, so it must wait for another day or commit.
   if (published?.assetTag === feed.assetTag) {
     return result('immutable-tag', { errors: [`The Linux feed already points at ${feed.assetTag}; refusing to overwrite it. Rebuild on a later commit or day.`] });
+  }
+  // A published Linux release from an earlier attempt may be replaced only if
+  // the feed never advertised it: its pinned feed copy must carry a build
+  // number the live feed has not reached. A missing copy means the upload never
+  // finished, so the feed cannot have moved to it.
+  if (release && !release.isDraft && published && (release.assets ?? []).some((asset) => asset?.name === LINUX_FEED_NAME)) {
+    const check = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-linux-nightly-pinned-'));
+    let pinned;
+    try {
+      runner('gh', ['release', 'download', feed.assetTag, '--repo', repo, '--dir', check, '--pattern', LINUX_FEED_NAME, '--clobber']);
+      pinned = parseLinuxFeed(JSON.parse(fs.readFileSync(path.join(check, LINUX_FEED_NAME), 'utf8')));
+    } finally {
+      fs.rmSync(check, { recursive: true, force: true });
+    }
+    if (pinned.buildNumber <= published.buildNumber) {
+      return result('immutable-tag', { errors: [`${feed.assetTag} holds Linux build ${pinned.buildNumber}, which the Linux feed (build ${published.buildNumber}) may have advertised; refusing to overwrite it.`] });
+    }
   }
   if (!release) {
     const create = step(['release', 'create', feed.assetTag, '--repo', repo, '--target', feed.commit, '--draft', '--prerelease',

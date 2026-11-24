@@ -169,7 +169,8 @@ test('Linux eligibility ignores macOS and Windows jobs in daemon.yml', () => {
   assert.equal(linuxJobsGreen([...linuxGreen, job('test (macos-latest, daemon)', 'cancelled'), job('test-windows-app (2/4)', 'failure')]), true);
   assert.equal(linuxJobsGreen([...linuxGreen.slice(1), job('changes', 'failure')]), false, 'a shared job still gates Linux');
   assert.equal(linuxJobsGreen([...linuxGreen, job('test (ubuntu-22.04, updater)', 'cancelled')]), false);
-  assert.equal(linuxJobsGreen([job('changes'), job('test (ubuntu-22.04, daemon)', 'skipped')]), true, 'skipped Rust suites are fine when Rust did not change');
+  assert.equal(linuxJobsGreen([job('changes'), job('protocol-types', 'skipped'), ...linuxGreen.slice(2)]), true, 'a skipped shared job is fine');
+  assert.equal(linuxJobsGreen([job('changes'), job('test (ubuntu-22.04, daemon)', 'skipped'), job('build (ubuntu-22.04, x86_64)', 'skipped')]), false, 'skipped Linux suites are no evidence when the run did not pass');
   assert.equal(linuxJobsGreen([job('test (macos-latest, daemon)')]), false, 'a run with no Linux jobs is not Linux evidence');
   assert.equal(linuxJobsGreen(undefined), false);
 
@@ -250,6 +251,26 @@ test('a retry replaces Linux files the feed never pointed at, and refuses files 
   assert.equal(retry.published, true, retry.errors.join('; '));
   assert.match(gh.calls.find((call) => call.startsWith(`release upload ${ASSET}`)), /--clobber/);
   assert.deepEqual(gh.store.nightly.assets.map((asset) => asset.name), [LINUX_FEED_NAME]);
+
+  // A published Linux release the feed may already have advertised is never replaced, even after the feed moved on.
+  const advertised = fakeGitHub();
+  assert.equal(publishLinuxNightly({ assetsDir: out, runner: advertised.runner }).published, true);
+  const laterFeed = { ...feed, buildNumber: 2, commit: SHA_OLD, tag: `nightly-${DATE}-${SHA_OLD.slice(0, 7)}`, assetTag: `nightly-linux-${DATE}-${SHA_OLD.slice(0, 7)}` };
+  laterFeed.appImages = laterFeed.appImages.map((entry) => ({ ...entry, name: appImageName(laterFeed.tag, entry.arch) }));
+  advertised.calls.length = 0;
+  const stale = publishLinuxNightly({ assetsDir: assembled({ buildNumber: 3 }).out, currentFeed: laterFeed, force: true, runner: advertised.runner });
+  assert.equal(stale.stage, 'immutable-tag');
+  assert.match(stale.errors[0], /may have advertised/);
+  assert.ok(!advertised.calls.some((call) => call.includes('release upload')));
+
+  // With a live feed at build 2, an unadvertised earlier attempt at build 3 is still replaceable.
+  const pending = fakeGitHub();
+  const attempt = assembled({ buildNumber: 3 });
+  assert.equal(publishLinuxNightly({ assetsDir: attempt.out, currentFeed: laterFeed, runner: pending.runner }).published, true);
+  delete pending.store.nightly;
+  pending.files[`${ASSET}/${name}`] = Buffer.from('a failed attempt');
+  const resumed = publishLinuxNightly({ assetsDir: attempt.out, currentFeed: laterFeed, runner: pending.runner });
+  assert.equal(resumed.published, true, resumed.errors.join('; '));
 
   // Once the live Linux feed points at this release, a forced same-day rebuild is refused before anything changes.
   const forced = assembled({ buildNumber: 2 });
