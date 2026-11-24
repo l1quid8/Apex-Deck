@@ -7,19 +7,20 @@
 //     [--dry-run] [--github-output PATH]
 //
 //   node scripts/nightly-release.mjs publish --assets-dir DIR --manifest PATH
-//     [--extra-dir DIR] [--repo OWNER/REPO] [--current-feed PATH]
+//     [--dmg-dir DIR | --extra-dir DIR] [--repo OWNER/REPO] [--current-feed PATH]
 //     [--verify-dir DIR] [--force] [--dry-run]
 //
 // Safety invariants:
 // 1. Only a green `daemon.yml` run on `main` can be selected for Nightly.
 // 2. If that green SHA already matches the published rolling `nightly` feed,
 //    `plan` skips building and publishing (unless `--force`).
-// 3. `publish` verifies every listed package and daemon locally, uploads to an
-//    immutable draft `--prerelease` tag (`nightly-YYYYMMDD-<sha7>`), downloads
-//    every asset back, and re-verifies exact byte size + SHA-256 (plus optional
-//    package verification) BEFORE publishing the immutable release or advancing
-//    the rolling `nightly` prerelease feed. Any failure holds the feed and
-//    exits nonzero.
+// 3. `publish` verifies every listed package, daemon, and required macOS DMG
+//    locally, uploads to an immutable draft `--prerelease` tag
+//    (`nightly-YYYYMMDD-<sha7>`), downloads every uploaded asset back, and
+//    re-verifies exact byte size + SHA-256 (plus optional package verification)
+//    BEFORE publishing the immutable release or advancing the rolling `nightly`
+//    prerelease feed. Any missing or corrupted asset holds the feed and exits
+//    nonzero.
 // 4. Nightly releases are ALWAYS `--prerelease` and NEVER `--latest`.
 
 import crypto from 'node:crypto';
@@ -218,24 +219,132 @@ export function sha256File(filePath) {
   return hash.digest('hex');
 }
 
-/** Verify every package and daemon listed in `manifest` exists in `dir` with matching size & SHA-256. */
-export function verifyAssetFiles(manifest, dir, { verifyPackage = null } = {}) {
+/**
+ * Derive the required macOS Nightly DMG filename(s) for `manifest`.
+ *
+ * Each Nightly `.pkg` (`Apex-Deck-Nightly_<YYYYMMDD>_<sha7>_<arch>.pkg`, where
+ * `<arch>` is `arm64`, `x64`, or `universal`) must ship alongside its matching
+ * `.dmg` before the immutable release or rolling feed can advance.
+ */
+export function expectedDmgNames(manifest) {
+  const parsed = parseNightlyFeed(manifest);
+  const match = /^nightly-([0-9]{8})-([a-f0-9]{7})$/.exec(parsed.tag);
+  const [, date, sha7] = match;
+  const pkgPrefix = `Apex-Deck-Nightly_${date}_${sha7}_`;
+  const names = [];
+  for (const entry of parsed.packages) {
+    let archTag = entry.arch;
+    if (entry.name.startsWith(pkgPrefix) && entry.name.endsWith('.pkg')) {
+      const suffix = entry.name.slice(pkgPrefix.length, -'.pkg'.length);
+      if (suffix === 'arm64' || suffix === 'x64' || suffix === 'universal') {
+        archTag = suffix;
+      }
+    }
+    const dmgName = `${pkgPrefix}${archTag}.dmg`;
+    if (!names.includes(dmgName)) names.push(dmgName);
+  }
+  return names;
+}
+
+function lstatOrNull(filePath) {
+  try {
+    return fs.lstatSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Locate and hash every required Nightly DMG for `manifest`.
+ *
+ * Fails closed when any expected DMG is missing, non-regular, empty, or
+ * disagrees with a sibling `.sha256` sidecar when one is present.
+ */
+export function resolveRequiredDmgs(manifest, { assetsDir, dmgDir = null, extraAssets = [] } = {}) {
+  const requiredNames = expectedDmgNames(manifest);
+  const explicitByName = new Map();
+  const errors = [];
+  for (const candidate of extraAssets) {
+    if (!candidate) continue;
+    const resolved = path.resolve(candidate);
+    const base = path.basename(resolved);
+    if (explicitByName.has(base) && explicitByName.get(base) !== resolved) {
+      errors.push(`Ambiguous extra asset for ${base}`);
+      continue;
+    }
+    explicitByName.set(base, resolved);
+  }
+
+  const dmgs = [];
+  for (const name of requiredNames) {
+    const candidates = [];
+    if (explicitByName.has(name)) candidates.push(explicitByName.get(name));
+    if (dmgDir) candidates.push(path.join(path.resolve(dmgDir), name));
+    if (assetsDir) candidates.push(path.join(path.resolve(assetsDir), name));
+
+    let filePath = null;
+    let stat = null;
+    for (const candidate of candidates) {
+      const found = lstatOrNull(candidate);
+      if (found) {
+        filePath = candidate;
+        stat = found;
+        break;
+      }
+    }
+    if (!filePath || !stat) {
+      errors.push(`Missing required dmg asset: ${name}`);
+      continue;
+    }
+    if (!stat.isFile()) {
+      errors.push(`Asset is not a regular file: ${name}`);
+      continue;
+    }
+    if (stat.size <= 0 || stat.size > PACKAGE_LIMIT) {
+      errors.push(`Invalid size for dmg asset ${name}: ${stat.size}`);
+      continue;
+    }
+    const actualSha = sha256File(filePath);
+    const sidecarCandidate = explicitByName.get(`${name}.sha256`) ?? `${filePath}.sha256`;
+    const sidecarStat = lstatOrNull(sidecarCandidate);
+    if (sidecarStat) {
+      if (!sidecarStat.isFile()) {
+        errors.push(`DMG checksum sidecar is not a regular file: ${name}.sha256`);
+        continue;
+      }
+      const expectedHash = fs.readFileSync(sidecarCandidate, 'utf8').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+      if (!SHA256_RE.test(expectedHash) || expectedHash !== actualSha) {
+        errors.push(`DMG checksum sidecar mismatch for ${name}: expected ${expectedHash || 'invalid'}, got ${actualSha}`);
+        continue;
+      }
+    }
+    dmgs.push({
+      name,
+      filePath,
+      size: stat.size,
+      sha256: actualSha,
+    });
+  }
+  return { ok: errors.length === 0, dmgs, errors };
+}
+
+/** Verify every package, daemon, and required DMG listed exists in `dir` with matching size & SHA-256. */
+export function verifyAssetFiles(manifest, dir, { dmgs = [], verifyPackage = null } = {}) {
   const checked = [];
   const errors = [];
   const seen = new Set();
   const entries = [
     ...manifest.packages.map((entry) => ({ kind: 'package', entry })),
     ...manifest.daemons.map((entry) => ({ kind: 'daemon', entry })),
+    ...dmgs.map((entry) => ({ kind: 'dmg', entry })),
   ];
   for (const { kind, entry } of entries) {
     const key = `${kind}:${entry.name}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const filePath = path.join(dir, entry.name);
-    let stat;
-    try {
-      stat = fs.lstatSync(filePath);
-    } catch {
+    const filePath = entry.verifyPath ?? path.join(dir, entry.name);
+    const stat = lstatOrNull(filePath);
+    if (!stat) {
       errors.push(`Missing ${kind} asset: ${entry.name}`);
       continue;
     }
@@ -302,21 +411,22 @@ function defaultRunner(command, args, { allowFailure = false } = {}) {
   return result;
 }
 
-function uniqueAssetPaths(manifest, assetsDir, extraAssets = []) {
+function uniqueAssetPaths(manifest, assetsDir, requiredDmgs = []) {
   const names = new Set([
     ...manifest.packages.map((entry) => entry.name),
     ...manifest.daemons.map((entry) => entry.name),
   ]);
   const files = [...names].map((name) => path.join(assetsDir, name));
-  for (const extra of extraAssets) {
-    if (extra && !files.includes(extra)) files.push(extra);
+  for (const dmg of requiredDmgs) {
+    if (dmg?.filePath && !files.includes(dmg.filePath)) files.push(dmg.filePath);
   }
   return files;
 }
 
 /**
  * Publish an immutable Nightly prerelease and advance the rolling `nightly`
- * feed ONLY after local and post-upload asset verification both pass.
+ * feed ONLY after local and post-upload asset verification (packages, Linux
+ * daemons, and required macOS DMGs) both pass.
  *
  * When any check fails, the rolling `nightly` feed is held untouched and the
  * immutable tag remains unpublished.
@@ -324,6 +434,7 @@ function uniqueAssetPaths(manifest, assetsDir, extraAssets = []) {
 export function publishNightlyRelease({
   manifestPath,
   assetsDir,
+  dmgDir = null,
   extraAssets = [],
   currentFeed = null,
   repo = DEFAULT_REPO,
@@ -367,15 +478,17 @@ export function publishNightlyRelease({
     }
   }
 
-  // Gate 1: Verify every local asset matches the manifest before touching GitHub.
+  // Gate 1: Verify every local package, daemon, and required macOS DMG before touching GitHub.
   const localCheck = verifyAssetFiles(manifest, assetsDir, { verifyPackage });
-  if (!localCheck.ok) {
+  const localDmgs = resolveRequiredDmgs(manifest, { assetsDir, dmgDir, extraAssets });
+  const localErrors = [...localCheck.errors, ...localDmgs.errors];
+  if (localErrors.length > 0) {
     return {
       published: false,
       feedAdvanced: false,
       skipped: false,
       stage: 'local-verify',
-      errors: localCheck.errors,
+      errors: localErrors,
       tag: manifest.tag,
       commit: manifest.commit,
       buildNumber: manifest.buildNumber,
@@ -383,7 +496,7 @@ export function publishNightlyRelease({
     };
   }
 
-  const uploadFiles = uniqueAssetPaths(manifest, assetsDir, extraAssets);
+  const uploadFiles = uniqueAssetPaths(manifest, assetsDir, localDmgs.dmgs);
   const title = `Apex Deck Nightly ${manifest.version} (build ${manifest.buildNumber}, ${manifest.tag})`;
   const notes = manifest.notes || `Nightly build ${manifest.buildNumber} from ${manifest.commit}.`;
 
@@ -441,19 +554,24 @@ export function publishNightlyRelease({
   }
   execStep(['release', 'upload', manifest.tag, '--repo', repo, '--clobber', ...uploadFiles]);
 
-  // Gate 2: Download every listed asset back (or check verifyDir in dry-run) and verify
-  // exact size + SHA-256 BEFORE publishing the tag or advancing the rolling `nightly` feed.
+  // Gate 2: Download every uploaded asset (packages, Linux daemons, and required DMGs)
+  // back (or check verifyDir in dry-run) and verify exact size + SHA-256 BEFORE
+  // publishing the immutable tag or advancing the rolling `nightly` feed.
   const scratch = dryRun ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'apex-nightly-verify-'));
   try {
     const checkDir = dryRun ? (verifyDir ?? assetsDir) : scratch;
     const listedNames = [...new Set([
       ...manifest.packages.map((entry) => entry.name),
       ...manifest.daemons.map((entry) => entry.name),
+      ...localDmgs.dmgs.map((entry) => entry.name),
     ])];
     for (const name of listedNames) {
       execStep(['release', 'download', manifest.tag, '--repo', repo, '--dir', checkDir, '--pattern', name]);
     }
-    const downloadCheck = verifyAssetFiles(manifest, checkDir, { verifyPackage });
+    const verifyDmgs = dryRun && !verifyDir
+      ? localDmgs.dmgs.map(({ name, size, sha256, filePath }) => ({ name, size, sha256, verifyPath: filePath }))
+      : localDmgs.dmgs.map(({ name, size, sha256 }) => ({ name, size, sha256 }));
+    const downloadCheck = verifyAssetFiles(manifest, checkDir, { dmgs: verifyDmgs, verifyPackage });
     if (!downloadCheck.ok) {
       return {
         published: false,
@@ -593,6 +711,7 @@ function writeGitHubOutputs(outputPath, plan) {
     `should_build=${plan.shouldBuild ? 'true' : 'false'}`,
     `reason=${plan.reason}`,
     `commit=${plan.commit ?? ''}`,
+    `sha7=${plan.commit ? plan.commit.slice(0, 7) : ''}`,
     `date=${plan.date ?? ''}`,
     `tag=${plan.tag ?? ''}`,
     `build_number=${plan.buildNumber ?? ''}`,
@@ -600,14 +719,6 @@ function writeGitHubOutputs(outputPath, plan) {
     `last_build_number=${plan.lastBuildNumber ?? 0}`,
   ];
   fs.appendFileSync(outputPath, `${lines.join('\n')}\n`);
-}
-
-function collectExtraAssets(extraDir) {
-  if (!extraDir || !fs.existsSync(extraDir)) return [];
-  return fs.readdirSync(extraDir)
-    .filter((name) => /^Apex-Deck-Nightly_.+\.dmg(\.sha256)?$/i.test(name))
-    .sort()
-    .map((name) => path.join(extraDir, name));
 }
 
 function main(argv) {
@@ -642,7 +753,8 @@ function main(argv) {
     const repo = flagValue(rest, '--repo') || DEFAULT_REPO;
     const assetsDir = path.resolve(flagValue(rest, '--assets-dir'));
     const manifestPath = path.resolve(flagValue(rest, '--manifest') || path.join(assetsDir, NIGHTLY_MANIFEST_NAME));
-    const extraDir = flagValue(rest, '--extra-dir');
+    const dmgDirFlag = flagValue(rest, '--dmg-dir') || flagValue(rest, '--extra-dir');
+    const dmgDir = dmgDirFlag ? path.resolve(dmgDirFlag) : null;
     const currentFeedFile = flagValue(rest, '--current-feed');
     const verifyDir = flagValue(rest, '--verify-dir') ? path.resolve(flagValue(rest, '--verify-dir')) : null;
     const dryRun = hasFlag(rest, '--dry-run');
@@ -653,11 +765,10 @@ function main(argv) {
     } else if (!dryRun) {
       currentFeed = fetchCurrentFeed({ repo });
     }
-    const extraAssets = collectExtraAssets(extraDir ? path.resolve(extraDir) : '');
     const result = publishNightlyRelease({
       manifestPath,
       assetsDir,
-      extraAssets,
+      dmgDir,
       currentFeed,
       repo,
       dryRun,

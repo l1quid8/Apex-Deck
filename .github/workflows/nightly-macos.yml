@@ -47,6 +47,7 @@ jobs:
       should_build: ${{ steps.decide.outputs.should_build }}
       reason: ${{ steps.decide.outputs.reason }}
       commit: ${{ steps.decide.outputs.commit }}
+      sha7: ${{ steps.decide.outputs.sha7 }}
       date: ${{ steps.decide.outputs.date }}
       tag: ${{ steps.decide.outputs.tag }}
       build_number: ${{ steps.decide.outputs.build_number }}
@@ -188,7 +189,7 @@ jobs:
           name: nightly-macos-assets
           path: |
             release/${{ needs.plan.outputs.tag }}-assets/
-            release/Apex-Deck-Nightly_*.dmg
+            release/Apex-Deck-Nightly_${{ needs.plan.outputs.date }}_${{ needs.plan.outputs.sha7 }}_*.dmg
           if-no-files-found: error
           retention-days: 14
 
