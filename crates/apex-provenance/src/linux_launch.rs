@@ -264,6 +264,8 @@ mod tests {
             });
         }
         let manifest = LinuxReleaseManifest {
+            channel: crate::linux_install::ReleaseChannel::Stable,
+            build_number: None,
             version: "test".into(),
             commit: "a".repeat(40),
             arch: "arm64".into(),

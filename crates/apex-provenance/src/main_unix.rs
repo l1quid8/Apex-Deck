@@ -211,7 +211,7 @@ fn run() -> Result<(), String> {
         return Err("Broker scheduling migration queued; waiting for launchd to reload the Interactive service".into());
     }
     #[cfg(target_os="linux")]
-    linux_install::protected_path(Path::new("/run/apex-deck"))?;
+    linux_install::protected_path(Path::new(channel::LINUX_RUNTIME))?;
     let root = Path::new(ROOT);
     // The installer creates the directory; no auto-migration of user files.
     #[cfg(not(target_os="linux"))]

@@ -3180,6 +3180,8 @@ export type Welcome = {
   /** The exact build, so a UI can tell two builds of the same version apart. */
   build_commit: string;
   build_dirty: boolean;
+  /** Full Nightly release identity for Linux desktop readiness. */
+  build_identity?: unknown;
   /** What this daemon can do; clients gate features on these names. */
   capabilities: Array<string>;
   host_id: string;

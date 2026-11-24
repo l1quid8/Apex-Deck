@@ -1,6 +1,9 @@
 //! Root-controlled service configuration. A plan is reviewable configuration,
 //! not service installation or process attestation. Activation below requires
 //! a verified release, supervised exec and an authenticated health handshake.
+#[cfg(target_os = "linux")]
+use crate::channel::LINUX_TREE;
+use crate::channel::{LINUX_DAEMON_UNIT, LINUX_RUNTIME, LINUX_SERVICE, PRODUCT};
 use crate::linux_activation::Descriptor;
 use crate::linux_registration::LinuxRegistration;
 use std::path::{Path, PathBuf};
@@ -10,6 +13,7 @@ use std::path::{Path, PathBuf};
 pub fn validate_health(
     value: &serde_json::Value,
     descriptor: &Descriptor,
+    release: Option<&serde_json::Value>,
     nonce: &str,
     expected_uids: &[u32],
     ready: bool,
@@ -25,6 +29,7 @@ pub fn validate_health(
         || value["manifestSha256"] != descriptor.manifest_sha256
         || value["protocol"] != descriptor.protocol
         || value["tree"].as_str() != descriptor.tree.to_str()
+        || value.get("release") != release
         || value["ready"] != ready
         || instance.len() != 32
         || !instance.bytes().all(|b| b.is_ascii_hexdigit())
@@ -90,6 +95,10 @@ fn quoted(value: &str) -> Result<String, String> {
     Ok(quoted_literal(value)?.replace('$', "$$"))
 }
 
+fn daemon_instance(uid: u32) -> String {
+    LINUX_DAEMON_UNIT.replacen("@.", &format!("@{uid}."), 1)
+}
+
 /// Generate fixed system units only. No user unit, shell, remote listener,
 /// environment inheritance or linger operation is included in this plan.
 pub fn plan(
@@ -98,12 +107,16 @@ pub fn plan(
 ) -> Result<ServicePlan, String> {
     descriptor.validate()?;
     let broker = descriptor.tree.join("resources/bin/apex-provenance");
+    let runtime = Path::new(LINUX_RUNTIME)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Invalid runtime directory")?;
     let mut units = vec![UnitFile {
-        path: "/etc/systemd/system/apex-deck-provenance.service".into(),
-        contents: format!("[Unit]\nDescription=Apex Deck protected authority\nAfter=local-fs.target\n\n[Service]\nType=notify\nNotifyAccess=main\nTimeoutStartSec=180\nUser=root\nGroup=root\nUMask=0077\nRuntimeDirectory=apex-deck\nRuntimeDirectoryMode=0755\nExecStart=/usr/bin/env -i PATH=/usr/bin:/bin NOTIFY_SOCKET=${{NOTIFY_SOCKET}} {} service-linux\nRestart=on-failure\nRestartSec=2\nKillMode=control-group\nNoNewPrivileges=yes\n\n[Install]\nWantedBy=multi-user.target\n", quoted(broker.to_str().ok_or("Invalid broker path")?)?),
+        path: Path::new("/etc/systemd/system").join(LINUX_SERVICE),
+        contents: format!("[Unit]\nDescription={PRODUCT} protected authority\nAfter=local-fs.target\n\n[Service]\nType=notify\nNotifyAccess=main\nTimeoutStartSec=180\nUser=root\nGroup=root\nUMask=0077\nRuntimeDirectory={runtime}\nRuntimeDirectoryMode=0755\nExecStart=/usr/bin/env -i PATH=/usr/bin:/bin NOTIFY_SOCKET=${{NOTIFY_SOCKET}} {} service-linux\nRestart=on-failure\nRestartSec=2\nKillMode=control-group\nNoNewPrivileges=yes\n\n[Install]\nWantedBy=multi-user.target\n", quoted(broker.to_str().ok_or("Invalid broker path")?)?),
     }, UnitFile {
-        path: "/etc/systemd/system/apex-deck-daemon@.service".into(),
-        contents: "[Unit]\nDescription=Apex Deck desktop engine for UID %i\nRequires=apex-deck-provenance.service\nPartOf=apex-deck-provenance.service\nAfter=apex-deck-provenance.service user@%i.service\nBindsTo=user@%i.service\n\n[Service]\nType=simple\nUser=%i\nUMask=0077\nRestart=on-failure\nRestartSec=2\nKillMode=control-group\nNoNewPrivileges=yes\n".into(),
+        path: Path::new("/etc/systemd/system").join(LINUX_DAEMON_UNIT),
+        contents: format!("[Unit]\nDescription={PRODUCT} desktop engine for UID %i\nRequires={LINUX_SERVICE}\nPartOf={LINUX_SERVICE}\nAfter={LINUX_SERVICE} user@%i.service\nBindsTo=user@%i.service\n\n[Service]\nType=simple\nUser=%i\nUMask=0077\nRestart=on-failure\nRestartSec=2\nKillMode=control-group\nNoNewPrivileges=yes\n"),
     }];
     let mut login_dependencies = Vec::new();
     let mut uids = std::collections::BTreeSet::new();
@@ -113,7 +126,7 @@ pub fn plan(
             return Err("Invalid or duplicate desktop UID".into());
         }
         registration.validate_scope(uid, registration.data_dir())?;
-        let name = format!("apex-deck-daemon@{uid}.service");
+        let name = daemon_instance(uid);
         units.push(UnitFile {
             path: format!("/etc/systemd/system/{name}.d/registration.conf").into(),
             contents: format!("[Service]\nGroup={}\nWorkingDirectory=/\nExecStart=/usr/bin/env -i PATH=/usr/bin:/bin {} {} wait-linux-daemon\nExecStopPost=/usr/bin/env -i PATH=/usr/bin:/bin {} stop-linux-daemon\n",
@@ -123,7 +136,7 @@ pub fn plan(
         });
         login_dependencies.push(LoginDependency {
             path: format!("/etc/systemd/system/user@{uid}.service.wants/{name}").into(),
-            target: "../apex-deck-daemon@.service".into(),
+            target: Path::new("..").join(LINUX_DAEMON_UNIT),
         });
     }
     Ok(ServicePlan {
@@ -426,8 +439,8 @@ pub fn initialize() -> Result<(), String> {
     directory(Path::new(crate::ROOT))?;
     let _store = crate::linux_activation::Store::initialize()?;
     crate::linux_registration::RegistrationStore::initialize()?.publish_scopes()?;
-    directory(Path::new("/run/apex-deck"))?;
-    directory(Path::new("/opt/apex-deck"))?;
+    directory(Path::new(LINUX_RUNTIME))?;
+    directory(Path::new(LINUX_TREE))?;
     Ok(())
 }
 
@@ -499,11 +512,11 @@ fn orchestration(
     let stop = || -> Result<(), String> {
         let mut errors = Vec::new();
         for r in &registrations {
-            if let Err(error) = stop_unit(&format!("apex-deck-daemon@{}.service", r.uid())) {
+            if let Err(error) = stop_unit(&daemon_instance(r.uid())) {
                 errors.push(error);
             }
         }
-        if let Err(error) = stop_unit("apex-deck-provenance.service") {
+        if let Err(error) = stop_unit(LINUX_SERVICE) {
             errors.push(error);
         }
         if errors.is_empty() {
@@ -557,25 +570,26 @@ fn orchestration(
         }
         drop(store);
         systemctl(&["daemon-reload"])?;
-        systemctl(&["enable", "apex-deck-provenance.service"])?;
-        systemctl(&["start", "apex-deck-provenance.service"])?;
+        systemctl(&["enable", LINUX_SERVICE])?;
+        systemctl(&["start", LINUX_SERVICE])?;
         let mut active = Vec::new();
         for registration in &registrations {
             if session_active(registration.uid())? {
                 active.push(registration.uid());
                 systemctl(&[
                     "start",
-                    &format!("apex-deck-daemon@{}.service", registration.uid()),
+                    &daemon_instance(registration.uid()),
                 ])?;
             }
         }
+        let release = candidate.manifest().nightly_identity();
         let health = |ready| -> Result<(), String> {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 let nonce = crate::io::challenge()?;
                 let reply = signed_request(serde_json::json!({"op":"health","nonce":nonce}));
                 let result = reply
-                    .and_then(|value| validate_health(&value, &descriptor, &nonce, &active, ready));
+                    .and_then(|value| validate_health(&value, &descriptor, release.as_ref(), &nonce, &active, ready));
                 match result {
                     Ok(()) => return Ok(()),
                     Err(error) if Instant::now() >= deadline => return Err(error),
@@ -597,7 +611,7 @@ fn orchestration(
             .map_err(|e| e.to_string())?;
         let nonce = crate::io::challenge()?;
         let final_health = signed_request(serde_json::json!({"op":"health","nonce":nonce}))?;
-        validate_health(&final_health, &descriptor, &nonce, &active, true)?;
+        validate_health(&final_health, &descriptor, release.as_ref(), &nonce, &active, true)?;
         if final_health["authorityReady"] != true {
             return Err("Service did not reopen authenticated admission".into());
         }
@@ -617,6 +631,7 @@ fn orchestration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::{LINUX_TREE, NIGHTLY};
     #[test]
     #[cfg(target_os="linux")]
     #[ignore="requires a disposable root Linux filesystem"]
@@ -647,18 +662,28 @@ mod tests {
     #[test]
     fn service_plan_uses_system_user_manager_and_fixed_clean_nonroot_daemon_template() {
         let descriptor = Descriptor {
-            tree: "/opt/apex-deck/test".into(),
+            tree: Path::new(LINUX_TREE).join("test"),
             manifest_sha256: "a".repeat(64),
             protocol: 1,
             epoch: 1,
         };
         let service = plan(&descriptor, &[]).unwrap();
         let broker = &service.units[0].contents;
-        assert!(broker.contains("ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin NOTIFY_SOCKET=${NOTIFY_SOCKET} \"/opt/apex-deck/test/resources/bin/apex-provenance\" service-linux"));
+        assert!(broker.contains(&format!("ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin NOTIFY_SOCKET=${{NOTIFY_SOCKET}} \"{LINUX_TREE}/test/resources/bin/apex-provenance\" service-linux")));
+        let (broker_name, runtime, daemon_name, instance) = if NIGHTLY {
+            ("apex-deck-nightly-provenance.service", "apex-deck-nightly", "apex-deck-nightly-daemon@.service", "apex-deck-nightly-daemon@1000.service")
+        } else {
+            ("apex-deck-provenance.service", "apex-deck", "apex-deck-daemon@.service", "apex-deck-daemon@1000.service")
+        };
+        assert_eq!(service.units[0].path, Path::new("/etc/systemd/system").join(broker_name));
+        assert_eq!(service.units[1].path, Path::new("/etc/systemd/system").join(daemon_name));
+        assert_eq!(daemon_instance(1000), instance);
+        assert!(broker.contains(&format!("RuntimeDirectory={runtime}\n")));
         let daemon = &service.units[1].contents;
         assert!(daemon.contains("User=%i"));
         assert!(daemon.contains("BindsTo=user@%i.service"));
-        assert!(daemon.contains("Requires=apex-deck-provenance.service"));
+        assert!(daemon.contains(&format!("Requires={broker_name}\n")));
+        assert!(daemon.contains(&format!("PartOf={broker_name}\n")));
         assert!(!daemon.contains("WantedBy=multi-user.target"));
         assert!(!broker.contains("--no-sandbox"));
         assert!(service.login_dependencies.is_empty());
@@ -666,12 +691,12 @@ mod tests {
     #[test]
     fn invalid_descriptor_cannot_generate_service_configuration() {
         let mut descriptor = Descriptor {
-            tree: "/opt/apex-deck/test".into(),
+            tree: Path::new(LINUX_TREE).join("test"),
             manifest_sha256: "a".repeat(64),
             protocol: 1,
             epoch: 1,
         };
-        descriptor.tree = "/opt/apex-deck/../bad".into();
+        descriptor.tree = Path::new(LINUX_TREE).join("../bad");
         assert!(plan(&descriptor, &[]).is_err());
     }
 }

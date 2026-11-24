@@ -2,14 +2,32 @@ name: linux-appimage
 
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Package the Stable or Nightly channel
+        type: choice
+        options: [stable, nightly]
+        default: stable
+      build_number:
+        description: Release owner's monotonic build number (required for Nightly)
+        type: string
   push:
     branches: [main, feat/linux-appimage]
+  pull_request:
+    paths:
+      - .github/workflows/linux-appimage.yml
+      - desktop/linuxService.mjs
+      - scripts/*linux*
+      - scripts/vps*
+      - packaging/systemd/**
+      - crates/apex-provenance/src/**/linux*
+      - crates/apex-daemon/src/maintenance.rs
 
 permissions:
   contents: read
 
 concurrency:
-  group: linux-appimage-${{ github.ref }}
+  group: linux-appimage-${{ github.ref }}-${{ inputs.channel || 'ci' }}
   cancel-in-progress: true
 
 jobs:
@@ -17,15 +35,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
+        channel: ${{ fromJSON(github.event_name == 'pull_request' && '["stable","nightly"]' || (inputs.channel == 'nightly' && '["nightly"]' || '["stable"]')) }}
+        target:
           - os: ubuntu-22.04
             arch: x64
           - os: ubuntu-22.04-arm
             arch: arm64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 55
+    env:
+      APEX_CHANNEL: ${{ matrix.channel }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -34,8 +57,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          key: ${{ matrix.channel }}
       - run: npm ci
       - run: node --test tests/package-linux.test.mjs
+      - run: python3 -m unittest discover -s tests -p 'test_vps_update*.py'
       - name: Test signed Linux payload validation (no privileged installation)
         run: |
           node --test tests/linux-protected-package.test.mjs
@@ -44,13 +69,16 @@ jobs:
           node scripts/test-linux-protected-package.mjs
       - name: Install Linux desktop libraries and virtual display
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2 libgbm1 xvfb xdotool
-      - name: Build the AppImage with the production Linux daemon
+      - name: Build the AppImage with the channel's Linux daemon
+        env:
+          APEX_BUILD_NUMBER: ${{ github.event_name == 'pull_request' && github.run_id || inputs.build_number }}
         run: npm run desktop:linux
       - name: Inspect the portable payload
         shell: bash
         run: |
           set -euo pipefail
           cd release
+          if [[ "$APEX_CHANNEL" == nightly ]]; then cd nightly; fi
           sha256sum --check *.AppImage.sha256
           chmod +x *.AppImage
           ./*.AppImage --appimage-extract >/dev/null
@@ -59,13 +87,22 @@ jobs:
           file squashfs-root/apex-deck squashfs-root/resources/bin/apex-daemon
           squashfs-root/resources/bin/apex-daemon --version
           test ! -e 'squashfs-root/resources/Unified Computer Use.app'
+          echo "APPIMAGE_ROOT=$PWD/squashfs-root" >>"$GITHUB_ENV"
+          if [[ "$APEX_CHANNEL" == nightly ]]; then
+            echo "EXPECTED_TITLE=Apex Deck Nightly" >>"$GITHUB_ENV"
+            echo "RUNTIME_CHANNEL=stable" >>"$GITHUB_ENV"
+          else
+            echo "EXPECTED_TITLE=Apex Deck" >>"$GITHUB_ENV"
+            echo "RUNTIME_CHANNEL=nightly" >>"$GITHUB_ENV"
+          fi
       - name: Open the packaged window on a virtual Linux display
         timeout-minutes: 2
         shell: bash
         run: |
           export APEX_DECK_DATA_DIR="$(mktemp -d /tmp/apex-image.XXXXXX)"
+          export APEX_CHANNEL="$RUNTIME_CHANNEL"
           timeout 80s xvfb-run -a bash -euo pipefail -c '
-            release/squashfs-root/AppRun >release/linux-startup.log 2>&1 &
+            "$APPIMAGE_ROOT/AppRun" >release/linux-startup.log 2>&1 &
             pid=$!
             trap "kill $pid 2>/dev/null || true" EXIT
             # A portable first launch explains the missing installed authority.
@@ -81,7 +118,7 @@ jobs:
             done
             for attempt in {1..30}; do
               kill -0 "$pid"
-              if xdotool search --onlyvisible --name "^Apex Deck$" >release/linux-window.txt; then
+              if xdotool search --onlyvisible --name "^${EXPECTED_TITLE}$" >release/linux-window.txt; then
                 sleep 5
                 kill -0 "$pid"
                 exit 0
@@ -94,17 +131,20 @@ jobs:
           '
       - uses: actions/upload-artifact@v4
         with:
-          name: Apex-Deck-AppImage-linux-${{ matrix.arch }}
+          name: Apex-Deck-AppImage-linux-${{ matrix.channel }}-${{ matrix.target.arch }}
           path: |
             release/*.AppImage
             release/*.AppImage.sha256
             release/*.AppImage.json
+            release/nightly/*.AppImage
+            release/nightly/*.AppImage.sha256
+            release/nightly/*.AppImage.json
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: linux-startup-evidence-${{ matrix.arch }}
+          name: linux-startup-evidence-${{ matrix.channel }}-${{ matrix.target.arch }}
           path: |
             release/linux-startup.log
             release/linux-window.txt
