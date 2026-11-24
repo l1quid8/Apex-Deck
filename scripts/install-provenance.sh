@@ -1,28 +1,59 @@
 #!/bin/bash
 # Explicit first installation only. Never run automatically from a worker or UI.
-# Usage: sudo /bin/bash scripts/install-provenance.sh '/path/Apex Deck.app' '/path/apex-provenance'
+# Usage: sudo /bin/bash scripts/install-provenance.sh [--channel stable|nightly] '/path/Apex Deck.app' '/path/apex-provenance'
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 unset NODE_OPTIONS ELECTRON_RUN_AS_NODE PYTHONPATH PYTHONHOME
 [[ $EUID == 0 ]] || { echo 'Run this installer explicitly as administrator.' >&2; exit 1; }
+
+channel='stable'
+if [[ "${1:-}" == '--channel' ]]; then
+  shift
+  channel="${1:-}"
+  shift || true
+fi
+case "$channel" in
+  stable)
+    product='Apex Deck'
+    app_id='dev.apexdeck.app'
+    cli_id='dev.apexdeck.cli'
+    root='/Library/Application Support/Apex Deck Provenance'
+    label='dev.apexdeck.provenance'
+    log_path='/var/log/apex-provenance.log'
+    ;;
+  nightly)
+    product='Apex Deck Nightly'
+    app_id='dev.apexdeck.app.nightly'
+    cli_id='dev.apexdeck.cli.nightly'
+    root='/Library/Application Support/Apex Deck Nightly Provenance'
+    label='dev.apexdeck.provenance.nightly'
+    log_path='/var/log/apex-provenance-nightly.log'
+    ;;
+  *)
+    echo "Invalid channel: $channel (expected stable or nightly)." >&2
+    exit 1
+    ;;
+esac
+
 [[ $# == 2 ]] || { echo 'Expected a signed packaged app and broker binary.' >&2; exit 1; }
-root='/Library/Application Support/Apex Deck Provenance'
 [[ ! -e "$root" && ! -L "$root" ]] || { echo 'Existing authority found. Refusing to overwrite keys, records or trust pins.' >&2; exit 1; }
 [[ -d "$1" && -f "$2" && ! -L "$2" ]] || exit 1
 # Copy before validation so a user cannot replace source resources after checking.
 # Failed installation is deliberately left for administrator inspection, not
 # recursively deleted or silently retried with a fresh signing key.
 /usr/bin/install -d -o root -g wheel -m 755 "$root/TrustedUI"
-/usr/bin/ditto "$1" "$root/TrustedUI/Apex Deck.app"
+/usr/bin/ditto "$1" "$root/TrustedUI/$product.app"
 /usr/bin/install -o root -g wheel -m 755 "$2" "$root/apex-provenance"
 /usr/sbin/chown -R root:wheel "$root"
 /bin/chmod -RN "$root"
 /bin/chmod -R go-w "$root"
-app="$root/TrustedUI/Apex Deck.app"
+app="$root/TrustedUI/$product.app"
 daemon="$app/Contents/Resources/bin/apex-daemon"
-/usr/bin/python3 -I - "$app" <<'PY'
-import os,sys,plistlib
+/usr/bin/python3 -I - "$app" "$app_id" "$channel" <<'PY'
+import os,re,sys,plistlib
 root=os.path.realpath(sys.argv[1])
+expected_app_id=sys.argv[2]
+expected_channel=sys.argv[3]
 framework=os.path.join(root,'Contents/Frameworks/Electron Framework.framework/Electron Framework')
 blob=open(framework,'rb').read(); sentinel=b'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'
 start=0; count=0
@@ -37,8 +68,12 @@ while True:
     start=at+2+blob[at+1]
 if not count: raise SystemExit('Electron fuse wire absent')
 with open(os.path.join(root,'Contents/Info.plist'),'rb') as f: info=plistlib.load(f)
-if info.get('CFBundleIdentifier')!='dev.apexdeck.app' or not info.get('ElectronAsarIntegrity'):
+if info.get('CFBundleIdentifier')!=expected_app_id or not info.get('ElectronAsarIntegrity'):
     raise SystemExit('App identity or ASAR integrity metadata absent')
+if expected_channel=='nightly':
+    build=str(info.get('CFBundleVersion') or '').strip()
+    if not re.fullmatch(r'[1-9][0-9]*', build) or int(build) > 9007199254740991:
+        raise SystemExit('Nightly app requires a positive integer CFBundleVersion')
 for base,dirs,files in os.walk(root,followlinks=False):
     for name in dirs+files:
         p=os.path.join(base,name)
@@ -62,7 +97,7 @@ daemon_hash=$(/usr/bin/codesign -d --verbose=4 "$daemon" 2>&1 | /usr/bin/awk -F=
 cli="$app/Contents/Resources/bin/apex"
 if [[ -e "$cli" || -L "$cli" ]]; then
   [[ -f "$cli" && ! -L "$cli" ]] || exit 1
-  /usr/bin/codesign --verify --strict -R='anchor apple generic and identifier "dev.apexdeck.cli"' "$cli"
+  /usr/bin/codesign --verify --strict -R="anchor apple generic and identifier \"$cli_id\"" "$cli"
   details=$(/usr/bin/codesign -d --verbose=4 "$cli" 2>&1)
   [[ "$details" == *'(runtime)'* ]] || { echo 'CLI hardened runtime is required.' >&2; exit 1; }
   cli_hash=$(/usr/bin/codesign -d --verbose=4 "$cli" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2}')
@@ -70,16 +105,16 @@ if [[ -e "$cli" || -L "$cli" ]]; then
   /usr/bin/printf '{"uiCdhash":"%s","daemonCdhash":"%s","cliCdhash":"%s"}\n' "$ui_hash" "$daemon_hash" "$cli_hash" > "$root/config.json"
 fi
 /bin/chmod 600 "$root/config.json"
-plist='/Library/LaunchDaemons/dev.apexdeck.provenance.plist'
+plist="/Library/LaunchDaemons/${label}.plist"
 [[ ! -e "$plist" && ! -L "$plist" ]] || { echo 'LaunchDaemon already exists; leaving it intact.' >&2; exit 1; }
-/bin/cat > "$plist" <<'PLIST'
+/bin/cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>dev.apexdeck.provenance</string>
-<key>ProgramArguments</key><array><string>/Library/Application Support/Apex Deck Provenance/apex-provenance</string></array>
+<key>Label</key><string>${label}</string>
+<key>ProgramArguments</key><array><string>${root}/apex-provenance</string></array>
 <key>UserName</key><string>root</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-<key>StandardErrorPath</key><string>/var/log/apex-provenance.log</string>
+<key>StandardErrorPath</key><string>${log_path}</string>
 <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 PLIST
@@ -88,5 +123,5 @@ PLIST
 /bin/launchctl bootstrap system "$plist"
 # The root update job that "Restart to update" hands off to (scripts/upgrade.py).
 /usr/bin/python3 -I "$app/Contents/Resources/updater/upgrade.py" service
-echo "Installed protected authority. Trusted UI: $app"
+echo "Installed protected authority ($channel). Trusted UI: $app"
 echo 'Original app and user JSON were preserved. Legacy authority is NOT migrated.'

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { channel, loadChannel } from '../desktop/channel.mjs';
 import {
   FIXED_PACKAGE_NAME,
   PREVIOUS_PACKAGE_NAME,
@@ -14,6 +15,7 @@ import {
   fixedPackage,
   isStaleReleaseEntry,
   mountsToDetach,
+  packageNames,
   previousPackage,
   stagingPackage,
 } from '../scripts/release-artifacts.mjs';
@@ -26,13 +28,20 @@ const MAC_ONLY = process.platform === 'darwin' ? {} : { skip: 'macOS-only: the p
 const tempRelease = () => fs.mkdtempSync(path.join(os.tmpdir(), 'apex-release-'));
 const write = (target, body) => fs.writeFileSync(target, body);
 
-test('the installable artifact has one fixed name, with one rollback beside it', () => {
+test('the installable artifact has one fixed name per channel, with one rollback beside it', () => {
   const release = tempRelease();
-  assert.equal(path.basename(fixedPackage(release).pkg), 'Apex-Deck-upgrade.pkg');
-  assert.equal(path.basename(fixedPackage(release).manifest), 'Apex-Deck-upgrade.pkg.json');
-  assert.equal(path.basename(previousPackage(release).pkg), 'Apex-Deck-upgrade.previous.pkg');
-  assert.equal(FIXED_PACKAGE_NAME, 'Apex-Deck-upgrade.pkg');
-  assert.equal(PREVIOUS_PACKAGE_NAME, 'Apex-Deck-upgrade.previous.pkg');
+  const expected = packageNames(channel);
+  assert.equal(path.basename(fixedPackage(release).pkg), expected.fixed);
+  assert.equal(path.basename(fixedPackage(release).manifest), `${expected.fixed}.json`);
+  assert.equal(path.basename(previousPackage(release).pkg), expected.previous);
+  assert.equal(FIXED_PACKAGE_NAME, expected.fixed);
+  assert.equal(PREVIOUS_PACKAGE_NAME, expected.previous);
+  const stable = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'stable' } });
+  const nightly = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'nightly' } });
+  assert.equal(packageNames(stable).fixed, 'Apex-Deck-upgrade.pkg');
+  assert.equal(packageNames(nightly).fixed, 'Apex-Deck-Nightly-upgrade.pkg');
+  assert.equal(packageNames(nightly).previous, 'Apex-Deck-Nightly-upgrade.previous.pkg');
+  assert.equal(packageNames(nightly).staging, '.Apex-Deck-Nightly-upgrade.staging.pkg');
 });
 
 test('the staging name is one the real package builder accepts', MAC_ONLY, () => {
@@ -53,6 +62,7 @@ test('cleanup names build leftovers and nothing else', () => {
     'mac-universal',
     '.native-upgrade-abc123',
     '.Apex-Deck-upgrade.staging.pkg',
+    '.Apex-Deck-Nightly-upgrade.staging.pkg',
     '.temp-abc123.dmg',
     'Apex-Deck_0.9.0_assistant-one-chat-r3_arm64.pkg',
     'Apex-Deck_0.9.0_assistant-one-chat-r3_arm64.pkg.json',
@@ -61,9 +71,13 @@ test('cleanup names build leftovers and nothing else', () => {
     'Apex-Deck-upgrade.pkg',
     'Apex-Deck-upgrade.pkg.json',
     'Apex-Deck-upgrade.previous.pkg',
+    'Apex-Deck-Nightly-upgrade.pkg',
+    'Apex-Deck-Nightly-upgrade.pkg.json',
+    'Apex-Deck-Nightly-upgrade.previous.pkg',
     'Apex-Deck.dmg',
     'Apex-Deck_0.9.0_arm64.dmg',
     'Apex-Deck_0.9.0_arm64.dmg.sha256',
+    'Apex-Deck-Nightly_20261123_11c1ade_arm64.dmg',
     'v0.9.0-assets',
     'verification',
     '.DS_Store',
@@ -164,6 +178,8 @@ test('only disk images backed by this release folder are detached', () => {
 
 test('the first fixed-name build keeps the installer in use as the rollback', () => {
   const release = tempRelease();
+  const stable = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'stable' } });
+  const nightly = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'nightly' } });
   const old = path.join(release, 'Apex-Deck_0.9.0_assistant-one-chat-r1_arm64.pkg');
   const current = path.join(release, 'Apex-Deck_0.9.0_assistant-one-chat-r3_arm64.pkg');
   write(old, 'r1');
@@ -174,15 +190,16 @@ test('the first fixed-name build keeps the installer in use as the rollback', ()
   fs.utimesSync(old, long, long);
   fs.utimesSync(current, recent, recent);
 
-  assert.equal(adoptLegacyRollback(release), 'Apex-Deck_0.9.0_assistant-one-chat-r3_arm64.pkg');
-  assert.equal(fs.readFileSync(previousPackage(release).pkg, 'utf8'), 'r3', 'the newest old installer is the rollback');
-  assert.equal(JSON.parse(fs.readFileSync(previousPackage(release).manifest, 'utf8')).id, 'id-3');
+  assert.equal(adoptLegacyRollback(release, nightly), null, 'Nightly never adopts a Stable legacy installer');
+  assert.equal(adoptLegacyRollback(release, stable), 'Apex-Deck_0.9.0_assistant-one-chat-r3_arm64.pkg');
+  assert.equal(fs.readFileSync(previousPackage(release, stable).pkg, 'utf8'), 'r3', 'the newest old installer is the rollback');
+  assert.equal(JSON.parse(fs.readFileSync(previousPackage(release, stable).manifest, 'utf8')).id, 'id-3');
 
   // Now there is a rollback, so nothing else is adopted and the rest is stale.
-  assert.equal(adoptLegacyRollback(release), null);
+  assert.equal(adoptLegacyRollback(release, stable), null);
   cleanupRelease(release);
   assert.equal(fs.existsSync(old), false, 'the older installers are cleared');
-  assert.equal(fs.readFileSync(previousPackage(release).pkg, 'utf8'), 'r3');
+  assert.equal(fs.readFileSync(previousPackage(release, stable).pkg, 'utf8'), 'r3');
 });
 
 test('adoption never displaces an existing fixed package or rollback', () => {

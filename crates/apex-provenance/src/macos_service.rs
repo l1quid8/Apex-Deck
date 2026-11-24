@@ -21,18 +21,24 @@ struct Service {
 impl Service {
     fn system() -> Self {
         let broker = Path::new(apex_provenance::ROOT).join("apex-provenance");
+        let label = apex_provenance::channel::MAC_SERVICE;
         Self {
             domain: "system".into(),
-            label: "dev.apexdeck.provenance".into(),
-            plist: "/Library/LaunchDaemons/dev.apexdeck.provenance.plist".into(),
-            repair_label: "dev.apexdeck.provenance-scheduling-repair".into(),
+            label: label.into(),
+            plist: format!("/Library/LaunchDaemons/{label}.plist").into(),
+            repair_label: format!("{label}-scheduling-repair"),
             repair_command: vec![
                 Path::new(apex_provenance::ROOT)
                     .join("repair-broker")
                     .into_os_string(),
                 "repair-macos-service".into(),
             ],
-            error_log: "/var/log/apex-provenance.log".into(),
+            error_log: if apex_provenance::channel::NIGHTLY {
+                "/var/log/apex-provenance-nightly.log"
+            } else {
+                "/var/log/apex-provenance.log"
+            }
+            .into(),
             broker,
         }
     }
@@ -734,5 +740,34 @@ mod tests {
             Some("preserved")
         );
         println!("old-updater bootstrap: Interactive restart at priority {priority}, fresh readiness socket, other plist settings preserved");
+    }
+
+    #[test]
+    fn system_service_uses_active_channel_identity() {
+        let system = Service::system();
+        assert_eq!(system.label, apex_provenance::channel::MAC_SERVICE);
+        assert_eq!(
+            system.plist,
+            PathBuf::from(format!(
+                "/Library/LaunchDaemons/{}.plist",
+                apex_provenance::channel::MAC_SERVICE
+            ))
+        );
+        assert_eq!(
+            system.repair_label,
+            format!("{}-scheduling-repair", apex_provenance::channel::MAC_SERVICE)
+        );
+        assert_eq!(
+            system.broker,
+            Path::new(apex_provenance::ROOT).join("apex-provenance")
+        );
+        assert_eq!(
+            system.error_log,
+            PathBuf::from(if apex_provenance::channel::NIGHTLY {
+                "/var/log/apex-provenance-nightly.log"
+            } else {
+                "/var/log/apex-provenance.log"
+            })
+        );
     }
 }

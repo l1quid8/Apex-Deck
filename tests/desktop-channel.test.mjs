@@ -111,3 +111,26 @@ test('signed Windows Nightly installers must carry the promised numeric PE FileV
   signature.fileVersion = '0.0.1.41';
   await assert.rejects(windowsInstaller({ verify, launch: () => assert.fail('wrong build launched') })(ready), /build number mismatch/);
 });
+
+test('macOS requestUpdate carries buildNumber on Nightly and omits it on Stable', async () => {
+  const { requestUpdate } = await import('../desktop/provenance.mjs');
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const rawKey = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
+  let sent = null;
+  const issue = async (req) => {
+    sent = req;
+    const payload = JSON.stringify({ domain: channel.DOMAIN, kind: 'update', uid: 501, id: '12345678-1234-4234-8234-123456789abc', version: req.version });
+    return { payload, signature: sign(null, Buffer.from(payload), privateKey).toString('base64') };
+  };
+  const base = { version: '0.9.19', package: '/tmp/u.pkg', sha256: 'a'.repeat(64), size: 123 };
+  if (channel.nightly) {
+    await assert.rejects(requestUpdate(base, { uid: 501, publicKey: rawKey, issue }), /build number/);
+    const id = await requestUpdate({ ...base, buildNumber: 42 }, { uid: 501, publicKey: rawKey, issue });
+    assert.equal(id, '12345678-1234-4234-8234-123456789abc');
+    assert.equal(sent.buildNumber, 42);
+  } else {
+    const id = await requestUpdate({ ...base, buildNumber: 42 }, { uid: 501, publicKey: rawKey, issue });
+    assert.equal(id, '12345678-1234-4234-8234-123456789abc');
+    assert.equal('buildNumber' in sent, false);
+  }
+});

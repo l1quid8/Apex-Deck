@@ -24,6 +24,22 @@ public enum SafariWebApp {
   }
 }
 
+public enum HelperChannel {
+  #if APEX_NIGHTLY
+  public static let nightly = true
+  public static let helperId = "dev.apexdeck.unified-computer-use.nightly"
+  public static let parentAppId = "dev.apexdeck.app.nightly"
+  public static let helperFolder = "Apex Unified Computer Use Nightly"
+  public static let cursorFolder = "Apex Deck Nightly"
+  #else
+  public static let nightly = false
+  public static let helperId = "dev.apexdeck.unified-computer-use"
+  public static let parentAppId = "dev.apexdeck.app"
+  public static let helperFolder = "Apex Unified Computer Use"
+  public static let cursorFolder = "Apex Deck"
+  #endif
+}
+
 public enum Policy {
   public static func protectedRole(_ role: String, _ subrole: String) -> Bool {
     let role = role.lowercased()
@@ -45,7 +61,8 @@ public enum Policy {
   public static func target(_ s: String) -> Bool {
     let protected = ["com.apple.systempreferences", "com.apple.systemsettings", "com.apple.securityagent",
       "com.apple.loginwindow", "com.apple.coreautha", "com.apple.authorizationhost",
-      "com.apple.keychainaccess", "com.apple.passwords", "dev.apexdeck.unified-computer-use"]
+      "com.apple.keychainaccess", "com.apple.passwords",
+      "dev.apexdeck.unified-computer-use", "dev.apexdeck.unified-computer-use.nightly"]
     let lower = s.lowercased()
     return s.count <= 255 && s.contains(".") && !s.hasSuffix(".") && !protected.contains(lower) && !lower.hasPrefix("com.apple.authenticationservices") && !lower.hasPrefix("com.apple.authkit")
       && s.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_").contains($0) }
@@ -192,7 +209,7 @@ public enum Wire {
     }
   }
   public static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-    "Library/Application Support/Apex Unified Computer Use")
+    "Library/Application Support/\(HelperChannel.helperFolder)")
   public static var bundle: URL {
     // The relay always launches the signed bundle that contains its own binary.
     var url = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.resolvingSymlinksInPath()

@@ -330,6 +330,27 @@ test('candidate CLI verification requires its exact hash, identifier and a regul
     assert.equal(run('e'.repeat(40)).status, 1);
     rmSync(cli);
     assert.equal(run('d'.repeat(40)).status, 1);
-    assert.match(verifier, /identifier "dev\.apexdeck\.cli"/);
+    assert.match(verifier, /EXPECTED_CLI_ID='dev\.apexdeck\.cli'/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('candidate verification isolates Stable and Nightly bundle and CLI identities', MAC_ONLY, () => {
+  const dir = mkdtempSync('/tmp/apex-channel-bundle-test-');
+  try {
+    const app = fakeBundle(dir, 'Apex Deck Nightly.app');
+    writeFileSync(path.join(app, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.apexdeck.app.nightly</string><key>CFBundleVersion</key><string>42</string><key>CFBundleShortVersionString</key><string>0.9.19</string><key>ElectronAsarIntegrity</key><dict><key>hash</key><string>fixture</string></dict></dict></plist>');
+    const cli = path.join(app, 'Contents/Resources/bin/apex'); writeFileSync(cli, 'cli');
+    const broker = path.join(dir, 'apex-provenance'); writeFileSync(broker, 'broker');
+    const effect = signatureEffect.replace('*/apex-daemon)', '*/apex) hash="$CLI_HASH" ;; */apex-daemon)').replace(
+      'if [[ "$1" == --verify ]]; then return 0; fi',
+      'if [[ "$1" == --verify ]]; then if [[ " $* " == *"dev.apexdeck.cli.nightly"* ]]; then return 0; fi; if [[ " $* " == *"dev.apexdeck.cli"* ]]; then return 1; fi; return 0; fi',
+    );
+    const run = (extraArgs) => spawnSync('/bin/bash', ['-s', '--', ...extraArgs, app, hashes.ui, hashes.daemon, broker, hashes.broker, 'd'.repeat(40)], {
+      input: effect + verifier.replaceAll('/usr/bin/codesign', 'test_codesign'), encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin', UI_HASH: hashes.ui, DAEMON_HASH: hashes.daemon, BROKER_HASH: hashes.broker, CLI_HASH: 'd'.repeat(40) },
+    });
+    assert.equal(run(['--channel', 'nightly']).status, 0);
+    assert.equal(run([]).status, 1, 'Stable verifier must reject Nightly bundle');
+    assert.equal(run(['--channel', 'stable']).status, 1, 'Explicit Stable verifier must reject Nightly bundle');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

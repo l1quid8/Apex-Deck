@@ -1,22 +1,25 @@
 #!/usr/bin/env node
-// Packages Apex Deck with one commit stamped into every artifact, onto one
-// fixed installable name.
+// Packages Apex Deck (Stable or Nightly) with one commit stamped into every
+// artifact, onto one fixed installable name per channel.
 //
 // Resolves the commit once, exports it to cargo (build.rs) and vite
 // (vite.config.ts), and fails the run if the checkout moved while it built --
 // a mixed package is worse than a missing one, because it installs fine and
 // then reports "Different builds" for no reason the Human can act on.
 //
-// Every run ends at release/Apex-Deck-upgrade.pkg, with the package it replaced
-// kept as release/Apex-Deck-upgrade.previous.pkg. Build leftovers (the unpacked
-// app, staging files, half-written images, mounts) are cleared here, at the end
-// of a failed run as well as a good one, because that is where they pile up.
+// Every run ends at release/Apex-Deck[-Nightly]-upgrade.pkg, with the package
+// it replaced kept as release/Apex-Deck[-Nightly]-upgrade.previous.pkg. Build
+// leftovers (the unpacked app, staging files, half-written images, mounts) are
+// cleared here, at the end of a failed run as well as a good one, because that
+// is where they pile up.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { basename, resolve } from 'node:path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { channel as activeChannel } from '../desktop/channel.mjs';
 import { readStamp, stampEnv } from './build-stamp.mjs';
+import { nightlyBuildNumber } from './package-mac.mjs';
 import { buildUpgrade } from './package-mac-upgrade.mjs';
 import {
   adoptLegacyRollback,
@@ -52,9 +55,19 @@ export function packagedApps(release) {
 
 /// Read the stamp back out of what was actually produced. The checkout staying
 /// put is necessary but not proof; this is the claim worth trusting.
-export function assertStamped(apps, commit) {
+export function assertStamped(apps, commit, { target = activeChannel, buildNumber = null } = {}) {
   let checked = 0;
   for (const app of apps) {
+    const plist = resolve(app, 'Contents/Info.plist');
+    if (existsSync(plist)) {
+      const info = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], { encoding: 'utf8' }));
+      if (info.CFBundleIdentifier !== target.APP_ID) {
+        throw new Error(`${basename(app)} carries bundle identifier ${info.CFBundleIdentifier ?? 'missing'}, expected ${target.APP_ID}`);
+      }
+      if (target.nightly && buildNumber !== null && String(info.CFBundleVersion ?? '').trim() !== String(buildNumber)) {
+        throw new Error(`${basename(app)} carries CFBundleVersion ${info.CFBundleVersion ?? 'missing'}, expected ${buildNumber}`);
+      }
+    }
     const artifacts = [
       ['UI bundle', resolve(app, 'Contents/Resources/app.asar')],
       ['service', resolve(app, 'Contents/Resources/bin/apex-daemon')],
@@ -73,19 +86,21 @@ export function assertStamped(apps, commit) {
 
 function main() {
   const release = resolve('release');
+  const buildNumber = activeChannel.nightly ? nightlyBuildNumber(process.env) : null;
   const stamp = readStamp({ env: process.env, git });
+  const fullCommit = git(['rev-parse', '--verify', 'HEAD']);
   if (stamp.commit === 'unknown') {
     console.error('package-pinned: no commit to stamp; refusing to ship an unlabelled build.');
     return 1;
   }
 
-  log(`stamping ${stamp.commit}${stamp.dirty ? '-dirty' : ''} into the app and the service`);
+  log(`channel=${activeChannel.name}${buildNumber ? ` build=${buildNumber}` : ''}; stamping ${stamp.commit}${stamp.dirty ? '-dirty' : ''} into the app and the service`);
 
   // Clear the previous run's leftovers before building, so a failed build cannot
   // leave a half-written image or an unpacked app for the next one to trip over.
   // The newest versioned installer becomes the rollback first, so the package the
   // Human is running today is not deleted in the same breath.
-  const adopted = adoptLegacyRollback(release);
+  const adopted = adoptLegacyRollback(release, activeChannel);
   if (adopted) log(`kept ${adopted} as the rollback before clearing the old installers`);
   cleanupRelease(release, { log });
   detachReleaseImages(release, { log });
@@ -104,18 +119,20 @@ function main() {
     }
 
     const apps = packagedApps(release);
-    log(`read ${stamp.commit} back out of ${assertStamped(apps, stamp.commit)} built artifact(s).`);
+    log(`read ${stamp.commit} back out of ${assertStamped(apps, stamp.commit, { target: activeChannel, buildNumber })} built artifact(s).`);
 
     if (process.env.APEX_DECK_SKIP_PKG === '1') {
       log('APEX_DECK_SKIP_PKG=1 set; leaving the installable package untouched.');
       return 0;
     }
 
-    const app = apps.find((candidate) => basename(candidate) === 'Apex Deck.app') ?? apps[0];
-    buildUpgrade(app, stagingPackage(release).pkg);
+    const expectedBundle = `${activeChannel.PRODUCT}.app`;
+    const app = apps.find((candidate) => basename(candidate) === expectedBundle) ?? apps[0];
+    buildUpgrade(app, stagingPackage(release, activeChannel).pkg, activeChannel);
     // Only now, with a verified package on disk, is the fixed name replaced.
-    const { pkg, previous, sidecar } = commitPackage(release, { commit: stamp.commit, dirty: stamp.dirty });
-    log(`wrote ${pkg} (version ${sidecar.version}, stamp ${stamp.commit})`);
+    const extra = activeChannel.nightly ? { channel: activeChannel.name, buildNumber, fullCommit } : {};
+    const { pkg, previous, sidecar } = commitPackage(release, { commit: stamp.commit, dirty: stamp.dirty, extra }, activeChannel);
+    log(`wrote ${pkg} (version ${sidecar.version}, stamp ${stamp.commit}${buildNumber ? `, build ${buildNumber}` : ''})`);
     if (previous) log(`kept the package it replaced as ${previous}`);
   } catch (error) {
     console.error(`package-pinned: ${error.message}`);

@@ -14,40 +14,61 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { channel } from '../desktop/channel.mjs';
 
-export const FIXED_PACKAGE_NAME = 'Apex-Deck-upgrade.pkg';
-export const PREVIOUS_PACKAGE_NAME = 'Apex-Deck-upgrade.previous.pkg';
+export function packageNames(target = channel) {
+  const stem = target?.nightly ? 'Apex-Deck-Nightly-upgrade' : 'Apex-Deck-upgrade';
+  return {
+    fixed: `${stem}.pkg`,
+    previous: `${stem}.previous.pkg`,
+    staging: `.${stem}.staging.pkg`,
+  };
+}
+
+const currentNames = packageNames(channel);
+export const FIXED_PACKAGE_NAME = currentNames.fixed;
+export const PREVIOUS_PACKAGE_NAME = currentNames.previous;
 
 // Hidden and still ending in .pkg, because package-mac-upgrade.mjs refuses to
 // write anywhere else in release/ and refuses any other extension.
-export const STAGING_PACKAGE_NAME = '.Apex-Deck-upgrade.staging.pkg';
+export const STAGING_PACKAGE_NAME = currentNames.staging;
+
+const ALL_STAGING_NAMES = new Set([
+  '.Apex-Deck-upgrade.staging.pkg',
+  '.Apex-Deck-upgrade.staging.pkg.json',
+  '.Apex-Deck-Nightly-upgrade.staging.pkg',
+  '.Apex-Deck-Nightly-upgrade.staging.pkg.json',
+]);
 
 const UNPACKED_APP_DIR = /^mac(?:-arm64|-universal|-x64)?$/;
 
 /// The artifact the Human installs, and its manifest sidecar.
-export function fixedPackage(releaseDir) {
+export function fixedPackage(releaseDir, target = channel) {
   const dir = path.resolve(releaseDir);
+  const { fixed } = packageNames(target);
   return {
-    pkg: path.join(dir, FIXED_PACKAGE_NAME),
-    manifest: path.join(dir, `${FIXED_PACKAGE_NAME}.json`),
+    pkg: path.join(dir, fixed),
+    manifest: path.join(dir, `${fixed}.json`),
   };
 }
 
 /// Where a package is built before it is allowed to replace the fixed name.
-export function stagingPackage(releaseDir) {
+export function stagingPackage(releaseDir, target = channel) {
   const dir = path.resolve(releaseDir);
+  const { staging } = packageNames(target);
   return {
-    pkg: path.join(dir, STAGING_PACKAGE_NAME),
-    manifest: path.join(dir, `${STAGING_PACKAGE_NAME}.json`),
+    pkg: path.join(dir, staging),
+    manifest: path.join(dir, `${staging}.json`),
   };
 }
 
 /// The one kept rollback.
-export function previousPackage(releaseDir) {
+export function previousPackage(releaseDir, target = channel) {
   const dir = path.resolve(releaseDir);
+  const { previous } = packageNames(target);
   return {
-    pkg: path.join(dir, PREVIOUS_PACKAGE_NAME),
-    manifest: path.join(dir, `${PREVIOUS_PACKAGE_NAME}.json`),
+    pkg: path.join(dir, previous),
+    manifest: path.join(dir, `${previous}.json`),
   };
 }
 
@@ -60,7 +81,7 @@ export function isStaleReleaseEntry(name) {
   if (name.includes('/') || name.includes('\\')) return false;
   if (UNPACKED_APP_DIR.test(name)) return true;
   if (name.startsWith('.native-upgrade-')) return true;
-  if (name === STAGING_PACKAGE_NAME || name === `${STAGING_PACKAGE_NAME}.json`) return true;
+  if (ALL_STAGING_NAMES.has(name)) return true;
   if (/^\.temp.*\.dmg$/i.test(name)) return true;
   // Versioned names from before the fixed-name rule: they never regenerate now,
   // and the fixed package plus its previous copy covers what they were for.
@@ -107,17 +128,17 @@ export function cleanupRelease(releaseDir, { log = () => {} } = {}) {
 /// replaces as the rollback. The old artifact stays intact until the new one has
 /// already been verified by buildUpgrade, so a failed build never leaves the
 /// Human without a package.
-export function commitPackage(releaseDir, { commit = '', dirty = false } = {}) {
+export function commitPackage(releaseDir, { commit = '', dirty = false, extra = {} } = {}, target = channel) {
   const dir = path.resolve(releaseDir);
-  const staging = stagingPackage(dir);
-  const fixed = fixedPackage(dir);
-  const previous = previousPackage(dir);
+  const staging = stagingPackage(dir, target);
+  const fixed = fixedPackage(dir, target);
+  const previous = previousPackage(dir, target);
   if (!fs.existsSync(staging.pkg)) throw new Error(`No staged package at ${staging.pkg}`);
 
   const manifest = fs.existsSync(staging.manifest)
     ? JSON.parse(fs.readFileSync(staging.manifest, 'utf8'))
     : {};
-  const sidecar = { ...manifest, commit, dirty };
+  const sidecar = { ...manifest, ...extra, commit, dirty };
 
   const keptPrevious = fs.existsSync(fixed.pkg);
   if (keptPrevious) fs.renameSync(fixed.pkg, previous.pkg);
@@ -134,10 +155,11 @@ export function commitPackage(releaseDir, { commit = '', dirty = false } = {}) {
 /// installers this rule replaces -- including whichever one the Human is running
 /// right now. Keep the newest of those as the rollback rather than deleting the
 /// only way back.
-export function adoptLegacyRollback(releaseDir) {
+export function adoptLegacyRollback(releaseDir, target = channel) {
+  if (target?.nightly) return null;
   const dir = path.resolve(releaseDir);
-  const fixed = fixedPackage(dir);
-  const previous = previousPackage(dir);
+  const fixed = fixedPackage(dir, target);
+  const previous = previousPackage(dir, target);
   if (fs.existsSync(fixed.pkg) || fs.existsSync(previous.pkg)) return null;
   if (!fs.existsSync(dir)) return null;
   const candidates = fs.readdirSync(dir)

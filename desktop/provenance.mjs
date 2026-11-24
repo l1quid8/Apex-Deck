@@ -157,6 +157,10 @@ export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKe
 // job's id once the broker has signed for it.
 export async function requestUpdate(update,{uid=process.getuid(),publicKey:rawKey,issue:send=issue}={}){
   const request={op:'update_install',version:update.version,package:update.package,sha256:update.sha256,size:update.size};
+  if(channel.nightly){
+    if(!Number.isSafeInteger(update.buildNumber) || update.buildNumber<=0)throw new Error('Invalid Nightly build number.');
+    request.buildNumber=update.buildNumber;
+  }
   const key=rawKey??protectedPublicKey();
   const signed=await send(request);
   if(typeof signed?.payload!=='string' || Buffer.byteLength(signed.payload)>LIMIT || typeof signed.signature!=='string')throw new Error('Invalid response from the protected service.');

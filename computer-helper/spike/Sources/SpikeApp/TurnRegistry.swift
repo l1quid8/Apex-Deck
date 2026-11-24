@@ -191,7 +191,7 @@ final class TurnRegistry {
     let deck = contents.deletingLastPathComponent()
     guard helper.lastPathComponent == "Unified Computer Use.app", resources.lastPathComponent == "Resources",
       contents.lastPathComponent == "Contents", deck.pathExtension == "app",
-      let parentRequirement = requirement("dev.apexdeck.app"), let daemonRequirement = requirement("apex-daemon") else { return nil }
+      let parentRequirement = requirement(HelperChannel.parentAppId), let daemonRequirement = requirement("apex-daemon") else { return nil }
     var parentCode: SecStaticCode?
     let strict = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckNestedCode | kSecCSCheckAllArchitectures)
     guard SecStaticCodeCreateWithPath(deck as CFURL, [], &parentCode) == errSecSuccess,
