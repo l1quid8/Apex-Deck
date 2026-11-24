@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { channel, loadChannel } from '../desktop/channel.mjs';
 import { pickIdentity, signingMessage, releaseBuildCommands, cliSigningArgs, builderArgs, builtDmgs, nightlyBuildNumber, nightlyDmgArtifactName, nightlyBuilderConfig } from '../scripts/package-mac.mjs';
@@ -70,16 +72,17 @@ test('Nightly packaging builds isolated app identity, bundleVersion, dated DMG n
     },
     dmg: { artifactName: 'Apex-Deck_${version}_${arch}.${ext}' },
   };
+  const updaterDir = join(tmpdir(), 'staged-updater');
   const cfg = nightlyBuilderConfig(base, {
-    target: nightly, buildNumber: 42, date: '20261123', commit: '11c1ade33ad9', updaterDir: '/tmp/staged-updater',
+    target: nightly, buildNumber: 42, date: '20261123', commit: '11c1ade33ad9', updaterDir,
   });
   assert.equal(cfg.appId, 'dev.apexdeck.app.nightly');
   assert.equal(cfg.productName, 'Apex Deck Nightly');
   assert.equal(cfg.mac.bundleVersion, '42');
   assert.equal(cfg.dmg.artifactName, nightlyDmgArtifactName({ date: '20261123', commit: '11c1ade33ad9' }));
   assert.equal(cfg.dmg.artifactName, 'Apex-Deck-Nightly_20261123_11c1ade_${arch}.${ext}');
-  assert.equal(cfg.mac.extraResources[1].from, '/tmp/staged-updater/upgrade.py');
-  assert.equal(cfg.mac.extraResources[2].from, '/tmp/staged-updater/verify-protected-bundle.sh');
+  assert.equal(cfg.mac.extraResources[1].from, join(updaterDir, 'upgrade.py'));
+  assert.equal(cfg.mac.extraResources[2].from, join(updaterDir, 'verify-protected-bundle.sh'));
   assert.equal(base.appId, 'dev.apexdeck.app', 'base config object is not mutated');
 });
 

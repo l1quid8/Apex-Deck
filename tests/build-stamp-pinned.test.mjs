@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stubNodeCommand } from './helpers/node-command-stub.mjs';
 import { readStamp, stampEnv } from '../scripts/build-stamp.mjs';
 import { assertCheckoutUnchanged, resolvePinnedCheckout } from '../scripts/package-pinned.mjs';
 
@@ -105,9 +106,7 @@ test('package-pinned succeeds on a stationary checkout under the exact Nightly C
   const dir = mkdtempSync(join(tmpdir(), 'apex-package-pinned-ci-'));
   try {
     const repo = join(dir, 'repo');
-    const binDir = join(dir, 'bin');
     mkdirSync(repo, { recursive: true });
-    mkdirSync(binDir, { recursive: true });
 
     const runGit = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
     runGit(['init', '-q']);
@@ -120,9 +119,8 @@ test('package-pinned succeeds on a stationary checkout under the exact Nightly C
 
     // Mock `npm` creates a stamped stub Nightly .app in release/mac-arm64/ and
     // optionally advances git HEAD when MOCK_ADVANCE_HEAD=1.
-    const mockNpm = join(binDir, 'npm');
     const capturedEnvFile = join(dir, 'captured-env.json');
-    writeFileSync(mockNpm, `#!/usr/bin/env node
+    const stubArgs = stubNodeCommand(dir, 'npm', `
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -137,7 +135,8 @@ fs.writeFileSync(${JSON.stringify(capturedEnvFile)}, JSON.stringify({
 }));
 const app = path.resolve('release/mac-arm64/Apex Deck Nightly.app');
 fs.mkdirSync(path.join(app, 'Contents/Resources/bin'), { recursive: true });
-fs.writeFileSync(path.join(app, 'Contents/Info.plist'), [
+// The native Info.plist verification uses macOS plutil.
+if (process.platform === 'darwin') fs.writeFileSync(path.join(app, 'Contents/Info.plist'), [
   '<?xml version="1.0" encoding="UTF-8"?>',
   '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
   '<plist version="1.0"><dict>',
@@ -154,11 +153,9 @@ if (process.env.MOCK_ADVANCE_HEAD === '1') {
   execFileSync('git', ['commit', '-qm', 'moved']);
 }
 `);
-    chmodSync(mockNpm, 0o755);
 
     const ciEnv = {
       ...process.env,
-      PATH: `${binDir}:${process.env.PATH ?? ''}`,
       APEX_CHANNEL: 'nightly',
       APEX_BUILD_NUMBER: '42',
       APEX_NIGHTLY_DATE: '20261124',
@@ -167,7 +164,7 @@ if (process.env.MOCK_ADVANCE_HEAD === '1') {
     };
 
     // 1. Stationary checkout with full 40-char CI APEX_BUILD_COMMIT must pass.
-    const ok = spawnSync(process.execPath, [PACKAGE_PINNED], { cwd: repo, env: ciEnv, encoding: 'utf8' });
+    const ok = spawnSync(process.execPath, [...stubArgs, PACKAGE_PINNED], { cwd: repo, env: ciEnv, encoding: 'utf8' });
     assert.equal(ok.status, 0, `expected exit 0, got ${ok.status}:\nstdout: ${ok.stdout}\nstderr: ${ok.stderr}`);
     const captured = JSON.parse(readFileSync(capturedEnvFile, 'utf8'));
     assert.equal(captured.APEX_CHANNEL, 'nightly');
@@ -177,7 +174,7 @@ if (process.env.MOCK_ADVANCE_HEAD === '1') {
     assert.equal(captured.APEX_BUILD_DIRTY, 'false');
 
     // 2. If HEAD moves during the build, package-pinned must fail with full SHAs.
-    const moved = spawnSync(process.execPath, [PACKAGE_PINNED], {
+    const moved = spawnSync(process.execPath, [...stubArgs, PACKAGE_PINNED], {
       cwd: repo,
       env: { ...ciEnv, MOCK_ADVANCE_HEAD: '1' },
       encoding: 'utf8',

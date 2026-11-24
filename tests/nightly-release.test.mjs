@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { stubNodeCommand } from './helpers/node-command-stub.mjs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
@@ -690,13 +691,10 @@ test('fetchCurrentFeed starts at build 1 only when feed absence is confirmed and
 
 test('failed rolling-feed read aborts CLI plan and publish without touching the rolling feed', () => {
   const next = makeFixture({ commit: SHA_NEW, date: '20261124', buildNumber: 1 });
-  const binDir = path.join(next.dir, 'bin');
   const logFile = path.join(next.dir, 'gh-calls.log');
   const outFile = path.join(next.dir, 'github-output.txt');
-  fs.mkdirSync(binDir, { recursive: true });
   try {
-    const fakeGh = path.join(binDir, 'gh');
-    fs.writeFileSync(fakeGh, `#!/usr/bin/env node
+    const stubArgs = stubNodeCommand(next.dir, 'gh', `
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logFile)}, args.join(' ') + '\\n');
@@ -715,17 +713,14 @@ if (args[0] === 'api' && args[1].includes('/releases/tags/nightly')) {
 process.stderr.write('unexpected gh call: ' + args.join(' ') + '\\n');
 process.exit(99);
 `);
-    fs.chmodSync(fakeGh, 0o755);
-
-    const env = { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` };
 
     // 1. `plan` aborts on 500 and writes nothing to GITHUB_OUTPUT (never resets build_number=1).
     const planRes = spawnSync(process.execPath, [
-      SCRIPT, 'plan',
+      ...stubArgs, SCRIPT, 'plan',
       '--repo', 'l1quid8/apex-deck',
       '--date', '20261124',
       '--github-output', outFile,
-    ], { env, encoding: 'utf8' });
+    ], { encoding: 'utf8' });
     assert.notEqual(planRes.status, 0, 'plan must fail on transient rolling-feed error');
     assert.match(planRes.stderr, /HTTP 500/);
     assert.equal(fs.existsSync(outFile), false, 'failed plan must not write GITHUB_OUTPUT');
@@ -733,12 +728,12 @@ process.exit(99);
     // 2. `publish` aborts before issuing any release create/upload/edit call.
     fs.writeFileSync(logFile, '');
     const pubRes = spawnSync(process.execPath, [
-      SCRIPT, 'publish',
+      ...stubArgs, SCRIPT, 'publish',
       '--repo', 'l1quid8/apex-deck',
       '--assets-dir', next.assetsDir,
       '--extra-dir', next.dmgDir,
       '--manifest', next.manifestPath,
-    ], { env, encoding: 'utf8' });
+    ], { encoding: 'utf8' });
     assert.notEqual(pubRes.status, 0, 'publish must fail on transient rolling-feed error');
     assert.match(pubRes.stderr, /HTTP 500/);
     const calls = fs.readFileSync(logFile, 'utf8');

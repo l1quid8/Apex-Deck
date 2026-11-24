@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {execFileSync, spawnSync} from 'node:child_process';
 import {loadChannel} from '../desktop/channel.mjs';
 import {renderVerifierScript,upgradeScripts,validateManifest,validateOutput} from '../scripts/package-mac-upgrade.mjs';
 const stableChannel = loadChannel({ packaged: false, env: { APEX_CHANNEL: 'stable' } });
@@ -602,6 +602,11 @@ test('renderVerifierScript stamps Nightly defaults once without altering explici
  assert.match(stableRendered, /^EXPECTED_CHANNEL='stable'\nEXPECTED_APP_ID='dev\.apexdeck\.app'\nEXPECTED_CLI_ID='dev\.apexdeck\.cli'$/m);
  assert.match(nightlyRendered, /^EXPECTED_CHANNEL='nightly'\nEXPECTED_APP_ID='dev\.apexdeck\.app\.nightly'\nEXPECTED_CLI_ID='dev\.apexdeck\.cli\.nightly'$/m);
  assert.match(nightlyRendered, /^\s+EXPECTED_CHANNEL='stable'$/m);
- const syntax = spawnSync('/bin/bash', ['-n'], { input: nightlyRendered, encoding: 'utf8' });
+ // git --exec-path locates Git for Windows even outside Program Files.
+ const bash = process.platform === 'win32'
+  ? path.resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe')
+  : '/bin/bash';
+ const syntax = spawnSync(bash, ['-n'], { input: nightlyRendered, encoding: 'utf8' });
+ assert.ifError(syntax.error);
  assert.equal(syntax.status, 0, syntax.stderr);
 });
