@@ -311,12 +311,30 @@ test('build numbers only move forward on the Linux feed', () => {
 });
 
 test('fetchLinuxFeed treats a missing Linux feed as absent but fails closed on errors', () => {
-  const ok = { status: 0, stdout: '[]', stderr: '' };
-  const withRolling = (assets) => (command, args) => (args[1].startsWith('repos/') && args[1].includes('releases?') ? ok
+  const history = (tags) => ({ status: 0, stdout: tags.map((tag) => `${tag}\n`).join(''), stderr: '' });
+  const isList = (args) => args.includes('--paginate');
+  const withRolling = (assets, tags = []) => (command, args) => (isList(args) ? history(tags)
     : { status: 0, stdout: JSON.stringify({ assets }), stderr: '' });
-  assert.equal(fetchLinuxFeed({ runner: withRolling([{ name: 'apex-deck-nightly-update.json' }]) }), null, 'a macOS-only rolling release has no Linux feed yet');
-  assert.equal(fetchLinuxFeed({ runner: (command, args) => (args[1].includes('releases?') ? ok : { status: 1, stdout: '', stderr: 'HTTP 404' }) }), null);
-  assert.throws(() => fetchLinuxFeed({ runner: (command, args) => (args[1].includes('releases?') ? ok : { status: 1, stdout: '', stderr: 'HTTP 502' }) }), /failed/);
+  assert.equal(fetchLinuxFeed({ runner: withRolling([{ name: 'apex-deck-nightly-update.json' }], [TAG]) }), null,
+    'a macOS-only rolling release has no Linux feed yet, and the shared source tag is not Linux history');
+  assert.equal(fetchLinuxFeed({ runner: (command, args) => (isList(args) ? history([]) : { status: 1, stdout: '', stderr: 'HTTP 404' }) }), null);
+  assert.throws(() => fetchLinuxFeed({ runner: (command, args) => (isList(args) ? history([]) : { status: 1, stdout: '', stderr: 'HTTP 502' }) }), /failed/);
+  assert.throws(() => fetchLinuxFeed({ runner: () => { throw new Error('gh api failed (1): HTTP 502'); } }), /502/,
+    'an unreadable release history never counts as "no Linux Nightly yet"');
+});
+
+test('an interrupted rolling-feed upload never restarts Linux build numbers', () => {
+  // `gh release upload --clobber` deletes the old feed before uploading. If the
+  // upload then fails, the rolling release has no Linux feed, but a published
+  // Linux release from an earlier run still exists.
+  const history = { status: 0, stdout: `${ASSET}\nnightly-linux-20261124-11c1ade\n`, stderr: '' };
+  const runner = (command, args) => (args.includes('--paginate') ? history
+    : { status: 0, stdout: JSON.stringify({ assets: [{ name: 'apex-deck-nightly-update.json' }] }), stderr: '' });
+  assert.throws(() => fetchLinuxFeed({ runner }), new RegExp(`missing.*${ASSET}.*Refusing to restart build numbers`));
+  const noRolling = (command, args) => (args.includes('--paginate') ? history : { status: 1, stdout: '', stderr: 'HTTP 404' });
+  assert.throws(() => fetchLinuxFeed({ runner: noRolling }), /Refusing to restart build numbers/);
+  const draftsOnly = (command, args) => (args.includes('--paginate') ? { status: 0, stdout: '', stderr: '' } : runner(command, args));
+  assert.equal(fetchLinuxFeed({ runner: draftsOnly }), null, 'an unpublished draft from a failed first run is not history');
 });
 
 test('the Linux workflow needs no Apple or Windows secrets and writes only the Linux feed', () => {

@@ -429,23 +429,39 @@ export function publishLinuxNightly({ assetsDir, currentFeed = null, repo = DEFA
   return result('done', { published: true, dryRun });
 }
 
+const LINUX_ASSET_TAG_RE = /^nightly-linux-\d{8}-[0-9a-f]{7}$/;
+
+/** Tags of published (non-draft) Linux Nightly asset releases, newest first as GitHub lists them. */
+function publishedLinuxReleaseTags(runner, repo) {
+  const result = runner('gh', ['api', '--paginate', `repos/${repo}/releases?per_page=100`, '--jq', '.[] | select(.draft == false) | .tag_name']);
+  return (result.stdout ?? '').split('\n').map((line) => line.trim()).filter((tag) => LINUX_ASSET_TAG_RE.test(tag));
+}
+
 /**
- * Read the published Linux feed. Returns null only when the repository is
- * readable and the rolling release or the Linux feed asset is absent, so a
- * transient error never resets the build number to 1.
+ * Read the published Linux feed. Returns null only when no Linux Nightly has
+ * ever been published. If Linux releases exist but the rolling feed is gone
+ * (for example `gh release upload --clobber` deleted it and the upload then
+ * failed), this throws instead of returning null, so the planner never
+ * restarts the build number at 1. Restore the feed from the newest Linux
+ * release's pinned copy to resume.
  */
 export function fetchLinuxFeed({ repo = DEFAULT_REPO, runner = defaultRunner } = {}) {
-  const list = JSON.parse(runner('gh', ['api', `repos/${repo}/releases?per_page=1`]).stdout || 'null');
-  if (!Array.isArray(list)) throw new Error('Unexpected response while checking release history.');
+  const history = publishedLinuxReleaseTags(runner, repo);
+  const missing = () => {
+    if (!history.length) return null;
+    throw new Error(`The Linux Nightly feed ${LINUX_FEED_NAME} is missing from the ${ROLLING_TAG} release, but published Linux release ${history[0]} exists. ` +
+      `Refusing to restart build numbers. Restore it with: gh release download ${history[0]} --repo ${repo} --pattern ${LINUX_FEED_NAME} && ` +
+      `gh release upload ${ROLLING_TAG} --repo ${repo} ${LINUX_FEED_NAME}`);
+  };
   const args = ['api', `repos/${repo}/releases/tags/${ROLLING_TAG}`];
   const tagResult = runner('gh', args, { allowFailure: true });
   if (tagResult.status !== 0) {
-    if (/HTTP 404/.test(`${tagResult.stderr}${tagResult.stdout}`)) return null;
+    if (/HTTP 404/.test(`${tagResult.stderr}${tagResult.stdout}`)) return missing();
     throw new Error(failure('gh', args, tagResult));
   }
   const rolling = JSON.parse(tagResult.stdout || 'null');
   if (!rolling || !Array.isArray(rolling.assets)) throw new Error('Malformed rolling Nightly release metadata.');
-  if (!rolling.assets.some((asset) => asset?.name === LINUX_FEED_NAME)) return null;
+  if (!rolling.assets.some((asset) => asset?.name === LINUX_FEED_NAME)) return missing();
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-linux-nightly-feed-'));
   try {
     runner('gh', ['release', 'download', ROLLING_TAG, '--repo', repo, '--dir', scratch, '--pattern', LINUX_FEED_NAME]);
