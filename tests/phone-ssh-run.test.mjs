@@ -1040,3 +1040,165 @@ test("runSetup with real generated directory and trust shell avoids fresh trust 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Stable dataFolderCheck and trustCheckScript recognize populated ~/.apex legacy stores while Nightly ignores them", { skip: process.platform === "win32" && "POSIX sh check" }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "apex-ssh-legacy-"));
+  try {
+    const home = path.join(root, "legacy user");
+    const xdg = path.join(root, "custom xdg");
+    const legacy = path.join(home, ".apex");
+    const legacyChats = path.join(legacy, "saved-chats-v1");
+    const desktop = path.join(home, ".local", "share", "dev.apexdeck.app");
+    fs.mkdirSync(xdg, { recursive: true });
+
+    // 1. An empty ~/.apex (without saved-chats-v1 entries) is NOT selected by shared_store::select.
+    fs.mkdirSync(legacy, { recursive: true });
+    assert.equal(runPosixShell(dataFolderCheck("stable"), { HOME: home }).stdout.trim(), "__nodata__");
+    assert.equal(runPosixShell(trustCheckScript("stable"), { HOME: home }).stdout.trim(), "__notrust__");
+
+    // 2. Populated ~/.apex with existing host-trust.json (no desktop dir yet): Stable selects ~/.apex, Nightly ignores it.
+    fs.mkdirSync(legacyChats, { recursive: true });
+    fs.writeFileSync(path.join(legacyChats, "session.json"), "{}");
+    fs.writeFileSync(path.join(legacy, "host-trust.json"), JSON.stringify({ trusted: true, source: "legacy-apex" }));
+
+    for (const env of [{ HOME: home }, { HOME: home, XDG_DATA_HOME: xdg }]) {
+      const stableDir = runPosixShell(dataFolderCheck("stable"), env);
+      assert.equal(stableDir.code, 0);
+      assert.equal(stableDir.stdout.trim(), legacy);
+      assert.equal(stableDir.stdout.includes("__nodata__"), false);
+      const stableTrust = runPosixShell(trustCheckScript("stable"), env);
+      assert.equal(stableTrust.code, 0);
+      assert.deepEqual(JSON.parse(stableTrust.stdout), { trusted: true, source: "legacy-apex" });
+
+      const nightlyDir = runPosixShell(dataFolderCheck("nightly"), env);
+      assert.equal(nightlyDir.code, 0);
+      assert.equal(nightlyDir.stdout.trim(), "__nodata__");
+      const nightlyTrust = runPosixShell(trustCheckScript("nightly"), env);
+      assert.equal(nightlyTrust.code, 0);
+      assert.equal(nightlyTrust.stdout.trim(), "__notrust__");
+    }
+
+    // 3. Once apex-daemon writes shared-store-v1.json ("legacy-cli") inside desktop dir, Stable still resolves ~/.apex.
+    fs.mkdirSync(desktop, { recursive: true });
+    fs.writeFileSync(path.join(desktop, "shared-store-v1.json"), JSON.stringify({ store: "legacy-cli", version: 1 }));
+    assert.equal(runPosixShell(dataFolderCheck("stable"), { HOME: home }).stdout.trim(), legacy);
+    assert.deepEqual(JSON.parse(runPosixShell(trustCheckScript("stable"), { HOME: home }).stdout), { trusted: true, source: "legacy-apex" });
+
+    // 4. Desktop-locked shared-store-v1.json ("desktop") stays on desktop even when ~/.apex is populated.
+    fs.writeFileSync(path.join(desktop, "shared-store-v1.json"), JSON.stringify({ store: "desktop", version: 1 }));
+    assert.equal(runPosixShell(dataFolderCheck("stable"), { HOME: home }).stdout.trim(), desktop);
+    assert.equal(runPosixShell(trustCheckScript("stable"), { HOME: home }).stdout.trim(), "__notrust__");
+    fs.writeFileSync(path.join(desktop, "host-trust.json"), JSON.stringify({ trusted: true, source: "desktop-store" }));
+    assert.deepEqual(JSON.parse(runPosixShell(trustCheckScript("stable"), { HOME: home }).stdout), { trusted: true, source: "desktop-store" });
+
+    // 5. Invalid marker version or symlinked marker never redirects to ~/.apex.
+    fs.writeFileSync(path.join(desktop, "shared-store-v1.json"), JSON.stringify({ store: "legacy-cli", version: 2 }));
+    assert.equal(runPosixShell(dataFolderCheck("stable"), { HOME: home }).stdout.trim(), desktop);
+    const markerLink = path.join(desktop, "shared-store-v1.json");
+    const targetMarker = path.join(root, "outside-marker.json");
+    fs.writeFileSync(targetMarker, JSON.stringify({ store: "legacy-cli", version: 1 }));
+    fs.rmSync(markerLink);
+    fs.symlinkSync(targetMarker, markerLink);
+    assert.equal(runPosixShell(dataFolderCheck("stable"), { HOME: home }).stdout.trim(), desktop);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Stable runSetup skips the fresh-host trust prompt on a populated ~/.apex legacy store while Nightly still uses its own directory", { skip: process.platform === "win32" && "POSIX sh check" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "apex-ssh-run-legacy-"));
+  try {
+    const runAgainstHome = async (home, channel, { writeMarkerOnStart = false } = {}) => {
+      const vps = twoChannelVps({
+        stable: {
+          bin: "/usr/local/bin/apex-daemon",
+          version: "apex-daemon 0.9.19 (aaaaaaaaaaaa)",
+          sha256: STABLE_SHA,
+          serviceActive: true,
+        },
+        nightly: {
+          bin: "/usr/local/bin/apex-daemon-nightly",
+          version: `apex-daemon 0.9.19 (${NIGHTLY_COMMIT.slice(0, 12)})`,
+          sha256: NIGHTLY_SHA,
+          serviceActive: true,
+        },
+      });
+      const baseExec = vps.session.exec;
+      vps.session.exec = async (command, options) => {
+        if (command.includes("__nodata__") || command.includes("__notrust__")) {
+          vps.ran.push(command);
+          return runPosixShell(command, { HOME: home });
+        }
+        const result = await baseExec(command, options);
+        if (writeMarkerOnStart && channel === "stable" && command.includes("apex-daemon remote on")) {
+          // Simulate shared_store::select creating desktop/shared-store-v1.json when Stable starts.
+          const desktop = path.join(home, ".local", "share", "dev.apexdeck.app");
+          fs.mkdirSync(desktop, { recursive: true });
+          fs.writeFileSync(path.join(desktop, "shared-store-v1.json"), JSON.stringify({ store: "legacy-cli", version: 1 }));
+        }
+        return result;
+      };
+      const events = [];
+      const saved = [];
+      const started = runSetup(request({ label: `VPS ${channel}` }), {
+        connect: async () => vps.session,
+        channel,
+        knownKey: () => null,
+        rememberKey: () => {},
+        keep: async () => {},
+        save: (paired, req) => saved.push({ paired, req }),
+        pair(link, onCode) {
+          const endpointId = link.startsWith("apexdeck-nightly://") ? NIGHTLY_ENDPOINT : STABLE_ENDPOINT;
+          const done = (async () => {
+            const ack = onCode("333444");
+            vps.state.onLine(JSON.stringify({ event: "claim", code: "333444" }));
+            await ack;
+            return { hostEndpointId: endpointId, addrs: [], name: `vps-${channel}` };
+          })();
+          return { done, cancel() {} };
+        },
+      }, (event) => {
+        events.push(event);
+        if (event.kind === "trust") started.decideTrust(true);
+      });
+      await started.done;
+      return { events, saved, vps };
+    };
+
+    // Case 1: Populated ~/.apex with existing host-trust.json (and no ~/.local/share/dev.apexdeck.app yet).
+    const trustedHome = path.join(root, "trusted-legacy");
+    fs.mkdirSync(path.join(trustedHome, ".apex", "saved-chats-v1"), { recursive: true });
+    fs.writeFileSync(path.join(trustedHome, ".apex", "saved-chats-v1", "session.json"), "{}");
+    fs.writeFileSync(
+      path.join(trustedHome, ".apex", "host-trust.json"),
+      JSON.stringify({ trusted: true, trusted_at_ms: 1700000000000, epoch: "e".repeat(64) }),
+    );
+
+    const stableTrusted = await runAgainstHome(trustedHome, "stable", { writeMarkerOnStart: true });
+    assert.equal(stableTrusted.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(stableTrusted.events));
+    assert.equal(stableTrusted.events.some((e) => e.kind === "trust"), false, "Stable must skip the fresh-host trust prompt for populated ~/.apex");
+    assert.equal(stableTrusted.vps.state.stable.trustHostCalls, 0, "Stable must never run trust-host on an existing legacy store");
+    assert.ok(stableTrusted.events.some((e) => e.kind === "step" && e.id === "trust" && e.text.startsWith("Host trusted on")));
+    assert.equal(stableTrusted.saved[0]?.paired.hostEndpointId, STABLE_ENDPOINT);
+
+    // Case 2: Populated ~/.apex without host-trust.json still skips the fresh-host trust prompt so existing devices aren't voided.
+    const untrustedHome = path.join(root, "untrusted-legacy");
+    fs.mkdirSync(path.join(untrustedHome, ".apex", "saved-chats-v1"), { recursive: true });
+    fs.writeFileSync(path.join(untrustedHome, ".apex", "saved-chats-v1", "session.json"), "{}");
+
+    const stableUntrusted = await runAgainstHome(untrustedHome, "stable");
+    assert.equal(stableUntrusted.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(stableUntrusted.events));
+    assert.equal(stableUntrusted.events.some((e) => e.kind === "trust"), false, "Stable must not offer a trust reset on an existing untrusted ~/.apex store");
+    assert.equal(stableUntrusted.vps.state.stable.trustHostCalls, 0);
+
+    // Case 3: Nightly on the exact same populated ~/.apex home still treats Nightly as fresh in its own directory.
+    const nightlyRun = await runAgainstHome(trustedHome, "nightly");
+    assert.equal(nightlyRun.events.find((e) => e.kind === "failed"), undefined, JSON.stringify(nightlyRun.events));
+    assert.equal(nightlyRun.events.some((e) => e.kind === "trust" && e.fresh === true), true, "Nightly must ignore ~/.apex and treat its own missing folder as fresh");
+    assert.equal(nightlyRun.vps.state.nightly.trustHostCalls, 1);
+    assert.equal(nightlyRun.vps.state.stable.trustHostCalls, 0);
+    assert.equal(nightlyRun.saved[0]?.paired.hostEndpointId, NIGHTLY_ENDPOINT);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

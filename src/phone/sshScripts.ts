@@ -283,9 +283,15 @@ exit 5
 
 export const REMOTE_ON = remoteOn("stable");
 
-/** Resolve the channel's Linux data directory once, matching apex-daemon's XDG rule. */
-const channelDataDir = (cfg: ChannelScripts): string =>
-  `data_root="\${XDG_DATA_HOME:-$HOME/.local/share}"; case "$data_root" in /*) ;; *) data_root="$HOME/.local/share" ;; esac; data_dir="\${data_root%/}/${cfg.dataDirName}"`;
+/** Resolve the channel's Linux data directory once, matching apex-daemon's XDG and Stable legacy-store rules. */
+const channelDataDir = (cfg: ChannelScripts): string => {
+  const base = `data_root="\${XDG_DATA_HOME:-$HOME/.local/share}"; case "$data_root" in /*) ;; *) data_root="$HOME/.local/share" ;; esac; data_dir="\${data_root%/}/${cfg.dataDirName}"`;
+  if (cfg.channel !== "stable") return base;
+  const desktopHasData = `[ -d "$data_dir/saved-chats-v1" ] && ls -A "$data_dir/saved-chats-v1" 2>/dev/null | grep -q .`;
+  const legacyHasData = `[ -d "$legacy_dir/saved-chats-v1" ] && ls -A "$legacy_dir/saved-chats-v1" 2>/dev/null | grep -q .`;
+  const markerSelectsLegacy = `[ -f "$marker" ] && [ ! -L "$marker" ] && [ -r "$marker" ] && size=$(wc -c < "$marker" 2>/dev/null | tr -d '[:space:]') && [ -n "$size" ] && [ "$size" -le 4096 ] && grep -Eq '"version"[[:space:]]*:[[:space:]]*1([^0-9.]|$)' "$marker" && grep -Eq '"store"[[:space:]]*:[[:space:]]*"legacy-cli"' "$marker" && ! grep -Eq '"store"[[:space:]]*:[[:space:]]*"desktop"' "$marker"`;
+  return `${base}; if [ -n "\${HOME:-}" ]; then legacy_dir="\${HOME%/}/.apex"; marker="$data_dir/shared-store-v1.json"; if [ -e "$marker" ] || [ -L "$marker" ]; then if ${markerSelectsLegacy} && [ -d "$legacy_dir" ]; then data_dir="$legacy_dir"; fi; elif ! { ${desktopHasData}; } && ${legacyHasData}; then data_dir="$legacy_dir"; fi; fi`;
+};
 
 /** Check whether this channel's data folder already exists before Deck starts. */
 export const dataFolderCheck = (channel: HostChannel = "stable"): string => {
