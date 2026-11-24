@@ -1,6 +1,7 @@
 //! Explicit administrator ceremony. The desktop request supplies a scope only;
 //! kernel credentials supply identity and the administrator's terminal consent.
 use crate::{
+    channel::{LINUX_ENROLL as SOCKET, LINUX_RUNTIME},
     linux::KernelPeer,
     linux_registration::{EnrollmentConsent, LinuxRegistration, RegistrationStore},
 };
@@ -15,7 +16,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SOCKET: &str = "/run/apex-deck/enroll.sock";
 const DISCLOSURE: &str = "On Linux, unrestricted programs under the same account can inject into or automate the trusted UI. This cannot provide macOS dynamic code-signature guarantees.";
 
 pub fn parse_request(value: &serde_json::Value) -> Result<PathBuf, String> {
@@ -56,7 +56,7 @@ pub fn administrator() -> Result<(), String> {
     if unsafe { libc::geteuid() } != 0 {
         return Err("Enrollment listener requires an explicit administrator terminal".into());
     }
-    crate::linux_install::protected_path(Path::new("/run/apex-deck"))?;
+    crate::linux_install::protected_path(Path::new(LINUX_RUNTIME))?;
     let mut tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -137,7 +137,7 @@ pub fn request(folder: &Path) -> Result<(), String> {
     }
     let value = serde_json::json!({"op":"enroll","dataDir":folder});
     parse_request(&value)?;
-    crate::linux_install::protected_path(Path::new("/run/apex-deck"))?;
+    crate::linux_install::protected_path(Path::new(LINUX_RUNTIME))?;
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let stat = std::fs::symlink_metadata(SOCKET).map_err(|e| e.to_string())?;
     if stat.uid() != 0 || !stat.file_type().is_socket() {

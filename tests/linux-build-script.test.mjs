@@ -19,24 +19,40 @@ test('a worktree build also mounts the main checkout .git so build.rs can read t
     mkdirSync(join(repo, 'scripts'), { recursive: true }); mkdirSync(tools);
     copyFileSync(script, join(repo, 'scripts', 'linux-build.sh'));
     // A stand-in docker records each call's arguments, one per line.
-    writeFileSync(join(tools, 'docker'), '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$DOCKER_ARGS.$1"\n', { mode: 0o755 });
+    writeFileSync(join(tools, 'docker'), `#!/bin/sh
+printf '%s\\n' "$@" > "$DOCKER_ARGS.$1"
+for arg do
+  case "$arg" in *:/out) touch "${'${arg%:/out}'}/apex-daemon";; esac
+done
+`, { mode: 0o755 });
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
     const git = (...args) => execFileSync('git', args, { cwd: repo, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
     git('add', '.'); git('commit', '-qm', 'base');
     git('worktree', 'add', '-q', '--detach', linked);
 
-    const mounts = root => {
-      execFileSync('bash', [join(root, 'scripts', 'linux-build.sh'), 'amd64'], {
-        env: { ...env, PATH: `${tools}:${env.PATH}`, DOCKER_ARGS: log }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    const build = (root, channel) => {
+      const output = execFileSync('bash', [join(root, 'scripts', 'linux-build.sh'), 'amd64'], {
+        env: { ...env, PATH: `${tools}:${env.PATH}`, DOCKER_ARGS: log, APEX_CHANNEL: channel, APEX_BUILD_NUMBER: '7' },
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
       });
       const args = readFileSync(`${log}.run`, 'utf8').trimEnd().split('\n');
-      return args.filter((_, i) => args[i - 1] === '-v');
+      return { output: output.trim(), args, mounts: args.filter((_, i) => args[i - 1] === '-v') };
     };
     const caches = ['apex-deck-cargo-registry-amd64:/root/.cargo/registry', 'apex-deck-linux-build-amd64:/target'];
     const common = join(repo, '.git');
 
-    assert.deepEqual(mounts(repo), [`${repo}:/src:ro`, ...caches, `${repo}/target/linux-amd64:/out`]);
-    assert.deepEqual(mounts(linked), [`${linked}:/src:ro`, `${common}:${common}:ro`, ...caches, `${linked}/target/linux-amd64:/out`]);
+    assert.deepEqual(build(repo, 'stable').mounts, [`${repo}:/src:ro`, ...caches, `${repo}/target/linux-amd64:/out`]);
+    assert.deepEqual(build(linked, 'stable').mounts, [`${linked}:/src:ro`, `${common}:${common}:ro`, ...caches, `${linked}/target/linux-amd64:/out`]);
+    const commit = git('rev-parse', 'HEAD').trim();
+    const nightly = build(linked, 'nightly');
+    assert.equal(nightly.output, `${linked}/target/linux-amd64-nightly`);
+    assert(nightly.mounts.includes('apex-deck-linux-build-amd64-nightly:/target'));
+    assert(nightly.args.includes('APEX_CHANNEL=nightly'));
+    assert(nightly.args.includes('APEX_BUILD_NUMBER=7'));
+    assert(nightly.args.includes(`APEX_BUILD_SOURCE_COMMIT=${commit}`));
+    assert(nightly.args.includes(`APEX_BUILD_COMMIT=${commit.slice(0, 12)}`));
+    writeFileSync(join(linked, 'scripts', 'linux-build.sh'), '# dirty\n', { flag: 'a' });
+    assert.throws(() => build(linked, 'nightly'), /Nightly requires a clean checkout/);
   } finally { rmSync(base, { recursive: true, force: true }); }
 });

@@ -31,7 +31,12 @@ export function assertTrustedStartup(packaged,argv,env,platform=process.platform
   if (!packaged) return;
   // Windows reads variable names in any case, so apex_daemon_bin is APEX_DAEMON_BIN.
   const named=(k)=>platform==='win32'?k.toUpperCase():k;
-  const badEnv=Object.keys(env).some(k=>{const n=named(k);return ((n.startsWith('APEX_') && n!=='APEX_DECK_DATA_DIR') || n.startsWith('ELECTRON_') || n==='NODE_OPTIONS' || n.startsWith('DYLD_')) && env[k];});
+  const badEnv=Object.keys(env).some(k=>{
+    const n=named(k);
+    // Linux packages obtain their channel only from the bundled stamp.
+    const allowedApexEnv=n==='APEX_DECK_DATA_DIR' || (platform==='linux' && n==='APEX_CHANNEL');
+    return ((n.startsWith('APEX_') && !allowedApexEnv) || n.startsWith('ELECTRON_') || n==='NODE_OPTIONS' || n.startsWith('DYLD_')) && env[k];
+  });
   // Packaged trusted UI has no developer-command or URL escape hatch. Only
   // ordinary file/open event arguments and approved OS launch flags are allowed.
   if(env.APEX_DECK_DATA_DIR && !path.isAbsolute(env.APEX_DECK_DATA_DIR)) throw new Error('Apex data directory must be absolute.');
@@ -106,9 +111,16 @@ export async function linuxIdentity({uid=process.getuid?.(),publicKey=protectedP
   const canonical=text=>typeof text==='string' && path.posix.isAbsolute(text) && path.posix.normalize(text)===text && !/[\x00-\x1f\x7f]/.test(text);
   const treeName = typeof value.tree === 'string' ? path.posix.basename(value.tree) : '';
   const validTree = /^[a-zA-Z0-9][a-zA-Z0-9.-]{0,199}$/.test(treeName) && value.tree === path.posix.join(channel.LINUX_TREE, treeName);
+  const release = value.release;
+  const validRelease = channel.nightly
+    ? release?.channel === channel.name && typeof release.version === 'string' && /^[a-zA-Z0-9.-]{1,64}$/.test(release.version)
+      && typeof release.commit === 'string' && /^[a-f0-9]{40}$/.test(release.commit)
+      && Number.isSafeInteger(release.buildNumber) && release.buildNumber > 0
+      && (!packaged || value.role !== 'app' || (release.commit === channel.commit && release.buildNumber === channel.buildNumber))
+    : release === undefined;
   if(value.domain!==channel.DOMAIN || value.kind!=='linux-scope' || value.nonce!==nonce || value.uid!==uid || !Number.isSafeInteger(uid) || uid<=0
     || !Number.isSafeInteger(value.epoch) || value.epoch<=0 || value.protocol!==1 || !/^[a-f0-9]{64}$/.test(value.manifestSha256??'')
-    || !validTree || !/^[a-f0-9]{32}$/.test(value.brokerInstance??'')
+    || !validTree || !validRelease || !/^[a-f0-9]{32}$/.test(value.brokerInstance??'')
     || !canonical(value.dataDir) || value.daemonEndpoint!==path.posix.join(value.dataDir,'daemon.sock')
     || ![null,'app'].includes(value.role) || (value.daemonPid!==null && (!Number.isSafeInteger(value.daemonPid) || value.daemonPid<=0))
     || (dataDir!==undefined && dataDir!==value.dataDir)) throw new Error('Authenticated Linux scope does not match this account, release or data folder.');
@@ -157,6 +169,10 @@ export async function attestFrame(frame,{dataDir,uid=process.getuid?.(),publicKe
 // job's id once the broker has signed for it.
 export async function requestUpdate(update,{uid=process.getuid(),publicKey:rawKey,issue:send=issue}={}){
   const request={op:'update_install',version:update.version,package:update.package,sha256:update.sha256,size:update.size};
+  if(channel.nightly){
+    if(!Number.isSafeInteger(update.buildNumber) || update.buildNumber<=0)throw new Error('Invalid Nightly build number.');
+    request.buildNumber=update.buildNumber;
+  }
   const key=rawKey??protectedPublicKey();
   const signed=await send(request);
   if(typeof signed?.payload!=='string' || Buffer.byteLength(signed.payload)>LIMIT || typeof signed.signature!=='string')throw new Error('Invalid response from the protected service.');

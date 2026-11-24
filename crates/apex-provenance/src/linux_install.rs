@@ -1,4 +1,5 @@
 //! Signed Linux payload validation. No service activation is performed here.
+use crate::channel::{LINUX_TREE, NIGHTLY};
 use ring::signature::{UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,10 +9,40 @@ use std::io::{Read, Seek, SeekFrom};
 pub const MANIFEST_LIMIT: usize = 4 * 1024 * 1024;
 pub const PAYLOAD_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 pub const FILE_LIMIT: usize = 20_000;
+const MAX_BUILD_NUMBER: u64 = (1 << 53) - 1;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReleaseChannel {
+    #[default]
+    Stable,
+    Nightly,
+}
+impl ReleaseChannel {
+    fn current() -> Self {
+        if NIGHTLY {
+            Self::Nightly
+        } else {
+            Self::Stable
+        }
+    }
+}
+
+fn build_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    u64::deserialize(deserializer).map(Some)
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LinuxReleaseManifest {
+    #[serde(default)]
+    pub channel: ReleaseChannel,
+    #[serde(
+        default,
+        deserialize_with = "build_number",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_number: Option<u64>,
     pub version: String,
     pub commit: String,
     pub arch: String,
@@ -21,6 +52,16 @@ pub struct LinuxReleaseManifest {
     pub archive_sha256: String,
     pub files: Vec<PayloadFile>,
 }
+
+impl LinuxReleaseManifest {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn nightly_identity(&self) -> Option<serde_json::Value> {
+        self.build_number.map(|build_number| {
+            serde_json::json!({"channel":self.channel,"version":self.version,"commit":self.commit,"buildNumber":build_number})
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PayloadFile {
@@ -47,6 +88,13 @@ fn verify_with_key<R: Read + Seek>(
         .map_err(|_| "Invalid release signature")?;
     let manifest: LinuxReleaseManifest =
         serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if manifest.channel != ReleaseChannel::current() {
+        return Err("Wrong Linux release channel".into());
+    }
+    match (manifest.channel, manifest.build_number) {
+        (ReleaseChannel::Stable, None) | (ReleaseChannel::Nightly, Some(1..=MAX_BUILD_NUMBER)) => (),
+        _ => return Err("Invalid Linux release build number".into()),
+    }
     if !matches!(arch, "arm64" | "x64") || manifest.arch != arch {
         return Err("Wrong payload architecture".into());
     }
@@ -276,7 +324,7 @@ pub fn stage_release(
         return Err("Expected staged regular archive".into());
     }
     let manifest = verify_release(&bytes, &signature, &mut archive)?;
-    let parent = std::path::Path::new("/opt/apex-deck");
+    let parent = std::path::Path::new(LINUX_TREE);
     protected_path(parent)?;
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let target = parent.join(format!(
@@ -431,6 +479,8 @@ mod tests {
             .unwrap();
         let archive = builder.into_inner().unwrap();
         let manifest = LinuxReleaseManifest {
+            channel: ReleaseChannel::current(),
+            build_number: NIGHTLY.then_some(123),
             version: "0.9.9".into(),
             commit: "a".repeat(40),
             arch: "arm64".into(),
@@ -477,6 +527,34 @@ mod tests {
             check(&signed, &key, &archive, "arm64").unwrap().commit,
             "a".repeat(40)
         );
+    }
+    #[test]
+    fn signed_channel_is_strict_and_only_stable_accepts_a_legacy_manifest() {
+        let (signed, _, archive) = fixture();
+        for (channel, build_number, accepted) in [
+            (None, None, !NIGHTLY),
+            (Some(serde_json::json!("stable")), None, !NIGHTLY),
+            (Some(serde_json::json!("nightly")), Some(serde_json::json!(123)), NIGHTLY),
+            (Some(serde_json::json!("nightly")), None, false),
+            (Some(serde_json::json!("nightly")), Some(serde_json::json!(0)), false),
+            (Some(serde_json::json!("nightly")), Some(serde_json::json!(MAX_BUILD_NUMBER + 1)), false),
+            (Some(serde_json::json!("stable")), Some(serde_json::json!(123)), false),
+            (Some(serde_json::Value::Null), None, false),
+            (Some(serde_json::json!("preview")), None, false),
+            (None, Some(serde_json::Value::Null), false),
+        ] {
+            let (signed, key) = resigned(&signed, |value| {
+                let fields = value.as_object_mut().unwrap();
+                for (name, field) in [("channel", channel), ("buildNumber", build_number)] {
+                    if let Some(field) = field {
+                        fields.insert(name.into(), field);
+                    } else {
+                        fields.remove(name);
+                    }
+                }
+            });
+            assert_eq!(check(&signed, &key, &archive, "arm64").is_ok(), accepted, "{}", signed.payload);
+        }
     }
     #[test]
     fn forged_signature_is_rejected_before_parsing_archive() {

@@ -181,6 +181,15 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
             "-h" | "--help" => help = true,
             "-V" | "--version" => version = true,
             "--data-dir" => data_dir = Some(PathBuf::from(value()?)),
+            #[cfg(target_os = "linux")]
+            "--require-channel" => {
+                let required = value()?;
+                let built = crate::build_info::linux_channel();
+                if required.as_str() != built {
+                    return Err(format!("this daemon was built for {built}; the service requires {required}"));
+                }
+                serve_flag.get_or_insert("--require-channel");
+            }
             "--port" => {
                 let port = value()?;
                 options.port = port.parse().map_err(|_| format!("--port {port} is not a port number"))?;
@@ -276,6 +285,15 @@ mod tests {
         assert_eq!(parse(&["serve"]), Ok(Cli { action: Action::Serve(ServeOptions::default()), data_dir: None }));
         assert_eq!(ServeOptions::default().bind.to_string(), "127.0.0.1");
         assert_eq!(ServeOptions::default().port, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systemd_can_require_the_compiled_channel_before_starting() {
+        let built = crate::build_info::linux_channel();
+        let other = if built == "stable" { "nightly" } else { "stable" };
+        assert!(parse(&["serve", "--require-channel", built]).is_ok());
+        assert!(parse(&["serve", "--require-channel", other]).unwrap_err().contains("the service requires"));
     }
 
     #[test]

@@ -4,6 +4,8 @@ import { openSync, closeSync, readSync, writeSync, fsyncSync, lstatSync, readdir
 import { createHash, sign, createPrivateKey } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractFile } from '@electron/asar';
+import { checkedChannel, nightlyIdentity } from '../desktop/channelIdentity.mjs';
 
 const safePath = name => name.length <= 100 && name.split('/').every(p => p && p !== '.' && p !== '..' && /^[a-zA-Z0-9._+@ -]+$/.test(p));
 function hashFile(file) {
@@ -36,8 +38,11 @@ function tarHeader(file) {
   put(header.reduce((sum, value) => sum + value, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8);
   return header;
 }
-export function packagePayload({ payload, prefix, privateKey, arch, version, commit }) {
+export function packagePayload({ payload, prefix, privateKey, arch, version, commit, channel = 'stable', buildNumber }) {
   if (!['arm64', 'x64'].includes(arch) || !/^[a-f0-9]{40}$/.test(commit) || !/^[a-zA-Z0-9.-]{1,64}$/.test(version)) throw new Error('Invalid release identity');
+  checkedChannel(channel);
+  if (channel === 'nightly') nightlyIdentity({ buildNumber, commit });
+  else if (buildNumber !== undefined) throw new Error('Stable payloads do not carry a Nightly build number');
   payload = realpathSync(payload); prefix = path.resolve(prefix);
   if (prefix === payload || prefix.startsWith(payload + path.sep)) throw new Error('Artifact output must be outside the payload');
   const files = inventory(payload);
@@ -58,7 +63,7 @@ export function packagePayload({ payload, prefix, privateKey, arch, version, com
       }
     }
     write(Buffer.alloc(1024)); fsyncSync(fd); closeSync(fd); fd = undefined;
-    const manifest = { version, commit, arch, protocol: 1, evaluation: true, archiveSize: lstatSync(archivePath).size, archiveSha256: hashFile(archivePath), files };
+    const manifest = { version, commit, channel, buildNumber, arch, protocol: 1, evaluation: true, archiveSize: lstatSync(archivePath).size, archiveSha256: hashFile(archivePath), files };
     const bytes = Buffer.from(JSON.stringify(manifest));
     if (bytes.length > 4 * 1024 ** 2) throw new Error('Manifest exceeds bounds');
     writeFileSync(`${prefix}.manifest.json`, bytes, { flag: 'wx', mode: 0o644 });
@@ -77,7 +82,19 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (!commit || extra.length || process.platform !== 'linux') throw new Error('Usage on Linux: package-linux-protected.mjs PAYLOAD PREFIX EVALUATION_PRIVATE_KEY ARCH VERSION COMMIT');
     const canonicalKey = realpathSync(keyPath); const canonicalPayload = realpathSync(payload);
     if (canonicalKey.startsWith(canonicalPayload + path.sep) || (lstatSync(canonicalKey).mode & 0o077)) throw new Error('Private evaluation key must be outside payload and accessible only to its owner');
-    packagePayload({ payload, prefix, privateKey: createPrivateKey(readFileSync(canonicalKey)), arch, version, commit });
+    const channel = checkedChannel(process.env.APEX_CHANNEL ?? 'stable');
+    const asar = path.join(canonicalPayload, 'resources/app.asar');
+    const stamp = JSON.parse(extractFile(asar, 'dist/channel.json'));
+    if (stamp.channel !== channel || JSON.parse(extractFile(asar, 'package.json')).version !== version) {
+      throw new Error('The packaged Electron channel or version does not match the payload.');
+    }
+    if (channel === 'nightly') {
+      nightlyIdentity(stamp);
+      if (stamp.commit !== commit || String(stamp.buildNumber) !== process.env.APEX_BUILD_NUMBER) {
+        throw new Error('The packaged Electron build identity does not match the payload.');
+      }
+    }
+    packagePayload({ payload, prefix, privateKey: createPrivateKey(readFileSync(canonicalKey)), arch, version, commit, channel, buildNumber: stamp.buildNumber });
     console.log('Created evaluation-only signed payload; independently provision the verifier trust root.');
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

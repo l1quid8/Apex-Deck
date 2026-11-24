@@ -10,8 +10,10 @@
 #                  still compares against HEAD and will fail unless the build
 #                  reports the same commit.
 # Environment:
+#   APEX_CHANNEL       stable (default) or nightly; selects the build and deployment target
+#   APEX_BUILD_NUMBER  published build number, required for a Nightly build
 #   APEX_DAEMON_USER   remote user for the unit (default: the ssh config user)
-#   APEX_DAEMON_UNIT   full unit name (default: apex-daemon@<user>)
+#   APEX_DAEMON_UNIT   Stable unit override; Nightly always uses apex-daemon-nightly@<user>.service
 #   APEX_LINUX_ARCH    amd64 (default) or arm64, passed to scripts/linux-build.sh
 # Exits non-zero on any failed step or failed verification. It does not roll
 # back automatically; the backup path and rollback command are printed.
@@ -36,15 +38,35 @@ done
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${APEX_LINUX_ARCH:-amd64}"
 case "$ARCH" in amd64|arm64) ;; *) echo "APEX_LINUX_ARCH must be amd64 or arm64" >&2; exit 2 ;; esac
-BIN_LOCAL="$ROOT/target/linux-$ARCH/apex-daemon"
-BIN_REMOTE="/usr/local/bin/apex-daemon"
+CHANNEL="${APEX_CHANNEL-stable}"
+case "$CHANNEL" in stable|nightly) ;; *) echo "APEX_CHANNEL must be stable or nightly" >&2; exit 2 ;; esac
+CHANNEL_PATHS="$(node -e 'const c = require(process.argv[1])[process.argv[2]]; console.log(c.VPS_BINARY, c.VPS_UNIT)' "$ROOT/desktop/channels.json" "$CHANNEL")"
+read -r BIN_REMOTE UNIT_TEMPLATE <<< "$CHANNEL_PATHS"
+BUILD_DIR="linux-$ARCH"
+[[ "$CHANNEL" != nightly ]] || BUILD_DIR="$BUILD_DIR-nightly"
+BIN_LOCAL="$ROOT/target/$BUILD_DIR/apex-daemon"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-TMP_REMOTE="/tmp/apex-daemon.$STAMP"
+TMP_REMOTE="/tmp/${BIN_REMOTE##*/}.$STAMP"
 BACKUP_REMOTE="$BIN_REMOTE.bak-$STAMP"
 
 # Remote user from ssh config. `ssh -G` only reads local config, no connection.
 SSH_USER="${APEX_DAEMON_USER:-$(ssh -G "$HOST" 2>/dev/null | awk '$1 == "user" {print $2}')}"
-UNIT="${APEX_DAEMON_UNIT:-apex-daemon@$SSH_USER}"
+[[ -n "$SSH_USER" ]] || { echo "could not work out the remote user; set APEX_DAEMON_USER" >&2; exit 2; }
+UNIT_DEFAULT="${UNIT_TEMPLATE/@./@$SSH_USER.}"
+if [[ "$CHANNEL" == nightly ]]; then
+  [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "invalid Nightly service user" >&2; exit 2; }
+  if [[ -n "${APEX_DAEMON_UNIT:-}" && "$APEX_DAEMON_UNIT" != "$UNIT_DEFAULT" && "$APEX_DAEMON_UNIT" != "${UNIT_DEFAULT%.service}" ]]; then
+    echo "Nightly deployment requires $UNIT_DEFAULT" >&2
+    exit 2
+  fi
+  UNIT="$UNIT_DEFAULT"
+else
+  UNIT="${APEX_DAEMON_UNIT:-${UNIT_DEFAULT%.service}}"
+  if [[ "$UNIT" == apex-daemon-nightly@* ]]; then
+    echo "Stable deployment cannot target a Nightly unit" >&2
+    exit 2
+  fi
+fi
 
 # Plain non-interactive ssh: ignore any RemoteCommand, forwards or shared
 # connection the host's ssh config sets up for interactive use.
@@ -78,14 +100,27 @@ remote_out() {
   ssh "${SSH_OPTS[@]}" "$HOST" "$@"
 }
 
-echo "Host: $HOST  user: ${SSH_USER:-unknown}  unit: $UNIT  arch: $ARCH"
-(( DRY_RUN )) && echo "DRY RUN: nothing below is executed, except the local ssh -G lookup"
+verify_nightly_binary() {
+  local identity
+  identity="$(remote_out "$1" --build-identity)" || return 1
+  (( ! DRY_RUN )) || return 0
+  node -e '
+    const [raw, commit, buildNumber] = process.argv.slice(1);
+    let identity;
+    try { identity = JSON.parse(raw); } catch { process.exit(1); }
+    if (identity?.channel !== "nightly" || identity.commit !== commit ||
+        !Number.isSafeInteger(identity.buildNumber) || identity.buildNumber <= 0 ||
+        identity.buildNumber !== Number(buildNumber)) process.exit(1);
+  ' "$identity" "$FULL_COMMIT" "${APEX_BUILD_NUMBER:-}"
+}
 
-[[ -n "$SSH_USER" ]] || { echo "could not work out the remote user; set APEX_DAEMON_USER" >&2; exit 2; }
+echo "Host: $HOST  user: $SSH_USER  unit: $UNIT  arch: $ARCH  channel: $CHANNEL"
+(( DRY_RUN )) && echo "DRY RUN: nothing below is executed, except the local ssh -G lookup"
 
 # Preflight: refuse a dirty tree (tracked files only, since the Linux build copies
 # the tracked working tree, and untracked scratch folders are not part of it).
-COMMIT="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
+FULL_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+COMMIT="${FULL_COMMIT:0:12}"
 DIRTY="$(git -C "$ROOT" status --porcelain --untracked-files=no)"
 echo "Local commit: $COMMIT"
 if [[ -n "$DIRTY" ]]; then
@@ -95,11 +130,15 @@ if [[ -n "$DIRTY" ]]; then
     echo "REFUSED: working tree is dirty. Commit first, or pass --allow-dirty." >&2
     exit 1
   fi
+  if [[ "$CHANNEL" == nightly ]] && (( ! DRY_RUN )); then
+    echo "REFUSED: Nightly deployment requires clean, stamped source." >&2
+    exit 1
+  fi
   echo "WARNING: deploying with --allow-dirty; the binary is not exactly $COMMIT."
 fi
 
 echo "Step 1: build for Linux ($ARCH)"
-run "$ROOT/scripts/linux-build.sh" "$ARCH"
+run env "APEX_CHANNEL=$CHANNEL" "$ROOT/scripts/linux-build.sh" "$ARCH"
 if (( ! DRY_RUN )) && [[ ! -x "$BIN_LOCAL" ]]; then
   echo "build did not produce $BIN_LOCAL" >&2
   exit 1
@@ -112,7 +151,19 @@ echo "Step 3: back up the current binary to $BACKUP_REMOTE"
 remote sudo cp -p "$BIN_REMOTE" "$BACKUP_REMOTE"
 
 echo "Step 4: install"
-remote sudo install -m 0755 "$TMP_REMOTE" "$BIN_REMOTE"
+if [[ "$CHANNEL" == nightly ]]; then
+  STAGED_REMOTE="$BIN_REMOTE.deploy-new-$STAMP"
+  remote sudo install -m 0755 "$TMP_REMOTE" "$STAGED_REMOTE"
+  if ! verify_nightly_binary "$STAGED_REMOTE"; then
+    remote sudo rm -f "$STAGED_REMOTE"
+    remote rm -f "$TMP_REMOTE"
+    echo "REFUSED: copied binary does not report the expected Nightly build identity" >&2
+    exit 1
+  fi
+  remote sudo mv -f "$STAGED_REMOTE" "$BIN_REMOTE"
+else
+  remote sudo install -m 0755 "$TMP_REMOTE" "$BIN_REMOTE"
+fi
 remote rm -f "$TMP_REMOTE"
 
 echo "Step 5: restart $UNIT"
@@ -125,10 +176,15 @@ remote sudo systemctl restart "$UNIT"
 echo "Step 6: verify"
 if (( DRY_RUN )); then
   remote_out "$BIN_REMOTE" --version
+  [[ "$CHANNEL" != nightly ]] || remote_out "$BIN_REMOTE" --build-identity
   remote_out systemctl is-active "$UNIT"
   remote_out systemctl show -p MainPID --value "$UNIT"
   echo "(dry run: checks below are what a real run requires)"
   echo "  - remote --version output contains commit $COMMIT"
+  if [[ "$CHANNEL" == nightly ]]; then
+    echo "  - remote --build-identity reports the Nightly channel, commit $FULL_COMMIT, and requested build number"
+    echo "  - the unit's main process uses $BIN_REMOTE"
+  fi
   echo "  - systemctl is-active $UNIT prints 'active'"
   echo "  - MainPID start time (ps -o lstart=) is at or after the restart time"
   echo "Dry run complete. Nothing was built, copied, installed or restarted."
@@ -141,14 +197,22 @@ if ! printf '%s\n' "$VERSION_OUT" | grep -Eq "(^|[^0-9a-f])$COMMIT([^0-9a-f]|$)"
   fail "remote --version does not show commit $COMMIT (saw: ${VERSION_OUT:-nothing})"
 fi
 
+if [[ "$CHANNEL" == nightly ]] && ! verify_nightly_binary "$BIN_REMOTE"; then
+  fail "remote Nightly build identity does not match the deployed source and build number"
+fi
+
 ACTIVE="$(remote_out systemctl is-active "$UNIT" || true)"
 echo "  unit state: $ACTIVE"
 [[ "$ACTIVE" == "active" ]] || fail "$UNIT is '$ACTIVE', not 'active'"
 
 PID="$(remote_out systemctl show -p MainPID --value "$UNIT" || true)"
-if [[ -z "$PID" || "$PID" == "0" ]]; then
+if [[ ! "$PID" =~ ^[1-9][0-9]*$ || "$PID" == "1" ]]; then
   fail "$UNIT has no main PID"
 else
+  if [[ "$CHANNEL" == nightly ]]; then
+    RUNNING_BINARY="$(remote_out sudo readlink "/proc/$PID/exe" || true)"
+    [[ "$RUNNING_BINARY" == "$BIN_REMOTE" ]] || fail "Nightly unit is not using $BIN_REMOTE"
+  fi
   START_EPOCH="$(remote_out "date -d \"\$(ps -o lstart= -p $PID)\" +%s" 2>/dev/null || true)"
   echo "  main PID $PID started at epoch ${START_EPOCH:-unknown}; restart at epoch $RESTART_EPOCH"
   if [[ -z "$START_EPOCH" ]]; then

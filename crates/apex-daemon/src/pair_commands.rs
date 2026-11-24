@@ -181,7 +181,8 @@ mod pairing {
             }
             let host = HostInfo { host: *endpoint.id().as_bytes(), name: name.clone(), relay: crate::remote::RELAY.to_string(), addrs };
             let invite = daemon.invites.start(host, now);
-            json!({ "invitation": B64.encode(invite.inv), "link": invite.to_link(), "expires_at": now.saturating_add(LIFETIME_MS) })
+            let link = invite.to_link_with_scheme(apex_provenance::channel::URL_SCHEME);
+            json!({ "invitation": B64.encode(invite.inv), "link": link, "expires_at": now.saturating_add(LIFETIME_MS) })
         }).await;
         made.ok_or_else(|| Refusal::new(NOT_REMOTE, "not_remote"))
     }
@@ -222,5 +223,24 @@ mod tests {
     fn pair_start_ignores_old_tier_and_threads_args() {
         let request: PairRequest = serde_json::from_value(json!({ "cmd": "pair_start", "args": { "tier": "read_only", "threads": ["r1"] } })).unwrap();
         assert!(matches!(request, PairRequest::PairStart {}));
+    }
+
+    #[test]
+    fn channel_pairing_link_uses_active_url_scheme_and_round_trips() {
+        let invite = crate::pairing::Invite {
+            v: 1,
+            host: [7; 32],
+            name: "Mac".into(),
+            relay: "https://relay.apex-terminal.xyz/".into(),
+            addrs: vec!["127.0.0.1:41641".into()],
+            inv: [1; 16],
+            secret: [2; 32],
+            exp: 1_900_000_000,
+            os: "macos".into(),
+        };
+        let link = invite.to_link_with_scheme(apex_provenance::channel::URL_SCHEME);
+        let expected_prefix = format!("{}://pair?p=", apex_provenance::channel::URL_SCHEME);
+        assert!(link.starts_with(&expected_prefix), "{link}");
+        assert_eq!(crate::pairing::Invite::parse_link(&link, 1_800_000_000).unwrap(), invite);
     }
 }

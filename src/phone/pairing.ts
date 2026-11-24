@@ -7,7 +7,7 @@ import { CLOSE, type RemotePlugin } from "./remotePlugin.ts";
 
 /** Our relay. A link naming any other is refused (crates/apex-pairing/src/link.rs). */
 export const RELAY = "https://relay.apex-terminal.xyz/";
-const PREFIX = "apexdeck://pair?p=";
+const PREFIXES = ["apexdeck://pair?p=", "apexdeck-nightly://pair?p="] as const;
 /** Clock skew allowed past a link's expiry, as on the native side. */
 const SKEW_S = 120;
 const NOT_OURS = "This code isn't from Apex Deck.";
@@ -36,10 +36,11 @@ function base64url(text: string): string {
  */
 export function parsePairingLink(text: string, nowS = Date.now() / 1000): PairingPreview {
   const trimmed = text.trim();
-  if (!trimmed.startsWith(PREFIX)) throw new Error(NOT_OURS);
+  const prefix = PREFIXES.find((candidate) => trimmed.startsWith(candidate));
+  if (!prefix) throw new Error(NOT_OURS);
   let wire: Record<string, unknown>;
   try {
-    wire = JSON.parse(base64url(trimmed.slice(PREFIX.length)));
+    wire = JSON.parse(base64url(trimmed.slice(prefix.length)));
   } catch {
     throw new Error(NOT_OURS);
   }

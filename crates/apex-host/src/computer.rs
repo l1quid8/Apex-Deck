@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 const POLICY_DEADLINE: Duration = Duration::from_secs(2);
-const HELPER_ID: &str = "dev.apexdeck.unified-computer-use";
+const HELPER_ID: &str = apex_provenance::channel::HELPER_ID;
 
 /// This stamp is derived from a saved assistant, rather than a model's tool
 /// arguments or the similarly named access mode of an ordinary Work room.
@@ -362,7 +362,10 @@ async fn verified_bundle() -> Result<PathBuf, String> {
 }
 fn socket_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| {
-        PathBuf::from(h).join("Library/Application Support/Apex Unified Computer Use/control.sock")
+        PathBuf::from(h)
+            .join("Library/Application Support")
+            .join(apex_provenance::channel::HELPER_FOLDER)
+            .join("control.sock")
     })
 }
 
@@ -1454,5 +1457,21 @@ mod tests {
         // EOF, so even a delayed acknowledgement cannot preserve authority.
         assert_eq!(helper.read(&mut byte).await.unwrap(), 0);
         assert!(helper.write_all(b"late\n").await.is_err());
+    }
+
+    #[test]
+    fn helper_identity_and_socket_follow_active_channel() {
+        assert_eq!(HELPER_ID, apex_provenance::channel::HELPER_ID);
+        if let Some(socket) = socket_path() {
+            assert!(
+                socket.ends_with(
+                    Path::new("Library/Application Support")
+                        .join(apex_provenance::channel::HELPER_FOLDER)
+                        .join("control.sock")
+                ),
+                "{}",
+                socket.display()
+            );
+        }
     }
 }

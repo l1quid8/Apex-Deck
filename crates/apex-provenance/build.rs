@@ -9,6 +9,11 @@ fn main() {
     for (name, value) in table[channel].as_object().unwrap() {
         source.push_str(&format!("pub const {name}: &str = {:?};\n", value.as_str().unwrap()));
     }
+    let other = if channel == "nightly" { "stable" } else { "nightly" };
+    source.push_str(&format!(
+        "pub const LINUX_OTHER_ROOT: &str = {:?};\n",
+        table[other]["LINUX_ROOT"].as_str().unwrap()
+    ));
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(out.join("channel.rs"), source).unwrap();
     println!("cargo:rerun-if-env-changed=APEX_LINUX_EVALUATION_PUBLIC_KEY");

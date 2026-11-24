@@ -11,15 +11,36 @@
 #   the team that signed the installed protected copy.
 import hashlib,json,os,platform,plistlib,pwd,re,shutil,stat,subprocess,sys,time
 from pathlib import Path
+CHANNEL = 'stable'
+CHANNEL_CONFIG_JSON = ''
 MANIFEST_JSON = ''
 M = json.loads(MANIFEST_JSON) if MANIFEST_JSON else None
-ROOT = Path('/Library/Application Support/Apex Deck Provenance')
-UPGRADES = Path('/Library/Application Support/Apex Deck Upgrade')
-STAGED = UPGRADES / M['id'] / 'Apex Deck.app' if M else None
-TRUSTED = ROOT / 'TrustedUI' / 'Apex Deck.app'
+_DEFAULT_CHANNEL = {
+    'APP_ID': 'dev.apexdeck.app',
+    'PRODUCT': 'Apex Deck',
+    'CLI_ID': 'dev.apexdeck.cli',
+    'MAC_ROOT': '/Library/Application Support/Apex Deck Provenance',
+    'MAC_SOCKET': '/var/run/dev.apexdeck.provenance.sock',
+    'MAC_SERVICE': 'dev.apexdeck.provenance',
+    'MAC_AGENT': 'dev.apexdeck.daemon',
+    'MAC_UPDATE': 'dev.apexdeck.update',
+    'MAC_UPGRADES': '/Library/Application Support/Apex Deck Upgrade',
+    'RESULT_FILE': '/Library/Application Support/Apex Deck Updates/last-update.json',
+}
+_CH = json.loads(CHANNEL_CONFIG_JSON) if CHANNEL_CONFIG_JSON else _DEFAULT_CHANNEL
+APP_ID = _CH['APP_ID']
+PRODUCT = _CH['PRODUCT']
+CLI_ID = _CH['CLI_ID']
+AGENT_LABEL = _CH['MAC_AGENT']
+BROKER_LABEL = _CH['MAC_SERVICE']
+BROKER_SOCKET = Path(_CH['MAC_SOCKET'])
+ROOT = Path(_CH['MAC_ROOT'])
+UPGRADES = Path(_CH['MAC_UPGRADES'])
+STAGED = UPGRADES / M['id'] / (PRODUCT + '.app') if M else None
+TRUSTED = ROOT / 'TrustedUI' / (PRODUCT + '.app')
 DAEMON = TRUSTED / 'Contents/Resources/bin/apex-daemon'
-APPLICATION = Path('/Applications/Apex Deck.app')
-BROKER_PLIST = Path('/Library/LaunchDaemons/dev.apexdeck.provenance.plist')
+APPLICATION = Path('/Applications') / (PRODUCT + '.app')
+BROKER_PLIST = Path('/Library/LaunchDaemons') / (BROKER_LABEL + '.plist')
 AUTHORITY = ('private-key','public-key','journal.json')
 JOURNAL_LOG = 'journal.log'  # Optional on older installations; absence is part of the snapshot.
 
@@ -77,7 +98,8 @@ def validate_bundle(app):
     bundle_links(app)
     for image in (Path(app),Path(app)/'Contents/Resources/bin/apex-daemon',Path(app)/'Contents/Resources/bin/apex-provenance'):
         run('/usr/bin/codesign','--verify','--strict','-R='+REQUIREMENT,image)
-    run('/bin/bash',VERIFIER,app,M['ui'],M['daemon'],Path(app)/'Contents/Resources/bin/apex-provenance',M['broker'],*([M['cli']] if 'cli' in M else []))
+    channel_args=('--channel',CHANNEL) if CHANNEL=='nightly' else ()
+    run('/bin/bash',VERIFIER,*channel_args,app,M['ui'],M['daemon'],Path(app)/'Contents/Resources/bin/apex-provenance',M['broker'],*([M['cli']] if 'cli' in M else []))
 
 def update_config(config_path,ui,daemon,cli=None):
     regular(config_path)
@@ -98,7 +120,26 @@ def update_config(config_path,ui,daemon,cli=None):
 def app_running(uid=None):
     # Any signed-in person's copy, or with `uid` only that person's: with Fast User Switching each has their own.
     who=('-U',str(uid)) if uid is not None else ()
-    return run('/usr/bin/pgrep',*who,'-x','Apex Deck',required=False).returncode == 0
+    return run('/usr/bin/pgrep',*who,'-x',PRODUCT,required=False).returncode == 0
+
+def daemon_targets():
+    return {
+        str(TRUSTED / 'Contents/Resources/bin/apex-daemon'),
+        str(APPLICATION / 'Contents/Resources/bin/apex-daemon'),
+    }
+
+def channel_daemon_running():
+    # Match only this channel's daemon executables so Stable and Nightly can
+    # update independently while the other channel remains live.
+    targets = daemon_targets()
+    processes = run('/bin/ps', '-axo', 'pid=,comm=', required=False)
+    if processes.returncode:
+        return True
+    for line in processes.stdout.splitlines():
+        _, _, command = line.strip().partition(' ')
+        if command.strip() in targets:
+            return True
+    return False
 
 def require_helper_stopped():
     # The helper caches its parent daemon's signing hash at launch. Replacing
@@ -110,11 +151,11 @@ def require_helper_stopped():
     if processes.returncode:
         raise RuntimeError('Could not check whether Unified Computer Use is still running, so nothing was installed. Try the update again.')
     if str(helper) in (line.strip() for line in processes.stdout.splitlines()):
-        raise RuntimeError('Unified Computer Use is still running from the installed Apex Deck, so nothing was installed. Finish any active computer-use work, then sign out of the macOS account running it and sign back in before retrying the update. Other signed-in accounts may also need to sign out.')
+        raise RuntimeError('Unified Computer Use is still running from the installed '+PRODUCT+', so nothing was installed. Finish any active computer-use work, then sign out of the macOS account running it and sign back in before retrying the update. Other signed-in accounts may also need to sign out.')
 
 def preflight(payload=False):
     if os.geteuid()!=0: raise RuntimeError('macOS Installer administrator authorization is required')
-    if app_running(): raise RuntimeError('Quit Apex Deck before installing this upgrade, then retry in Installer.')
+    if app_running(): raise RuntimeError('Quit '+PRODUCT+' before installing this upgrade, then retry in Installer.')
     require_helper_stopped()
     protected(ROOT); protected(ROOT/'TrustedUI'); protected(TRUSTED); protected(ROOT/'apex-provenance'); protected(BROKER_PLIST)
     for name in (*AUTHORITY,'config.json'):
@@ -125,8 +166,8 @@ def preflight(payload=False):
     config = json.loads((ROOT/'config.json').read_bytes())
     if not isinstance(config,dict) or not all(isinstance(config.get(k),str) for k in ('uiCdhash','daemonCdhash')): raise RuntimeError('Invalid authority config')
     with BROKER_PLIST.open('rb') as f: broker = plistlib.load(f)
-    if broker.get('Label')!='dev.apexdeck.provenance' or broker.get('ProgramArguments')!=[str(ROOT/'apex-provenance')]: raise RuntimeError('Unexpected broker service configuration')
-    if APPLICATION.is_symlink() or not APPLICATION.is_dir(): raise RuntimeError('Expected an existing regular /Applications/Apex Deck.app')
+    if broker.get('Label')!=BROKER_LABEL or broker.get('ProgramArguments')!=[str(ROOT/'apex-provenance')]: raise RuntimeError('Unexpected broker service configuration')
+    if APPLICATION.is_symlink() or not APPLICATION.is_dir(): raise RuntimeError('Expected an existing regular '+str(APPLICATION))
     # /Applications itself may be admin-writable; only this fixed bundle is replaced.
     for parent in (Path('/Library'),Path('/Library/Application Support')): protected(parent)
     if UPGRADES.exists(): protected(UPGRADES)
@@ -134,11 +175,11 @@ def preflight(payload=False):
     st = os.stat('/dev/console')
     if st.st_uid < 500: raise RuntimeError('An ordinary user must be signed in to install this upgrade')
     user = pwd.getpwuid(st.st_uid)
-    agent = Path(user.pw_dir)/'Library/LaunchAgents/dev.apexdeck.daemon.plist'
+    agent = Path(user.pw_dir)/'Library/LaunchAgents'/(AGENT_LABEL+'.plist')
     regular(agent)
     if agent.is_symlink() or agent.stat().st_uid!=user.pw_uid: raise RuntimeError('Unsafe user service plist')
     with agent.open('rb') as f: config_agent=plistlib.load(f)
-    if config_agent.get('Label')!='dev.apexdeck.daemon' or config_agent.get('ProgramArguments',[None])[0]!=str(DAEMON): raise RuntimeError('The existing user service does not target the protected daemon; stop and inspect.')
+    if config_agent.get('Label')!=AGENT_LABEL or config_agent.get('ProgramArguments',[None])[0]!=str(TRUSTED/'Contents/Resources/bin/apex-daemon'): raise RuntimeError('The existing user service does not target the protected daemon; stop and inspect.')
     if payload:
         protected(STAGED); validate_bundle(STAGED)
     return user,agent
@@ -161,14 +202,14 @@ def service_pid(state):
 
 def broker_socket_identity():
     try:
-        info=Path('/var/run/dev.apexdeck.provenance.sock').lstat()
+        info=BROKER_SOCKET.lstat()
         if stat.S_ISSOCK(info.st_mode): return (info.st_dev,info.st_ino,info.st_ctime_ns)
     except FileNotFoundError: pass
     return None
 
 def wait_for_broker(previous_pid,previous_socket):
     for _ in range(20):
-        result=run('/bin/launchctl','print','system/dev.apexdeck.provenance',required=False)
+        result=run('/bin/launchctl','print','system/'+BROKER_LABEL,required=False)
         pid=service_pid(result.stdout)
         socket=broker_socket_identity()
         running=re.search(r'^\s*state = running\s*$',result.stdout,re.MULTILINE)
@@ -185,20 +226,23 @@ def other_services(uid):
     # will start it again: the install stops each one and starts it again from the same plist.
     # Directory (network or mobile) accounts can be missing from getpwall, so a running daemon's owner is looked up too.
     people={person.pw_uid:person for person in pwd.getpwall()}
+    targets=daemon_targets()
     for line in run('/bin/ps','-axo','uid=,comm=',required=False).stdout.splitlines():
         owner,_,command=line.strip().partition(' ')
-        if Path(command.strip()).name!='apex-daemon' or not owner.isdigit() or int(owner) in people: continue
+        command=command.strip()
+        same_channel = command in targets or (CHANNEL == 'stable' and Path(command).name == 'apex-daemon' and 'Nightly' not in command)
+        if not same_channel or not owner.isdigit() or int(owner) in people: continue
         try: people[int(owner)]=pwd.getpwuid(int(owner))
-        except KeyError: raise RuntimeError('Apex Deck\'s background service is running in an account this Mac can\'t look up, so nothing was installed. Sign out of that account, then try the update again.')
+        except KeyError: raise RuntimeError(PRODUCT+'\'s background service is running in an account this Mac can\'t look up, so nothing was installed. Sign out of that account, then try the update again.')
     found={}
     for person in people.values():
         if person.pw_uid<500 or person.pw_uid==uid: continue
-        if run('/bin/launchctl','print','gui/'+str(person.pw_uid)+'/dev.apexdeck.daemon',required=False).returncode: continue
-        plist=Path(person.pw_dir)/'Library/LaunchAgents/dev.apexdeck.daemon.plist'
+        if run('/bin/launchctl','print','gui/'+str(person.pw_uid)+'/'+AGENT_LABEL,required=False).returncode: continue
+        plist=Path(person.pw_dir)/'Library/LaunchAgents'/(AGENT_LABEL+'.plist')
         try: st=os.lstat(plist)
         except FileNotFoundError: st=None
         if st is None or not stat.S_ISREG(st.st_mode) or st.st_uid!=person.pw_uid:
-            raise RuntimeError('Apex Deck\'s background service in another account on this Mac isn\'t set up the usual way, so nothing was installed. Sign out of that account, then try the update again.')
+            raise RuntimeError(PRODUCT+'\'s background service in another account on this Mac isn\'t set up the usual way, so nothing was installed. Sign out of that account, then try the update again.')
         found[person.pw_uid]=(person.pw_gecos or person.pw_name,plist)
     return found
 
@@ -214,8 +258,8 @@ def install(notes=None):
     user,agent = preflight(payload=True)
     others=other_services(user.pw_uid)
     domain='gui/'+str(user.pw_uid)
-    agent_loaded=run('/bin/launchctl','print',domain+'/dev.apexdeck.daemon',required=False).returncode==0
-    broker_state=run('/bin/launchctl','print','system/dev.apexdeck.provenance',required=False)
+    agent_loaded=run('/bin/launchctl','print',domain+'/'+AGENT_LABEL,required=False).returncode==0
+    broker_state=run('/bin/launchctl','print','system/'+BROKER_LABEL,required=False)
     broker_loaded=broker_state.returncode==0
     previous_broker_pid=service_pid(broker_state.stdout)
     steps=[]; stopped=False; config_changed=False; complete=False; records={}; broker_stopped=False; broker_started=False; recovery_ok=False; others_stopped=[]
@@ -227,24 +271,24 @@ def install(notes=None):
         lock.rmdir()
         raise
     try:
-        if agent_loaded: run('/bin/launchctl','bootout',domain+'/dev.apexdeck.daemon')
+        if agent_loaded: run('/bin/launchctl','bootout',domain+'/'+AGENT_LABEL)
         stopped=True
         for uid,(name,plist) in others.items():
-            target='gui/'+str(uid)+'/dev.apexdeck.daemon'
+            target='gui/'+str(uid)+'/'+AGENT_LABEL
             if run('/bin/launchctl','bootout',target,required=False).returncode==0: others_stopped.append((uid,name,plist))
             # One gone since it was found, such as that account signing out, has nothing to stop or start again.
             elif run('/bin/launchctl','print',target,required=False).returncode==0:
-                raise RuntimeError('Apex Deck\'s background service in the account "'+name+'" couldn\'t be stopped, so nothing was installed. Sign out of that account, then try the update again.')
+                raise RuntimeError(PRODUCT+'\'s background service in the account "'+name+'" couldn\'t be stopped, so nothing was installed. Sign out of that account, then try the update again.')
         for _ in range(30):
-            if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode!=0: break
+            if not channel_daemon_running(): break
             time.sleep(1)
-        # Still running: a daemon no account's service runs, such as a development build's.
-        if run('/usr/bin/pgrep','-x','apex-daemon',required=False).returncode==0: raise RuntimeError('An Apex Deck background service that the update couldn\'t stop is still running on this Mac, such as one from a development build, so nothing was installed. Quit it, then try the update again.')
-        if app_running(user.pw_uid): raise RuntimeError('Apex Deck was opened again while the update was starting, so nothing was installed. Quit it, then try the update again.')
-        if app_running(): raise RuntimeError('Apex Deck was opened in another account on this Mac while the update was starting, so nothing was installed. Quit it there, then try the update again.')
+        # Still running: a daemon for this channel that no account's service stopped.
+        if channel_daemon_running(): raise RuntimeError('An '+PRODUCT+' background service that the update couldn\'t stop is still running on this Mac, so nothing was installed. Quit it, then try the update again.')
+        if app_running(user.pw_uid): raise RuntimeError(PRODUCT+' was opened again while the update was starting, so nothing was installed. Quit it, then try the update again.')
+        if app_running(): raise RuntimeError(PRODUCT+' was opened in another account on this Mac while the update was starting, so nothing was installed. Quit it there, then try the update again.')
         require_helper_stopped()
         if broker_loaded:
-            run('/bin/launchctl','bootout','system/dev.apexdeck.provenance'); broker_stopped=True
+            run('/bin/launchctl','bootout','system/'+BROKER_LABEL); broker_stopped=True
         # Snapshot only after both writers have stopped. No user-store files are touched.
         records={name:authority_digest(name) for name in (*AUTHORITY,JOURNAL_LOG)}
         authority_backup=backup/'authority'; authority_backup.mkdir(mode=0o700)
@@ -252,7 +296,7 @@ def install(notes=None):
             if name in records and records[name] is None: continue
             run('/usr/bin/ditto',ROOT/name,authority_backup/name)
             if digest(ROOT/name)!=digest(authority_backup/name): raise RuntimeError('Authority backup verification failed')
-        run('/usr/bin/ditto',agent,backup/'dev.apexdeck.daemon.plist')
+        run('/usr/bin/ditto',agent,backup/(AGENT_LABEL+'.plist'))
         (backup/'manifest.json').write_text(json.dumps(dict(M,records=records,agentSha256=agent_hash),indent=2)+'\n')
         candidate=backup/'candidate.app'
         run('/usr/bin/ditto',STAGED,candidate)
@@ -262,7 +306,7 @@ def install(notes=None):
         protected(candidate); validate_bundle(candidate)
         broker_candidate=backup/'candidate-broker'
         run('/usr/bin/install','-o','root','-g','wheel','-m','755',candidate/'Contents/Resources/bin/apex-provenance',broker_candidate)
-        applications_candidate=Path('/Applications')/('Apex Deck.app.upgrade-'+backup.name.removeprefix('backup-'))
+        applications_candidate=Path('/Applications')/(PRODUCT+'.app.upgrade-'+backup.name.removeprefix('backup-'))
         if applications_candidate.exists() or applications_candidate.is_symlink(): raise RuntimeError('Application staging path already exists')
         run('/usr/bin/ditto',candidate,applications_candidate)
         validate_bundle(applications_candidate)
@@ -295,11 +339,11 @@ def install(notes=None):
         # App launch is left to the operator after Installer reports success.
         (backup/'installation-verified.json').write_text(json.dumps(dict(M,authorityPreserved=True,agentPreserved=True))+'\n')
         complete=True
-        print('Apex Deck upgrade verified. Original apps and authority backup retained at '+str(backup),flush=True)
+        print(PRODUCT+' upgrade verified. Original apps and authority backup retained at '+str(backup),flush=True)
     except BaseException:
         recovery=[]
         try:
-            if broker_started: run('/bin/launchctl','bootout','system/dev.apexdeck.provenance')
+            if broker_started: run('/bin/launchctl','bootout','system/'+BROKER_LABEL)
         except BaseException as error: recovery.append(str(error))
         if recovery:
             # A live replacement broker may still write the journal. Retain the
@@ -350,11 +394,11 @@ def install(notes=None):
                 problem=start_service(uid,plist)
                 if not problem: continue
                 print('The background service for account '+str(uid)+' could not be restarted: '+problem,file=sys.stderr)
-                notes.append('Apex Deck\'s background service in the account "'+name+'" didn\'t start again, so agents and phone connections there stay off until Apex Deck is opened in that account.')
+                notes.append(PRODUCT+'\'s background service in the account "'+name+'" didn\'t start again, so agents and phone connections there stay off until '+PRODUCT+' is opened in that account.')
         else:
             # Not started on a copy that needs checking; say whose service is off and stays off.
             for uid,name,plist in others_stopped:
-                notes.append('Apex Deck\'s background service in the account "'+name+'" was stopped for the update and stays off until this is sorted out.')
+                notes.append(PRODUCT+'\'s background service in the account "'+name+'" was stopped for the update and stays off until this is sorted out.')
 
 # ---------------------------------------------------------------- update job
 # "Restart to update": the broker, which runs nothing itself, only drops a
@@ -364,15 +408,19 @@ def install(notes=None):
 # reopened whichever way it went. The request stays queued until the job is
 # done: that is what the broker reads as "an update is already installing".
 
-JOB_LABEL='dev.apexdeck.update'
-UPDATE_PLIST=Path('/Library/LaunchDaemons/dev.apexdeck.update.plist')
+JOB_LABEL=_CH['MAC_UPDATE']
+UPDATE_PLIST=Path('/Library/LaunchDaemons')/(JOB_LABEL+'.plist')
 QUEUE=UPGRADES/'queue'
 JOBS=UPGRADES/'jobs'
 RUNNING_AS_JOB=False
 # Root-owned but readable by the signed-in user, so Deck can say how it went.
-RESULTS=Path('/Library/Application Support/Apex Deck Updates')
+RESULTS=Path(_CH['RESULT_FILE']).parent
+RESULT_NAME=Path(_CH['RESULT_FILE']).name
+UPDATE_LOG='/var/log/apex-deck-nightly-update.log' if CHANNEL=='nightly' else '/var/log/apex-deck-update.log'
 UUID=re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$')
 VERSION=re.compile(r'^\d+(?:\.\d+){1,3}$')
+BUILD_NUMBER=re.compile(r'^[1-9][0-9]*$')
+MAX_BUILD_NUMBER=9007199254740991
 PACKAGE_LIMIT=4*1024**3
 EXIT_WAIT=120
 # Verified backups this job made; each holds two whole apps.
@@ -384,20 +432,37 @@ def version_key(value):
     parts=[int(part) for part in value.split('.')]
     return tuple(parts+[0]*(4-len(parts)))
 
+def parse_build_number(value):
+    if type(value) is int and 1<=value<=MAX_BUILD_NUMBER: return value
+    if isinstance(value,str) and BUILD_NUMBER.match(value):
+        parsed=int(value)
+        if 1<=parsed<=MAX_BUILD_NUMBER: return parsed
+    raise RuntimeError('Invalid build number: '+repr(value))
+
 def validate_manifest(value):
     # The same shape scripts/package-mac-upgrade.mjs renders into a package.
     for key in ('ui','daemon','broker',*(('cli',) if 'cli' in value else ())):
         if not isinstance(value.get(key),str) or not re.match(r'^[a-f0-9]{40}$',value[key]): raise RuntimeError('Invalid '+key+' CDHash')
     if not isinstance(value.get('id'),str) or not UUID.match(value['id']): raise RuntimeError('Invalid upgrade id')
     version_key(value.get('version'))
-    return {key:value[key] for key in ('id','version','ui','daemon','broker',*(('cli',) if 'cli' in value else ()))}
+    result={key:value[key] for key in ('id','version','ui','daemon','broker',*(('cli',) if 'cli' in value else ()))}
+    if 'channel' in value:
+        if value['channel']!=CHANNEL: raise RuntimeError('Upgrade channel mismatch')
+        result['channel']=value['channel']
+    if 'buildNumber' in value:
+        result['buildNumber']=parse_build_number(value['buildNumber'])
+    return result
 
 def read_request(path):
     path=Path(path); protected(path); regular(path)
     value=json.loads(path.read_bytes())
-    if not isinstance(value,dict) or set(value)!={'id','version','package','sha256','size','uid'}: raise RuntimeError('Malformed update request')
+    expected={'id','version','package','sha256','size','uid'}
+    if CHANNEL=='nightly': expected.add('buildNumber')
+    if not isinstance(value,dict) or set(value)!=expected: raise RuntimeError('Malformed update request')
     if not isinstance(value['id'],str) or not UUID.match(value['id']): raise RuntimeError('Invalid update id')
     version_key(value['version'])
+    if CHANNEL=='nightly':
+        if type(value['buildNumber']) is not int or not 1<=value['buildNumber']<=MAX_BUILD_NUMBER: raise RuntimeError('Invalid update build number')
     package=value['package']
     if not isinstance(package,str) or not package.startswith('/') or not package.endswith('.pkg') or '\0' in package or '/../' in package: raise RuntimeError('Invalid update package path')
     if not isinstance(value['sha256'],str) or not re.match(r'^[a-f0-9]{64}$',value['sha256']): raise RuntimeError('Invalid update checksum')
@@ -429,7 +494,7 @@ def codesign_details(image,verbose):
 
 def team_of(image):
     match=re.search(r'^TeamIdentifier=([A-Z0-9]{10})$',codesign_details(image,2),re.MULTILINE)
-    if not match: raise RuntimeError('The installed Apex Deck has no Developer ID team, so it cannot pin who may update it')
+    if not match: raise RuntimeError('The installed '+PRODUCT+' has no Developer ID team, so it cannot pin who may update it')
     return match.group(1)
 
 def cdhash(image):
@@ -450,12 +515,12 @@ def stage(job,request):
     expanded=job/'expanded'
     # Unpacking runs none of the package's scripts.
     run('/usr/sbin/pkgutil','--expand-full',package,expanded)
-    payload=expanded/'Payload'/'Apex Deck.app'
-    if payload.is_symlink() or not payload.is_dir(): raise RuntimeError('The update package holds no Apex Deck.app')
+    payload=expanded/'Payload'/(PRODUCT+'.app')
+    if payload.is_symlink() or not payload.is_dir(): raise RuntimeError('The update package holds no '+PRODUCT+'.app')
     bundle_links(payload)
     holder=UPGRADES/request['id']
     holder.mkdir(mode=0o700)
-    staged=holder/'Apex Deck.app'
+    staged=holder/(PRODUCT+'.app')
     run('/usr/bin/ditto',payload,staged)
     run('/usr/sbin/chown','-R','root:wheel',staged)
     run('/bin/chmod','-RN',staged)
@@ -469,25 +534,35 @@ def identify(app,request):
     global REQUIREMENT
     app=Path(app)
     REQUIREMENT=DEVELOPER_ID+' and certificate leaf[subject.OU] = "'+team_of(TRUSTED)+'"'
-    run('/usr/bin/codesign','--verify','--deep','--strict','-R=identifier "dev.apexdeck.app" and '+REQUIREMENT,app)
+    run('/usr/bin/codesign','--verify','--deep','--strict','-R=identifier "'+APP_ID+'" and '+REQUIREMENT,app)
     for image in (app/'Contents/Resources/bin/apex-daemon',app/'Contents/Resources/bin/apex-provenance'):
         run('/usr/bin/codesign','--verify','--strict','-R='+REQUIREMENT,image)
     cli=app/'Contents/Resources/bin/apex'
     cli_identity={}
     if cli.exists() or cli.is_symlink():
         if cli.is_symlink() or not cli.is_file(): raise RuntimeError('Invalid CLI executable')
-        run('/usr/bin/codesign','--verify','--strict','-R=identifier \"dev.apexdeck.cli\" and '+REQUIREMENT,cli)
+        run('/usr/bin/codesign','--verify','--strict','-R=identifier "'+CLI_ID+'" and '+REQUIREMENT,cli)
         cli_identity={'cli':cdhash(cli)}
     info=bundle_info(app)
     version=info.get('CFBundleShortVersionString')
-    if info.get('CFBundleIdentifier')!='dev.apexdeck.app': raise RuntimeError('The update is not Apex Deck')
+    if info.get('CFBundleIdentifier')!=APP_ID: raise RuntimeError('The update is not '+PRODUCT)
     if version!=request['version']: raise RuntimeError('The downloaded app is version '+str(version)+', not '+request['version'])
-    installed=bundle_info(TRUSTED).get('CFBundleShortVersionString')
-    if version_key(version)<=version_key(installed): raise RuntimeError('Version '+version+' is not newer than the installed '+str(installed))
+    trusted_info=bundle_info(TRUSTED)
+    installed=trusted_info.get('CFBundleShortVersionString')
+    nightly_fields={}
+    if CHANNEL=='nightly':
+        new_build=parse_build_number(info.get('CFBundleVersion'))
+        installed_build=parse_build_number(trusted_info.get('CFBundleVersion'))
+        if new_build!=request['buildNumber']: raise RuntimeError('The downloaded app is build '+str(new_build)+', not '+str(request['buildNumber']))
+        if new_build<=installed_build: raise RuntimeError('Build '+str(new_build)+' is not newer than the installed build '+str(installed_build))
+        if version_key(version)<version_key(installed): raise RuntimeError('Version '+version+' is older than the installed '+str(installed))
+        nightly_fields={'channel':'nightly','buildNumber':new_build}
+    else:
+        if version_key(version)<=version_key(installed): raise RuntimeError('Version '+version+' is not newer than the installed '+str(installed))
     minimum=info.get('LSMinimumSystemVersion')
     if minimum and version_key(minimum)>version_key(macos_version()): raise RuntimeError('Version '+version+' needs macOS '+minimum+' or later')
-    if platform.machine() not in run('/usr/bin/lipo','-archs',app/'Contents/MacOS/Apex Deck').stdout.split(): raise RuntimeError('The update is not built for this Mac ('+platform.machine()+')')
-    return validate_manifest({**cli_identity,'id':request['id'],'version':version,'ui':cdhash(app),'daemon':cdhash(app/'Contents/Resources/bin/apex-daemon'),'broker':cdhash(app/'Contents/Resources/bin/apex-provenance')})
+    if platform.machine() not in run('/usr/bin/lipo','-archs',app/'Contents/MacOS'/PRODUCT).stdout.split(): raise RuntimeError('The update is not built for this Mac ('+platform.machine()+')')
+    return validate_manifest({**cli_identity,**nightly_fields,'id':request['id'],'version':version,'ui':cdhash(app),'daemon':cdhash(app/'Contents/Resources/bin/apex-daemon'),'broker':cdhash(app/'Contents/Resources/bin/apex-provenance')})
 
 def use_manifest(manifest,staged):
     global M,STAGED
@@ -502,19 +577,19 @@ def closed_within(seconds,uid=None):
 def wait_for_exit(uid,seconds=EXIT_WAIT):
     # The requester's copy is quitting for this update, so give it time. Another signed-in
     # person's copy isn't, but it runs from the bundle being replaced: stop now and say so.
-    if not closed_within(seconds,uid): raise RuntimeError('Apex Deck did not close within '+str(seconds)+' seconds, so nothing was installed')
-    if app_running(): raise RuntimeError('Apex Deck is still open in another account on this Mac. Quit it there, then try the update again.')
+    if not closed_within(seconds,uid): raise RuntimeError(PRODUCT+' did not close within '+str(seconds)+' seconds, so nothing was installed')
+    if app_running(): raise RuntimeError(PRODUCT+' is still open in another account on this Mac. Quit it there, then try the update again.')
 
 def write_result(result):
     if RESULTS.is_symlink(): raise RuntimeError('Linked update results folder')
     if not RESULTS.exists(): RESULTS.mkdir(mode=0o755)
     os.chmod(RESULTS,0o755); protected(RESULTS)
-    temporary=RESULTS/'last-update.json.new'
+    temporary=RESULTS/(RESULT_NAME+'.new')
     if temporary.exists() or temporary.is_symlink(): temporary.unlink()
     with open(os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644),'wb') as f:
         f.write((json.dumps(result)+'\n').encode()); f.flush(); os.fsync(f.fileno())
     os.chmod(temporary,0o644)
-    os.replace(temporary,RESULTS/'last-update.json')
+    os.replace(temporary,RESULTS/RESULT_NAME)
 
 def reopen(uid):
     # As the person, in their session; never as root. Nobody signed in, or someone else: leave it closed.
@@ -542,10 +617,13 @@ def auto(request_path):
     job=Path(request_path).parent
     if job.parent!=JOBS or job.name!=request['id']: raise RuntimeError('Update request is outside its job folder')
     result={'id':request['id'],'version':request['version'],'from':None,'startedAt':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}
+    if CHANNEL=='nightly': result['buildNumber']=request['buildNumber']
     notes=[]
     try:
         if os.stat('/dev/console').st_uid!=request['uid']: raise RuntimeError('The person who asked for this update is not the one signed in')
-        result['from']=bundle_info(TRUSTED).get('CFBundleShortVersionString')
+        trusted_info=bundle_info(TRUSTED)
+        result['from']=trusted_info.get('CFBundleShortVersionString')
+        if CHANNEL=='nightly': result['fromBuild']=trusted_info.get('CFBundleVersion')
         # The protected app this checker came from is replaced mid-install; keep a private copy.
         verifier=job/'verify-protected-bundle.sh'
         shutil.copyfile(VERIFIER,verifier); os.chmod(verifier,0o700); VERIFIER=verifier
@@ -558,7 +636,7 @@ def auto(request_path):
         attention=(UPGRADES/'install.lock'/'recovery-needed.txt').exists()
         result['outcome']='needs-attention' if attention else 'failed'
         result['message']=str(error) or error.__class__.__name__
-        print('Apex Deck update stopped: '+' '.join([result['message'],*notes]),file=sys.stderr,flush=True)
+        print(PRODUCT+' update stopped: '+' '.join([result['message'],*notes]),file=sys.stderr,flush=True)
     # Kept apart from `message`, which Deck may shorten: every account's note, and what brings it back, is shown whole.
     if notes: result['notes']=notes
     result['finishedAt']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
@@ -569,8 +647,8 @@ def auto(request_path):
         (job/'update.pkg').unlink(missing_ok=True)
     for step in (clear,lambda:write_result(result),lambda:reopen(request['uid']),prune):
         try: step()
-        except BaseException as error: print('Apex Deck update cleanup: '+str(error),file=sys.stderr,flush=True)
-    print('Apex Deck update '+result['outcome']+': '+json.dumps(result),flush=True)
+        except BaseException as error: print(PRODUCT+' update cleanup: '+str(error),file=sys.stderr,flush=True)
+    print(PRODUCT+' update '+result['outcome']+': '+json.dumps(result),flush=True)
     return 0 if result['outcome']=='installed' else 1
 
 def update_service_plist():
@@ -581,8 +659,8 @@ def update_service_plist():
         # Deck is reopened through LaunchServices; nothing it starts belongs to this job.
         'AbandonProcessGroup':True,
         'EnvironmentVariables':{'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},
-        'StandardOutPath':'/var/log/apex-deck-update.log',
-        'StandardErrorPath':'/var/log/apex-deck-update.log',
+        'StandardOutPath':UPDATE_LOG,
+        'StandardErrorPath':UPDATE_LOG,
     })
 
 def install_update_service():
@@ -623,13 +701,14 @@ def stopped(rid,message,attention=False):
     uid=None
     try:
         request=read_request(JOBS/rid/'request.json'); result['version']=request['version']; uid=request['uid']
+        if CHANNEL=='nightly': result['buildNumber']=request['buildNumber']
     except BaseException:
         console=os.stat('/dev/console').st_uid
         if console>=500: uid=console
     for step in (lambda:write_result(result),lambda:uid is not None and reopen(uid)):
         try: step()
-        except BaseException as error: print('Apex Deck update cleanup: '+str(error),file=sys.stderr,flush=True)
-    print('Apex Deck update '+result['outcome']+': '+json.dumps(result),flush=True)
+        except BaseException as error: print(PRODUCT+' update cleanup: '+str(error),file=sys.stderr,flush=True)
+    print(PRODUCT+' update '+result['outcome']+': '+json.dumps(result),flush=True)
     return 1
 
 def interrupted(entry):
@@ -671,6 +750,6 @@ if __name__=='__main__':
             if sys.argv[1]=='preflight': preflight()
             else: install()
     except BaseException as error:
-        print('Apex Deck upgrade stopped: '+str(error),file=sys.stderr)
+        print(PRODUCT+' upgrade stopped: '+str(error),file=sys.stderr)
         code=1
     sys.exit(code)

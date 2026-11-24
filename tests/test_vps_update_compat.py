@@ -42,6 +42,7 @@ class SourceCompatibilityTests(unittest.TestCase):
             shutil.copyfile(ROOT / module, self.source / module)
         before = self.command.read_bytes()
         self.assertTrue(self.compat.prepare_source(self.source)["native_maintenance"])
+        self.assertTrue(self.compat.prepare_source(self.source, native_only=True)["native_maintenance"])
         self.assertEqual(self.command.read_bytes(), before)
         modified = before.replace(b"local_linux_cli_admitted()?;", b"/* probe skipped */")
         self.assertNotEqual(modified, before)
@@ -49,6 +50,13 @@ class SourceCompatibilityTests(unittest.TestCase):
         with self.assertRaises(self.compat.CompatibilityError):
             self.compat.prepare_source(self.source)
         self.assertEqual(self.command.read_bytes(), modified)
+
+    def test_nightly_cannot_carry_the_historical_stable_patch(self):
+        self.stage()
+        before = self.command.read_bytes()
+        with self.assertRaisesRegex(self.compat.CompatibilityError, "requires native"):
+            self.compat.prepare_source(self.source, native_only=True)
+        self.assertEqual(self.command.read_bytes(), before)
 
     def test_release_carries_fix_and_preserves_phone_folder_exception(self):
         self.stage()

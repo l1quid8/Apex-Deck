@@ -34,6 +34,28 @@ fn main() {
     // A pinned commit differs from the last run's, so rerun and restamp.
     println!("cargo:rerun-if-env-changed=APEX_BUILD_COMMIT");
     println!("cargo:rerun-if-env-changed=APEX_BUILD_DIRTY");
+    println!("cargo:rerun-if-env-changed=APEX_CHANNEL");
+    println!("cargo:rerun-if-env-changed=APEX_BUILD_NUMBER");
+    println!("cargo:rerun-if-env-changed=APEX_BUILD_SOURCE_COMMIT");
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+        && std::env::var("APEX_CHANNEL").as_deref() == Ok("nightly")
+    {
+        let number = std::env::var("APEX_BUILD_NUMBER").ok();
+        let source = std::env::var("APEX_BUILD_SOURCE_COMMIT").ok();
+        match (number, source) {
+            (None, None) => {}
+            (Some(number), Some(source)) => {
+                let number: u64 = number.parse().expect("APEX_BUILD_NUMBER must be a positive safe integer");
+                assert!((1..=9_007_199_254_740_991).contains(&number), "APEX_BUILD_NUMBER must be a positive safe integer");
+                assert!(source.len() == 40 && source.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "APEX_BUILD_SOURCE_COMMIT must be a full lowercase SHA");
+                assert_eq!(&source[..12], commit, "APEX_BUILD_SOURCE_COMMIT must match the build commit");
+                println!("cargo:rustc-env=APEX_LINUX_BUILD_NUMBER={number}");
+                println!("cargo:rustc-env=APEX_LINUX_BUILD_SOURCE_COMMIT={source}");
+            }
+            _ => panic!("APEX_BUILD_NUMBER and APEX_BUILD_SOURCE_COMMIT must be set together"),
+        }
+    }
 
     // A build folder that links its target/ to another checkout's shares this
     // script's last run, and with it that checkout's watch list below, so

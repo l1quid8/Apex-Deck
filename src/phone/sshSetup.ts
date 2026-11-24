@@ -2,6 +2,8 @@
 // goes out, and the shape of the setup run. SSH is used once, to set up; chats
 // then use the paired link.
 
+import type { HostChannel } from "./sshScripts.ts";
+
 /** Refuses a huge file before reading it. A private key is a few kilobytes. */
 export const MAX_KEY_BYTES = 64 * 1024;
 
@@ -207,6 +209,8 @@ export interface SshRequest {
   key: SshKey | null;
   passphrase: string;
   keep: boolean;
+  /** Target host channel ("stable" | "nightly"); defaults to the app's channel. */
+  channel?: HostChannel;
 }
 
 export function sshRequest(form: SshForm): SshRequest {

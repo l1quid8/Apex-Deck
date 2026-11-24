@@ -5,21 +5,47 @@ unset NODE_OPTIONS ELECTRON_RUN_AS_NODE PYTHONPATH PYTHONHOME DYLD_INSERT_LIBRAR
 
 root='/Library/Application Support/Apex Deck Provenance'
 plist='/Library/LaunchDaemons/dev.apexdeck.provenance.plist'
-product="$root/Standalone"
+label='dev.apexdeck.provenance'
+socket='/var/run/dev.apexdeck.provenance.sock'
+cli_id='dev.apexdeck.cli'
+log_path='/var/log/apex-provenance.log'
+path_link='/usr/local/bin/apex'
+channel='stable'
 team='75N5HW62JH'
 
 no_path_link=0
 uninstall=0
 src=""
 
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+  arg="$1"
   case "$arg" in
+    --channel)
+      shift
+      channel="${1:-}"
+      ;;
     --no-path-link) no_path_link=1 ;;
     --uninstall) uninstall=1 ;;
     --*) echo "Unknown flag $arg" >&2; exit 1 ;;
     *) if [[ -z "$src" ]]; then src="$arg"; else echo "Too many positional arguments" >&2; exit 1; fi ;;
   esac
+  shift || true
 done
+
+case "$channel" in
+  stable) ;;
+  nightly)
+    root='/Library/Application Support/Apex Deck Nightly Provenance'
+    plist='/Library/LaunchDaemons/dev.apexdeck.provenance.nightly.plist'
+    label='dev.apexdeck.provenance.nightly'
+    socket='/var/run/dev.apexdeck.provenance.nightly.sock'
+    cli_id='dev.apexdeck.cli.nightly'
+    log_path='/var/log/apex-provenance-nightly.log'
+    path_link='/usr/local/bin/apex-nightly'
+    ;;
+  *) echo "Invalid channel: $channel (expected stable or nightly)" >&2; exit 1 ;;
+esac
+product="$root/Standalone"
 
 [[ $EUID == 0 ]] || { echo 'Run explicitly as administrator.' >&2; exit 1; }
 
@@ -83,10 +109,10 @@ PY
   committed=1
   if [[ -e "$product" || -L "$product" ]]; then /bin/mv "$product" "$stage/product.before"; fi
 
-  if [[ -L /usr/local/bin/apex ]]; then
-    target=$(/usr/bin/readlink /usr/local/bin/apex || true)
+  if [[ -L "$path_link" ]]; then
+    target=$(/usr/bin/readlink "$path_link" || true)
     case "$target" in
-      *Standalone/apex*|*Apex\ Deck\ Provenance/Standalone/apex*) /bin/rm -f /usr/local/bin/apex ;;
+      *Standalone/apex*|*Apex\ Deck\ Provenance/Standalone/apex*|*Apex\ Deck\ Nightly\ Provenance/Standalone/apex*) /bin/rm -f "$path_link" ;;
     esac
   fi
 
@@ -126,12 +152,12 @@ with os.fdopen(fd,'w') as out:
 os.rename(tmp,path)
 PY
     /bin/launchctl bootstrap system "$plist" >/dev/null 2>&1 || true
-    /usr/bin/python3 -I - <<'PY'
-import socket,time
+    /usr/bin/python3 -I - "$socket" <<'PY'
+import socket,sys,time
 for _ in range(50):
   try:
     with socket.socket(socket.AF_UNIX) as s:
-      s.settimeout(.2); s.connect('/var/run/dev.apexdeck.provenance.sock')
+      s.settimeout(.2); s.connect(sys.argv[1])
     break
   except OSError:
     time.sleep(.1)
@@ -219,7 +245,7 @@ for binary in apex apex-daemon apex-provenance; do
   [[ -f "$src/$binary" && ! -L "$src/$binary" ]] || { echo "Missing regular binary: $binary" >&2; exit 1; }
   /usr/bin/install -o root -g wheel -m 755 "$src/$binary" "$stage/$binary"
   req="anchor apple generic and certificate leaf[subject.OU] = \"$team\""
-  [[ $binary == apex ]] && req="$req and identifier \"dev.apexdeck.cli\""
+  [[ $binary == apex ]] && req="$req and identifier \"$cli_id\""
   /usr/bin/lipo -verify_arch arm64 "$stage/$binary"
   /usr/bin/codesign --verify --strict -R="$req" "$stage/$binary"
   d=$(/usr/bin/codesign -d --verbose=4 "$stage/$binary" 2>&1)
@@ -230,12 +256,15 @@ done
 
 [[ -f "$src/manifest.json" && ! -L "$src/manifest.json" ]] || { echo 'Missing manifest.json' >&2; exit 1; }
 /usr/bin/install -o root -g wheel -m 600 "$src/manifest.json" "$stage/manifest.json"
-/usr/bin/python3 -I - "$stage" <<'PY'
+/usr/bin/python3 -I - "$stage" "$channel" <<'PY'
 import json,hashlib,sys
-root=sys.argv[1]
+root,expected_channel=sys.argv[1],sys.argv[2]
 with open(root+'/manifest.json') as f: m=json.load(f)
 if m.get('formatVersion')!=1 or m.get('product')!='apex-cli' or m.get('architecture')!='arm64':
   raise SystemExit('Unsupported CLI manifest')
+manifest_channel=m.get('channel','stable')
+if manifest_channel!=expected_channel:
+  raise SystemExit('CLI manifest channel mismatch: expected '+expected_channel+', found '+str(manifest_channel))
 files=m.get('files',[])
 if len(files)!=3 or {f.get('name') for f in files}!={'apex','apex-daemon','apex-provenance'}:
   raise SystemExit('Incomplete CLI manifest')
@@ -326,14 +355,14 @@ for p in sys.argv[1:]:
 PY
 
 if [[ $no_path_link == 0 ]]; then
-  if [[ -L /usr/local/bin/apex ]]; then
-    t=$(/usr/bin/readlink /usr/local/bin/apex || true)
+  if [[ -L "$path_link" ]]; then
+    t=$(/usr/bin/readlink "$path_link" || true)
     case "$t" in
-      *Standalone/apex*|*Apex\ Deck\ Provenance/Standalone/apex*) ;;
-      *) echo '/usr/local/bin/apex exists and does not point to Standalone; refusing replacement.' >&2; exit 1 ;;
+      *Standalone/apex*|*Apex\ Deck\ Provenance/Standalone/apex*|*Apex\ Deck\ Nightly\ Provenance/Standalone/apex*) ;;
+      *) echo "$path_link exists and does not point to Standalone; refusing replacement." >&2; exit 1 ;;
     esac
-  elif [[ -e /usr/local/bin/apex ]]; then
-    echo '/usr/local/bin/apex already exists; refusing replacement.' >&2; exit 1
+  elif [[ -e "$path_link" ]]; then
+    echo "$path_link already exists; refusing replacement." >&2; exit 1
   fi
 fi
 
@@ -371,14 +400,14 @@ PY
 # throttled below every app, and each serial transaction stretched to many
 # seconds whenever a build or test load ran on the Mac.
 write_service_file() {
-  /bin/cat > "$plist.next" <<'PLIST'
+  /bin/cat > "$plist.next" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>dev.apexdeck.provenance</string>
-<key>ProgramArguments</key><array><string>/Library/Application Support/Apex Deck Provenance/apex-provenance</string></array>
+<key>Label</key><string>${label}</string>
+<key>ProgramArguments</key><array><string>${root}/apex-provenance</string></array>
 <key>UserName</key><string>root</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-<key>StandardErrorPath</key><string>/var/log/apex-provenance.log</string>
+<key>StandardErrorPath</key><string>${log_path}</string>
 <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 PLIST
@@ -420,13 +449,13 @@ product_placed=1
 /usr/bin/install -o root -g wheel -m 755 "$stage/apex-provenance" "$root/apex-provenance.next"
 /bin/mv "$root/apex-provenance.next" "$root/apex-provenance"
 /bin/launchctl bootstrap system "$plist"
-/bin/launchctl print system/dev.apexdeck.provenance >/dev/null
-/usr/bin/python3 -I - <<'PY'
-import socket,time
+/bin/launchctl print "system/$label" >/dev/null
+/usr/bin/python3 -I - "$socket" <<'PY'
+import socket,sys,time
 for _ in range(50):
   try:
     with socket.socket(socket.AF_UNIX) as s:
-      s.settimeout(.2); s.connect('/var/run/dev.apexdeck.provenance.sock')
+      s.settimeout(.2); s.connect(sys.argv[1])
     break
   except OSError:
     time.sleep(.1)
@@ -435,8 +464,8 @@ else:
 PY
 
 if [[ $no_path_link == 0 ]]; then
-  [[ -L /usr/local/bin/apex ]] && /bin/rm -f /usr/local/bin/apex
-  if [[ ! -e /usr/local/bin/apex ]]; then /bin/ln -s "$product/apex" /usr/local/bin/apex; fi
+  [[ -L "$path_link" ]] && /bin/rm -f "$path_link"
+  if [[ ! -e "$path_link" ]]; then /bin/ln -s "$product/apex" "$path_link"; fi
 fi
 
 if [[ $is_upgrade == 1 ]]; then

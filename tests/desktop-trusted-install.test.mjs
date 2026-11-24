@@ -80,19 +80,53 @@ test('the /Applications copy hands off to the protected copy when both are the s
 
 test('Nightly compares builds and preserves its protected daemon across a mismatch', {skip: !channel.nightly || process.platform !== 'darwin'}, () => {
   const files = fakeFiles();
-  assert.equal(plan(files).kind, 'handoff');
+  const handoff = plan(files);
+  assert.equal(handoff.kind, 'handoff');
+  assert.match(handoff.notice.message, /trusted Apex Deck Nightly install/);
+  assert.match(handoff.notice.detail, /scripts\/repin-provenance\.sh --channel nightly\)/);
+  assert.doesNotMatch(handoff.notice.detail, /scripts\/repin-provenance\.sh\)/);
+
   const mismatch = plan(files, {buildNumber: 42});
   assert.equal(mismatch.kind, 'notice');
+  assert.match(mismatch.notice.message, /trusted Apex Deck Nightly install/);
   assert.match(mismatch.notice.detail, /build 41.*build 42/);
+  assert.match(mismatch.notice.detail, /scripts\/repin-provenance\.sh --channel nightly\)/);
+  assert.doesNotMatch(mismatch.notice.detail, /scripts\/repin-provenance\.sh\)/);
+  assert.match(mismatch.notice.detail, /open Apex Deck Nightly again/);
   assert.equal(plan(files, {bundle: TRUSTED, buildNumber: 42}).daemon, TRUSTED_DAEMON);
+
+  const outdatedSemver = plan(fakeFiles({ trustedVersion: '0.8.1' }));
+  assert.equal(outdatedSemver.kind, 'notice');
+  assert.match(outdatedSemver.notice.detail, /scripts\/repin-provenance\.sh --channel nightly\)/);
+  assert.doesNotMatch(outdatedSemver.notice.detail, /scripts\/repin-provenance\.sh\)/);
+
+  const missing = plan(fakeFiles({ trusted: false }));
+  assert.equal(missing.kind, 'notice');
+  assert.match(missing.notice.message, /trusted Apex Deck Nightly install/);
+  assert.match(missing.notice.detail, /Apex Deck Nightly's protected copy isn't installed/);
+  assert.match(missing.notice.detail, /scripts\/install-provenance\.sh --channel nightly, then scripts\/repin-provenance\.sh --channel nightly/);
+  assert.doesNotMatch(missing.notice.detail, /scripts\/(?:install|repin)-provenance\.sh[,)]/);
+  assert.match(missing.notice.detail, /open Apex Deck Nightly again/);
+
+  const unsafe = plan(fakeFiles({ owner: 501 }));
+  assert.equal(unsafe.kind, 'notice');
+  assert.match(unsafe.notice.detail, /scripts\/install-provenance\.sh --channel nightly, then scripts\/repin-provenance\.sh --channel nightly/);
+  assert.doesNotMatch(unsafe.notice.detail, /scripts\/(?:install|repin)-provenance\.sh[,)]/);
 });
 
 test('a missing protected copy is no handoff: the running daemon, and a notice saying what to do', () => {
   const got = plan(fakeFiles({ trusted: false }));
   assert.equal(got.kind, 'notice');
   assert.equal(got.daemon, `${APP}/Contents/Resources/bin/apex-daemon`);
-  assert.match(got.notice.message, /trusted Apex Deck install/i);
+  assert.match(got.notice.message, new RegExp(`trusted ${channel.PRODUCT} install`, 'i'));
   assert.match(got.notice.detail, /isn't installed|is not installed/i);
+  if (channel.nightly) {
+    assert.match(got.notice.detail, /scripts\/install-provenance\.sh --channel nightly, then scripts\/repin-provenance\.sh --channel nightly/);
+    assert.doesNotMatch(got.notice.detail, /scripts\/(?:install|repin)-provenance\.sh[,)]/);
+  } else {
+    assert.match(got.notice.detail, /scripts\/install-provenance\.sh, then scripts\/repin-provenance\.sh/);
+    assert.doesNotMatch(got.notice.detail, /--channel nightly/);
+  }
 });
 
 test('a protected copy of another version is no handoff, and the notice names both versions', MAC_ONLY, () => {

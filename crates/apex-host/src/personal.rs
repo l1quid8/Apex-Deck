@@ -402,6 +402,10 @@ pub struct PersonalAssistant {
 pub struct PushDevice {
     pub token: String,
     pub added_at: u64,
+    /// APNs bundle topic (`dev.apexdeck.phone` or `dev.apexdeck.phone.nightly`).
+    /// Absent for devices saved before per-device topics; falls back to `apns.json`'s topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
 }
 
 /// A machine besides the host that may run this assistant's operations,

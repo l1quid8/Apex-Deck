@@ -208,7 +208,7 @@ final class Server {
           // Validate PNG magic
           let pngMagic = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
           if !data.starts(with: pngMagic) { self.fail(id, "cursor images must be PNG", client); return }
-          let tmpDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Apex Deck/computer-cursor", isDirectory: true)
+          let tmpDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("\(HelperChannel.cursorFolder)/computer-cursor", isDirectory: true)
           if let dir = tmpDir {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let hash = data.hashValue

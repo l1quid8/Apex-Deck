@@ -12,6 +12,11 @@ fn main() {
     // don't need a working bubblewrap; jail tests switch it on themselves.
     #[cfg(unix)]
     apex_adapters::linux_jail::this_program_is_the_jail_init();
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().skip(1).eq([std::ffi::OsString::from("--build-identity")]) {
+        println!("{}", apex_daemon::build_info::linux_build_identity());
+        return;
+    }
     apex_daemon::entry::run();
 }
 

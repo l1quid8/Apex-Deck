@@ -165,6 +165,7 @@ Install these files from the reviewed checkout as root:
 sudo install -d -m 0755 /usr/local/lib/apex-deck-update /etc/apex-deck-update
 sudo install -m 0644 scripts/vps_update.py scripts/vps_update_compat.py \
   scripts/vps-update-allow-test.rs scripts/vps-update-maintenance.patch \
+  desktop/channels.json \
   /usr/local/lib/apex-deck-update/
 sudo install -m 0644 packaging/systemd/apex-deck-update@.service \
   packaging/systemd/apex-deck-update@.timer /etc/systemd/system/
@@ -219,6 +220,73 @@ ssh vps 'sudo install -m 0755 /tmp/apex-daemon /usr/local/bin/apex-daemon && sud
 ```
 
 A client that reconnects after a restart gets `resumed: false` and reloads.
+
+## Run Nightly alongside Stable
+
+Use a Linux daemon from the immutable Nightly release, or check out that
+release's tag and build it with the `buildNumber` from `apex-deck-nightly-update-linux.json`.
+For example, with `BUILD_NUMBER` set to that published number:
+
+```sh
+APEX_CHANNEL=nightly APEX_BUILD_NUMBER="$BUILD_NUMBER" scripts/linux-build.sh amd64
+scp target/linux-amd64-nightly/apex-daemon vps:/tmp/apex-daemon-nightly
+ssh vps 'sudo install -m 0755 /tmp/apex-daemon-nightly /usr/local/bin/apex-daemon-nightly && rm /tmp/apex-daemon-nightly'
+```
+
+On the VPS, install the Nightly daemon, updater and timer units from the
+reviewed checkout. Replace the service account in the example with yours.
+
+```sh
+sudo install -m 0644 packaging/systemd/apex-daemon-nightly@.service \
+  packaging/systemd/apex-deck-nightly-update@.service \
+  packaging/systemd/apex-deck-nightly-update@.timer /etc/systemd/system/
+sudo install -d -m 0755 /usr/local/lib/apex-deck-nightly-update /etc/apex-deck-nightly-update
+sudo install -m 0644 scripts/vps_update.py scripts/vps_update_compat.py \
+  desktop/channels.json /usr/local/lib/apex-deck-nightly-update/
+printf '%s\n' '{"user":"l1quid8"}' \
+  | sudo tee /etc/apex-deck-nightly-update/l1quid8.json >/dev/null
+sudo chmod 0644 /etc/apex-deck-nightly-update/l1quid8.json
+sudo systemctl daemon-reload
+sudo systemctl enable --now apex-daemon-nightly@l1quid8.service
+sudo systemctl enable --now apex-deck-nightly-update@l1quid8.timer
+```
+
+Use `ssh vps apex-daemon-nightly --stdio --attach` to connect. The Nightly
+template uses `~/.local/share/dev.apexdeck.app.nightly` for chats, daemon
+identity, tokens, `owner.lock` and `daemon.sock`. Check the endpoint with
+`apex-daemon-nightly endpoint` as the service account. Both channels use
+kernel-assigned loopback WebSocket ports by default. If you set fixed ports
+through a unit drop-in, give each channel a distinct WebSocket port and, if
+enabled, a distinct HTTP gateway port. For example, a Stable gateway on 8787
+can run beside a Nightly gateway on 8788. Set distinct UDP ports if you pin
+both phone listeners. For a home path that makes `daemon.sock` longer than
+100 bytes, use a shorter private Nightly `--data-dir` in the unit drop-in and
+set the same absolute `data_dir` in the Nightly updater configuration and
+attach command.
+
+The timer checks the rolling [Linux Nightly manifest](https://github.com/l1quid8/apex-deck/releases/download/nightly/apex-deck-nightly-update-linux.json).
+It orders updates by build number, so two builds can have the same version.
+If an installation rolls back, the failed build stays quarantined and only
+a higher build number is eligible for installation.
+It checks the manifest's full source commit against the immutable tag before
+building and runs the native Linux candidate tests on that source. It uses
+the same idle admission, health checks and rollback sequence as Stable.
+The build cache lives in `~/.cache/apex-deck-nightly-update/`, and pending
+maintenance requests live in `/run/apex-deck-nightly-update/`. The updater
+lock lives in `/var/lib/apex-deck-nightly-update/`, with status, candidates,
+backups and journal under `/var/lib/apex-deck-nightly-update/<user>/`.
+
+```sh
+systemctl status apex-daemon-nightly@l1quid8.service
+journalctl -u apex-deck-nightly-update@l1quid8.service -n 30
+cat /var/lib/apex-deck-nightly-update/l1quid8/status.json
+```
+
+For a manual Nightly update from the matching tagged checkout, run
+`APEX_CHANNEL=nightly APEX_BUILD_NUMBER="$BUILD_NUMBER" scripts/vps-deploy.sh vps`.
+It takes a backup of `/usr/local/bin/apex-daemon-nightly` and restarts
+`apex-daemon-nightly@<user>.service`. Use the timer for updates that wait for
+idle admission automatically.
 
 ## Troubleshooting
 

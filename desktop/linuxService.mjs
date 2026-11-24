@@ -1,4 +1,5 @@
 import {linuxIdentity, issue, protectedPublicKey} from './provenance.mjs';
+import {channel} from './channel.mjs';
 import {randomBytes, createPublicKey, verify} from 'node:crypto';
 import path from 'node:path';
 
@@ -34,7 +35,7 @@ export async function launchLinuxUI({scope,env=process.env,send=issue,publicKey=
   const key=createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),publicKey]),type:'spki',format:'der'});
   if(typeof signed?.payload!=='string' || Buffer.byteLength(signed.payload)>1024*1024 || typeof signed.signature!=='string' || !verify(null,Buffer.from(signed.payload),key,Buffer.from(signed.signature,'base64')))throw new Error('Invalid installed UI launch signature.');
   const reply=JSON.parse(signed.payload);
-  if(reply.domain!=='apex-provenance-v1' || reply.kind!=='linux-launch' || reply.nonce!==nonce || reply.uid!==scope.uid || reply.role!=='app' || reply.epoch!==scope.epoch || !Number.isSafeInteger(reply.pid) || reply.pid<=0)throw new Error('Installed UI launch response mismatch.');
+  if(reply.domain!==channel.DOMAIN || reply.kind!=='linux-launch' || reply.nonce!==nonce || reply.uid!==scope.uid || reply.role!=='app' || reply.epoch!==scope.epoch || !Number.isSafeInteger(reply.pid) || reply.pid<=0)throw new Error('Installed UI launch response mismatch.');
   return '';
 }
 

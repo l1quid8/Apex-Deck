@@ -1,9 +1,10 @@
 #![cfg(unix)]
 use apex_provenance::linux_activation::{Activation, Descriptor, Phase};
+use apex_provenance::channel::{LINUX_TREE, NIGHTLY};
 
 fn release(commit: char) -> Descriptor {
     Descriptor {
-        tree: format!("/opt/apex-deck/1.0-{}-arm64", commit.to_string().repeat(40)).into(),
+        tree: format!("{LINUX_TREE}/1.0-{}-arm64", commit.to_string().repeat(40)).into(),
         manifest_sha256: commit.to_string().repeat(64),
         protocol: 1,
         epoch: 0,
@@ -61,7 +62,9 @@ fn corrupt_or_incompatible_state_never_becomes_admissible() {
         assert!(state.prepare(candidate).is_err());
     }
     let mut candidate = release('a');
-    candidate.tree = "/opt/apex-deck/../untrusted".into();
+    candidate.tree = format!("{LINUX_TREE}/../untrusted").into();
+    assert!(state.prepare(candidate.clone()).is_err());
+    candidate.tree = if NIGHTLY { "/opt/apex-deck/foreign" } else { "/opt/apex-deck-nightly/foreign" }.into();
     assert!(state.prepare(candidate).is_err());
     state.prepare(release('a')).unwrap();
     state.services_stopped().unwrap();

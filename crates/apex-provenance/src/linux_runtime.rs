@@ -158,9 +158,11 @@ impl Context {
         }
         peer.validate()?;
         let role = self.role(peer)?.map(Role::name);
-        Ok(
-            json!({"domain":DOMAIN,"kind":"linux-scope","nonce":Self::nonce(request)?,"uid":registration.uid(),"dataDir":registration.data_dir(),"epoch":self.descriptor.epoch,"manifestSha256":self.descriptor.manifest_sha256,"protocol":1,"tree":self.descriptor.tree,"brokerInstance":self.instance,"role":role,"daemonEndpoint":registration.data_dir().join("daemon.sock"),"daemonPid":daemon.map(|d|d.guard.pid())}),
-        )
+        let mut scope = json!({"domain":DOMAIN,"kind":"linux-scope","nonce":Self::nonce(request)?,"uid":registration.uid(),"dataDir":registration.data_dir(),"epoch":self.descriptor.epoch,"manifestSha256":self.descriptor.manifest_sha256,"protocol":1,"tree":self.descriptor.tree,"brokerInstance":self.instance,"role":role,"daemonEndpoint":registration.data_dir().join("daemon.sock"),"daemonPid":daemon.map(|d|d.guard.pid())});
+        if let Some(release) = self.candidate.manifest().nightly_identity() {
+            scope["release"] = release;
+        }
+        Ok(scope)
     }
     pub fn stop_daemon(&mut self, peer: &KernelPeer, request: &Value) -> Result<Value, String> {
         peer.validate()?;
@@ -336,6 +338,9 @@ impl Context {
         {
             return Err("Daemon readiness process generation changed".into());
         }
+        if probe.get("release") != self.candidate.manifest().nightly_identity().as_ref() {
+            return Err("Installed daemon release identity differs from the signed manifest".into());
+        }
         Ok(probe)
     }
     pub fn health(&self, peer: &KernelPeer, request: &Value) -> Result<Value, String> {
@@ -366,9 +371,11 @@ impl Context {
             let probe = self.probe_launch(launch, timeout)?;
             daemons.push(json!({"uid":launch.uid,"pid":launch.guard.pid(),"processLive":true,"protocolReady":true,"bootId":probe["bootId"]}));
         }
-        Ok(
-            json!({"domain":DOMAIN,"kind":"linux-health","nonce":Self::nonce(request)?,"epoch":self.descriptor.epoch,"manifestSha256":self.descriptor.manifest_sha256,"protocol":1,"tree":self.descriptor.tree,"brokerInstance":self.instance,"ready":ready,"authorityReady":authority_ready,"daemons":daemons}),
-        )
+        let mut health = json!({"domain":DOMAIN,"kind":"linux-health","nonce":Self::nonce(request)?,"epoch":self.descriptor.epoch,"manifestSha256":self.descriptor.manifest_sha256,"protocol":1,"tree":self.descriptor.tree,"brokerInstance":self.instance,"ready":ready,"authorityReady":authority_ready,"daemons":daemons});
+        if let Some(release) = self.candidate.manifest().nightly_identity() {
+            health["release"] = release;
+        }
+        Ok(health)
     }
 }
 
@@ -419,9 +426,11 @@ pub fn probe_daemon(
     {
         return Err("Daemon did not complete the challenged installed protocol handshake".into());
     }
-    Ok(
-        json!({"nonce":nonce,"uid":uid,"pid":pid,"start":start,"protocol":1,"bootId":response["ok"]["boot_id"]}),
-    )
+    let mut probe = json!({"nonce":nonce,"uid":uid,"pid":pid,"start":start,"protocol":1,"bootId":response["ok"]["boot_id"]});
+    if let Some(release) = response["ok"].get("build_identity") {
+        probe["release"] = release.clone();
+    }
+    Ok(probe)
 }
 
 fn bounded_probe_output(

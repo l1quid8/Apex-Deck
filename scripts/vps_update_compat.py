@@ -104,7 +104,7 @@ NATIVE_REGIONS = (
 )
 
 
-def prepare_source(source_root: Path) -> dict:
+def prepare_source(source_root: Path, *, native_only: bool = False) -> dict:
     """Verify/carry the workaround and insert its real API regression test.
 
     All source compatibility checks happen in memory before the single write.
@@ -122,6 +122,9 @@ def prepare_source(source_root: Path) -> dict:
                 raise CompatibilityError("Native maintenance implementation missing")
         return {"native_maintenance": True, "carried_hotfix": False, "test_added": False,
                 "command_sha256": hashlib.sha256(original.encode()).hexdigest()}
+
+    if native_only:
+        raise CompatibilityError("Nightly requires native Linux admission and maintenance")
 
     text = original
     admission, device = _regions(text)

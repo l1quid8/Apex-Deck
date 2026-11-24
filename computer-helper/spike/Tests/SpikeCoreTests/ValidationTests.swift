@@ -3,7 +3,24 @@ import XCTest
 final class ValidationTests: XCTestCase {
   func testGeneralAppsAllowedAndSystemSecurityAppsProtected() {
     for s in ["com.apple.TextEdit", "local.ds4.app", "com.apple.Terminal"] { XCTAssertTrue(Policy.target(s)) }
-    for s in ["com.apple.TextEdit ", "", "com.apple.systempreferences", "com.apple.SecurityAgent", "com.apple.Passwords", "dev.apexdeck.unified-computer-use"] { XCTAssertFalse(Policy.target(s)) }
+    for s in ["com.apple.TextEdit ", "", "com.apple.systempreferences", "com.apple.SecurityAgent", "com.apple.Passwords", "dev.apexdeck.unified-computer-use", "dev.apexdeck.unified-computer-use.nightly"] { XCTAssertFalse(Policy.target(s)) }
+  }
+  func testHelperChannelSocketAndIdentifiersAreScoped() {
+    #if APEX_NIGHTLY
+    XCTAssertTrue(HelperChannel.nightly)
+    XCTAssertEqual(HelperChannel.helperId, "dev.apexdeck.unified-computer-use.nightly")
+    XCTAssertEqual(HelperChannel.parentAppId, "dev.apexdeck.app.nightly")
+    XCTAssertEqual(HelperChannel.helperFolder, "Apex Unified Computer Use Nightly")
+    XCTAssertEqual(HelperChannel.cursorFolder, "Apex Deck Nightly")
+    #else
+    XCTAssertFalse(HelperChannel.nightly)
+    XCTAssertEqual(HelperChannel.helperId, "dev.apexdeck.unified-computer-use")
+    XCTAssertEqual(HelperChannel.parentAppId, "dev.apexdeck.app")
+    XCTAssertEqual(HelperChannel.helperFolder, "Apex Unified Computer Use")
+    XCTAssertEqual(HelperChannel.cursorFolder, "Apex Deck")
+    #endif
+    XCTAssertTrue(Wire.socketPath.hasSuffix("Library/Application Support/\(HelperChannel.helperFolder)/control.sock"))
+    XCTAssertLessThan(Wire.socketPath.utf8.count, 104, "socket path must fit in macOS sockaddr_un.sun_path")
   }
   func testNamedKeysAndModifiersAreValidated() {
     for s in ["Cmd-N", "Shift-Cmd-G", "Cmd-Q", "Cmd-V", "Control-C", "PageDown"] { XCTAssertNotNil(Policy.key(s)) }

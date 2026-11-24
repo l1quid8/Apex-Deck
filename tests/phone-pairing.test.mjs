@@ -41,6 +41,14 @@ test("the camera and paste go through the same parser", () => {
   assert.deepEqual(preview, { name: "Tyler's Mac Studio", host: HOST, addrs: ["192.168.1.20:41641"], exp: now + 300, os: "" });
 });
 
+test("the parser also accepts apexdeck-nightly:// pairing links and refuses unknown schemes", () => {
+  const nightlyLink = link().replace(/^apexdeck:\/\//, "apexdeck-nightly://");
+  const preview = parsePairingLink(`  ${nightlyLink}\n`, now);
+  assert.deepEqual(preview, { name: "Tyler's Mac Studio", host: HOST, addrs: ["192.168.1.20:41641"], exp: now + 300, os: "" });
+  const otherScheme = link().replace(/^apexdeck:\/\//, "apexdeck-other://");
+  assert.throws(() => parsePairingLink(otherScheme, now), { message: "This code isn't from Apex Deck." });
+});
+
 test("a link naming another relay is refused", () => {
   assert.throws(() => parsePairingLink(link({ relay: "https://evil.example/" }), now), { message: "This code isn't from Apex Deck." });
 });

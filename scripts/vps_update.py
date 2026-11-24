@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update one systemd daemon from published stable tags, retaining Linux Allow.
+"""Update one systemd daemon from its channel's published source tags.
 
 Root owns configuration, candidates, backups and the transaction journal. Git,
 Cargo and candidate executables always run as the configured daemon account.
@@ -23,7 +23,11 @@ from pathlib import Path
 
 REPOSITORY = "https://github.com/l1quid8/apex-deck.git"
 RELEASE_API = "https://api.github.com/repos/l1quid8/apex-deck/releases/latest"
+NIGHTLY_FEED = "https://github.com/l1quid8/apex-deck/releases/download/nightly/apex-deck-nightly-update-linux.json"
 HERE = Path(__file__).resolve().parent
+CHANNELS_FILE = HERE / "channels.json"
+if not CHANNELS_FILE.is_file():
+    CHANNELS_FILE = HERE.parent / "desktop/channels.json"
 
 
 class MaintenanceRefused(RuntimeError):
@@ -63,8 +67,60 @@ def verify_candidate_result(output, expected):
 
 def version(text):
     if not isinstance(text, str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", text):
-        raise ValueError(f"Not a stable numeric version: {text!r}")
+        raise ValueError(f"Not a numeric release version: {text!r}")
     return tuple(map(int, text.split(".")))
+
+
+def build_number(value):
+    if type(value) is not int or not 0 < value <= 2**53 - 1:
+        raise ValueError("Nightly requires a positive safe build number")
+    return value
+
+
+def nightly_identity(value):
+    if not isinstance(value, dict) or value.get("channel") != "nightly":
+        raise ValueError("Nightly update channel mismatch")
+    number = build_number(value.get("buildNumber"))
+    commit = value.get("commit")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Nightly requires a full lowercase source SHA")
+    version(value.get("version"))
+    return {"channel": "nightly", "version": value["version"], "buildNumber": number, "commit": commit}
+
+
+def nightly_manifest(value):
+    identity = nightly_identity(value)
+    if type(value.get("schemaVersion")) is not int or value["schemaVersion"] != 1:
+        raise ValueError("Unsupported Nightly manifest schema")
+    tag = value.get("tag")
+    if not isinstance(tag, str) or not re.fullmatch(r"nightly-[0-9]{8}-" + identity["commit"][:7], tag):
+        raise ValueError("Invalid immutable Nightly tag")
+    return {**identity, "schemaVersion": 1, "tag": tag}
+
+
+def nightly_release_status(release, live, state):
+    installed = nightly_identity(live.get("build_identity"))
+    highest = state.get("highest_build_number")
+    failed = state.get("failed_build_number")
+    floor = [(installed["buildNumber"], installed["commit"])]
+    if highest is not None:
+        floor.append((build_number(highest), state["highest_commit"]))
+    if failed is not None:
+        floor.append((build_number(failed), state["failed_commit"]))
+    for number, commit in floor:
+        if release["buildNumber"] == number and release["commit"] != commit:
+            raise ValueError("Nightly build number refers to two source commits")
+    if release["buildNumber"] == failed:
+        return "quarantined"
+    if release["buildNumber"] <= max(number for number, _ in floor):
+        return "current"
+    return "new"
+
+
+def quarantine(state, tag, candidate):
+    state["failed_release"] = tag
+    if candidate and "buildNumber" in candidate:
+        state.update(failed_build_number=candidate["buildNumber"], failed_commit=candidate["commit"])
 
 
 def read_json(path, default=None):
@@ -124,29 +180,42 @@ def update(system, root):
             system.restore(recovery["backup"])
             system.start()
             system.healthy_backup(recovery["backup"])
-            state["failed_release"] = recovery.get("release")
+            quarantine(state, recovery.get("release"), recovery.get("candidate"))
             write_json(state_path, state)
             journal.unlink()
             return {"status": "recovered", "backup": recovery["backup"]}
         finally:
             system.cancel(lease)
     live = system.live()
-    running = version(live["version"])
-    highest = max(running, version(state.get("highest_version", live["version"])))
     release = system.latest()
-    if release.get("draft") is not False or release.get("prerelease") is not False:
-        return {"status": "skipped", "reason": "Only published stable releases are eligible"}
-    tag = release.get("tag_name", "")
-    if not tag.startswith("v"):
-        raise ValueError("Published release must use a vMAJOR.MINOR.PATCH tag")
-    wanted = tag[1:]
-    if version(wanted) <= highest:
+    nightly = system.channel == "nightly"
+    if nightly:
+        release = nightly_manifest(release)
+        tag, wanted = release["tag"], release["version"]
+        release_status = nightly_release_status(release, live, state)
+    else:
+        if release.get("draft") is not False or release.get("prerelease") is not False:
+            return {"status": "skipped", "reason": "Only published stable releases are eligible"}
+        tag = release.get("tag_name", "")
+        if not isinstance(tag, str) or not tag.startswith("v"):
+            raise ValueError("Published release must use a vMAJOR.MINOR.PATCH tag")
+        wanted = tag[1:]
+        highest = max(version(live["version"]), version(state.get("highest_version", live["version"])))
+        if version(wanted) <= highest:
+            release_status = "current"
+        elif state.get("failed_release") == tag:
+            release_status = "quarantined"
+        else:
+            release_status = "new"
+    if release_status == "current":
         return {"status": "current", "running": live, "latest": tag}
-    if state.get("failed_release") == tag:
+    if release_status == "quarantined":
         return {"status": "quarantined", "release": tag, "reason": "Earlier installation failed; wait for a newer release or inspect state.json"}
     candidate = system.prepare(release)
     if candidate["version"] != wanted:
         raise ValueError("Built candidate version does not match its published release")
+    if nightly and nightly_manifest({**candidate, "schemaVersion": 1}) != release:
+        raise ValueError("Built candidate identity does not match its Nightly manifest")
     lease = system.begin(live)
     if lease.get("ready") is not True:
         return {"status": "busy", "release": tag, "details": lease}
@@ -179,14 +248,20 @@ def update(system, root):
                 system.healthy_backup(backup)
             finally:
                 system.cancel(rollback_lease)
-            state["failed_release"] = tag
+            quarantine(state, tag, candidate)
             state["last_error"] = str(error)
             state["backup"] = backup
             write_json(state_path, state)
             journal.unlink()
             return {"status": "rolled_back", "release": tag, "reason": str(error), "backup": backup}
-        state.update(highest_version=wanted, installed=candidate, backup=backup, updated_at=int(time.time()))
+        if nightly:
+            state.update(highest_build_number=release["buildNumber"], highest_commit=release["commit"])
+        else:
+            state["highest_version"] = wanted
+        state.update(installed=candidate, backup=backup, updated_at=int(time.time()))
         state.pop("failed_release", None)
+        state.pop("failed_build_number", None)
+        state.pop("failed_commit", None)
         state.pop("last_error", None)
         write_json(state_path, state)
         journal.unlink()
@@ -196,21 +271,38 @@ def update(system, root):
 
 
 class System:
-    def __init__(self, config, root):
+    def __init__(self, config, root, channel="stable"):
         self.config = config
         self.root = root
+        self.channel = channel
         self.user = config["user"]
         if not re.fullmatch(r"[a-z_][a-z0-9_-]*", self.user):
             raise ValueError("Invalid service user")
         self.account = pwd.getpwnam(self.user)
-        self.unit = config.get("unit", "apex-daemon@" + self.user + ".service")
-        if not isinstance(self.unit, str) or not re.fullmatch(r"apex-daemon(?:-[a-z0-9_-]+)?@" + re.escape(self.user) + r"\.service", self.unit):
+        identities = read_json(CHANNELS_FILE)
+        selected = identities[channel]
+        default_unit = selected["VPS_UNIT"].replace("@", "@" + self.user)
+        nightly_unit = identities["nightly"]["VPS_UNIT"].replace("@", "@" + self.user)
+        self.unit = config.get("unit", default_unit)
+        if channel == "nightly":
+            valid_unit = self.unit == default_unit
+        else:
+            valid_unit = (isinstance(self.unit, str) and self.unit != nightly_unit and
+                          re.fullmatch(r"apex-daemon(?:-[a-z0-9_-]+)?@" + re.escape(self.user) + r"\.service", self.unit))
+        if not valid_unit:
             raise ValueError("Invalid daemon service unit for the configured account")
-        self.binary = Path("/usr/local/bin/apex-daemon")
-        self.data = Path(config.get("data_dir", self.account.pw_dir + "/.local/share/dev.apexdeck.app"))
-        self.work = Path(self.account.pw_dir) / ".cache/apex-deck-update"
+        self.binary = Path(selected["VPS_BINARY"])
+        home = Path(self.account.pw_dir)
+        self.data = Path(config.get("data_dir", home / ".local/share" / selected["APP_ID"]))
+        if channel == "nightly":
+            stable = (home / ".local/share" / identities["stable"]["APP_ID"]).resolve()
+            if not self.data.is_absolute() or self.data.resolve() in (stable, (home / ".apex").resolve()):
+                raise ValueError("Nightly needs its own absolute daemon data directory")
+            if len(os.fsencode(self.data / "daemon.sock")) > 100:
+                raise ValueError("Nightly daemon socket path is longer than 100 bytes")
+        self.work = home / ".cache" / selected["VPS_UPDATE"]
         self.source = self.work / "source"
-        self.request = Path("/run/apex-deck-update") / f"{self.account.pw_uid}.request"
+        self.request = Path("/run") / selected["VPS_UPDATE"] / f"{self.account.pw_uid}.request"
         self.active_lease = None
 
     def command(self, argv, *, user=False, cwd=None, timeout=120, env=None):
@@ -276,19 +368,44 @@ class System:
             raise ValueError("Daemon did not provide a verifiable live build identity")
         pid = int(self.command(["systemctl", "show", "-p", "MainPID", "--value", self.unit]))
         record = json.loads(self.command(["cat", self.data / "daemon.json"], user=True))
-        running_hash = digest(Path(f"/proc/{pid}/exe")) if pid > 1 else ""
+        executable = Path(f"/proc/{pid}/exe")
+        running_hash = digest(executable) if pid > 1 else ""
         validate_identity(live, record, pid, running_hash, None if allow_disk_mismatch else digest(self.binary))
+        if self.channel == "nightly":
+            identity = nightly_identity(live.get("build_identity"))
+            exact_path = str(self.binary)
+            expected_paths = (exact_path, exact_path + " (deleted)") if allow_disk_mismatch else (exact_path,)
+            if (identity["version"] != live["version"] or identity["commit"][:12] != live["build_commit"]
+                    or live.get("build_dirty") is not False or os.readlink(executable) not in expected_paths):
+                raise ValueError("Running Nightly build identity differs from the configured executable")
+        elif isinstance(live.get("build_identity"), dict) and live["build_identity"].get("channel") == "nightly":
+            raise ValueError("Stable updater received a Nightly daemon identity")
         live["executable_sha256"] = running_hash
         return live
 
     def latest(self):
-        request = urllib.request.Request(RELEASE_API, headers={"Accept": "application/vnd.github+json", "User-Agent": "Apex-Deck-VPS-Updater"})
+        url = NIGHTLY_FEED if self.channel == "nightly" else RELEASE_API
+        accept = "application/json" if self.channel == "nightly" else "application/vnd.github+json"
+        request = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "Apex-Deck-VPS-Updater"})
         with urllib.request.urlopen(request, timeout=30) as response:
+            if self.channel == "nightly":
+                contents = response.read(65537)
+                if len(contents) > 65536:
+                    raise ValueError("Nightly manifest exceeds 64 KiB")
+                return json.loads(contents)
             return json.load(response)
 
     def prepare(self, release):
-        tag = release["tag_name"]
-        version(tag[1:])
+        nightly = self.channel == "nightly"
+        if nightly:
+            release = nightly_manifest(release)
+            tag, wanted = release["tag"], release["version"]
+        else:
+            tag = release["tag_name"]
+            if not isinstance(tag, str) or not tag.startswith("v"):
+                raise ValueError("Published release must use a vMAJOR.MINOR.PATCH tag")
+            wanted = tag[1:]
+            version(wanted)
         self.command(["mkdir", "-p", self.work], user=True)
         if not (self.source / ".git").is_dir():
             self.command(["git", "init", self.source], user=True)
@@ -299,11 +416,20 @@ class System:
         commit = self.command(["git", "rev-parse", "FETCH_HEAD^{commit}"], user=True, cwd=self.source)
         if not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise ValueError("Release tag did not resolve to a commit")
-        recipe_files = [HERE / name for name in ("vps_update.py", "vps_update_compat.py", "vps-update-allow-test.rs", "vps-update-maintenance.patch")]
+        if nightly and commit != release["commit"]:
+            raise ValueError("Immutable Nightly tag resolves to a different source commit")
+        recipe_names = ["vps_update.py", "vps_update_compat.py"]
+        if not nightly:
+            recipe_names.extend(["vps-update-allow-test.rs", "vps-update-maintenance.patch"])
+        recipe_files = [HERE / name for name in recipe_names] + [CHANNELS_FILE]
         recipe = hashlib.sha256("".join(digest(path) for path in recipe_files).encode()).hexdigest()
-        stage = self.root / "candidates" / (commit + "-" + recipe[:12])
+        cache_key = f"{release['buildNumber']}-{commit}" if nightly else commit
+        stage = self.root / "candidates" / (cache_key + "-" + recipe[:12])
+        target = stage / self.binary.name
         metadata = read_json(stage / "candidate.json")
-        if metadata and digest(Path(metadata["path"])) == metadata["sha256"]:
+        if (metadata and metadata.get("path") == str(target) and target.is_file() and
+                digest(target) == metadata.get("sha256") and
+                (not nightly or nightly_manifest({**metadata, "schemaVersion": 1}) == release)):
             return metadata
         self.command(["git", "checkout", "--force", "--detach", commit], user=True, cwd=self.source)
         # This dedicated clone contains no user work. Never clean another checkout.
@@ -312,15 +438,19 @@ class System:
         # cause a privileged compatibility-helper write outside this checkout.
         compatibility = json.loads(self.command([
             "python3", "-c",
-            "import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from vps_update_compat import prepare_source; print(json.dumps(prepare_source(Path(sys.argv[2]))))",
-            HERE, self.source,
+            "import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from vps_update_compat import prepare_source; print(json.dumps(prepare_source(Path(sys.argv[2]), native_only=sys.argv[3]=='nightly')))",
+            HERE, self.source, self.channel,
         ], user=True))
-        if not compatibility.get("native_maintenance"):
+        if not nightly and not compatibility.get("native_maintenance"):
             self.command(["git", "apply", "--check", HERE / "vps-update-maintenance.patch"], user=True, cwd=self.source)
             self.command(["git", "apply", HERE / "vps-update-maintenance.patch"], user=True, cwd=self.source)
         stage.mkdir(parents=True, exist_ok=True)
         build_dirty = bool(self.command(["git", "status", "--porcelain"], user=True, cwd=self.source))
-        build_env = {"CARGO_TARGET_DIR": str(self.work / "target"), "APEX_BUILD_COMMIT": commit[:12], "APEX_BUILD_DIRTY": str(build_dirty).lower(), "CARGO_BUILD_JOBS": "2"}
+        build_env = {"CARGO_TARGET_DIR": str(self.work / "target"), "APEX_CHANNEL": self.channel, "APEX_BUILD_COMMIT": commit[:12], "APEX_BUILD_DIRTY": str(build_dirty).lower(), "CARGO_BUILD_JOBS": "2"}
+        if nightly:
+            if build_dirty:
+                raise ValueError("Nightly candidate source must stay clean")
+            build_env.update(APEX_BUILD_NUMBER=str(release["buildNumber"]), APEX_BUILD_SOURCE_COMMIT=commit)
         test_results = []
         for number, (argv, expected) in enumerate(candidate_checks(compatibility.get("native_maintenance")), 1):
             output = self.command(argv, user=True, cwd=self.source, timeout=3600, env=build_env)
@@ -329,7 +459,6 @@ class System:
             test_results.append({"command": argv, "passed": passed})
         output = self.command(["cargo", "build", "--release", "--locked", "-p", "apex-daemon", "--features", "remote"], user=True, cwd=self.source, timeout=3600, env=build_env)
         (stage / "build.log").write_text(output + "\n")
-        target = stage / "apex-daemon"
         # Read as the build user, avoiding root following user-controlled symlinks.
         with target.open("wb") as output:
             subprocess.run(["runuser", "-u", self.user, "--", "cat", str(self.work / "target/release/apex-daemon")], stdout=output, check=True, timeout=30)
@@ -337,9 +466,15 @@ class System:
             os.fsync(output.fileno())
         target.chmod(0o755)
         reported = self.command([target, "--version"], user=True)
-        if not re.fullmatch(r"apex-daemon " + re.escape(tag[1:]) + r" \(" + commit[:12] + r"(?:-dirty)?\)", reported):
+        dirty_pattern = "" if nightly else r"(?:-dirty)?"
+        if not re.fullmatch(r"apex-daemon " + re.escape(wanted) + r" \(" + commit[:12] + dirty_pattern + r"\)", reported):
             raise RuntimeError("Candidate identity does not match tagged source: " + reported)
-        metadata = {"version": tag[1:], "commit": commit, "sha256": digest(target), "path": str(target), "recipe_sha256": recipe, "compatibility": compatibility, "tests": test_results, "build_dirty": build_dirty}
+        metadata = {"version": wanted, "commit": commit, "sha256": digest(target), "path": str(target), "recipe_sha256": recipe, "compatibility": compatibility, "tests": test_results, "build_dirty": build_dirty}
+        if nightly:
+            identity = nightly_identity(json.loads(self.command([target, "--build-identity"], user=True)))
+            if identity != nightly_identity(release):
+                raise ValueError("Built Nightly daemon identity differs from the manifest")
+            metadata.update(identity, tag=tag)
         write_json(stage / "candidate.json", metadata)
         return metadata
 
@@ -461,7 +596,7 @@ class System:
     def replace(self, source, expected):
         if digest(source) != expected:
             raise RuntimeError("Executable checksum changed")
-        temporary = self.binary.with_name("apex-daemon.update-new")
+        temporary = self.binary.with_name(self.binary.name + ".update-new")
         shutil.copyfile(source, temporary)
         temporary.chmod(0o755)
         with temporary.open("rb") as stream:
@@ -506,6 +641,10 @@ class System:
                     raise RuntimeError("Live protocol identity differs from candidate")
                 if not backup and live.get("build_dirty") != expected["build_dirty"]:
                     raise RuntimeError("Live build patch marker differs from candidate")
+                if self.channel == "nightly":
+                    identity = expected["live"]["build_identity"] if backup else expected
+                    if nightly_identity(live["build_identity"]) != nightly_identity(identity):
+                        raise RuntimeError("Live Nightly build number or full source SHA differs from candidate")
                 if pid <= 1 or record.get("pid") != pid or record.get("boot_id") != live["boot_id"]:
                     raise RuntimeError("systemd and live daemon identity disagree")
                 if digest(Path(f"/proc/{pid}/exe")) != expected["sha256"]:
@@ -531,15 +670,17 @@ class System:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("user")
+    parser.add_argument("--channel", choices=("stable", "nightly"), default="stable")
     parser.add_argument("--prepare-only", action="store_true", help="Build and verify latest published tag without touching the service")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run as root")
     if not re.fullmatch(r"[a-z_][a-z0-9_-]*", args.user):
         parser.error("invalid service user")
-    root = Path("/var/lib/apex-deck-update") / args.user
+    updater = read_json(CHANNELS_FILE)[args.channel]["VPS_UPDATE"]
+    root = Path("/var/lib") / updater / args.user
     root.mkdir(parents=True, exist_ok=True)
-    config_path = Path("/etc/apex-deck-update") / (args.user + ".json")
+    config_path = Path("/etc") / updater / (args.user + ".json")
     if config_path.stat().st_uid != 0 or config_path.stat().st_mode & 0o022:
         parser.error("configuration must be root owned and not user writable")
     config = read_json(config_path)
@@ -551,8 +692,8 @@ def main():
         except BlockingIOError:
             print("An update is already running")
             return
-        system = System(config, root)
         try:
+            system = System(config, root, args.channel)
             result = {"status": "prepared", "candidate": system.prepare(system.latest())} if args.prepare_only else update(system, root)
         except Exception as error:
             result = {"status": "error", "reason": str(error)}

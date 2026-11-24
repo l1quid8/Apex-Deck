@@ -157,8 +157,10 @@ impl VoiceServer {
                     .ok()
                     .and_then(|m| m["version"].as_str().map(str::to_owned)),
             ) {
-                let root =
-                    PathBuf::from(home).join("Library/Application Support/dev.apexdeck.app/voice");
+                let root = PathBuf::from(home)
+                    .join("Library/Application Support")
+                    .join(apex_provenance::channel::APP_ID)
+                    .join("voice");
                 return Self::mac_app(&root, &version, deps(helper::MLX));
             }
         }
@@ -793,6 +795,21 @@ mod tests {
         t.fake.fail.store(false, Ordering::Relaxed);
         t.installed().await;
         assert_eq!(t.fake.fetches.load(Ordering::Relaxed), 3);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn mac_voice_root_follows_active_channel() {
+        let server = VoiceServer::new(Path::new("/tmp/unused-voice-data"));
+        assert!(
+            server.root.ends_with(
+                Path::new("Library/Application Support")
+                    .join(apex_provenance::channel::APP_ID)
+                    .join("voice")
+            ),
+            "{}",
+            server.root.display()
+        );
     }
 }
 #[cfg(test)]
