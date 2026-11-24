@@ -45,8 +45,8 @@ const CHANNELS: Record<HostChannel, ChannelScripts> = {
     userUnit: "apex-daemon-nightly.service",
     switchUnit: "apex-deck-nightly-switch",
     updaterDir: "/etc/apex-deck-nightly-update",
-    feedName: "apex-deck-nightly-update.json",
-    defaultFeedPath: "download/nightly/apex-deck-nightly-update.json",
+    feedName: "apex-deck-nightly-update-linux.json",
+    defaultFeedPath: "download/nightly/apex-deck-nightly-update-linux.json",
   },
 };
 

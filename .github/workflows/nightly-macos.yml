@@ -1,10 +1,11 @@
-# Scheduled Nightly release workflow for macOS + Linux VPS daemons.
+# Scheduled Nightly release workflow for macOS only. Linux publishes on its own
+# schedule through nightly-linux.yml and apex-deck-nightly-update-linux.json.
 #
 # Runs once a night (or on manual dispatch) and:
 #   1. Picks the latest green `daemon.yml` push commit on `main`.
 #   2. Skips cleanly when that SHA already matches the rolling `nightly` feed.
-#   3. Builds signed/notarized Apex Deck Nightly (macOS) plus Linux Nightly
-#      daemons from that exact commit with a strictly monotonic buildNumber.
+#   3. Builds signed/notarized Apex Deck Nightly (macOS) from that exact
+#      commit with a strictly monotonic buildNumber.
 #   4. Uploads to an immutable draft `--prerelease` tag (`nightly-YYYYMMDD-<sha7>`),
 #      downloads every asset back and verifies exact sizes + SHA-256 checksums,
 #      and only advances the rolling `nightly` prerelease feed once every check
@@ -67,37 +68,8 @@ jobs:
           if [ -n "$INPUT_SHA" ]; then args+=(--sha "$INPUT_SHA"); fi
           node scripts/nightly-release.mjs "${args[@]}"
 
-  build-linux-daemons:
-    needs: plan
-    if: needs.plan.outputs.should_build == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            arch: x86_64
-          - os: ubuntu-22.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    env:
-      APEX_CHANNEL: nightly
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.plan.outputs.commit }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked -p apex-daemon --features remote
-      - uses: actions/upload-artifact@v4
-        with:
-          name: apex-daemon-nightly-linux-${{ matrix.arch }}
-          path: target/release/apex-daemon
-          if-no-files-found: error
-          retention-days: 7
-
   build-macos:
-    needs: [plan, build-linux-daemons]
+    needs: plan
     if: needs.plan.outputs.should_build == 'true'
     runs-on: macos-15
     timeout-minutes: 60
@@ -117,14 +89,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-      - uses: actions/download-artifact@v4
-        with:
-          name: apex-daemon-nightly-linux-arm64
-          path: build/linux-daemons/arm64
-      - uses: actions/download-artifact@v4
-        with:
-          name: apex-daemon-nightly-linux-x86_64
-          path: build/linux-daemons/x86_64
       - name: Import Developer ID certificate and notarization credentials
         env:
           DRY_RUN: ${{ inputs.dry_run }}
@@ -176,8 +140,6 @@ jobs:
             --date "${{ needs.plan.outputs.date }}" \
             --commit "${{ needs.plan.outputs.commit }}" \
             --build-number "${{ needs.plan.outputs.build_number }}" \
-            --linux "arm64=build/linux-daemons/arm64/apex-daemon" \
-            --linux "x86_64=build/linux-daemons/x86_64/apex-daemon" \
             --notes "Nightly build ${{ needs.plan.outputs.build_number }} (${{ needs.plan.outputs.tag }})."
       - name: Clean up signing keychain and key material
         if: always()

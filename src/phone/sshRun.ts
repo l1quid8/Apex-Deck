@@ -89,18 +89,20 @@ export interface Feed {
   buildNumber?: number;
   commit?: string;
   tag?: string;
+  /** Nightly only: the Linux-only release that holds the daemons (nightly-linux-YYYYMMDD-<sha7>). */
+  assetTag?: string;
   daemons: DaemonAsset[];
 }
 
 /** The release feed's Linux half, verified against the target channel. Throws when invalid or mismatched. */
 export function readFeed(text: string, channel: HostChannel = "stable"): Feed {
-  let value: { channel?: unknown; version?: unknown; buildNumber?: unknown; commit?: unknown; tag?: unknown; daemons?: unknown };
+  let value: { channel?: unknown; version?: unknown; buildNumber?: unknown; commit?: unknown; tag?: unknown; assetTag?: unknown; daemons?: unknown };
   try { value = JSON.parse(text); } catch { throw new Error("The release list couldn't be read."); }
   if (!value || typeof value !== "object") throw new Error("The release list couldn't be read.");
   if (typeof value.version !== "string" || !/^\d+\.\d+\.\d+$/.test(value.version)) throw new Error("The release list couldn't be read.");
   const feedChannel = value.channel === undefined ? "stable" : value.channel;
   if (feedChannel !== channel) throw new Error(`The release list is for ${String(feedChannel)}, not ${channel}.`);
-  let nightlyMeta: { buildNumber?: number; commit?: string; tag?: string } = {};
+  let nightlyMeta: { buildNumber?: number; commit?: string; tag?: string; assetTag?: string } = {};
   if (channel === "nightly") {
     if (typeof value.buildNumber !== "number" || !Number.isSafeInteger(value.buildNumber) || value.buildNumber <= 0) {
       throw new Error("The Nightly release list has no valid build number.");
@@ -111,7 +113,10 @@ export function readFeed(text: string, channel: HostChannel = "stable"): Feed {
     if (typeof value.tag !== "string" || !/^nightly-[0-9]{8}-[a-f0-9]{7}$/.test(value.tag) || !value.tag.endsWith(`-${value.commit.slice(0, 7)}`)) {
       throw new Error("The Nightly release list has no valid immutable tag.");
     }
-    nightlyMeta = { buildNumber: value.buildNumber, commit: value.commit, tag: value.tag };
+    if (value.assetTag !== `nightly-linux-${value.tag.slice("nightly-".length)}`) {
+      throw new Error("The Nightly release list has no valid Linux download release.");
+    }
+    nightlyMeta = { buildNumber: value.buildNumber, commit: value.commit, tag: value.tag, assetTag: value.assetTag };
   }
   const daemons = Array.isArray(value.daemons) ? value.daemons.filter((entry): entry is DaemonAsset =>
     typeof entry?.arch === "string" && typeof entry?.name === "string" && /^[A-Za-z0-9._-]+$/.test(entry.name) && /^[a-f0-9]{64}$/.test(entry?.sha256)) : [];
@@ -281,7 +286,7 @@ export function runSetup(request: SshRequest, deps: SetupDeps, emit: (event: Set
       } else {
         const asset = feed.daemons.find((entry) => entry.arch === arch);
         if (!asset) throw new StepFailure("install", "No Deck download yet", `${labelName} ${feed.version} has no Linux ${arch} download yet.`);
-        const downloadTag = channel === "nightly" ? feed.tag! : `v${feed.version}`;
+        const downloadTag = channel === "nightly" ? feed.assetTag! : `v${feed.version}`;
         const url = `${releases}/download/${downloadTag}/${asset.name}`;
         const systemBin = probe.bin === cfg.systemBin || (!probe.bin && root.ok);
         if (systemBin && !root.ok) throw new StepFailure("install", "Needs admin rights", `${labelName} is installed for everyone here, so updating it needs a password with sudo.`);

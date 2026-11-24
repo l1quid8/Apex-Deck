@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Plans, verifies, and publishes scheduled Nightly macOS + Linux daemon builds.
+// Plans, verifies, and publishes scheduled Nightly macOS builds. Linux publishes
+// independently through scripts/nightly-linux-release.mjs and its own feed.
 //
 // Subcommands:
 //   node scripts/nightly-release.mjs plan [--repo OWNER/REPO] [--date YYYYMMDD]

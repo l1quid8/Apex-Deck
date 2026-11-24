@@ -23,7 +23,7 @@ from pathlib import Path
 
 REPOSITORY = "https://github.com/l1quid8/apex-deck.git"
 RELEASE_API = "https://api.github.com/repos/l1quid8/apex-deck/releases/latest"
-NIGHTLY_FEED = "https://github.com/l1quid8/apex-deck/releases/download/nightly/apex-deck-nightly-update.json"
+NIGHTLY_FEED = "https://github.com/l1quid8/apex-deck/releases/download/nightly/apex-deck-nightly-update-linux.json"
 HERE = Path(__file__).resolve().parent
 CHANNELS_FILE = HERE / "channels.json"
 if not CHANNELS_FILE.is_file():

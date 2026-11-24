@@ -393,6 +393,7 @@ test("quoting and reports survive awkward text", () => {
 
 const NIGHTLY_COMMIT = "11c1ade33ad9f6dc2d80ff32a68e159d501fde38";
 const NIGHTLY_TAG = "nightly-20261124-11c1ade";
+const NIGHTLY_ASSET_TAG = "nightly-linux-20261124-11c1ade";
 const NIGHTLY_SHA = "b".repeat(64);
 const STABLE_SHA = "c".repeat(64);
 const STABLE_ENDPOINT = "1".repeat(64);
@@ -405,6 +406,7 @@ const NIGHTLY_FEED = JSON.stringify({
   buildNumber: 43,
   commit: NIGHTLY_COMMIT,
   tag: NIGHTLY_TAG,
+  assetTag: NIGHTLY_ASSET_TAG,
   daemons: [{ arch: "x86_64", name: "apex-daemon-nightly-linux-x86_64", sha256: NIGHTLY_SHA }],
 });
 const STABLE_FEED_0919 = JSON.stringify({
@@ -483,7 +485,7 @@ function twoChannelVps(initial = {}) {
         return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
       }
       if (command.includes("sudo -n true")) return { code: 0, stdout: "", stderr: "" };
-      if (command.includes("apex-deck-nightly-update.json")) {
+      if (command.includes("apex-deck-nightly-update-linux.json")) {
         return { code: 0, stdout: initial.nightlyFeed ?? NIGHTLY_FEED, stderr: "" };
       }
       if (command.includes("apex-deck-update.json")) {
@@ -631,9 +633,9 @@ test("Nightly Add server over SSH on a two-channel VPS installs, trusts, starts,
     assert.equal(saved[0].req.channel, "nightly");
 
     // Verify Nightly feed, immutable download URL, unit, trust, and pair commands ran.
-    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update.json")));
+    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update-linux.json")));
     assert.ok(vps.ran.every((cmd) => !cmd.includes("apex-deck-update.json")));
-    assert.ok(vps.ran.some((cmd) => cmd.includes(`/download/${NIGHTLY_TAG}/apex-daemon-nightly-linux-x86_64`)));
+    assert.ok(vps.ran.some((cmd) => cmd.includes(`/download/${NIGHTLY_ASSET_TAG}/apex-daemon-nightly-linux-x86_64`)));
     assert.ok(vps.ran.some((cmd) => cmd.includes("/usr/local/bin/apex-daemon-nightly")));
     assert.ok(vps.ran.some((cmd) => cmd.includes("apex-daemon-nightly@.service")));
     assert.deepEqual(vps.opened.map((cmd) => cmd.trim().split("\n").at(-1)), ["exec apex-daemon-nightly pair --json"]);
@@ -712,6 +714,9 @@ test("Nightly same-semver update on a two-channel VPS switches only Nightly whil
 
 test("readFeed rejects cross-channel and malformed Nightly feeds", () => {
   assert.equal(readFeed(NIGHTLY_FEED, "nightly").tag, NIGHTLY_TAG);
+  assert.equal(readFeed(NIGHTLY_FEED, "nightly").assetTag, NIGHTLY_ASSET_TAG, "Nightly daemons download from the Linux-only release");
+  assert.throws(() => readFeed(JSON.stringify({ ...JSON.parse(NIGHTLY_FEED), assetTag: undefined }), "nightly"), /Linux download release/);
+  assert.throws(() => readFeed(JSON.stringify({ ...JSON.parse(NIGHTLY_FEED), assetTag: NIGHTLY_TAG }), "nightly"), /Linux download release/);
   assert.throws(() => readFeed(FEED, "nightly"), /not nightly/);
   assert.throws(() => readFeed(NIGHTLY_FEED, "stable"), /not stable/);
   assert.throws(() => readFeed(JSON.stringify({ ...JSON.parse(NIGHTLY_FEED), buildNumber: 0 }), "nightly"), /build number/);
@@ -817,7 +822,7 @@ test("native iOS bridge failure stops SSH setup with zero remote commands and a 
     assert.equal(saved.length, 1);
     assert.equal(saved[0].req.channel, "nightly");
     assert.equal(saved[0].paired.hostEndpointId, NIGHTLY_ENDPOINT);
-    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update.json")));
+    assert.ok(vps.ran.some((cmd) => cmd.includes("/download/nightly/apex-deck-nightly-update-linux.json")));
     assert.ok(vps.ran.every((cmd) => !cmd.includes("apex-deck-update.json")));
     assert.equal(vps.state.stable.installs, 0);
     assert.equal(vps.state.stable.pairCalls, 0);
