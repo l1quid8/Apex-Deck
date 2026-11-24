@@ -507,21 +507,14 @@ export function publishNightlyRelease({
     return runner('gh', args, opts);
   };
 
-  // Create or reuse a draft immutable prerelease. Another platform (Linux,
-  // Windows) may already have published this commit's immutable release with
-  // its own assets; macOS then adds only its own files, without --clobber, and
-  // still refuses to overwrite any macOS asset already on a published tag.
+  // Create or reuse a draft immutable prerelease; never clobber an already published immutable tag.
   let existingDraft = false;
-  let existingPublished = false;
   if (!dryRun) {
-    const viewArgs = ['release', 'view', manifest.tag, '--repo', repo, '--json', 'isDraft,isPrerelease,targetCommitish,assets'];
+    const viewArgs = ['release', 'view', manifest.tag, '--repo', repo, '--json', 'isDraft,isPrerelease'];
     const view = runner('gh', viewArgs, { allowFailure: true });
     if (view.status === 0) {
       const info = JSON.parse(view.stdout || '{}');
-      const ownNames = new Set(uploadFiles.map((file) => path.basename(file)));
-      const clash = Array.isArray(info.assets) ? info.assets.some((asset) => ownNames.has(asset?.name)) : true;
-      const otherCommit = info.targetCommitish && info.targetCommitish !== manifest.commit;
-      if (!info.isDraft && (clash || otherCommit)) {
+      if (!info.isDraft) {
         return {
           published: false,
           feedAdvanced: false,
@@ -534,8 +527,7 @@ export function publishNightlyRelease({
           commands,
         };
       }
-      if (info.isDraft) existingDraft = true;
-      else existingPublished = true;
+      existingDraft = true;
     } else if (!isReleaseNotFound(view)) {
       return {
         published: false,
@@ -551,7 +543,7 @@ export function publishNightlyRelease({
     }
   }
 
-  if (!existingDraft && !existingPublished) {
+  if (!existingDraft) {
     execStep([
       'release', 'create', manifest.tag,
       '--repo', repo,
@@ -561,7 +553,7 @@ export function publishNightlyRelease({
       '--notes', notes,
     ]);
   }
-  execStep(['release', 'upload', manifest.tag, '--repo', repo, ...(existingPublished ? [] : ['--clobber']), ...uploadFiles]);
+  execStep(['release', 'upload', manifest.tag, '--repo', repo, '--clobber', ...uploadFiles]);
 
   // Gate 2: Download every uploaded asset (packages, Linux daemons, and required DMGs)
   // back (or check verifyDir in dry-run) and verify exact size + SHA-256 BEFORE
@@ -599,7 +591,7 @@ export function publishNightlyRelease({
   }
 
   // Gate passed: publish immutable prerelease first, then advance rolling `nightly` feed.
-  if (!existingPublished) execStep(['release', 'edit', manifest.tag, '--repo', repo, '--draft=false', '--prerelease']);
+  execStep(['release', 'edit', manifest.tag, '--repo', repo, '--draft=false', '--prerelease']);
 
   let rollingExists = true;
   if (!dryRun) {
