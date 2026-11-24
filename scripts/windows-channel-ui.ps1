@@ -20,10 +20,39 @@ if ($app.ProcessName -ne $identity.PRODUCT -or ($app.Path -and $app.Path -ne (Jo
 if (!$Post -and !$Expect.Count) { throw 'Supply a marker to post or recover.' }
 Write-Host "Testing $Channel UI PID $AppId in Windows session $($app.SessionId) as $([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
 
-function Find-Control([string]$name, $type) {
+$activator = New-Object -ComObject WScript.Shell
+if (!('ChannelUiWindow' -as [type])) {
+  Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class ChannelUiWindow {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Rect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr window, out Rect bounds);
+    [DllImport("user32.dll")]
+    public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+}
+'@
+}
+
+function Get-ActiveAppWindow {
   $app.Refresh()
-  if ($app.MainWindowHandle -eq [IntPtr]::Zero) { return }
-  $window = [Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
+  $hwnd = $app.MainWindowHandle
+  if ($hwnd -eq [IntPtr]::Zero) { return }
+  # Chromium can withhold the accessibility document when the other channel covers this window.
+  if ([ChannelUiWindow]::GetForegroundWindow() -ne $hwnd) {
+    $null = $activator.AppActivate($AppId)
+    if ([ChannelUiWindow]::GetForegroundWindow() -ne $hwnd) { return }
+  }
+  [Windows.Automation.AutomationElement]::FromHandle($hwnd)
+}
+
+function Find-Control([string]$name, $type) {
+  $window = Get-ActiveAppWindow
+  if (!$window) { return }
   $condition = [Windows.Automation.AndCondition]::new(
     [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $name),
     [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, $type))
@@ -33,7 +62,7 @@ function Find-Control([string]$name, $type) {
 function Write-UiFailureContext([string]$name) {
   $app.Refresh()
   $hwnd = $app.MainWindowHandle
-  Write-Host "UIA client session $([Diagnostics.Process]::GetCurrentProcess().SessionId), app session $($app.SessionId), HWND $hwnd, title '$($app.MainWindowTitle)'"
+  Write-Host "UIA client session $([Diagnostics.Process]::GetCurrentProcess().SessionId), app session $($app.SessionId), HWND $hwnd, foreground $([ChannelUiWindow]::GetForegroundWindow()), title '$($app.MainWindowTitle)'"
   if ($hwnd -eq [IntPtr]::Zero) { return }
   $window = [Windows.Automation.AutomationElement]::FromHandle($hwnd)
   $scope = [Windows.Automation.TreeScope]::Descendants
@@ -73,22 +102,8 @@ function Save-UiWindow {
   $hwnd = $app.MainWindowHandle
   if ($hwnd -eq [IntPtr]::Zero -or (Test-Path -LiteralPath $file)) { return }
   Add-Type -AssemblyName System.Drawing
-  if (!('ChannelUiCapture' -as [type])) {
-    Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class ChannelUiCapture {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct Rect { public int Left, Top, Right, Bottom; }
-    [DllImport("user32.dll")]
-    public static extern bool GetWindowRect(IntPtr window, out Rect bounds);
-    [DllImport("user32.dll")]
-    public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
-}
-'@
-  }
-  $rect = [ChannelUiCapture+Rect]::new()
-  if (![ChannelUiCapture]::GetWindowRect($hwnd, [ref]$rect)) { throw "No bounds for HWND $hwnd" }
+  $rect = [ChannelUiWindow+Rect]::new()
+  if (![ChannelUiWindow]::GetWindowRect($hwnd, [ref]$rect)) { throw "No bounds for HWND $hwnd" }
   $width = $rect.Right - $rect.Left
   $height = $rect.Bottom - $rect.Top
   if ($width -lt 1 -or $height -lt 1 -or $width -gt 4096 -or $height -gt 4096) { throw "Unexpected window dimensions ${width}x$height" }
@@ -99,7 +114,7 @@ public static class ChannelUiCapture {
       $dc = $graphics.GetHdc()
       try {
         # PW_RENDERFULLCONTENT captures only this HWND, including when the other channel covers it.
-        if (![ChannelUiCapture]::PrintWindow($hwnd, $dc, 2)) { throw "PrintWindow failed for HWND $hwnd" }
+        if (![ChannelUiWindow]::PrintWindow($hwnd, $dc, 2)) { throw "PrintWindow failed for HWND $hwnd" }
       } finally { $graphics.ReleaseHdc($dc) }
     } finally { $graphics.Dispose() }
     $null = [IO.Directory]::CreateDirectory($folder)

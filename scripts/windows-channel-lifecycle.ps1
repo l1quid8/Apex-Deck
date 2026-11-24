@@ -56,6 +56,15 @@ function TestAuthority([string]$name) {
   } finally { Remove-Item Env:APEX_CHANNEL }
 }
 
+function AuthorityPublicKey($identity, $data) {
+  $helper = Join-Path $env:ProgramFiles "$($identity.PRODUCT)/resources/bin/$($identity.WINDOWS_HELPER)"
+  $result = & $helper identity $data | ConvertFrom-Json
+  if ($LASTEXITCODE -or [Convert]::FromBase64String($result.publicKey).Length -ne 32) {
+    throw "Invalid installed public identity for $($identity.PRODUCT)"
+  }
+  return $result.publicKey
+}
+
 function AssertNightlyBuild([string]$setup) {
   $identity = $channels.nightly
   $root = Join-Path $env:ProgramFiles $identity.PRODUCT
@@ -168,6 +177,10 @@ try {
   $nightly = Snapshot $channels.nightly 'before Nightly upgrade'
   Survived $stable (Snapshot $channels.stable 'after first Nightly install')
   if ($stable.endpoint -eq $nightly.endpoint -or $stable.uninstall -eq $nightly.uninstall) { throw 'Channel identity collision' }
+  if ((AuthorityPublicKey $channels.stable $stable.data) -ceq (AuthorityPublicKey $channels.nightly $nightly.data)) {
+    throw 'The two installed authorities expose the same signing key'
+  }
+  Write-Host 'The installed Stable and Nightly authorities have different Ed25519 public keys for this Windows user.'
   CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -CreateSample -Post "stable-$run" }
   CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -CreateSample -Post "nightly-$run" -Exclude "stable-$run" }
   $stable = Relaunch $stable $channels.stable

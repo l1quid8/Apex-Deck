@@ -28,9 +28,16 @@ try {
   Export-Certificate -Cert $certificate -FilePath $public | Out-Null
   Import-Certificate -FilePath $public -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
   foreach ($name in $copies.Keys) {
-    $signed = Set-AuthenticodeSignature -LiteralPath (Join-Path $scratch $name) -Certificate $certificate -HashAlgorithm SHA256
+    $path = Join-Path $scratch $name
+    $signed = Set-AuthenticodeSignature -LiteralPath $path -Certificate $certificate -HashAlgorithm SHA256
     if ($signed.Status -ne 'Valid' -or $signed.SignerCertificate.Thumbprint -ne $certificate.Thumbprint) {
       throw "QA signing failed for $name ($($signed.Status): $($signed.StatusMessage))"
+    }
+    if ($name -ne 'app.exe') {
+      $info = (Get-Item -LiteralPath $path).VersionInfo
+      $parts = $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart
+      Write-Host (@{qaSetup=$name; product=$info.ProductName; version=$info.ProductVersion; fileVersion=$parts -join '.';
+        sha256=(Get-FileHash -LiteralPath $path).Hash; signature=[string]$signed.Status; publisher=$signed.SignerCertificate.Subject} | ConvertTo-Json -Compress)
     }
   }
   $env:APEX_CHANNEL = 'nightly'
