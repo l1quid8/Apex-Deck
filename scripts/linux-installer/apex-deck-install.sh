@@ -131,7 +131,7 @@ default_data_dir() { printf '%s/.local/share/%s\n' "$(user_home "$1")" "$APP_ID"
 enroll() { # tree user data-dir
   local tree=$1 user=$2 data=$3 requester status=0
   [[ -t 0 ]] || die "enrollment needs an interactive administrator terminal."
-  runuser -u "$user" -- mkdir -p -m 0700 "$data"
+  runuser -u "$user" -- mkdir -p -m 0700 -- "$data" "$data/saved-chats-v1"
   (
     for _ in $(seq 1 100); do [[ -S "${RUNTIME}/enroll.sock" ]] && break; sleep 0.1; done
     exec runuser -u "$user" -- env -i PATH=/usr/bin:/bin HOME="$(user_home "$user")" \

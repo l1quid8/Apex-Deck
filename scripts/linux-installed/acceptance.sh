@@ -31,6 +31,8 @@ collect() {
   systemctl --no-pager status "$SERVICE" "$SLUG-daemon@*" >"$EVIDENCE/units.txt" 2>&1
   # shellcheck disable=SC2024 # root writes the evidence file
   [[ -n ${UID_T:-} ]] && sudo -u "$TESTER" DISPLAY=$DISPLAY_NUM xwd -root -silent 2>/dev/null >"$EVIDENCE/screen.xwd"
+  local data="$(getent passwd "$TESTER" | cut -d: -f6)/.local/share/dev.apexdeck.app.nightly"
+  stat -c '%U:%G %a %n' "$data" "$data/saved-chats-v1" >"$EVIDENCE/scope-modes.txt" 2>&1
   cp /tmp/apex-acceptance-*.log "$EVIDENCE/" 2>/dev/null
   chmod -R a+rX "$EVIDENCE"
 }
@@ -91,6 +93,7 @@ grep -q 'Existing authority found' /tmp/apex-acceptance-reinstall.log || fail "w
 step "Start a display and accessibility for the desktop account"
 as_user Xvfb $DISPLAY_NUM -screen 0 1440x900x24 -nolisten tcp >/tmp/apex-acceptance-xvfb.log 2>&1 &
 for _ in $(seq 50); do as_user xdpyinfo >/dev/null 2>&1 && break; sleep 0.2; done
+as_user openbox >/tmp/apex-acceptance-openbox.log 2>&1 &
 as_user busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
 DRIVER=/usr/local/libexec/apex-installed-test/ui-driver.py
 install -D -m 0755 "$HERE/ui-driver.py" "$DRIVER"
