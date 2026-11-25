@@ -168,17 +168,6 @@ fn reset_copy(data: &Path, copy: &BotCopy) -> Result<(), String> {
     Ok(())
 }
 
-/// Replaces the file in one rename, so a crash leaves the old or the new one.
-fn save(path: &Path, ledger: &Ledger) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(ledger).map_err(|e| e.to_string())?;
-    let temp = path.with_file_name(format!("task-branches-v1.json.tmp-{}", std::process::id()));
-    std::fs::write(&temp, bytes).map_err(|e| format!("Could not write {}: {e}", temp.display()))?;
-    std::fs::rename(&temp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&temp);
-        format!("Could not save {}: {e}", path.display())
-    })
-}
-
 impl TaskBranches {
     pub fn new(data: &Path) -> Self {
         Self { path: data.join("task-branches-v1.json"), cache: Mutex::new(None) }
@@ -187,11 +176,7 @@ impl TaskBranches {
     fn edit<T>(&self, f: impl FnOnce(&mut Vec<TaskFolder>) -> Result<T, String>) -> Result<T, String> {
         let mut cache = self.cache.lock().map_err(|e| e.to_string())?;
         if cache.is_none() {
-            let saved = match std::fs::read(&self.path) {
-                Ok(bytes) => serde_json::from_slice::<Ledger>(&bytes).map_err(|e| format!("Could not read {}: {e}", self.path.display()))?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ledger { version: 1, folders: Vec::new() },
-                Err(e) => return Err(format!("Could not read {}: {e}", self.path.display())),
-            };
+            let saved = crate::plain_file::read::<Ledger>(&self.path)?.unwrap_or(Ledger { version: 1, folders: Vec::new() });
             if saved.version != 1 {
                 return Err(format!("{} is from a newer Deck (version {}).", self.path.display(), saved.version));
             }
@@ -201,7 +186,7 @@ impl TaskBranches {
         let mut next = current.clone();
         let result = f(&mut next.folders)?;
         if current.folders != next.folders {
-            if let Err(e) = save(&self.path, &next) {
+            if let Err(e) = crate::plain_file::save(&self.path, &next) {
                 *cache = None;
                 return Err(e);
             }

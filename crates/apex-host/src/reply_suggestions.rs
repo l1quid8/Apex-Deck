@@ -4,7 +4,6 @@
 //! A Git decision comes only from the saved merge workflow and GitHub. A
 //! question an agent wrote can only ever send text back to that agent.
 
-use crate::authority_file::VersionedDocument;
 use crate::thread_git::{Checks, Phase, Workflow};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -255,13 +254,13 @@ pub fn ask(text: &str) -> Option<Ask> {
         .then(|| Ask { question: question.into(), label: label.into() })
 }
 
+/// The user's own file, not a protected ledger: a dismissal only hides a card.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Ledger {
     version: u32,
     /// Dismissed keys per thread, oldest first.
     rooms: BTreeMap<String, Vec<String>>,
 }
-impl VersionedDocument for Ledger {}
 
 pub struct ReplySuggestions {
     path: PathBuf,
@@ -292,11 +291,11 @@ impl ReplySuggestions {
     fn ledger(&self) -> Result<std::sync::MutexGuard<'_, Option<Ledger>>, String> {
         let mut cache = self.ledger.lock().map_err(|e| e.to_string())?;
         if cache.is_none() {
-            *cache = Some(
-                Ledger::read_optional(&self.path)
-                    .map_err(|e| e.to_string())?
-                    .unwrap_or(Ledger { version: 1, rooms: BTreeMap::new() }),
-            );
+            let saved = crate::plain_file::read::<Ledger>(&self.path)?.unwrap_or(Ledger { version: 1, rooms: BTreeMap::new() });
+            if saved.version != 1 {
+                return Err(format!("{} is from a newer Deck (version {}).", self.path.display(), saved.version));
+            }
+            *cache = Some(saved);
         }
         Ok(cache)
     }
@@ -318,7 +317,7 @@ impl ReplySuggestions {
         keys.push(key.to_owned());
         let extra = keys.len().saturating_sub(KEPT);
         keys.drain(..extra);
-        next.write_to(&self.path).map_err(|e| e.to_string())?;
+        crate::plain_file::save(&self.path, &next)?;
         *cache = Some(next);
         Ok(())
     }
@@ -511,6 +510,22 @@ mod tests {
             restarted.dismiss("r", &format!("test/repo|r|{n}|question|")).unwrap();
         }
         assert_eq!(restarted.dismissed("r").unwrap().len(), KEPT);
+    }
+
+    #[test]
+    fn dismissals_are_a_plain_file_the_broker_never_sees() {
+        // The root broker keeps only the ledgers it lists and refuses even a
+        // read of any other name, so on an installed Mac a protected ledger
+        // here failed every card request. A dismissal grants nothing.
+        let data = TestDataDir::new();
+        let key = format!("test/repo|r|7|merge|{}", "a".repeat(40));
+        ReplySuggestions::new(data.path(), Mode::DecisionCard).dismiss("r", &key).unwrap();
+        let path = data.path().join("reply-decisions-v1.json");
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 1);
+        assert_eq!(saved["rooms"]["r"][0], key.as_str());
+        assert!(!crate::authority_file::fixture_path(&path).exists());
+        assert_eq!(ReplySuggestions::new(data.path(), Mode::DecisionCard).dismissed("r").unwrap(), vec![key], "read back after a restart");
     }
 
     #[test]
