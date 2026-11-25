@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub const DECK_ASKS: &str = "When the user has a genuine optional coding decision, you may end your reply with exactly one plain-text line: Deck asks: <question>? | <action label>. Use 8–160 characters for the question and 2–40 for the label. For example: Deck asks: Add a timestamp to diagnose the delay? | Add diagnostic logging. The label is sent back to you as a one-turn request. Use no backticks, extra pipes, or Git/Host actions such as push, merge, ship or cancel. Place this line immediately before any Deck built, Deck ship or Deck review passed receipt. Omit it for ordinary answers.";
+pub const DECK_ASKS_FULL: &str = "When the person must make a decision that belongs to them (scope, design, their devices or accounts, spending money, or deleting their data), you may end your reply with exactly one plain-text line: Deck asks: <question>? | <action label>. Never use it to ask whether to do the next step of the task; at Full access, do that step. Use 8–160 characters for the question and 2–40 for the label. For example: Deck asks: Show the new setting on the phone too? | Show it on the phone. The label is sent back to you as a one-turn request. Use no backticks, extra pipes, or Git/Host actions such as push, merge, ship or cancel. Place this line immediately before any Deck built, Deck ship or Deck review passed receipt. Omit it for ordinary answers.";
+
 type Prepared = (Arc<dyn Participant>, TurnRequest, usize, Arc<ApprovalDesk>);
 
 type Sink<'a> = &'a (dyn Fn(RoomEvent) + Send + Sync);
@@ -116,10 +119,17 @@ pub trait TurnLifecycleHook: Send + Sync {
     fn revoke(&self, _id: Option<&ParticipantId>) {}
     fn start<'a>(&'a self, id: &'a ParticipantId, request: &'a mut TurnRequest, access: Access) -> BoxFuture<'a, Option<Box<dyn Send>>>;
 }
+/// Where an agent's turn runs instead of the shared folder: its copy, or its
+/// task folder when `task_branch` names the branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyGrant {
+    pub path: PathBuf,
+    pub task_branch: Option<String>,
+}
 pub trait CopyProvider: Send + Sync {
     fn copy_for<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Result<PathBuf, String>>;
     fn turn_finished<'a>(&'a self, id: &'a ParticipantId, cancelled: bool) -> BoxFuture<'a, ()>;
-    fn active_copy<'a>(&'a self, _id: &'a ParticipantId) -> BoxFuture<'a, Option<PathBuf>> {
+    fn active_copy<'a>(&'a self, _id: &'a ParticipantId) -> BoxFuture<'a, Option<CopyGrant>> {
         Box::pin(async move { None })
     }
 }
@@ -721,11 +731,11 @@ impl ConcurrentRoom {
         // The shared folder is the fallback when a copy can't be made.
         let mut copy_refused: Option<String> = None;
         let existing_active_copy = match existing_active_copy {
-            Some(path) => Some(path),
+            Some(grant) => Some(grant),
             None if !request.plan && request.access != Some(Access::Read) => match &self.copies {
                 Some(provider) if self.room.lock().await.configs().len() > 1 => {
                     match provider.copy_for(&ticket.id).await {
-                        Ok(path) => Some(path),
+                        Ok(path) => Some(CopyGrant { path, task_branch: None }),
                         Err(reason) => { copy_refused = Some(reason); None }
                     }
                 }
@@ -733,13 +743,22 @@ impl ConcurrentRoom {
             },
             None => None,
         };
+        // Only an agent that can run the Deck command line, at Full, is told
+        // how its work leaves the copy for a pull request.
+        let task_start = participant.config().has_deck_cli()
+            && request.access.unwrap_or(participant.config().access) == Access::Full;
 
-        let (mut editor, held_by, mut is_copy_turn) = if let Some(copy_path) = existing_active_copy {
-            request.cwd = Some(copy_path.clone());
-            let copy_line = copy_turn_line(&copy_path);
+        // A task folder is never folded back, so its turn is not a copy turn
+        // and takes no editor slot: nothing it does lands in the shared folder.
+        let (mut editor, held_by, mut is_copy_turn) = if let Some(grant) = existing_active_copy {
+            request.cwd = Some(grant.path.clone());
+            let line = match &grant.task_branch {
+                Some(branch) => task_turn_line(&grant.path, branch),
+                None => copy_turn_line(&grant.path, task_start),
+            };
             request.system.push_str("\n\n");
-            request.system.push_str(&copy_line);
-            (None, None, true)
+            request.system.push_str(&line);
+            (None, None, grant.task_branch.is_none())
         } else {
             let (editor, held_by) = {
                 let mut held = self.editor.lock().unwrap();
@@ -784,7 +803,7 @@ impl ConcurrentRoom {
                     match provider.copy_for(&ticket.id).await {
                         Ok(copy_path) => {
                             request.cwd = Some(copy_path.clone());
-                            let copy_line = copy_turn_line(&copy_path);
+                            let copy_line = copy_turn_line(&copy_path, task_start);
                             request.system.push_str("\n\n");
                             request.system.push_str(&copy_line);
                             copy_granted = true;
@@ -839,7 +858,13 @@ impl ConcurrentRoom {
         }
         if ticket.origin.is_some() { request.system.push_str("\nThis is a voice call. Begin with a concise speakable sentence. End with a short plain-language result. Keep code in the thread.\n"); }
         if reply_decisions && ticket.origin.is_none() && runner_context.is_none() {
-            request.system.push_str("\nWhen the user has a genuine optional coding decision, you may end your reply with exactly one plain-text line: Deck asks: <question>? | <action label>. Use 8–160 characters for the question and 2–40 for the label. For example: Deck asks: Add a timestamp to diagnose the delay? | Add diagnostic logging. The label is sent back to you as a one-turn request. Use no backticks, extra pipes, or Git/Host actions such as push, merge or cancel. Place this line immediately before any Deck built or Deck review passed receipt. Omit it for ordinary answers.\n");
+            request.system.push('\n');
+            request.system.push_str(if effective_access == Access::Full {
+                DECK_ASKS_FULL
+            } else {
+                DECK_ASKS
+            });
+            request.system.push('\n');
         }
         let direct = direct_request.filter(|(id, _, _)| {
             id == &ticket.id && !request.plan && runner_context.is_none() && participant.config().media.is_none()
@@ -966,11 +991,27 @@ pub fn shared_folder_line(bot: &str, reason: &str) -> String {
     format!("{bot} is working in the thread's folder this turn, not its own copy: Deck couldn't make one ({reason}).")
 }
 
-pub fn copy_turn_line(path: &Path) -> String {
+pub fn task_turn_line(path: &Path, branch: &str) -> String {
     format!(
-        "You are working in your own copy of the project at {}. Deck folds your file changes back into the main folder when your turn ends. Don't commit, push, switch branches, or build installers here.",
+        "You are working on task branch {branch} in {}. Commit, push and open the pull request from here. Deck does not fold this folder into the main folder; it removes it after the pull request merges.",
         path.display()
     )
+}
+
+/// `task_start`: the agent can run `"$APEX_DECK_BIN" task start` (it has the
+/// Deck command line and Full access), so it is told how its work leaves the copy.
+pub fn copy_turn_line(path: &Path, task_start: bool) -> String {
+    if task_start {
+        format!(
+            "You are working in your own copy of the project at {}. Deck folds your file changes back into the main folder when your turn ends. Don't commit, push or switch branches here. When the work should become a pull request, run \"$APEX_DECK_BIN\" task start <type>/<name> (for example fix/paste-images) and carry on in the folder it prints; your changes go with you. Don't build installers here.",
+            path.display()
+        )
+    } else {
+        format!(
+            "You are working in your own copy of the project at {}. Deck folds your file changes back into the main folder when your turn ends. Don't commit, push, switch branches, or build installers here.",
+            path.display()
+        )
+    }
 }
 
 // Cancellation or a dropped task releases the reservation as well.

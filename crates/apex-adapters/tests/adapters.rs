@@ -1082,7 +1082,7 @@ async fn codex_turn_runs_when_the_plugin_list_fails_and_leaves_the_menu_alone() 
 /// environment it was started with and the prompt it was sent. Returns
 /// `(environment, prompt)`.
 #[cfg(unix)]
-async fn phone_probe(tool: apex_core::AgentTool, phone: Option<apex_adapters::PhoneEnv>) -> (String, String) {
+async fn phone_probe(tool: apex_core::AgentTool, phone: Option<apex_adapters::DeckEnv>) -> (String, String) {
     let (name, script) = match tool {
         apex_core::AgentTool::ClaudeCode => ("claude", r#"#!/bin/sh
 env > "$PWD/env.txt"
@@ -1099,7 +1099,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
     let mut cfg = config("jig", Backend::Agent { tool, model: None });
     cfg.access = Access::Full;
     cfg.display_name = "Jigga".into();
-    let bot = build(cfg, &BuildContext { phone, ..context_in(&dir) });
+    let bot = build(cfg, &BuildContext { deck: phone, ..context_in(&dir) });
     let (result, _, _) = work(bot.as_ref()).await;
     result.unwrap();
     let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
@@ -1112,7 +1112,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 #[tokio::test]
 async fn claude_and_codex_processes_get_the_phone_variables_and_the_hint() {
     use apex_core::AgentTool;
-    let phone = || Some(apex_adapters::PhoneEnv { bin: "/A/apex-daemon".into(), socket: "/D/daemon.sock".into(), room: "room-9".into() });
+    let phone = || Some(apex_adapters::DeckEnv { bin: "/A/apex-daemon".into(), socket: "/D/daemon.sock".into(), room: "room-9".into(), simulator: true });
     let names = ["APEX_DECK_BIN", "APEX_DECK_PHONE_SOCKET", "APEX_DECK_ROOM", "APEX_DECK_BOT", "APEX_DECK_BOT_NAME"];
     for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
         let (env, prompt) = phone_probe(tool, phone()).await;

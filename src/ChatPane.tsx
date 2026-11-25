@@ -95,9 +95,8 @@ import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { QuestionForm } from "./QuestionForm";
 import { ReplyDecisionCard, useReplyOffer } from "./ReplyDecisionCard";
 import { visibleReply } from "./replyDecision";
-import { ReplyNextSteps } from "./ReplyNextSteps";
 import { CLEAR_BUSY, CLEARED, commandRefusal, imageLabel, imageMessage, unknownCommand } from "./commandRules";
-import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, type FormView } from "./questions";
+import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, suggestionHint, type FormView } from "./questions";
 import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { accessNoteExpiry } from "./accessChange";
@@ -623,7 +622,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiBlocked = false, onOpenMulti, onSendApi, dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, reveal, onRevealed, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiBlocked = false, onOpenMulti, onSendApi, dock, onWantComposer, onPlanRuns, onOpenPlan, talkOnly = false, chatDraft = "", onChatDraft, onChatSend, chatBlocked, chatReadOnly = false, onChatAddBot, chatDelivery, onChatParticipants, voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, reveal, onRevealed, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: null }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -756,7 +755,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [gitCardSeq, setGitCardSeq] = useState<number | null>(null);
   const [gitCardTarget, setGitCardTarget] = useState<HTMLDivElement | null>(null);
   const closeGitCard = useCallback(() => { setGitMenuRequest(null); setGitCardSeq(null); }, []);
-  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && (turnFiles.get(entry.message.seq)?.length || /(?:^|\n)Deck built [0-9a-f]{40}\s*$/.test(entry.message.text)));
+  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && (turnFiles.get(entry.message.seq)?.length || /(?:^|\n)Deck (?:built|ship) [0-9a-f]{40}\s*$/.test(entry.message.text)));
   const latestGitSeq = latestGitReply?.kind === "message" ? latestGitReply.message.seq : null;
   const openGitCard = (seq: number, paths: string[] | null) => {
     setGitCardSeq(seq);
@@ -1033,7 +1032,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   // The thread's Plan switch, as the host keeps it.
   const [planOn, setPlanOn] = useState(false);
   const setPlan = (on: boolean) => backend.roomSetPlan(pane.id, on).catch((error) => notify(`Could not ${on ? "turn Plan on" : "turn Plan off"}: ${String(error)}`, "error"));
-  // Questions stay with the composer; follow-ups live beneath their reply.
+  // Questions and the suggestion hint share the composer.
   const questionState = useSyncExternalStore(subscribeQuestions, questionSnapshot);
   const lastMessage = useMemo(() => messagesOf(entries).at(-1), [entries]);
   const { offer, refresh: refreshDecision } = useReplyOffer(backend, pane.id, visible && ready && !profileMode && !chatReadOnly && !chatBlocked, lastMessage?.seq ?? null, busy);
@@ -1043,7 +1042,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     <ReplyDecisionCard key={offer.decision.key} offer={offer} backend={backend} room={pane.id} refresh={refreshDecision}
       focused={focused} report={(message, error) => notify(message, error ? "error" : "info")} /> : null;
   const rawForm = formView(questionState[pane.id]);
-  const allowList = backend.demo || offer?.mode === "next_steps";
+  const allowList = (backend.demo || offer?.mode === "decision_card") && !offer?.decision;
   const form: FormView = rawForm.kind === "steps" && !allowList ? { kind: "none" } : rawForm;
   const composerForm: FormView = form.kind === "question" ? form : { kind: "none" };
   const [highlighted, setHighlighted] = useState(-1);
@@ -1053,7 +1052,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [answered, setAnswered] = useState<Record<string, string>>({});
   const answeredHere = useRef<string | null>(null);
   const shownForm = useRef<FormView>(form);
-  const formKeyId = form.kind === "question" ? form.ask.request : form.kind === "steps" ? `steps:${form.offer.steps.map((step) => step.prompt).join("|")}` : form.kind;
+  const formKeyId = form.kind === "question" ? form.ask.request : form.kind;
   useEffect(() => { setHighlighted(-1); setFormFolded(false); }, [formKeyId]);
   useEffect(() => { shownForm.current = form; });
   const flashForm = (line: string) => { setFormNotice(line); setTimeout(() => setFormNotice((now) => (now === line ? null : now)), 3500); };
@@ -2768,13 +2767,12 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   };
   /** A key in the composer that the form takes. True when it was handled. */
   const formKeys = (key: string) => {
-    const act = formKey(key, text === "", composerForm, highlighted);
+    const act = formKey(key, text === "", form, highlighted);
     if (act.act === "none") return false;
     if (act.act === "move") setHighlighted(act.index);
     else if (act.act === "dismiss") dismissSteps(pane.id);
     else if (act.act === "collapse") setFormFolded(true);
-    else if (act.act === "fill" && form.kind === "steps") setText(form.offer.steps[act.index].prompt);
-    else if (act.act === "pick" && form.kind === "steps") fillStep(form.offer.steps[act.index], form.offer.by);
+    else if (act.act === "fill" && form.kind === "steps") fillStep(form.offer.steps[act.index], form.offer.by);
     else if (act.act === "pick" && form.kind === "question") {
       const [q] = form.ask.questions;
       // A single plain question is answered from the keyboard; anything
@@ -4067,8 +4065,6 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                   if (!files?.length) return null;
                   return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
                 })()}
-                {form.kind === "steps" && entry.message.seq === lastMessage?.seq && form.offer.by === entry.message.speaker.id && newestReply.get(entry.message.speaker.id) === entry.message.seq &&
-                  <ReplyNextSteps key={formKeyId} offer={form.offer} onStep={fillStep} />}
                 {entry.message.seq === decisionSeq && decisionCard}
               </div>
               {messageActions(entry.message)}
@@ -4352,7 +4348,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             }
           }}
           rows={1}
-          placeholder={chatBlocked ?? (waitingForOwner ? "Waiting for Deck…" : voiceHint ?? copy.placeholder)}
+          placeholder={chatBlocked ?? (waitingForOwner ? "Waiting for Deck…" : voiceHint ?? suggestionHint(form, text, Boolean(offer?.decision)) ?? copy.placeholder)}
           disabled={chatReadOnly || !roomReady || participants.length === 0}
         />
           </div>

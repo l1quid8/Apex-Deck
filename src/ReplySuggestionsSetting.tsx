@@ -29,6 +29,6 @@ export function ReplySuggestionsSetting({ backend }: { backend: Backend }) {
   }
   return <div><select aria-label="Suggestions after a reply" disabled={saving || mode === null} value={mode ?? ""} onChange={e => void save(e.target.value as SuggestionsMode)}>
     {mode === null && <option value="">Loading…</option>}
-    <option value="decision_card">Decision card</option><option value="next_steps">Next steps list</option><option value="off">Off</option>
+    <option value="decision_card">On</option><option value="off">Off</option>
   </select>{error && <span role="alert">{error} <button onClick={() => { setError(""); setRevision(n => n + 1); }}>Refresh</button></span>}</div>;
 }

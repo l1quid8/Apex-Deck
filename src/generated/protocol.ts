@@ -525,7 +525,7 @@ export type MessageOrigin = {
   seq: number;
 };
 
-export type Mode = "decision_card" | "next_steps" | "off";
+export type Mode = "decision_card" | "off";
 
 /** One suggestion: a short label for the button and the prompt it sends. */
 export type NextStep = {
@@ -928,6 +928,12 @@ export type Settings = {
   utcOffsetMinutes?: number | null;
 };
 
+/**
+ * What a card action names: the merge request it showed, or (from an
+ * iPhone a build behind) the Git state that carried it.
+ */
+export type Shown = WorkflowKey | State;
+
 export type Signed = {
   payload: string;
   signature: string;
@@ -1001,16 +1007,16 @@ export type ThreadGitAction = {
   expected: State;
   kind: "request_merge";
 } | {
-  expected: State;
+  expected: Shown;
   kind: "merge_ready";
 } | {
-  expected: State;
+  expected: Shown;
   kind: "fix_checks";
 } | {
-  expected: State;
+  expected: Shown;
   kind: "cancel_merge";
 } | {
-  expected: State;
+  expected: Shown;
   kind: "ask_fix";
 };
 
@@ -1105,6 +1111,18 @@ export type Workflow = {
   repo: string;
   result_oid?: string | null;
   reviewer?: string | null;
+  root: string;
+};
+
+/**
+ * The merge request a card acts on, read from the card the person saw.
+ * Its folder may be a task folder, not the thread's own.
+ */
+export type WorkflowKey = {
+  branch: string;
+  generation: number;
+  head: string;
+  repo: string;
   root: string;
 };
 
@@ -1889,6 +1907,19 @@ export type Command = {
     room: string;
   };
   cmd: "phone_chat_queued";
+} | {
+  args: {
+    bot: string;
+    branch: string;
+    room: string;
+  };
+  cmd: "task_start";
+} | {
+  args: {
+    bot: string;
+    room: string;
+  };
+  cmd: "task_status";
 } | {
   args: {
     cwd: string;
@@ -4425,6 +4456,15 @@ export interface Commands {
     settings: unknown;
   };
   startup_folders: Record<string, never>;
+  task_start: {
+    bot: string;
+    branch: string;
+    room: string;
+  };
+  task_status: {
+    bot: string;
+    room: string;
+  };
   trust_status: Record<string, never>;
   voice_capabilities: Record<string, never>;
   voice_meta_session: {

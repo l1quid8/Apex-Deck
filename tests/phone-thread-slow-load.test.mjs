@@ -28,7 +28,7 @@ async function openBigThread(t, answer) {
     backend: { roomSteps: async () => null, onRoomEvent: async () => () => {} },
   };
   const env = {
-    ...helpers, ...progress,
+    ...helpers, ...progress, cardSession: 'mac-session',
     openPane: { id: 'big', workspaceId: 'ws', title: 'Big thread' }, openWorkspace: { id: 'ws' }, openHostId: 'mac', openLink: { id: 'mac', status: 'online' }, openPath: '/p', viewingPending: false,
     room: null, roomRef: { current: null },
     setRoom: (next) => { env.room = typeof next === 'function' ? next(env.room) : next; env.roomRef.current = env.room; },

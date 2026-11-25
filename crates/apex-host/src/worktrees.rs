@@ -69,7 +69,7 @@ fn git_writing(project_data: &Path, project: &Path, target: Option<&Path>, args:
 fn arg(s: impl AsRef<std::ffi::OsStr>) -> String {
     crate::assistant_git::external_path(Path::new(s.as_ref())).to_string_lossy().into_owned()
 }
-fn parse_list(raw: &str, task_dir: &Path) -> Vec<Worktree> {
+pub(crate) fn parse_list(raw: &str, task_dir: &Path) -> Vec<Worktree> {
     let mut records: Vec<Vec<&str>> = Vec::new();
     let mut current = Vec::new();
     for field in raw.split('\0').filter(|field| !field.is_empty()) {

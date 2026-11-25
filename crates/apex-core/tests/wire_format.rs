@@ -107,6 +107,14 @@ fn saved_agent_appearance_survives_a_config_round_trip() {
 }
 
 #[test]
+fn new_threads_have_no_round_limit() {
+    assert_eq!(RoomOptions::default().max_bot_hops, None);
+    let saved: RoomOptions =
+        serde_json::from_value(json!({ "policy": "mention", "max_bot_hops": 3 })).unwrap();
+    assert_eq!(saved.max_bot_hops, Some(3));
+}
+
+#[test]
 fn room_options_shape() {
     let options = RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: Some(2) };
     assert_eq!(to_value(options).unwrap(), json!({ "policy": "round_robin", "max_bot_hops": 2 }));

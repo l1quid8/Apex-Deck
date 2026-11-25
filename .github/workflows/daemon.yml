@@ -302,3 +302,13 @@ jobs:
         with:
           name: apex-daemon-linux-${{ matrix.arch }}
           path: target/release/apex-daemon
+
+  all-checks-passed:
+    if: always()
+    needs: [changes, versions-agree, protocol-types, test-windows-ipc, test, test-windows, test-windows-checks, test-windows-daemon, test-windows-app, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "All checks passed."

@@ -28,8 +28,9 @@ test("tags for other bots, and names inside the suggestion, are kept", () => {
   assert.equal(stepDraft("", "@nova", nova), "@nova");
 });
 
-test("on the phone, suggestions start folded and fill the composer instead of sending", () => {
+test("on the phone, suggestions are open and fill the composer instead of sending", () => {
   const src = fs.readFileSync("src/phone/PhoneApp.tsx", "utf8");
-  assert.match(src, /<ReplyNextSteps[^>]*startCollapsed onStep=\{fillStep\}/);
+  assert.match(src, /<ReplyNextSteps[^>]*onStep=\{fillStep\}/);
+  assert.doesNotMatch(src, /startCollapsed/);
   assert.doesNotMatch(src, /<ReplyNextSteps[^>]*onStep=\{props\.steps\.onStep\}/);
 });

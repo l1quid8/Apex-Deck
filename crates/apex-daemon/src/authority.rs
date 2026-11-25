@@ -143,6 +143,8 @@ pub fn command_needs(command: &Command) -> Need {
         PreviewProbe { .. } => Need::Never,
         // The phone is this Mac's simulator; paired devices can't drive it.
         PhoneDevices {} | PhoneControl { .. } | PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
+        // An agent's own command line on this machine; a paired device has no turn.
+        TaskStart { .. } | TaskStatus { .. } => Need::Never,
         ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Need::Never,
         // Legacy migration reads every old ledger and transcript on this Mac, and
         // its apply is a UI-attested intent issued only for this Mac.
@@ -369,6 +371,8 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         PhoneGiveBack {} => None,
         PhoneBot { .. } => None,
         PhoneChatQueued { .. } => None,
+        TaskStart { .. } => None,
+        TaskStatus { .. } => None,
         MonitorAssign { .. } => None,
         // Connecting/stopping a coordinator does not create or change a bot.
         MonitorConnect { .. } => None,
@@ -761,6 +765,8 @@ pub(crate) mod tests {
             ("phone_give_back", false, json!({})),
             ("phone_bot", false, json!({ "room": "mine", "bot": "a", "name": "A", "request": { "kind": "look" } })),
             ("phone_chat_queued", false, json!({ "room": "mine" })),
+            ("task_start", false, json!({ "room": "mine", "bot": "a", "branch": "fix/paste-images" })),
+            ("task_status", false, json!({ "room": "mine", "bot": "a" })),
             ("legacy_import_preview", false, json!({})),
             ("legacy_import_apply", false, json!({ "snapshot": "20261022-101501", "sources": {} })),
             ("legacy_import_history", false, json!({ "snapshot": "20261022-101501", "requestId": "r" })),

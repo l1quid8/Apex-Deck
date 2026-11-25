@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Offer } from './questions';
 import type { NextStep } from './types';
@@ -6,18 +6,17 @@ import './reply-next-steps.css';
 
 /** How long the pointer rests on a suggestion before its prompt shows. */
 const PREVIEW_MS = 320;
-/** How long a finger holds a suggestion before its prompt shows instead of sending. */
+/** How long a finger holds a suggestion before its prompt shows instead of filling the draft. */
 const HOLD_MS = 450;
 
 interface Preview { text: string; left: number; top: number; bottom: number }
 
 /** Follow-ups belong to the offering agent's latest finished response. */
-export function ReplyNextSteps({ offer, onStep, startCollapsed = false }: { offer: Offer; onStep(step: NextStep, by: string): void; startCollapsed?: boolean }) {
-  const [expanded, setExpanded] = useState(!startCollapsed);
+export function ReplyNextSteps({ offer, onStep }: { offer: Offer; onStep(step: NextStep, by: string): void }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A touch screen has no hover: a hold shows the prompt, and the tap that
-  // ends a hold must not send it.
+  // ends a hold must not fill the draft.
   const held = useRef(false);
   const id = useId();
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -38,7 +37,8 @@ export function ReplyNextSteps({ offer, onStep, startCollapsed = false }: { offe
       window.removeEventListener('keydown', key, true);
     };
   }, [preview]);
-  if (offer.pending || !offer.steps.length) return null;
+  const [step] = offer.steps;
+  if (offer.pending || !step) return null;
 
   const hide = () => { clearTimeout(timer.current); setPreview(null); };
   const show = (step: NextStep, el: HTMLElement, delay: number) => {
@@ -52,48 +52,39 @@ export function ReplyNextSteps({ offer, onStep, startCollapsed = false }: { offe
 
   return <div className="reply-next-steps" onPointerLeave={hide}>
     <hr aria-hidden="true" />
-    <div className="reply-next-steps-links" role="group" aria-label="Suggested next steps">
-      <span id={`${id}-steps`} className="reply-next-steps-options" hidden={!expanded}>
-        {expanded && offer.steps.map((step, i) => <Fragment key={i}>
-          {i > 0 && <span className="reply-next-steps-dot" aria-hidden="true">·</span>}
-          {/* A span, not a button: Chromium lays an inline button out as one
-              atomic box, so its label could never continue across a line. */}
-          <span className="reply-next-step" role="button" tabIndex={0} aria-describedby={`${id}-${i}`}
-            onPointerEnter={event => { if (event.pointerType === 'mouse') show(step, event.currentTarget, PREVIEW_MS); }}
-            onPointerDown={event => {
-              held.current = false;
-              if (event.pointerType === 'mouse') return;
-              const el = event.currentTarget;
-              hide();
-              timer.current = setTimeout(() => { held.current = true; show(step, el, 0); }, HOLD_MS);
-            }}
-            onPointerUp={event => { if (event.pointerType !== 'mouse') hide(); }}
-            onPointerCancel={() => { held.current = false; hide(); }}
-            onContextMenu={event => { if (held.current) event.preventDefault(); }}
-            onClick={() => {
-              if (held.current) { held.current = false; return; }
-              onStep(step, offer.by);
-            }}
-            onKeyDown={event => {
-              if (event.key !== 'Enter' && event.key !== ' ') return;
-              event.preventDefault();
-              onStep(step, offer.by);
-            }}
-            onFocus={event => show(step, event.currentTarget, 0)}
-            onBlur={hide}>{step.label}</span>
-          <span id={`${id}-${i}`} className="reply-next-steps-sr">{step.prompt}</span>
-        </Fragment>)}
-      </span>
-      {/* Folded, the words open it too: a lone chevron is a small target for a finger. */}
-      {!expanded && <span className="reply-next-steps-label" onClick={() => setExpanded(true)}>Next steps</span>}
-      <button type="button" className="reply-next-steps-toggle" aria-controls={`${id}-steps`} aria-expanded={expanded}
-        aria-label={`${expanded ? 'Collapse' : 'Expand'} next steps`} onClick={() => setExpanded(!expanded)}>{expanded ? '‹' : '›'}</button>
+    <div className="reply-next-steps-links" role="group" aria-label="Suggested reply">
+      {/* A span, not a button: Chromium lays an inline button out as one
+          atomic box, so its label could never continue across a line. */}
+      <span className="reply-next-step" role="button" tabIndex={0} aria-describedby={id}
+        onPointerEnter={event => { if (event.pointerType === 'mouse') show(step, event.currentTarget, PREVIEW_MS); }}
+        onPointerDown={event => {
+          held.current = false;
+          if (event.pointerType === 'mouse') return;
+          const el = event.currentTarget;
+          hide();
+          timer.current = setTimeout(() => { held.current = true; show(step, el, 0); }, HOLD_MS);
+        }}
+        onPointerUp={event => { if (event.pointerType !== 'mouse') hide(); }}
+        onPointerCancel={() => { held.current = false; hide(); }}
+        onContextMenu={event => { if (held.current) event.preventDefault(); }}
+        onClick={() => {
+          if (held.current) { held.current = false; return; }
+          onStep(step, offer.by);
+        }}
+        onKeyDown={event => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          onStep(step, offer.by);
+        }}
+        onFocus={event => show(step, event.currentTarget, 0)}
+        onBlur={hide}>{step.label}</span>
+      <span id={id} className="reply-next-steps-sr">{step.prompt}</span>
     </div>
     {preview && <SuggestionPreview {...preview} />}
   </div>;
 }
 
-/** The prompt a suggestion sends: the rail's hover-card look, above the
+/** The suggestion’s prompt: the rail's hover-card look, above the
  *  suggestion and kept inside the window. */
 function SuggestionPreview({ text, left, top, bottom }: Preview) {
   const ref = useRef<HTMLDivElement>(null);

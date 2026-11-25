@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyQuestionEvent, restoreQuestions, formView, formKey, answerText, questionSignal } from "../src/questions.ts";
+import { applyQuestionEvent, restoreQuestions, formView, formKey, suggestionHint, answerText, questionSignal } from "../src/questions.ts";
 
 const q = (question, labels = ["A", "B"], multi = false) => ({ header: "", question, options: labels.map((label) => ({ label })), multi_select: multi });
 const asked = (id, request, questions) => ({ type: "question_requested", id, request, questions });
@@ -35,6 +35,8 @@ test("next steps clear when a turn starts or the person sends anything", () => {
   assert.equal(applyQuestionEvent(s, "t", human, 3).t?.offer ?? null, null);
   const bot = { type: "message_added", message: { seq: 3, speaker: { kind: "bot", id: "null" }, text: "hi" } };
   assert.equal(applyQuestionEvent(s, "t", bot, 3).t.offer.steps.length, 1, "a bot message leaves them");
+  const deck = { ...bot, message: { ...bot.message, speaker: { kind: "bot", id: "deck" } } };
+  assert.equal(applyQuestionEvent(s, "t", deck, 3).t?.offer ?? null, null);
   assert.equal(applyQuestionEvent(s, "t", steps("null", []), 4).t?.offer ?? null, null, "an empty settled list clears");
   assert.equal(formView(applyQuestionEvent({}, "t", steps("null", [], true), 1).t).kind, "pending");
 });
@@ -56,15 +58,14 @@ test("restoring from room state matches the live state", () => {
 });
 
 test("keys act on the form only while the composer is empty", () => {
-  const view = { kind: "steps", offer: { by: "null", steps: [{ label: "A", prompt: "a" }, { label: "B", prompt: "b" }], pending: false } };
-  assert.deepEqual(formKey("2", true, view, 0), { act: "pick", index: 1 });
-  assert.deepEqual(formKey("2", false, view, 0), { act: "none" }, "typing a 2 into a message stays a 2");
-  assert.deepEqual(formKey("5", true, view, 0), { act: "none" }, "no fifth option");
-  assert.deepEqual(formKey("ArrowDown", true, view, 0), { act: "move", index: 1 });
-  assert.deepEqual(formKey("ArrowDown", true, view, 1), { act: "move", index: 1 }, "stops at the end");
-  assert.deepEqual(formKey("ArrowUp", true, view, 0), { act: "none" }, "ArrowUp at the top is left to the composer");
-  assert.deepEqual(formKey("Enter", true, view, 1), { act: "pick", index: 1 });
-  assert.deepEqual(formKey("Escape", false, view, 0), { act: "dismiss" });
+  const view = { kind: "steps", offer: { by: "null", steps: [{ label: "Try it on your phone", prompt: "Install build 41 on my phone" }], pending: false } };
+  for (const key of ["1", "ArrowDown", "ArrowUp", "Enter"]) assert.deepEqual(formKey(key, true, view, 0), { act: "none" });
+  assert.deepEqual(formKey("Escape", true, view, -1), { act: "dismiss" });
+  assert.deepEqual(formKey("Tab", false, view, -1), { act: "none" });
+  assert.equal(suggestionHint(view, "", false), "Try it on your phone · Tab to use");
+  assert.equal(suggestionHint(view, "x", false), undefined);
+  assert.equal(suggestionHint(view, "", true), undefined);
+  assert.equal(suggestionHint({ kind: "none" }, "", false), undefined);
   const question = { kind: "question", ask: { id: "null", request: "ask-1", questions: [q("DB?")] }, position: 1, of: 1 };
   assert.deepEqual(formKey("Escape", true, question, 0), { act: "collapse" }, "Esc never skips a question");
   assert.deepEqual(formKey("1", true, question, 0), { act: "pick", index: 0 });
@@ -109,6 +110,15 @@ test("a multi-question ask keeps every answer: single picks move on, the last se
 test("Enter on an empty box sends nothing until an option was reached with the arrows", () => {
   const view = { kind: "steps", offer: { by: "null", steps: [{ label: "A", prompt: "a" }], pending: false } };
   assert.deepEqual(formKey("Enter", true, view, -1), { act: "none" });
-  assert.deepEqual(formKey("ArrowDown", true, view, -1), { act: "move", index: 0 });
-  assert.deepEqual(formKey("Enter", true, view, 0), { act: "pick", index: 0 });
+  assert.deepEqual(formKey("ArrowDown", true, view, -1), { act: "none" });
+  assert.deepEqual(formKey("Enter", true, view, 0), { act: "none" });
+});
+
+
+test("a restored multi-item offer keeps its first suggestion", () => {
+  const offered = restoreQuestions({}, "t", { next_steps: { id: "null", steps: [{ label: "A", prompt: "a" }, { label: "B", prompt: "b" }], pending: false } }, 5);
+  const view = formView(offered.t);
+  assert.equal(suggestionHint(view, "", false), "A · Tab to use");
+  assert.deepEqual(formKey("Tab", true, view, -1), { act: "fill", index: 0 });
+  assert.deepEqual(view.offer.steps, [{ label: "A", prompt: "a" }]);
 });

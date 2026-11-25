@@ -10,6 +10,10 @@
 #      downloads every asset back and verifies exact sizes + SHA-256 checksums,
 #      and only advances the rolling `nightly` prerelease feed once every check
 #      passes. Nightly never advances GitHub's `--latest` Stable release.
+#
+# The Developer ID certificate and App Store Connect key live only in the
+# `macos-nightly-signing` environment, which accepts deployments from main
+# alone. Only build-macos uses that environment.
 name: nightly-macos
 
 on:
@@ -39,6 +43,7 @@ concurrency:
 
 jobs:
   plan:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -73,6 +78,7 @@ jobs:
     if: needs.plan.outputs.should_build == 'true'
     runs-on: macos-15
     timeout-minutes: 60
+    environment: macos-nightly-signing
     env:
       APEX_CHANNEL: nightly
       APEX_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}

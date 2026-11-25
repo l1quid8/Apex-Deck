@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use unicode_general_category::{get_general_category, GeneralCategory};
 
 /// At most this many suggestions are offered.
-pub const MAX_STEPS: usize = 3;
+pub const MAX_STEPS: usize = 1;
 /// A button's label, in characters.
 pub const LABEL_MAX: usize = 48;
 /// The prompt a button sends, in characters.
@@ -23,13 +23,24 @@ pub struct NextStep {
 }
 
 /// What the bot is asked, as the last turn of its usual view of the chat.
-pub const ASK: &str = "Do not continue the task. Instead, predict what the person is most likely to ask you next, \
-as up to 3 concrete prompts written in their voice (imperative, specific to this conversation: name the file, \
-test, or follow-up they would actually type). Prefer the obvious next action (run the tests, commit, fix the \
-thing you flagged, do the same for X) over generic ones. If your last reply ended by asking the person something, \
-the prompts are answers to that question. If the conversation is clearly finished or nothing useful comes to \
-mind, return an empty list.\n\nAnswer with ONLY a JSON array, no prose, no code fence: \
-[{\"label\": \"<at most 48 characters, shown on a button>\", \"prompt\": \"<full prompt text>\"}]";
+pub const ASK: &str = "Do not continue the task. Suggest the one message the person is most likely to send you next, \
+written in their voice and specific to this conversation. Only suggest something the person has to decide or do themselves: \
+try a build on their own device, choose what to work on next, or answer a question you asked them. Never suggest a step you \
+could take yourself, such as running tests, committing, pushing, opening or merging a pull request, or fixing something you \
+found. If there is no such step, return an empty list.\n\nAnswer with ONLY a JSON array, no prose, no code fence: \
+[{\"label\": \"<at most 48 characters, shown as the suggestion>\", \"prompt\": \"<full prompt text>\"}]";
+
+/// Match two adjacent words, allowing punctuation between them.
+pub fn has_ship_words(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let mut words = lower.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).peekable();
+    while let Some(word) = words.next() {
+        if word == "ship" && words.peek() == Some(&"it") {
+            return true;
+        }
+    }
+    false
+}
 
 /// Terminal escape sequences: CSI (`ESC [` … final byte), OSC (`ESC ]` …
 /// BEL or `ESC \`), and two-byte escapes.
@@ -133,6 +144,7 @@ pub fn parse(reply: &str) -> Vec<NextStep> {
         let prompt = clean(prompt, PROMPT_MAX);
         if prompt.is_empty() { continue; }
         let label = item["label"].as_str().map(|l| clean(l, LABEL_MAX)).filter(|l| !l.is_empty()).unwrap_or_else(|| clean(&prompt, LABEL_MAX));
+        if has_ship_words(&label) || has_ship_words(&prompt) { continue; }
         steps.push(NextStep { label, prompt });
         if steps.len() == MAX_STEPS { break; }
     }
@@ -144,11 +156,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_clean_list_is_read_in_order_and_capped_at_three() {
+    fn only_the_first_suggestion_is_kept() {
         let reply = r#"[{"label":"Commit","prompt":"commit it"},{"label":"Test","prompt":"run the tests"},{"label":"Push","prompt":"push it"},{"label":"More","prompt":"one more"}]"#;
         let steps = parse(reply);
-        assert_eq!(steps.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(), ["Commit", "Test", "Push"]);
-        assert_eq!(steps[1].prompt, "run the tests");
+        assert_eq!(steps, vec![NextStep { label: "Commit".into(), prompt: "commit it".into() }]);
+    }
+
+    #[test]
+    fn the_ask_offers_only_the_persons_own_steps() {
+        assert!(ASK.contains("Only suggest something the person has to decide or do themselves"));
+        assert!(!ASK.contains("run the tests, commit"));
+    }
+
+    #[test]
+    fn a_suggestion_saying_ship_it_is_dropped() {
+        assert!(parse(r#"[{"label":"Ship it","prompt":"Proceed"}]"#).is_empty());
+        assert!(parse(r#"[{"label":"Proceed","prompt":"Go ahead and ship it!"}]"#).is_empty());
+        for safe in ["Fix the shipping fee", "shipit"] {
+            let reply = serde_json::json!([{"label":"SHIP-it","prompt":"Proceed"},{"label":safe,"prompt":safe}]);
+            assert_eq!(parse(&reply.to_string())[0].label, safe);
+        }
     }
 
     #[test]
@@ -169,9 +196,9 @@ mod tests {
 
     #[test]
     fn a_missing_or_blank_label_falls_back_to_the_prompt() {
-        let steps = parse(r#"[{"prompt":"rebuild the dmg with the fix"},{"label":"  ","prompt":"commit"}]"#);
+        let steps = parse(r#"[{"prompt":"rebuild the dmg with the fix"}]"#);
         assert_eq!(steps[0].label, "rebuild the dmg with the fix");
-        assert_eq!(steps[1].label, "commit");
+        assert_eq!(parse(r#"[{"label":"  ","prompt":"commit"}]"#)[0].label, "commit");
     }
 
     #[test]

@@ -40,7 +40,7 @@ const EMPTY_BUNDLE: ChatBundle = {
   profiles: [],
   disabledProviders: [],
   workspaceName: "",
-  newThread: { policy: "mention", max_bot_hops: 3 },
+  newThread: { policy: "mention", max_bot_hops: null },
   newBotAccess: "read",
   confirmSteer: true,
   chipParts: { tool: true, effort: true, usage: true },

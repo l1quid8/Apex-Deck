@@ -152,6 +152,9 @@ pub enum Command {
     PhoneGiveBack {},
     PhoneBot { room: String, bot: String, name: String, request: crate::phone::BotRequest },
     PhoneChatQueued { room: String },
+    /// An agent's `"$APEX_DECK_BIN" task start`: its work onto its own branch.
+    TaskStart { room: String, bot: String, branch: String },
+    TaskStatus { room: String, bot: String },
     MonitorAssign { workspace_id: String, cwd: String, host_id: String, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: apex_core::ParticipantConfig, #[serde(default)] only_if_absent: bool },
     MonitorSourcesUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, mode: String },
     MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
@@ -433,6 +436,8 @@ impl Command {
             // Phone
             PhoneStatus { .. } | PhoneStart { .. } | PhoneStop { .. } | PhoneView { .. } | PhoneHuman { .. } | PhoneDevices { .. } | PhoneControl { .. }
             | PhoneGiveBack { .. } | PhoneBot { .. } | PhoneChatQueued { .. } => Policy::OPEN,
+            // Task branches: an agent's own command line, like the phone's
+            TaskStart { .. } | TaskStatus { .. } => Policy::OPEN,
             // Local
             PreviewProbe { .. } | TrustStatus { .. } | OpenTarget { .. } => Policy::OPEN,
             // Api
@@ -877,6 +882,8 @@ impl Host {
                 self.phone.chat_queued(&room);
                 reply(())
             }
+            TaskStart { room, bot, branch } => reply(Arc::clone(self).task_start(room, bot, branch).await?),
+            TaskStatus { room, bot } => reply(self.task_status(room, bot)?),
             MonitorSuggestSources { cwd } => reply(serde_json::json!({ "files": self.monitor_suggest_sources(&cwd)? })),
             MonitorAssign { workspace_id, cwd, host_id, text, files, threads, profile, only_if_absent } => {
                 let host = Arc::clone(self);
@@ -1434,7 +1441,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 251);
+        assert_eq!(names.len(), 253);
         for name in [
             "search_open",
             "search",
@@ -1500,7 +1507,7 @@ mod tests {
         assert!(names.contains(&"mod_env_get".to_string()));
         assert!(names.contains(&"monitor_list".to_string()));
         assert!(names.contains(&"monitor_get".to_string()));
-        for phone in ["phone_status", "phone_start", "phone_stop", "phone_view", "phone_human", "phone_give_back", "phone_bot", "phone_chat_queued"] {
+        for phone in ["phone_status", "phone_start", "phone_stop", "phone_view", "phone_human", "phone_give_back", "phone_bot", "phone_chat_queued", "task_start", "task_status"] {
             assert!(names.contains(&phone.to_string()), "{phone}");
         }
         assert!(names.contains(&"monitor_suggest_sources".to_string()));

@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en" data-deck-theme="clay" data-deck-color-mode="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Search Deck · Desktop preview</title>
+<style>
+:root{--bg:#0e0e0e;--panel:#191919;--panel-2:#212121;--line:color-mix(in srgb,#fff 10%,transparent);--line-2:color-mix(in srgb,#fff 7%,transparent);--text:#ececec;--muted:#8d8d8d;--muted-2:#666;--accent:#e89a86;--accent-bg:color-mix(in srgb,var(--accent) 18%,transparent);--danger:#f0626b;--radius:12px}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:13px/1.5 -apple-system,BlinkMacSystemFont,'SF Pro',Segoe UI,sans-serif;letter-spacing:-.01em}
+.topbar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line-2)}
+.logo{width:18px;height:18px;border:1px solid var(--line);border-radius:4px;display:grid;place-items:center;font-size:10px;color:var(--muted)}
+.title{font-weight:600}
+.dot{width:4px;height:4px;border-radius:50%;background:var(--accent)}
+.sub{color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.topbar button{margin-left:auto;padding:5px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
+.topbar button:hover{color:var(--text);background:var(--panel)}
+.canvas{display:flex;flex-direction:column;height:calc(100% - 45px)}
+.grid{position:relative;flex:1 1 auto;overflow:hidden;display:block}
+.pane{position:absolute;background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.pane.focused{border-color:color-mix(in srgb,var(--accent) 55%,var(--line))}
+.pane-head{height:28px;min-height:28px;display:flex;align-items:center;gap:6px;padding:0 6px 0 8px;font-size:11.5px;white-space:nowrap;background:var(--panel);border-bottom:1px solid var(--line-2)}
+.presence{width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.pane-ws{padding:0 6px;line-height:18px;border-radius:4px;background:color-mix(in srgb,#fff 6%,transparent);color:var(--muted);font-size:11px}
+.pane-title{flex:1 1 auto;min-width:2ch;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.pane-agent{color:var(--muted-2)}
+.pane-actions{display:flex;gap:2px}
+.pane-actions button{width:20px;height:20px;display:grid;place-items:center;border:0;background:transparent;color:var(--muted-2);border-radius:4px;font-size:12px;cursor:pointer}
+.pane-actions button:hover{background:color-mix(in srgb,#fff 8%,transparent);color:var(--text)}
+.transcript{flex:1 1 auto;padding:18px 14px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+.msg.human{border-left:2px solid var(--line);padding-left:10px;color:var(--muted)}
+.msg.human span{font-size:10px;display:block}
+.msg p{margin:4px 0 0;max-width:62ch;overflow-wrap:anywhere}
+.agentline{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.mark{width:18px;height:18px;display:grid;place-items:center;background:var(--panel-2);border:1px solid var(--line);font-family:ui-monospace,monospace;font-size:10px;color:var(--muted)}
+.agentline strong{font-size:12px;font-weight:500}
+.agentline span:last-child{font-size:10px;color:var(--muted-2)}
+.nextsteps{margin-top:10px}
+.nextsteps hr{border:0;height:1px;background:var(--line);margin:0 0 7px;transform:scaleY(.25);transform-origin:center}
+.suggest{display:flex;align-items:center;flex-wrap:wrap;gap:2px 8px;font-size:12px}
+.suggest button{border:0;background:transparent;color:var(--muted);padding:3px 0;font:italic 12px/1.5 inherit;cursor:pointer}
+.suggest button:hover{color:var(--text);text-decoration:underline;text-underline-offset:3px}
+.suggest span.sep{color:var(--muted-2)}
+.suggest .last{display:inline-flex;align-items:center;gap:4px}
+.chevron{width:20px;height:20px;display:grid;place-items:center;font-size:11px;border-radius:3px;font-style:normal}
+.chevron:hover{background:var(--panel-2);color:var(--text)}
+.pane-select{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--line-2);font-size:11px;color:var(--muted);background:rgba(255,255,255,.01)}
+.pane-select input{accent-color:var(--accent)}
+.pane-select:has(input:checked){color:var(--text)}
+.composer{padding:12px 14px;border-top:1px solid var(--line-2);background:rgba(255,255,255,.015)}
+.to{font-size:11px;color:var(--muted);margin-bottom:8px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.to strong{color:var(--text);font-weight:600}
+.allowed{margin-left:auto;font:10px ui-monospace,monospace;color:var(--muted-2)}
+.box{border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:10px 12px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.chip{font-size:11px;padding:3px 8px;border-radius:999px;background:color-mix(in srgb,#fff 8%,transparent);border:1px solid var(--line-2);color:var(--muted)}
+textarea{width:100%;min-height:64px;max-height:140px;resize:vertical;background:transparent;border:0;color:var(--text);font:13px/1.5 inherit;padding:0}
+.boxfoot{display:flex;align-items:center;gap:8px;margin-top:8px}
+.boxfoot button{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:4px 10px;font-size:11px;cursor:pointer}
+.boxfoot .spacer{flex:1}
+.send{width:26px;height:26px;border-radius:50%!important;display:grid;place-items:center;background:var(--text)!important;color:var(--bg)!important;border:0!important;font-size:14px!important}
+.status{padding:8px 14px 10px;color:var(--muted-2);font-size:10.5px;border-top:1px solid var(--line-2)}
+.grid.focused .pane{border:0;border-radius:0}
+.grid.focused{inset:0}
+pre{margin:10px 14px;padding:10px;border:1px solid var(--line-2);border-radius:8px;background:var(--panel);color:var(--muted);font:11px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word}
+@media(max-width:640px){.grid{grid-template-columns:1fr!important}}
+
+[hidden]{display:none!important}
+.workspace{display:grid;grid-template-columns:220px minmax(0,1fr);height:calc(100dvh - 45px)}
+.workspace .canvas{height:100%;min-height:0}
+.rail{background:var(--panel);border-right:1px solid var(--line);padding:16px 12px}
+.rail label,.rail small{display:block;color:#aaa;font-size:11px}
+.rail input{box-sizing:border-box;width:100%;margin:6px 0;padding:9px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:7px}
+.rail button{display:block;width:100%;text-align:left;padding:8px;border:0;border-radius:5px;background:transparent;color:var(--text);cursor:pointer}
+.rail button:hover,.rail button:focus-visible{background:var(--panel-2)}
+.rail mark{background:transparent;color:var(--accent);font-weight:650}
+#results{position:absolute;top:100%;left:0;z-index:10;width:min(302px,calc(100vw - 24px));padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0006}
+.search-wrap{position:relative}
+.msg:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.msg.found{animation:found 2s ease-out}
+@keyframes found{from{background:var(--accent-bg)}to{background:transparent}}
+@media(prefers-reduced-motion:reduce){.msg.found{animation:none;background:var(--accent-bg)}}
+@media(max-width:650px){.workspace{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.rail{padding:4px 12px}.rail nav{display:none}}
+#results{width:min(640px,calc(100vw - 24px));max-height:calc(100dvh - 124px);display:flex;flex-direction:column;padding:0}
+.search-tools,#results footer{padding:10px 12px;background:var(--panel-2)}
+.search-scroll{overflow:auto;overscroll-behavior:contain;padding:0 12px 8px}
+.filter-row{display:flex;flex-wrap:wrap;gap:4px}
+.filter-row button,#recent-bar button{width:auto;display:inline-block}
+.filter-row button[aria-pressed=true]{background:var(--accent-bg);color:var(--accent)}
+#more-options label,.rail .scope{display:inline-flex;align-items:center;gap:5px;margin:6px 8px 0 0}
+#more-options input{width:auto}
+#results h3{font-size:11px;letter-spacing:.04em;color:var(--muted);margin:14px 8px 2px}
+#results footer{font-size:12px;border-top:1px solid var(--line)}
+dialog,select{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px}
+dialog{padding:20px;width:min(420px,90vw)}
+dialog::backdrop{background:#0008}
+
+.ws-row {
+  display: flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.ws-row.active {
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+.ws-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  padding: 8px 10px 8px 24px;
+  color: var(--muted);
+}
+.ws-name { padding: 10px; gap: 10px; }
+.pane-row { border-radius: 6px; }
+.pane-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rail > .rail-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.rail-sec { display: flex; align-items: center; gap: 4px; padding: 12px 8px 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.project-host-group { min-width: 0; margin-bottom: 6px; }
+.project-host-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 7px 8px 4px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; text-align: left; cursor: pointer; }
+.ws-row { position: relative; }
+.ws-name { padding: 7px 10px; gap: 9px; }
+.pane-row { position: relative; padding: 6px 10px 6px 24px; }
+.rail{display:flex;flex-direction:column;min-height:0}
+.rail .rail-scroll{margin-top:12px}
+.rail nav .pane-row{display:flex;align-items:center;gap:8px;color:var(--text)}
+.rail summary{cursor:pointer}
+.rail .project-host-toggle{color:var(--muted)}
+.rail .hit[aria-selected=true]{background:var(--accent-bg);box-shadow:inset 3px 0 var(--accent)}
+.rail .hit small{font-size:12px}
+#results footer button{display:inline;width:auto;color:var(--accent)}
+dialog{padding:22px;border-radius:14px;box-shadow:0 12px 48px #0008}
+dialog form{display:flex;gap:8px;justify-content:flex-end}
+dialog button{border:1px solid var(--line);background:var(--panel-2);color:var(--text);border-radius:8px;padding:8px 12px}
+dialog button[value=restore]{background:var(--text);color:var(--bg)}
+@keyframes found{0%,60%{outline:2px solid #95ddc8;outline-offset:-2px;background:#95ddc819}100%{outline:2px solid transparent;outline-offset:-2px}}
+@media(prefers-reduced-motion:reduce){.msg.found{outline:2px solid #95ddc8;outline-offset:-2px}}
+@media(max-width:650px){.rail-scroll{display:none!important}}
+</style>
+</head>
+<body>
+<div class="topbar"><span class="logo">⬢</span><span class="title">Apex Deck</span><a href="/" style="color:var(--muted)">iPhone preview</a><span class="dot"></span><span class="sub" id="mode">3 panes · multi-targeting</span><button id="reset">Reset</button><button id="zoomout" hidden>Zoom out</button></div>
+<div class="workspace"><aside class="rail"><div class="search-wrap"><label for="deck-search">Search Deck</label><input id="deck-search" type="search" placeholder="Search Deck…" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="hit-list" aria-expanded="false"><div id="results" aria-label="Search results" hidden>
+<div class="search-tools"><div id="filters" class="filter-row"></div><div id="more-options" hidden><div id="extra-filters" class="filter-row"></div><label><input id="archived" type="checkbox"> Include archived</label><label><input id="trash" type="checkbox"> Include Trash</label>
+<label class="scope">Scope <select id="scope"><option value="all">Everywhere</option><option value="project">This project</option></select></label></div></div>
+<div class="search-scroll"><div id="hit-list" role="listbox" aria-label="Matches"></div><div id="recent-bar"></div></div><footer role="status"><span id="coverage">Hetzner is offline · not searched</span> <button type="button" id="retry">Retry</button></footer></div></div><div class="rail-scroll"><div class="rail-sec">Your team</div><div class="pane-row">Asstra</div><div class="rail-sec">Pinned</div><nav id="pinned"></nav><div class="rail-sec">Projects</div><section class="project-host-group"><details open><summary class="project-host-toggle">This Mac</summary><details class="ws" open><summary class="ws-row active"><span class="ws-name"><span class="ws-title">Apex Deck</span></span></summary><nav id="project-threads" aria-label="Project threads"></nav></details></details></section><div class="rail-sec">Recents</div><nav id="recents"></nav></div></aside><div class="canvas"><div class="grid" id="grid"></div><div class="composer"><div class="to">To <strong id="to">2 threads · Null, Jigga</strong><span class="allowed" id="allowed">multiAllowed=true shown=3 targetOnly=null</span></div><div class="box"><div class="chips" id="chips"><span class="chip">#Composer polish</span><span class="chip">#Layout review</span></div><textarea id="draft" maxlength="4000">Review these changes together.</textarea><div class="boxfoot"><button type="button">+</button><span id="kind" style="color:var(--muted);font-size:11px">Multi-thread draft preserved</span><span class="spacer"></span><button type="button" aria-pressed="false">TL;DR</button><button type="button" class="send" id="send">↑</button></div></div></div><p class="status" id="status">Exact shipped: targetOnly = maximized ?? mapTargetOnly ?? (shown.length===1 ? shown[0] : null). Design only.</p></div>
+</div><pre id="code">// App.tsx 993-998 — exact shipped in 27640101 / a8bd3157
+const targetOnly = (maximized && shown.some(p => p.id === maximized) ? maximized : null)
+  ?? (mapTargetOnly && shown.some(p => p.id === mapTargetOnly) ? mapTargetOnly : null)
+  ?? (shown.length === 1 ? shown[0].id : null);
+const multiAllowed = !targetOnly && shown.length > 1;
+const multiOn = multiDraft.on && multiAllowed;
+// multiOn suspends UI only — multiDraft doc/selection/TL;DR/files stay authoritative
+// onVisiblePanes + onTargetOnly guarded with stale() size check</pre>
+<dialog id="restore" aria-labelledby="restore-title"><h2 id="restore-title">Restore this thread to open it?</h2><p></p><form method="dialog"><button value="cancel" autofocus>Cancel</button> <button value="restore">Restore and open</button></form></dialog>
+<dialog id="sample" aria-labelledby="sample-title"><small></small><h2 id="sample-title"></h2><p></p><form method="dialog"><button>Close preview</button></form></dialog>
+<script>
+const names={a:'Composer polish',b:'Layout review',c:'Release notes'};
+const agents={a:'Null',b:'Jigga',c:'Null'};
+const threads={a:{human:'Implement focused-pane targeting from the mockup.',agent:'Null',body:'Suggestions now sit under the reply that generated them. The shared composer stays clear.',focus:true},b:{human:'Keep the composer clean.',agent:'Jigga',body:'Each pane keeps its own width while you zoom. Focus should keep it exclusive.'},c:{human:'What happens to my multi draft if I zoom into this unselected thread?',agent:'Null',body:'Unselected · maximizing gives it a separate draft and preserves multi.',placeholder:true}};
+Object.assign(names,{qa:'Installer QA',handoff:'Release handoff'});
+Object.assign(agents,{qa:'Gayble',handoff:'Asstra'});
+threads.qa={human:'Which installer checks are left?',agent:'Gayble',body:'Open the installer disk image and launch the app from Applications.'};
+threads.handoff={human:'What should we test on the second Mac?',agent:'Asstra',body:'Try the installer on a clean Mac before signing off.'};
+let selected=new Set(['a','b']), drafts={multi:'Review these changes together.',a:'',b:'',c:''}, focused=null, active='a', draftKey='multi';
+const grid=document.getElementById('grid'), toEl=document.getElementById('to'), allowedEl=document.getElementById('allowed'), kindEl=document.getElementById('kind'), chipsEl=document.getElementById('chips'), draftEl=document.getElementById('draft'), statusEl=document.getElementById('status'), modeEl=document.getElementById('mode'), outBtn=document.getElementById('zoomout'), codeEl=document.getElementById('code');
+function save(){drafts[draftKey]=draftEl.value}
+function paneHTML(id){
+ const t=threads[id];
+ return `<header class="pane-head"><span class="presence"></span><span class="pane-ws">Apex Deck</span><span class="pane-title">${names[id]}</span><span class="pane-agent">→ ${agents[id]}</span><span style="flex:1"></span><div class="pane-actions"><button data-zoom="${id}" title="Maximize (focus)">⤢</button></div></header><div class="transcript"><div class="msg human"><span>The user</span><p>${t.human}</p></div><div class="msg agent${t.placeholder?' placeholder':''}"><div class="agentline"><span class="mark">${t.agent[0]}</span><strong>${t.agent}</strong><span>Sample reply</span></div><p>${t.body}</p>${!t.placeholder?`<div class="nextsteps"><hr><div class="suggest"><button>Review changes</button><span class="sep">·</span><button>Check edge cases</button><span class="sep">·</span><span class="last"><button>Plan next step</button><button class="chevron"><span>‹</span></button></span></div></div>`:''}</div></div><label class="pane-select"><input type="checkbox" data-select="${id}" ${selected.has(id)?'checked':''}><span>Target</span></label>`;
+}
+function layoutPanes(){
+ grid.querySelectorAll('.pane').forEach(pane => { pane.hidden = true; });
+ const count=focused?1:3;
+ const ids=focused?[focused]:['a','b','c'];
+ const w=grid.clientWidth, h=grid.clientHeight;
+ if(count===3){
+  const pw=Math.floor(w/3);
+  ids.forEach((id,i)=>{let el=document.getElementById('pane-'+id); if(!el){el=document.createElement('article'); el.className='pane'; el.id='pane-'+id; el.dataset.id=id; grid.appendChild(el);} el.hidden=false; el.classList.remove('focused'); el.style.left=(i*pw)+'px'; el.style.top='0px'; el.style.width=(i===2?w-i*pw:pw-1)+'px'; el.style.height=h+'px'; el.innerHTML=paneHTML(id);});
+ } else {
+  Object.keys(threads).forEach(id=>{let el=document.getElementById('pane-'+id); if(!el){el=document.createElement('article'); el.className='pane'; el.id='pane-'+id; el.dataset.id=id; grid.appendChild(el);} if(id!==focused){el.hidden=true;} else {el.hidden=false; el.classList.add('focused'); el.style.left='0px'; el.style.top='0px'; el.style.width=w+'px'; el.style.height=h+'px'; el.innerHTML=paneHTML(id);} });
+ }
+ bind();
+}
+function bind(){
+ grid.querySelectorAll('[data-zoom]').forEach(b=>b.onclick=()=>{save(); focused=b.dataset.zoom; active=focused; render();});
+ grid.querySelectorAll('[data-select]').forEach(cb=>cb.onchange=()=>{ if(focused) return; save(); const id=cb.dataset.select; if(cb.checked){selected.add(id); active=id;} else selected.delete(id); render();});
+}
+function render(){
+ const shownCount=focused?1:3;
+ const targetOnly=focused ?? (shownCount===1?active:null);
+ const multiAllowed=!targetOnly && shownCount>1;
+ const multiOn=selected.size>=2 && multiAllowed;
+ draftKey=multiOn?'multi':(targetOnly||active);
+ if(document.activeElement!==draftEl) draftEl.value=drafts[draftKey]||'';
+ toEl.textContent=multiOn?`${selected.size} threads · ${Array.from(selected).map(id=>agents[id]).join(', ')}`:`${names[draftKey]} · ${agents[draftKey]}`;
+ kindEl.textContent=multiOn?'Multi-thread draft preserved':`Single draft · targeting ${names[draftKey]}`;
+ allowedEl.textContent=`multiAllowed=${multiAllowed} shown=${shownCount} targetOnly=${targetOnly||'null'}`;
+ modeEl.textContent=targetOnly?`1 pane focused → ${names[targetOnly]}`:`${shownCount} panes · ${multiOn?'multi-targeting':'single-targeting'}`;
+ grid.classList.toggle('focused',!!focused);
+ chipsEl.hidden=!multiOn; chipsEl.replaceChildren(); if(multiOn) selected.forEach(id=>{const s=document.createElement('span'); s.className='chip'; s.textContent='#'+names[id]; chipsEl.appendChild(s);});
+ outBtn.hidden=!focused;
+ statusEl.textContent=focused?`Focused on ${names[focused]} only — multi selection [${Array.from(selected).join(',')}] and draft "${drafts.multi}" kept intact. Zoom out restores exact.`:`Exact shipped: targetOnly = maximized ?? mapTargetOnly ?? (shown.length===1 ? shown[0] : null); multiAllowed = !targetOnly && shown.length>1 — matches App.tsx 993-998.`;
+ layoutPanes();
+}
+document.getElementById('reset').onclick=()=>{selected=new Set(['a','b']); drafts={multi:'Review these changes together.',a:'',b:'',c:''}; focused=null; active='a'; render();};
+outBtn.onclick=()=>{save(); focused=null; render();};
+document.getElementById('send').onclick=()=>{save(); statusEl.textContent=`Preview send to ${toEl.textContent}. Suspended multi unchanged: "${drafts.multi}". Nothing sent.`;};
+draftEl.oninput=save;
+const search = document.querySelector('#deck-search');
+const results = document.querySelector('#results');
+function openHit(id, part) {
+  save();
+  focused = active = id;
+  results.hidden = true;
+  render();
+  const pane = document.getElementById('pane-' + id);
+  const target = pane.querySelector(part ? '.msg.' + part : '.pane-title');
+  target.tabIndex = -1;
+  target.focus({preventScroll:true});
+  target.scrollIntoView({block:'nearest'});
+  if (part) {
+    target.classList.add('found');
+    setTimeout(() => target.classList.remove('found'), 2000);
+  }
+}
+const row = (group, title, detail, extra = {}) => ({group, title, detail, project:'Apex Deck', ...extra});
+const entries = [
+  row('Projects','Installer Lab','Project folder · ~/Projects/installer-lab',{project:'Installer Lab'}),
+  row('Agents','Installer reviewer','Agent profile · Release team'),
+  ...Object.keys(names).map(id => row('Threads',names[id],'Thread',{id})),
+  ...Object.keys(threads).flatMap(id => ['human','agent'].map(part => row('Messages',threads[id][part === 'human'?'human':'body'],names[id]+' · '+(part==='human'?'The user':agents[id]),{id,part,minute:9*60+Object.keys(threads).indexOf(id)*5+(part==='agent'?1:0)}))),
+  row('Settings','Installer notifications','Notifications · Desktop'),
+  ...['Verify clean install','Check signing','Check disk image','Test upgrade','Review release notes','Verify uninstall'].map(task => row('Tasks',task,'Installer checklist · Release QA')),
+  row('Notes','Installer signing checklist','Project memory · Release QA'),
+  row('Library','Installer welcome screen.png','Library picture · Release QA'),
+  row('Files','installer-checklist.md','docs/release/installer-checklist.md'),
+  row('In files','Open the installer on a clean Mac.','docs/release/installer-checklist.md · line 12'),
+  row('Work steps','Verify installer signature','Release handoff · Asstra · Step 3 · exit 0'),
+  row('Threads','Installer rehearsal','Archived',{state:'Archived',id:'rehearsal'}),
+  row('Threads','Old installer checklist','In Trash',{state:'In Trash',id:'oldqa'})
+];
+for (const item of entries.filter(item => item.state)) {
+  names[item.id] = item.title;
+  agents[item.id] = 'Asstra';
+  threads[item.id] = {human:'Which release does this cover?',agent:'Asstra',body:'This checklist covers the previous release.'};
+}
+const groups = ['Projects','Threads','Agents','Messages','Settings','Tasks','Notes','Library','Files','In files','Work steps'];
+let filter = 'All', recentPlaces = entries.filter(item => item.group === 'Threads').slice(0,5), recentQueries = ['installer'];
+const expanded = new Set();
+const list = document.querySelector('#hit-list'), recentBar = document.querySelector('#recent-bar');
+const more = document.querySelector('#more-options'), filters = document.querySelector('#filters');
+function element(tag, value) {
+  const el = document.createElement(tag);
+  el.textContent = value;
+  return el;
+}
+function control(label, action, parent) {
+  const b = element('button',label);
+  b.type = 'button';
+  b.onclick = action;
+  parent.append(b);
+  return b;
+}
+function chooseFilter(value) {
+  filter = value;
+  expanded.clear();
+  draw();
+}
+for (const group of ['All','Threads','Messages','Files','Settings']) {
+  control(group,() => chooseFilter(group),filters).dataset.filter = group;
+}
+const moreBtn = control('More',() => {
+  more.hidden = !more.hidden;
+  moreBtn.setAttribute('aria-expanded',String(!more.hidden));
+},filters);
+moreBtn.setAttribute('aria-controls','more-options');
+moreBtn.setAttribute('aria-expanded','false');
+for (const group of ['Projects','Agents','Tasks','Notes','Library','Work steps']) {
+  control(group,() => chooseFilter(group),document.querySelector('#extra-filters')).dataset.filter = group;
+}
+function openItem(item) {
+  if (item.state === 'In Trash') {
+    const dialog = document.querySelector('#restore');
+    dialog.returnValue = 'cancel';
+    dialog.querySelector('p').textContent = '“'+item.title+'” will return to '+item.project+' on Mac.';
+    dialog.showModal();
+    dialog.onclose = () => {
+      if (dialog.returnValue === 'restore') { item.state = ''; item.detail = 'Thread'; openItem(item); }
+      else { search.focus(); draw(); }
+    };
+    return;
+  }
+  if (item.state === 'Archived') { item.state = ''; item.detail = 'Thread'; }
+  recentPlaces = [item,...recentPlaces.filter(hit => hit !== item)].slice(0,5);
+  const q = search.value.trim();
+  if (q) recentQueries = [q,...recentQueries.filter(word => word !== q)].slice(0,5);
+  if (item.id) return openHit(item.id,item.part);
+  results.hidden = true;
+  const preview = document.querySelector('#sample');
+  preview.querySelector('small').textContent = item.group+' · '+item.project+' · Mac';
+  preview.querySelector('h2').textContent = item.title;
+  preview.querySelector('p').textContent = item.detail;
+  preview.showModal();
+}
+let activeHit = -1;
+function selectHit(index,scroll=false) {
+  const rows = [...list.querySelectorAll('.hit')];
+  activeHit = rows.length ? (index+rows.length)%rows.length : -1;
+  rows.forEach((row,i) => {
+    row.id='deck-hit-'+i;
+    row.setAttribute('role','option');
+    row.setAttribute('aria-selected',String(i===activeHit));
+  });
+  if (activeHit<0) search.removeAttribute('aria-activedescendant');
+  else {
+    search.setAttribute('aria-activedescendant',rows[activeHit].id);
+    if (scroll) rows[activeHit].scrollIntoView({block:'nearest'});
+  }
+}
+function draw() {
+  const q = search.value.trim();
+  const words = (q.match(/"[^"]+"|[^\s"]+/g)||[]).map(word => word.replace(/^"|"$/g,'').toLowerCase());
+  const visible = item => (!item.state || document.getElementById(item.state==='Archived'?'archived':'trash').checked)
+    && (document.querySelector('#scope').value==='all' || item.project==='Apex Deck')
+    && (filter==='All' || filter===item.group || filter==='Files' && item.group==='In files');
+  const hits = (q?entries:recentPlaces).filter(item => visible(item) && words.every(word => (item.group==='Messages'?item.title:item.title+' '+item.detail).toLowerCase().includes(word)));
+  list.replaceChildren();
+  recentBar.replaceChildren();
+  for (const chip of results.querySelectorAll('[data-filter]')) chip.setAttribute('aria-pressed',String(chip.dataset.filter===filter));
+  moreBtn.textContent = ['All','Threads','Messages','Files','Settings'].includes(filter)?'More':'More · '+filter;
+  if (!q && recentQueries.length) {
+    recentBar.append(element('h3','Recent searches'));
+    for (const word of recentQueries) control(word,() => { search.value = word; search.focus(); draw(); },recentBar);
+    control('Clear',() => { recentQueries = []; search.focus(); draw(); },recentBar);
+  }
+  for (const group of q?groups:['Recently opened']) {
+    const items = q?hits.filter(item => item.group===group):hits;
+    if (!items.length) continue;
+    if (group==='Messages') items.sort((a,b) => b.minute-a.minute);
+    list.append(element('h3',group));
+    for (const item of expanded.has(group)?items:items.slice(0,3)) {
+      const b = control('',() => openItem(item),list);
+      b.className = 'hit';
+      let rest = item.title;
+      while (rest.length) {
+        const matches = words.map(word => ({word,at:rest.toLowerCase().indexOf(word)})).filter(m => m.at>=0).sort((a,b) => a.at-b.at);
+        if (!matches.length) { b.append(rest); break; }
+        const {word,at} = matches[0];
+        b.append(rest.slice(0,at),element('mark',rest.slice(at,at+word.length)));
+        rest = rest.slice(at+word.length);
+      }
+      const detail = item.detail.replace(/^(Thread|Project folder|Agent profile|Library picture)( · |$)/,'');
+      const time = item.group==='Messages' ? Math.floor(item.minute/60)+':'+String(item.minute%60).padStart(2,'0')+' AM' : '';
+      b.append(element('small',[detail,item.project,time].filter(Boolean).join(' · ')));
+    }
+    if (items.length>3) control(expanded.has(group)?'Show fewer':'Show all '+items.length,() => {
+      if (expanded.has(group)) expanded.delete(group); else expanded.add(group);
+      draw(); list.querySelectorAll('h3').forEach(h => { if (h.textContent===group) h.nextElementSibling.focus(); });
+    },list);
+  }
+  if (!hits.length) list.append(element('p',q?'No matches on this Mac.':'No recent places match these filters.'));
+  selectHit(0);
+}
+new MutationObserver(() => search.setAttribute('aria-expanded',String(!results.hidden))).observe(results,{attributes:true,attributeFilter:['hidden']});
+function showHits() { results.hidden = false; draw(); }
+for (const [nav,ids] of [['pinned',['handoff']],['project-threads',['a','b','c','qa','handoff']],['recents',['handoff','qa']]]) {
+  for (const id of ids) {
+    const item = entries.find(entry => entry.group==='Threads' && entry.id===id);
+    const button = control('',() => openItem(item),document.getElementById(nav));
+    button.className='pane-row';
+    button.append(element('span', '•'),element('span',item.title));
+    button.lastChild.className='pane-row-title';
+  }
+}
+document.getElementById('retry').onclick = () => {
+  document.getElementById('coverage').textContent='Hetzner is still offline · not searched';
+};
+const wrap = search.closest('.search-wrap');
+let returnFocus;
+search.addEventListener('focus',event => {
+  if (!wrap.contains(event.relatedTarget) && event.relatedTarget) returnFocus = event.relatedTarget;
+  showHits();
+});
+search.onclick = showHits;
+search.oninput = () => { expanded.clear(); showHits(); };
+results.onchange = () => { expanded.clear(); draw(); };
+document.addEventListener('pointerdown',event => { if (!wrap.contains(event.target)) results.hidden = true; });
+wrap.onfocusout = event => { if (event.relatedTarget && !wrap.contains(event.relatedTarget)) results.hidden = true; };
+document.addEventListener('keydown',event => {
+  if ((event.metaKey || event.ctrlKey && event.shiftKey) && event.key.toLowerCase()==='p' && !document.querySelector('dialog[open]')) {
+    event.preventDefault(); search.focus(); showHits(); search.select();
+  }
+});
+wrap.onkeydown = event => {
+  if (event.key==='Escape') { (returnFocus?.isConnected?returnFocus:search).focus(); results.hidden = true; return; }
+  const buttons = [...list.querySelectorAll('.hit')];
+  if (results.hidden || !buttons.length) return;
+  if (event.key==='Enter' && event.target===search) { event.preventDefault(); buttons[activeHit]?.click(); return; }
+  if (!['ArrowUp','ArrowDown'].includes(event.key) || event.target!==search && !buttons.includes(event.target)) return;
+  event.preventDefault();
+  selectHit(activeHit+(event.key==='ArrowDown'?1:-1),true);
+};
+window.addEventListener('resize',layoutPanes);
+render(); layoutPanes();
+</script>
+</body>
+</html>

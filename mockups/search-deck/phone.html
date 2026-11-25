@@ -1,0 +1,405 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#090d12"><title>Search Deck — iPhone mock-up</title><link rel="stylesheet" href="app.css"><style>/* ---- Mockup page (not app UI) ---- */
+html, body { height: auto !important; min-height: 100%; overflow: auto !important; }
+body.mk-page { margin: 0; background: #05080b; color: #e6edf3; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; padding: 32px 28px 48px; }
+.mk-wrap { display: flex; gap: 40px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
+.mk-intro { max-width: 420px; }
+.mk-intro h1 { font-size: 22px; margin: 0 0 8px; }
+.mk-intro p, .mk-intro li { color: #9aa7b4; margin: 0 0 8px; }
+.mk-intro b { color: #e6edf3; }
+.mk-intro ol { padding-left: 20px; margin: 0 0 12px; }
+.mk-intro a { color: #3def91; }
+.mk-phone { width: 393px; height: 852px; position: relative; overflow: hidden; transform: translateZ(0); border-radius: 46px; outline: 1px solid #2a323b; background: #000; flex: none; }
+.mk-phone .mk-root { height: 100%; }
+.mk-phone .ph-app { height: 100%; }
+.mk-phone .ph-head { padding-top: 14px; }
+.mk-strip { display: none; }
+@media (max-width: 520px) {
+  body.mk-page { padding: 0; }
+  .mk-intro { display: none; }
+  .mk-wrap { display: block; }
+  .mk-strip { display: flex; gap: 10px; align-items: center; justify-content: space-between; height: 34px; padding: 0 14px; font-size: 12px; color: #9aa7b4; background: #0b1116; border-bottom: 1px solid #1c242c; }
+  .mk-strip a { color: #3def91; text-decoration: none; }
+  .mk-phone { width: 100vw; height: calc(100dvh - 34px); border-radius: 0; outline: 0; }
+  .mk-phone .ph-head { padding-top: 4px; }
+}
+
+/* ---- New: Search Deck field under the large title ---- */
+.mk-field { display: flex; align-items: center; gap: 7px; height: 38px; margin: 2px 16px 6px; padding: 0 8px 0 10px; border-radius: 11px; background: var(--panel-2); color: var(--muted); }
+.mk-field svg { flex: none; }
+.mk-field input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 16px !important; padding: 0; -webkit-appearance: none; appearance: none; }
+.mk-field input::placeholder { color: var(--muted); }
+.mk-field input::-webkit-search-cancel-button { display: none; }
+.ph-app button.mk-clear { flex: none; width: 44px; height: 44px; min-height: 44px; margin: -3px -8px -3px -6px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--muted); }
+.mk-clear i { width: 17px; height: 17px; border-radius: 50%; background: var(--muted); color: var(--panel-2); display: grid; place-items: center; }
+.mk-open-field { width: calc(100% - 32px); text-align: left; cursor: text; border: 0; font: inherit; font-size: 16px; }
+.ph-app button.mk-open-field { min-height: 38px; padding: 0 8px 0 10px; border-radius: 11px; }
+
+/* ---- New: the search screen ---- */
+.mk-search { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mk-sbar { flex: none; display: flex; align-items: center; gap: 2px; padding: 10px 6px 6px 0; }
+.mk-sbar .mk-field { flex: 1; margin: 0 0 0 16px; }
+.ph-app button.mk-cancel { flex: none; border: 0; background: transparent; color: var(--mint); font-size: 16px; padding: 0 10px; }
+.mk-chips { flex: none; display: flex; gap: 8px; overflow-x: auto; padding: 6px 16px 10px; scrollbar-width: none; border-bottom: 1px solid var(--line); }
+.mk-chips::-webkit-scrollbar { display: none; }
+.ph-app button.mk-chip { position: relative; flex: none; min-height: 32px; padding: 0 13px; border-radius: 16px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 14px; white-space: nowrap; }
+.ph-app button.mk-chip[aria-pressed="true"] { background: color-mix(in srgb, var(--mint) 16%, transparent); border-color: color-mix(in srgb, var(--mint) 45%, transparent); color: var(--mint); }
+/* v2: 44 pt tap areas around the 32 pt chips (visual size unchanged) */
+.ph-app button.mk-chip::after { content: ""; position: absolute; inset: -6px -4px; }
+.ph-app button.mk-cancel { min-height: 44px; }
+.mk-results { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.mk-results mark { background: transparent; color: var(--mint); font-weight: 600; }
+.mk-results .ph-tl-thread .ph-tl-age { font-size: 13px; }
+.mk-results .mk-state { color: var(--amber); }
+.mk-results .mk-trash { color: var(--red); }
+.ph-app button.mk-more-row { display: block; width: 100%; min-height: 44px; padding: 0 20px; border: 0; border-radius: 0; background: transparent; color: var(--mint); font-size: 14px; text-align: left; }
+.mk-recent { display: flex; flex-wrap: wrap; gap: 12px 8px; padding: 10px 20px 6px; }
+.mk-label-row { display: flex; align-items: flex-end; justify-content: space-between; }
+.mk-label-row .ph-tl-label { flex: 1; }
+.ph-app button.mk-textbtn { flex: none; min-height: 44px; margin-bottom: -10px; padding: 0 20px; border: 0; background: transparent; color: var(--mint); font-size: 15px; }
+.mk-results .ph-tl-name.mk-snip { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; line-height: 1.35; }
+.mk-none { padding: 60px 36px 0; text-align: center; color: var(--muted); }
+.mk-none strong { display: block; color: var(--text); font-size: 19px; margin-bottom: 6px; }
+.mk-status { display: flex; align-items: center; gap: 6px; min-height: 48px; margin-top: 12px; padding: 0 6px 0 20px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.mk-status span { flex: 1; }
+.mk-status .ph-tl-retry { margin: 0; min-height: 44px; }
+.mk-hint { padding: 14px 20px 0; font-size: 13px; color: var(--tl-faint, #58656f); }
+
+/* More sheet switches */
+.mk-sheet-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }
+.mk-switch { display: flex; align-items: center; justify-content: space-between; min-height: 48px; border-top: 1px solid var(--line); font-size: 16px; }
+.mk-switch input { width: 46px; height: 28px; accent-color: var(--mint); }
+.ph-app .mk-sheet-actions { display: grid; gap: 8px; padding: 8px 0 4px; }
+.ph-app .mk-sheet-actions button { width: 100%; }
+.ph-app button.mk-secondary { background: var(--panel-2); border: 0; color: var(--text); font-weight: 600; }
+.mk-kicker { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
+/* ---- New: the found message, highlighted after the jump ---- */
+.ph-said.mk-found { border-radius: 14px; animation: mk-found 2.6s ease-out forwards; }
+@keyframes mk-found { 0%, 35% { background: color-mix(in srgb, var(--mint) 18%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--mint) 55%, transparent); } 100% { background: transparent; box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .ph-said.mk-found { animation: none; background: color-mix(in srgb, var(--mint) 14%, transparent); } }
+.ph-said:focus { outline: none; }
+.mk-toast { position: absolute; left: 14px; right: 14px; bottom: 96px; z-index: 12; }
+
+.mk-phone [hidden] { display: none !important; }
+#mk-thread:not([hidden]) { display: contents; }
+.mk-switch input { -webkit-appearance: none; appearance: none; flex: none; width: 51px; height: 31px; margin: 0; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--line); position: relative; transition: background 160ms; }
+.mk-switch input::before { content: ""; position: absolute; top: 2px; left: 2px; width: 25px; height: 25px; border-radius: 50%; background: #fff; box-shadow: 0 2px 4px #0006; transition: transform 160ms; }
+.mk-switch input:checked { background: var(--mint); border-color: var(--mint); }
+.mk-switch input:checked::before { transform: translateX(20px); }
+.mk-switch input:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+
+/* ---- v2: drawn iOS keyboard (dark), shown while the field has focus ---- */
+.mk-kb { flex: none; padding: 6px 3px 30px; background: #2b2b2d; border-top: 1px solid #000; user-select: none; -webkit-user-select: none; }
+.mk-kb-sugg { display: flex; height: 38px; align-items: center; margin: -6px -3px 6px; border-bottom: 1px solid #3a3a3c; }
+.mk-kb-sugg span { flex: 1; text-align: center; color: #d1d1d6; font-size: 15px; border-right: 1px solid #3a3a3c; }
+.mk-kb-sugg span:last-child { border-right: 0; }
+.mk-kb-row { display: flex; justify-content: center; gap: 6px; margin: 0 0 11px; }
+.mk-kb-row.r2 { padding: 0 19px; }
+.ph-app button.mk-key { flex: 1 1 0; min-width: 0; height: 42px; min-height: 42px; padding: 0; border: 0; border-radius: 5px; background: #6b6b6e; color: #fff; font-size: 22px; font-weight: 400; box-shadow: 0 1px 0 #000; }
+.ph-app button.mk-key.fn { flex: 1.35 1 0; background: #474749; font-size: 16px; }
+.ph-app button.mk-key.space { flex: 5 1 0; font-size: 16px; }
+.ph-app button.mk-key.go { flex: 2 1 0; background: #0a84ff; font-size: 16px; }
+.ph-app button.mk-key:active { background: #9a9a9e; }
+</style></head>
+<body class="mk-page"><div class="mk-strip"><span>iPhone mock-up · sample data</span><a href="desktop.html">Desktop version →</a></div><div class="mk-wrap"><section class="mk-intro"><h1>Search Deck on iPhone</h1>
+<p>Mock-up v2, 2026-11-21 (after Gayble’s review: drawn keyboard, two-line snippets centred on the match, 44 pt tap areas, Clear as a text button, one type label per row), companion to the <a href="desktop.html">desktop Search Deck mock-up</a>. The Threads screen, thread view, title bar, tab bar and sheets are the real phone app's markup and styles. Search pieces are new. All threads and results are sample data.</p>
+<ol><li>Tap <b>Search Deck</b> under the Threads title.</li><li>Type <b>installer</b>. Results arrive grouped by type, three per group, with <b>Show all</b> for more.</li><li>Under <b>Messages</b>, tap <b>“Try the installer on a clean Mac before signing off.”</b> Release handoff opens scrolled to that reply, which flashes mint. <b>Back</b> returns to your results.</li><li>Tap <b>More…</b> and turn on <b>Include Trash</b>, then tap <b>Old installer checklist</b> to see the restore sheet.</li></ol>
+<p>Also shown: filter chips, recent searches and recently opened when the field is empty, the offline-machine line with Retry, and the empty state (try <b>zzz</b>).</p>
+<p>Left out on purpose: the desktop's “This project” scope (the Threads tab has no current project), and a search button on the other tabs (one entry point first; we can add a magnifier to Agents, Code, Tasks and Library if you want it everywhere).</p></section>
+<div class="mk-phone"><div class="mk-root"><div class="ph-app" data-rev="1"><div class="phone-frame"><header class="ph-head" data-mk="home"><h1 class="ph-large"><img class="ph-mark" alt="" width="26" height="26" src="/branding/mark.svg">Threads</h1><span class="ph-head-actions"><button type="button" class="ph-icon" aria-label="New chat or thread"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button><button type="button" class="ph-icon" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></span></header><main class="ph-content ph-tl" data-mk="home"><button type="button" id="mk-open" class="mk-field mk-open-field" aria-label="Search Deck"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg><span>Search Deck</span></button><div class="ph-tl-heading"><button type="button" class="ph-tl-p ph-tl-section" aria-expanded="true"><span class="ph-tl-pname">Recent</span><span class="ph-tl-chev"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span></button></div><button type="button" class="ph-tl-thread" aria-haspopup="menu"><i class="ph-tl-dot work" aria-hidden="true"></i><span class="ph-tl-l1"><span class="ph-tl-name">Composer polish</span><span class="ph-tl-age">38m</span></span><span class="ph-tl-l2"><span class="ph-tl-work">Jigga is working</span><span>in</span><span class="ph-tl-where">Apex Deck</span></span></button><button type="button" class="ph-tl-thread" aria-haspopup="menu"><i class="ph-tl-dot unread" role="img" aria-label="Unread"></i><span class="ph-tl-l1"><span class="ph-tl-name unread">Release handoff</span><span class="ph-tl-age">4m</span></span><span class="ph-tl-l2"><span class="ph-tl-where">Apex Deck</span></span></button><button type="button" class="ph-tl-thread" aria-haspopup="menu"><span class="ph-tl-l1"><span class="ph-tl-name">Installer QA</span><span class="ph-tl-age">12m</span></span><span class="ph-tl-l2"><span class="ph-tl-where">Release QA</span></span></button><button type="button" class="ph-tl-thread" aria-haspopup="menu"><span class="ph-tl-l1"><span class="ph-tl-name">Layout review</span><span class="ph-tl-age">3h</span></span><span class="ph-tl-l2"><span class="ph-tl-where">Apex Deck</span></span></button><section class="ph-tl-machine" aria-label="MacBook Pro"><div class="ph-tl-heading"><button type="button" class="ph-tl-p ph-tl-section" aria-expanded="true"><span class="ph-host-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"></path></svg></span><span class="ph-tl-pname">MacBook Pro</span><span class="ph-tl-chev"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span></button></div><div class="ph-tl-project open"><div class="ph-tl-prow"><button type="button" class="ph-tl-p" aria-expanded="true" aria-haspopup="menu"><span class="ph-tl-pname">Apex Deck</span><span class="ph-tl-chev"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span></button><button type="button" class="ph-tl-add" aria-label="New thread in Apex Deck"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button></div><div class="ph-tl-in"><button type="button" class="ph-tl-thread" aria-haspopup="menu"><i class="ph-tl-dot unread" role="img" aria-label="Unread"></i><span class="ph-tl-l1"><span class="ph-tl-name unread">Release handoff</span><span class="ph-tl-age">4m</span></span></button><button type="button" class="ph-tl-thread" aria-haspopup="menu"><i class="ph-tl-dot work" aria-hidden="true"></i><span class="ph-tl-l1"><span class="ph-tl-name">Composer polish</span><span class="ph-tl-age">38m</span></span><span class="ph-tl-l2"><span class="ph-tl-work">Jigga is working</span></span></button><button type="button" class="ph-tl-thread" aria-haspopup="menu"><span class="ph-tl-l1"><span class="ph-tl-name">Layout review</span><span class="ph-tl-age">3h</span></span></button></div></div><div class="ph-tl-project open"><div class="ph-tl-prow"><button type="button" class="ph-tl-p" aria-expanded="true" aria-haspopup="menu"><span class="ph-tl-pname">Release QA</span><span class="ph-tl-chev"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span></button><button type="button" class="ph-tl-add" aria-label="New thread in Release QA"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></button></div><div class="ph-tl-in"><button type="button" class="ph-tl-thread" aria-haspopup="menu"><span class="ph-tl-l1"><span class="ph-tl-name">Installer QA</span><span class="ph-tl-age">12m</span></span></button><button type="button" class="ph-tl-thread" aria-haspopup="menu"><span class="ph-tl-l1"><span class="ph-tl-name">Release notes</span><span class="ph-tl-age">1d</span></span></button></div></div></section><section class="ph-tl-machine down" aria-label="Hetzner"><div class="ph-tl-heading"><button type="button" class="ph-tl-p ph-tl-section" aria-expanded="true"><span class="ph-host-icon" style="color: var(--brand-cyan);"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg></span><span class="ph-tl-pname">Hetzner</span><span class="ph-tl-warn">Offline</span><span class="ph-tl-chev"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span></button><button type="button" class="ph-tl-retry" aria-label="Retry Hetzner">Retry</button></div><div class="ph-tl-project"><div class="ph-tl-prow"><button type="button" class="ph-tl-p" aria-expanded="false" aria-haspopup="menu"><span class="ph-tl-pname">Hem</span><span class="ph-tl-count" aria-label="1 thread">1</span><span class="ph-tl-chev"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></span></button></div></div></section><button type="button" class="ph-tl-archived">Archived (1)</button></main><div id="mk-search" class="mk-search" hidden><div class="mk-sbar"><label class="mk-field"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg><input id="mk-q" type="search" placeholder="Search Deck" autocomplete="off" autocapitalize="off" enterkeyhint="search" aria-label="Search Deck" aria-controls="mk-results"><button type="button" id="mk-clear" class="mk-clear" aria-label="Clear search" hidden><i><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></i></button></label><button type="button" id="mk-cancel" class="mk-cancel">Cancel</button></div><div id="mk-chips" class="mk-chips" role="group" aria-label="Filter results"></div><div id="mk-results" class="mk-results ph-content ph-tl" aria-label="Search results"></div><div id="mk-status" class="mk-status" role="status"><span><span class="ph-tl-warn">Hetzner is offline</span> · not searched</span><button type="button" id="mk-retry" class="ph-tl-retry">Retry</button></div><div id="mk-kb" class="mk-kb" aria-hidden="true" hidden></div></div><div id="mk-thread" hidden></div><nav class="ph-tabs" aria-label="Sections"><button type="button" class=""><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"></path></svg>Agents</button><button type="button" class=""><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 17 6-6-6-6"></path><path d="M12 19h8"></path></svg>Code</button><button type="button" class="on"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>Threads</button><button type="button" class=""><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg>Tasks</button><button type="button" class=""><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>Library</button></nav><div id="mk-sheet"></div></div></div></div></div></div>
+<template id="tpl-nav"><header class="ph-nav"><button type="button" class="ph-icon ph-nav-back" aria-label="Back to Threads"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button><button type="button" class="ph-nav-title" aria-label="Phone polish. apex-deck on MacBook Pro. Change where this runs"><h2>Phone polish</h2><p class="ph-context"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span class="ph-context-project">apex-deck</span><span class="ph-context-machine">· MacBook Pro</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></p></button><button type="button" class="ph-icon" aria-label="Thread actions"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button></header><div class="ph-crew" aria-hidden="false"><div class="ph-crew-row" role="group" aria-label="Bots in this thread"><button type="button" class="ph-crew-pill" aria-label="Tag everyone"><span class="ph-crew-chip"><span class="ph-mention-all" aria-hidden="true">@</span>Everyone</span></button><button type="button" class="ph-crew-pill to" aria-label="Jigga, answers your next message. Tap to tag. Hold or pull down for details and settings" style="--who: #f59e0b; --pull: 0px;"><span class="ph-crew-chip"><span class="ph-crew-face"><span class="identicon identicon-sm" aria-hidden="true" style="--who: #f59e0b;"><i class="on"></i><i></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i></span></span><span class="ph-crew-name">Jigga</span></span><i class="ph-crew-grab" aria-hidden="true"></i></button><button type="button" class="ph-crew-pill ph-crew-add" aria-label="Add or remove bots in this thread"><span class="ph-crew-chip"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg><span class="ph-crew-name">Bots</span></span></button></div><button type="button" class="ph-icon ph-crew-fold" aria-label="Fold the bots into the title bar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"></path></svg></button></div><div class="ph-swap"><main class="ph-content ph-chat"></main></div><form class="ph-composer"><div class="ph-compose-row"><div class="ph-input"><textarea aria-label="Message Jigga" rows="1" placeholder="Message Jigga…" style="height: 44px;"></textarea><button type="button" class="tldr-pill" aria-pressed="false" aria-label="TL;DR mode"><span aria-hidden="true">TL;</span><span aria-hidden="true">DR</span></button><button type="submit" class="ph-send" aria-label="Send to MacBook Pro" disabled=""><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button></div></div></form></template><template id="tpl-human"><section class="ph-said mine" data-seq="0"><div class="ph-msg human"><p>The phone thread opened scrolled to the top again. Can you look at why?</p></div><span class="message-actions collapsed-actions"><time class="message-time" datetime="2026-11-11T09:12:00.000Z" title="11/11/2026, 1:12:00 AM" aria-label="11/11/2026, 1:12:00 AM"><span class="message-time-label">Wed 1:12 AM</span><span class="message-time-compact" aria-hidden="true">Wed 1:12a</span></time><button type="button" class="msg-action action-disclosure" data-message-more="0" title="Show message actions" aria-label="Show message actions" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6 9 12l6 6"></path></svg></button><span class="message-action-items" hidden=""><button type="button" class="msg-action revert" aria-label="Revert to here" title="Revert: delete everything after, put files back, your text returns to the box"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button><button type="button" class="msg-action pin-action" title="Pin your message" aria-label="Pin your message" aria-pressed="false"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill="none"></path><path d="M12 16v6"></path></svg></button></span><span class="message-primary-actions"><button type="button" class="msg-action copy" title="Copy" aria-label="Copy message"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"></path></svg></button><button type="button" class="msg-action quote" title="Quote" aria-label="Quote your message"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5-6 6 6 6M3 11h10a7 7 0 0 1 7 7"></path></svg></button></span></span></section></template><template id="tpl-agent"><section class="ph-said" data-seq="1"><div class="ph-msg"><div class="ph-by" style="--agent-color: #f59e0b;"><span class="identicon identicon-sm" aria-hidden="true" style="--who: #f59e0b;"><i class="on"></i><i></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i></span><span>Jigga</span></div><div class="ph-md"><div class="md"><p>Yes. When a thread opens, the phone tries to put you back where you left off. If the saved spot is gone (the thread was trimmed or reloaded), it falls back to the very top instead of the newest message.</p></div></div></div><span class="message-actions collapsed-actions"><span class="message-primary-actions"><button type="button" class="msg-action quote" title="Quote" aria-label="Quote response from Jigga"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5-6 6 6 6M3 11h10a7 7 0 0 1 7 7"></path></svg></button><button type="button" class="msg-action copy" title="Copy" aria-label="Copy message"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"></path></svg></button></span><span class="message-action-items" hidden=""><button type="button" class="msg-action read-aloud" aria-label="Read aloud" aria-pressed="false" title="Read aloud"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5Z"></path><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"></path></svg></button><button type="button" class="msg-action pin-action" title="Pin response" aria-label="Pin response" aria-pressed="false"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill="none"></path><path d="M12 16v6"></path></svg></button><button type="button" class="msg-action retry" aria-label="Retry" title="Retry: delete this reply and after, put files back, ask again"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></button></span><button type="button" class="msg-action action-disclosure" data-message-more="1" title="Show message actions" aria-label="Show message actions" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg></button><time class="message-time" datetime="2026-11-11T09:13:30.000Z" title="11/11/2026, 1:13:30 AM" aria-label="11/11/2026, 1:13:30 AM"><span class="message-time-label">Wed 1:13 AM</span><span class="message-time-compact" aria-hidden="true">Wed 1:13a</span></time></span></section></template><template id="tpl-x"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></template>
+<script>(() => {
+const $ = (s, r = document) => r.querySelector(s);
+const SEARCH_SVG = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>';
+const X_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+const frame = $('.mk-phone .phone-frame');
+const home = [...frame.querySelectorAll('[data-mk="home"]')];
+const tabs = $('.ph-tabs', frame);
+const search = $('#mk-search');
+const thread = $('#mk-thread');
+const sheetHost = $('#mk-sheet');
+const list = $('#mk-results');
+const status = $('#mk-status');
+const input = $('#mk-q');
+const clearBtn = $('#mk-clear');
+
+// ---- Sample data (illustrative, not your real threads) ----
+const T = {
+  handoff: { title: 'Release handoff', project: 'Apex Deck', agent: 'Asstra', color: '#f59e0b', msgs: [
+    ['h', 'Where are we on the 0.9.16 release?'],
+    ['a', 'The app, daemon and CLI are built and signed. The notarization check passed on the first try.'],
+    ['h', 'What should we test on the second Mac?'],
+    ['a', 'Three things: the upgrade from 0.9.15, the uninstaller, and that paired phones reconnect after the update.'],
+    ['h', 'Anything else before I sign off?'],
+    ['a', 'Try the installer on a clean Mac before signing off.', 'found'],
+    ['h', 'ok, doing that tonight'],
+    ['a', 'I’ll keep the checklist open in Installer QA and mark each item as you report it.'] ] },
+  qa: { title: 'Installer QA', project: 'Release QA', agent: 'Gayble', color: '#a3e635', msgs: [
+    ['h', 'Which checks are left?'],
+    ['a', 'Open the disk image, drag Apex Deck into Applications, then launch the installer from there and check that the first-run screen appears.', 'found'],
+    ['h', 'Done. It launched fine.'] ] },
+  composer: { title: 'Composer polish', project: 'Apex Deck', agent: 'Jigga', color: '#f59e0b', msgs: [['h', 'Keep the composer clean.'], ['a', 'Suggestions now sit under the reply that made them.']] },
+  layout: { title: 'Layout review', project: 'Apex Deck', agent: 'Null', color: '#a3e635', msgs: [['h', 'Check the pane widths.'], ['a', 'Each pane keeps its own width while you zoom.']] },
+  notes: { title: 'Release notes', project: 'Release QA', agent: 'Ink', color: '#f59e0b', msgs: [['h', 'Draft the notes.'], ['a', 'Draft is in docs/release/0.9.16.md.'], ['a', 'The notes cover the new phone search, faster thread loading, the fixed approval card, and a reminder to run the installer on a clean Mac first.', 'found']] },
+  voice: { title: 'Voice helper', project: 'Hem', agent: 'Asstra', color: '#a3e635', msgs: [['h', 'Status?'], ['a', 'Waiting on Hetzner.']] },
+  rehearsal: { title: 'Installer rehearsal', project: 'Release QA', agent: 'Asstra', color: '#f59e0b', msgs: [['h', 'Which release does this cover?'], ['a', 'This checklist covers the previous installer.']] },
+  oldqa: { title: 'Old installer checklist', project: 'Release QA', agent: 'Asstra', color: '#f59e0b', msgs: [['h', 'Which release does this cover?'], ['a', 'The previous installer. It was replaced by Installer QA.']] },
+};
+const row = (group, title, l2, extra = {}) => ({ group, title, l2, ...extra });
+const ENTRIES = [
+  row('Projects', 'Installer Lab', 'MacBook Pro · ~/Projects/installer-lab', { kind: 'Project' }),
+  row('Threads', 'Installer QA', 'Release QA · MacBook Pro', { open: 'qa', age: '12m' }),
+  row('Threads', 'Installer rehearsal', 'Release QA', { open: 'rehearsal', state: 'Archived', age: '6d' }),
+  row('Threads', 'Old installer checklist', 'Release QA', { open: 'oldqa', state: 'In Trash', age: '3w' }),
+  row('Agents', 'Installer reviewer', 'Release team', { kind: 'Agent' }),
+  row('Messages', 'Try the installer on a clean Mac before signing off.', 'Release handoff · Asstra', { open: 'handoff', found: true, age: '4m' }),
+  row('Messages', 'Open the disk image, drag Apex Deck into Applications, then launch the installer from there and check that the first-run screen appears.', 'Installer QA · Gayble', { open: 'qa', found: true, age: '12m' }),
+  row('Messages', 'The notes cover the new phone search, faster thread loading, the fixed approval card, and a reminder to run the installer on a clean Mac first.', 'Release notes · Ink', { open: 'notes', found: true, age: '2d' }),
+  row('Settings', 'Installer notifications', 'Notifications', { kind: 'Setting' }),
+  ...['Verify clean installer run', 'Check installer signing', 'Check installer disk image', 'Test installer upgrade', 'Review installer notes', 'Verify installer uninstall'].map(t => row('Tasks', t, 'Installer checklist · Release QA', { kind: 'Task' })),
+  row('Notes', 'Installer signing checklist', 'Release QA', { kind: 'Note' }),
+  row('Library', 'Installer welcome screen.png', 'Release QA', { kind: 'Picture' }),
+  row('Files', 'installer-checklist.md', 'docs/release · Release QA', { kind: 'File' }),
+  row('In files', 'Open the installer on a clean Mac.', 'installer-checklist.md · line 12', { kind: 'Line in a file' }),
+  row('Work steps', 'Verify installer signature', 'Release handoff · Asstra · step 3 · exit 0', { kind: 'Work step' }),
+];
+const GROUPS = ['Projects', 'Threads', 'Agents', 'Messages', 'Settings', 'Tasks', 'Notes', 'Library', 'Files', 'In files', 'Work steps'];
+const MAIN_CHIPS = ['All', 'Threads', 'Messages', 'Files', 'Settings'];
+const MORE_CHIPS = ['Projects', 'Agents', 'Tasks', 'Notes', 'Library', 'Work steps'];
+let filter = 'All', includeArchived = false, includeTrash = false, hetznerOn = false;
+let recentQueries = ['installer', 'signing'];
+let recentPlaces = ENTRIES.filter(e => e.open === 'qa' && e.group === 'Threads');
+const expanded = new Set();
+let fromSearch = false;
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function highlight(target, text, words) {
+  let rest = text;
+  while (rest.length) {
+    const hits = words.map(w => ({ w, at: rest.toLowerCase().indexOf(w) })).filter(m => m.at >= 0 && m.w).sort((a, b) => a.at - b.at);
+    if (!hits.length) { target.append(rest); break; }
+    const { w, at } = hits[0];
+    target.append(rest.slice(0, at), el('mark', '', rest.slice(at, at + w.length)));
+    rest = rest.slice(at + w.length);
+  }
+}
+// Long text: start a little before the first match so it is always visible in two lines.
+function snippet(text, words) {
+  const low = text.toLowerCase();
+  const at = Math.min(...words.map(w => low.indexOf(w)).filter(i => i >= 0));
+  if (!Number.isFinite(at) || at <= 48) return text;
+  let start = text.lastIndexOf(' ', at - 28);
+  start = start < 0 ? 0 : start + 1;
+  return '…' + text.slice(start);
+}
+function setMode(mode) {
+  home.forEach(n => n.hidden = mode !== 'home');
+  search.hidden = mode !== 'search';
+  thread.hidden = mode !== 'thread';
+  tabs.hidden = mode === 'thread' || (mode === 'search' && kbUp);
+  if (mode !== 'search') showKb(false);
+}
+function openSearch() {
+  setMode('search'); fromSearch = false;
+  draw(); input.focus({ preventScroll: true });
+}
+function closeSearch() { input.value = ''; filter = 'All'; expanded.clear(); setMode('home'); $('#mk-open').focus({ preventScroll: true }); }
+function chips() {
+  const box = $('#mk-chips'); box.replaceChildren();
+  for (const c of [...MAIN_CHIPS, 'More']) {
+    const b = el('button', 'mk-chip', c === 'More' ? (MORE_CHIPS.includes(filter) ? 'More · ' + filter : 'More…') : c);
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(c === filter || (c === 'More' && MORE_CHIPS.includes(filter))));
+    b.onclick = () => c === 'More' ? moreSheet() : (filter = c, expanded.clear(), draw());
+    box.append(b);
+  }
+}
+function visible(e) {
+  if (e.state === 'Archived' && !includeArchived) return false;
+  if (e.state === 'In Trash' && !includeTrash) return false;
+  return filter === 'All' || filter === e.group || (filter === 'Files' && e.group === 'In files');
+}
+function hitRow(e, words) {
+  const b = el('button', 'ph-tl-thread'); b.type = 'button';
+  const l1 = el('span', 'ph-tl-l1'); const name = el('span', 'ph-tl-name'); highlight(name, e.title, words);
+  if (e.group === 'Messages' || e.group === 'In files') { name.classList.add('mk-snip'); name.replaceChildren(); highlight(name, snippet(e.title, words), words); }
+  l1.append(name, el('span', 'ph-tl-age', e.age || ''));
+  const l2 = el('span', 'ph-tl-l2');
+  if (e.state) l2.append(el('span', e.state === 'In Trash' ? 'mk-trash' : 'mk-state', e.state), el('span', '', '·'));
+  const where = el('span', 'ph-tl-where'); highlight(where, e.l2, words); l2.append(where);
+  b.append(l1, l2);
+  b.onclick = () => pick(e);
+  return b;
+}
+function draw() {
+  chips();
+  const q = input.value.trim();
+  clearBtn.hidden = !q;
+  const words = (q.match(/"[^"]+"|[^\s"]+/g) || []).map(w => w.replace(/^"|"$/g, '').toLowerCase());
+  list.replaceChildren();
+  if (!q) {
+    if (recentQueries.length) {
+      const head = el('div', 'mk-label-row'); const c = el('button', 'mk-textbtn', 'Clear'); c.type = 'button'; c.setAttribute('aria-label', 'Clear recent searches'); c.onclick = () => { recentQueries = []; draw(); input.focus({ preventScroll: true }); }; head.append(el('div', 'ph-tl-label', 'Recent searches'), c); list.append(head);
+      const box = el('div', 'mk-recent');
+      for (const w of recentQueries) { const b = el('button', 'mk-chip', w); b.type = 'button'; b.onclick = () => { input.value = w; draw(); input.focus({ preventScroll: true }); }; box.append(b); }
+      list.append(box);
+    }
+    const places = recentPlaces.filter(visible);
+    if (places.length) { list.append(el('div', 'ph-tl-label', 'Recently opened')); places.forEach(p => list.append(hitRow(p, []))); }
+    list.append(el('p', 'mk-hint', 'Searches every machine: project, thread and agent names, messages, settings, tasks, notes, pictures, files and work steps. Try “installer”.'));
+  } else {
+    const hits = ENTRIES.filter(e => visible(e) && words.every(w => (e.title + ' ' + e.l2).toLowerCase().includes(w)));
+    for (const g of GROUPS) {
+      const items = hits.filter(e => e.group === g);
+      if (!items.length) continue;
+      list.append(el('div', 'ph-tl-label', g));
+      (expanded.has(g) ? items : items.slice(0, 3)).forEach(e => list.append(hitRow(e, words)));
+      if (items.length > 3) { const m = el('button', 'mk-more-row', expanded.has(g) ? 'Show fewer' : 'Show all ' + items.length); m.type = 'button'; m.onclick = () => { expanded.has(g) ? expanded.delete(g) : expanded.add(g); draw(); }; list.append(m); }
+    }
+    if (!hits.length) { const n = el('div', 'mk-none'); n.append(el('strong', '', 'No matches'), el('p', '', 'Nothing on MacBook Pro matches “' + q + '”' + (filter !== 'All' ? ' in ' + filter : '') + '.')); list.append(n); }
+  }
+  status.hidden = hetznerOn;
+  list.append(status);
+}
+function remember(e) {
+  const q = input.value.trim();
+  if (q) recentQueries = [q, ...recentQueries.filter(w => w !== q)].slice(0, 5);
+  recentPlaces = [e, ...recentPlaces.filter(p => p !== e)].slice(0, 5);
+}
+function pick(e) {
+  if (e.state === 'In Trash') return trashSheet(e);
+  remember(e);
+  if (e.state === 'Archived') { e.state = ''; }
+  if (e.open) return openThread(e.open, e.found, true);
+  previewSheet(e);
+}
+// ---- Thread view, built from the real captured thread screen ----
+function openThread(id, found, viaSearch) {
+  const t = T[id]; fromSearch = !!viaSearch;
+  thread.replaceChildren($('#tpl-nav').content.cloneNode(true));
+  $('.ph-nav-title h2', thread).textContent = t.title;
+  $('.ph-context-project', thread).textContent = t.project;
+  $('.ph-nav-back', thread).setAttribute('aria-label', viaSearch ? 'Back to search results' : 'Back to Threads');
+  $('.ph-nav-back', thread).onclick = () => { if (fromSearch) { setMode('search'); draw(); input.focus({ preventScroll: true }); } else setMode('home'); };
+  thread.querySelectorAll('.ph-crew-name').forEach((n, i) => { if (i === 0) n.textContent = t.agent; });
+  const chat = $('.ph-chat', thread); chat.replaceChildren();
+  let target = null;
+  t.msgs.forEach(([who, text, mark], i) => {
+    const s = $(who === 'h' ? '#tpl-human' : '#tpl-agent').content.firstElementChild.cloneNode(true);
+    s.dataset.seq = i;
+    if (who === 'h') $('.ph-msg p', s).textContent = text;
+    else { $('.ph-md p', s).textContent = text; $('.ph-by > span:last-child', s).textContent = t.agent; }
+    if (mark && found) target = s;
+    chat.append(s);
+  });
+  chat.append(document.createElement('div'));
+  const ta = $('.ph-composer textarea', thread); if (ta) { ta.placeholder = 'Message ' + t.agent + '…'; ta.setAttribute('aria-label', 'Message ' + t.agent); }
+  setMode('thread');
+  if (target) {
+    target.tabIndex = -1;
+    requestAnimationFrame(() => {
+      chat.scrollTop = 0;
+      target.scrollIntoView({ block: 'center' });
+      target.classList.add('mk-found');
+      target.focus({ preventScroll: true });
+    });
+  } else requestAnimationFrame(() => { chat.scrollTop = chat.scrollHeight; });
+}
+// ---- Sheets (real .ph-sheet markup) ----
+function sheet(title, build) {
+  sheetHost.replaceChildren();
+  const back = el('div', 'ph-sheet-back');
+  const s = el('div', 'ph-sheet'); s.setAttribute('role', 'dialog'); s.setAttribute('aria-modal', 'true'); s.setAttribute('aria-label', title); s.tabIndex = -1;
+  const head = el('div', 'ph-sheet-title'); head.append(el('h3', '', title));
+  const x = el('button', 'ph-icon'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.innerHTML = $('#tpl-x').innerHTML; head.append(x);
+  const body = el('div', 'ph-sheet-body');
+  s.append(el('div', 'ph-handle'), head, body);
+  back.append(s); sheetHost.append(back);
+  const close = () => { sheetHost.replaceChildren(); };
+  x.onclick = close; back.onclick = ev => { if (ev.target === back) close(); };
+  s.onkeydown = ev => { if (ev.key === 'Escape') close(); };
+  build(body, close);
+  s.focus();
+}
+function moreSheet() {
+  sheet('Search filters', (body, close) => {
+    body.append(el('p', 'ph-sheet-text', 'Show one kind of result.'));
+    const box = el('div', 'mk-sheet-chips');
+    for (const c of MORE_CHIPS) { const b = el('button', 'mk-chip', c); b.type = 'button'; b.setAttribute('aria-pressed', String(filter === c)); b.onclick = () => { filter = c; expanded.clear(); close(); draw(); }; box.append(b); }
+    body.append(box);
+    const sw = (label, get, set) => { const l = el('label', 'mk-switch'); const i = el('input'); i.type = 'checkbox'; i.checked = get(); i.onchange = () => { set(i.checked); draw(); }; l.append(el('span', '', label), i); body.append(l); };
+    sw('Include archived', () => includeArchived, v => includeArchived = v);
+    sw('Include Trash', () => includeTrash, v => includeTrash = v);
+    const a = el('div', 'mk-sheet-actions'); const done = el('button', 'primary ph-wide', 'Done'); done.type = 'button'; done.onclick = close; a.append(done); body.append(a);
+  });
+}
+function trashSheet(e) {
+  sheet('Restore this thread?', (body, close) => {
+    body.append(el('p', 'ph-sheet-text', '“' + e.title + '” is in Trash. Restoring puts it back in ' + T[e.open].project + ' on MacBook Pro and opens it. Nothing is restored unless you choose to.'));
+    const a = el('div', 'mk-sheet-actions');
+    const r = el('button', 'primary ph-wide', 'Restore and open'); r.type = 'button';
+    r.onclick = () => { close(); e.state = ''; remember(e); openThread(e.open, false, true); };
+    const c = el('button', 'mk-secondary ph-wide', 'Cancel'); c.type = 'button'; c.onclick = () => { close(); input.focus({ preventScroll: true }); };
+    a.append(r, c); body.append(a);
+  });
+}
+function previewSheet(e) {
+  sheet(e.title, (body, close) => {
+    body.append(el('div', 'mk-kicker', e.kind + ' · MacBook Pro'), el('p', 'ph-sheet-text', e.l2));
+    body.append(el('p', 'ph-sheet-text', 'Sample only. In the app this opens the ' + e.kind.toLowerCase() + ' in its own screen (' + ({ Project: 'its threads', Agent: 'the agent editor', Setting: 'Settings, scrolled to it', Task: 'Tasks', Note: 'the project’s notes', Picture: 'Library', File: 'the file viewer', 'Line in a file': 'the file viewer at line 12', 'Work step': 'the reply, with the step opened' }[e.kind] || 'place') + ').'));
+    const a = el('div', 'mk-sheet-actions'); const d = el('button', 'mk-secondary ph-wide', 'Close preview'); d.type = 'button'; d.onclick = () => { close(); input.focus({ preventScroll: true }); }; a.append(d); body.append(a);
+  });
+}
+// ---- Drawn keyboard ----
+const kb = $('#mk-kb');
+let kbUp = false;
+function showKb(on) {
+  kbUp = on; kb.hidden = !on;
+  if (!search.hidden) tabs.hidden = on;
+}
+(function buildKb() {
+  const sugg = el('div', 'mk-kb-sugg'); ['“installer”', 'install', 'installed'].forEach(w => sugg.append(el('span', '', w))); kb.append(sugg);
+  const rows = [['qwertyuiop', ''], ['asdfghjkl', 'r2'], ['⇧zxcvbnm⌫', ''], ['123|space|search', '']];
+  for (const [keys, cls] of rows) {
+    const r = el('div', 'mk-kb-row ' + cls);
+    const list2 = keys.includes('|') ? keys.split('|') : [...keys];
+    for (const k of list2) {
+      const b = el('button', 'mk-key', k === 'space' ? 'space' : k === 'search' ? 'search' : k);
+      b.type = 'button'; b.tabIndex = -1;
+      if (k === '⇧' || k === '⌫' || k === '123') b.classList.add('fn');
+      if (k === 'space') b.classList.add('space');
+      if (k === 'search') b.classList.add('go');
+      b.onpointerdown = ev => ev.preventDefault();
+      b.onclick = () => {
+        if (k === 'search') { input.blur(); return; }
+        if (k === '⌫') input.value = input.value.slice(0, -1);
+        else if (k === 'space') input.value += ' ';
+        else if (k.length === 1 && k !== '⇧') input.value += k;
+        expanded.clear(); draw();
+      };
+      r.append(b);
+    }
+    kb.append(r);
+  }
+})();
+input.addEventListener('focus', () => showKb(true));
+input.addEventListener('blur', () => showKb(false));
+// iOS dismisses the keyboard when you drag the results.
+list.addEventListener('touchmove', () => { if (kbUp) input.blur(); }, { passive: true });
+list.addEventListener('wheel', () => { if (kbUp) input.blur(); }, { passive: true });
+// ---- Wiring ----
+$('#mk-open').onclick = openSearch;
+$('#mk-cancel').onclick = closeSearch;
+input.oninput = () => { expanded.clear(); draw(); };
+input.onkeydown = ev => {
+  if (ev.key === 'Escape') closeSearch();
+  if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+};
+clearBtn.onclick = () => { input.value = ''; draw(); input.focus({ preventScroll: true }); };
+$('#mk-retry').onclick = () => { status.querySelector('span').textContent = 'Retrying Hetzner… still offline (sample).'; };
+// Thread rows on the real Threads list open the sample threads too.
+const byTitle = Object.fromEntries(Object.entries(T).map(([k, v]) => [v.title, k]));
+frame.querySelectorAll('.ph-tl .ph-tl-thread').forEach(b => { const n = b.querySelector('.ph-tl-name')?.textContent; if (byTitle[n]) b.onclick = () => openThread(byTitle[n], false, false); });
+setMode('home');
+})();
+</script></body></html>
