@@ -248,7 +248,11 @@ impl TaskBranches {
             }
         }
         let external = crate::assistant_git::external_path(path);
-        if let Err(e) = git(data, &folder.root, &[path], &[], &["worktree", "remove", "--force", &external.to_string_lossy()]) {
+        // Git may write in the folder's parent, not the folder: Linux's jail
+        // mounts a folder named on its own, and a mount point can't be
+        // deleted. Git still refuses a locked worktree.
+        let parent = path.parent().unwrap_or(path);
+        if let Err(e) = git(data, &folder.root, &[parent], &[], &["worktree", "remove", "--force", &external.to_string_lossy()]) {
             return kept(format!("Deck couldn't remove it: {e}"));
         }
         let _ = crate::project_process::prune_worktrees(data, &folder.root);
