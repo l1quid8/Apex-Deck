@@ -114,7 +114,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomFork { .. } => Need::Paired,
         ChatPromote { .. } => Need::Paired,
         ChatPromoteAbandon { .. } => Need::Paired,
-        SessionSave { .. } => Need::Paired,
+        SessionSave { .. } | SessionSaveLayout { .. } => Need::Paired,
         MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorConnect { .. } | MonitorWatchSave { .. } | MonitorWatchStop { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorReact { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => Need::Paired,
         SettingsLoad {} => Need::Paired,
         SettingsSave { .. } => Need::Paired,
@@ -241,6 +241,11 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         RoomMount { .. } => Raises,
         FolderAccept { .. } => Raises,
         SessionSave { .. } => Raises,
+        // The store refuses it, under its write lock, if the saved profiles
+        // would change. Every other session field is presentation, or is
+        // re-checked at use against a receipted binding (project folders,
+        // apex_host::personal_workspace::validate_project_identity).
+        SessionSaveLayout { .. } => None,
         AgentProfileSave { .. } => Raises,
         SettingsSave { .. } => Raises,
         SettingsCodeModeSet { .. } => Raises,
@@ -705,6 +710,7 @@ pub(crate) mod tests {
             ("room_import", true, json!({ "id": "mine", "snapshot": { "participants": [], "transcript": [], "options": options } })),
             ("room_fork", true, json!({ "source": "mine", "target": "mine2" })),
             ("session_save", true, json!({ "session": {} })),
+            ("session_save_layout", true, json!({ "session": {} })),
             ("settings_load", true, json!({})),
             ("settings_save", true, json!({ "settings": {} })),
             ("settings_code_mode_set", true, json!({ "enabled": false })),
@@ -826,6 +832,7 @@ pub(crate) mod tests {
             ("room_mount", AccessEffect::Raises, "widens what a level can write"),
             ("folder_accept", AccessEffect::Raises, "lets Full bot run lower code, same as raise"),
             ("session_save", AccessEffect::Raises, "session JSON can carry profiles with Full access"),
+            ("session_save_layout", AccessEffect::None, "store refuses it under the write lock when profiles would change"),
             ("settings_save", AccessEffect::Raises, "settings could carry defaults affecting access"),
             ("settings_code_mode_set", AccessEffect::Raises, "global Code Mode is a user control"),
             ("computer_set_enabled", AccessEffect::Raises, "enables desktop computer use for agents"),

@@ -1462,6 +1462,35 @@ mod tests {
         }
     }
 
+    /// Linux: the local window may save layout without a receipt, but not a
+    /// session that changes agent profiles, and not settings.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn linux_local_layout_saves_pass_and_profile_changes_still_need_a_device() {
+        let (daemon, _data) = daemon();
+        let mut daemon = Arc::try_unwrap(daemon).ok().unwrap();
+        daemon.linux_device_policy = Some(true);
+        let daemon = Arc::new(daemon);
+        let mut local = connect_to(&daemon, Trust::Local);
+        local.hello().await;
+        let full = json!([{"id":"worker","display_name":"Worker","persona":"","access":"full","backend":{"kind":"scripted","lines":[]}}]);
+        let replies = |frames: Vec<Value>| frames.into_iter().last().unwrap();
+        // The plain save is still refused at the gate, whatever it carries.
+        local.send(json!({"id":1,"cmd":"session_save","args":{"session":{"version":1,"section":"threads"}}})).await;
+        assert!(replies(local.until_reply(1).await)["err"].as_str().unwrap().contains("paired device"));
+        local.send(json!({"id":2,"cmd":"settings_save","args":{"settings":{"version":1}}})).await;
+        assert!(replies(local.until_reply(2).await)["err"].as_str().unwrap().contains("paired device"));
+        // Adding a workspace is a layout save.
+        local.send(json!({"id":3,"cmd":"session_save_layout","args":{"session":{"version":1,"workspaces":[{"id":"w","name":"w","path":"/tmp"}]}}})).await;
+        assert!(replies(local.until_reply(3).await).get("ok").is_some());
+        // A profile change through it is refused by the store and not written.
+        local.send(json!({"id":4,"cmd":"session_save_layout","args":{"session":{"version":1,"profiles":full}}})).await;
+        assert_eq!(replies(local.until_reply(4).await)["err"], apex_host::LAYOUT_SAVE_CHANGES_PROFILES);
+        local.send(json!({"id":5,"cmd":"session_load"})).await;
+        let saved = replies(local.until_reply(5).await);
+        assert_eq!(saved["ok"]["workspaces"][0]["id"], "w");
+        assert!(saved["ok"].get("profiles").is_none_or(|p| p.as_array().is_some_and(|p| p.is_empty())), "{saved}");
+    }
+
     /// Linux: a same-user local peer reaches the terminal surface only after the
     /// recorded jail probe passed; a token connection never does.
     #[cfg(target_os = "linux")]

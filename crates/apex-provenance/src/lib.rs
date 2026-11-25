@@ -815,6 +815,11 @@ pub fn protected(name: &str) -> bool {
             // one-use and bound to a fresh delivery id; the host ties the
             // grant to the connection that executes it.
             | "search_open"
+            // Open on the Mac; on Linux the local window proves them with a
+            // receipt because they can raise access (apex-host
+            // `attested_on_linux`). Keyed by a fresh delivery id like rooms.
+            | "session_save" | "settings_save" | "folder_accept"
+            | "settings_code_mode_set" | "monitor_watch_save"
     )
 }
 fn content_bound_startup_preflight(command: &Value) -> bool {

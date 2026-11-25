@@ -1008,7 +1008,7 @@ impl Host {
             Some(monitor)=>(crate::assistant_tasks::TaskOwner {workspace_id:monitor.workspace_id,cwd:monitor.cwd,host_id:monitor.host_id,conversation_id:monitor.conversation_id},monitor.revision),
             // A first handoff reserves the record the app itself would make, so
             // the desktop and phone recognise it as this project's coordinator.
-            None=>(crate::assistant_tasks::TaskOwner {workspace_id:project.workspace_id.clone(),cwd:project.cwd.clone(),host_id:self.coordinator_host(&project.workspace_id)?,conversation_id:format!("apex-agent-{}-{event_id}",project.workspace_id)},1),
+            None=>(crate::assistant_tasks::TaskOwner {workspace_id:project.workspace_id.clone(),cwd:project.cwd.clone(),host_id:self.coordinator_host_for(project)?,conversation_id:format!("apex-agent-{}-{event_id}",project.workspace_id)},1),
         };
         Ok((owner,revision,standing))
     }

@@ -305,6 +305,9 @@ pub struct Store {
     writes: Mutex<()>,
 }
 
+/// The window resends a refused layout save through the broker on this text.
+pub const LAYOUT_SAVE_CHANGES_PROFILES: &str = "This save changes agent profiles, which needs the installed window's receipt on this Linux host.";
+
 impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self { root, writes: Mutex::new(()) }
@@ -392,6 +395,15 @@ impl Store {
     /// Save desktop presentation state while protecting profiles edited by another client.
     /// Return the accepted snapshot so events never echo stale profile data.
     pub(crate) fn save_session_snapshot(&self, session: &serde_json::Value) -> Result<serde_json::Value, String> {
+        self.save_session_held(session, false)
+    }
+
+    /// As `save_session_snapshot`, refused when it would change the profiles.
+    pub(crate) fn save_session_layout(&self, session: &serde_json::Value) -> Result<serde_json::Value, String> {
+        self.save_session_held(session, true)
+    }
+
+    fn save_session_held(&self, session: &serde_json::Value, keep_profiles: bool) -> Result<serde_json::Value, String> {
         let _guard = self.writes.lock().unwrap();
         let mut next = session.clone();
         self.reconcile_lifecycle_session(&mut next)?;
@@ -400,6 +412,9 @@ impl Store {
         let revision = current["profileRevision"].as_u64().unwrap_or(0);
         let expected = fields.get("profileRevision").and_then(|v| v.as_u64()).unwrap_or(0);
         let profiles_changed = expected == revision && fields.contains_key("profiles") && fields.get("profiles") != current.get("profiles");
+        if keep_profiles && profiles_changed {
+            return Err(LAYOUT_SAVE_CHANGES_PROFILES.into());
+        }
         if profiles_changed {
             fields.insert("profileSavedBy".into(), fields.get("savedBy").cloned().unwrap_or(serde_json::Value::Null));
         } else if let Some(source) = current.get("profileSavedBy") {

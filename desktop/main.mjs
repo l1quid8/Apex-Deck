@@ -30,6 +30,7 @@ import { linuxLocalDaemon, resolveLinuxLaunch, launchLinuxUI } from './linuxServ
 import { callDaemon, hasRemoteAccessKey, importSavedRemoteAccess, setPhoneConnections } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { assertTrustedStartup, attestFrame, needsAttestation, protectWindowsProcess, requestUpdate } from './provenance.mjs';
+import { createLinuxSaves } from './linuxSaves.mjs';
 import { Updater, WINDOWS_FEED_URL, disabledReason, fetchDownload, fetchManifest, packageVerifier, teamFrom, windowsInstaller, windowsLauncher, windowsSigner, windowsVerifier } from './updater.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
 import { assistantFloatBounds, movedAssistantFloatBounds } from './assistantFloatLayout.mjs';
@@ -271,10 +272,22 @@ const links = createHostLinks({
     });
   },
   emit: (contentsId, hostId, gen, channel, value) => {
-    const entry = [...windows.values(), ...popoutWindows.values()].find(e => e.win.webContents.id === contentsId);
-    if (entry && !entry.win.webContents.isDestroyed()) entry.win.webContents.send(channel, hostId, gen, value);
+    if (channel === 'daemon:line' && hostId === LOCAL && linuxSaves?.incoming(contentsId, gen, value)) return;
+    emitTo(contentsId, hostId, gen, channel, value);
   },
 });
+function emitTo(contentsId, hostId, gen, channel, value) {
+  const entry = [...windows.values(), ...popoutWindows.values()].find(e => e.win.webContents.id === contentsId);
+  if (entry && !entry.win.webContents.isDestroyed()) entry.win.webContents.send(channel, hostId, gen, value);
+}
+/** The broker-launched Linux window's saves (desktop/linuxSaves.mjs); elsewhere unchanged. */
+const linuxSaves = process.platform === 'linux' && app.isPackaged && plan.scope?.role === 'app' && !plan.protectedSubmissionError
+  ? createLinuxSaves({
+    attest: frame => attestFrame(frame, { dataDir: plan.dataDir }),
+    send: (contentsId, gen, line) => links.send(contentsId, LOCAL, gen, line),
+    reply: (contentsId, gen, line) => emitTo(contentsId, LOCAL, gen, 'daemon:line', line),
+  })
+  : null;
 
 /** The Deck window event came from, never a docked page or child frame. Pop-outs count as Deck windows. */
 function deckWindow(event) {
@@ -353,7 +366,7 @@ ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
   const contents = event.sender;
   if (!watchedContents.has(contents.id)) {
     watchedContents.add(contents.id);
-    contents.once('destroyed', () => { links.destroy(contents.id); watchedContents.delete(contents.id); });
+    contents.once('destroyed', () => { links.destroy(contents.id); linuxSaves?.forget(contents.id); watchedContents.delete(contents.id); });
     contents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) links.destroy(contents.id); });
   }
   return links.connect(contents.id, hostId);
@@ -365,6 +378,7 @@ ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
     event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: `App preferences are owned by ${LOCAL_NAME}.` }));
     return;
   }
+  if (hostId === LOCAL && linuxSaves?.outgoing(event.sender.id, gen, frame)) return;
   // Remote coding rooms and phone-grant management use authenticated SSH;
   // the destination host enforces its own grant boundary. Remote assistant
   // authority is unavailable until its own broker is deployed.

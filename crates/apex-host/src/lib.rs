@@ -79,7 +79,8 @@ pub mod project_process;
 /// builds, and `cargo test -p apex-host-production-check`, must see false.
 pub const TEST_SUPPORT_COMPILED: bool = cfg!(feature = "test-support");
 
-pub use command::{Caller, Command, local_linux_cli_admitted, local_linux_cli_surface};
+pub use storage::LAYOUT_SAVE_CHANGES_PROFILES;
+pub use command::{Caller, Command, attested_on_linux, local_linux_cli_admitted, local_linux_cli_surface};
 pub use host::{Host, HostPaths};
 pub use apex_core::{ClientCapabilities, GeneratedUiCapability};
 

@@ -454,22 +454,27 @@ impl crate::host::Host {
     }
 
     /// Delegated tasks belong to a project's coordinator. A project without one
-    /// is connected here, with no checks, using the path the app saved for it.
+    /// is connected here at the folder its receipted binding validated.
     pub(crate) fn project_coordinator(&self, project: &ProjectRef) -> Result<crate::monitor::ProjectMonitor, String> {
         if let Some(monitor) = self.monitor_get(&project.workspace_id)? { return Ok(monitor); }
-        let workspaces = self.session()?.and_then(|session| session.workspaces).unwrap_or_default();
-        let saved = workspaces.iter().find(|ws| ws["id"].as_str() == Some(&project.workspace_id)).ok_or("Project assignment is unavailable.")?;
-        let cwd = saved["path"].as_str().unwrap_or(&project.cwd).to_owned();
-        self.monitor_connect(project.workspace_id.clone(), cwd, self.coordinator_host(&project.workspace_id)?)
+        let host = self.coordinator_host_for(project)?;
+        self.monitor_connect(project.workspace_id.clone(), project.cwd.clone(), host)
     }
 
-    /// The machine a coordinator record names: the app's saved workspace host,
-    /// or `local` for this Mac. The desktop and phone look records up this way,
-    /// so a record made with the raw host id is invisible to both.
-    pub(crate) fn coordinator_host(&self, workspace_id: &str) -> Result<String, String> {
+    /// The coordinator host for an already validated `project`, from one read
+    /// of the session. The saved workspace must still name the validated
+    /// folder on this machine: the session can be rewritten between the
+    /// binding check and this read, and must not move the coordinator.
+    pub(crate) fn coordinator_host_for(&self, project: &ProjectRef) -> Result<String, String> {
+        let local = self.local_host_id()?;
         let workspaces = self.session()?.and_then(|session| session.workspaces).unwrap_or_default();
-        Ok(workspaces.iter().find(|ws| ws["id"].as_str() == Some(workspace_id))
-            .and_then(|ws| ws["hostId"].as_str()).unwrap_or("local").to_owned())
+        let saved = workspaces.iter().find(|ws| ws["id"].as_str() == Some(&project.workspace_id)).ok_or("Project assignment is unavailable.")?;
+        let host = saved["hostId"].as_str().unwrap_or("local");
+        let path = saved["path"].as_str().and_then(|path| std::path::Path::new(path).canonicalize().ok());
+        if !(host == "local" || host == local) || path.as_deref() != Some(std::path::Path::new(&project.cwd)) {
+            return Err("The project's saved folder changed. Reopen the project and try again.".into());
+        }
+        Ok(host.to_owned())
     }
 
     /// The explicit delegation form supplies its own human authorization. Keep

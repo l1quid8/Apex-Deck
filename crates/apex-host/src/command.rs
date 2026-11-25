@@ -31,6 +31,9 @@ pub enum Command {
     BackendStop { boot_id: String },
     AgentProfileSave { #[serde(flatten)] input: crate::agent_profiles::SaveProfile },
     SessionSave { session: Value },
+    /// The same save, refused if it would change the saved agent profiles.
+    /// Lets the protected Linux window save layout without a broker receipt.
+    SessionSaveLayout { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
     SettingsCodeModeSet { enabled: bool },
@@ -396,7 +399,7 @@ impl Command {
             // Provenance
             ProvenanceExecute { .. } => Policy::OPEN,
             // Session
-            SessionLoad { .. } | SessionSave { .. } | SettingsLoad { .. } | SettingsSave { .. } | SettingsCodeModeSet { .. } | SettingsReplySuggestionsSet { .. } => Policy::OPEN,
+            SessionLoad { .. } | SessionSave { .. } | SessionSaveLayout { .. } | SettingsLoad { .. } | SettingsSave { .. } | SettingsCodeModeSet { .. } | SettingsReplySuggestionsSet { .. } => Policy::OPEN,
             // Agent
             AgentProfileList { .. } | AgentsDetect { .. } | PersonaDraft { .. } | ModelMetrics { .. } | AgentModels { .. } | AgentBotModels { .. } => Policy::OPEN,
             // Artifacts
@@ -476,6 +479,22 @@ impl Command {
 /// thread-scoped attachment bytes. No arbitrary host-path copying or reads.
 /// Never broker admin, device grants, pairing, personal assistant or updates.
 /// Decided per variant in `Command::policy`.
+/// Open elsewhere, but on Linux a local caller needs a paired device or the
+/// installed window's broker receipt to run these, because they can raise
+/// access (apex-daemon `authority::access_effect`). A receipt is extra proof,
+/// never a substitute for one of the PROTECTED commands' own checks.
+pub fn attested_on_linux(command: &Command) -> bool {
+    matches!(command, Command::SessionSave { .. } | Command::SettingsSave { .. } | Command::FolderAccept { .. }
+        | Command::SettingsCodeModeSet { .. } | Command::MonitorWatchSave { .. })
+}
+
+/// What a consumed broker receipt may carry: the protected surface, the
+/// Linux-attested saves above, and assistant-room posts.
+fn receipt_admits(command: &Command) -> bool {
+    command.requires_provenance() || attested_on_linux(command)
+        || matches!(command, Command::RoomPost { .. } | Command::RoomPostTo { .. } | Command::RoomTurn { .. })
+}
+
 pub fn local_linux_cli_surface(command: &Command) -> bool {
     command.policy().linux_cli
 }
@@ -571,7 +590,7 @@ impl Host {
                 let original = blocking(move || apex_provenance::io::consume(&receipt, &data_dir)).await?;
                 source_key=Some(original.key);
                 let command = Command::from_json(original.command)?;
-                if !(command.requires_provenance() || matches!(command,RoomPost{..}|RoomPostTo{..}|RoomTurn{..})) { return Err("Attested command is outside the protected submission surface".into()); }
+                if !receipt_admits(&command) { return Err("Attested command is outside the protected submission surface".into()); }
                 command
             }
             // A connection that reached this machine without a receipt (SSH,
@@ -709,6 +728,7 @@ impl Host {
             ProvenanceExecute { .. } => return Err("Nested provenance commands are forbidden".into()),
             SessionLoad {} => reply(self.session_load()?),
             SessionSave { session } => reply(self.session_save(session)?),
+            SessionSaveLayout { session } => reply(self.session_save_layout(session)?),
             AgentProfileList {} => self.agent_profile_list(),
             BackendStop { .. } => Err("Backend stop receipts are accepted only on standalone backend control".into()),
             ProviderSetupBegin { provider,method } => {
@@ -1683,5 +1703,30 @@ mod tests {
         assert!(call(&reopened, json!({ "cmd": "monitor_get", "args": { "workspaceId": "workspace-a" } })).unwrap_err().contains("Could not read saved data"));
         assert_eq!(std::fs::read_to_string(data.join("saved-chats-v1").join("monitor.json")).unwrap(), "broken document");
         let _ = std::fs::remove_dir_all(data);
+    }
+}
+
+#[cfg(test)]
+mod linux_attested_saves {
+    use super::*;
+    use serde_json::json;
+    fn cmd(name: &str, args: Value) -> Command { Command::from_json(json!({"cmd": name, "args": args})).unwrap() }
+
+    #[test]
+    fn receipts_may_carry_the_raising_saves_but_the_layout_save_needs_none() {
+        for (name, args) in [
+            ("session_save", json!({"session": {}})),
+            ("settings_save", json!({"settings": {}})),
+            ("settings_code_mode_set", json!({"enabled": true})),
+        ] {
+            let command = cmd(name, args);
+            assert!(attested_on_linux(&command) && receipt_admits(&command), "{name}");
+            // Still open elsewhere: a receipt is extra proof on Linux, not a new requirement on the Mac.
+            assert!(!command.requires_provenance(), "{name}");
+        }
+        let layout = cmd("session_save_layout", json!({"session": {}}));
+        assert!(!attested_on_linux(&layout) && !receipt_admits(&layout) && !layout.requires_provenance());
+        assert!(!local_linux_cli_surface(&layout), "the terminal surface gains nothing");
+        assert!(!receipt_admits(&cmd("session_load", json!({}))));
     }
 }
