@@ -266,7 +266,7 @@ impl TaskBranches {
             return Err(NAMING.into());
         }
         if let Some(have) = self.get(thread, agent)? {
-            return Err(format!("You already have a task branch in this thread: {} in {}.", have.branch, have.path.display()));
+            return Err(format!("You already have a task branch in this thread: {} in {}.", have.branch, crate::assistant_git::external_path(&have.path).display()));
         }
         let top = git(data, root, &[], &[], &["rev-parse", "--show-toplevel"]).map_err(|_| NOT_GITHUB.to_string())?;
         let top = std::fs::canonicalize(&top).map_err(|e| format!("Cannot resolve {top}: {e}"))?;
@@ -341,6 +341,9 @@ impl TaskBranches {
 
 /// A main checkout for tests whose `origin` fetches from a local bare
 /// repository and pushes to GitHub (never reached), with `main` pushed.
+/// The bare repository sits inside the checkout's own `.git`: on Linux,
+/// Deck's git runs in a jail that sees the checkout and its `.git`, not the
+/// rest of `/tmp`.
 #[cfg(test)]
 pub(crate) mod fixture {
     use super::*;
@@ -355,15 +358,16 @@ pub(crate) mod fixture {
     pub(crate) struct Repo {
         pub(crate) data: TestDataDir,
         root: TestDataDir,
-        pub(crate) bare: TestDataDir,
+        pub(crate) bare: PathBuf,
         pub(crate) store: TaskBranches,
     }
     impl Repo {
         pub(crate) fn new() -> Self {
-            let (data, root, bare) = (TestDataDir::new(), TestDataDir::new(), TestDataDir::new());
-            git(bare.path(), &["init", "-q", "--bare", "-b", "main"]);
+            let (data, root) = (TestDataDir::new(), TestDataDir::new());
             let r = root.path();
             git(r, &["init", "-qb", "main"]);
+            let bare = r.join(".git").join("github.git");
+            git(r, &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()]);
             git(r, &["config", "user.name", "Fixture"]);
             git(r, &["config", "user.email", "test@example.invalid"]);
             std::fs::write(r.join(".gitignore"), "node_modules/\n").unwrap();
@@ -372,11 +376,11 @@ pub(crate) mod fixture {
             std::fs::write(r.join("sub/inner.txt"), "inner\n").unwrap();
             git(r, &["add", "-A"]);
             git(r, &["commit", "-qm", "base"]);
-            git(r, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
+            git(r, &["remote", "add", "origin", bare.to_str().unwrap()]);
             git(r, &["config", "remote.origin.pushurl", "https://github.com/test/repo.git"]);
             // Nothing in a test reaches GitHub: a merge worker's push fails here, locally.
             git(r, &["config", "http.proxy", "http://127.0.0.1:9"]);
-            git(r, &["push", "-q", bare.path().to_str().unwrap(), "main:main"]);
+            git(r, &["push", "-q", bare.to_str().unwrap(), "main:main"]);
             git(r, &["fetch", "-q", "origin"]);
             let store = TaskBranches::new(data.path());
             Self { data, root, bare, store }
@@ -399,7 +403,7 @@ pub(crate) mod fixture {
             git(r, &["switch", "-qc", "upstream"]);
             std::fs::write(r.join(file), text).unwrap();
             git(r, &["commit", "-qam", "upstream change"]);
-            git(r, &["push", "-q", self.bare.path().to_str().unwrap(), "upstream:main"]);
+            git(r, &["push", "-q", self.bare.to_str().unwrap(), "upstream:main"]);
             git(r, &["switch", "-q", "main"]);
             git(r, &["branch", "-qD", "upstream"]);
         }
@@ -492,10 +496,12 @@ mod tests {
         }
         git(repo.root(), &["branch", "fix/paste-images"]);
         assert_eq!(repo.start(None, "a", "fix/paste-images").unwrap_err(), "fix/paste-images already exists. Pick another name.");
-        git(repo.root(), &["push", "-q", repo.bare.path().to_str().unwrap(), "main:refs/heads/fix/remote-only"]);
+        git(repo.root(), &["push", "-q", repo.bare.to_str().unwrap(), "main:refs/heads/fix/remote-only"]);
         assert_eq!(repo.start(None, "a", "fix/remote-only").unwrap_err(), "fix/remote-only already exists. Pick another name.");
         std::fs::create_dir_all(repo.parent().join("fix-taken")).unwrap();
-        assert_eq!(repo.start(None, "a", "fix/taken").unwrap_err(), format!("A folder named fix-taken already exists in {}. Pick another name.", repo.parent().display()));
+        // The folder is named as git reports it, which on Windows mixes slashes.
+        let taken = repo.start(None, "a", "fix/taken").unwrap_err();
+        assert!(taken.starts_with("A folder named fix-taken already exists in ") && taken.ends_with("-worktrees. Pick another name."), "{taken}");
         assert_eq!(repo.store.get("t", "a").unwrap(), None, "nothing was started");
         // The type is part of the folder's name, so these two don't collide.
         let feat = repo.start(None, "a", "feat/paste-images").unwrap();
@@ -510,7 +516,7 @@ mod tests {
         let first = repo.start(None, "a", "fix/one").unwrap();
         assert_eq!(
             repo.start(None, "a", "fix/two").unwrap_err(),
-            format!("You already have a task branch in this thread: fix/one in {}.", first.folder.path.display())
+            format!("You already have a task branch in this thread: fix/one in {}.", crate::assistant_git::external_path(&first.folder.path).display())
         );
         assert!(!repo.parent().join("fix-two").exists());
     }
@@ -556,11 +562,15 @@ mod tests {
         let copies = |thread_dir: PathBuf| crate::bot_copies::BotCopies::new(
             repo.data.path().to_path_buf(), "t".into(), thread_dir, Default::default(), std::sync::Arc::new(|_: apex_core::RoomEvent| {}), Default::default(),
         ).with_task_branches(std::sync::Arc::new(TaskBranches::new(repo.data.path())));
+        // The turn runs, and is told it runs, in the folder as git takes it:
+        // never Windows' \\?\ form, which git refuses.
+        let plain = crate::assistant_git::external_path(&started.folder.path).into_owned();
         let grant = copies(repo.root().to_path_buf()).active_copy(&ParticipantId::new("a")).await.unwrap();
-        assert_eq!(grant, apex_core::CopyGrant { path: started.folder.path.clone(), task_branch: Some("fix/turns".into()) });
+        assert_eq!(grant, apex_core::CopyGrant { path: plain.clone(), task_branch: Some("fix/turns".into()) });
+        assert!(!grant.path.to_string_lossy().starts_with(r"\\?\"));
         // A thread on a subfolder starts in the same subfolder of the task folder.
         let grant = copies(repo.root().join("sub")).active_copy(&ParticipantId::new("a")).await.unwrap();
-        assert_eq!(grant.path, started.folder.path.join("sub"));
+        assert_eq!(grant.path, plain.join("sub"));
         assert_eq!(copies(repo.root().to_path_buf()).active_copy(&ParticipantId::new("b")).await, None, "another agent has none");
         // Deleted outside Deck: the record goes, and the next turn is an ordinary one.
         std::fs::remove_dir_all(&started.folder.path).unwrap();

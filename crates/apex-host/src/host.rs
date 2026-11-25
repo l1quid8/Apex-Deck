@@ -1599,7 +1599,7 @@ impl Host {
             Some(why) => format!("Merged {pr}. Your Mac wasn't updated: {why}."),
         };
         if let Some((path, why)) = kept {
-            note.push_str(&format!(" The task folder {} was kept: {why}.", path.display()));
+            note.push_str(&format!(" The task folder {} was kept: {why}.", crate::assistant_git::external_path(&path).display()));
         }
         if let Err(why) = self.deck_note(room, note).await {
             eprintln!("[apex-deck] could not post the merge note in {room}: {why}");
@@ -3738,7 +3738,9 @@ impl Host {
             let copy = crate::bot_copies::load_copies(&data).into_iter().find(|c| c.thread == room && c.bot == bot && crate::bot_copies::adoptable(&c.state));
             branches.start(&data, &root, copy.as_ref(), &room, &bot, &branch)
         }).await.map_err(|e| e.to_string())??;
-        let (branch, path) = (&started.folder.branch, started.folder.path.display());
+        // The agent passes this path to git, which refuses Windows' verbatim form.
+        let shown = crate::assistant_git::external_path(&started.folder.path);
+        let (branch, path) = (&started.folder.branch, shown.display());
         let mut text = if started.moved {
             format!("Task branch {branch} is ready in {path}, made from origin/main with the changes from your copy, not committed yet.")
         } else {
@@ -3761,7 +3763,7 @@ impl Host {
             return Ok("No task branch in this thread.".into());
         };
         let pr = self.thread_git.get(&room)?.filter(|w| w.branch == folder.branch).and_then(|w| w.pr);
-        Ok(format!("{} in {}{}", folder.branch, folder.path.display(), pr.map(|pr| format!(" · PR #{pr}")).unwrap_or_default()))
+        Ok(format!("{} in {}{}", folder.branch, crate::assistant_git::external_path(&folder.path).display(), pr.map(|pr| format!(" · PR #{pr}")).unwrap_or_default()))
     }
 
     pub async fn room_git_status(&self, id: String) -> Result<crate::git_changes::State, String> {
@@ -6983,8 +6985,10 @@ done
         t.say("a", "@a fix the alert");
         let w = t.workflow().expect("the receipt is recorded");
         let folder = t.host.task_branches.get("r", "a").unwrap().unwrap().path;
-        assert_eq!((w.root.as_str(), w.branch.as_str(), w.head.as_str(), w.builder.as_str(), w.phase.clone()),
-            (folder.to_str().unwrap(), "fix/a", t.sha("a"), "a", crate::thread_git::Phase::Ready));
+        // Git names the folder its own way (forward slashes on Windows); it is the same folder.
+        assert!(same_folder(Path::new(&w.root), &folder), "{} is not {}", w.root, folder.display());
+        assert_eq!((w.branch.as_str(), w.head.as_str(), w.builder.as_str(), w.phase.clone()),
+            ("fix/a", t.sha("a"), "a", crate::thread_git::Phase::Ready));
         assert_eq!(git(t.repo.root(), &["symbolic-ref", "--short", "HEAD"]), "main");
         t.finish();
     }
@@ -7072,7 +7076,7 @@ done
         let offer = t.card("merge");
         let folder = t.host.task_branches.get("r", "a").unwrap().unwrap().path;
         assert_eq!((offer["decision"]["kind"].as_str(), offer["decision"]["context"].as_str()), (Some("merge"), Some("PR #42 · checks passed")));
-        assert_eq!(offer["checkout"]["root"].as_str(), folder.to_str());
+        assert!(same_folder(Path::new(offer["checkout"]["root"].as_str().unwrap()), &folder));
         let shown: WorkflowKey = serde_json::from_value(serde_json::json!({
             "root": offer["checkout"]["root"], "branch": offer["checkout"]["branch"], "repo": offer["checkout"]["repo"],
             "generation": offer["checkout"]["generation"], "head": offer["decision"]["head"],
@@ -7141,7 +7145,7 @@ done
         let tree = git(&folder, &["rev-parse", "HEAD^{tree}"]);
         let main = git(t.repo.root(), &["rev-parse", "origin/main"]);
         let merge = git(&folder, &["commit-tree", &tree, "-p", &main, "-p", &head, "-m", "Merge pull request #42"]);
-        git(t.repo.root(), &["push", "-q", t.repo.bare.path().to_str().unwrap(), &format!("{merge}:refs/heads/main")]);
+        git(t.repo.root(), &["push", "-q", t.repo.bare.to_str().unwrap(), &format!("{merge}:refs/heads/main")]);
         let w: crate::thread_git::Workflow = serde_json::from_value(serde_json::json!({
             "root": folder.to_str().unwrap(), "branch": "fix/a", "repo": "test/repo", "head": head,
             "builder": "a", "builder_model": "", "reviewer": null, "phase": "syncing", "generation": 1,
@@ -7177,7 +7181,8 @@ done
         std::fs::write(Path::new(&job.root).join("unsaved.txt"), "still working\n").unwrap();
         t.host.thread_git.put("r", job.clone()).unwrap();
         t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
-        t.until(|| t.notes() == vec![format!("Merged PR #42. Your Mac wasn't updated: its main has commits that aren't on GitHub. The task folder {} was kept: it has changes the pull request doesn't contain.", job.root)]);
+        let shown = crate::assistant_git::external_path(Path::new(&job.root)).display().to_string();
+        t.until(|| t.notes() == vec![format!("Merged PR #42. Your Mac wasn't updated: its main has commits that aren't on GitHub. The task folder {shown} was kept: it has changes the pull request doesn't contain.")]);
         assert!(Path::new(&job.root).is_dir());
         assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Merged);
         t.finish();
@@ -7190,7 +7195,8 @@ done
         t.host.handle("r").unwrap().live.lock().unwrap().observe(&RoomEvent::TurnStarted { id: ParticipantId::new("a") });
         t.host.thread_git.put("r", job.clone()).unwrap();
         t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
-        t.until(|| t.notes() == vec![format!("Merged PR #42. Your Mac is updated. Awaiting your test. The task folder {} was kept: its agent was still working in it.", job.root)]);
+        let shown = crate::assistant_git::external_path(Path::new(&job.root)).display().to_string();
+        t.until(|| t.notes() == vec![format!("Merged PR #42. Your Mac is updated. Awaiting your test. The task folder {shown} was kept: its agent was still working in it.")]);
         assert!(Path::new(&job.root).is_dir(), "never deleted under a running turn");
         assert_eq!(t.host.task_branches.get("r", "a").unwrap(), None, "its next turn is an ordinary one");
         t.finish();
@@ -7272,7 +7278,9 @@ done
         handle.plan.store(false, Ordering::SeqCst);
         assert_eq!(host.task_status("r".into(), "a".into()).unwrap(), "No task branch in this thread.");
         let text = start("a").unwrap();
-        let folder = repo.parent().join("fix-alert-timer");
+        // Agents get the folder as git takes it: never Windows' \\?\ form.
+        let folder = crate::assistant_git::external_path(&repo.parent().join("fix-alert-timer")).into_owned();
+        assert!(!text.contains(r"\\?\"), "{text}");
         assert_eq!(text, format!("Task branch fix/alert-timer is ready in {0}, made from origin/main. You had no changes in a copy of your own, so nothing was moved. Commit, push and open the pull request from that folder. For the rest of this turn use full paths there (git -C {0}); your next turn starts in it.", folder.display()));
         assert_eq!(host.task_status("r".into(), "a".into()).unwrap(), format!("fix/alert-timer in {} · PR #42", folder.display()));
         assert_eq!(host.task_status("r".into(), "b".into()).unwrap(), "No task branch in this thread.");

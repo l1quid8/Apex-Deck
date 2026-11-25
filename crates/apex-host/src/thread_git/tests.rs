@@ -564,13 +564,12 @@ fn the_marker_reads_built_ship_and_review_lines() {
 
 /// The Mac's main folder on `main`, whose `origin` fetches from a bare
 /// repository standing in for GitHub (and pushes to GitHub, never reached),
+/// kept inside the folder's `.git` so Linux's jailed git can see it,
 /// the builder's task folder on `fix/x` with one commit, and the merge
 /// commit GitHub made for it, already on GitHub's main.
 struct Mac {
     data: TestDataDir,
     main: TestDataDir,
-    /// Held so the stand-in for GitHub lives as long as the test.
-    _bare: TestDataDir,
     store: ThreadGit,
     folder: PathBuf,
     merge: String,
@@ -579,15 +578,16 @@ const GITHUB: &str = "https://github.com/test/repo.git";
 impl Mac {
     /// `files` are the task commit's changes; the main folder starts with README.md, notes.md and old.md.
     fn new(files: &[(&str, &str)]) -> Self {
-        let (data, main, bare) = (TestDataDir::new(), TestDataDir::new(), TestDataDir::new());
+        let (data, main) = (TestDataDir::new(), TestDataDir::new());
         let run = |cwd: &Path, args: &[&str]| -> String {
             let out = fixture_git_command().args(args).current_dir(cwd).output().unwrap();
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8(out.stdout).unwrap().trim().to_owned()
         };
-        run(bare.path(), &["init", "-q", "--bare", "-b", "main"]);
         let m = main.path();
         run(m, &["init", "-qb", "main"]);
+        let bare = m.join(".git").join("github.git");
+        run(m, &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()]);
         run(m, &["config", "user.name", "Fixture"]);
         run(m, &["config", "user.email", "test@example.invalid"]);
         run(m, &["config", "http.proxy", "http://127.0.0.1:9"]);
@@ -596,10 +596,11 @@ impl Mac {
         }
         run(m, &["add", "-A"]);
         run(m, &["commit", "-qm", "base"]);
-        run(m, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
+        run(m, &["remote", "add", "origin", bare.to_str().unwrap()]);
         run(m, &["config", "remote.origin.pushurl", GITHUB]);
-        run(m, &["push", "-q", bare.path().to_str().unwrap(), "main:main"]);
-        let folder = std::fs::canonicalize(m).unwrap().with_file_name(format!("{}-task", m.file_name().unwrap().to_string_lossy()));
+        run(m, &["push", "-q", bare.to_str().unwrap(), "main:main"]);
+        // Git for Windows refuses Rust's \\?\ canonical form, so it gets the plain one.
+        let folder = crate::assistant_git::external_path(&std::fs::canonicalize(m).unwrap()).with_file_name(format!("{}-task", m.file_name().unwrap().to_string_lossy()));
         run(m, &["worktree", "add", "-q", "-b", "fix/x", folder.to_str().unwrap()]);
         for (file, text) in files {
             let path = folder.join(file);
@@ -609,19 +610,19 @@ impl Mac {
         run(&folder, &["add", "-A"]);
         run(&folder, &["commit", "-qm", "the fix"]);
         let head = run(&folder, &["rev-parse", "HEAD"]);
-        run(&folder, &["push", "-q", bare.path().to_str().unwrap(), "fix/x:fix/x"]);
+        run(&folder, &["push", "-q", bare.to_str().unwrap(), "fix/x:fix/x"]);
         // GitHub's merge commit: main and the fix, with the fix's tree.
         let tree = run(&folder, &["rev-parse", "HEAD^{tree}"]);
         let base = run(m, &["rev-parse", "main"]);
         let merge = run(m, &["commit-tree", &tree, "-p", &base, "-p", &head, "-m", "Merge pull request #42"]);
-        run(m, &["push", "-q", bare.path().to_str().unwrap(), &format!("{merge}:refs/heads/main")]);
+        run(m, &["push", "-q", bare.to_str().unwrap(), &format!("{merge}:refs/heads/main")]);
         let store = ThreadGit::new(data.path());
         store.put("r", serde_json::from_value(serde_json::json!({
             "root": folder.to_str().unwrap(), "branch": "fix/x", "repo": "test/repo", "head": head,
             "builder": "a", "builder_model": "", "reviewer": null, "phase": "syncing", "generation": 1,
             "pr": 42, "detail": "Merged PR #42 into main.", "result_oid": merge, "pushed": true, "fix_requested": false,
         })).unwrap()).unwrap();
-        Self { data, main, _bare: bare, store, folder, merge }
+        Self { data, main, store, folder, merge }
     }
     fn git(&self, args: &[&str]) -> String {
         let out = fixture_git_command().args(args).current_dir(self.main.path()).output().unwrap();

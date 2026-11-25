@@ -1465,7 +1465,8 @@ impl BotCopies {
             .map(|rel| folder.path.join(rel))
             .filter(|dir| dir.is_dir())
             .unwrap_or_else(|| folder.path.clone());
-        Some(apex_core::CopyGrant { path, task_branch: Some(folder.branch) })
+        // The turn runs there and is told so: in the form git takes on Windows too.
+        Some(apex_core::CopyGrant { path: crate::assistant_git::external_path(&path).into_owned(), task_branch: Some(folder.branch) })
     }
 
     /// Looks up a bot's display name for the notes a fold posts.
