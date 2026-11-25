@@ -100,6 +100,21 @@ test('packaged provenance refuses code injection switches and development URLs',
   assert.doesNotThrow(()=>mod.assertTrustedStartup(false,['app'],{APEX_DECK_DEV_URL:'http://localhost:5173'}));
 });
 
+test('Linux accepts the Wayland desktop Ozone hint and nothing else from Electron',()=>{
+  for (const value of ['auto','wayland']) {
+    assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:value},'linux'),value);
+  }
+  // x11 would expose the trusted UI to same-user X clients on a Wayland host.
+  for (const value of ['x11','Wayland',' wayland','wayland --remote-debugging-port=9222']) {
+    assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:value},'linux'),undefined,value);
+  }
+  for (const platform of ['darwin','win32']) {
+    assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:'wayland'},platform),undefined,platform);
+  }
+  assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_RUN_AS_NODE:'1'},'linux'));
+  assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:'wayland',ELECTRON_RUN_AS_NODE:'1'},'linux'));
+});
+
 test('only the exact inert Windows installer update marker is accepted',()=>{
   assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app','--updated'],{},'win32'));
   for (const flag of ['--updated=true','--Updated','-updated','/updated','--remote-debugging-port=9222']) {
