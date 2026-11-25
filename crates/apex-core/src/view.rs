@@ -101,6 +101,10 @@ fn native_checklist_instructions(me: &ParticipantConfig) -> Option<&'static str>
     }
 }
 
+/// Full access for an agent with the Deck command line: the person has said
+/// yes to the whole job, up to a pull request a reviewer has passed.
+const FULL_FINISHES_THE_JOB: &str = "You may edit files and run commands in the workspace. The person has authorized Full-access agents to finish the job without asking. For a code change in a GitHub repository, that means: run \"$APEX_DECK_BIN\" task start <type>/<name> before you edit, then commit, push, open a pull request, ask another agent to review it with its @handle, and fix what the review finds. Never merge a pull request yourself. Stop to ask the person only about decisions that are theirs: scope, design, their devices or accounts, spending money, or deleting their data.\n";
+
 pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -134,6 +138,7 @@ pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> St
         Access::Read => "You may read the workspace but must not change any files.\n",
         Access::Ask => "You may edit files and run commands in the workspace. Each one is shown to the person for approval before it happens, and they may refuse it.\n",
         Access::Edits => "You may edit files in the workspace.\n",
+        Access::Full if me.has_deck_cli() => FULL_FINISHES_THE_JOB,
         Access::Full => "You may edit files and run commands in the workspace.\n",
     });
 
@@ -610,6 +615,29 @@ mod tests {
             assert!(prompt.contains("Simple answers and one-step tasks do not need a checklist"), "{tool:?}: {prompt}");
             assert!(prompt.contains("The user's directions take precedence"), "{tool:?}: {prompt}");
         }
+    }
+
+    #[test]
+    fn only_agents_with_the_deck_cli_at_full_are_told_about_task_start() {
+        let agent = |tool, access| {
+            let mut me = cfg("worker", "Worker");
+            me.backend = crate::Backend::Agent { tool, model: None };
+            me.access = access;
+            system_prompt(&me, &[me.clone()])
+        };
+        for tool in [crate::AgentTool::ClaudeCode, crate::AgentTool::Codex] {
+            let prompt = agent(tool, Access::Full);
+            assert!(prompt.contains("The person has authorized Full-access agents to finish the job without asking."), "{tool:?}: {prompt}");
+            assert!(prompt.contains("run \"$APEX_DECK_BIN\" task start <type>/<name> before you edit"), "{tool:?}: {prompt}");
+            assert!(prompt.contains("Stop to ask the person only about decisions that are theirs"), "{tool:?}: {prompt}");
+        }
+        // Another agent tool at Full, or Claude Code below Full, keeps today's line.
+        for prompt in [agent(crate::AgentTool::Gemini, Access::Full), agent(crate::AgentTool::Grok, Access::Full)] {
+            assert!(prompt.contains("You may edit files and run commands in the workspace.\n"), "{prompt}");
+            assert!(!prompt.contains("task start") && !prompt.contains("finish the job"), "{prompt}");
+        }
+        let edits = agent(crate::AgentTool::ClaudeCode, Access::Edits);
+        assert!(edits.contains("You may edit files in the workspace.\n") && !edits.contains("task start"), "{edits}");
     }
 
     #[test]

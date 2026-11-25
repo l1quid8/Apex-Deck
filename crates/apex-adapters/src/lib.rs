@@ -64,7 +64,7 @@ pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_A
 pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSpec, ModelKind};
 pub use cli::CliParticipant;
 pub use openai::{cost_micros as api_cost_micros, list_models, OpenAiCompatParticipant};
-pub use phone_env::{PhoneEnv, DAEMON_SOCKET, PHONE_HINT};
+pub use phone_env::{DeckEnv, DAEMON_SOCKET, PHONE_HINT};
 pub use presets::{agent_command, allow_reading};
 pub use owned_process::{OwnedChild as OwnedProcessChild, Registry as OwnedProcessRegistry};
 pub use executable::program as executable_program;
@@ -126,7 +126,7 @@ pub struct BuildContext {
     /// These must come from host storage configuration, never transcript text.
     pub attachment_roots: Vec<PathBuf>,
     /// Deck's shared phone, for Claude and Codex bots on a Mac. None turns it off.
-    pub phone: Option<PhoneEnv>,
+    pub deck: Option<DeckEnv>,
     /// Where the daemon's data lives, for bot jail storage and protected paths.
     pub data_dir: Option<PathBuf>,
     /// Observed public IP addresses of this host (e.g. from iroh).
@@ -237,7 +237,7 @@ pub fn participant_for_room(
                 cargo_target_dir: None,
                 media_dir: None,
                 attachment_roots: Vec::new(),
-                phone: None,
+                deck: None,
                 data_dir: context.data_dir.clone(),
                 observed_addrs: context.observed_addrs.clone(),
             };

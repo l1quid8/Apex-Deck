@@ -52,7 +52,7 @@ fn bot(access: Access, cwd: &Path) -> Arc<dyn Participant> {
         cargo_target_dir: None,
         media_dir: None,
         attachment_roots: vec![],
-        phone: None,
+        deck: None,
         data_dir: None,
         observed_addrs: vec![],
         ..BuildContext::default()

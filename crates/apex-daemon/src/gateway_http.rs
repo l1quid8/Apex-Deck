@@ -1084,7 +1084,7 @@ async fn handle_chat_completions(
         cargo_target_dir: None,
         media_dir: None,
         attachment_roots: Vec::new(),
-        phone: None,
+        deck: None,
         data_dir: Some(state.data_dir.clone()),
         observed_addrs: Vec::new(),
     };

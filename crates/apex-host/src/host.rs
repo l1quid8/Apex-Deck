@@ -173,6 +173,7 @@ pub struct Host {
     store: Store,
     settings_write: Mutex<()>,
     pub(crate) thread_git: crate::thread_git::ThreadGit,
+    pub(crate) task_branches: Arc<crate::task_branches::TaskBranches>,
     pub(crate) reply_suggestions: crate::reply_suggestions::ReplySuggestions,
     pub(crate) search: crate::search::Search,
     snapshots: Arc<checkpoints::Snapshots>,
@@ -332,6 +333,7 @@ impl Host {
         let host = Arc::new(Host {
             maintenance,
             thread_git: crate::thread_git::ThreadGit::new(&paths.data),
+            task_branches: Arc::new(crate::task_branches::TaskBranches::new(&paths.data)),
             reply_suggestions: crate::reply_suggestions::ReplySuggestions::new(&paths.data, crate::reply_suggestions::Mode::from_settings(store.settings().ok().flatten().as_ref())),
             search: Default::default(),
             paths,
@@ -1250,7 +1252,8 @@ impl Host {
             attachment_roots: vec![self.attachment_dir(&id)?.canonicalize().map_err(|e| format!("Could not resolve the attachments folder: {e}"))?],
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
-            phone: if !kind.is_chat() && cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
+            // Deck's command line (`task`) on every platform; its phone only where the simulator runs.
+            deck: if !kind.is_chat() { std::env::current_exe().ok().map(|bin| apex_adapters::DeckEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone(), simulator: cfg!(target_os = "macos") }) } else { None },
             data_dir: Some(self.paths.data.clone()),
             observed_addrs: Vec::new(),
         };
@@ -1318,7 +1321,7 @@ impl Host {
                 runtime.editor_handle(),
                 self.fold_event_sink(id.clone()),
                 Arc::clone(&self.fold_queue),
-            ).with_room(self.fold_room_lookup(id.clone())).with_names(Arc::new({
+            ).with_room(self.fold_room_lookup(id.clone())).with_task_branches(Arc::clone(&self.task_branches)).with_names(Arc::new({
                 let (this, id) = (Arc::downgrade(self), id.clone());
                 move |bot| {
                     let room = this.upgrade()?.store.room(&id).ok()??;
@@ -3554,6 +3557,52 @@ impl Host {
             None => self.store.room(&room).ok().flatten().and_then(|saved| saved.cwd.map(PathBuf::from)),
         };
         self.thread_git.poll(&room, job, &self.paths.data, cwd.as_deref()).await;
+    }
+
+    /// `"$APEX_DECK_BIN" task start <branch>`, run by `bot` during its turn:
+    /// a task folder on a new branch from origin/main, with the changes from
+    /// the agent's copy moved into it.
+    pub async fn task_start(self: Arc<Self>, room: String, bot: String, branch: String) -> Result<String, String> {
+        const WORKING: &str = "Only an agent that is working in this thread can start a task branch.";
+        let handle = self.handle(&room).map_err(|_| WORKING.to_string())?;
+        if !handle.live.lock().unwrap().view.active.contains(bot.as_str()) {
+            return Err(WORKING.into());
+        }
+        let config = handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p| p.id.as_str() == bot).cloned().ok_or(WORKING)?;
+        if config.access != Access::Full {
+            return Err("Task branches need Full access.".into());
+        }
+        if handle.plan.load(Ordering::SeqCst) {
+            return Err("Task branches can't be started in Plan mode.".into());
+        }
+        let root = handle.context.cwd.clone().ok_or(crate::task_branches::NOT_GITHUB)?;
+        drop(handle);
+        let (data, branches) = (self.paths.data.clone(), Arc::clone(&self.task_branches));
+        let started = tokio::task::spawn_blocking(move || {
+            let copy = crate::bot_copies::load_copies(&data).into_iter().find(|c| c.thread == room && c.bot == bot && crate::bot_copies::adoptable(&c.state));
+            branches.start(&data, &root, copy.as_ref(), &room, &bot, &branch)
+        }).await.map_err(|e| e.to_string())??;
+        let (branch, path) = (&started.folder.branch, started.folder.path.display());
+        let mut text = if started.moved {
+            format!("Task branch {branch} is ready in {path}, made from origin/main with the changes from your copy, not committed yet.")
+        } else {
+            format!("Task branch {branch} is ready in {path}, made from origin/main. You had no changes in a copy of your own, so nothing was moved.")
+        };
+        text.push_str(&format!(" Commit, push and open the pull request from that folder. For the rest of this turn use full paths there (git -C {path}); your next turn starts in it."));
+        if !started.conflicts.is_empty() {
+            text.push_str(&format!(" Fix the conflicts in these files first: {}.", started.conflicts.join(", ")));
+        }
+        Ok(text)
+    }
+
+    /// `"$APEX_DECK_BIN" task status`: the agent's task branch in this thread,
+    /// with the pull request Deck saved for it. Asks GitHub nothing.
+    pub fn task_status(&self, room: String, bot: String) -> Result<String, String> {
+        let Some(folder) = self.task_branches.get(&room, &bot)? else {
+            return Ok("No task branch in this thread.".into());
+        };
+        let pr = self.thread_git.get(&room)?.filter(|w| w.branch == folder.branch).and_then(|w| w.pr);
+        Ok(format!("{} in {}{}", folder.branch, folder.path.display(), pr.map(|pr| format!(" · PR #{pr}")).unwrap_or_default()))
     }
 
     pub async fn room_git_status(&self, id: String) -> Result<crate::git_changes::State, String> {
@@ -6665,6 +6714,45 @@ done
     }
 
     #[test]
+    fn task_start_needs_an_agent_mid_turn_at_full_with_plan_off() {
+        let (host, runtime, data) = host("task-start-admission");
+        // The thread's saved merge workflow for that branch, read with no GitHub call.
+        let ledger = serde_json::json!({"version":1,"rooms":{"r":{
+            "root":"/elsewhere","branch":"fix/alert-timer","repo":"test/repo","head":"a".repeat(40),
+            "builder":"a","builder_model":"","reviewer":null,"phase":"ready",
+            "generation":0,"pr":42,"detail":"","pushed":true,"fix_requested":false
+        }}});
+        std::fs::write(crate::authority_file::fixture_path(&data.join("thread-git-v1.json")), serde_json::to_vec(&ledger).unwrap()).unwrap();
+        let repo = crate::task_branches::fixture::Repo::new();
+        let mut full = scripted("a", &[]);
+        full.access = apex_core::Access::Full;
+        let mut ask = scripted("b", &[]);
+        ask.access = apex_core::Access::Ask;
+        host.room_create("r".into(), vec![full, ask], RoomOptions::default(), Some(repo.root().display().to_string())).unwrap();
+        let start = |bot: &str| runtime.block_on(Arc::clone(&host).task_start("r".into(), bot.into(), "fix/alert-timer".into()));
+        let working = "Only an agent that is working in this thread can start a task branch.";
+        assert_eq!(start("a").unwrap_err(), working, "no turn running");
+        let handle = host.handle("r").unwrap();
+        for id in ["a", "b"] {
+            handle.live.lock().unwrap().observe(&RoomEvent::TurnStarted { id: ParticipantId::new(id) });
+        }
+        assert_eq!(start("nobody").unwrap_err(), working);
+        assert_eq!(start("b").unwrap_err(), "Task branches need Full access.");
+        handle.plan.store(true, Ordering::SeqCst);
+        assert_eq!(start("a").unwrap_err(), "Task branches can't be started in Plan mode.");
+        handle.plan.store(false, Ordering::SeqCst);
+        assert_eq!(host.task_status("r".into(), "a".into()).unwrap(), "No task branch in this thread.");
+        let text = start("a").unwrap();
+        let folder = repo.parent().join("fix-alert-timer");
+        assert_eq!(text, format!("Task branch fix/alert-timer is ready in {0}, made from origin/main. You had no changes in a copy of your own, so nothing was moved. Commit, push and open the pull request from that folder. For the rest of this turn use full paths there (git -C {0}); your next turn starts in it.", folder.display()));
+        assert_eq!(host.task_status("r".into(), "a".into()).unwrap(), format!("fix/alert-timer in {} · PR #42", folder.display()));
+        assert_eq!(host.task_status("r".into(), "b".into()).unwrap(), "No task branch in this thread.");
+        drop(handle);
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
     fn next_steps_are_not_worked_out_after_stop() {
         let (host, runtime, data) = host("next-steps-stop");
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
@@ -7194,7 +7282,7 @@ done
             cargo_target_dir: None,
             media_dir: None,
             attachment_roots: Vec::new(),
-            phone: None,
+            deck: None,
             data_dir: None,
             observed_addrs: Vec::new(),
         };

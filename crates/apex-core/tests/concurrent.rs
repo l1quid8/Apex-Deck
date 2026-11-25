@@ -286,7 +286,7 @@ fn second_writer_gets_copy_and_keeps_write_access() {
         let req = &requests_b[0];
         assert_eq!(req.access, Some(apex_core::Access::Full));
         assert_eq!(req.cwd, Some(copy_path.clone()));
-        let expected_line = apex_core::copy_turn_line(&copy_path);
+        let expected_line = apex_core::copy_turn_line(&copy_path, false);
         assert!(req.system.contains(&expected_line));
 
         // With two agents in the thread, the first gets its own copy too.
@@ -470,13 +470,9 @@ fn reconcile_turn_uses_copy_when_main_is_free() {
         finished: Arc<Mutex<Vec<(ParticipantId, bool)>>>,
     }
     impl apex_core::CopyProvider for ReconcilingProvider {
-        fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, Option<PathBuf>> {
-            let path = if id.as_str() == "B" {
-                Some(self.copy_path.clone())
-            } else {
-                None
-            };
-            Box::pin(async move { path })
+        fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, Option<apex_core::CopyGrant>> {
+            let grant = (id.as_str() == "B").then(|| apex_core::CopyGrant { path: self.copy_path.clone(), task_branch: None });
+            Box::pin(async move { grant })
         }
         fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
             Box::pin(async move { Ok(self.copy_path.clone()) })
@@ -521,7 +517,7 @@ fn reconcile_turn_uses_copy_when_main_is_free() {
         let req = &requests_b[0];
         assert_eq!(req.access, Some(apex_core::Access::Full));
         assert_eq!(req.cwd, Some(copy_path.clone()), "bot with active copy must use its copy even when main is free");
-        let expected_line = apex_core::copy_turn_line(&copy_path);
+        let expected_line = apex_core::copy_turn_line(&copy_path, false);
         assert!(req.system.contains(&expected_line));
 
         let finished_calls = finished.lock().unwrap().clone();
@@ -1556,5 +1552,134 @@ fn shared_folder_notice_is_said_once_per_agent_in_a_thread() {
             _ => None,
         }).collect();
         assert_eq!(added, transcript);
+    });
+}
+
+/// Hands B a task folder and every other agent a copy, and records which
+/// agents' turns were sent to the fold.
+struct TaskFolderProvider {
+    folder: PathBuf,
+    copy: PathBuf,
+    copies_made: Arc<AtomicUsize>,
+    finished: Arc<Mutex<Vec<ParticipantId>>>,
+}
+impl apex_core::CopyProvider for TaskFolderProvider {
+    fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, Option<apex_core::CopyGrant>> {
+        let grant = (id.as_str() == "B").then(|| apex_core::CopyGrant { path: self.folder.clone(), task_branch: Some("fix/paste-images".into()) });
+        Box::pin(async move { grant })
+    }
+    fn copy_for<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, Result<PathBuf, String>> {
+        self.copies_made.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { Ok(self.copy.clone()) })
+    }
+    fn turn_finished<'a>(&'a self, id: &'a ParticipantId, _: bool) -> futures::future::BoxFuture<'a, ()> {
+        self.finished.lock().unwrap().push(id.clone());
+        Box::pin(async move {})
+    }
+}
+fn task_folder_provider() -> Arc<TaskFolderProvider> {
+    Arc::new(TaskFolderProvider {
+        folder: PathBuf::from("/tmp/apex-deck-worktrees/fix-paste-images"),
+        copy: PathBuf::from("/tmp/apex-deck-worktrees/agent-a-thread"),
+        copies_made: Arc::default(),
+        finished: Arc::default(),
+    })
+}
+fn full_writer(id: &str) -> Arc<ScriptedParticipant> {
+    let mut config = ScriptedParticipant::new(id, &["done"]).config().clone();
+    config.access = apex_core::Access::Full;
+    Arc::new(ScriptedParticipant::from_config(config))
+}
+fn editors_taken(events: &[RoomEvent]) -> Vec<ParticipantId> {
+    events.iter().filter_map(|e| match e { RoomEvent::EditorChanged { id: Some(id) } => Some(id.clone()), _ => None }).collect()
+}
+
+#[test]
+fn a_turn_in_a_task_folder_folds_nothing_back() {
+    block_on(async {
+        let (a, b) = (full_writer("A"), full_writer("B"));
+        let room = Room::new(vec![a.clone(), b.clone()], RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) });
+        let provider = task_folder_provider();
+        let concurrent = ConcurrentRoom::new(room).with_copies(provider.clone());
+        let batch = concurrent.begin_post("hello", None, &|_| {}).await.unwrap();
+        concurrent.run(batch, &|_| {}).await;
+        let req = &b.requests()[0];
+        assert_eq!(req.cwd, Some(provider.folder.clone()));
+        assert_eq!(req.access, Some(apex_core::Access::Full));
+        assert!(req.system.contains(&apex_core::task_turn_line(&provider.folder, "fix/paste-images")), "{}", req.system);
+        assert!(!req.system.contains("Deck folds your file changes back"), "a task folder is not a copy: {}", req.system);
+        // A still works in a copy that folds back; B's turn is never sent to the fold.
+        assert_eq!(a.requests()[0].cwd, Some(provider.copy.clone()));
+        assert_eq!(provider.copies_made.load(Ordering::SeqCst), 1);
+        assert_eq!(*provider.finished.lock().unwrap(), vec![ParticipantId::new("A")]);
+    });
+}
+
+#[test]
+fn a_lone_agent_turn_runs_in_its_task_folder() {
+    block_on(async {
+        let b = full_writer("B");
+        let room = Room::new(vec![b.clone()], RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) });
+        let provider = task_folder_provider();
+        let concurrent = ConcurrentRoom::new(room).with_copies(provider.clone());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+        let batch = concurrent.begin_post("hello", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+        assert_eq!(b.requests()[0].cwd, Some(provider.folder.clone()));
+        assert!(editors_taken(&events.lock().unwrap()).is_empty(), "a task folder turn takes no editor slot");
+        assert!(provider.finished.lock().unwrap().is_empty());
+        assert_eq!(provider.copies_made.load(Ordering::SeqCst), 0);
+    });
+}
+
+#[test]
+fn a_lone_agent_without_a_task_folder_works_in_the_shared_folder_as_today() {
+    block_on(async {
+        let a = full_writer("A");
+        let room = Room::new(vec![a.clone()], RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) });
+        let provider = task_folder_provider();
+        let concurrent = ConcurrentRoom::new(room).with_copies(provider.clone());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink = move |event| sink_events.lock().unwrap().push(event);
+        let batch = concurrent.begin_post("hello", None, &sink).await.unwrap();
+        concurrent.run(batch, &sink).await;
+        let req = &a.requests()[0];
+        assert_eq!(req.cwd, None, "the shared folder");
+        assert!(!req.system.contains("You are working on task branch") && !req.system.contains("your own copy"), "{}", req.system);
+        assert_eq!(editors_taken(&events.lock().unwrap()), vec![ParticipantId::new("A")]);
+        assert_eq!(provider.copies_made.load(Ordering::SeqCst), 0, "a lone agent gets no copy");
+        assert!(provider.finished.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn only_agents_with_the_deck_cli_at_full_are_told_about_task_start_in_their_copy() {
+    block_on(async {
+        let agent = |id: &str, tool: apex_core::AgentTool, access: apex_core::Access| {
+            let mut config = ScriptedParticipant::new(id, &[]).config().clone();
+            config.backend = apex_core::Backend::Agent { tool, model: None };
+            config.access = access;
+            Arc::new(ScriptedParticipant::from_config(config))
+        };
+        let claude = agent("claude", apex_core::AgentTool::ClaudeCode, apex_core::Access::Full);
+        let gemini = agent("gemini", apex_core::AgentTool::Gemini, apex_core::Access::Full);
+        let codex = agent("codex", apex_core::AgentTool::Codex, apex_core::Access::Edits);
+        let room = Room::new(vec![claude.clone(), gemini.clone(), codex.clone()], RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) });
+        let provider = task_folder_provider();
+        let concurrent = ConcurrentRoom::new(room).with_copies(provider.clone());
+        let batch = concurrent.begin_post("hello", None, &|_| {}).await.unwrap();
+        concurrent.run(batch, &|_| {}).await;
+        let told = apex_core::copy_turn_line(&provider.copy, true);
+        let today = apex_core::copy_turn_line(&provider.copy, false);
+        assert!(told.contains("task start <type>/<name>") && told.contains("your changes go with you"), "{told}");
+        assert_eq!(today, format!("You are working in your own copy of the project at {}. Deck folds your file changes back into the main folder when your turn ends. Don't commit, push, switch branches, or build installers here.", provider.copy.display()));
+        assert!(claude.requests()[0].system.contains(&told), "{}", claude.requests()[0].system);
+        for other in [&gemini, &codex] {
+            let system = &other.requests()[0].system;
+            assert!(system.contains(&today) && !system.contains("task start"), "{system}");
+        }
     });
 }

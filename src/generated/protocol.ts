@@ -1886,6 +1886,19 @@ export type Command = {
   cmd: "phone_chat_queued";
 } | {
   args: {
+    bot: string;
+    branch: string;
+    room: string;
+  };
+  cmd: "task_start";
+} | {
+  args: {
+    bot: string;
+    room: string;
+  };
+  cmd: "task_status";
+} | {
+  args: {
     cwd: string;
     files?: Array<string>;
     hostId: string;
@@ -4417,6 +4430,15 @@ export interface Commands {
     settings: unknown;
   };
   startup_folders: Record<string, never>;
+  task_start: {
+    bot: string;
+    branch: string;
+    room: string;
+  };
+  task_status: {
+    bot: string;
+    room: string;
+  };
   trust_status: Record<string, never>;
   voice_capabilities: Record<string, never>;
   voice_meta_session: {

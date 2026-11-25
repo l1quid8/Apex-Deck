@@ -33,6 +33,11 @@ pub fn run() {
         let args: Vec<String> = std::env::args().skip(2).collect();
         std::process::exit(crate::phone_cli::main(&args));
     }
+    // ...and `apex-daemon task <verb>` to move their work onto its own branch.
+    if std::env::args().nth(1).as_deref() == Some("task") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(crate::task_cli::main(&args));
+    }
     crate::log_time::start();
     crate::logging::init();
     #[cfg(windows)]
