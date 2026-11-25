@@ -419,6 +419,7 @@ impl HeadCheckout {
         if link.exists() {
             return Ok(());
         }
+        let modules = modules.canonicalize().map_err(|e| format!("Cannot resolve installed node_modules: {e}"))?;
         link_dir(&modules, &link).map_err(|e| {
             format!(
                 "Checks need node_modules from {} inside an isolated checkout of the commit, and that link failed: {e}",
@@ -1008,10 +1009,14 @@ mod tests {
     #[test]
     fn checks_reuse_installed_dependencies_in_a_scratch_checkout() {
         let r = Repo::new();
-        std::fs::create_dir_all(r.0.join("node_modules/typescript")).unwrap();
+        let packages = r.0.join("installed");
+        std::fs::create_dir_all(packages.join("typescript")).unwrap();
+        link_dir(&packages, &r.0.join("node_modules")).unwrap();
         r.write("node_modules/typescript/marker.txt", "installed\n");
         let head = status(r.1.path(), &r.0).unwrap().head;
         let checkout = HeadCheckout::new(r.1.path(), &r.0, &head).unwrap();
+        assert_eq!(crate::assistant_git::external_path(&std::fs::read_link(checkout.dir.join("node_modules")).unwrap()),
+                   crate::assistant_git::external_path(&packages.canonicalize().unwrap()));
         assert_eq!(
             std::fs::read_to_string(checkout.dir.join("node_modules/typescript/marker.txt")).unwrap(),
             "installed\n"

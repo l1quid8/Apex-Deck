@@ -215,6 +215,19 @@ mod tests {
     use super::*;
     use ring::signature::KeyPair;
     #[test]
+    fn an_agent_terminals_deck_variables_are_accepted_together() {
+        // The set a Full-access Claude Code or Codex agent's terminal gets on
+        // every platform, for `"$APEX_DECK_BIN" task start` (apex-adapters' deck_vars).
+        let agent = [
+            ("APEX_DECK_BIN", "/Applications/Apex Deck.app/Contents/MacOS/apex-daemon"),
+            ("APEX_DECK_PHONE_SOCKET", "/Users/me/Library/Application Support/Apex/daemon.sock"),
+            ("APEX_DECK_ROOM", "pane-mwmh2i4y-0"),
+            ("APEX_DECK_BOT", "jigga"),
+            ("APEX_DECK_BOT_NAME", "Jigga"),
+        ];
+        assert!(check_environment(agent.map(|(name, value)| (name.to_string(), value.to_string()))).is_ok());
+    }
+    #[test]
     fn runtime_injection_and_generic_command_signing_are_refused() {
         for name in [
             "DYLD_INSERT_LIBRARIES",

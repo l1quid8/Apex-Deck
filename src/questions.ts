@@ -40,7 +40,7 @@ export function applyQuestionEvent(state: QuestionState, room: string, event: Ro
     case "turn_started":
       return asks.offer ? put(state, room, { ...asks, offer: null }) : state;
     case "message_added":
-      return event.message.speaker.kind === "human" && asks.offer ? put(state, room, { ...asks, offer: null }) : state;
+      return (event.message.speaker.kind === "human" || (event.message.speaker.kind === "bot" && event.message.speaker.id === "deck")) && asks.offer ? put(state, room, { ...asks, offer: null }) : state;
     case "participant_idle":
       return asks.questions.some((q) => q.id === event.id) ? put(state, room, { ...asks, questions: asks.questions.filter((q) => q.id !== event.id) }) : state;
     case "stopped":
@@ -62,11 +62,11 @@ export function formView(asks: ThreadAsks | undefined): FormView {
   const [first] = asks.questions;
   if (first) return { kind: "question", ask: first, position: 1, of: asks.questions.length };
   if (asks.offer?.pending) return { kind: "pending", by: asks.offer.by };
-  if (asks.offer?.steps.length) return { kind: "steps", offer: asks.offer };
+  if (asks.offer?.steps.length) return { kind: "steps", offer: { ...asks.offer, steps: asks.offer.steps.slice(0, 1) } };
   return { kind: "none" };
 }
 
-/** What waits above the composer: only a question. Next steps follow the reply that offered them. */
+/** What waits above the composer: only a question. */
 export function questionOnly(view: FormView): FormView {
   return view.kind === "question" ? view : { kind: "none" };
 }
@@ -75,10 +75,9 @@ export type FormAct =
   | { act: "none" } | { act: "pick"; index: number } | { act: "move"; index: number }
   | { act: "dismiss" } | { act: "collapse" } | { act: "fill"; index: number };
 
-function count(view: FormView): number {
-  if (view.kind === "steps") return view.offer.steps.length;
-  if (view.kind === "question") return view.ask.questions[0]?.options.length ?? 0;
-  return 0;
+export function suggestionHint(view: FormView, composerText: string, cardShown: boolean): string | undefined {
+  if (view.kind !== "steps" || view.offer.steps.length !== 1 || composerText !== "" || cardShown) return undefined;
+  return `${view.offer.steps[0].label} · Tab to use`;
 }
 
 /** What a key in the composer does to the form. Picking keys only work while the composer is empty. */
@@ -86,13 +85,13 @@ export function formKey(key: string, composerEmpty: boolean, view: FormView, hig
   if (view.kind === "none" || view.kind === "pending") return { act: "none" };
   if (key === "Escape") return view.kind === "question" ? { act: "collapse" } : { act: "dismiss" };
   if (!composerEmpty) return { act: "none" };
-  const n = count(view);
+  if (view.kind === "steps") return key === "Tab" && view.offer.steps.length ? { act: "fill", index: 0 } : { act: "none" };
+  const n = view.ask.questions[0]?.options.length ?? 0;
   if (/^[1-9]$/.test(key)) { const index = Number(key) - 1; return index < n ? { act: "pick", index } : { act: "none" }; }
   if (key === "ArrowDown" && n) return { act: "move", index: Math.min(highlighted + 1, n - 1) };
   if (key === "ArrowUp" && highlighted > 0) return { act: "move", index: highlighted - 1 };
   // Enter picks only an option the arrows reached; a bare Enter sends nothing.
   if (key === "Enter" && highlighted >= 0 && highlighted < n) return { act: "pick", index: highlighted };
-  if (key === "Tab" && view.kind === "steps") return { act: "fill", index: 0 };
   return { act: "none" };
 }
 

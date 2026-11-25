@@ -172,7 +172,11 @@ pub struct Host {
     events: Bus,
     store: Store,
     settings_write: Mutex<()>,
-    thread_git: crate::thread_git::ThreadGit,
+    pub(crate) thread_git: crate::thread_git::ThreadGit,
+    pub(crate) task_branches: Arc<crate::task_branches::TaskBranches>,
+    /// This host, for work that has only `&self` (a turn's events) but must
+    /// post a Deck note once the turn lets go of the thread.
+    me: std::sync::OnceLock<std::sync::Weak<Host>>,
     pub(crate) reply_suggestions: crate::reply_suggestions::ReplySuggestions,
     pub(crate) search: crate::search::Search,
     snapshots: Arc<checkpoints::Snapshots>,
@@ -246,6 +250,11 @@ impl apex_core::TurnStartHook for StartCheckpoint {
         // A failed snapshot doesn't stop the turn; Retry then offers only the chat.
         Box::pin(async move { let _ = taking.await; })
     }
+}
+
+/// The same folder, however its path is spelled (macOS `/var` is `/private/var`).
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b || std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b)
 }
 
 /// The `pty_spawn` agent that signs `tool` in.
@@ -332,6 +341,8 @@ impl Host {
         let host = Arc::new(Host {
             maintenance,
             thread_git: crate::thread_git::ThreadGit::new(&paths.data),
+            task_branches: Arc::new(crate::task_branches::TaskBranches::new(&paths.data)),
+            me: std::sync::OnceLock::new(),
             reply_suggestions: crate::reply_suggestions::ReplySuggestions::new(&paths.data, crate::reply_suggestions::Mode::from_settings(store.settings().ok().flatten().as_ref())),
             search: Default::default(),
             paths,
@@ -367,6 +378,7 @@ impl Host {
             runner_service, runner_workers: Mutex::default(), runner_gates: Mutex::default(),
         });
 
+        let _ = host.me.set(Arc::downgrade(&host));
         let host_for_reconcile = Arc::downgrade(&host);
         host.fold_queue.set_reconcile(Arc::new(move |thread_id, bot_id, message_text| {
             let host_weak = host_for_reconcile.clone();
@@ -1250,7 +1262,8 @@ impl Host {
             attachment_roots: vec![self.attachment_dir(&id)?.canonicalize().map_err(|e| format!("Could not resolve the attachments folder: {e}"))?],
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
-            phone: if !kind.is_chat() && cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
+            // Deck's command line (`task`) on every platform; its phone only where the simulator runs.
+            deck: if !kind.is_chat() { std::env::current_exe().ok().map(|bin| apex_adapters::DeckEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone(), simulator: cfg!(target_os = "macos") }) } else { None },
             data_dir: Some(self.paths.data.clone()),
             observed_addrs: Vec::new(),
         };
@@ -1318,7 +1331,7 @@ impl Host {
                 runtime.editor_handle(),
                 self.fold_event_sink(id.clone()),
                 Arc::clone(&self.fold_queue),
-            ).with_room(self.fold_room_lookup(id.clone())).with_names(Arc::new({
+            ).with_room(self.fold_room_lookup(id.clone())).with_task_branches(Arc::clone(&self.task_branches)).with_names(Arc::new({
                 let (this, id) = (Arc::downgrade(self), id.clone());
                 move |bot| {
                     let room = this.upgrade()?.store.room(&id).ok()??;
@@ -1451,13 +1464,14 @@ impl Host {
             }
             if let RoomEvent::TurnStarted { id: bot } = &event {
                 if let Some(config) = handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p| &p.id == bot) {
-                    turn_models.lock().unwrap().insert(bot.clone(), config.clone());
+                    // Who the agent was and whether Plan was on when its turn began.
+                    turn_models.lock().unwrap().insert(bot.clone(), (config.clone(), handle.plan.load(Ordering::SeqCst)));
                 }
             }
             let receipt = match &event {
                 RoomEvent::MessageAdded { message } if crate::thread_git::marker(&message.text).is_some() => {
                     match &message.speaker {
-                        apex_core::Speaker::Bot(by) => turn_models.lock().unwrap().remove(by).map(|p|(p,message.text.clone())),
+                        apex_core::Speaker::Bot(by) => turn_models.lock().unwrap().remove(by).map(|(p, plan)| (p, plan, message.text.clone())),
                         _ => None,
                     }
                 }
@@ -1470,12 +1484,131 @@ impl Host {
                 self.room_event(id, RoomEvent::Failed { id: ParticipantId::new("storage"), error: why });
                 return;
             }
-            if let (Some((by,text)), Some(cwd)) = (receipt, &handle.context.cwd) {
-                if let Err(why) = self.thread_git.record(id, &self.paths.data, cwd, &by, &text) {
-                    eprintln!("[apex-deck] thread Git receipt: {why}");
-                }
+            if let (Some((by, plan, text)), Some(cwd)) = (receipt, &handle.context.cwd) {
+                self.receive_receipt(id, handle, cwd, &by, plan, &text);
             }
         }
+    }
+
+    /// Where a receipt may be read, in order: the speaker's task folder, the
+    /// thread's current merge folder (a reviewer's receipt), the thread's folder.
+    fn receipt_folders(&self, room: &str, by: &ParticipantId, cwd: &Path) -> Vec<PathBuf> {
+        let mut folders = Vec::new();
+        if let Some(folder) = self.task_branches.get(room, by.as_str()).ok().flatten() {
+            folders.push(folder.path);
+        }
+        if let Some(root) = self.thread_git.get(room).ok().flatten().map(|w| PathBuf::from(w.root)).filter(|root| root.is_dir()) {
+            folders.push(root);
+        }
+        folders.push(cwd.to_path_buf());
+        folders.dedup();
+        folders
+    }
+
+    /// A `Deck built`, `Deck ship` or `Deck review passed` line ending `by`'s
+    /// reply. `plan_at_start`: Plan was on when the turn began.
+    fn receive_receipt(&self, id: &str, handle: &RoomHandle, cwd: &Path, by: &ParticipantConfig, plan_at_start: bool, text: &str) {
+        use crate::thread_git::{Marker, RecordOutcome};
+        let Some((kind, sha)) = crate::thread_git::marker(text) else { return };
+        let mut outcome = Ok(RecordOutcome::Ignored);
+        for folder in self.receipt_folders(id, &by.id, cwd) {
+            outcome = self.thread_git.record(id, &self.paths.data, &folder, by, text);
+            if !matches!(outcome, Ok(RecordOutcome::Ignored)) { break; }
+        }
+        match outcome {
+            Err(why) => eprintln!("[apex-deck] thread Git receipt: {why}"),
+            Ok(RecordOutcome::Ignored) => {}
+            Ok(RecordOutcome::BusyOther { other }) => {
+                let name = |id: &str| handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p| p.id.as_str() == id).map(|p| p.display_name.clone()).unwrap_or_else(|| id.to_owned());
+                self.deck_note_later(id, format!("Deck merges one pull request per thread at a time, and {}'s is in progress. {}, end a reply with your Deck ship or Deck built line again after it lands.", name(&other), by.display_name));
+            }
+            Ok(RecordOutcome::Recorded) if kind == Marker::Ship => {
+                // The speaker's own task folder holds the commit, at Full, with Plan off throughout.
+                let owned = self.task_branches.get(id, by.id.as_str()).ok().flatten().is_some_and(|folder| {
+                    self.thread_git.get(id).ok().flatten().is_some_and(|w| w.head == sha && w.builder == by.id.as_str() && same_folder(Path::new(&w.root), &folder.path))
+                });
+                let access_now = handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p| p.id == by.id).map_or(Access::Read, |p| p.access);
+                if !crate::thread_git::ship::may_ship(owned, by.access, access_now, plan_at_start, handle.plan.load(Ordering::SeqCst)) { return; }
+                let armed = {
+                    let saved = handle.checkpoint.lock().unwrap();
+                    crate::thread_git::ship::ship_armed(&saved.snapshot.transcript, saved.snapshot.compaction.as_ref())
+                };
+                if !armed {
+                    self.deck_note_later(id, crate::thread_git::ship::NOT_SAID.into());
+                } else if let Err(why) = self.thread_git.ship(id, by.id.as_str(), sha) {
+                    eprintln!("[apex-deck] Deck ship: {why}");
+                }
+            }
+            Ok(RecordOutcome::Recorded) => {}
+        }
+    }
+
+    /// A line from Deck in thread `room`, saved with the thread. Opens a closed
+    /// thread to post it, and drops any suggestion being worked out.
+    pub(crate) async fn deck_note(self: &Arc<Self>, room: &str, text: String) -> Result<(), String> {
+        if !self.rooms.lock().unwrap().contains_key(room) { self.room_open(room.to_owned(), vec![], RoomOptions::default(), None, true)?; }
+        let handle = self.handle(room)?;
+        let error = Mutex::new(None);
+        handle.room.lock().await.append_deck_note(text, &self.turn_sink(room, &handle, &error));
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.checkpoint_room(&handle, room).await?;
+        if let Some(error) = error.into_inner().unwrap() { return Err(error); }
+        Ok(())
+    }
+
+    /// `deck_note` from code holding the thread (a turn's events): it is posted
+    /// once the turn lets go.
+    fn deck_note_later(&self, room: &str, text: String) {
+        let Some(host) = self.me.get().and_then(std::sync::Weak::upgrade) else { return };
+        let room = room.to_owned();
+        self.runtime.spawn(async move {
+            if let Err(why) = host.deck_note(&room, text).await {
+                eprintln!("[apex-deck] could not post Deck's note in {room}: {why}");
+            }
+        });
+    }
+
+    /// The merge is in, whether or not the Mac was updated: the builder's task
+    /// folder goes unless it holds work the merge doesn't, and the thread hears
+    /// it all in one Deck note.
+    async fn merged(self: &Arc<Self>, room: &str, job: &crate::thread_git::Workflow, deferred: Option<crate::thread_git::Deferral>) {
+        use crate::task_branches::{Close, Closed};
+        let kept = if self.merges_from_task_folder(room, job) {
+            let (branches, data, thread, builder) = (Arc::clone(&self.task_branches), self.paths.data.clone(), room.to_owned(), job.builder.clone());
+            // Never removed under a turn that is running in it.
+            let working = self.handle(room).is_ok_and(|handle| handle.live.lock().unwrap().view.active.contains(job.builder.as_str()));
+            let why = if working {
+                Close::Leave("its agent was still working in it".into())
+            } else {
+                Close::Merged { head: job.head.clone(), result_oid: job.result_oid.clone() }
+            };
+            match tokio::task::spawn_blocking(move || branches.close(&data, &thread, &builder, why)).await.map_err(|e| e.to_string()).and_then(|closed| closed) {
+                Ok(Closed::Kept { path, why }) => Some((path, why)),
+                Ok(Closed::Removed) => None,
+                Err(why) => {
+                    eprintln!("[apex-deck] could not remove the task folder in {room}: {why}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let pr = job.pr.map(|n| format!("PR #{n}")).unwrap_or_else(|| job.branch.clone());
+        let mut note = match &deferred {
+            None => format!("Merged {pr}. Your Mac is updated. Awaiting your test."),
+            Some(why) => format!("Merged {pr}. Your Mac wasn't updated: {why}."),
+        };
+        if let Some((path, why)) = kept {
+            note.push_str(&format!(" The task folder {} was kept: {why}.", crate::assistant_git::external_path(&path).display()));
+        }
+        if let Err(why) = self.deck_note(room, note).await {
+            eprintln!("[apex-deck] could not post the merge note in {room}: {why}");
+        }
+    }
+
+    /// Whether `w` merges from its builder's task folder rather than the thread's own.
+    fn merges_from_task_folder(&self, room: &str, w: &crate::thread_git::Workflow) -> bool {
+        self.task_branches.get(room, &w.builder).ok().flatten().is_some_and(|folder| same_folder(Path::new(&w.root), &folder.path))
     }
 
     /// Save a reply's steps once the reply itself is saved. Steps are extra:
@@ -3533,27 +3666,104 @@ impl Host {
         });
     }
 
-    async fn advance_thread_merge(&self, room: String, job: crate::thread_git::Workflow) {
+    async fn advance_thread_merge(self: &Arc<Self>, room: String, job: crate::thread_git::Workflow) {
         let Ok(_maintenance) = self.maintenance.enter() else { return };
         if job.phase == crate::thread_git::Phase::Syncing {
-            if let Err(why) = self.thread_git.sync(self, &room, &job).await {
-                let _ = self.thread_git.defer_sync(&room, &job, why);
-            }
+            let fallback = match self.handle(&room) {
+                Ok(handle) => handle.context.cwd.clone(),
+                Err(_) => self.store.room(&room).ok().flatten().and_then(|saved| saved.cwd.map(PathBuf::from)),
+            };
+            // Only the call that moved the workflow to Merged tidies up and says so.
+            let deferred = match self.thread_git.sync(self, &room, &job, fallback.as_deref()).await {
+                Ok(true) => None,
+                Ok(false) => return,
+                Err(why) => match self.thread_git.defer_sync(&room, &job, &why) {
+                    Ok(true) => Some(why),
+                    _ => return,
+                },
+            };
+            self.merged(&room, &job, deferred).await;
             return;
         }
+        // A task folder is the builder's alone; only the thread's own folder is shared with its turns.
+        let task_folder = self.merges_from_task_folder(&room, &job);
         let handle = self.handle(&room).ok();
-        let _mount = match handle.as_ref() {
+        let _mount = match handle.as_ref().filter(|_| !task_folder) {
             Some(handle) => match handle.lock_checkout().await { Ok(guard) => Some(guard), Err(_) => return },
             None => None,
         };
         let gate = self.checkout_gate(Path::new(&job.root));
         let Ok(_lease) = gate.acquire(format!("thread-git:{room}"), Default::default()).await else { return };
         if self.thread_git.get(&room).ok().flatten().as_ref() != Some(&job) { return; }
-        let cwd = match handle {
-            Some(ref handle) => handle.context.cwd.clone(),
-            None => self.store.room(&room).ok().flatten().and_then(|saved| saved.cwd.map(PathBuf::from)),
+        let cwd = if task_folder {
+            Some(PathBuf::from(&job.root))
+        } else {
+            match handle {
+                Some(ref handle) => handle.context.cwd.clone(),
+                None => self.store.room(&room).ok().flatten().and_then(|saved| saved.cwd.map(PathBuf::from)),
+            }
         };
-        self.thread_git.poll(&room, job, &self.paths.data, cwd.as_deref()).await;
+        let (pr, branch) = (job.pr, job.branch.clone());
+        if let Some(why) = self.thread_git.poll(&room, job, &self.paths.data, cwd.as_deref()).await {
+            let text = match pr {
+                Some(pr) => format!("Couldn't merge PR #{pr}: {why}"),
+                None => format!("Couldn't merge {branch}: {why}"),
+            };
+            if let Err(error) = self.deck_note(&room, text).await {
+                eprintln!("[apex-deck] could not post the merge note in {room}: {error}");
+            }
+        }
+    }
+
+    /// `"$APEX_DECK_BIN" task start <branch>`, run by `bot` during its turn:
+    /// a task folder on a new branch from origin/main, with the changes from
+    /// the agent's copy moved into it.
+    pub async fn task_start(self: Arc<Self>, room: String, bot: String, branch: String) -> Result<String, String> {
+        const WORKING: &str = "Only an agent that is working in this thread can start a task branch.";
+        let handle = self.handle(&room).map_err(|_| WORKING.to_string())?;
+        if !handle.live.lock().unwrap().view.active.contains(bot.as_str()) {
+            return Err(WORKING.into());
+        }
+        let config = handle.checkpoint.lock().unwrap().snapshot.participants.iter().find(|p| p.id.as_str() == bot).cloned().ok_or(WORKING)?;
+        if config.access != Access::Full {
+            return Err("Task branches need Full access.".into());
+        }
+        if handle.plan.load(Ordering::SeqCst) {
+            return Err("Task branches can't be started in Plan mode.".into());
+        }
+        let root = handle.context.cwd.clone().ok_or(crate::task_branches::NOT_GITHUB)?;
+        drop(handle);
+        let (data, branches) = (self.paths.data.clone(), Arc::clone(&self.task_branches));
+        let started = tokio::task::spawn_blocking(move || {
+            let copy = crate::bot_copies::load_copies(&data).into_iter().find(|c| c.thread == room && c.bot == bot && crate::bot_copies::adoptable(&c.state));
+            branches.start(&data, &root, copy.as_ref(), &room, &bot, &branch)
+        }).await.map_err(|e| e.to_string())??;
+        // The agent passes this path to git, which refuses Windows' verbatim form.
+        let shown = crate::assistant_git::external_path(&started.folder.path);
+        let (branch, path) = (&started.folder.branch, shown.display());
+        let mut text = if started.moved {
+            format!("Task branch {branch} is ready in {path}, made from origin/main with the changes from your copy, not committed yet.")
+        } else {
+            format!("Task branch {branch} is ready in {path}, made from origin/main. You had no changes in a copy of your own, so nothing was moved.")
+        };
+        text.push_str(&format!(" Commit, push and open the pull request from that folder. For the rest of this turn use full paths there (git -C {path}); your next turn starts in it."));
+        if !started.conflicts.is_empty() {
+            text.push_str(&format!(" Fix the conflicts in these files first: {}.", started.conflicts.join(", ")));
+        }
+        if let Some(why) = &started.copy_left {
+            text.push_str(&format!(" Deck couldn't put your copy back to its base ({}), so its changes may also fold back into the main folder when this turn ends.", why.trim_end_matches('.')));
+        }
+        Ok(text)
+    }
+
+    /// `"$APEX_DECK_BIN" task status`: the agent's task branch in this thread,
+    /// with the pull request Deck saved for it. Asks GitHub nothing.
+    pub fn task_status(&self, room: String, bot: String) -> Result<String, String> {
+        let Some(folder) = self.task_branches.get(&room, &bot)? else {
+            return Ok("No task branch in this thread.".into());
+        };
+        let pr = self.thread_git.get(&room)?.filter(|w| w.branch == folder.branch).and_then(|w| w.pr);
+        Ok(format!("{} in {}{}", folder.branch, crate::assistant_git::external_path(&folder.path).display(), pr.map(|pr| format!(" · PR #{pr}")).unwrap_or_default()))
     }
 
     pub async fn room_git_status(&self, id: String) -> Result<crate::git_changes::State, String> {
@@ -3577,66 +3787,93 @@ impl Host {
     }
 
     pub async fn room_thread_git_action(self: &Arc<Self>, id: String, action: crate::thread_git::ThreadGitAction) -> Result<crate::git_changes::Outcome, String> {
-        if let crate::thread_git::ThreadGitAction::CancelMerge { expected }=&action {
-            let message=self.thread_git.admit(&id,expected,true)?;
-            return Ok(crate::git_changes::Outcome{state:self.room_git_status(id).await?,message});
-        }
-        let handle = self.handle(&id)?;
-        let _action = handle.lock_checkout().await?;
-        let cwd = handle.context.cwd.clone().ok_or("This thread has no workspace folder.")?;
-        let gate = self.checkout_gate(&cwd);
-        let _lease = gate.acquire(format!("git-menu:{id}"), Arc::new(AtomicBool::new(false))).await.map_err(|e| format!("Could not reserve the checkout: {e:?}"))?;
         use crate::thread_git::ThreadGitAction as Action;
         let data = &self.paths.data;
-        let message = match action {
-            Action::CancelMerge { expected } => self.thread_git.admit(&id, &expected, true)?,
-            Action::RequestMerge { expected } => {
-                crate::git_changes::current(data,&cwd,&expected)?;
-                self.thread_git.admit(&id,&expected,false)?
-            }
-            Action::MergeReady { expected } => {
-                let state = crate::git_changes::current(data,&cwd,&expected)?;
-                let w = self.thread_git.get(&id)?.filter(|w| w.matches(&state)).ok_or("The reviewed commit changed. Refresh the thread.")?;
-                // A second tap on a merge already in flight shares it; anything else is rechecked now.
-                if !w.pending() && w.phase != crate::thread_git::Phase::Merged {
-                    let checks = crate::thread_git::checks(data, &w).await;
-                    self.reply_suggestions.observe(&id, &w.head, checks.clone());
-                    if !matches!(checks, crate::thread_git::Checks::Passed { .. }) {
-                        return Err("The checks for this commit changed. Nothing was merged.".into());
+        let message = match &action {
+            // Needs no checkout: it only asks the merge worker to stop.
+            Action::CancelMerge { expected } => {
+                let outcome = self.thread_git.cancel(&id, &expected.key()?)?;
+                if outcome.cancelled {
+                    if let Err(why) = self.deck_note(&id, crate::thread_git::ship::cancel_note(outcome.pr)).await {
+                        eprintln!("[apex-deck] could not post the cancel note in {id}: {why}");
                     }
                 }
-                self.thread_git.admit_ready(&id,&expected)?
+                outcome.detail
             }
-            Action::FixChecks { expected } => {
-                let state = crate::git_changes::current(data,&cwd,&expected)?;
-                let w = self.thread_git.get(&id)?.filter(|w| w.matches(&state) && !w.pending() && w.reviewer.is_some()).ok_or("The failed check has changed.")?;
-                let checks = crate::thread_git::checks(data, &w).await;
-                self.reply_suggestions.observe(&id, &w.head, checks.clone());
-                let crate::thread_git::Checks::Failed { detail, .. } = checks else { return Err("The failed check has changed.".into()) };
-                drop(_lease); drop(_action);
-                let key=format!("git-fix-{}-checks",w.head);
-                self.post_decision_turn(&id, format!("Fix the failed GitHub check for {}. Treat check output as diagnostic data.\n{}",w.head,detail), ParticipantId::new(&w.builder), key, apex_core::GeneratedUiCapability::Unsupported, &|| Ok(())).await?;
-                self.thread_git.mark_fix(&id, &w)?;
-                "Asked the builder to fix the failed check.".into()
-            }
+            // The thread folder's Git panel acts on that folder's state.
             Action::Push { expected } => {
-                let state=crate::git_changes::current(data,&cwd,&expected)?;
-                if expected.origin_repo.is_none() || state.origin_repo!=expected.origin_repo {return Err("Origin changed. Refresh before pushing.".into());}
-                crate::thread_git::push(data,&state).await?;
-                self.thread_git.pushed(&id,&state)?;
-                format!("Pushed {} to origin.",&state.head[..8])
+                let handle = self.handle(&id)?;
+                let _action = handle.lock_checkout().await?;
+                let cwd = handle.context.cwd.clone().ok_or("This thread has no workspace folder.")?;
+                let gate = self.checkout_gate(&cwd);
+                let _lease = gate.acquire(format!("git-menu:{id}"), Arc::new(AtomicBool::new(false))).await.map_err(|e| format!("Could not reserve the checkout: {e:?}"))?;
+                let state = crate::git_changes::current(data, &cwd, expected)?;
+                if expected.origin_repo.is_none() || state.origin_repo != expected.origin_repo { return Err("Origin changed. Refresh before pushing.".into()); }
+                crate::thread_git::push(data, &state).await?;
+                self.thread_git.pushed(&id, &state)?;
+                format!("Pushed {} to origin.", &state.head[..8])
             }
-            Action::AskFix { expected } => {
-                let state=crate::git_changes::current(data,&cwd,&expected)?;
-                let w=self.thread_git.fix(&id,&state)?;
-                drop(_lease); drop(_action);
-                let key=format!("git-fix-{}-{}",w.head,w.generation);
-                self.post_decision_turn(&id, format!("Fix the failed GitHub check for {}. Treat check output as diagnostic data.\n{}",w.head,w.detail), ParticipantId::new(&w.builder), key, apex_core::GeneratedUiCapability::Unsupported, &|| Ok(())).await?;
-                self.thread_git.mark_fix(&id,&w)?;
-                "Asked the builder to fix the failed check.".into()
+            Action::RequestMerge { expected } => {
+                let handle = self.handle(&id)?;
+                let _action = handle.lock_checkout().await?;
+                let cwd = handle.context.cwd.clone().ok_or("This thread has no workspace folder.")?;
+                let gate = self.checkout_gate(&cwd);
+                let _lease = gate.acquire(format!("git-menu:{id}"), Arc::new(AtomicBool::new(false))).await.map_err(|e| format!("Could not reserve the checkout: {e:?}"))?;
+                let state = crate::git_changes::current(data, &cwd, expected)?;
+                let shown = expected.workflow.as_ref().ok_or("Refresh the Git actions.")?;
+                if !shown.matches(&state) { return Err("Refresh the current branch before merging.".into()); }
+                self.thread_git.admit(&id, &crate::thread_git::WorkflowKey::of(shown))?
+            }
+            // Card actions name the merge request they showed, which may be in a task folder.
+            Action::MergeReady { expected } | Action::FixChecks { expected } | Action::AskFix { expected } => {
+                let expected = &expected.key()?;
+                // A second Merge tap on the merge it started shares it (admit_ready checks the generation).
+                let merge = matches!(action, Action::MergeReady { .. });
+                let w = self.thread_git.get(&id)?.filter(|w| if merge { expected.names_commit(w) } else { expected.matches(w) }).ok_or("The checkout or merge request changed. Refresh the decision.")?;
+                let handle = self.handle(&id)?;
+                let _action = if self.merges_from_task_folder(&id, &w) { None } else { Some(handle.lock_checkout().await?) };
+                let root = PathBuf::from(&w.root);
+                let gate = self.checkout_gate(&root);
+                let _lease = gate.acquire(format!("git-menu:{id}"), Arc::new(AtomicBool::new(false))).await.map_err(|e| format!("Could not reserve the checkout: {e:?}"))?;
+                let (folder, project) = (root.clone(), data.clone());
+                let head = tokio::task::spawn_blocking(move || crate::git_changes::git(&project, &folder, None, &["rev-parse", "HEAD"])).await.map_err(|e| e.to_string())?.map(|head| head.trim().to_owned());
+                if head.as_deref() != Ok(expected.head.as_str()) { return Err("The checkout or merge request changed. Refresh the decision.".into()); }
+                match &action {
+                    Action::MergeReady { .. } => {
+                        // A second tap on a merge already in flight shares it; anything else is rechecked now.
+                        if !w.pending() && w.phase != crate::thread_git::Phase::Merged {
+                            let checks = crate::thread_git::checks(data, &w).await;
+                            self.reply_suggestions.observe(&id, &w.head, checks.clone());
+                            if !matches!(checks, crate::thread_git::Checks::Passed { .. }) {
+                                return Err("The checks for this commit changed. Nothing was merged.".into());
+                            }
+                        }
+                        self.thread_git.admit_ready(&id, expected)?
+                    }
+                    Action::FixChecks { .. } => {
+                        if w.pending() { return Err("The failed check has changed.".into()); }
+                        let checks = crate::thread_git::checks(data, &w).await;
+                        self.reply_suggestions.observe(&id, &w.head, checks.clone());
+                        let crate::thread_git::Checks::Failed { detail, .. } = checks else { return Err("The failed check has changed.".into()) };
+                        drop(_lease); drop(_action);
+                        let key = format!("git-fix-{}-checks", w.head);
+                        self.post_decision_turn(&id, format!("Fix the failed GitHub check for {}. Treat check output as diagnostic data.\n{}", w.head, detail), ParticipantId::new(&w.builder), key, apex_core::GeneratedUiCapability::Unsupported, &|| Ok(())).await?;
+                        self.thread_git.mark_fix(&id, &w)?;
+                        "Asked the builder to fix the failed check.".into()
+                    }
+                    Action::AskFix { .. } => {
+                        let w = self.thread_git.fix(&id, expected)?;
+                        drop(_lease); drop(_action);
+                        let key = format!("git-fix-{}-{}", w.head, w.generation);
+                        self.post_decision_turn(&id, format!("Fix the failed GitHub check for {}. Treat check output as diagnostic data.\n{}", w.head, w.detail), ParticipantId::new(&w.builder), key, apex_core::GeneratedUiCapability::Unsupported, &|| Ok(())).await?;
+                        self.thread_git.mark_fix(&id, &w)?;
+                        "Asked the builder to fix the failed check.".into()
+                    }
+                    _ => unreachable!(),
+                }
             }
         };
-        Ok(crate::git_changes::Outcome { state:self.room_git_status(id).await?, message })
+        Ok(crate::git_changes::Outcome { state: self.room_git_status(id).await?, message })
     }
 
     /// The one decision under this thread's newest reply, or none.
@@ -3651,14 +3888,15 @@ impl Host {
         let last = handle.room.try_lock().and_then(|room| room.transcript().last().map(|m| (m.seq, match &m.speaker { apex_core::Speaker::Bot(by) => Some(by.to_string()), _ => None }, m.text.clone())));
         let card = mode == Mode::DecisionCard && !busy && last.is_some();
         let waiting = workflow.as_ref().filter(|w| card && !w.pending());
-        let head = match (waiting, &handle.context.cwd) {
-            (Some(_), Some(cwd)) => {
-                let (data, cwd) = (self.paths.data.clone(), cwd.clone());
-                tokio::task::spawn_blocking(move || crate::git_changes::git(&data, &cwd, None, &["rev-parse", "HEAD"])).await.ok().and_then(Result::ok).map(|head| head.trim().to_owned())
+        // HEAD where the commit is: the builder's task folder, or the thread's own. A folder gone means no card.
+        let head = match waiting.map(|w| PathBuf::from(&w.root)).filter(|root| root.is_dir()) {
+            Some(root) => {
+                let data = self.paths.data.clone();
+                tokio::task::spawn_blocking(move || crate::git_changes::git(&data, &root, None, &["rev-parse", "HEAD"])).await.ok().and_then(Result::ok).map(|head| head.trim().to_owned())
             }
-            _ => None,
+            None => None,
         };
-        let asks = waiting.filter(|w| matches!(w.phase, Phase::Ready | Phase::Cancelled) && w.reviewer.is_some() && head.as_deref() == Some(w.head.as_str()));
+        let asks = waiting.filter(|w| matches!(w.phase, Phase::Ready | Phase::Cancelled) && head.as_deref() == Some(w.head.as_str()));
         let checks = match asks {
             Some(w) => match self.reply_suggestions.recent_checks(&id, &w.head) {
                 Some(answer) => answer,
@@ -6438,27 +6676,71 @@ done
     #[test]
     fn a_long_reply_is_followed_by_the_bots_next_steps() {
         let (host, runtime, data) = host("next-steps");
-        host.settings_reply_suggestions_set(crate::reply_suggestions::Mode::NextSteps).unwrap();
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#])], RoomOptions::default(), None).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
         runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null fix it".into(), vec![ParticipantId::new("null")])).unwrap();
         let steps = wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, .. })).expect("next steps arrive");
-        assert_eq!(steps, RoomEvent::NextSteps { id: ParticipantId::new("null"), steps: vec![apex_core::NextStep { label: "Commit".into(), prompt: "commit it".into() }], pending: false });
+        assert_eq!(steps, RoomEvent::NextSteps { id: ParticipantId::new("null"), steps: vec![apex_core::NextStep { label: "Try it on my phone".into(), prompt: "I will try it on my phone.".into() }], pending: false });
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: true, .. })).is_some(), "a placeholder first");
         let state = host.room_state("r".into()).unwrap();
-        assert_eq!(state["next_steps"]["steps"][0]["prompt"], "commit it");
+        assert_eq!(state["next_steps"]["steps"][0]["prompt"], "I will try it on my phone.");
         let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]
-    fn only_the_list_setting_spends_the_extra_turn_and_a_switch_mid_list_discards_it() {
+    fn next_steps_are_skipped_when_a_reply_ends_in_a_deck_line() {
+        let (host, runtime, data) = host("next-steps-deck-line");
+        for (room, line) in [
+            ("asks", "Deck asks: Use the blue theme for the card? | Use blue".into()),
+            ("built", format!("Deck built {}", "a".repeat(40))),
+        ] {
+            let reply = format!("I prepared the requested changes and confirmed the layout still fits on a narrow screen.\n{line}");
+            assert_no_next_steps(&host, &runtime, room, &reply);
+        }
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn next_steps_are_skipped_while_a_merge_is_in_flight() {
+        let (host, runtime, data) = host("next-steps-merge");
+        let path = crate::authority_file::fixture_path(&data.join("thread-git-v1.json"));
+        let ledger = serde_json::json!({"version":1,"rooms":{"r":{
+            "root":"/fixture","branch":"fix/fixture","repo":"test/repo","head":"a".repeat(40),
+            "builder":"null","builder_model":"scripted","reviewer":null,"phase":"checks",
+            "generation":1,"pr":42,"detail":"","pushed":true,"fix_requested":false
+        }}});
+        std::fs::write(path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert!(host.thread_git.get("r").unwrap().unwrap().pending());
+        assert_no_next_steps(&host, &runtime, "r",
+            "I prepared the requested changes and confirmed the layout still fits on a narrow screen.");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    fn assert_no_next_steps(host: &Arc<Host>, runtime: &tokio::runtime::Runtime, room: &str, reply: &str) {
+        host.room_create(room.into(), vec![scripted("null", &[reply, r#"[{"label":"Try it","prompt":"I'll try the build on my phone"}]"#])], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let room_id = room.to_owned();
+        host.events().listen(move |envelope| {
+            if matches!(&envelope.event, HostEvent::Room { room, .. } if room == &room_id) {
+                sink.lock().unwrap().push(envelope.event.clone());
+            }
+        });
+        runtime.block_on(Arc::clone(host).room_post_to(room.into(), "@null fix it".into(), vec![ParticipantId::new("null")])).unwrap();
+        assert!(wait_for(&seen, |event| matches!(event, RoomEvent::Idle)).is_some());
+        assert!(wait_for(&seen, |event| matches!(event, RoomEvent::NextSteps { .. })).is_none());
+    }
+
+    #[test]
+    fn off_skips_next_steps_and_the_setting_is_saved() {
         use crate::reply_suggestions::Mode;
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        let list = r#"[{"label":"Commit","prompt":"commit it"}]"#;
-        for mode in [Mode::DecisionCard, Mode::Off] {
+        let list = r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#;
+        {
+            let mode = Mode::Off;
             let (host, runtime, data) = host(&format!("reply-suggestions-{}", mode.as_str()));
             assert_eq!(host.settings_reply_suggestions_set(mode).unwrap()["mode"], mode.as_str());
             host.room_create("r".into(), vec![scripted("null", &[long, list, long])], RoomOptions::default(), None).unwrap();
@@ -6475,7 +6757,7 @@ done
             assert!(spoke, "{mode:?}: the next visible reply is the script's second line");
             let _ = std::fs::remove_dir_all(data);
         }
-        // A new installation defaults to cards without spending a list turn.
+        // A new installation defaults to suggestions on.
         let (host, _runtime, data) = host("reply-suggestions-default");
         assert_eq!(host.reply_suggestions.mode(), Mode::DecisionCard);
         // The choice is saved with the settings, survives an older client's save, and is read at start.
@@ -6490,12 +6772,11 @@ done
     }
 
     #[test]
-    fn switching_away_from_the_list_while_it_is_written_shows_nothing() {
+    fn switching_off_while_next_steps_are_written_shows_nothing() {
         use crate::reply_suggestions::Mode;
         let (host, runtime, data) = host("reply-suggestions-switch");
-        host.settings_reply_suggestions_set(crate::reply_suggestions::Mode::NextSteps).unwrap();
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#])], RoomOptions::default(), None).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         let switcher = Arc::clone(&host);
@@ -6530,10 +6811,8 @@ done
         let shown = ask(&host);
         assert_eq!(shown["mode"], "decision_card");
         assert_eq!((shown["decision"]["kind"].as_str(), shown["decision"]["turns"].as_u64(), shown["decision"]["to"].as_str(), shown["decision"]["prompt"].as_str()), (Some("question"), Some(1), Some("null"), Some("Yes, add logging")));
-        for mode in [Mode::NextSteps, Mode::Off] {
-            host.settings_reply_suggestions_set(mode).unwrap();
-            assert!(ask(&host)["decision"].is_null(), "{mode:?}");
-        }
+        host.settings_reply_suggestions_set(Mode::Off).unwrap();
+        assert!(ask(&host)["decision"].is_null());
         host.settings_reply_suggestions_set(Mode::DecisionCard).unwrap();
         let key = shown["decision"]["key"].as_str().unwrap().to_owned();
         assert!(host.room_reply_decision_dismiss("other".into(), key.clone()).is_err());
@@ -6623,12 +6902,398 @@ done
         let _ = std::fs::remove_dir_all(data);
     }
 
+    /// A thread `r` on a checkout where each agent in `owners` has a task
+    /// folder (`fix/<agent>`) with one commit. Replies are the agents' lines;
+    /// `{sha:<agent>}` is that agent's commit, `{base}` is origin/main.
+    struct ShipThread {
+        host: Arc<Host>,
+        runtime: tokio::runtime::Runtime,
+        data: PathBuf,
+        repo: crate::task_branches::fixture::Repo,
+        shas: HashMap<String, String>,
+    }
+    const NOT_SAID: &str = "You haven't said \"ship it\" in this thread since the last merge, so Deck won't merge this on its own. Tap Merge once the checks pass.";
+    fn ship_thread(name: &str, owners: &[&str], agents: &[(&str, apex_core::Access, &[&str])]) -> ShipThread {
+        use crate::task_branches::fixture::{git, Repo};
+        let (host, runtime, data) = host(name);
+        let repo = Repo::new();
+        let mut shas = HashMap::new();
+        shas.insert("base".to_string(), git(repo.root(), &["rev-parse", "origin/main"]));
+        for owner in owners {
+            let folder = host.task_branches.start(&data, repo.root(), None, "r", owner, &format!("fix/{owner}")).unwrap().folder.path;
+            // Named for the test: same-second commits elsewhere would share a SHA.
+            git(&folder, &["commit", "--allow-empty", "-qm", &format!("{name}: {owner}'s fix")]);
+            shas.insert(owner.to_string(), git(&folder, &["rev-parse", "HEAD"]));
+        }
+        let fill = |line: &str| shas.iter().fold(line.to_string(), |line, (who, sha)| line.replace(&if who == "base" { "{base}".to_string() } else { format!("{{sha:{who}}}") }, sha));
+        let configs = agents.iter().map(|(id, access, lines)| {
+            let lines: Vec<String> = lines.iter().map(|l| fill(l)).collect();
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let mut config = scripted(id, &lines);
+            config.access = *access;
+            config
+        }).collect();
+        host.room_create("r".into(), configs, RoomOptions::default(), Some(repo.root().display().to_string())).unwrap();
+        ShipThread { host, runtime, data, repo, shas }
+    }
+    impl ShipThread {
+        fn sha(&self, who: &str) -> &str { &self.shas[who] }
+        /// The person's message to `to`, back once the reply is in.
+        fn say(&self, to: &str, text: &str) {
+            self.runtime.block_on(Arc::clone(&self.host).room_post_to("r".into(), text.into(), vec![ParticipantId::new(to)])).unwrap();
+            self.until(|| !self.host.handle("r").unwrap().busy());
+        }
+        fn until(&self, done: impl Fn() -> bool) {
+            for _ in 0..500 {
+                if done() { return; }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("timed out; Deck's notes: {:?}", self.notes());
+        }
+        /// Deck's notes so far, after giving any note still being posted time to land.
+        fn notes(&self) -> Vec<String> {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state = self.host.room_state("r".into()).unwrap();
+            state["snapshot"]["transcript"].as_array().unwrap().iter()
+                .filter(|m| m["speaker"]["id"] == "deck").map(|m| m["text"].as_str().unwrap().to_owned()).collect()
+        }
+        fn workflow(&self) -> Option<crate::thread_git::Workflow> { self.host.thread_git.get("r").unwrap() }
+        fn key(&self) -> crate::thread_git::WorkflowKey { crate::thread_git::WorkflowKey::of(&self.workflow().unwrap()) }
+        fn act(&self, action: crate::thread_git::ThreadGitAction) -> Result<String, String> {
+            self.runtime.block_on(self.host.room_thread_git_action("r".into(), action)).map(|outcome| outcome.message)
+        }
+        fn offer(&self) -> serde_json::Value { self.runtime.block_on(self.host.room_reply_decision("r".into())).unwrap() }
+        /// The card, once the finished turn has let go of the thread (clients ask again every 5 s).
+        fn card(&self, kind: &str) -> serde_json::Value {
+            self.until(|| self.offer()["decision"]["kind"] == kind);
+            self.offer()
+        }
+        /// Stops a merge the test started, so the worker never runs it.
+        fn finish(self) {
+            if let Some(w) = self.workflow().filter(|w| w.pending()) {
+                let _ = self.host.thread_git.cancel("r", &crate::thread_git::WorkflowKey::of(&w));
+            }
+            self.host.shutdown();
+            let _ = std::fs::remove_dir_all(&self.data);
+        }
+    }
+
+    #[test]
+    fn a_receipt_from_a_task_folder_is_recorded_while_the_thread_folder_stays_on_main() {
+        use crate::task_branches::fixture::git;
+        let t = ship_thread("receipt-task-folder", &["a"], &[("a", apex_core::Access::Full, &["Fixed it.\nDeck built {sha:a}"])]);
+        t.say("a", "@a fix the alert");
+        let w = t.workflow().expect("the receipt is recorded");
+        let folder = t.host.task_branches.get("r", "a").unwrap().unwrap().path;
+        // Git names the folder its own way (forward slashes on Windows); it is the same folder.
+        assert!(same_folder(Path::new(&w.root), &folder), "{} is not {}", w.root, folder.display());
+        assert_eq!((w.branch.as_str(), w.head.as_str(), w.builder.as_str(), w.phase.clone()),
+            ("fix/a", t.sha("a"), "a", crate::thread_git::Phase::Ready));
+        assert_eq!(git(t.repo.root(), &["symbolic-ref", "--short", "HEAD"]), "main");
+        t.finish();
+    }
+
+    #[test]
+    fn ship_needs_the_persons_words() {
+        let shipped = "Fixed it.\nDeck ship {sha:a}";
+        let t = ship_thread("ship-words", &["a"], &[("a", apex_core::Access::Full, &[shipped, shipped])]);
+        t.say("a", "@a fix the alert");
+        assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Ready, "counts as Deck built");
+        t.until(|| t.notes() == vec![NOT_SAID.to_string()]);
+        t.say("a", "@a Fix the alert, ship it");
+        assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Preparing);
+        let offer = t.card("merging");
+        assert_eq!(offer["decision"]["question"].as_str(), Some("Merging…"));
+        assert_eq!(t.notes().len(), 1, "no second note");
+        t.finish();
+    }
+
+    #[test]
+    fn deck_ship_is_ignored_from_another_agent_below_full_or_in_plan() {
+        use apex_core::Access::{Ask, Full};
+        let t = ship_thread("ship-ignored", &["a", "c"], &[
+            ("a", Full, &["Built.\nDeck built {sha:a}", "Planned.\nDeck ship {sha:a}"]),
+            ("b", Full, &["Shipping theirs.\nDeck ship {sha:a}"]),
+            ("c", Ask, &["Shipped.\nDeck ship {sha:c}"]),
+        ]);
+        t.say("a", "@a build it");
+        t.say("b", "@b ship it");
+        assert_eq!((t.workflow().unwrap().builder.as_str(), t.workflow().unwrap().phase), ("a", crate::thread_git::Phase::Ready), "the reviewer can't ship the builder's work");
+        t.say("c", "@c ship it");
+        assert_eq!((t.workflow().unwrap().builder.as_str(), t.workflow().unwrap().phase), ("c", crate::thread_git::Phase::Ready), "below Full it counts as Deck built");
+        t.host.handle("r").unwrap().plan.store(true, Ordering::SeqCst);
+        t.say("a", "@a ship it");
+        t.host.handle("r").unwrap().plan.store(false, Ordering::SeqCst);
+        assert!(!t.workflow().unwrap().pending(), "no merge from a Plan turn");
+        assert!(t.notes().is_empty(), "none of these is the person's missing words: {:?}", t.notes());
+        t.finish();
+    }
+
+    #[test]
+    fn deck_ship_for_a_stale_commit_is_ignored() {
+        let t = ship_thread("ship-stale", &["a"], &[("a", apex_core::Access::Full, &["Shipped.\nDeck ship {base}"])]);
+        t.say("a", "@a ship it");
+        assert_eq!(t.workflow(), None);
+        assert!(t.notes().is_empty());
+        t.finish();
+    }
+
+    #[test]
+    fn a_second_builder_waits_for_a_merge_in_flight() {
+        use apex_core::Access::Full;
+        let t = ship_thread("ship-one-at-a-time", &["a", "b"], &[("a", Full, &["Shipped.\nDeck ship {sha:a}"]), ("b", Full, &["Built.\nDeck built {sha:b}"])]);
+        t.say("a", "@a fix it, ship it");
+        let in_flight = t.workflow().unwrap();
+        assert!(in_flight.pending());
+        t.say("b", "@b now yours");
+        t.until(|| t.notes() == vec!["Deck merges one pull request per thread at a time, and a's is in progress. b, end a reply with your Deck ship or Deck built line again after it lands.".to_string()]);
+        let now = t.workflow().unwrap();
+        assert_eq!((now.builder, now.head, now.generation), (in_flight.builder, in_flight.head, in_flight.generation), "b's commit didn't replace a's merge");
+        t.finish();
+    }
+
+    #[test]
+    fn cancel_posts_a_note_only_when_it_starts_cancelling() {
+        use crate::thread_git::{Shown, ThreadGitAction::CancelMerge};
+        let t = ship_thread("ship-cancel", &["a"], &[("a", apex_core::Access::Full, &["Shipped.\nDeck ship {sha:a}"])]);
+        t.say("a", "@a ship it");
+        let key = t.key();
+        t.act(CancelMerge { expected: Shown::Key(key.clone()) }).unwrap();
+        t.until(|| t.notes() == vec![crate::thread_git::ship::cancel_note(None)]);
+        // The background worker may already have confirmed it.
+        assert!(matches!(t.workflow().unwrap().phase, crate::thread_git::Phase::Cancelling | crate::thread_git::Phase::Cancelled));
+        t.act(CancelMerge { expected: Shown::Key(key) }).unwrap();
+        assert_eq!(t.notes().len(), 1, "a second tap posts nothing");
+        t.finish();
+    }
+
+    #[test]
+    fn the_card_merges_a_task_folder_workflow() {
+        use crate::thread_git::{Checks, Phase, Shown, ThreadGitAction::MergeReady, WorkflowKey};
+        let t = ship_thread("card-merge-task-folder", &["a"], &[("a", apex_core::Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.say("a", "@a build it");
+        crate::thread_git::fake_checks(t.sha("a"), Checks::Passed { pr: 42 });
+        let offer = t.card("merge");
+        let folder = t.host.task_branches.get("r", "a").unwrap().unwrap().path;
+        assert_eq!((offer["decision"]["kind"].as_str(), offer["decision"]["context"].as_str()), (Some("merge"), Some("PR #42 · checks passed")));
+        assert!(same_folder(Path::new(offer["checkout"]["root"].as_str().unwrap()), &folder));
+        let shown: WorkflowKey = serde_json::from_value(serde_json::json!({
+            "root": offer["checkout"]["root"], "branch": offer["checkout"]["branch"], "repo": offer["checkout"]["repo"],
+            "generation": offer["checkout"]["generation"], "head": offer["decision"]["head"],
+        })).unwrap();
+        let saved = t.workflow().unwrap();
+        let mut old_head = shown.clone();
+        old_head.head = "b".repeat(40);
+        let mut other_merge = shown.clone();
+        other_merge.generation += 1;
+        for stale in [old_head, other_merge] {
+            assert!(t.act(MergeReady { expected: Shown::Key(stale) }).is_err());
+            assert_eq!(t.workflow().unwrap(), saved, "nothing changed");
+        }
+        t.act(MergeReady { expected: Shown::Key(shown.clone()) }).unwrap();
+        assert_eq!(t.workflow().unwrap().phase, Phase::Preparing);
+        t.act(MergeReady { expected: Shown::Key(shown) }).unwrap();
+        // (The worker may have tried GitHub in between; the test repo can't reach it.)
+        let after = t.workflow().unwrap();
+        assert_eq!((after.phase, after.generation), (Phase::Preparing, 1), "a second tap shares the merge in flight");
+        t.finish();
+    }
+
+    #[test]
+    fn fixing_from_the_card_works_against_the_task_folder() {
+        use crate::thread_git::{Checks, Phase, Shown, ThreadGitAction::{AskFix, FixChecks}};
+        let t = ship_thread("card-fix-task-folder", &["a"], &[("a", apex_core::Access::Full, &["Built.\nDeck built {sha:a}", "On the check.", "On it again."])]);
+        t.say("a", "@a build it");
+        crate::thread_git::fake_checks(t.sha("a"), Checks::Failed { pr: 42, detail: "Windows failed".into() });
+        assert_eq!(t.act(FixChecks { expected: Shown::Key(t.key()) }).unwrap(), "Asked the builder to fix the failed check.");
+        t.until(|| !t.host.handle("r").unwrap().busy() && t.workflow().unwrap().fix_requested);
+        let mut failed = t.workflow().unwrap();
+        failed.phase = Phase::Failed;
+        failed.fix_requested = false;
+        t.host.thread_git.put("r", failed).unwrap();
+        assert_eq!(t.act(AskFix { expected: Shown::Key(t.key()) }).unwrap(), "Asked the builder to fix the failed check.");
+        t.until(|| !t.host.handle("r").unwrap().busy() && t.workflow().unwrap().fix_requested);
+        let replies = t.host.room_state("r".into()).unwrap()["snapshot"]["transcript"].as_array().unwrap().iter().filter(|m| m["speaker"]["id"] == "a").count();
+        assert_eq!(replies, 3, "each fix is one turn for the builder");
+        t.finish();
+    }
+
+    #[test]
+    fn a_blocked_merge_posts_a_deck_note_once() {
+        use crate::task_branches::fixture::git;
+        let t = ship_thread("ship-blocked", &["a"], &[("a", apex_core::Access::Full, &["Shipped.\nDeck ship {sha:a}"])]);
+        t.say("a", "@a ship it");
+        // The task folder moved on before anything reached GitHub.
+        git(Path::new(&t.workflow().unwrap().root), &["commit", "--allow-empty", "-qm", "more"]);
+        let job = t.workflow().unwrap();
+        // This step or the background worker's, whichever comes first, stops it and says so once.
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
+        t.until(|| t.notes() == vec!["Couldn't merge fix/a: Merge stopped before submission.".to_string()]);
+        assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Blocked);
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job));
+        assert_eq!(t.notes().len(), 1, "a stale poll posts nothing");
+        t.finish();
+    }
+
+    /// Agent `a`'s task folder commit merged on GitHub (the bare origin's
+    /// main), and the thread's workflow at Syncing as the merge worker leaves
+    /// it. Saving it (`put`) hands it to the background worker too.
+    fn merged_on_github(t: &ShipThread) -> crate::thread_git::Workflow {
+        use crate::task_branches::fixture::git;
+        let folder = t.host.task_branches.get("r", "a").unwrap().unwrap().path;
+        let head = t.sha("a").to_owned();
+        let tree = git(&folder, &["rev-parse", "HEAD^{tree}"]);
+        let main = git(t.repo.root(), &["rev-parse", "origin/main"]);
+        let merge = git(&folder, &["commit-tree", &tree, "-p", &main, "-p", &head, "-m", "Merge pull request #42"]);
+        git(t.repo.root(), &["push", "-q", t.repo.bare.to_str().unwrap(), &format!("{merge}:refs/heads/main")]);
+        let w: crate::thread_git::Workflow = serde_json::from_value(serde_json::json!({
+            "root": folder.to_str().unwrap(), "branch": "fix/a", "repo": "test/repo", "head": head,
+            "builder": "a", "builder_model": "", "reviewer": null, "phase": "syncing", "generation": 1,
+            "pr": 42, "detail": "Merged PR #42 into main.", "result_oid": merge, "pushed": true, "fix_requested": false,
+        })).unwrap();
+        w
+    }
+
+    #[test]
+    fn the_merge_note_survives_the_folder_and_is_posted_once() {
+        use crate::task_branches::fixture::git;
+        let t = ship_thread("merge-note", &["a"], &[("a", apex_core::Access::Full, &[])]);
+        let job = merged_on_github(&t);
+        t.host.thread_git.put("r", job.clone()).unwrap();
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
+        t.until(|| t.notes() == vec!["Merged PR #42. Your Mac is updated. Awaiting your test.".to_string()]);
+        assert_eq!(git(t.repo.root(), &["rev-parse", "HEAD"]), job.result_oid.clone().unwrap(), "the Mac's main is at the merge");
+        assert!(std::fs::symlink_metadata(&job.root).is_err(), "the task folder is gone");
+        assert_eq!(t.host.task_branches.get("r", "a").unwrap(), None);
+        assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Merged);
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job));
+        assert_eq!(t.notes().len(), 1, "a stale Syncing job posts no second note");
+        assert!(t.offer()["decision"].is_null(), "no card: the note says it");
+        t.finish();
+    }
+
+    #[test]
+    fn a_deferred_update_and_a_kept_folder_say_why_in_the_note() {
+        use crate::task_branches::fixture::git;
+        let t = ship_thread("merge-note-deferred", &["a"], &[("a", apex_core::Access::Full, &[])]);
+        let job = merged_on_github(&t);
+        git(t.repo.root(), &["commit", "-q", "--allow-empty", "-m", "only on this Mac"]);
+        std::fs::write(Path::new(&job.root).join("unsaved.txt"), "still working\n").unwrap();
+        t.host.thread_git.put("r", job.clone()).unwrap();
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
+        let shown = crate::assistant_git::external_path(Path::new(&job.root)).display().to_string();
+        t.until(|| t.notes() == vec![format!("Merged PR #42. Your Mac wasn't updated: its main has commits that aren't on GitHub. The task folder {shown} was kept: it has changes the pull request doesn't contain.")]);
+        assert!(Path::new(&job.root).is_dir());
+        assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Merged);
+        t.finish();
+    }
+
+    #[test]
+    fn the_task_folder_stays_while_its_agent_is_working() {
+        let t = ship_thread("merge-note-busy", &["a"], &[("a", apex_core::Access::Full, &[])]);
+        let job = merged_on_github(&t);
+        t.host.handle("r").unwrap().live.lock().unwrap().observe(&RoomEvent::TurnStarted { id: ParticipantId::new("a") });
+        t.host.thread_git.put("r", job.clone()).unwrap();
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
+        let shown = crate::assistant_git::external_path(Path::new(&job.root)).display().to_string();
+        t.until(|| t.notes() == vec![format!("Merged PR #42. Your Mac is updated. Awaiting your test. The task folder {shown} was kept: its agent was still working in it.")]);
+        assert!(Path::new(&job.root).is_dir(), "never deleted under a running turn");
+        assert_eq!(t.host.task_branches.get("r", "a").unwrap(), None, "its next turn is an ordinary one");
+        t.finish();
+    }
+
+    #[test]
+    fn plan_or_lower_access_switched_on_mid_turn_stops_that_turns_ship() {
+        type Change = fn(&RoomHandle);
+        let changes: [(&str, Change); 3] = [
+            ("nothing", |_| {}),
+            ("plan", |handle| handle.plan.store(true, Ordering::SeqCst)),
+            ("access", |handle| {
+                let mut saved = handle.checkpoint.lock().unwrap();
+                saved.snapshot.participants.iter_mut().find(|p| p.id.as_str() == "a").unwrap().access = apex_core::Access::Ask;
+            }),
+        ];
+        for (name, change) in changes {
+            let t = ship_thread(&format!("ship-mid-turn-{name}"), &["a"], &[("a", apex_core::Access::Full, &["Working on it."])]);
+            t.say("a", "@a fix it, ship it");
+            let handle = t.host.handle("r").unwrap();
+            let error = Mutex::new(None);
+            let sink = t.host.turn_sink("r", &handle, &error);
+            // The agent's next turn, as its events arrive: Plan or access changes in the middle.
+            sink(RoomEvent::TurnStarted { id: ParticipantId::new("a") });
+            change(&handle);
+            let seq = handle.checkpoint.lock().unwrap().snapshot.transcript.len();
+            let reply: apex_core::Message = serde_json::from_value(serde_json::json!({
+                "seq": seq, "speaker": { "kind": "bot", "id": "a" }, "text": format!("Shipped.\nDeck ship {}", t.sha("a")),
+            })).unwrap();
+            sink(RoomEvent::MessageAdded { message: reply });
+            handle.plan.store(false, Ordering::SeqCst);
+            assert_eq!(t.workflow().unwrap().pending(), name == "nothing", "{name}");
+            drop(sink);
+            drop(handle);
+            t.finish();
+        }
+    }
+
+    #[test]
+    fn a_closed_thread_still_gets_the_note() {
+        let t = ship_thread("merge-note-closed", &["a"], &[("a", apex_core::Access::Full, &[])]);
+        let job = merged_on_github(&t);
+        t.host.room_close("r".into());
+        t.host.thread_git.put("r", job.clone()).unwrap();
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job));
+        let saved = t.host.store.room("r").unwrap().unwrap();
+        let deck = apex_core::Speaker::Bot(ParticipantId::new("deck"));
+        assert!(saved.snapshot.transcript.iter().any(|m| m.speaker == deck && m.text == "Merged PR #42. Your Mac is updated. Awaiting your test."), "{:?}", saved.snapshot.transcript);
+        t.finish();
+    }
+
+    #[test]
+    fn task_start_needs_an_agent_mid_turn_at_full_with_plan_off() {
+        let (host, runtime, data) = host("task-start-admission");
+        // The thread's saved merge workflow for that branch, read with no GitHub call.
+        let ledger = serde_json::json!({"version":1,"rooms":{"r":{
+            "root":"/elsewhere","branch":"fix/alert-timer","repo":"test/repo","head":"a".repeat(40),
+            "builder":"a","builder_model":"","reviewer":null,"phase":"ready",
+            "generation":0,"pr":42,"detail":"","pushed":true,"fix_requested":false
+        }}});
+        std::fs::write(crate::authority_file::fixture_path(&data.join("thread-git-v1.json")), serde_json::to_vec(&ledger).unwrap()).unwrap();
+        let repo = crate::task_branches::fixture::Repo::new();
+        let mut full = scripted("a", &[]);
+        full.access = apex_core::Access::Full;
+        let mut ask = scripted("b", &[]);
+        ask.access = apex_core::Access::Ask;
+        host.room_create("r".into(), vec![full, ask], RoomOptions::default(), Some(repo.root().display().to_string())).unwrap();
+        let start = |bot: &str| runtime.block_on(Arc::clone(&host).task_start("r".into(), bot.into(), "fix/alert-timer".into()));
+        let working = "Only an agent that is working in this thread can start a task branch.";
+        assert_eq!(start("a").unwrap_err(), working, "no turn running");
+        let handle = host.handle("r").unwrap();
+        for id in ["a", "b"] {
+            handle.live.lock().unwrap().observe(&RoomEvent::TurnStarted { id: ParticipantId::new(id) });
+        }
+        assert_eq!(start("nobody").unwrap_err(), working);
+        assert_eq!(start("b").unwrap_err(), "Task branches need Full access.");
+        handle.plan.store(true, Ordering::SeqCst);
+        assert_eq!(start("a").unwrap_err(), "Task branches can't be started in Plan mode.");
+        handle.plan.store(false, Ordering::SeqCst);
+        assert_eq!(host.task_status("r".into(), "a".into()).unwrap(), "No task branch in this thread.");
+        let text = start("a").unwrap();
+        // Agents get the folder as git takes it: never Windows' \\?\ form.
+        let folder = crate::assistant_git::external_path(&repo.parent().join("fix-alert-timer")).into_owned();
+        assert!(!text.contains(r"\\?\"), "{text}");
+        assert_eq!(text, format!("Task branch fix/alert-timer is ready in {0}, made from origin/main. You had no changes in a copy of your own, so nothing was moved. Commit, push and open the pull request from that folder. For the rest of this turn use full paths there (git -C {0}); your next turn starts in it.", folder.display()));
+        assert_eq!(host.task_status("r".into(), "a".into()).unwrap(), format!("fix/alert-timer in {} · PR #42", folder.display()));
+        assert_eq!(host.task_status("r".into(), "b".into()).unwrap(), "No task branch in this thread.");
+        drop(handle);
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(data);
+    }
+
     #[test]
     fn next_steps_are_not_worked_out_after_stop() {
         let (host, runtime, data) = host("next-steps-stop");
-        host.settings_reply_suggestions_set(crate::reply_suggestions::Mode::NextSteps).unwrap();
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#])], RoomOptions::default(), None).unwrap();
         let handle = host.handle("r").unwrap();
         // The reply, without the host's batch (which would ask by itself).
         runtime.block_on(async { handle.room.lock().await.post_human("@null fix it", &|_| {}).await });
@@ -7154,7 +7819,7 @@ done
             cargo_target_dir: None,
             media_dir: None,
             attachment_roots: Vec::new(),
-            phone: None,
+            deck: None,
             data_dir: None,
             observed_addrs: Vec::new(),
         };

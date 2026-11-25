@@ -22,7 +22,7 @@ use crate::muse_server;
 use crate::live_session::{Key, LiveTurn, Process, Slot};
 use crate::presets::{agent_command_in, clean_effort, clean_model, codex_service_tier, output_format};
 use crate::codex_hook;
-use crate::phone_env::{self, PhoneEnv};
+use crate::phone_env::{self, DeckEnv};
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 use crate::owned_process::{OwnedChild, Registry};
 
@@ -112,7 +112,7 @@ pub struct CliParticipant {
     cargo_target_dir: Option<PathBuf>,
     attachment_roots: Vec<PathBuf>,
     /// Deck's shared phone, for Claude and Codex bots. See phone_env.rs.
-    phone: Option<PhoneEnv>,
+    deck: Option<DeckEnv>,
     /// Where daemon data lives, for bot jail storage.
     pub data_dir: Option<PathBuf>,
     /// Observed public IP addresses of this host.
@@ -126,7 +126,7 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, live: None, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false, code_mode: None, code_mode_cancel: Default::default() }
+        Self { config, live: None, timeout: TURN_TIMEOUT, watchdog_managed: false, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, native_guarded: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), deck: None, data_dir: None, observed_addrs: Vec::new(), computer: None, computer_only: false, code_mode: None, code_mode_cancel: Default::default() }
     }
 
     /// Start a conversation turn with tools disabled at both the CLI and
@@ -135,7 +135,7 @@ impl CliParticipant {
         self.tools_disabled = true;
         self.mcp_disabled = true;
         self.config.access = Access::Read;
-        self.phone = None;
+        self.deck = None;
         self.codex_hook = None;
         self
     }
@@ -186,7 +186,7 @@ impl CliParticipant {
         self.temp = context.temp.clone();
         self.processes = Registry::new(context.process_registry.clone());
         self.cargo_target_dir = context.cargo_target_dir.clone();
-        self.phone = context.phone.clone();
+        self.deck = context.deck.clone();
         self.data_dir = context.data_dir.clone();
         self.observed_addrs = context.observed_addrs.clone();
         self
@@ -224,7 +224,7 @@ impl CliParticipant {
                     args.extend(["--tools".into(), "".into(), "--no-subagents".into()]);
                 }
                 if *tool == AgentTool::Codex {
-                    args.splice(1..1, phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
+                    args.splice(1..1, phone_env::codex_shell_flags(self.deck.as_ref().filter(|_| !self.tools_disabled), &self.config));
                 }
                 if self.tools_disabled && *tool == AgentTool::Grok {
                     let mut safe = Vec::with_capacity(args.len() + 1);
@@ -339,7 +339,7 @@ impl CliParticipant {
         }
         // Claude and Codex bots get the phone command; see phone_env.rs.
         // A text-only monitor turn has no tools, so it gets nothing.
-        command.envs(phone_env::phone_vars(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
+        command.envs(phone_env::deck_vars(self.deck.as_ref().filter(|_| !self.tools_disabled), &self.config));
         // An API key overrides Muse's subscription sign-in and bills per
         // use, so a Muse bot never sees one.
         if program == "muse" {
@@ -409,7 +409,7 @@ impl CliParticipant {
         };
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
         let data_dir = self.data_dir.clone().unwrap_or_else(|| home.join(".local/share/apex-deck"));
-        let room = self.phone.as_ref().map(|p| p.room.as_str()).unwrap_or("room");
+        let room = self.deck.as_ref().map(|p| p.room.as_str()).unwrap_or("room");
         let bot = self.config.id.as_str();
         let path_os = self.path.as_ref().map(|p| std::ffi::OsString::from(p)).unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
         let program_path = crate::executable::program(program, self.path.as_deref());
@@ -492,7 +492,7 @@ fn random_token() -> String {
     async fn start_codex(&self) -> Result<(OwnedChild, Option<codex_hook::Hook>), ParticipantError> {
         let program = "codex";
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
-        args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
+        args.extend(phone_env::codex_shell_flags(self.deck.as_ref().filter(|_| !self.tools_disabled), &self.config));
         if self.mcp_disabled {
             let mut inventory_args: Vec<String> = GATEWAY_CODEX_FLAGS.iter().map(|s|(*s).into()).collect();
             inventory_args.extend(["mcp".into(), "list".into(), "--json".into()]);
@@ -1152,7 +1152,7 @@ impl Participant for CliParticipant {
                 temp: None,
                 isolation: Some(isolation),
                 cargo_target_dir: None,
-                phone: None,
+                deck: None,
                 ..self.clone()
             };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
@@ -1172,7 +1172,7 @@ impl Participant for CliParticipant {
         }
         let program = program.as_str();
         let loaded = crate::attachments::for_request(&request, &self.attachment_roots)?;
-        let mut prompt = render_prompt(&phone_env::with_hint(&request.system_with_notes(), self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &loaded.with_note(&request.turns));
+        let mut prompt = render_prompt(&phone_env::with_hint(&request.system_with_notes(), self.deck.as_ref().filter(|_| !self.tools_disabled), &self.config), &loaded.with_note(&request.turns));
         let skipped_image = !loaded.skipped.is_empty();
         let images = loaded.images;
         let mut staged = None;
@@ -1242,7 +1242,7 @@ impl Participant for CliParticipant {
             }
             slot.begin(Key {
                 config: self.config.clone(), cwd: self.cwd.clone(),
-                system: phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config),
+                system: phone_env::with_hint(&request.system, self.deck.as_ref().filter(|_| !self.tools_disabled), &self.config),
                 plan: self.plan, args: args.clone(),
                 hooked,
                 tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, code_mode: bridge.is_some(),
@@ -1475,7 +1475,7 @@ exit 1
         assert_eq!(crate::attachments::claude_content("describe", &images)[1]["source"]["data"], "iVBORw0KGgpmaXh0dXJl");
         assert!(bot.tools_disabled && bot.mcp_disabled);
         assert_eq!(bot.config.access, apex_core::Access::Read);
-        assert!(bot.phone.is_none() && bot.codex_hook.is_none());
+        assert!(bot.deck.is_none() && bot.codex_hook.is_none());
     }
 
     #[cfg(target_os = "macos")]

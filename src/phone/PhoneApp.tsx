@@ -175,7 +175,7 @@ const FOLDS_KEY = "apex-deck.phone.folds.v1";
 const CREW_KEY = "apex-deck.phone.crew.v1";
 /** The threads open on this phone, in the order they were opened: swiping moves through these and no others. */
 const OPEN_KEY = "apex-deck.phone.openThreads.v1";
-const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
+const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: null };
 
 type Tab = "tasks" | "threads" | "agents" | "code" | "library" | "machines" | "machine" | "computer" | "app-permissions" | "settings" | "appearance" | "log";
 type Draft = { text: string; files: ComposerAttachment[] };
@@ -4145,12 +4145,12 @@ function ThreadView(props: {
   // Runner replies are folded into a closed disclosure. Keep their decision reachable.
   const foldedDecision = decisionSeq !== null && props.runner?.replySeqs?.includes(decisionSeq);
   // Older transports and some platforms cannot admit phone Git writes.
-  const canShowDecision = offer?.decision?.kind === "question" || offer?.decision?.kind === "merged" ||
+  const canShowDecision = offer?.decision?.kind === "question" ||
     props.suggestionHost?.supports("phone_thread_git_v1");
   const decisionCard = decisionBackend && offer?.decision && canShowDecision && (pendingMerge || (!busy && decisionSeq !== null)) &&
     <ReplyDecisionCard key={offer.decision.key} backend={decisionBackend} room={props.paneId}
       offer={offer} refresh={refresh} focused={false} report={props.onDecisionResult} />;
-  const showList = !props.suggestionHost || offer?.mode === "next_steps";
+  const showList = !props.suggestionHost || (offer?.mode === "decision_card" && !offer.decision);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composerHistory = useComposerHistory(
     JSON.stringify([props.link.id, props.paneId]), props.draft.text,
@@ -4605,7 +4605,7 @@ function ThreadView(props: {
               <PhonePictures paths={replyImages(message.text)} read={readPicture(person(message.speaker.id).display_name)} blocked={props.pictures.blocked} />
               {!foldedDecision && message.seq === decisionSeq && decisionCard}
               {showList && props.steps && message.speaker.kind === "bot" && props.steps.offer.by === message.speaker.id && newestReply.get(message.speaker.id) === message.seq &&
-                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} startCollapsed onStep={fillStep} />}
+                <ReplyNextSteps key={`${props.link.id}:${props.paneId}:${message.seq}:${JSON.stringify(props.steps.offer.steps)}`} offer={props.steps.offer} onStep={fillStep} />}
             </div>
             {actionsFor(message, message.text)}
           </section>

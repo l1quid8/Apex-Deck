@@ -154,6 +154,13 @@ pub struct ParticipantConfig {
     pub voice: Option<String>,
 }
 
+impl ParticipantConfig {
+    /// Whether Deck gives this agent its command line (`"$APEX_DECK_BIN"`).
+    pub fn has_deck_cli(&self) -> bool {
+        matches!(self.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. })
+    }
+}
+
 /// How fast a bot's tool answers. Fast costs more on both Codex and Claude.
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

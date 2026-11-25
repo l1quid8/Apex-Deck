@@ -126,7 +126,7 @@ fn run_git(project_data: &Path,
         .output()
         .map_err(|e| format!("Could not run git {}: {e}", args.first().unwrap_or(&"")))?;
     if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_string())
     } else {
         Err(format!(
             "Git {} failed: {}",
@@ -306,6 +306,12 @@ fn copy_folder_name(thread: &str, bot: &str) -> String {
 /// folder the Worktrees tab adds the user's own worktrees to. Its state stays in
 /// `<data>/bot-copies/<thread>/<bot>/copy.json`.
 fn copy_work_dir(data: &Path, root: &Path, thread: &str, bot: &str) -> PathBuf {
+    worktrees_dir(data, root).join(copy_folder_name(thread, bot))
+}
+
+/// `<main>-worktrees` beside the main checkout: where the Worktrees tab adds
+/// the user's own worktrees, and Deck its agents' copies and task folders.
+pub(crate) fn worktrees_dir(data: &Path, root: &Path) -> PathBuf {
     let main = run_git(data, root, &[], &["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .ok()
         .map(PathBuf::from)
@@ -314,7 +320,7 @@ fn copy_work_dir(data: &Path, root: &Path, thread: &str, bot: &str) -> PathBuf {
         .unwrap_or_else(|| root.to_path_buf());
     let parent = main.parent().unwrap_or(&main);
     let name = main.file_name().unwrap_or_default().to_string_lossy();
-    parent.join(format!("{name}-worktrees")).join(copy_folder_name(thread, bot))
+    parent.join(format!("{name}-worktrees"))
 }
 
 /// True when `copy.work` is where Deck puts this agent's copy: beside the
@@ -1008,8 +1014,25 @@ const FOLD_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// A copy a turn may run in. A folding copy belongs to the fold queue, which
 /// deletes it when done, so a turn must never start inside one.
-fn adoptable(state: &CopyState) -> bool {
+pub(crate) fn adoptable(state: &CopyState) -> bool {
     matches!(state, CopyState::Working | CopyState::Reconciling { .. })
+}
+
+/// The copy's folder is gone, or it is still exactly its base: HEAD is the
+/// base and nothing but the shortcut links shows in `git status`.
+fn unchanged(data: &Path, copy: &BotCopy) -> bool {
+    if std::fs::symlink_metadata(&copy.work).is_err() {
+        return true;
+    }
+    if run_git(data, &copy.work, &[], &["rev-parse", "HEAD"]).ok().as_deref() != Some(copy.base.as_str()) {
+        return false;
+    }
+    run_git(data, &copy.work, &[], &["status", "--porcelain", "--untracked-files=all"]).is_ok_and(|status| {
+        status.lines().all(|line| {
+            let path = line.get(3..).unwrap_or("").trim_end_matches('/');
+            SHARED_SHORTCUT_PATHS.iter().any(|rel| path == *rel || path.starts_with(&format!("{rel}/")))
+        })
+    })
 }
 
 pub fn recover_unfolded_copies(data: &Path) -> Vec<BotCopy> {
@@ -1210,6 +1233,14 @@ impl FoldQueue {
     }
 
     async fn process_task(&self, task: FoldTask) {
+        // Nothing to fold (its work went to a task branch, or there was none):
+        // remove the copy without taking the editor slot or running the check.
+        let (data, copy) = (self.data.clone(), task.copy.clone());
+        if tokio::task::spawn_blocking(move || unchanged(&data, &copy)).await.unwrap_or(false) {
+            let (data, copy) = (self.data.clone(), task.copy.clone());
+            let _ = tokio::task::spawn_blocking(move || remove_copy(&data, &copy)).await;
+            return;
+        }
         let fold_owner = ParticipantId::new("deck-fold");
         loop {
             {
@@ -1369,6 +1400,7 @@ pub struct BotCopies {
     active: Mutex<HashMap<ParticipantId, BotCopy>>,
     name_of: Option<Arc<dyn Fn(&ParticipantId) -> Option<String> + Send + Sync>>,
     room: Option<RoomLookup>,
+    task_branches: Option<Arc<crate::task_branches::TaskBranches>>,
 }
 
 impl BotCopies {
@@ -1390,6 +1422,7 @@ impl BotCopies {
             active: Mutex::default(),
             name_of: None,
             room: None,
+            task_branches: None,
         }
     }
 
@@ -1415,6 +1448,27 @@ impl BotCopies {
         }
     }
 
+    /// The agents' task folders: a turn runs in the agent's folder when it has one.
+    pub fn with_task_branches(mut self, task_branches: Arc<crate::task_branches::TaskBranches>) -> Self {
+        self.task_branches = Some(task_branches);
+        self
+    }
+
+    /// The agent's task folder in this thread, at the folder matching the
+    /// thread's own. A folder deleted outside Deck drops its record.
+    fn task_folder(&self, id: &ParticipantId) -> Option<apex_core::CopyGrant> {
+        let folder = self.task_branches.as_ref()?.get(&self.thread, id.as_str()).ok()??;
+        let thread = std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+        let path = thread
+            .strip_prefix(&folder.root)
+            .ok()
+            .map(|rel| folder.path.join(rel))
+            .filter(|dir| dir.is_dir())
+            .unwrap_or_else(|| folder.path.clone());
+        // The turn runs there and is told so: in the form git takes on Windows too.
+        Some(apex_core::CopyGrant { path: crate::assistant_git::external_path(&path).into_owned(), task_branch: Some(folder.branch) })
+    }
+
     /// Looks up a bot's display name for the notes a fold posts.
     pub fn with_names(mut self, name_of: Arc<dyn Fn(&ParticipantId) -> Option<String> + Send + Sync>) -> Self {
         self.name_of = Some(name_of);
@@ -1423,12 +1477,16 @@ impl BotCopies {
 }
 
 impl CopyProvider for BotCopies {
-    fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Option<PathBuf>> {
+    fn active_copy<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, Option<apex_core::CopyGrant>> {
+        let grant = |path: PathBuf| apex_core::CopyGrant { path, task_branch: None };
         Box::pin(async move {
+            if let Some(task) = self.task_folder(id) {
+                return Some(task);
+            }
             {
                 let active = self.active.lock().unwrap();
                 if let Some(c) = active.get(id) {
-                    return self.agent_dir(c).ok();
+                    return self.agent_dir(c).ok().map(grant);
                 }
             }
             let existing = {
@@ -1441,7 +1499,7 @@ impl CopyProvider for BotCopies {
                 if adoptable(&copy.state) {
                     let dir = self.agent_dir(&copy).ok();
                     self.active.lock().unwrap().insert(id.clone(), copy);
-                    return dir;
+                    return dir.map(grant);
                 }
             }
             None
@@ -2530,7 +2588,7 @@ mod tests {
             "the copy sits beside the user's worktrees"
         );
         assert!(!data.join("bot-copies/thread-sub/bot1/work").exists());
-        assert_eq!(copies.active_copy(&id).await, Some(dir.clone()));
+        assert_eq!(copies.active_copy(&id).await, Some(apex_core::CopyGrant { path: dir.clone(), task_branch: None }));
         fs::write(dir.join("lib.rs"), "two\n").unwrap();
         fs::write(copy.work.join("outside.txt"), "root\n").unwrap();
         copies.turn_finished(&id, false).await;
@@ -2629,6 +2687,37 @@ mod tests {
         queue.wait_idle().await;
         assert!(load_copies(&data).is_empty(), "no record is left to block the next copy");
         assert!(notes.lock().unwrap().is_empty(), "no misleading 'kept in the Worktrees tab' note");
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_copy_is_removed_without_a_fold() {
+        let (_tmp, root, data) = init_repo("fold-unchanged");
+        // Work in the main folder that isn't this agent's: the copy's base holds it.
+        fs::write(root.join("theirs.txt"), "theirs").unwrap();
+        let copy = create_copy(&root, &data, "t-same", "bot").unwrap();
+        // Someone else holds the editor slot throughout. A fold would wait for
+        // it (and then run the project check); an unchanged copy needs neither.
+        let held = Some(ParticipantId::new("someone-else"));
+        let editor = Arc::new(Mutex::new(held.clone()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&events);
+        let queue = Arc::new(FoldQueue::new(data.clone()));
+        queue.enqueue(FoldTask {
+            thread: "t-same".into(),
+            copy: copy.clone(),
+            editor_handle: Arc::clone(&editor),
+            event_sink: Arc::new(move |e| seen.lock().unwrap().push(e)),
+            reconcile: None,
+            room: None,
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(20), queue.wait_idle())
+            .await
+            .expect("an unchanged copy is removed without waiting for the editor slot");
+        assert!(load_copies(&data).is_empty(), "no record is left");
+        assert!(!copy.work.exists(), "the copy folder is gone");
+        assert_eq!(*editor.lock().unwrap(), held, "the editor slot was never taken");
+        assert!(events.lock().unwrap().is_empty(), "nothing to report: {:?}", events.lock().unwrap());
+        assert_eq!(fs::read_to_string(root.join("theirs.txt")).unwrap(), "theirs", "the main folder is untouched");
     }
 
     #[test]

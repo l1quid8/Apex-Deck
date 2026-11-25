@@ -4,7 +4,6 @@
 //! A Git decision comes only from the saved merge workflow and GitHub. A
 //! question an agent wrote can only ever send text back to that agent.
 
-use crate::authority_file::VersionedDocument;
 use crate::thread_git::{Checks, Phase, Workflow};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -28,7 +27,6 @@ const KEPT: usize = 64;
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     DecisionCard,
-    NextSteps,
     Off,
 }
 impl Mode {
@@ -42,14 +40,12 @@ impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {
             Mode::DecisionCard => "decision_card",
-            Mode::NextSteps => "next_steps",
             Mode::Off => "off",
         }
     }
     fn code(self) -> u8 {
         match self {
             Mode::DecisionCard => 0,
-            Mode::NextSteps => 1,
             Mode::Off => 2,
         }
     }
@@ -58,16 +54,15 @@ impl Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// Review and required checks passed for this commit. Deck merges; 0 turns.
+    /// Every required check passed for this commit. Deck merges; 0 turns.
     Merge,
     /// A required check failed before any merge was asked for. 1 turn.
     FixChecks,
     /// A merge that was asked for stopped on a failed check. 1 turn.
     FixFailed,
     /// A merge is in flight. Shown in every mode so Cancel stays reachable.
+    /// A merge that landed is reported by Deck's note in the thread.
     Merging,
-    /// Receipt.
-    Merged,
     /// The agent's own yes/no question. Only ever sends text to that agent.
     Question,
 }
@@ -156,7 +151,8 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
     };
     // A merge in flight is reachable whatever the setting says.
     if let Some(w) = facts.workflow.filter(|w| w.pending()) {
-        return Some(git(w, Kind::Merging, "merging", "Merging…", None, 0, None));
+        let question = if w.phase == Phase::Checks { "Merging when checks pass…" } else { "Merging…" };
+        return Some(git(w, Kind::Merging, "merging", question, None, 0, None));
     }
     let reply = facts.reply.as_ref()?;
     if facts.mode != Mode::DecisionCard || facts.busy {
@@ -164,7 +160,6 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
     }
     let current = facts.workflow.filter(|w| facts.head == Some(w.head.as_str()));
     let candidate = current.and_then(|w| match (&w.phase, facts.checks) {
-        (Phase::Merged, _) => Some(git(w, Kind::Merged, "merged", "Merged. Awaiting your test.", None, 0, None)),
         (Phase::Failed, _) if !w.fix_requested => Some(git(
             w,
             Kind::FixFailed,
@@ -174,13 +169,17 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
             1,
             Some(w.detail.clone()),
         )),
-        (Phase::Ready | Phase::Cancelled, Checks::Passed { pr }) if w.reviewer.is_some() => {
+        (Phase::Ready | Phase::Cancelled, Checks::Passed { pr }) => {
             let mut card = git(w, Kind::Merge, "merge", "Merge into main?", Some("Merge to main"), 0, None);
-            card.context = format!("PR #{pr} · review passed for {} · required checks passed", short(&w.head));
+            // A different model's review is the author's job now; shown when there was one.
+            card.context = match &w.reviewer {
+                Some(_) => format!("PR #{pr} · checks passed · review passed for {}", short(&w.head)),
+                None => format!("PR #{pr} · checks passed"),
+            };
             card.pr = Some(*pr);
             Some(card)
         }
-        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if w.reviewer.is_some() && !w.fix_requested => {
+        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if !w.fix_requested => {
             let mut card = git(
                 w,
                 Kind::FixChecks,
@@ -228,15 +227,15 @@ pub struct Ask {
 
 /// Words that belong to buttons the Mac runs itself. An agent's button may not
 /// borrow them, so a text-only button never reads as a Deck action.
-const HOST_ACTIONS: [&str; 3] = ["merg", "push", "cancel"];
+const HOST_ACTIONS: [&str; 4] = ["merg", "push", "cancel", "ship"];
 
 /// `Deck asks: <question>? | <yes label>` as the reply's last line, or the
-/// line before a `Deck built` / `Deck review passed` receipt. Anything
-/// malformed is no question at all.
+/// line before a `Deck built` / `Deck ship` / `Deck review passed` receipt.
+/// Anything malformed is no question at all.
 pub fn ask(text: &str) -> Option<Ask> {
     let mut lines = text.trim_end().lines().rev().filter(|l| !l.trim().is_empty());
     let mut line = lines.next()?;
-    if line.starts_with("Deck built ") || line.starts_with("Deck review passed ") {
+    if line.starts_with("Deck built ") || line.starts_with("Deck ship ") || line.starts_with("Deck review passed ") {
         line = lines.next()?;
     }
     let (question, label) = line.strip_prefix("Deck asks: ")?.rsplit_once(" | ")?;
@@ -255,13 +254,13 @@ pub fn ask(text: &str) -> Option<Ask> {
         .then(|| Ask { question: question.into(), label: label.into() })
 }
 
+/// The user's own file, not a protected ledger: a dismissal only hides a card.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Ledger {
     version: u32,
     /// Dismissed keys per thread, oldest first.
     rooms: BTreeMap<String, Vec<String>>,
 }
-impl VersionedDocument for Ledger {}
 
 pub struct ReplySuggestions {
     path: PathBuf,
@@ -281,9 +280,8 @@ impl ReplySuggestions {
     }
     pub fn mode(&self) -> Mode {
         match self.mode.load(Ordering::SeqCst) {
-            0 => Mode::DecisionCard,
             2 => Mode::Off,
-            _ => Mode::NextSteps,
+            _ => Mode::DecisionCard,
         }
     }
     pub fn set_mode(&self, mode: Mode) {
@@ -293,11 +291,11 @@ impl ReplySuggestions {
     fn ledger(&self) -> Result<std::sync::MutexGuard<'_, Option<Ledger>>, String> {
         let mut cache = self.ledger.lock().map_err(|e| e.to_string())?;
         if cache.is_none() {
-            *cache = Some(
-                Ledger::read_optional(&self.path)
-                    .map_err(|e| e.to_string())?
-                    .unwrap_or(Ledger { version: 1, rooms: BTreeMap::new() }),
-            );
+            let saved = crate::plain_file::read::<Ledger>(&self.path)?.unwrap_or(Ledger { version: 1, rooms: BTreeMap::new() });
+            if saved.version != 1 {
+                return Err(format!("{} is from a newer Deck (version {}).", self.path.display(), saved.version));
+            }
+            *cache = Some(saved);
         }
         Ok(cache)
     }
@@ -319,7 +317,7 @@ impl ReplySuggestions {
         keys.push(key.to_owned());
         let extra = keys.len().saturating_sub(KEPT);
         keys.drain(..extra);
-        next.write_to(&self.path).map_err(|e| e.to_string())?;
+        crate::plain_file::save(&self.path, &next)?;
         *cache = Some(next);
         Ok(())
     }
@@ -398,9 +396,8 @@ mod tests {
     fn each_row_of_the_table() {
         let card = Mode::DecisionCard;
         let ready = workflow(Phase::Ready, true);
-        // Nothing: no commits, waiting for review, checks running or unknown.
+        // Nothing: no commits, checks running or unknown.
         assert_eq!(decided(card, None, PASSED, "Done.", &[]), None);
-        assert_eq!(decided(card, Some(&workflow(Phase::Ready, false)), PASSED, "Done.", &[]), None, "review first");
         assert_eq!(decided(card, Some(&ready), Checks::Running, "Done.", &[]), None);
         assert_eq!(decided(card, Some(&ready), Checks::Unknown("no pull request".into()), "Done.", &[]), None);
         // Review and required checks passed on the same commit.
@@ -419,8 +416,8 @@ mod tests {
         let merging = decided(card, Some(&workflow(Phase::Checks, true)), Checks::Running, "Done.", &[]).unwrap();
         assert_eq!((merging.kind, merging.cancellable, merging.dismissible), (Kind::Merging, true, false));
         assert!(!decided(card, Some(&workflow(Phase::Cancelling, true)), Checks::Running, "Done.", &[]).unwrap().cancellable);
-        let merged = decided(card, Some(&workflow(Phase::Merged, true)), Checks::Running, "Done.", &[]).unwrap();
-        assert_eq!((merged.kind, merged.primary), (Kind::Merged, None));
+        // Deck's note in the thread reports a merge; no card does.
+        assert_eq!(decided(card, Some(&workflow(Phase::Merged, true)), Checks::Running, "Done.", &[]), None);
         // The agent's own question, and Git winning over it.
         let asks = "I traced it.\nDeck asks: Add a timestamp so we can measure the delay? | Yes, add logging";
         let question = decided(card, None, Checks::Running, asks, &[]).unwrap();
@@ -429,14 +426,45 @@ mod tests {
     }
 
     #[test]
-    fn list_and_off_show_nothing_but_a_merge_in_flight() {
-        let asks = "Deck asks: Add a timestamp so we can measure the delay? | Yes, add logging";
-        for mode in [Mode::NextSteps, Mode::Off] {
-            assert_eq!(decided(mode, Some(&workflow(Phase::Ready, true)), PASSED, asks, &[]), None);
-            assert_eq!(decided(mode, Some(&workflow(Phase::Merged, true)), PASSED, asks, &[]), None);
-            let merging = decided(mode, Some(&workflow(Phase::Submitting, true)), PASSED, asks, &[]).unwrap();
-            assert_eq!((merging.kind, merging.cancellable), (Kind::Merging, true), "Cancel stays reachable in {mode:?}");
+    fn the_merge_card_needs_only_passing_checks() {
+        let card = Mode::DecisionCard;
+        let unreviewed = decided(card, Some(&workflow(Phase::Ready, false)), PASSED, "Done.", &[]).unwrap();
+        assert_eq!((unreviewed.kind, unreviewed.context.as_str(), unreviewed.primary.as_deref()), (Kind::Merge, "PR #42 · checks passed", Some("Merge to main")));
+        let reviewed = decided(card, Some(&workflow(Phase::Ready, true)), PASSED, "Done.", &[]).unwrap();
+        assert_eq!(reviewed.context, "PR #42 · checks passed · review passed for aaaaaaaa");
+    }
+
+    #[test]
+    fn a_failed_check_without_a_review_still_offers_a_fix() {
+        let fix = decided(Mode::DecisionCard, Some(&workflow(Phase::Ready, false)), Checks::Failed { pr: 42, detail: "Windows failed".into() }, "Done.", &[]).unwrap();
+        assert_eq!((fix.kind, fix.turns), (Kind::FixChecks, 1));
+    }
+
+    #[test]
+    fn a_merge_waiting_for_checks_says_so() {
+        let question = |phase| decided(Mode::DecisionCard, Some(&workflow(phase, false)), Checks::Running, "Done.", &[]).unwrap().question;
+        assert_eq!(question(Phase::Checks), "Merging when checks pass…");
+        for phase in [Phase::Preparing, Phase::Submitting, Phase::Cancelling, Phase::Syncing] {
+            assert_eq!(question(phase.clone()), "Merging…", "{phase:?}");
         }
+    }
+
+    #[test]
+    fn a_button_may_not_say_ship_and_a_ship_line_is_a_receipt() {
+        let sha = "c".repeat(40);
+        assert_eq!(ask("All set.\nDeck asks: Ready to go? | Ship it"), None);
+        assert_eq!(ask("All set.\nDeck asks: Ready to go now? | Shipping"), None);
+        let above = ask(&format!("Done.\nDeck asks: Show the setting on the phone too? | Show it on the phone\nDeck ship {sha}")).unwrap();
+        assert_eq!(above.label, "Show it on the phone");
+    }
+
+    #[test]
+    fn off_shows_nothing_but_a_merge_in_flight() {
+        let asks = "Deck asks: Add a timestamp so we can measure the delay? | Yes, add logging";
+        assert_eq!(decided(Mode::Off, Some(&workflow(Phase::Ready, true)), PASSED, asks, &[]), None);
+        assert_eq!(decided(Mode::Off, Some(&workflow(Phase::Merged, true)), PASSED, asks, &[]), None);
+        let merging = decided(Mode::Off, Some(&workflow(Phase::Submitting, true)), PASSED, asks, &[]).unwrap();
+        assert_eq!((merging.kind, merging.cancellable), (Kind::Merging, true), "Cancel stays reachable");
     }
 
     #[test]
@@ -482,6 +510,22 @@ mod tests {
             restarted.dismiss("r", &format!("test/repo|r|{n}|question|")).unwrap();
         }
         assert_eq!(restarted.dismissed("r").unwrap().len(), KEPT);
+    }
+
+    #[test]
+    fn dismissals_are_a_plain_file_the_broker_never_sees() {
+        // The root broker keeps only the ledgers it lists and refuses even a
+        // read of any other name, so on an installed Mac a protected ledger
+        // here failed every card request. A dismissal grants nothing.
+        let data = TestDataDir::new();
+        let key = format!("test/repo|r|7|merge|{}", "a".repeat(40));
+        ReplySuggestions::new(data.path(), Mode::DecisionCard).dismiss("r", &key).unwrap();
+        let path = data.path().join("reply-decisions-v1.json");
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 1);
+        assert_eq!(saved["rooms"]["r"][0], key.as_str());
+        assert!(!crate::authority_file::fixture_path(&path).exists());
+        assert_eq!(ReplySuggestions::new(data.path(), Mode::DecisionCard).dismissed("r").unwrap(), vec![key], "read back after a restart");
     }
 
     #[test]
@@ -542,6 +586,7 @@ mod tests {
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"decision_card"}))), Mode::DecisionCard);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"off"}))), Mode::Off);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"everything"}))), Mode::DecisionCard);
+        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"next_steps"}))), Mode::DecisionCard);
         let state = ReplySuggestions::new(TestDataDir::new().path(), Mode::DEFAULT);
         state.set_mode(Mode::Off);
         assert_eq!(state.mode().as_str(), "off");

@@ -3371,7 +3371,7 @@ mod tests {
         f.runtime.block_on(async {
             let _integration = f.host.assistant_apply.lock().await;
             let dispatch = tokio::time::timeout(std::time::Duration::from_secs(2), f.host.room_post_to("reader".into(), "Read the project.".into(), vec![ParticipantId::new("read-bot")])).await;
-            assert!(matches!(dispatch, Ok(Ok(()))), "A read chat must remain available during task integration.");
+            assert!(matches!(dispatch, Ok(Ok(()))), "A read chat must remain available during task integration: {dispatch:?}");
             for _ in 0..100 {
                 if f.host.room_state("reader".into()).unwrap()["snapshot"]["transcript"].as_array().unwrap().iter().any(|message| message["text"] == "Reading continued.") { return; }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;

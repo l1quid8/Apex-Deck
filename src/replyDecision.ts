@@ -1,16 +1,16 @@
 import type { Backend } from "./backend";
 import type { Mode } from "./generated/protocol";
-import type { GitOutcome, GitState, ThreadWorkflow } from "./gitChanges";
+import type { GitOutcome, ThreadWorkflow } from "./gitChanges";
 
 export type SuggestionsMode = Mode;
 export function suggestionsMode(raw: unknown): SuggestionsMode {
   const mode = (raw as { replySuggestions?: unknown } | null)?.replySuggestions;
-  return mode === "off" || mode === "next_steps" ? mode : "decision_card";
+  return mode === "off" ? "off" : "decision_card";
 }
 
 export interface ReplyDecision {
   key: string;
-  kind: "question" | "merge" | "fix_checks" | "fix_failed" | "merging" | "merged";
+  kind: "question" | "merge" | "fix_checks" | "fix_failed" | "merging";
   context: string;
   question: string;
   primary?: string;
@@ -48,23 +48,21 @@ export async function actOnDecision(backend: Backend, id: string, shown: ReplyOf
     await backend.call("room_post_to", { id, targets: [card.to], text: card.prompt, decisionKey: card.key });
     return "Sent to the agent.";
   }
-  if (card.kind === "question" || card.kind === "merged") throw new Error("There is no executable action.");
+  if (card.kind === "question") throw new Error("There is no executable action.");
   const kind = ({ merge: "merge_ready", fix_checks: "fix_checks", fix_failed: "ask_fix", merging: "cancel_merge" } as const)[card.kind];
   if (!kind || (kind === "cancel_merge" && !card.cancellable))
     throw new Error("This action is no longer available.");
-  const state = await backend.call<GitState>("room_git_status", { id });
+  // The card names the merge request it showed, which may be in an agent's task
+  // folder; the Mac checks that folder's HEAD itself.
   const checkout = shown.checkout;
-  if (!checkout || !state.workflow || state.workflow.head !== card.head ||
-      state.workflow.generation !== checkout.generation || state.workflow.repo !== checkout.repo ||
-      state.workflow.branch !== checkout.branch || state.workflow.root !== checkout.root ||
-      (kind !== "cancel_merge" && state.head !== card.head))
-    throw new Error("The checkout or merge request changed. Refresh the decision.");
-  const result = await backend.call<GitOutcome>("room_thread_git_action", { id, action: { kind, expected: { ...state, files: [] } } });
+  if (!checkout || !card.head) throw new Error("The checkout or merge request changed. Refresh the decision.");
+  const expected = { root: checkout.root, branch: checkout.branch, repo: checkout.repo, generation: checkout.generation, head: card.head };
+  const result = await backend.call<GitOutcome>("room_thread_git_action", { id, action: { kind, expected } });
   return result.message;
 }
 
 // Hide the protocol line from completed reply prose, keeping a trailing Git receipt.
 export function visibleReply(text: string): string {
   if (!text.includes("Deck asks: ")) return text;
-  return text.replace(/(?:^|\n)Deck asks: [^\n|`]{7,159}\? \| [^\n|`]{2,40}(?=\s*(?:\nDeck (?:built|review passed) [0-9a-f]{40}\s*)?$)/u, "").trimEnd();
+  return text.replace(/(?:^|\n)Deck asks: [^\n|`]{7,159}\? \| [^\n|`]{2,40}(?=\s*(?:\nDeck (?:built|ship|review passed) [0-9a-f]{40}\s*)?$)/u, "").trimEnd();
 }

@@ -44,6 +44,11 @@ const backend = {async call(cmd, {id, action}) {
     return state();
   }
   if (cmd !== 'room_thread_git_action' || action.expected.head !== workflow.head) throw Error('Wrong command or commit');
+  // Card and Cancel/Ask-to-fix actions name the merge request; Push and Merge carry the Git state.
+  const named = ['merge_ready', 'cancel_merge', 'fix_checks', 'ask_fix'].includes(action.kind);
+  const key = JSON.stringify(Object.keys(action.expected).sort().map(k => [k, action.expected[k]]));
+  const want = JSON.stringify(Object.entries({...checkout, head: workflow.head}).sort(([a], [b]) => a < b ? -1 : 1));
+  if (named ? key !== want : !(Array.isArray(action.expected.files) && action.expected.ahead === 1)) throw Error('Wrong payload for ' + action.kind + ': ' + JSON.stringify(action.expected));
   if (failNextWrite) { failNextWrite = false; throw Error('Push rejected by remote'); }
   writes.push(action.kind);
   switch (action.kind) {
@@ -193,9 +198,13 @@ async function runSuggestions() {
     const back = [...document.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.startsWith('Back to'));
     back.click(); await mount();
   }
-  await selectMode('next_steps');
   await wait(list);
-  if (card()) throw Error('List showed a decision card');
+  const step = list().querySelector('.reply-next-step');
+  if (!step || list().querySelectorAll('.reply-next-step').length !== 1 || list().querySelector('.reply-next-steps-toggle') || card()) throw Error('Expected one open suggestion');
+  const writesBeforeTap = writes.length;
+  step.click();
+  await wait(() => document.querySelector('textarea[aria-label="Message this thread"]')?.value === 'Add diagnostic logging.');
+  if (writes.length !== writesBeforeTap) throw Error('Suggestion sent a message');
   decisionKind = 'merging';
   await selectMode('off');
   await wait(() => card() && button('Cancel'));

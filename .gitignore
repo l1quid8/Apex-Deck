@@ -9,3 +9,4 @@ dist-phone/
 build/DerivedData/
 err*.txt
 __pycache__/
+.superpowers/

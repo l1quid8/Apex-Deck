@@ -27,6 +27,7 @@ pub mod shared_store;
 #[cfg(feature = "remote")]
 pub mod pairing;
 pub mod phone_cli;
+pub mod task_cli;
 pub mod protocol;
 #[cfg(feature = "remote")]
 pub mod remote;
