@@ -780,3 +780,18 @@ test('nightly-macos workflow schedules green main builds, grants plan actions: r
   assert.match(codeOnly, /should_build == 'true'/);
   assert.doesNotMatch(codeOnly, /--latest/, 'workflow must never mark a Nightly release as --latest');
 });
+
+test('nightly-macos runs only from main, and only build-macos reaches the signing environment', () => {
+  const parsed = yaml.load(fs.readFileSync(new URL('../.github/workflows/nightly-macos.yml', import.meta.url), 'utf8'));
+  assert.equal(parsed.jobs.plan.if, "github.ref == 'refs/heads/main'");
+  for (const [name, job] of Object.entries(parsed.jobs)) {
+    const usesSecrets = /secrets\./.test(JSON.stringify(job));
+    if (name === 'build-macos') {
+      assert.equal(job.environment, 'macos-nightly-signing');
+      assert.ok(usesSecrets, 'build-macos imports the signing secrets');
+    } else {
+      assert.equal(job.environment, undefined, `${name} must not use a signing environment`);
+      assert.ok(!usesSecrets, `${name} must not read secrets`);
+    }
+  }
+});
