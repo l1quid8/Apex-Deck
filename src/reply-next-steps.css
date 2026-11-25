@@ -1,20 +1,10 @@
 .reply-next-steps { min-width: 0; width: 100%; }
 .reply-next-steps hr { display: block; width: 100%; height: 1px; margin: 16px 0 8px; padding: 0; border: 0; background: color-mix(in srgb, var(--text) 20%, transparent); transform: scaleY(.25); transform-origin: center; }
-/* The suggestions are one run of text, so a long one continues on the next
-   line instead of being pushed whole onto a row of its own. */
+/* An inline suggestion can wrap inside a narrow reply. */
 .reply-next-steps-links { display: block; min-width: 0; font: normal 13px/24px var(--font-sans, system-ui, sans-serif); }
-.reply-next-steps-options { display: contents; }
-.reply-next-steps-options[hidden] { display: none; }
-.reply-next-steps button { appearance: none; margin: 0; border: 0; border-radius: 3px; background: transparent; box-shadow: none; color: var(--muted); cursor: pointer; }
 .reply-next-steps .reply-next-step { display: inline; padding: 2px 0; border-radius: 3px; color: var(--muted); font: italic 13px/24px var(--font-sans, system-ui, sans-serif); text-align: left; overflow-wrap: anywhere; cursor: pointer; }
 .reply-next-steps .reply-next-step:hover { color: var(--text); background: transparent; text-decoration: underline; text-underline-offset: 4px; }
 .reply-next-steps .reply-next-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-/* No whitespace around the separator: it can never open a wrapped line. */
-.reply-next-steps-dot { margin: 0 10px; color: var(--muted); user-select: none; }
-.reply-next-steps .reply-next-steps-toggle { display: inline-flex; align-items: center; justify-content: flex-start; width: 24px; height: 24px; margin-left: 4px; padding: 0; vertical-align: middle; font: normal 12px/1 var(--font-sans, system-ui, sans-serif); }
-.reply-next-steps .reply-next-steps-toggle:hover { color: var(--text); background: transparent; }
-.reply-next-steps-label { color: var(--muted); font: italic 13px/24px var(--font-sans, system-ui, sans-serif); }
-.reply-next-steps button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .reply-next-steps-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* The prompt a suggestion sends, while the pointer rests on it. It borrows the
    rail's hover card, so these have to beat .hover-card's own padding/width. */
@@ -22,8 +12,6 @@
 @media (pointer: coarse) {
   .reply-next-steps-links { line-height: 44px; }
   .reply-next-steps .reply-next-step { line-height: 44px; }
-  .reply-next-steps-label { line-height: 44px; }
-  .reply-next-steps .reply-next-steps-toggle { width: 44px; height: 44px; }
 }
 /* A hold previews the prompt, so iOS must not open its own text callout. */
 @media (pointer: coarse) {

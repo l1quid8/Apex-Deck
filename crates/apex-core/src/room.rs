@@ -49,7 +49,7 @@ pub struct RoomOptions {
 
 impl Default for RoomOptions {
     fn default() -> Self {
-        Self { policy: TurnPolicy::Mention, max_bot_hops: Some(3) }
+        Self { policy: TurnPolicy::Mention, max_bot_hops: None }
     }
 }
 

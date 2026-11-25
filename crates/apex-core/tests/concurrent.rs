@@ -530,6 +530,33 @@ fn reconcile_turn_uses_copy_when_main_is_free() {
 }
 
 #[test]
+fn full_access_asks_only_the_persons_decisions() {
+    use apex_core::Access;
+
+    block_on(async {
+        for (access, plan, expects_full_prompt) in [
+            (Access::Full, false, true),
+            (Access::Ask, false, false),
+            (Access::Full, true, false),
+        ] {
+            let mut config = ScriptedParticipant::new("bot", &["done"]).config().clone();
+            config.access = access;
+            let bot = Arc::new(ScriptedParticipant::from_config(config));
+            let room = Room::new(vec![bot.clone()], RoomOptions::default());
+            room.plan_handle().store(plan, Ordering::SeqCst);
+            let runtime = ConcurrentRoom::new(room);
+            let batch = runtime.begin_post("continue", None, &|_| {}).await.unwrap()
+                .with_reply_decisions(true);
+            runtime.run(batch, &|_| {}).await;
+            let requests = bot.requests();
+            let system = &requests[0].system;
+            assert_eq!(system.contains("a decision that belongs to them"), expects_full_prompt);
+            assert_eq!(system.contains("Add diagnostic logging"), !expects_full_prompt);
+        }
+    });
+}
+
+#[test]
 fn answer_guidance_is_captured_when_a_batch_is_accepted() {
     block_on(async {
         let bot = Arc::new(ScriptedParticipant::new("bot", &["first", "second"]));

@@ -28,7 +28,6 @@ const KEPT: usize = 64;
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     DecisionCard,
-    NextSteps,
     Off,
 }
 impl Mode {
@@ -42,14 +41,12 @@ impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {
             Mode::DecisionCard => "decision_card",
-            Mode::NextSteps => "next_steps",
             Mode::Off => "off",
         }
     }
     fn code(self) -> u8 {
         match self {
             Mode::DecisionCard => 0,
-            Mode::NextSteps => 1,
             Mode::Off => 2,
         }
     }
@@ -281,9 +278,8 @@ impl ReplySuggestions {
     }
     pub fn mode(&self) -> Mode {
         match self.mode.load(Ordering::SeqCst) {
-            0 => Mode::DecisionCard,
             2 => Mode::Off,
-            _ => Mode::NextSteps,
+            _ => Mode::DecisionCard,
         }
     }
     pub fn set_mode(&self, mode: Mode) {
@@ -429,14 +425,12 @@ mod tests {
     }
 
     #[test]
-    fn list_and_off_show_nothing_but_a_merge_in_flight() {
+    fn off_shows_nothing_but_a_merge_in_flight() {
         let asks = "Deck asks: Add a timestamp so we can measure the delay? | Yes, add logging";
-        for mode in [Mode::NextSteps, Mode::Off] {
-            assert_eq!(decided(mode, Some(&workflow(Phase::Ready, true)), PASSED, asks, &[]), None);
-            assert_eq!(decided(mode, Some(&workflow(Phase::Merged, true)), PASSED, asks, &[]), None);
-            let merging = decided(mode, Some(&workflow(Phase::Submitting, true)), PASSED, asks, &[]).unwrap();
-            assert_eq!((merging.kind, merging.cancellable), (Kind::Merging, true), "Cancel stays reachable in {mode:?}");
-        }
+        assert_eq!(decided(Mode::Off, Some(&workflow(Phase::Ready, true)), PASSED, asks, &[]), None);
+        assert_eq!(decided(Mode::Off, Some(&workflow(Phase::Merged, true)), PASSED, asks, &[]), None);
+        let merging = decided(Mode::Off, Some(&workflow(Phase::Submitting, true)), PASSED, asks, &[]).unwrap();
+        assert_eq!((merging.kind, merging.cancellable), (Kind::Merging, true), "Cancel stays reachable");
     }
 
     #[test]
@@ -542,6 +536,7 @@ mod tests {
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"decision_card"}))), Mode::DecisionCard);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"off"}))), Mode::Off);
         assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"everything"}))), Mode::DecisionCard);
+        assert_eq!(Mode::from_settings(Some(&serde_json::json!({"replySuggestions":"next_steps"}))), Mode::DecisionCard);
         let state = ReplySuggestions::new(TestDataDir::new().path(), Mode::DEFAULT);
         state.set_mode(Mode::Off);
         assert_eq!(state.mode().as_str(), "off");

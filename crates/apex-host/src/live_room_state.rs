@@ -142,7 +142,7 @@ impl RoomView {
                 self.next_steps = (*pending || !steps.is_empty())
                     .then(|| serde_json::json!({"id":id,"steps":steps,"pending":pending}));
             }
-            RoomEvent::MessageAdded { message } if message.speaker == apex_core::Speaker::Human => {
+            RoomEvent::MessageAdded { message } if message.speaker == apex_core::Speaker::Human || matches!(&message.speaker, apex_core::Speaker::Bot(id) if id.as_str() == "deck") => {
                 self.next_steps = None;
             }
             RoomEvent::ApprovalRequested {

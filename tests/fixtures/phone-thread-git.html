@@ -193,9 +193,13 @@ async function runSuggestions() {
     const back = [...document.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.startsWith('Back to'));
     back.click(); await mount();
   }
-  await selectMode('next_steps');
   await wait(list);
-  if (card()) throw Error('List showed a decision card');
+  const step = list().querySelector('.reply-next-step');
+  if (!step || list().querySelectorAll('.reply-next-step').length !== 1 || list().querySelector('.reply-next-steps-toggle') || card()) throw Error('Expected one open suggestion');
+  const writesBeforeTap = writes.length;
+  step.click();
+  await wait(() => document.querySelector('textarea[aria-label="Message this thread"]')?.value === 'Add diagnostic logging.');
+  if (writes.length !== writesBeforeTap) throw Error('Suggestion sent a message');
   decisionKind = 'merging';
   await selectMode('off');
   await wait(() => card() && button('Cancel'));

@@ -33,7 +33,7 @@ test('a Next button drawn for one machine\'s chat sends nothing once another mac
   const step={label:'Continue private A plan',prompt:'Analyze A private report: SECRET-A'};
   const oldRoom={id:'a',hostId:'A',asks:{questions:[],offer:{by:'bot',steps:[step],pending:false}},participants:[{id:'bot',display_name:'Bot'}]};
   const env={room:oldRoom,roomRef:{current:oldRoom},openPane:{id:'b',hostId:'B',workspaceId:'chats:B'},openWorkspace:{id:'chats:B'},openHostId:'B',openLink:{id:'B',status:'online'},openPath:'',openChat:{id:'b',hostId:'B',bots:[{id:'bot',name:'Bot'}]},viewingPending:false,
-  phoneHost:()=>host,toLink:s=>s.kind==='connected'?'online':'offline',isChatSpace:s=>s.startsWith('chats:'),threadKey,createRoomRecovery,representedRoomEvent,createStepsIndexLoader,
+  cardSession:'machine-b-session',phoneHost:()=>host,toLink:s=>s.kind==='connected'?'online':'offline',isChatSpace:s=>s.startsWith('chats:'),threadKey,createRoomRecovery,representedRoomEvent,createStepsIndexLoader,
   loadedSteps:{current:new Map()},refreshSteps:{current:()=>{}},catalogRef:{current:{hosts:{}}},delivery,
   setRoom:next=>{env.room=typeof next==='function'?next(env.room):next;env.roomRef.current=env.room},
   setNotice:n=>notices.push(n),words:String,useEffect:cb=>cb(),chatGate:null,

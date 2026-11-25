@@ -1,6 +1,5 @@
 //! After a batch of replies, ask the bot that spoke last what the person
-//! will likely want next, as the next-steps plugin for Claude Code does,
-//! and offer it above the composer. One extra short turn of the same bot,
+//! will likely want next when the decision is theirs. One extra short turn of the same bot,
 //! read-only, with nobody to approve anything.
 
 use std::sync::atomic::Ordering;
@@ -9,18 +8,25 @@ use std::time::Duration;
 
 use apex_core::{next_steps, NoApprover, Progress, RoomEvent, Speaker};
 
-use crate::host::{Host, RoomHandle};
+use crate::{
+    host::{Host, RoomHandle},
+    reply_suggestions::{self, Mode},
+    thread_git,
+};
 
 /// A suggestion that takes longer than this is not worth waiting for.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
+
+pub(crate) fn card_owns(text: &str) -> bool {
+    reply_suggestions::ask(text).is_some() || thread_git::marker(text).is_some()
+}
 
 /// `revision` is the room's revision when the replies began: a Stop, a new
 /// message or another turn since then means there is nothing to suggest.
 /// `answers` is the finished chain's interactive-answers preference.
 pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
-    // Only the list costs this extra turn; the decision card and Off never ask for it.
-    let listed = |host: &Host| host.reply_suggestions.mode() == crate::reply_suggestions::Mode::NextSteps;
-    if !listed(&host) { return; }
+    let enabled = |host: &Host| host.reply_suggestions.mode() == Mode::DecisionCard;
+    if !enabled(&host) { return; }
     let Ok(maintenance) = host.maintenance.enter() else { return; };
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
@@ -34,10 +40,12 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
             }
         }
         if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
+        let merge_pending = || host.thread_git.get(&room).ok().flatten().is_some_and(|workflow| workflow.pending());
+        if merge_pending() { return; }
         let prepared = {
             let current = handle.room.lock().await;
             current.transcript().last().and_then(|last| match &last.speaker {
-                Speaker::Bot(id) if last.text.chars().count() >= next_steps::MIN_REPLY_CHARS => {
+                Speaker::Bot(id) if last.text.chars().count() >= next_steps::MIN_REPLY_CHARS && !card_owns(&last.text) => {
                     current.next_steps_request_with_answers(id, answers).map(|prepared| (id.clone(), prepared))
                 }
                 _ => None,
@@ -49,7 +57,7 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
         let quiet = |_: Progress<'_>| {};
         let superseded = async {
             loop {
-                if revision != handle.observation_revision.load(Ordering::SeqCst) || !listed(&host) { return; }
+                if revision != handle.observation_revision.load(Ordering::SeqCst) || !enabled(&host) { return; }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         };
@@ -65,8 +73,8 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
         // events already cleared the placeholder, and these are stale.
         let stale = handle.deleted.load(Ordering::SeqCst) || revision != handle.observation_revision.load(Ordering::SeqCst) || handle.has_open_questions();
         if !stale {
-            // The setting changed while the list was being written: throw it away.
-            let steps = if listed(&host) { steps } else { Vec::new() };
+            // The setting changed or a merge started while the suggestion was being written.
+            let steps = if enabled(&host) && !merge_pending() { steps } else { Vec::new() };
             host.room_event(&room, RoomEvent::NextSteps { id, steps, pending: false });
         }
     });

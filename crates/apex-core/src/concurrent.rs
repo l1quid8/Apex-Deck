@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub const DECK_ASKS: &str = "When the user has a genuine optional coding decision, you may end your reply with exactly one plain-text line: Deck asks: <question>? | <action label>. Use 8–160 characters for the question and 2–40 for the label. For example: Deck asks: Add a timestamp to diagnose the delay? | Add diagnostic logging. The label is sent back to you as a one-turn request. Use no backticks, extra pipes, or Git/Host actions such as push, merge or cancel. Place this line immediately before any Deck built or Deck review passed receipt. Omit it for ordinary answers.";
+pub const DECK_ASKS_FULL: &str = "When the person must make a decision that belongs to them (scope, design, their devices or accounts, spending money, or deleting their data), you may end your reply with exactly one plain-text line: Deck asks: <question>? | <action label>. Never use it to ask whether to do the next step of the task; at Full access, do that step. Use 8–160 characters for the question and 2–40 for the label. For example: Deck asks: Show the new setting on the phone too? | Show it on the phone. The label is sent back to you as a one-turn request. Use no backticks, extra pipes, or Git/Host actions such as push, merge or cancel. Place this line immediately before any Deck built or Deck review passed receipt. Omit it for ordinary answers.";
+
 type Prepared = (Arc<dyn Participant>, TurnRequest, usize, Arc<ApprovalDesk>);
 
 type Sink<'a> = &'a (dyn Fn(RoomEvent) + Send + Sync);
@@ -839,7 +842,13 @@ impl ConcurrentRoom {
         }
         if ticket.origin.is_some() { request.system.push_str("\nThis is a voice call. Begin with a concise speakable sentence. End with a short plain-language result. Keep code in the thread.\n"); }
         if reply_decisions && ticket.origin.is_none() && runner_context.is_none() {
-            request.system.push_str("\nWhen the user has a genuine optional coding decision, you may end your reply with exactly one plain-text line: Deck asks: <question>? | <action label>. Use 8–160 characters for the question and 2–40 for the label. For example: Deck asks: Add a timestamp to diagnose the delay? | Add diagnostic logging. The label is sent back to you as a one-turn request. Use no backticks, extra pipes, or Git/Host actions such as push, merge or cancel. Place this line immediately before any Deck built or Deck review passed receipt. Omit it for ordinary answers.\n");
+            request.system.push('\n');
+            request.system.push_str(if effective_access == Access::Full {
+                DECK_ASKS_FULL
+            } else {
+                DECK_ASKS
+            });
+            request.system.push('\n');
         }
         let direct = direct_request.filter(|(id, _, _)| {
             id == &ticket.id && !request.plan && runner_context.is_none() && participant.config().media.is_none()

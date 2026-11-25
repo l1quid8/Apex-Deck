@@ -10,7 +10,7 @@
 //! live in `apex-adapters`.
 
 mod approval;
-mod concurrent;
+pub mod concurrent;
 mod continuation;
 pub mod curation;
 pub use curation::{journal_text, journal_section,Curation, CurationUndo, CurateOutcome, hidden_line, keep_valid, merge_ranges, stands};

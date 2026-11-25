@@ -5,7 +5,7 @@ import type { GitOutcome, GitState, ThreadWorkflow } from "./gitChanges";
 export type SuggestionsMode = Mode;
 export function suggestionsMode(raw: unknown): SuggestionsMode {
   const mode = (raw as { replySuggestions?: unknown } | null)?.replySuggestions;
-  return mode === "off" || mode === "next_steps" ? mode : "decision_card";
+  return mode === "off" ? "off" : "decision_card";
 }
 
 export interface ReplyDecision {

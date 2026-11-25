@@ -1,4 +1,7 @@
 import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { suggestionsMode } from '../src/replyDecision.ts';
 import { withAppearanceApp } from './helpers/appearance-app.mjs';
 
 const fixture = {
@@ -49,6 +52,13 @@ export function App(){return <main className="rail" style={{display:'block',widt
   },
 };
 
+test('old Next steps settings read as On and Tab fills the draft through the suggestion handler', () => {
+  assert.equal(suggestionsMode({ replySuggestions: 'next_steps' }), 'decision_card');
+  const source = fs.readFileSync('src/ChatPane.tsx', 'utf8');
+  assert.match(source, /formKey\(key, text === "", form, highlighted\)/);
+  assert.match(source, /act\.act === "fill" && form\.kind === "steps"\) fillStep\(/);
+});
+
 test('desktop switches suggestion modes, dispatches once and keeps Cancel accessible', { timeout: 150000 }, async () => {
   await withAppearanceApp('reply-decisions-desktop', String.raw`
     const card = '.bubble.bot.completed[data-seq="1"] .reply-decision';
@@ -65,9 +75,26 @@ test('desktop switches suggestion modes, dispatches once and keeps Cancel access
     await click(card+' .primary');
     await until('!document.querySelector(".reply-decision")');
     assert.deepEqual(await run('window.actions'),['merge_ready','cancel_merge']);
-    await choose('next_steps');await run('window.steps()');
-    await until('!!document.querySelector(".reply-next-step")');
-    await choose('off');await until('!document.querySelector(".reply-next-step")');
+    const input = 'document.querySelector(".composer textarea")';
+    const hint = input + '.placeholder.includes("Measure · Tab to use")';
+    const key = key => run(input + '.dispatchEvent(new KeyboardEvent("keydown",{key:'+JSON.stringify(key)+',bubbles:true,cancelable:true}))');
+    await choose('decision_card');
+    await run('window.scene("merge");window.steps()');
+    await until('!!document.querySelector(".reply-decision")');
+    assert.equal(await run(hint),false);
+    await run('window.scene("none")');
+    await until(hint);
+    await shot('desktop-suggestion-hint');
+    await key('Tab');await until(input+'.value==="Measure again"');
+    await shot('desktop-suggestion-filled');
+    await run('(()=>{const el='+input+';Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(el,"");el.dispatchEvent(new Event("input",{bubbles:true}));})()');
+    await until(input+'.value===""');
+    assert.equal(await run(hint),false,'clearing the filled draft keeps the hint dismissed');
+    await run('window.steps()');await until(hint);
+    await key('Escape');await until('!'+hint);
+    await shot('desktop-suggestion-dismissed');
+    await run('window.steps()');await until(hint);
+    await choose('off');await until('!'+hint);
     await choose('decision_card');
     await run('window.scene("fix_checks")');
     await until('document.querySelector(".reply-decision small")?.textContent==="1 model turn"');

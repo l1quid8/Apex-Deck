@@ -172,7 +172,7 @@ pub struct Host {
     events: Bus,
     store: Store,
     settings_write: Mutex<()>,
-    thread_git: crate::thread_git::ThreadGit,
+    pub(crate) thread_git: crate::thread_git::ThreadGit,
     pub(crate) reply_suggestions: crate::reply_suggestions::ReplySuggestions,
     pub(crate) search: crate::search::Search,
     snapshots: Arc<checkpoints::Snapshots>,
@@ -6438,27 +6438,71 @@ done
     #[test]
     fn a_long_reply_is_followed_by_the_bots_next_steps() {
         let (host, runtime, data) = host("next-steps");
-        host.settings_reply_suggestions_set(crate::reply_suggestions::Mode::NextSteps).unwrap();
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#])], RoomOptions::default(), None).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
         runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null fix it".into(), vec![ParticipantId::new("null")])).unwrap();
         let steps = wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, .. })).expect("next steps arrive");
-        assert_eq!(steps, RoomEvent::NextSteps { id: ParticipantId::new("null"), steps: vec![apex_core::NextStep { label: "Commit".into(), prompt: "commit it".into() }], pending: false });
+        assert_eq!(steps, RoomEvent::NextSteps { id: ParticipantId::new("null"), steps: vec![apex_core::NextStep { label: "Try it on my phone".into(), prompt: "I will try it on my phone.".into() }], pending: false });
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: true, .. })).is_some(), "a placeholder first");
         let state = host.room_state("r".into()).unwrap();
-        assert_eq!(state["next_steps"]["steps"][0]["prompt"], "commit it");
+        assert_eq!(state["next_steps"]["steps"][0]["prompt"], "I will try it on my phone.");
         let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]
-    fn only_the_list_setting_spends_the_extra_turn_and_a_switch_mid_list_discards_it() {
+    fn next_steps_are_skipped_when_a_reply_ends_in_a_deck_line() {
+        let (host, runtime, data) = host("next-steps-deck-line");
+        for (room, line) in [
+            ("asks", "Deck asks: Use the blue theme for the card? | Use blue".into()),
+            ("built", format!("Deck built {}", "a".repeat(40))),
+        ] {
+            let reply = format!("I prepared the requested changes and confirmed the layout still fits on a narrow screen.\n{line}");
+            assert_no_next_steps(&host, &runtime, room, &reply);
+        }
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn next_steps_are_skipped_while_a_merge_is_in_flight() {
+        let (host, runtime, data) = host("next-steps-merge");
+        let path = crate::authority_file::fixture_path(&data.join("thread-git-v1.json"));
+        let ledger = serde_json::json!({"version":1,"rooms":{"r":{
+            "root":"/fixture","branch":"fix/fixture","repo":"test/repo","head":"a".repeat(40),
+            "builder":"null","builder_model":"scripted","reviewer":null,"phase":"checks",
+            "generation":1,"pr":42,"detail":"","pushed":true,"fix_requested":false
+        }}});
+        std::fs::write(path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert!(host.thread_git.get("r").unwrap().unwrap().pending());
+        assert_no_next_steps(&host, &runtime, "r",
+            "I prepared the requested changes and confirmed the layout still fits on a narrow screen.");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    fn assert_no_next_steps(host: &Arc<Host>, runtime: &tokio::runtime::Runtime, room: &str, reply: &str) {
+        host.room_create(room.into(), vec![scripted("null", &[reply, r#"[{"label":"Try it","prompt":"I'll try the build on my phone"}]"#])], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let room_id = room.to_owned();
+        host.events().listen(move |envelope| {
+            if matches!(&envelope.event, HostEvent::Room { room, .. } if room == &room_id) {
+                sink.lock().unwrap().push(envelope.event.clone());
+            }
+        });
+        runtime.block_on(Arc::clone(host).room_post_to(room.into(), "@null fix it".into(), vec![ParticipantId::new("null")])).unwrap();
+        assert!(wait_for(&seen, |event| matches!(event, RoomEvent::Idle)).is_some());
+        assert!(wait_for(&seen, |event| matches!(event, RoomEvent::NextSteps { .. })).is_none());
+    }
+
+    #[test]
+    fn off_skips_next_steps_and_the_setting_is_saved() {
         use crate::reply_suggestions::Mode;
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        let list = r#"[{"label":"Commit","prompt":"commit it"}]"#;
-        for mode in [Mode::DecisionCard, Mode::Off] {
+        let list = r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#;
+        {
+            let mode = Mode::Off;
             let (host, runtime, data) = host(&format!("reply-suggestions-{}", mode.as_str()));
             assert_eq!(host.settings_reply_suggestions_set(mode).unwrap()["mode"], mode.as_str());
             host.room_create("r".into(), vec![scripted("null", &[long, list, long])], RoomOptions::default(), None).unwrap();
@@ -6475,7 +6519,7 @@ done
             assert!(spoke, "{mode:?}: the next visible reply is the script's second line");
             let _ = std::fs::remove_dir_all(data);
         }
-        // A new installation defaults to cards without spending a list turn.
+        // A new installation defaults to suggestions on.
         let (host, _runtime, data) = host("reply-suggestions-default");
         assert_eq!(host.reply_suggestions.mode(), Mode::DecisionCard);
         // The choice is saved with the settings, survives an older client's save, and is read at start.
@@ -6490,12 +6534,11 @@ done
     }
 
     #[test]
-    fn switching_away_from_the_list_while_it_is_written_shows_nothing() {
+    fn switching_off_while_next_steps_are_written_shows_nothing() {
         use crate::reply_suggestions::Mode;
         let (host, runtime, data) = host("reply-suggestions-switch");
-        host.settings_reply_suggestions_set(crate::reply_suggestions::Mode::NextSteps).unwrap();
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#])], RoomOptions::default(), None).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         let switcher = Arc::clone(&host);
@@ -6530,10 +6573,8 @@ done
         let shown = ask(&host);
         assert_eq!(shown["mode"], "decision_card");
         assert_eq!((shown["decision"]["kind"].as_str(), shown["decision"]["turns"].as_u64(), shown["decision"]["to"].as_str(), shown["decision"]["prompt"].as_str()), (Some("question"), Some(1), Some("null"), Some("Yes, add logging")));
-        for mode in [Mode::NextSteps, Mode::Off] {
-            host.settings_reply_suggestions_set(mode).unwrap();
-            assert!(ask(&host)["decision"].is_null(), "{mode:?}");
-        }
+        host.settings_reply_suggestions_set(Mode::Off).unwrap();
+        assert!(ask(&host)["decision"].is_null());
         host.settings_reply_suggestions_set(Mode::DecisionCard).unwrap();
         let key = shown["decision"]["key"].as_str().unwrap().to_owned();
         assert!(host.room_reply_decision_dismiss("other".into(), key.clone()).is_err());
@@ -6626,9 +6667,8 @@ done
     #[test]
     fn next_steps_are_not_worked_out_after_stop() {
         let (host, runtime, data) = host("next-steps-stop");
-        host.settings_reply_suggestions_set(crate::reply_suggestions::Mode::NextSteps).unwrap();
         let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
-        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Try it on my phone","prompt":"I will try it on my phone."}]"#])], RoomOptions::default(), None).unwrap();
         let handle = host.handle("r").unwrap();
         // The reply, without the host's batch (which would ask by itself).
         runtime.block_on(async { handle.room.lock().await.post_human("@null fix it", &|_| {}).await });
