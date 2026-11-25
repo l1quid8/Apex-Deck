@@ -28,6 +28,7 @@ fail() { echo "ACCEPTANCE FAILED: $*" >&2; exit 1; }
 collect() {
   set +e
   journalctl --no-pager -b -u "$SERVICE" -u "$SLUG-daemon@*" >"$EVIDENCE/journal.txt" 2>&1
+  [[ -n ${UID_T:-} ]] && journalctl --no-pager -b "_UID=$UID_T" >"$EVIDENCE/user-journal.txt" 2>&1
   systemctl --no-pager status "$SERVICE" "$SLUG-daemon@*" >"$EVIDENCE/units.txt" 2>&1
   # shellcheck disable=SC2024 # root writes the evidence file
   [[ -n ${UID_T:-} ]] && sudo -u "$TESTER" DISPLAY=$DISPLAY_NUM xwd -root -silent 2>/dev/null >"$EVIDENCE/screen.xwd"
@@ -48,6 +49,10 @@ as_user() {
     DISPLAY=$DISPLAY_NUM XDG_SESSION_TYPE=x11 XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" "$@"
 }
+
+# The real host uses a nonempty auth file to show Codex as signed in.
+# Only the local fixture is installed for this account.
+as_user sh -c 'umask 077; mkdir -p "$HOME/.codex"; echo "{}" >"$HOME/.codex/auth.json"'
 
 step "Unpack the bundle as an administrator would"
 WORK=$(mktemp -d /root/apex-bundle.XXXXXX)
@@ -94,6 +99,10 @@ step "Start a display and accessibility for the desktop account"
 as_user Xvfb $DISPLAY_NUM -screen 0 1440x900x24 -nolisten tcp >/tmp/apex-acceptance-xvfb.log 2>&1 &
 for _ in $(seq 50); do as_user xdpyinfo >/dev/null 2>&1 && break; sleep 0.2; done
 as_user openbox >/tmp/apex-acceptance-openbox.log 2>&1 &
+# A graphical login exports the display to D-Bus and its systemd user manager.
+as_user dbus-update-activation-environment --systemd DISPLAY XDG_SESSION_TYPE
+as_user /usr/libexec/at-spi-bus-launcher --launch-immediately >/tmp/apex-acceptance-atspi.log 2>&1 &
+as_user busctl --user --timeout=30s wait org.a11y.Bus
 as_user busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
 DRIVER=/usr/local/libexec/apex-installed-test/ui-driver.py
 install -D -m 0755 "$HERE/ui-driver.py" "$DRIVER"
@@ -111,7 +120,7 @@ launch_ui() {
   [[ "$(stat -c %U /proc/$pid)" == "$TESTER" ]] || fail "UI is not running as $TESTER"
 }
 
-MARKERS=$(as_user mktemp -d /tmp/apex-markers.XXXXXX)
+MARKERS=$(as_user sh -c 'mktemp -d "$HOME/apex-markers.XXXXXX"')
 
 step "Launch through the broker; Allow once runs the request, Deny does not"
 launch_ui

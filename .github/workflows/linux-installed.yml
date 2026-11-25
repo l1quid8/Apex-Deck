@@ -59,7 +59,7 @@ jobs:
       - name: Install desktop, display, accessibility and terminal tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-0t64 libnss3 libasound2t64 libgbm1 xvfb x11-utils x11-apps xdotool openbox \
+          sudo apt-get install -y libgtk-3-0t64 libnss3 libasound2t64 libgbm1 xvfb x11-utils x11-apps xdotool openbox bubblewrap \
             at-spi2-core python3-pyatspi gir1.2-atspi-2.0 dbus-user-session expect desktop-file-utils
       - run: npm ci
       - run: node --test tests/package-linux-installer.test.mjs tests/package-linux.test.mjs
