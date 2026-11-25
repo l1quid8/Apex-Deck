@@ -196,6 +196,11 @@ through `scripts/nightly-release.mjs`. It writes only
   - `APPLE_API_KEY_BASE64`: the App Store Connect API key (`AuthKey_*.p8`),
     base64.
   - `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`: that key's ID and issuer ID.
+- **Known gap.** Unlike Windows, the Mac build and signing share one job:
+  electron-builder signs while it packages. Dependencies are installed before the
+  keys are imported, but the Rust and Electron build steps after that run with
+  the unlocked signing keychain and the notary key on disk. The environment limits
+  *which commits* reach the keys, not what those commits' build code can do.
 - **The update package.** The Mac updater checks the app inside the `.pkg`
   (team, app ID, version, build number), not the package's own signature, so
   the CI package is not installer-signed.
