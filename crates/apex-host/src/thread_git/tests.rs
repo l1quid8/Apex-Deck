@@ -569,10 +569,10 @@ fn the_marker_reads_built_ship_and_review_lines() {
 struct Mac {
     data: TestDataDir,
     main: TestDataDir,
-    bare: TestDataDir,
+    /// Held so the stand-in for GitHub lives as long as the test.
+    _bare: TestDataDir,
     store: ThreadGit,
     folder: PathBuf,
-    head: String,
     merge: String,
 }
 const GITHUB: &str = "https://github.com/test/repo.git";
@@ -621,7 +621,7 @@ impl Mac {
             "builder": "a", "builder_model": "", "reviewer": null, "phase": "syncing", "generation": 1,
             "pr": 42, "detail": "Merged PR #42 into main.", "result_oid": merge, "pushed": true, "fix_requested": false,
         })).unwrap()).unwrap();
-        Self { data, main, bare, store, folder, head, merge }
+        Self { data, main, _bare: bare, store, folder, merge }
     }
     fn git(&self, args: &[&str]) -> String {
         let out = fixture_git_command().args(args).current_dir(self.main.path()).output().unwrap();
