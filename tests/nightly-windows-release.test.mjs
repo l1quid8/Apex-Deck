@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import { channel } from '../desktop/channel.mjs';
 import {
   REQUIRED_WINDOWS_JOBS,
@@ -60,6 +61,14 @@ function signedBuild(options = {}) {
   return { dir, feed, name, bytes };
 }
 
+test('Stable test runs still exercise the Nightly feed, publish and updater checks', { skip: channel.nightly ? 'already running as Nightly' : false }, () => {
+  const files = ['tests/nightly-windows-release.test.mjs', 'tests/desktop-updater.test.mjs', 'tests/release-update-manifest.test.mjs'];
+  const { NODE_TEST_CONTEXT, ...env } = { ...process.env, APEX_CHANNEL: 'nightly' };
+  const child = spawnSync(process.execPath, ['--test', ...files], { encoding: 'utf8', env, timeout: 120000 });
+  assert.equal(child.status, 0, `${child.stdout}
+${child.stderr}`.slice(-4000));
+});
+
 test('a Windows Nightly needs every shared and Windows job green, whatever Linux and macOS did', () => {
   assert.equal(windowsJobsGreen(greenJobs()), true);
   const otherPlatformsFailed = greenJobs().map((job) => (/ubuntu|macos/.test(job.name) ? { ...job, conclusion: 'failure' } : job));
@@ -89,7 +98,11 @@ test('build numbers come only from the Windows feed and only go up', nightlyOnly
   const first = planWindowsNightly({ runs, jobsByRun, date: DATE });
   assert.deepEqual([first.shouldBuild, first.reason, first.buildNumber, first.tag], [true, 'initial', 1, TAG]);
   const published = feedFor({ commit: SHA_OLD, buildNumber: 41, date: '20261124' });
-  assert.deepEqual(planWindowsNightly({ runs, jobsByRun, currentFeed: published, date: DATE }).buildNumber, 42);
+  const newer = (from, to) => from === SHA_OLD && to === SHA_NEW;
+  assert.deepEqual(planWindowsNightly({ runs, jobsByRun, currentFeed: published, date: DATE, isNewer: newer }).buildNumber, 42);
+  // An older or unrelated commit never ships under a higher build number, even forced.
+  const rollback = planWindowsNightly({ runs, jobsByRun, currentFeed: published, date: DATE, force: true, isNewer: () => false });
+  assert.deepEqual([rollback.shouldBuild, rollback.reason], [false, 'not_newer']);
   const same = feedFor({ commit: SHA_NEW, buildNumber: 42 });
   assert.equal(planWindowsNightly({ runs, jobsByRun, currentFeed: same, date: DATE }).reason, 'unchanged');
   assert.equal(planWindowsNightly({ runs, jobsByRun, currentFeed: same, date: DATE, force: true }).buildNumber, 43);
@@ -201,6 +214,14 @@ test('a missing Windows feed never restarts build numbers once one has shipped',
   assert.equal(fetchWindowsFeed({ runner: fresh }), null);
 });
 
+test('the required Windows jobs are the ones daemon.yml really runs', () => {
+  const daemon = yaml.load(fs.readFileSync('.github/workflows/daemon.yml', 'utf8'));
+  const names = Object.entries(daemon.jobs).flatMap(([id, job]) => (job.strategy?.matrix?.shard
+    ? job.strategy.matrix.shard.map((shard) => job.name.replace('${{ matrix.shard }}', shard))
+    : [job.name ?? id]));
+  for (const name of REQUIRED_WINDOWS_JOBS) assert.ok(names.includes(name), `${name} is not a daemon.yml job`);
+});
+
 test('installer names match the merged Windows packager', () => {
   assert.equal(installerName(DATE, SHA_NEW), nightlyRelease(SHA_NEW, '1', DATE).asset);
 });
@@ -215,14 +236,20 @@ test('only the signing job can reach Azure, and only from main through its envir
       assert.equal(job.environment, 'windows-nightly-signing');
       assert.deepEqual(job.permissions, { contents: 'read', 'id-token': 'write' });
       assert.match(steps, /npm ci --ignore-scripts/);
+      const index = (pattern) => job.steps.findIndex((step) => pattern.test(JSON.stringify(step)));
+      assert.ok(index(/npm ci --ignore-scripts/) < index(/azure\/login/), 'packages are installed before the Azure login exists');
+      assert.equal(job.steps.find((step) => /actions\/checkout/.test(step.uses ?? '')).with['persist-credentials'], false);
+      assert.doesNotMatch(steps, /npm run|npm test/);
       assert.doesNotMatch(steps, /package-win\.mjs --compile|"npm ci"|cargo /, 'the signing job builds nothing');
-      for (const step of job.steps.filter((s) => s.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned`);
       continue;
     }
     assert.ok(!JSON.stringify(job).includes('id-token'), `${name} has no OIDC token`);
     assert.doesNotMatch(steps, /azure\/login/, `${name} never signs in to Azure`);
   }
   assert.deepEqual(workflow.jobs.publish.permissions, { contents: 'write' });
+  for (const job of Object.values(workflow.jobs)) {
+    for (const step of job.steps.filter((s) => s.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned`);
+  }
   assert.ok(workflow.on.workflow_dispatch.inputs.dry_run);
   for (const job of ['build', 'sign', 'publish']) {
     assert.ok(JSON.stringify(workflow.jobs[job].steps).includes('needs.plan.outputs.commit'), `${job} checks out the planned commit`);

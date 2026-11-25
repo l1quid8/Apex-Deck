@@ -96,8 +96,14 @@ export function loadJobsUntilGreen(runs, { targetSha = '', fetchJobs }) {
   return jobsByRun;
 }
 
-/** Decide whether to build, using only the Windows feed for the previous commit and build number. */
-export function planWindowsNightly({ runs, jobsByRun = {}, currentFeed = null, date = utcDateStamp(), targetSha = '', force = false }) {
+/**
+ * Decide whether to build, using only the Windows feed for the previous commit
+ * and build number. `isNewer(published, candidate)` must say whether the
+ * candidate descends from the published commit: a higher build number on older
+ * code would look like an upgrade to every installed copy, so it never builds.
+ * Undo a bad Nightly with a revert on main instead.
+ */
+export function planWindowsNightly({ runs, jobsByRun = {}, currentFeed = null, date = utcDateStamp(), targetSha = '', force = false, isNewer = () => false }) {
   if (!DATE_RE.test(date ?? '')) throw new Error('Nightly date must be YYYYMMDD.');
   const published = currentFeed ? parseWindowsFeed(currentFeed) : null;
   const lastCommit = published?.commit ?? null;
@@ -109,6 +115,9 @@ export function planWindowsNightly({ runs, jobsByRun = {}, currentFeed = null, d
   }
   if (!force && lastCommit === candidate.commit) {
     return { ...base, shouldBuild: false, reason: 'unchanged', commit: candidate.commit, tag: published.tag, buildNumber: lastBuildNumber };
+  }
+  if (lastCommit && lastCommit !== candidate.commit && !isNewer(lastCommit, candidate.commit)) {
+    return { ...base, shouldBuild: false, reason: 'not_newer', commit: candidate.commit, tag: null, buildNumber: null };
   }
   return {
     ...base,
@@ -217,7 +226,7 @@ export function publishWindowsNightly({ assetsDir, currentFeed = null, repo = DE
     return result('monotonic-check', { errors: [`Windows buildNumber ${feed.buildNumber} must be greater than published ${published.buildNumber}.`] });
   }
   if (published?.assetTag === feed.assetTag) {
-    return result('immutable-tag', { errors: [`The Windows feed already points at ${feed.assetTag}; refusing to overwrite it. Rebuild on a later commit or day.`] });
+    return result('immutable-tag', { errors: [`The Windows feed already points at ${feed.assetTag}; refusing to overwrite it. A same-day rebuild of the same commit is never allowed; rebuild on a later commit or day.`] });
   }
 
   const expected = releaseFiles(feed, assetsDir);
@@ -359,7 +368,10 @@ function main(argv) {
       };
       state = { runs, jobsByRun: loadJobsUntilGreen(runs, { targetSha, fetchJobs }), currentFeed: fetchWindowsFeed({ repo }) };
     }
-    const plan = planWindowsNightly({ runs: state.runs ?? [], jobsByRun: state.jobsByRun ?? {}, currentFeed: state.currentFeed ?? null, date: flag(rest, '--date') || utcDateStamp(), targetSha, force: has(rest, '--force') });
+    // GitHub's compare says "ahead" only when the candidate descends from the published commit.
+    const isNewer = state.ahead ? (from, to) => state.ahead.includes(`${from}...${to}`)
+      : (from, to) => defaultRunner('gh', ['api', `repos/${repo}/compare/${from}...${to}`, '--jq', '.status']).stdout.trim() === 'ahead';
+    const plan = planWindowsNightly({ runs: state.runs ?? [], jobsByRun: state.jobsByRun ?? {}, currentFeed: state.currentFeed ?? null, date: flag(rest, '--date') || utcDateStamp(), targetSha, force: has(rest, '--force'), isNewer });
     const output = flag(rest, '--github-output');
     if (output) {
       fs.appendFileSync(output, `${[
@@ -369,6 +381,7 @@ function main(argv) {
     }
     console.log(JSON.stringify(plan, null, 2));
     if (targetSha && plan.reason === 'target_not_green') throw new Error(`Target SHA ${targetSha} has no Windows-green ${workflow} push run on main.`);
+    if (targetSha && plan.reason === 'not_newer') throw new Error(`Target SHA ${targetSha} is not newer than ${plan.lastCommit} on the Windows feed; revert on main instead of rolling back.`);
     return;
   }
   if (command === 'assemble') {

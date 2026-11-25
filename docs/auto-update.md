@@ -156,7 +156,9 @@ macOS release, or the Linux release.
 
 - **Commit.** It takes the newest `daemon.yml` push on `main` whose shared and
   Windows jobs all passed, or a `sha` given by hand. Linux and macOS results
-  don't count.
+  don't count. The commit must be newer than the one on the Windows feed, so a
+  higher build number never carries older code. To undo a bad Nightly, revert on
+  `main`.
 - **Build number.** It is the published Windows feed's `buildNumber` plus 1. If
   a `nightly-windows-*` release exists but the feed is missing, planning stops
   rather than restart at 1.

@@ -63,8 +63,8 @@ jobs:
       tag: ${{ steps.decide.outputs.tag }}
       build_number: ${{ steps.decide.outputs.build_number }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - id: decide
@@ -91,18 +91,18 @@ jobs:
     steps:
       # Keep LF line endings so files match the Mac and Linux checkouts.
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Build exactly the planned commit
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${{ needs.plan.outputs.commit }}"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: nightly-windows
       - run: npm ci
@@ -111,7 +111,7 @@ jobs:
         run: node scripts/package-win.mjs --compile
       - name: Test elevated authority ACLs and read-only host locks
         run: cargo test --locked -p apex-provenance --lib -- --ignored
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nightly-windows-unpacked
           path: release/nightly-windows/win-unpacked
@@ -119,8 +119,9 @@ jobs:
           retention-days: 1
 
   # Only this job can reach Azure. It runs no install scripts and no project
-  # build, so nothing the dependencies add to a build can get hold of the
-  # signing login. Every action here is pinned to a commit.
+  # build. It still loads electron-builder (which signs the installer) from the
+  # planned commit's lockfile, so the signing login trusts reviewed main code
+  # and its locked packages. Every action in this workflow is pinned.
   sign:
     needs: [plan, build]
     runs-on: windows-latest
@@ -140,6 +141,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
       - name: Sign exactly the planned commit
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$APEX_COMMIT"
@@ -216,13 +218,13 @@ jobs:
     env:
       APEX_CHANNEL: nightly
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.plan.outputs.commit }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: nightly-windows-signed
           path: build
