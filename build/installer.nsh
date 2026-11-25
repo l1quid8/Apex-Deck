@@ -92,9 +92,16 @@ Var pid
   ${If} $0 == 0
     !insertmacro RefuseInstallLocation "Could not resolve the running processes for ${PRODUCT_NAME}."
   ${EndIf}
+  ; The app check leaves the daemon and the protected service to their own,
+  ; ordered stop (channelProcesses.nsh).
+  System::Call 'kernel32::SetEnvironmentVariableW(w "APEX_NSIS_SERVICE_IMAGES", w "${APEX_DAEMON_IMAGE},${APEX_HELPER_IMAGE}") i.r0'
+  ${If} $0 == 0
+    !insertmacro RefuseInstallLocation "Could not resolve the running processes for ${PRODUCT_NAME}."
+  ${EndIf}
   !insertmacro IS_POWERSHELL_AVAILABLE
   !insertmacro _CHECK_APP_RUNNING
   System::Call 'kernel32::SetEnvironmentVariableW(w "APEX_NSIS_PROCESS_DIR", p 0)'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "APEX_NSIS_SERVICE_IMAGES", p 0)'
 !macroend
 
 !macro customUnInit

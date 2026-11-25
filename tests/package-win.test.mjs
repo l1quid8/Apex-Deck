@@ -339,3 +339,21 @@ test('opening Setup and cancelling never leaves the protected service stopped', 
   // variables would be makensis warnings that electron-builder treats as fatal.
   assert.match(hook, /!ifndef BUILD_UNINSTALLER\s+;[\s\S]*?Var apexAuthorityStopped[\s\S]*?Function \.onInstFailed[\s\S]*?FunctionEnd\s+!endif/);
 });
+
+test('the app-running check leaves the daemon and the protected service to their ordered stop', () => {
+  // Setup now stops the service after this check. If the check also matched the
+  // daemon and the service, it would kill them; a killed service counts as a
+  // crash and Windows restarts it while files are being replaced.
+  const processes = read('build/channelProcesses.nsh');
+  assert.match(processes, /-and \(\(\$\$env:APEX_NSIS_SERVICE_IMAGES -split \[char\]44\) -notcontains \$\$_\.Name\)/);
+  const hook = read('build/installer.nsh').replaceAll('\r\n', '\n');
+  const running = hook.split('!macro customCheckAppRunning\n').at(1).split('!macroend')[0];
+  const set = running.indexOf('SetEnvironmentVariableW(w "APEX_NSIS_SERVICE_IMAGES", w "${APEX_DAEMON_IMAGE},${APEX_HELPER_IMAGE}")');
+  const check = running.indexOf('!insertmacro _CHECK_APP_RUNNING');
+  const clear = running.indexOf('SetEnvironmentVariableW(w "APEX_NSIS_SERVICE_IMAGES", p 0)');
+  assert.ok(set > -1 && set < check && check < clear, 'set before the check, cleared after it');
+  // The real upgrade in CI fails if the service was terminated rather than stopped.
+  const lifecycle = read('scripts/windows-channel-lifecycle.ps1');
+  assert.match(lifecycle, /Id=7031,7034; StartTime=\$upgradeStarted/);
+  assert.match(lifecycle, /throw "Stable Setup never showed its first page/);
+});

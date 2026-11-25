@@ -277,9 +277,13 @@ try {
   $opened = Start-Process -FilePath (Resolve-Path $StableSetup).Path -PassThru
   $deadline = (Get-Date).AddSeconds(60)
   do { Start-Sleep -Milliseconds 500; $opened.Refresh() } until ($opened.HasExited -or $opened.MainWindowHandle -ne 0 -or (Get-Date) -gt $deadline)
-  # Past .onInit either way: the window exists, or 60 s have gone by.
+  # Only a window proves Setup got past .onInit; an early exit tests nothing.
+  if ($opened.HasExited -or $opened.MainWindowHandle -eq 0) {
+    if (!$opened.HasExited) { Stop-Process -Id $opened.Id -Force }
+    throw "Stable Setup never showed its first page (exited: $($opened.HasExited))"
+  }
   Start-Sleep -Seconds 3
-  if (!$opened.HasExited) { Stop-Process -Id $opened.Id -Force; $opened.WaitForExit(30000) | Out-Null }
+  Stop-Process -Id $opened.Id -Force; $opened.WaitForExit(30000) | Out-Null
   $service = (Get-Service $channels.stable.WINDOWS_SERVICE).Status
   Write-Host "EVIDENCE setup-opened-and-closed {""window"":$($opened.MainWindowHandle -ne 0),""service"":""$service""}"
   if ($service -ne 'Running') { throw "Opening and closing Stable Setup left $($channels.stable.WINDOWS_SERVICE) $service" }
@@ -306,7 +310,15 @@ try {
   $nightly = Relaunch $nightly $channels.nightly
   CheckUI stable { & $uiScript -Channel stable -AppId $stable.app[0] -Expect "stable-$run" -Exclude "nightly-$run" }
   CheckUI nightly { & $uiScript -Channel nightly -AppId $nightly.app[0] -Expect "nightly-$run" -Exclude "stable-$run" }
+  $upgradeStarted = Get-Date
   Setup $NightlySetup
+  # Setup stops the protected service in order. A kill (for example by the
+  # app-running check) is logged as an unexpected termination, and Windows then
+  # restarts the service while files are being replaced.
+  $killed = @(Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control Manager'; Id=7031,7034; StartTime=$upgradeStarted} -ErrorAction SilentlyContinue |
+    Where-Object { $_.Message -match [regex]::Escape("$($channels.nightly.PRODUCT) Protected Authority") })
+  Write-Host "EVIDENCE upgrade-service-terminations {""count"":$($killed.Count)}"
+  if ($killed.Count) { throw "Nightly upgrade killed its protected service: $($killed[0].Message)" }
   $current = AssertNightlyBuild $NightlySetup
   if ($PreviousNightlySetup -and ($current -le $previous -or
       (Get-Item $first).VersionInfo.ProductVersion -ne (Get-Item $NightlySetup).VersionInfo.ProductVersion)) {
