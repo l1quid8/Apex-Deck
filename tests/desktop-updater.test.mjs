@@ -351,13 +351,26 @@ test('the package check pins this app’s team and the promised version', async 
 
 
 test('the Windows feed takes only installers, and a Mac feed never does', () => {
-  const windows = { ...manifestIdentity, schemaVersion: 1, version: '0.9.8', packages: [{ arch: 'x64', minimumSystemVersion: '10.0.22000', name: 'Apex-Deck-0.9.8-x64-Setup.exe', size: 10, sha256: 'a'.repeat(64) }] };
+  const windowsTag = channel.nightly ? { assetTag: 'nightly-windows-20261123-aaaaaaa' } : {};
+  const windows = { ...manifestIdentity, ...windowsTag, schemaVersion: 1, version: '0.9.8', packages: [{ arch: 'x64', minimumSystemVersion: '10.0.22000', name: 'Apex-Deck-0.9.8-x64-Setup.exe', size: 10, sha256: 'a'.repeat(64) }] };
   const manifest = parseManifest(windows, { extension: '.exe' });
+  if (channel.nightly) {
+    // Windows Nightly installers live on their own release, never the macOS one.
+    assert.equal(manifest.assetTag, 'nightly-windows-20261123-aaaaaaa');
+    for (const assetTag of [undefined, tag, 'nightly-windows-20261124-aaaaaaa', 'nightly-windows-20261123-bbbbbbb', 'nightly-linux-20261123-aaaaaaa']) {
+      assert.throws(() => parseManifest({ ...windows, assetTag }, { extension: '.exe' }), /Windows Nightly asset release/);
+    }
+    // A Mac feed never takes the Windows release, whatever it says.
+    assert.equal(parseManifest({ ...manifestIdentity, ...windowsTag, schemaVersion: 1, version: '0.9.8', packages: [{ arch: 'arm64', minimumSystemVersion: '13.0', name: 'Apex.pkg', size: 10, sha256: 'a'.repeat(64) }] }).assetTag, undefined);
+    assert.ok(assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe', manifest.assetTag).endsWith('/nightly-windows-20261123-aaaaaaa/Apex-Deck-0.9.8-x64-Setup.exe'));
+    assert.throws(() => assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe', tag), /Nightly asset tag/);
+    assert.throws(() => assetUrl('0.9.8', 'Apex.pkg', '.pkg', manifest.assetTag), /Nightly asset tag/);
+  }
   assert.ok(packageFor(manifest, { arch: 'x64', osVersion: '10.0.26100' }));
   assert.equal(packageFor(manifest, { arch: 'x64', osVersion: '10.0.19045' }), null);
   assert.throws(() => parseManifest(windows));
   assert.throws(() => parseManifest({ ...windows, packages: [{ ...windows.packages[0], name: 'Apex.pkg' }] }, { extension: '.exe' }));
-  assert.ok(assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe', tag).endsWith('/' + releaseTag('0.9.8') + '/Apex-Deck-0.9.8-x64-Setup.exe'));
+  if (!channel.nightly) assert.ok(assetUrl('0.9.8', 'Apex-Deck-0.9.8-x64-Setup.exe', '.exe', tag).endsWith('/v0.9.8/Apex-Deck-0.9.8-x64-Setup.exe'));
   assert.throws(() => assetUrl('0.9.8', 'a/b.exe', '.exe'));
   assert.notEqual(WINDOWS_FEED_URL, FEED_URL);
 });

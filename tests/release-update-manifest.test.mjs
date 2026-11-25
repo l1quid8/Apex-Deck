@@ -67,9 +67,10 @@ test('the Windows feed a release writes is what installed copies accept', () => 
     assert.throws(() => buildWindowsManifest(windows), /channel mismatch/);
     const feed = buildWindowsManifest(windows, nightly);
     assert.deepEqual([feed.channel, feed.tag, feed.buildNumber, feed.commit], ['nightly', nightly.tag, nightly.buildNumber, nightly.commit]);
+    assert.equal(feed.assetTag, 'nightly-windows-20261123-abcdef0');
     const parsed = parseManifest(feed, {extension: '.exe'});
-    assert.equal(assetUrl(parsed.version, parsed.packages[0].name, '.exe', parsed.tag),
-      'https://github.com/l1quid8/apex-deck/releases/download/nightly-20261123-abcdef0/Apex-Deck-Nightly_20261123_abcdef0_x64-Setup.exe');
+    assert.equal(assetUrl(parsed.version, parsed.packages[0].name, '.exe', parsed.assetTag),
+      'https://github.com/l1quid8/apex-deck/releases/download/nightly-windows-20261123-abcdef0/Apex-Deck-Nightly_20261123_abcdef0_x64-Setup.exe');
     assert.match(WINDOWS_FEED_URL, /\/download\/nightly\/apex-deck-nightly-update-windows\.json$/);
     return;
   }

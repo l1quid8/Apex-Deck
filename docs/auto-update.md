@@ -147,3 +147,32 @@ The Windows packager must stamp the signed Nightly installer with
 in the numeric PE `FileVersion`, most significant 16-bit word first. For
 example, build 42 is `0.0.0.42` and build 65578 is `0.0.1.42`. The updater
 compares all four numeric parts after download and again before launch.
+
+## Windows Nightly publishing
+
+`.github/workflows/nightly-windows.yml` publishes Windows Nightly on its own,
+through `scripts/nightly-windows-release.mjs`. It never touches Stable, the
+macOS release, or the Linux release.
+
+- **Commit.** It takes the newest `daemon.yml` push on `main` whose shared and
+  Windows jobs all passed, or a `sha` given by hand. Linux and macOS results
+  don't count.
+- **Build number.** It is the published Windows feed's `buildNumber` plus 1. If
+  a `nightly-windows-*` release exists but the feed is missing, planning stops
+  rather than restart at 1.
+- **Where the installer lives.** The signed
+  `Apex-Deck-Nightly_<YYYYMMDD>_<sha7>_x64-Setup.exe` goes on its own immutable
+  prerelease, `nightly-windows-YYYYMMDD-<sha7>`. The Windows feed names that
+  release as `assetTag`. Installed Windows Nightly downloads only from there
+  and rejects a feed without it. The feed's `tag` is still the shared source
+  tag `nightly-YYYYMMDD-<sha7>`.
+- **Feed.** `apex-deck-nightly-update-windows.json` on the rolling `nightly`
+  prerelease moves last. It moves only after the installer has been checked
+  locally and again after downloading it back.
+- **Signing.** Only the `sign` job can reach Azure. It runs in the
+  `windows-nightly-signing` environment, which accepts deployments from `main`
+  only. It checks the final Setup.exe's ProductName, ProductVersion,
+  FileVersion build number and Tyler Caldwell signature, then runs the
+  updater's own verifier before the feed is written.
+- **Dry run.** `dry_run` plans, builds, signs and verifies, then prints the
+  publish commands without running them.
