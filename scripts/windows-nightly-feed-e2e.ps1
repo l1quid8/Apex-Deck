@@ -14,7 +14,12 @@ $root = Join-Path $env:ProgramFiles $product
 $exe = Join-Path $root "$product.exe"
 $rule = 'ApexNightlyFeedE2E-block'
 $null = New-Item -ItemType Directory -Force $Work
-$env:APEX_CHANNEL = 'nightly'
+# The feed checker reads the channel from APEX_CHANNEL. Only it gets the variable:
+# the trusted app refuses to start with any APEX_* override.
+function FeedCheck([string[]]$CheckArgs) {
+  $env:APEX_CHANNEL = 'nightly'
+  try { & node "$PSScriptRoot/windows-nightly-feed-check.mjs" @CheckArgs } finally { Remove-Item Env:APEX_CHANNEL -ErrorAction SilentlyContinue }
+}
 
 function Step($text) { Write-Host "::group::$text" }
 function EndStep { Write-Host '::endgroup::' }
@@ -22,7 +27,7 @@ function Evidence($name, $value) { Write-Host "EVIDENCE $name $($value | Convert
 
 # 1. The published feed, read with the updater's own parser, and the installer it names.
 Step 'Read the published feed and download the installer it names'
-$out = & node "$PSScriptRoot/windows-nightly-feed-check.mjs" (Join-Path $Work 'download')
+$out = FeedCheck @((Join-Path $Work 'download'))
 if ($LASTEXITCODE) { throw 'Feed check failed' }
 $out | ForEach-Object { Write-Host $_ }
 $feed = ($out | Select-Object -Last 1) | ConvertFrom-Json
@@ -54,7 +59,7 @@ Evidence 'installed' @{ exe=$exe; signature="$($appSig.Status)"; signer=$appSig.
 EndStep
 
 Step 'The installed app''s own signer accepts the feed''s installer as this build'
-$out = & node "$PSScriptRoot/windows-nightly-feed-check.mjs" (Join-Path $Work 'download-2') $exe
+$out = FeedCheck @((Join-Path $Work 'download-2'), $exe)
 if ($LASTEXITCODE) { throw 'Installed-signer verification failed' }
 $out | ForEach-Object { Write-Host $_ }
 EndStep
@@ -182,6 +187,13 @@ function UpdateStatus([string]$want, [int]$seconds) {
   Dump "status '$last' never matched '$want'"
   throw "Update status was '$last', expected /$want/"
 }
+
+# The trusted app refuses to start with APEX_*, ELECTRON_* or NODE_OPTIONS in its
+# environment (desktop/provenance.mjs assertTrustedStartup). Start it the way a
+# person does, without any the runner happens to set.
+$scrubbed = @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(APEX_|ELECTRON_)' -or $_.Name -eq 'NODE_OPTIONS' } | ForEach-Object Name)
+$scrubbed | ForEach-Object { Remove-Item -LiteralPath "Env:$_" }
+Evidence 'launch-env' @{ removed=$scrubbed }
 
 try {
   # 4. Control: first launch with the app's own exe unable to reach the network.
