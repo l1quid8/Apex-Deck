@@ -91,12 +91,14 @@ grep -q 'Existing authority found' /tmp/apex-acceptance-reinstall.log || fail "w
 step "Start a display and accessibility for the desktop account"
 as_user Xvfb $DISPLAY_NUM -screen 0 1440x900x24 -nolisten tcp >/tmp/apex-acceptance-xvfb.log 2>&1 &
 for _ in $(seq 50); do as_user xdpyinfo >/dev/null 2>&1 && break; sleep 0.2; done
-as_user "$HERE/ui-driver.py" enable-accessibility
+as_user busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
+DRIVER=/usr/local/libexec/apex-installed-test/ui-driver.py
+install -D -m 0755 "$HERE/ui-driver.py" "$DRIVER"
 
 broker_pid() { systemctl show -p MainPID --value "$SERVICE"; }
 launch_ui() {
   as_user /usr/local/bin/$SLUG >>/tmp/apex-acceptance-launcher.log 2>&1 || true
-  as_user "$HERE/ui-driver.py" wait-window --timeout 120 || fail "UI window did not appear"
+  as_user "$DRIVER" wait-window --timeout 120 || fail "UI window did not appear"
   # The window must belong to the broker's supervised launch, not the launcher.
   local window pid parent
   window=$(as_user xdotool search --onlyvisible --name '^Apex Deck Nightly$' | head -1)
@@ -110,8 +112,8 @@ MARKERS=$(as_user mktemp -d /tmp/apex-markers.XXXXXX)
 
 step "Launch through the broker; Allow once runs the request, Deny does not"
 launch_ui
-as_user "$HERE/ui-driver.py" approve --marker "$MARKERS/allowed-1"
-as_user "$HERE/ui-driver.py" deny --marker "$MARKERS/denied-1"
+as_user "$DRIVER" approve --marker "$MARKERS/allowed-1"
+as_user "$DRIVER" deny --marker "$MARKERS/denied-1"
 [[ -f $MARKERS/allowed-1 ]] || fail "Allow once did not run the request"
 [[ ! -e $MARKERS/denied-1 ]] || fail "Deny still ran the request"
 
@@ -124,7 +126,7 @@ for _ in $(seq 100); do [[ -z $OLD_UI ]] || ! kill -0 "$OLD_UI" 2>/dev/null && b
 [[ -z $OLD_UI ]] || ! kill -0 "$OLD_UI" 2>/dev/null || fail "old UI survived broker restart"
 [[ "$(sha256sum /var/lib/$SLUG-provenance/public-key)" == "$KEY_BEFORE" ]] || fail "authority key changed"
 launch_ui
-as_user "$HERE/ui-driver.py" approve --marker "$MARKERS/allowed-2"
+as_user "$DRIVER" approve --marker "$MARKERS/allowed-2"
 [[ -f $MARKERS/allowed-2 ]] || fail "approval after restart did not run"
 [[ ! -e $MARKERS/denied-1 ]] || fail "denied request ran after restart"
 

@@ -279,24 +279,32 @@ mod reply_tests {
     #[test]
     fn send_and_reply_share_one_budget() {
         let (mut client, mut broker) = UnixStream::pair().unwrap();
-        let request = oversized_request(&client);
-        client.set_write_timeout(Some(Duration::from_millis(10))).unwrap();
-        client.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
-        let worker = std::thread::spawn(move || {
-            // Takes the request late, then never answers.
-            std::thread::sleep(Duration::from_millis(300));
-            let mut received = Vec::new();
-            let mut partial = [0u8; 65536];
-            loop {
-                match broker.read(&mut partial) { Ok(0) | Err(_) => break, Ok(n) => received.extend_from_slice(&partial[..n]) }
-                if received.ends_with(b"\n") { break; }
+        // Fill the queue before timing starts. Only the short final frame
+        // needs to be transmitted after the broker wakes, on either OS.
+        client.set_nonblocking(true).unwrap();
+        let mut queued = 0;
+        loop {
+            match client.write(&[b'x'; 4096]) {
+                Ok(0) => panic!("socket closed during setup"),
+                Ok(count) => queued += count,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("could not fill socket: {e}"),
             }
-            std::thread::sleep(Duration::from_millis(500));
+        }
+        client.set_nonblocking(false).unwrap();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(750));
+            let mut received = vec![0; queued + 1];
+            broker.read_exact(&mut received).unwrap();
+            assert_eq!(received.last(), Some(&b'\n'));
+            let mut end = [0];
+            assert_eq!(broker.read(&mut end).unwrap(), 0);
         });
         let start = std::time::Instant::now();
-        let error = transact(&mut client, &request, Duration::from_millis(400)).unwrap_err();
-        // Separate budgets would wait 300 ms to send and then 400 ms more for the reply.
-        assert!(start.elapsed() < Duration::from_millis(550), "one 400 ms budget covers send and reply together: {:?}", start.elapsed());
+        let error = transact(&mut client, b"\n", Duration::from_millis(1500)).unwrap_err();
+        let elapsed = start.elapsed();
+        // A fresh reply budget would wait at least 2250 ms in total.
+        assert!(elapsed < Duration::from_millis(2000), "shared deadline: {elapsed:?}");
         assert!(error.contains("reply timed out"), "{error}");
         drop(client);
         worker.join().unwrap();
