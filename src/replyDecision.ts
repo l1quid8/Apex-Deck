@@ -10,7 +10,7 @@ export function suggestionsMode(raw: unknown): SuggestionsMode {
 
 export interface ReplyDecision {
   key: string;
-  kind: "question" | "merge" | "fix_checks" | "fix_failed" | "merging" | "merged";
+  kind: "question" | "merge" | "fix_checks" | "fix_failed" | "merging";
   context: string;
   question: string;
   primary?: string;
@@ -48,7 +48,7 @@ export async function actOnDecision(backend: Backend, id: string, shown: ReplyOf
     await backend.call("room_post_to", { id, targets: [card.to], text: card.prompt, decisionKey: card.key });
     return "Sent to the agent.";
   }
-  if (card.kind === "question" || card.kind === "merged") throw new Error("There is no executable action.");
+  if (card.kind === "question") throw new Error("There is no executable action.");
   const kind = ({ merge: "merge_ready", fix_checks: "fix_checks", fix_failed: "ask_fix", merging: "cancel_merge" } as const)[card.kind];
   if (!kind || (kind === "cancel_merge" && !card.cancellable))
     throw new Error("This action is no longer available.");

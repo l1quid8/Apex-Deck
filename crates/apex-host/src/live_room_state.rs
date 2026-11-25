@@ -182,3 +182,25 @@ impl RoomView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apex_core::{Message, ParticipantId};
+
+    fn added(speaker: serde_json::Value) -> RoomEvent {
+        let message: Message = serde_json::from_value(serde_json::json!({ "seq": 3, "speaker": speaker, "text": "Merged PR #42. Your Mac is updated. Awaiting your test." })).unwrap();
+        RoomEvent::MessageAdded { message }
+    }
+
+    #[test]
+    fn a_deck_note_clears_a_shown_suggestion() {
+        let mut live = LiveRoomState::default();
+        let shown = RoomEvent::NextSteps { id: ParticipantId::new("a"), steps: vec![apex_core::NextStep { label: "Try it".into(), prompt: "I'll try it on my phone.".into() }], pending: false };
+        live.observe(&shown);
+        live.observe(&added(serde_json::json!({ "kind": "bot", "id": "a" })));
+        assert!(live.view.next_steps.is_some(), "another agent's message leaves it");
+        live.observe(&added(serde_json::json!({ "kind": "bot", "id": "deck" })));
+        assert!(live.view.next_steps.is_none(), "a Deck note clears it");
+    }
+}

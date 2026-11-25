@@ -1567,6 +1567,38 @@ impl Host {
         });
     }
 
+    /// The merge is in, whether or not the Mac was updated: the builder's task
+    /// folder goes unless it holds work the merge doesn't, and the thread hears
+    /// it all in one Deck note.
+    async fn merged(self: &Arc<Self>, room: &str, job: &crate::thread_git::Workflow, deferred: Option<crate::thread_git::Deferral>) {
+        use crate::task_branches::{Close, Closed};
+        let kept = if self.merges_from_task_folder(room, job) {
+            let (branches, data, thread, builder) = (Arc::clone(&self.task_branches), self.paths.data.clone(), room.to_owned(), job.builder.clone());
+            let why = Close::Merged { head: job.head.clone(), result_oid: job.result_oid.clone() };
+            match tokio::task::spawn_blocking(move || branches.close(&data, &thread, &builder, why)).await.map_err(|e| e.to_string()).and_then(|closed| closed) {
+                Ok(Closed::Kept { path, .. }) => Some(path),
+                Ok(Closed::Removed) => None,
+                Err(why) => {
+                    eprintln!("[apex-deck] could not remove the task folder in {room}: {why}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let pr = job.pr.map(|n| format!("PR #{n}")).unwrap_or_else(|| job.branch.clone());
+        let mut note = match &deferred {
+            None => format!("Merged {pr}. Your Mac is updated. Awaiting your test."),
+            Some(why) => format!("Merged {pr}. Your Mac wasn't updated: {why}."),
+        };
+        if let Some(path) = kept {
+            note.push_str(&format!(" The task folder {} was kept: it has changes the pull request doesn't contain.", path.display()));
+        }
+        if let Err(why) = self.deck_note(room, note).await {
+            eprintln!("[apex-deck] could not post the merge note in {room}: {why}");
+        }
+    }
+
     /// Whether `w` merges from its builder's task folder rather than the thread's own.
     fn merges_from_task_folder(&self, room: &str, w: &crate::thread_git::Workflow) -> bool {
         self.task_branches.get(room, &w.builder).ok().flatten().is_some_and(|folder| same_folder(Path::new(&w.root), &folder.path))
@@ -3630,9 +3662,20 @@ impl Host {
     async fn advance_thread_merge(self: &Arc<Self>, room: String, job: crate::thread_git::Workflow) {
         let Ok(_maintenance) = self.maintenance.enter() else { return };
         if job.phase == crate::thread_git::Phase::Syncing {
-            if let Err(why) = self.thread_git.sync(self, &room, &job).await {
-                let _ = self.thread_git.defer_sync(&room, &job, why);
-            }
+            let fallback = match self.handle(&room) {
+                Ok(handle) => handle.context.cwd.clone(),
+                Err(_) => self.store.room(&room).ok().flatten().and_then(|saved| saved.cwd.map(PathBuf::from)),
+            };
+            // Only the call that moved the workflow to Merged tidies up and says so.
+            let deferred = match self.thread_git.sync(self, &room, &job, fallback.as_deref()).await {
+                Ok(true) => None,
+                Ok(false) => return,
+                Err(why) => match self.thread_git.defer_sync(&room, &job, &why) {
+                    Ok(true) => Some(why),
+                    _ => return,
+                },
+            };
+            self.merged(&room, &job, deferred).await;
             return;
         }
         // A task folder is the builder's alone; only the thread's own folder is shared with its turns.
@@ -7070,6 +7113,68 @@ done
         t.until(|| t.notes() == vec!["Couldn't merge fix/a: Merge stopped before submission.".to_string()]);
         t.runtime.block_on(t.host.advance_thread_merge("r".into(), job));
         assert_eq!(t.notes().len(), 1, "a stale poll posts nothing");
+        t.finish();
+    }
+
+    /// Agent `a`'s task folder commit merged on GitHub (the bare origin's
+    /// main), and the thread's workflow at Syncing, as the merge worker leaves it.
+    fn merged_on_github(t: &ShipThread) -> crate::thread_git::Workflow {
+        use crate::task_branches::fixture::git;
+        let folder = t.host.task_branches.get("r", "a").unwrap().unwrap().path;
+        let head = t.sha("a").to_owned();
+        let tree = git(&folder, &["rev-parse", "HEAD^{tree}"]);
+        let main = git(t.repo.root(), &["rev-parse", "origin/main"]);
+        let merge = git(&folder, &["commit-tree", &tree, "-p", &main, "-p", &head, "-m", "Merge pull request #42"]);
+        git(t.repo.root(), &["push", "-q", t.repo.bare.path().to_str().unwrap(), &format!("{merge}:refs/heads/main")]);
+        let w: crate::thread_git::Workflow = serde_json::from_value(serde_json::json!({
+            "root": folder.to_str().unwrap(), "branch": "fix/a", "repo": "test/repo", "head": head,
+            "builder": "a", "builder_model": "", "reviewer": null, "phase": "syncing", "generation": 1,
+            "pr": 42, "detail": "Merged PR #42 into main.", "result_oid": merge, "pushed": true, "fix_requested": false,
+        })).unwrap();
+        t.host.thread_git.put("r", w.clone()).unwrap();
+        w
+    }
+
+    #[test]
+    fn the_merge_note_survives_the_folder_and_is_posted_once() {
+        use crate::task_branches::fixture::git;
+        let t = ship_thread("merge-note", &["a"], &[("a", apex_core::Access::Full, &[])]);
+        let job = merged_on_github(&t);
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
+        t.until(|| t.notes() == vec!["Merged PR #42. Your Mac is updated. Awaiting your test.".to_string()]);
+        assert_eq!(git(t.repo.root(), &["rev-parse", "HEAD"]), job.result_oid.clone().unwrap(), "the Mac's main is at the merge");
+        assert!(std::fs::symlink_metadata(&job.root).is_err(), "the task folder is gone");
+        assert_eq!(t.host.task_branches.get("r", "a").unwrap(), None);
+        assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Merged);
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job));
+        assert_eq!(t.notes().len(), 1, "a stale Syncing job posts no second note");
+        assert!(t.offer()["decision"].is_null(), "no card: the note says it");
+        t.finish();
+    }
+
+    #[test]
+    fn a_deferred_update_and_a_kept_folder_say_why_in_the_note() {
+        use crate::task_branches::fixture::git;
+        let t = ship_thread("merge-note-deferred", &["a"], &[("a", apex_core::Access::Full, &[])]);
+        let job = merged_on_github(&t);
+        git(t.repo.root(), &["commit", "-q", "--allow-empty", "-m", "only on this Mac"]);
+        std::fs::write(Path::new(&job.root).join("unsaved.txt"), "still working\n").unwrap();
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job.clone()));
+        t.until(|| t.notes() == vec![format!("Merged PR #42. Your Mac wasn't updated: its main has commits that aren't on GitHub. The task folder {} was kept: it has changes the pull request doesn't contain.", job.root)]);
+        assert!(Path::new(&job.root).is_dir());
+        assert_eq!(t.workflow().unwrap().phase, crate::thread_git::Phase::Merged);
+        t.finish();
+    }
+
+    #[test]
+    fn a_closed_thread_still_gets_the_note() {
+        let t = ship_thread("merge-note-closed", &["a"], &[("a", apex_core::Access::Full, &[])]);
+        let job = merged_on_github(&t);
+        t.host.room_close("r".into());
+        t.runtime.block_on(t.host.advance_thread_merge("r".into(), job));
+        let saved = t.host.store.room("r").unwrap().unwrap();
+        let deck = apex_core::Speaker::Bot(ParticipantId::new("deck"));
+        assert!(saved.snapshot.transcript.iter().any(|m| m.speaker == deck && m.text == "Merged PR #42. Your Mac is updated. Awaiting your test."), "{:?}", saved.snapshot.transcript);
         t.finish();
     }
 

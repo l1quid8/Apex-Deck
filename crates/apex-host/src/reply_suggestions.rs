@@ -62,9 +62,8 @@ pub enum Kind {
     /// A merge that was asked for stopped on a failed check. 1 turn.
     FixFailed,
     /// A merge is in flight. Shown in every mode so Cancel stays reachable.
+    /// A merge that landed is reported by Deck's note in the thread.
     Merging,
-    /// Receipt.
-    Merged,
     /// The agent's own yes/no question. Only ever sends text to that agent.
     Question,
 }
@@ -162,7 +161,6 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
     }
     let current = facts.workflow.filter(|w| facts.head == Some(w.head.as_str()));
     let candidate = current.and_then(|w| match (&w.phase, facts.checks) {
-        (Phase::Merged, _) => Some(git(w, Kind::Merged, "merged", "Merged. Awaiting your test.", None, 0, None)),
         (Phase::Failed, _) if !w.fix_requested => Some(git(
             w,
             Kind::FixFailed,
@@ -419,8 +417,8 @@ mod tests {
         let merging = decided(card, Some(&workflow(Phase::Checks, true)), Checks::Running, "Done.", &[]).unwrap();
         assert_eq!((merging.kind, merging.cancellable, merging.dismissible), (Kind::Merging, true, false));
         assert!(!decided(card, Some(&workflow(Phase::Cancelling, true)), Checks::Running, "Done.", &[]).unwrap().cancellable);
-        let merged = decided(card, Some(&workflow(Phase::Merged, true)), Checks::Running, "Done.", &[]).unwrap();
-        assert_eq!((merged.kind, merged.primary), (Kind::Merged, None));
+        // Deck's note in the thread reports a merge; no card does.
+        assert_eq!(decided(card, Some(&workflow(Phase::Merged, true)), Checks::Running, "Done.", &[]), None);
         // The agent's own question, and Git winning over it.
         let asks = "I traced it.\nDeck asks: Add a timestamp so we can measure the delay? | Yes, add logging";
         let question = decided(card, None, Checks::Running, asks, &[]).unwrap();

@@ -29,6 +29,17 @@ pub struct TaskFolder {
     pub root: PathBuf,
 }
 
+/// How a task's pull request ended.
+pub enum Close {
+    Merged { head: String, result_oid: Option<String> },
+    Abandoned,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum Closed {
+    Removed,
+    Kept { path: PathBuf, why: String },
+}
+
 #[derive(Debug)]
 pub struct Started {
     pub folder: TaskFolder,
@@ -184,6 +195,49 @@ impl TaskBranches {
             folders.remove(at);
             Ok(None)
         })
+    }
+
+    /// Always drops the record; removes the folder and branch only when nothing
+    /// in them is missing from the merge.
+    pub fn close(&self, data: &Path, thread: &str, agent: &str, why: Close) -> Result<Closed, String> {
+        let folder = self.get(thread, agent)?;
+        self.edit(|folders| {
+            folders.retain(|f| !(f.thread == thread && f.agent == agent));
+            Ok(())
+        })?;
+        let Some(folder) = folder else { return Ok(Closed::Removed) };
+        let kept = |why: &str| Ok(Closed::Kept { path: folder.path.clone(), why: why.into() });
+        let (head, result_oid) = match why {
+            Close::Abandoned => return kept("the pull request was closed without merging"),
+            Close::Merged { head, result_oid } => (head, result_oid),
+        };
+        let path = &folder.path;
+        let read = |args: &[&str]| git(data, path, &[path], &[], args);
+        let clean = read(&["status", "--porcelain"]).is_ok_and(|status| {
+            status.lines().all(|line| SHARED_SHORTCUT_PATHS.contains(&line.get(3..).unwrap_or("").trim_end_matches('/')))
+        });
+        // At the merged head, or contained in the merge (GitHub's "Update branch" made a newer head).
+        let at = read(&["rev-parse", "HEAD"]).unwrap_or_default();
+        let contained = at == head || result_oid.as_deref().is_some_and(|merge| read(&["merge-base", "--is-ancestor", &at, merge]).is_ok());
+        if !(clean && contained) {
+            return kept("it has changes the pull request doesn't contain");
+        }
+        for rel in SHARED_SHORTCUT_PATHS {
+            let link = path.join(rel);
+            if std::fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                // A Windows junction is a directory entry; a Unix link is a file.
+                #[cfg(windows)]
+                let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+                #[cfg(not(windows))]
+                let _ = std::fs::remove_file(&link);
+            }
+        }
+        let external = crate::assistant_git::external_path(path);
+        git(data, &folder.root, &[path], &[], &["worktree", "remove", "--force", &external.to_string_lossy()])?;
+        let _ = crate::project_process::prune_worktrees(data, &folder.root);
+        // `-D`: when the Mac's main wasn't updated, git doesn't know the branch is merged.
+        git(data, &folder.root, &[], &[], &["branch", "-D", &folder.branch])?;
+        Ok(Closed::Removed)
     }
 
     /// `root` is the thread's checkout; `copy` is the agent's active copy, if any.
@@ -490,5 +544,62 @@ mod tests {
         std::fs::remove_dir_all(&started.folder.path).unwrap();
         assert_eq!(copies(repo.root().to_path_buf()).active_copy(&ParticipantId::new("a")).await, None);
         assert_eq!(repo.store.get("t", "a").unwrap(), None);
+    }
+
+    fn merged(repo: &Repo, agent: &str, head: &str, result_oid: Option<String>) -> Closed {
+        repo.store.close(repo.data.path(), "t", agent, Close::Merged { head: head.into(), result_oid }).unwrap()
+    }
+
+    #[test]
+    fn after_the_update_the_task_folder_and_branch_are_removed() {
+        let repo = Repo::new();
+        let folder = repo.start(None, "a", "fix/done").unwrap().folder.path;
+        std::fs::create_dir_all(repo.root().join("node_modules")).unwrap();
+        git(&folder, &["commit", "--allow-empty", "-qm", "the fix"]);
+        let head = git(&folder, &["rev-parse", "HEAD"]);
+        assert_eq!(merged(&repo, "a", &head, None), Closed::Removed);
+        assert!(std::fs::symlink_metadata(&folder).is_err(), "the folder is gone");
+        assert_eq!(git(repo.root(), &["branch", "--list", "fix/done"]), "", "the branch is gone");
+        assert!(!git(repo.root(), &["worktree", "list"]).contains("fix-done"));
+        assert_eq!(repo.store.get("t", "a").unwrap(), None);
+        assert!(repo.root().join("node_modules").is_dir(), "the linked shortcut's target is untouched");
+    }
+
+    #[test]
+    fn a_task_folder_whose_head_is_contained_in_the_merge_commit_is_removed() {
+        // GitHub's "Update branch" merged main into the PR first: the merged head is newer than the folder.
+        let repo = Repo::new();
+        let folder = repo.start(None, "a", "fix/updated").unwrap().folder.path;
+        git(&folder, &["commit", "--allow-empty", "-qm", "the fix"]);
+        let mine = git(&folder, &["rev-parse", "HEAD"]);
+        let tree = git(&folder, &["rev-parse", "HEAD^{tree}"]);
+        let main = git(repo.root(), &["rev-parse", "origin/main"]);
+        let updated = git(&folder, &["commit-tree", &tree, "-p", &mine, "-p", &main, "-m", "Merge main into fix/updated"]);
+        let merge = git(&folder, &["commit-tree", &tree, "-p", &main, "-p", &updated, "-m", "Merge pull request #42"]);
+        assert_eq!(merged(&repo, "a", &updated, Some(merge)), Closed::Removed);
+        assert!(std::fs::symlink_metadata(&folder).is_err());
+    }
+
+    #[test]
+    fn a_task_folder_with_changes_or_new_commits_is_kept() {
+        let repo = Repo::new();
+        let kept = |agent: &str, branch: &str, change: &dyn Fn(&Path)| {
+            let folder = repo.start(None, agent, branch).unwrap().folder.path;
+            git(&folder, &["commit", "--allow-empty", "-qm", "the fix"]);
+            let head = git(&folder, &["rev-parse", "HEAD"]);
+            change(&folder);
+            let closed = merged(&repo, agent, &head, None);
+            assert_eq!(closed, Closed::Kept { path: folder.clone(), why: "it has changes the pull request doesn't contain".into() }, "{branch}");
+            assert!(folder.is_dir(), "{branch}: the folder stays");
+            assert_eq!(git(repo.root(), &["branch", "--list", branch]), format!("+ {branch}"), "{branch}: the branch stays");
+            assert_eq!(repo.store.get("t", agent).unwrap(), None, "{branch}: the record goes either way");
+        };
+        kept("a", "fix/dirty", &|folder| std::fs::write(folder.join("unsaved.txt"), "work in progress\n").unwrap());
+        kept("b", "fix/later", &|folder| { git(folder, &["commit", "--allow-empty", "-qm", "after the PR"]); });
+        // A pull request closed without merging keeps the folder too.
+        let folder = repo.start(None, "c", "fix/closed").unwrap().folder.path;
+        assert!(matches!(repo.store.close(repo.data.path(), "t", "c", Close::Abandoned).unwrap(), Closed::Kept { .. }));
+        assert!(folder.is_dir());
+        assert_eq!(repo.store.get("t", "c").unwrap(), None);
     }
 }

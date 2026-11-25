@@ -67,6 +67,32 @@ pub enum RecordOutcome {
     BusyOther { other: String },
 }
 
+/// Why the Mac's main folder wasn't fast-forwarded after a merge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Deferral {
+    /// Local changes (or untracked files) there that the merge also touches.
+    Files(Vec<String>),
+    Reason(String),
+}
+impl std::fmt::Display for Deferral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Deferral::Files(files) => write!(f, "these files on your Mac have changes the merge also touches: {}", files.join(", ")),
+            Deferral::Reason(why) => write!(f, "{}", why.trim_end().trim_end_matches('.')),
+        }
+    }
+}
+impl From<String> for Deferral {
+    fn from(why: String) -> Self {
+        Deferral::Reason(why)
+    }
+}
+impl From<&str> for Deferral {
+    fn from(why: &str) -> Self {
+        Deferral::Reason(why.into())
+    }
+}
+
 /// What a Cancel tap did: `cancelled` only when this tap moved the merge into cancelling.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CancelOutcome {

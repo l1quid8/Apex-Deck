@@ -4145,7 +4145,7 @@ function ThreadView(props: {
   // Runner replies are folded into a closed disclosure. Keep their decision reachable.
   const foldedDecision = decisionSeq !== null && props.runner?.replySeqs?.includes(decisionSeq);
   // Older transports and some platforms cannot admit phone Git writes.
-  const canShowDecision = offer?.decision?.kind === "question" || offer?.decision?.kind === "merged" ||
+  const canShowDecision = offer?.decision?.kind === "question" ||
     props.suggestionHost?.supports("phone_thread_git_v1");
   const decisionCard = decisionBackend && offer?.decision && canShowDecision && (pendingMerge || (!busy && decisionSeq !== null)) &&
     <ReplyDecisionCard key={offer.decision.key} backend={decisionBackend} room={props.paneId}

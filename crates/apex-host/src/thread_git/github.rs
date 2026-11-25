@@ -1,4 +1,4 @@
-use super::{git, repository, run, Checks, Phase, ThreadGit, Workflow};
+use super::{git, repository, run, Checks, Deferral, Phase, ThreadGit, Workflow};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -207,6 +207,31 @@ pub(crate) fn fake_checks(head: &str, answer: Checks) {
     fakes.retain(|(seen, _)| seen != head);
     fakes.push((head.to_owned(), answer));
 }
+/// Why git refused to fast-forward the main folder, read from its own output
+/// (`run` wraps it as `git failed:\n<stdout>\n<stderr>`).
+pub(crate) fn refusal(output: &str) -> Deferral {
+    let text = output.strip_prefix("git failed:\n").unwrap_or(output);
+    // "Your local changes to the following files ..." and "The following
+    // untracked working tree files ..." both end so, then list the files.
+    let mut files = Vec::new();
+    let mut listing = false;
+    for line in text.lines() {
+        if line.contains("would be overwritten by merge:") {
+            listing = true;
+        } else if listing && (line.starts_with('\t') || line.starts_with("    ")) {
+            files.push(line.trim().to_owned());
+        } else {
+            listing = false;
+        }
+    }
+    if !files.is_empty() {
+        return Deferral::Files(files);
+    }
+    if text.contains("Not possible to fast-forward") {
+        return Deferral::Reason("its main has commits that aren't on GitHub".into());
+    }
+    Deferral::Reason(text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("git refused to update it").to_owned())
+}
 /// `probe` against the real project, with a failure to ask read as unknown.
 pub async fn checks(data: &Path, w: &Workflow) -> Checks {
     #[cfg(test)]
@@ -226,7 +251,7 @@ pub(super) trait Shell {
         args: &[&str],
     ) -> Result<String, String>;
 }
-struct ProjectShell;
+pub(super) struct ProjectShell;
 impl Shell for ProjectShell {
     async fn run(
         &self,
@@ -239,26 +264,31 @@ impl Shell for ProjectShell {
     }
 }
 impl ThreadGit {
-    pub async fn sync(
+    /// Fast-forwards the Mac's main folder to GitHub's merge commit, keeping
+    /// local edits the merge doesn't touch, then deletes the merged branch on
+    /// GitHub. `true` only when this call moved the workflow to Merged.
+    /// `fallback` is the thread's folder, for when the task folder is gone.
+    pub async fn sync(&self, host: &crate::host::Host, room: &str, w: &Workflow, fallback: Option<&Path>) -> Result<bool, Deferral> {
+        self.sync_with(&ProjectShell, host.data_dir(), &|main| host.checkout_gate(main), fallback, room, w).await
+    }
+    pub(super) async fn sync_with(
         &self,
-        host: &crate::host::Host,
+        shell: &impl Shell,
+        data: &Path,
+        gate: &(dyn Fn(&Path) -> apex_core::CheckoutWriteGate + Sync),
+        fallback: Option<&Path>,
         room: &str,
         w: &Workflow,
-    ) -> Result<(), String> {
-        let data = host.data_dir();
+    ) -> Result<bool, Deferral> {
         let root = Path::new(&w.root);
         let sha = w
             .result_oid
             .as_deref()
             .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-            .ok_or("Missing GitHub merge commit.")?;
-        let worktrees = run(
-            data,
-            root,
-            "git",
-            &["worktree", "list", "--porcelain", "-z"],
-        )
-        .await?;
+            .ok_or("GitHub didn't report the merge commit")?;
+        // Any checkout of the repository lists its worktrees.
+        let lister = if root.is_dir() { root } else { fallback.ok_or("the task folder is gone and the thread has no folder")? };
+        let worktrees = shell.run(data, lister, "git", &["worktree", "list", "--porcelain", "-z"]).await?;
         let main = worktrees
             .split("\0\0")
             .find_map(|block| {
@@ -268,61 +298,51 @@ impl ThreadGit {
                     .any(|f| f == "branch refs/heads/main")
                     .then(|| PathBuf::from(path))
             })
-            .ok_or("Main is not checked out on this machine.")?;
+            .ok_or("main isn't checked out on this Mac")?;
         if main == root {
-            return Err("Task checkout is now on main; local update deferred.".into());
+            return Err("the task folder itself is on main".into());
         }
-        let main_gate = host.checkout_gate(&main);
+        let main_gate = gate(&main);
         let _lease = main_gate
             .acquire(format!("thread-git-sync:{room}"), Default::default())
             .await
             .map_err(|e| format!("{e:?}"))?;
         let read = |args: &[&str]| git(data, &main, None, args).map(|s| s.trim().to_string());
-        if read(&["symbolic-ref", "--short", "HEAD"])? != "main"
-            || !read(&["status", "--porcelain"])?.is_empty()
-        {
-            return Err("Local main has work in progress.".into());
+        if read(&["symbolic-ref", "--short", "HEAD"])? != "main" {
+            return Err("the main folder isn't on main".into());
         }
-        let url = read(&["remote", "get-url", "origin"])?;
-        if repository(&url)? != w.repo {
-            return Err("Local main has a different origin.".into());
+        // The repository is named by where it pushes, as receipts are.
+        if repository(&read(&["remote", "get-url", "--push", "origin"])?)? != w.repo {
+            return Err("the main folder has a different origin".into());
         }
-        run(
-            data,
-            &main,
-            "git",
-            &["fetch", "--no-tags", &url, "refs/heads/main"],
-        )
-        .await?;
-        read(&["merge-base", "--is-ancestor", sha, "FETCH_HEAD"])?;
+        shell.run(data, &main, "git", &["fetch", "--no-tags", "origin", "refs/heads/main"]).await?;
+        if read(&["merge-base", "--is-ancestor", sha, "FETCH_HEAD"]).is_err() {
+            return Err("GitHub's main doesn't have the merge yet".into());
+        }
+        // A fast-forward keeps staged and unstaged edits to files the merge
+        // doesn't touch; git refuses, naming them, when it would change them.
         if read(&["merge-base", "--is-ancestor", sha, "HEAD"]).is_err() {
-            run(data, &main, "git", &["merge", "--ff-only", sha]).await?;
-        }
-        // Delete only the remote ref that still points to the reviewed SHA.
-        let remote_ref = format!("refs/heads/{}", w.branch);
-        let remote = run(data, root, "git", &["ls-remote", &url, &remote_ref]).await?;
-        let mut detail = format!("{} Local main contains this merge.", w.detail);
-        if remote.split_whitespace().next() == Some(&w.head) {
-            let lease = format!("--force-with-lease={remote_ref}:{}", w.head);
-            if let Err(e) = run(
-                data,
-                root,
-                "git",
-                &["push", &lease, &url, &format!(":{remote_ref}")],
-            )
-            .await
-            {
-                detail.push_str(&format!(" Remote branch retained: {e}"));
+            if let Err(why) = shell.run(data, &main, "git", &["merge", "--ff-only", sha]).await {
+                return Err(refusal(&why));
             }
         }
-        detail.push_str(" The checked-out task branch is retained.");
-        self.update(room, w, |j| {
+        // Delete only the remote branch that still points to the merged head.
+        let remote_ref = format!("refs/heads/{}", w.branch);
+        let mut detail = format!("{} Local main contains this merge.", w.detail);
+        if let Ok(remote) = shell.run(data, &main, "git", &["ls-remote", "origin", &remote_ref]).await {
+            if remote.split_whitespace().next() == Some(&w.head) {
+                let lease = format!("--force-with-lease={remote_ref}:{}", w.head);
+                if let Err(e) = shell.run(data, &main, "git", &["push", &lease, "origin", &format!(":{remote_ref}")]).await {
+                    detail.push_str(&format!(" Remote branch retained: {e}"));
+                }
+            }
+        }
+        Ok(self.update(room, w, |j| {
             j.phase = Phase::Merged;
             j.detail = detail;
-        })?;
-        Ok(())
+        })?)
     }
-    pub fn defer_sync(&self, room: &str, w: &Workflow, why: String) -> Result<bool, String> {
+    pub fn defer_sync(&self, room: &str, w: &Workflow, why: &Deferral) -> Result<bool, String> {
         self.update(room, w, |j| {
             j.phase = Phase::Merged;
             j.detail = format!("{} Local update deferred: {why}", w.detail);

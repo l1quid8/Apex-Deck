@@ -561,3 +561,147 @@ fn the_marker_reads_built_ship_and_review_lines() {
     assert_eq!(marker(&format!("Deck ship {}", &sha[..39])), None);
     assert_eq!(marker(&format!("Deck ship {sha}\nmore")), None, "only the last line");
 }
+
+/// The Mac's main folder on `main`, whose `origin` fetches from a bare
+/// repository standing in for GitHub (and pushes to GitHub, never reached),
+/// the builder's task folder on `fix/x` with one commit, and the merge
+/// commit GitHub made for it, already on GitHub's main.
+struct Mac {
+    data: TestDataDir,
+    main: TestDataDir,
+    bare: TestDataDir,
+    store: ThreadGit,
+    folder: PathBuf,
+    head: String,
+    merge: String,
+}
+const GITHUB: &str = "https://github.com/test/repo.git";
+impl Mac {
+    /// `files` are the task commit's changes; the main folder starts with README.md, notes.md and old.md.
+    fn new(files: &[(&str, &str)]) -> Self {
+        let (data, main, bare) = (TestDataDir::new(), TestDataDir::new(), TestDataDir::new());
+        let run = |cwd: &Path, args: &[&str]| -> String {
+            let out = fixture_git_command().args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        run(bare.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let m = main.path();
+        run(m, &["init", "-qb", "main"]);
+        run(m, &["config", "user.name", "Fixture"]);
+        run(m, &["config", "user.email", "test@example.invalid"]);
+        run(m, &["config", "http.proxy", "http://127.0.0.1:9"]);
+        for (file, text) in [("README.md", "readme\n"), ("notes.md", "notes\n"), ("old.md", "old\n")] {
+            std::fs::write(m.join(file), text).unwrap();
+        }
+        run(m, &["add", "-A"]);
+        run(m, &["commit", "-qm", "base"]);
+        run(m, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
+        run(m, &["config", "remote.origin.pushurl", GITHUB]);
+        run(m, &["push", "-q", bare.path().to_str().unwrap(), "main:main"]);
+        let folder = std::fs::canonicalize(m).unwrap().with_file_name(format!("{}-task", m.file_name().unwrap().to_string_lossy()));
+        run(m, &["worktree", "add", "-q", "-b", "fix/x", folder.to_str().unwrap()]);
+        for (file, text) in files {
+            let path = folder.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        run(&folder, &["add", "-A"]);
+        run(&folder, &["commit", "-qm", "the fix"]);
+        let head = run(&folder, &["rev-parse", "HEAD"]);
+        run(&folder, &["push", "-q", bare.path().to_str().unwrap(), "fix/x:fix/x"]);
+        // GitHub's merge commit: main and the fix, with the fix's tree.
+        let tree = run(&folder, &["rev-parse", "HEAD^{tree}"]);
+        let base = run(m, &["rev-parse", "main"]);
+        let merge = run(m, &["commit-tree", &tree, "-p", &base, "-p", &head, "-m", "Merge pull request #42"]);
+        run(m, &["push", "-q", bare.path().to_str().unwrap(), &format!("{merge}:refs/heads/main")]);
+        let store = ThreadGit::new(data.path());
+        store.put("r", serde_json::from_value(serde_json::json!({
+            "root": folder.to_str().unwrap(), "branch": "fix/x", "repo": "test/repo", "head": head,
+            "builder": "a", "builder_model": "", "reviewer": null, "phase": "syncing", "generation": 1,
+            "pr": 42, "detail": "Merged PR #42 into main.", "result_oid": merge, "pushed": true, "fix_requested": false,
+        })).unwrap()).unwrap();
+        Self { data, main, bare, store, folder, head, merge }
+    }
+    fn git(&self, args: &[&str]) -> String {
+        let out = fixture_git_command().args(args).current_dir(self.main.path()).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+    async fn sync(&self) -> Result<bool, Deferral> {
+        self.sync_from(&self.store.get("r").unwrap().unwrap()).await
+    }
+    /// The merge worker's step for the workflow as it was when it started.
+    async fn sync_from(&self, w: &Workflow) -> Result<bool, Deferral> {
+        self.store.sync_with(&super::github::ProjectShell, self.data.path(), &|_| apex_core::CheckoutWriteGate::default(), Some(self.main.path()), "r", w).await
+    }
+}
+impl Drop for Mac {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.folder);
+    }
+}
+
+#[tokio::test]
+async fn an_unrelated_local_edit_does_not_stop_the_update() {
+    let mac = Mac::new(&[("src/x.rs", "fixed\n")]);
+    let m = mac.main.path();
+    std::fs::write(m.join("README.md"), "edited, not staged\n").unwrap();
+    std::fs::write(m.join("notes.md"), "edited and staged\n").unwrap();
+    std::fs::write(m.join("new.md"), "a new staged file\n").unwrap();
+    mac.git(&["add", "notes.md", "new.md"]);
+    mac.git(&["rm", "-q", "old.md"]);
+    let before = mac.git(&["status", "--porcelain"]);
+    let syncing = mac.store.get("r").unwrap().unwrap();
+    assert_eq!(mac.sync().await, Ok(true));
+    assert_eq!(mac.git(&["rev-parse", "HEAD"]), mac.merge, "the Mac's main is at the merge");
+    assert_eq!(std::fs::read_to_string(m.join("src/x.rs")).unwrap(), "fixed\n");
+    assert_eq!(mac.git(&["status", "--porcelain"]), before, "every local edit is still there");
+    assert_eq!(mac.store.get("r").unwrap().unwrap().phase, Phase::Merged);
+    assert_eq!(mac.sync_from(&syncing).await, Ok(false), "a second, stale sync changes nothing");
+}
+
+#[tokio::test]
+async fn a_local_edit_to_a_merged_file_stops_the_update_and_names_it() {
+    for staged in [false, true] {
+        let mac = Mac::new(&[("README.md", "the fix's readme\n")]);
+        std::fs::write(mac.main.path().join("README.md"), "my own edit\n").unwrap();
+        if staged {
+            mac.git(&["add", "README.md"]);
+        }
+        let base = mac.git(&["rev-parse", "HEAD"]);
+        assert_eq!(mac.sync().await, Err(Deferral::Files(vec!["README.md".into()])), "staged: {staged}");
+        assert_eq!(mac.git(&["rev-parse", "HEAD"]), base, "the Mac stays on the old commit");
+        assert_eq!(std::fs::read_to_string(mac.main.path().join("README.md")).unwrap(), "my own edit\n");
+    }
+}
+
+#[tokio::test]
+async fn an_untracked_file_in_the_way_is_named() {
+    let mac = Mac::new(&[("src/new.rs", "from the fix\n")]);
+    std::fs::create_dir_all(mac.main.path().join("src")).unwrap();
+    std::fs::write(mac.main.path().join("src/new.rs"), "my own new file\n").unwrap();
+    assert_eq!(mac.sync().await, Err(Deferral::Files(vec!["src/new.rs".into()])));
+}
+
+#[tokio::test]
+async fn a_main_with_local_commits_is_not_updated() {
+    let mac = Mac::new(&[("src/x.rs", "fixed\n")]);
+    mac.git(&["commit", "-q", "--allow-empty", "-m", "a local commit not on GitHub"]);
+    assert_eq!(mac.sync().await, Err(Deferral::Reason("its main has commits that aren't on GitHub".into())));
+    assert_eq!(mac.store.defer_sync("r", &mac.store.get("r").unwrap().unwrap(), &Deferral::Reason("its main has commits that aren't on GitHub".into())), Ok(true));
+    assert_eq!(mac.store.get("r").unwrap().unwrap().phase, Phase::Merged);
+}
+
+#[test]
+fn an_unexpected_git_error_strips_the_run_wrapper() {
+    assert_eq!(super::github::refusal("git failed:\n\nfatal: unable to access the repository\nmore detail"), Deferral::Reason("fatal: unable to access the repository".into()));
+    assert_eq!(
+        super::github::refusal("git failed:\nUpdating 1234..5678\nerror: Your local changes to the following files would be overwritten by merge:\n\tREADME.md\n\tsrc/x.rs\nPlease commit your changes or stash them before you merge.\nAborting"),
+        Deferral::Files(vec!["README.md".into(), "src/x.rs".into()])
+    );
+    assert_eq!(
+        super::github::refusal("git failed:\n\nhint: Diverging branches can't be fast-forwarded.\nfatal: Not possible to fast-forward, aborting."),
+        Deferral::Reason("its main has commits that aren't on GitHub".into())
+    );
+}
