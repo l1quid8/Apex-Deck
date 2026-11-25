@@ -12,6 +12,26 @@ pub(crate) fn is_closed_note(text: &str) -> bool {
     text.starts_with("PR #") && text.contains(" was closed without merging.")
 }
 
+// A separator inside an identifier is not a request to merge.
+fn has_ship_phrase(line: &str) -> bool {
+    let text = line.to_ascii_lowercase();
+    let identifier = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '/' | '.' | '\\');
+    text.match_indices("ship").any(|(start, _)| {
+        if text[..start].chars().next_back().is_some_and(identifier) {
+            return false;
+        }
+        let tail = &text[start + 4..];
+        let words = tail.trim_start();
+        if words.len() == tail.len() {
+            return false;
+        }
+        words.strip_prefix("it").is_some_and(|rest| {
+            rest.chars().next().is_none_or(|c| !identifier(c))
+                || rest.strip_prefix('.').is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace))
+        })
+    })
+}
+
 /// D1(a): scanning back from the end to `compaction.upto`, a message from the
 /// person containing "ship it" outside quoted (`>`) lines comes before any
 /// Deck note reporting a merge, a cancel, or a PR closed without merging.
@@ -27,8 +47,7 @@ pub(crate) fn ship_armed(transcript: &[Message], compaction: Option<&Compaction>
             }
             Speaker::Human => {
                 // A reply quote arrives as `> Name wrote:` lines inside the person's message.
-                let own: Vec<&str> = message.text.lines().filter(|line| !line.trim_start().starts_with('>')).collect();
-                if apex_core::next_steps::has_ship_words(&own.join("\n")) {
+                if message.text.lines().any(|line| !line.trim_start().starts_with('>') && has_ship_phrase(line)) {
                     return true;
                 }
             }
@@ -83,6 +102,22 @@ mod tests {
         }
         for said in ["Fix the alert", "shipit", "Fix the shipping fee"] {
             assert!(!ship_armed(&thread(&[("person", said), ("jigga", SHIPPED)]), None), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_path_or_branch_name_holding_ship_it_is_not_the_persons_words() {
+        // Split at every dash, slash and dot, these read as "ship it".
+        for said in [
+            "start PR 4a from docs/superpowers/plans/2026-11-24-ship-it.md",
+            "Rebase feat/ship-it-merge-flow on main",
+            "rename ship_it to deliver",
+            "see ship-it.md",
+        ] {
+            assert!(!ship_armed(&thread(&[("person", said), ("jigga", SHIPPED)]), None), "{said}");
+        }
+        for said in ["Fix the alert and ship it.", "(ship it)", "\"ship it\"", "**Ship it**", "ship it, thanks", "- ship  it", "ok\nship it"] {
+            assert!(ship_armed(&thread(&[("person", said), ("jigga", SHIPPED)]), None), "{said}");
         }
     }
 

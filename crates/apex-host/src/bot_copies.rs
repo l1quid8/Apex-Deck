@@ -126,7 +126,7 @@ fn run_git(project_data: &Path,
         .output()
         .map_err(|e| format!("Could not run git {}: {e}", args.first().unwrap_or(&"")))?;
     if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_string())
     } else {
         Err(format!(
             "Git {} failed: {}",

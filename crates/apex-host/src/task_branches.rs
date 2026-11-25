@@ -88,7 +88,7 @@ fn git(data: &Path, cwd: &Path, writable: &[&Path], envs: &[(&str, &OsStr)], arg
     cmd.args(args);
     let out = cmd.output().map_err(|e| format!("Could not run git {}: {e}", args.first().unwrap_or(&"")))?;
     if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_owned())
     } else {
         Err(format!("git {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim()))
     }
@@ -139,7 +139,7 @@ fn link_shortcuts(data: &Path, root: &Path, folder: &Path) -> Result<(), String>
             continue;
         }
         crate::git_changes::link_dir(&target, &folder.join(rel))
-            .map_err(|e| format!("Could not link {} into {}: {e}", target.display(), folder.display()))?;
+            .map_err(|e| format!("Could not link {} into {}: {e}", crate::assistant_git::external_path(&target).display(), crate::assistant_git::external_path(folder).display()))?;
         let rule = format!("/{rel}");
         if !rules.lines().any(|line| line.trim() == rule) {
             if !rules.is_empty() && !rules.ends_with('\n') {
@@ -199,7 +199,20 @@ impl TaskBranches {
     pub fn get(&self, thread: &str, agent: &str) -> Result<Option<TaskFolder>, String> {
         self.edit(|folders| {
             let Some(at) = folders.iter().position(|f| f.thread == thread && f.agent == agent) else { return Ok(None) };
-            if folders[at].path.is_dir() {
+            let folder = &folders[at];
+            if !valid_branch(&folder.branch) {
+                return Err("Invalid saved task branch name.".into());
+            }
+            let data = self.path.parent().expect("task ledger has a parent");
+            let expected = crate::bot_copies::worktrees_dir(data, &folder.root).join(folder.branch.replace('/', "-"));
+            let expected = crate::assistant_git::external_path(&expected);
+            if crate::assistant_git::external_path(&folder.path) != expected {
+                return Err("Saved task folder is outside its expected location.".into());
+            }
+            if folder.path.try_exists().map_err(|e| e.to_string())? {
+                if !folder.path.is_dir() || folder.path.canonicalize().map_err(|e| e.to_string())? != folder.path {
+                    return Err("Saved task folder is no longer its original directory.".into());
+                }
                 return Ok(Some(folders[at].clone()));
             }
             folders.remove(at);
@@ -233,10 +246,20 @@ impl TaskBranches {
         if !(clean && contained) {
             return kept("it has changes the pull request doesn't contain".into());
         }
+        let registered = git(data, &folder.root, &[path], &[], &["worktree", "list", "--porcelain", "-z"])?;
+        let row = crate::worktrees::parse_list(&registered, path).into_iter().find(|row| {
+            !row.main && row.branch.as_ref() == Some(&folder.branch)
+                && Path::new(&row.path).canonicalize().ok().as_deref() == Some(path)
+        });
+        match row {
+            None => return kept("the registered worktree or branch changed".into()),
+            Some(row) if row.locked => return kept("Deck couldn't remove it: the worktree is locked".into()),
+            _ => {}
+        }
         // The links go first, so removing the folder can never reach what they point to.
         for rel in SHARED_SHORTCUT_PATHS {
             let link = path.join(rel);
-            if std::fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            if std::fs::read_link(&link).is_ok() {
                 // A Windows junction is a directory entry; a Unix link is a file.
                 #[cfg(windows)]
                 let removed = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
@@ -248,12 +271,12 @@ impl TaskBranches {
             }
         }
         let external = crate::assistant_git::external_path(path);
-        // Git may write in the folder's parent, not the folder: Linux's jail
-        // mounts a folder named on its own, and a mount point can't be
-        // deleted. Git still refuses a locked worktree.
-        let parent = path.parent().unwrap_or(path);
-        if let Err(e) = git(data, &folder.root, &[parent], &[], &["worktree", "remove", "--force", &external.to_string_lossy()]) {
-            return kept(format!("Deck couldn't remove it: {e}"));
+        if let Err(e) = git(data, &folder.root, &[path], &[], &["worktree", "remove", "--force", "--", &external.to_string_lossy()]) {
+            // Git can empty a Linux bind mount. Only the host can remove its final directory entry.
+            let emptied = cfg!(target_os = "linux") && std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none());
+            if !emptied || std::fs::remove_dir(path).is_err() {
+                return kept(format!("Deck couldn't remove it: {e}"));
+            }
         }
         let _ = crate::project_process::prune_worktrees(data, &folder.root);
         // `-D`: when the Mac's main wasn't updated, git doesn't know the branch is merged.
@@ -280,7 +303,7 @@ impl TaskBranches {
         let name = branch.replace('/', "-");
         let path = parent.join(&name);
         if std::fs::symlink_metadata(&path).is_ok() {
-            return Err(format!("A folder named {name} already exists in {}. Pick another name.", parent.display()));
+            return Err(format!("A folder named {name} already exists in {}. Pick another name.", crate::assistant_git::external_path(&parent).display()));
         }
         let taken = || Err(format!("{branch} already exists. Pick another name."));
         if git(data, &top, &[], &[], &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok() {
@@ -640,6 +663,30 @@ mod tests {
     }
 
     #[test]
+    fn unstaged_first_status_entry_keeps_its_full_filename() {
+        let repo = Repo::new();
+        let folder = repo.start(None, "a", "fix/status").unwrap().folder.path;
+        let file = folder.join("anode_modules");
+        std::fs::write(&file, "original").unwrap();
+        git(&folder, &["add", "anode_modules"]);
+        git(&folder, &["commit", "-qm", "track file"]);
+        let head = git(&folder, &["rev-parse", "HEAD"]);
+        std::fs::write(&file, "user edit").unwrap();
+        assert!(matches!(merged(&repo, "a", &head, None), Closed::Kept { .. }));
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "user edit");
+    }
+
+    #[test]
+    fn a_mismatched_ledger_path_cannot_select_or_remove_a_worktree() {
+        let repo = Repo::new();
+        let folder = repo.start(None, "a", "fix/saved").unwrap().folder;
+        repo.store.edit(|folders| { folders[0].path = folder.root.clone(); Ok(()) }).unwrap();
+        assert!(repo.store.get("t", "a").is_err());
+        assert!(repo.store.close(repo.data.path(), "t", "a", Close::Abandoned).is_err());
+        assert!(folder.path.join(".git").is_file());
+    }
+
+    #[test]
     fn the_record_is_a_plain_file_beside_the_copies() {
         // Protected ledgers take only the names the root broker lists; this one is the user's own file.
         let repo = Repo::new();
@@ -672,6 +719,7 @@ mod tests {
     #[test]
     fn a_folder_git_cannot_remove_is_kept_and_says_why() {
         let repo = Repo::new();
+        std::fs::create_dir_all(repo.root().join("node_modules/pkg")).unwrap();
         let folder = repo.start(None, "a", "fix/locked").unwrap().folder.path;
         git(&folder, &["commit", "--allow-empty", "-qm", "the fix"]);
         let head = git(&folder, &["rev-parse", "HEAD"]);
@@ -682,6 +730,7 @@ mod tests {
         assert!(why.starts_with("Deck couldn't remove it: "), "{why}");
         assert!(folder.is_dir());
         assert_eq!(repo.store.get("t", "a").unwrap(), None);
+        assert!(folder.join("node_modules/pkg").is_dir());
         git(repo.root(), &["worktree", "unlock", folder.to_str().unwrap()]);
     }
 
