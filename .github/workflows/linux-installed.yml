@@ -1,0 +1,105 @@
+# Installed-mode acceptance for the protected Linux Nightly bundle. Hosted
+# ubuntu-24.04 runners are VMs with systemd as PID 1 and kernel >= 6.5, so the
+# real installer, broker and supervised UI run here, on both architectures.
+#
+# Pull requests use an evaluation broker built with a throwaway key generated
+# in this job; that key never leaves the runner and is never a release key.
+name: linux-installed
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/linux-installed.yml
+      - scripts/linux-installer/**
+      - scripts/linux-installed/**
+      - scripts/package-linux*.mjs
+      - desktop/linuxService.mjs
+      - desktop/trustedInstall.mjs
+      - crates/apex-provenance/**
+      - electron-builder.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-installed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: ubuntu-24.04
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 75
+    env:
+      APEX_CHANNEL: nightly
+      APEX_BUILD_NUMBER: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: installed
+      - name: Install desktop, display, accessibility and terminal tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-0t64 libnss3 libasound2t64 libgbm1 xvfb x11-utils xdotool \
+            at-spi2-core python3-pyatspi gir1.2-atspi-2.0 dbus-user-session expect desktop-file-utils
+      - run: npm ci
+      - run: node --test tests/package-linux-installer.test.mjs tests/package-linux.test.mjs
+      - name: Build the Nightly AppImage and its unpacked tree
+        run: npm run desktop:linux
+      - name: Build an evaluation broker with a throwaway key
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/evaluation.pem"
+          (umask 077 && openssl genpkey -algorithm ed25519 -out "$key")
+          pub=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)
+          APEX_LINUX_EVALUATION_PUBLIC_KEY="$pub" cargo build --release --locked -p apex-provenance \
+            --features linux-evaluation-verifier --target-dir target-evaluation
+          strip target-evaluation/release/apex-provenance
+          echo "EVALUATION_KEY=$key" >>"$GITHUB_ENV"
+      - name: Package the protected installer bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          unpacked=$(ls -d release/nightly/linux*-unpacked)
+          node scripts/package-linux-installer.mjs --unpacked "$unpacked" \
+            --provenance target-evaluation/release/apex-provenance \
+            --appimage-json "$(ls release/nightly/*.AppImage.json)" \
+            --out release/installer --evaluation-key "$EVALUATION_KEY"
+          rm -f "$EVALUATION_KEY"
+          cd release/installer && sha256sum --check ./*.sha256
+      - name: Install the fixture agent
+        run: sudo install -m 0755 scripts/linux-installed/fake-codex /usr/bin/codex
+      - name: Meet the protected-path rule on this runner
+        # Hosted runners make /opt writable for tool caches. Establish the
+        # production precondition; never weaken the broker's ancestor check.
+        run: sudo chown root:root /opt && sudo chmod go-w /opt
+      - name: Installed-mode acceptance
+        timeout-minutes: 20
+        run: sudo --preserve-env=CI scripts/linux-installed/acceptance.sh release/installer/*.linux-installer.tar "$RUNNER_TEMP/evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-installed-evidence-${{ matrix.target.arch }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+          retention-days: 14

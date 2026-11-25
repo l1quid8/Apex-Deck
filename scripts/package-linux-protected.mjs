@@ -38,7 +38,8 @@ function tarHeader(file) {
   put(header.reduce((sum, value) => sum + value, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8);
   return header;
 }
-export function packagePayload({ payload, prefix, privateKey, arch, version, commit, channel = 'stable', buildNumber }) {
+export function packagePayload({ payload, prefix, privateKey, arch, version, commit, channel = 'stable', buildNumber, evaluation = true }) {
+  if (typeof evaluation !== 'boolean') throw new Error('Trust class must be explicit');
   if (!['arm64', 'x64'].includes(arch) || !/^[a-f0-9]{40}$/.test(commit) || !/^[a-zA-Z0-9.-]{1,64}$/.test(version)) throw new Error('Invalid release identity');
   checkedChannel(channel);
   if (channel === 'nightly') nightlyIdentity({ buildNumber, commit });
@@ -63,7 +64,7 @@ export function packagePayload({ payload, prefix, privateKey, arch, version, com
       }
     }
     write(Buffer.alloc(1024)); fsyncSync(fd); closeSync(fd); fd = undefined;
-    const manifest = { version, commit, channel, buildNumber, arch, protocol: 1, evaluation: true, archiveSize: lstatSync(archivePath).size, archiveSha256: hashFile(archivePath), files };
+    const manifest = { version, commit, channel, buildNumber, arch, protocol: 1, evaluation, archiveSize: lstatSync(archivePath).size, archiveSha256: hashFile(archivePath), files };
     const bytes = Buffer.from(JSON.stringify(manifest));
     if (bytes.length > 4 * 1024 ** 2) throw new Error('Manifest exceeds bounds');
     writeFileSync(`${prefix}.manifest.json`, bytes, { flag: 'wx', mode: 0o644 });
