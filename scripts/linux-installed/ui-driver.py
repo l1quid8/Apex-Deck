@@ -61,7 +61,8 @@ def name_of(node):
 
 
 def role_of(node):
-    return safe(node.get_role_name, "") or ""
+    role = safe(node.get_role_name, "") or ""
+    return "button" if role == "push button" else role
 
 
 def children(node):
