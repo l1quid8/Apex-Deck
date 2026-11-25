@@ -1,0 +1,34 @@
+name: nightly-windows-feed-e2e
+# Installs the PUBLISHED Windows Nightly on a fresh runner and checks what its own
+# updater reports against the live apex-deck-nightly-update-windows.json.
+# Reads public release assets only: no secrets, no signing, publishes nothing.
+on:
+  workflow_dispatch:
+  push:
+    branches: [test/nightly-windows-feed-e2e]
+permissions:
+  contents: read
+concurrency:
+  group: nightly-windows-feed-e2e
+  cancel-in-progress: false
+jobs:
+  published-feed:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Install the published Nightly and read its update status
+        shell: pwsh
+        run: ./scripts/windows-nightly-feed-e2e.ps1 -Work "$env:RUNNER_TEMP/feed-e2e"
+      - name: Keep window captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: feed-e2e-ui
+          path: ${{ runner.temp }}/feed-e2e/*.png
+          if-no-files-found: ignore
