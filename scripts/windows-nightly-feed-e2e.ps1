@@ -50,7 +50,7 @@ $p = Start-Process -FilePath $feed.installer -ArgumentList '/S' -PassThru
 if (!$p.WaitForExit(300000) -or $p.ExitCode -ne 0) { throw "Installer failed ($($p.ExitCode))" }
 $appSig = Get-AuthenticodeSignature -LiteralPath $exe
 Evidence 'installed' @{ exe=$exe; signature="$($appSig.Status)"; signer=$appSig.SignerCertificate.Subject;
-  service=(Get-Service $identity.WINDOWS_SERVICE).Status.ToString(); task=(Get-ScheduledTask -TaskName $identity.WINDOWS_TASK).State.ToString() }
+  service=(Get-Service $identity.WINDOWS_SERVICE).Status.ToString() }
 EndStep
 
 Step 'The installed app''s own signer accepts the feed''s installer as this build'
@@ -188,7 +188,12 @@ try {
   Step 'Control: launch with the app blocked from the network; its first check must fail'
   if (!(Get-Process -Name $product -ErrorAction SilentlyContinue)) { Start-Process -FilePath $exe }
   $script:app = MainWindowProcess
-  Evidence 'launched' @{ pid=$script:app.Id; firewall='blocked' }
+  # The app registers its own logon task on first launch; setup doesn't.
+  $deadline = (Get-Date).AddMinutes(2)
+  do { Start-Sleep -Milliseconds 500; $task = Get-ScheduledTask -TaskName $identity.WINDOWS_TASK -ErrorAction SilentlyContinue }
+  until ($task.State -eq 'Running' -or (Get-Date) -gt $deadline)
+  if ($task.State -ne 'Running') { throw "$($identity.WINDOWS_TASK) task is '$($task.State)', not Running" }
+  Evidence 'launched' @{ pid=$script:app.Id; firewall='blocked'; task="$($task.State)" }
   OpenAboutUpdates
   # First automatic check runs 30 s after start.
   $blocked = UpdateStatus 'Couldn.t' 150
