@@ -183,7 +183,8 @@ function OpenAboutUpdates {
   Dump 'About & updates did not open'; throw 'About & updates did not open'
 }
 
-$statusPattern = "^$([regex]::Escape($feed.version))\. "
+# src/updates.ts updateNote: "Apex Deck <version>. <status>"
+$statusPattern = "^Apex Deck $([regex]::Escape($feed.version))\. "
 function UpdateStatus([string]$want, [int]$seconds) {
   $deadline = [DateTime]::UtcNow.AddSeconds($seconds)
   $last = $null
