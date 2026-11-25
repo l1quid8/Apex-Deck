@@ -36,9 +36,10 @@ export function assertTrustedStartup(packaged,argv,env,platform=process.platform
     // Linux packages obtain their channel only from the bundled stamp.
     const allowedApexEnv=n==='APEX_DECK_DATA_DIR' || (platform==='linux' && n==='APEX_CHANNEL');
     // Wayland desktops (Hyprland, Omarchy, Sway) export the Ozone display hint
-    // for every Electron app. It only picks the display backend, so accept its
-    // known values; any other value still counts as an override.
-    const allowedElectronEnv=platform==='linux' && n==='ELECTRON_OZONE_PLATFORM_HINT' && ['auto','wayland','x11'].includes(env[k]);
+    // for every Electron app. It only picks the display backend. x11 stays
+    // refused: forcing X11 on a Wayland host would let other same-user clients
+    // read or inject input into the trusted UI.
+    const allowedElectronEnv=platform==='linux' && n==='ELECTRON_OZONE_PLATFORM_HINT' && ['auto','wayland'].includes(env[k]);
     return ((n.startsWith('APEX_') && !allowedApexEnv) || (n.startsWith('ELECTRON_') && !allowedElectronEnv) || n==='NODE_OPTIONS' || n.startsWith('DYLD_')) && env[k];
   });
   // Packaged trusted UI has no developer-command or URL escape hatch. Only

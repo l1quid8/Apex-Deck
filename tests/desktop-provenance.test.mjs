@@ -101,13 +101,17 @@ test('packaged provenance refuses code injection switches and development URLs',
 });
 
 test('Linux accepts the Wayland desktop Ozone hint and nothing else from Electron',()=>{
-  for (const value of ['auto','wayland','x11']) {
+  for (const value of ['auto','wayland']) {
     assert.doesNotThrow(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:value},'linux'),value);
   }
-  assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:'wayland --remote-debugging-port=9222'},'linux'));
+  // x11 would expose the trusted UI to same-user X clients on a Wayland host.
+  for (const value of ['x11','Wayland',' wayland','wayland --remote-debugging-port=9222']) {
+    assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:value},'linux'),undefined,value);
+  }
   for (const platform of ['darwin','win32']) {
     assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:'wayland'},platform),undefined,platform);
   }
+  assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_RUN_AS_NODE:'1'},'linux'));
   assert.throws(()=>mod.assertTrustedStartup(true,['app'],{ELECTRON_OZONE_PLATFORM_HINT:'wayland',ELECTRON_RUN_AS_NODE:'1'},'linux'));
 });
 
