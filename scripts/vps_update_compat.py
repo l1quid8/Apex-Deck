@@ -100,6 +100,10 @@ NATIVE_REGIONS = (
     ("    pub async fn call_with_client_capability(", "    // Tests of downstream behavior", {
         "527fd0f45c92aa4a6c39de64832278e4041601b78fd1074828021279dc7dacb8",  # before Search Deck
         "c12ab17d9445b51ea339e30e998e8c198bff8b6376567d308a0a186a74eaa873",  # connection-bound search admission
+        # Receipts may also carry the saves attested on Linux (receipt_admits):
+        # open commands everywhere else; on Linux they now need a paired device
+        # or the installed window's receipt (apex-daemon access_effect). Tightens.
+        "dfb11fae8703145064bc6099ab42d059c94ef23217f6201de269d5e6ccd03661",
     }),
 )
 
