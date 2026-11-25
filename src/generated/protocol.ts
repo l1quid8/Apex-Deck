@@ -928,6 +928,12 @@ export type Settings = {
   utcOffsetMinutes?: number | null;
 };
 
+/**
+ * What a card action names: the merge request it showed, or (from an
+ * iPhone a build behind) the Git state that carried it.
+ */
+export type Shown = WorkflowKey | State;
+
 export type Signed = {
   payload: string;
   signature: string;
@@ -1001,16 +1007,16 @@ export type ThreadGitAction = {
   expected: State;
   kind: "request_merge";
 } | {
-  expected: WorkflowKey;
+  expected: Shown;
   kind: "merge_ready";
 } | {
-  expected: WorkflowKey;
+  expected: Shown;
   kind: "fix_checks";
 } | {
-  expected: WorkflowKey;
+  expected: Shown;
   kind: "cancel_merge";
 } | {
-  expected: WorkflowKey;
+  expected: Shown;
   kind: "ask_fix";
 };
 

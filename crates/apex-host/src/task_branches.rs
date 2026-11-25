@@ -3,7 +3,6 @@
 //! agent's copy's changes into it. Deck never folds a task folder back into
 //! the main folder; it removes it after the pull request merges.
 
-use crate::authority_file::VersionedDocument;
 use crate::bot_copies::{BotCopy, SHARED_SHORTCUT_PATHS};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -33,6 +32,8 @@ pub struct TaskFolder {
 pub enum Close {
     Merged { head: String, result_oid: Option<String> },
     Abandoned,
+    /// Merged, but the folder stays for this reason (its agent is working in it).
+    Leave(String),
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Closed {
@@ -45,14 +46,19 @@ pub struct Started {
     pub folder: TaskFolder,
     pub moved: bool,
     pub conflicts: Vec<String>,
+    /// Why the agent's copy couldn't be put back to its base, so its changes
+    /// may also fold back into the main folder.
+    pub copy_left: Option<String>,
 }
 
+/// Saved as the user's own file beside the agent copies, not a protected
+/// ledger: the root broker keeps only the ledgers it lists, and a task
+/// folder record grants nothing (merging still needs the person's words).
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Ledger {
     version: u32,
     folders: Vec<TaskFolder>,
 }
-impl VersionedDocument for Ledger {}
 
 pub struct TaskBranches {
     path: PathBuf,
@@ -162,6 +168,17 @@ fn reset_copy(data: &Path, copy: &BotCopy) -> Result<(), String> {
     Ok(())
 }
 
+/// Replaces the file in one rename, so a crash leaves the old or the new one.
+fn save(path: &Path, ledger: &Ledger) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(ledger).map_err(|e| e.to_string())?;
+    let temp = path.with_file_name(format!("task-branches-v1.json.tmp-{}", std::process::id()));
+    std::fs::write(&temp, bytes).map_err(|e| format!("Could not write {}: {e}", temp.display()))?;
+    std::fs::rename(&temp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Could not save {}: {e}", path.display())
+    })
+}
+
 impl TaskBranches {
     pub fn new(data: &Path) -> Self {
         Self { path: data.join("task-branches-v1.json"), cache: Mutex::new(None) }
@@ -170,15 +187,23 @@ impl TaskBranches {
     fn edit<T>(&self, f: impl FnOnce(&mut Vec<TaskFolder>) -> Result<T, String>) -> Result<T, String> {
         let mut cache = self.cache.lock().map_err(|e| e.to_string())?;
         if cache.is_none() {
-            *cache = Some(Ledger::read_optional(&self.path).map_err(|e| e.to_string())?.unwrap_or(Ledger { version: 1, folders: Vec::new() }));
+            let saved = match std::fs::read(&self.path) {
+                Ok(bytes) => serde_json::from_slice::<Ledger>(&bytes).map_err(|e| format!("Could not read {}: {e}", self.path.display()))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ledger { version: 1, folders: Vec::new() },
+                Err(e) => return Err(format!("Could not read {}: {e}", self.path.display())),
+            };
+            if saved.version != 1 {
+                return Err(format!("{} is from a newer Deck (version {}).", self.path.display(), saved.version));
+            }
+            *cache = Some(saved);
         }
         let current = cache.as_ref().unwrap();
         let mut next = current.clone();
         let result = f(&mut next.folders)?;
         if current.folders != next.folders {
-            if let Err(e) = next.write_to(&self.path) {
+            if let Err(e) = save(&self.path, &next) {
                 *cache = None;
-                return Err(e.to_string());
+                return Err(e);
             }
             *cache = Some(next);
         }
@@ -206,9 +231,10 @@ impl TaskBranches {
             Ok(())
         })?;
         let Some(folder) = folder else { return Ok(Closed::Removed) };
-        let kept = |why: &str| Ok(Closed::Kept { path: folder.path.clone(), why: why.into() });
+        let kept = |why: String| Ok(Closed::Kept { path: folder.path.clone(), why });
         let (head, result_oid) = match why {
-            Close::Abandoned => return kept("the pull request was closed without merging"),
+            Close::Abandoned => return kept("the pull request was closed without merging".into()),
+            Close::Leave(why) => return kept(why),
             Close::Merged { head, result_oid } => (head, result_oid),
         };
         let path = &folder.path;
@@ -220,23 +246,32 @@ impl TaskBranches {
         let at = read(&["rev-parse", "HEAD"]).unwrap_or_default();
         let contained = at == head || result_oid.as_deref().is_some_and(|merge| read(&["merge-base", "--is-ancestor", &at, merge]).is_ok());
         if !(clean && contained) {
-            return kept("it has changes the pull request doesn't contain");
+            return kept("it has changes the pull request doesn't contain".into());
         }
+        // The links go first, so removing the folder can never reach what they point to.
         for rel in SHARED_SHORTCUT_PATHS {
             let link = path.join(rel);
             if std::fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink()) {
                 // A Windows junction is a directory entry; a Unix link is a file.
                 #[cfg(windows)]
-                let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+                let removed = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
                 #[cfg(not(windows))]
-                let _ = std::fs::remove_file(&link);
+                let removed = std::fs::remove_file(&link);
+                if let Err(e) = removed {
+                    return kept(format!("Deck couldn't unlink {rel}: {e}"));
+                }
             }
         }
         let external = crate::assistant_git::external_path(path);
-        git(data, &folder.root, &[path], &[], &["worktree", "remove", "--force", &external.to_string_lossy()])?;
+        if let Err(e) = git(data, &folder.root, &[path], &[], &["worktree", "remove", "--force", &external.to_string_lossy()]) {
+            return kept(format!("Deck couldn't remove it: {e}"));
+        }
         let _ = crate::project_process::prune_worktrees(data, &folder.root);
         // `-D`: when the Mac's main wasn't updated, git doesn't know the branch is merged.
-        git(data, &folder.root, &[], &[], &["branch", "-D", &folder.branch])?;
+        // The folder is gone either way; a branch name left behind is harmless.
+        if let Err(e) = git(data, &folder.root, &[], &[], &["branch", "-D", &folder.branch]) {
+            eprintln!("[apex-deck] task branch {} stays: {e}", folder.branch);
+        }
         Ok(Closed::Removed)
     }
 
@@ -291,7 +326,7 @@ impl TaskBranches {
             link_shortcuts(data, &top, &path)?;
             let path = std::fs::canonicalize(&path).map_err(|e| format!("Cannot resolve {}: {e}", path.display()))?;
             let folder = TaskFolder { thread: thread.into(), agent: agent.into(), branch: branch.into(), path, repo, root: top.clone() };
-            Ok(Started { folder, moved: changes.is_some(), conflicts })
+            Ok(Started { folder, moved: changes.is_some(), conflicts, copy_left: None })
         })();
         let started = match made {
             Ok(started) => started,
@@ -304,16 +339,18 @@ impl TaskBranches {
                 return Err(why);
             }
         };
-        if let (Some(copy), Some(_)) = (copy, &changes) {
-            reset_copy(data, copy)?;
-        }
+        // Recorded before the copy is touched, so the folder is never orphaned.
         let folder = started.folder.clone();
         self.edit(|folders| {
             folders.retain(|f| !(f.thread == folder.thread && f.agent == folder.agent));
             folders.push(folder);
             Ok(())
         })?;
-        Ok(started)
+        let copy_left = match (copy, &changes) {
+            (Some(copy), Some(_)) => reset_copy(data, copy).err(),
+            _ => None,
+        };
+        Ok(Started { copy_left, ..started })
     }
 }
 
@@ -601,5 +638,69 @@ mod tests {
         assert!(matches!(repo.store.close(repo.data.path(), "t", "c", Close::Abandoned).unwrap(), Closed::Kept { .. }));
         assert!(folder.is_dir());
         assert_eq!(repo.store.get("t", "c").unwrap(), None);
+    }
+
+    #[test]
+    fn the_record_is_a_plain_file_beside_the_copies() {
+        // Protected ledgers take only the names the root broker lists; this one is the user's own file.
+        let repo = Repo::new();
+        let started = repo.start(None, "a", "fix/plain").unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(repo.data.path().join("task-branches-v1.json")).unwrap()).unwrap();
+        assert_eq!(saved["version"], 1);
+        assert_eq!(saved["folders"][0]["branch"], "fix/plain");
+        assert_eq!(saved["folders"][0]["path"].as_str(), started.folder.path.to_str());
+        assert!(!crate::authority_file::fixture_path(&repo.data.path().join("task-branches-v1.json")).exists());
+        assert_eq!(TaskBranches::new(repo.data.path()).get("t", "a").unwrap(), Some(started.folder), "read back after a restart");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_cannot_be_emptied_keeps_the_task_folder_recorded() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = Repo::new();
+        let copy = repo.copy("a");
+        std::fs::write(copy.work.join("sub/inner.txt"), "mine\n").unwrap();
+        // Git can't write the restored file back into a read-only folder.
+        std::fs::set_permissions(copy.work.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let started = repo.start(Some(&copy), "a", "fix/stuck-copy");
+        std::fs::set_permissions(copy.work.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = started.unwrap();
+        assert!(started.copy_left.is_some(), "the agent is told its copy still holds the changes");
+        assert_eq!(std::fs::read_to_string(started.folder.path.join("sub/inner.txt")).unwrap(), "mine\n");
+        assert_eq!(repo.store.get("t", "a").unwrap(), Some(started.folder), "the folder is recorded, not orphaned");
+    }
+
+    #[test]
+    fn a_folder_git_cannot_remove_is_kept_and_says_why() {
+        let repo = Repo::new();
+        let folder = repo.start(None, "a", "fix/locked").unwrap().folder.path;
+        git(&folder, &["commit", "--allow-empty", "-qm", "the fix"]);
+        let head = git(&folder, &["rev-parse", "HEAD"]);
+        git(repo.root(), &["worktree", "lock", "--reason", "in use", folder.to_str().unwrap()]);
+        let closed = merged(&repo, "a", &head, None);
+        let Closed::Kept { path, why } = closed else { panic!("removed a locked worktree") };
+        assert_eq!(path, folder);
+        assert!(why.starts_with("Deck couldn't remove it: "), "{why}");
+        assert!(folder.is_dir());
+        assert_eq!(repo.store.get("t", "a").unwrap(), None);
+        git(repo.root(), &["worktree", "unlock", folder.to_str().unwrap()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shortcut_link_that_cannot_be_removed_keeps_the_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = Repo::new();
+        std::fs::create_dir_all(repo.root().join("node_modules/pkg")).unwrap();
+        let folder = repo.start(None, "a", "fix/linked-shut").unwrap().folder.path;
+        git(&folder, &["commit", "--allow-empty", "-qm", "the fix"]);
+        let head = git(&folder, &["rev-parse", "HEAD"]);
+        // Removing anything in a read-only folder fails, so the link stays.
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let closed = merged(&repo, "a", &head, None);
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let Closed::Kept { why, .. } = closed else { panic!("removed the folder around a link it couldn't remove") };
+        assert!(why.starts_with("Deck couldn't unlink node_modules: "), "{why}");
+        assert!(repo.root().join("node_modules/pkg").is_dir(), "the linked folder is untouched");
     }
 }

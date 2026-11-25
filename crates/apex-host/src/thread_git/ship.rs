@@ -48,10 +48,10 @@ pub(crate) fn cancel_note(pr: Option<u64>) -> String {
 pub(crate) const NOT_SAID: &str = "You haven't said \"ship it\" in this thread since the last merge, so Deck won't merge this on its own. Tap Merge once the checks pass.";
 
 /// D1's other checks on a ship line: from the agent that owns the task
-/// folder holding the commit, at Full, with Plan off when the turn began and
-/// still off now.
-pub(crate) fn may_ship(owner: bool, access: Access, plan_at_start: bool, plan_now: bool) -> bool {
-    owner && access == Access::Full && !plan_at_start && !plan_now
+/// folder holding the commit, at Full with Plan off, both when the turn began
+/// and now.
+pub(crate) fn may_ship(owner: bool, access: Access, access_now: Access, plan_at_start: bool, plan_now: bool) -> bool {
+    owner && access == Access::Full && access_now == Access::Full && !plan_at_start && !plan_now
 }
 
 #[cfg(test)]
@@ -126,16 +126,17 @@ mod tests {
     #[test]
     fn only_the_owner_at_full_with_plan_off_may_ship() {
         use apex_core::Access;
-        assert!(may_ship(true, Access::Full, false, false));
-        for (owner, access, at_start, now) in [
-            (false, Access::Full, false, false),
-            (true, Access::Edits, false, false),
-            (true, Access::Ask, false, false),
-            (true, Access::Read, false, false),
-            (true, Access::Full, true, false),
-            (true, Access::Full, false, true),
+        assert!(may_ship(true, Access::Full, Access::Full, false, false));
+        for (owner, at_start, now, plan_at_start, plan_now) in [
+            (false, Access::Full, Access::Full, false, false),
+            (true, Access::Edits, Access::Full, false, false),
+            (true, Access::Ask, Access::Full, false, false),
+            (true, Access::Read, Access::Full, false, false),
+            (true, Access::Full, Access::Ask, false, false),
+            (true, Access::Full, Access::Full, true, false),
+            (true, Access::Full, Access::Full, false, true),
         ] {
-            assert!(!may_ship(owner, access, at_start, now), "{owner} {access:?} plan at start {at_start}, now {now}");
+            assert!(!may_ship(owner, at_start, now, plan_at_start, plan_now), "{owner} access {at_start:?} then {now:?}, plan {plan_at_start} then {plan_now}");
         }
     }
 

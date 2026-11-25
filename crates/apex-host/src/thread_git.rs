@@ -16,11 +16,28 @@ pub enum ThreadGitAction {
     Push { expected: State },
     RequestMerge { expected: State },
     /// From the decision card: merge only if the checks still pass right now.
-    MergeReady { expected: WorkflowKey },
+    MergeReady { expected: Shown },
     /// From the decision card: send a check that failed before any merge to the builder.
-    FixChecks { expected: WorkflowKey },
-    CancelMerge { expected: WorkflowKey },
-    AskFix { expected: WorkflowKey },
+    FixChecks { expected: Shown },
+    CancelMerge { expected: Shown },
+    AskFix { expected: Shown },
+}
+
+/// What a card action names: the merge request it showed, or (from an
+/// iPhone a build behind) the Git state that carried it.
+#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum Shown {
+    Key(WorkflowKey),
+    State(State),
+}
+impl Shown {
+    pub fn key(&self) -> Result<WorkflowKey, String> {
+        match self {
+            Shown::Key(key) => Ok(key.clone()),
+            Shown::State(state) => state.workflow.as_ref().map(WorkflowKey::of).ok_or_else(|| "Refresh the Git actions.".into()),
+        }
+    }
 }
 
 /// The merge request a card acts on, read from the card the person saw.

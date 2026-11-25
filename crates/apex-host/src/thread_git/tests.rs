@@ -705,3 +705,26 @@ fn an_unexpected_git_error_strips_the_run_wrapper() {
         Deferral::Reason("its main has commits that aren't on GitHub".into())
     );
 }
+
+#[test]
+fn an_older_client_naming_the_git_state_still_acts_on_the_card() {
+    // An iPhone a build behind sends the folder's Git state, as before.
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    let state = serde_json::to_value(f.state()).unwrap();
+    for kind in ["merge_ready", "cancel_merge", "fix_checks", "ask_fix"] {
+        let action: ThreadGitAction = serde_json::from_value(serde_json::json!({ "kind": kind, "expected": state })).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        let (ThreadGitAction::MergeReady { expected } | ThreadGitAction::CancelMerge { expected } | ThreadGitAction::FixChecks { expected } | ThreadGitAction::AskFix { expected }) = action else { panic!("{kind}") };
+        assert_eq!(expected.key().unwrap(), f.key(), "{kind}");
+    }
+    let key = serde_json::to_value(f.key()).unwrap();
+    let action: ThreadGitAction = serde_json::from_value(serde_json::json!({ "kind": "merge_ready", "expected": key })).unwrap();
+    let ThreadGitAction::MergeReady { expected } = action else { panic!() };
+    assert_eq!(expected.key().unwrap(), f.key());
+    // A state with no merge request on it names none.
+    let mut bare = f.state();
+    bare.workflow = None;
+    let action: ThreadGitAction = serde_json::from_value(serde_json::json!({ "kind": "cancel_merge", "expected": bare })).unwrap();
+    let ThreadGitAction::CancelMerge { expected } = action else { panic!() };
+    assert!(expected.key().is_err());
+}
