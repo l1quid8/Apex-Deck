@@ -84,6 +84,12 @@ export function parseManifest(value, { extension = '.pkg' } = {}) {
     if (typeof value.tag !== 'string' || !/^nightly-[0-9]{8}-[a-f0-9]{7}$/.test(value.tag) ||
         !value.tag.endsWith('-' + build.commit.slice(0, 7))) throw new Error('Invalid immutable Nightly tag.');
     identity = { ...build, tag: value.tag };
+    // Windows Nightly installers live on a Windows-only release, so Windows
+    // never publishes into, or waits on, the macOS release for the same tag.
+    if (extension === '.exe') {
+      if (value.assetTag !== windowsAssetTag(value.tag)) throw new Error('Invalid Windows Nightly asset release.');
+      identity.assetTag = value.assetTag;
+    }
   }
   if (!versionParts(value.version)) throw new Error('The update feed names no valid version.');
   if (value.notes !== undefined && (typeof value.notes !== 'string' || value.notes.length > 4000)) throw new Error('The update notes are malformed.');
@@ -105,10 +111,18 @@ export function packageFor(manifest, { arch, osVersion }) {
     && versionParts(osVersion) && compareVersions(osVersion, entry.minimumSystemVersion) >= 0) ?? null;
 }
 
+/** The Windows-only release holding the Windows Nightly installer for shared tag `tag`. */
+export function windowsAssetTag(tag) {
+  const match = /^nightly-([0-9]{8}-[a-f0-9]{7})$/.exec(typeof tag === 'string' ? tag : '');
+  if (!match) throw new Error('Invalid immutable Nightly tag.');
+  return `nightly-windows-${match[1]}`;
+}
+
 /** Always a file of this repository's release for `version`: the feed never chooses the host. */
 export function assetUrl(version, name, extension = '.pkg', tag) {
   if (!versionParts(version) || !PACKAGE_NAME[extension].test(name)) throw new Error('Invalid update asset.');
-  if (channel.nightly && (typeof tag !== 'string' || !/^nightly-[0-9]{8}-[a-f0-9]{7}$/.test(tag))) throw new Error('Invalid Nightly asset tag.');
+  const nightlyTag = extension === '.exe' ? /^nightly-windows-[0-9]{8}-[a-f0-9]{7}$/ : /^nightly-[0-9]{8}-[a-f0-9]{7}$/;
+  if (channel.nightly && (typeof tag !== 'string' || !nightlyTag.test(tag))) throw new Error('Invalid Nightly asset tag.');
   return `https://github.com/${REPO}/releases/download/${channel.nightly ? tag : 'v' + version}/${name}`;
 }
 
@@ -512,7 +526,7 @@ export class Updater {
           const partial = `${file}.partial`;
           this.files.rmSync(partial, { force: true });
           this.set({ state: 'downloading', available, progress: { received: 0, total: entry.size }, error: null });
-          const sha = await this.download(assetUrl(manifest.version, entry.name, this.extension, manifest.tag), partial, {
+          const sha = await this.download(assetUrl(manifest.version, entry.name, this.extension, manifest.assetTag ?? manifest.tag), partial, {
             size: entry.size,
             onProgress: (received) => this.set({ progress: { received, total: entry.size } }),
           });

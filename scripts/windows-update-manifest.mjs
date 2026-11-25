@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WINDOWS_MANIFEST_NAME, parseManifest, fileSha256 } from '../desktop/updater.mjs';
+import { WINDOWS_MANIFEST_NAME, parseManifest, fileSha256, windowsAssetTag } from '../desktop/updater.mjs';
 import { channel } from '../desktop/channel.mjs';
 import { windowsRelease, INSTALLER_NAME } from './package-win.mjs';
 import { windowsOutput } from './windows-build.mjs';
@@ -26,7 +26,7 @@ export function buildWindowsManifest({ version, notes = '', size, sha256 }, nigh
   const name = nightly?.asset ?? windowsAssetName(version);
   const manifest = {
     schemaVersion: 1, version, notes,
-    ...(nightly && { channel: 'nightly', buildNumber: nightly.buildNumber, commit: nightly.commit, tag: nightly.tag }),
+    ...(nightly && { channel: 'nightly', buildNumber: nightly.buildNumber, commit: nightly.commit, tag: nightly.tag, assetTag: windowsAssetTag(nightly.tag) }),
     packages: [{ arch: 'x64', minimumSystemVersion: MINIMUM_WINDOWS, name, size, sha256 }],
   };
   parseManifest(manifest, { extension: '.exe' });
@@ -51,7 +51,7 @@ async function main(argv) {
   if (!nightly) fs.copyFileSync(installer, path.join(folder, windowsAssetName(version)));
   fs.writeFileSync(path.join(folder, WINDOWS_MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`windows-update-manifest: wrote ${folder} for ${version}\n${sha256}  ${installer}`);
-  if (nightly) console.log(`Release owner: attach the installer to immutable prerelease ${nightly.tag} and its feed to rolling prerelease nightly. Keep both prereleases out of latest.`);
+  if (nightly) console.log(`nightly-windows.yml publishes the installer to ${windowsAssetTag(nightly.tag)} and this feed to the rolling nightly prerelease.`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

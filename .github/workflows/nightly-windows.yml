@@ -1,0 +1,248 @@
+# Scheduled Windows Nightly. Independent of macOS and Linux: no Apple
+# secrets, no shared jobs, and it reads and writes only
+# apex-deck-nightly-update-windows.json on the rolling `nightly` prerelease.
+# Stable Windows releases and their feed are untouched.
+#
+#   1. plan: newest `daemon.yml` push on main whose shared and Windows jobs are
+#      green (Linux and macOS jobs are ignored); skip when the Windows feed
+#      already has that commit. buildNumber is the Windows feed's + 1.
+#   2. build: compile Apex Deck Nightly from that exact commit. No signing
+#      access: this job runs the project's build and its dependencies' scripts.
+#   3. sign: the only job that can reach Azure. It runs no install scripts and
+#      no project build, signs the programs, wraps and signs the installer, then
+#      checks the final Setup.exe itself: ProductName, ProductVersion, the build
+#      number in FileVersion, a valid Tyler Caldwell signature, and the
+#      updater's own verifier. It writes the Windows feed from that installer.
+#   4. publish: verify locally, upload to the Windows-only
+#      nightly-windows-YYYYMMDD-<sha7> prerelease, download back and verify,
+#      make sure the shared nightly-YYYYMMDD-<sha7> source tag points at the
+#      commit, publish, then advance only the Windows feed. Any failure holds it.
+#
+# Azure trusts this workflow only through the `windows-nightly-signing`
+# environment, which accepts deployments from main alone. The federated
+# credential subject is repo:l1quid8/Apex-Deck:environment:windows-nightly-signing.
+name: nightly-windows
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Plan, build, sign and verify without publishing or moving the Windows Nightly feed'
+        type: boolean
+        default: false
+      force:
+        description: 'Build even when the Windows feed already has the newest green main commit'
+        type: boolean
+        default: false
+      sha:
+        description: 'Optional 40-character green main commit to build'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-windows
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      commit: ${{ steps.decide.outputs.commit }}
+      date: ${{ steps.decide.outputs.date }}
+      tag: ${{ steps.decide.outputs.tag }}
+      build_number: ${{ steps.decide.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - id: decide
+        env:
+          APEX_CHANNEL: nightly
+          GH_TOKEN: ${{ github.token }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          args=(plan --repo "${{ github.repository }}" --github-output "$GITHUB_OUTPUT")
+          if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
+          if [ -n "$INPUT_SHA" ]; then args+=(--sha "$INPUT_SHA"); fi
+          node scripts/nightly-windows-release.mjs "${args[@]}"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.should_build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      APEX_CHANNEL: nightly
+      APEX_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+      APEX_BUILD_DATE: ${{ needs.plan.outputs.date }}
+    steps:
+      # Keep LF line endings so files match the Mac and Linux checkouts.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - name: Build exactly the planned commit
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ needs.plan.outputs.commit }}"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: nightly-windows
+      - run: npm ci
+      - run: node --test tests/nightly-windows-release.test.mjs tests/release-update-manifest.test.mjs
+      - name: Compile the service and the app
+        run: node scripts/package-win.mjs --compile
+      - name: Test elevated authority ACLs and read-only host locks
+        run: cargo test --locked -p apex-provenance --lib -- --ignored
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-windows-unpacked
+          path: release/nightly-windows/win-unpacked
+          if-no-files-found: error
+          retention-days: 1
+
+  # Only this job can reach Azure. It runs no install scripts and no project
+  # build. It still loads electron-builder (which signs the installer) from the
+  # planned commit's lockfile, so the signing login trusts reviewed main code
+  # and its locked packages. Every action in this workflow is pinned.
+  sign:
+    needs: [plan, build]
+    runs-on: windows-latest
+    timeout-minutes: 25
+    environment: windows-nightly-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      APEX_CHANNEL: nightly
+      APEX_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+      APEX_BUILD_DATE: ${{ needs.plan.outputs.date }}
+      APEX_DECK_WIN_SIGN: '1'
+      APEX_COMMIT: ${{ needs.plan.outputs.commit }}
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - name: Sign exactly the planned commit
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$APEX_COMMIT"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Install the packaging tools only
+        run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nightly-windows-unpacked
+          path: release/nightly-windows/win-unpacked
+      - name: Sign in to Azure
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: 4c7cb8eb-c6e5-4804-80fe-b2164f58af8b
+          tenant-id: 02381f02-2a9b-4968-b74c-dd4b89329434
+          subscription-id: 360e8f4a-285c-46a3-bd01-5f8cddbbaa59
+          allow-no-subscriptions: true
+      - name: Sign the programs
+        shell: pwsh
+        run: scripts/sign-win-unpacked.ps1 -Unpacked release/nightly-windows/win-unpacked
+      - name: Build and sign the installer
+        run: node scripts/package-win.mjs --package
+      - name: Check the final signed Setup.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $short = $env:APEX_COMMIT.Substring(0, 7)
+          $out = 'release/nightly-windows'
+          $setup = (Resolve-Path (Join-Path $out "Apex-Deck-Nightly_${env:APEX_BUILD_DATE}_${short}_x64-Setup.exe")).Path
+          $unpacked = Join-Path $out 'win-unpacked'
+          $version = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $info = (Get-Item -LiteralPath $setup).VersionInfo
+          $parts = $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart
+          $build = [int64]0
+          foreach ($part in $parts) { $build = ($build -shl 16) + $part }
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Setup=$setup SHA256=$hash"
+          Write-Host "ProductName=$($info.ProductName) ProductVersion=$($info.ProductVersion) FileVersion=$($parts -join '.') Build=$build Commit=$env:APEX_COMMIT"
+          if ($info.ProductName -cne 'Apex Deck Nightly' -or $info.ProductVersion -cne $version -or $build -ne [int64]$env:APEX_BUILD_NUMBER) {
+            throw 'Final Setup PE resource mismatch'
+          }
+          $files = @($setup, (Join-Path $unpacked 'Apex Deck Nightly.exe'),
+            (Join-Path $unpacked 'resources\bin\apex-daemon-nightly.exe'), (Join-Path $unpacked 'resources\bin\apex-provenance-nightly.exe'))
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file
+            Write-Host "$file $($signature.Status) $($signature.SignerCertificate.Subject)"
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Tyler Caldwell(,|$)') {
+              throw "$file is not validly signed by Tyler Caldwell"
+            }
+          }
+          node scripts/windows-update-smoke.mjs $setup (Join-Path $unpacked 'Apex Deck Nightly.exe')
+          if ($LASTEXITCODE) { throw 'The updater refused the signed Nightly installer' }
+      - name: Write the Windows Nightly feed from the signed installer
+        run: node scripts/windows-update-manifest.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-windows-signed
+          path: |
+            release/nightly-windows/*_x64-Setup.exe
+            release/nightly-windows/*_x64-Setup.exe.sha256
+            release/nightly-windows/nightly/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [plan, sign]
+    if: needs.plan.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      APEX_CHANNEL: nightly
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nightly-windows-signed
+          path: build
+      - name: Assemble the Windows Nightly release
+        run: |
+          node scripts/nightly-windows-release.mjs assemble \
+            --out release/windows-nightly \
+            --build build \
+            --date "${{ needs.plan.outputs.date }}" \
+            --commit "${{ needs.plan.outputs.commit }}" \
+            --build-number "${{ needs.plan.outputs.build_number }}"
+      - name: Verify, publish the immutable installer, then advance the Windows feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          args=(publish --repo "${{ github.repository }}" --assets-dir release/windows-nightly)
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$INPUT_FORCE" = "true" ]; then args+=(--force); fi
+          node scripts/nightly-windows-release.mjs "${args[@]}"
