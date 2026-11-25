@@ -178,3 +178,26 @@ macOS release, or the Linux release.
   updater's own verifier before the feed is written.
 - **Dry run.** `dry_run` plans, builds, signs and verifies, then prints the
   publish commands without running them.
+
+## macOS Nightly publishing
+
+`.github/workflows/nightly-macos.yml` publishes macOS Nightly on its own,
+through `scripts/nightly-release.mjs`. It writes only
+`apex-deck-nightly-update.json` on the rolling `nightly` prerelease and its own
+`nightly-YYYYMMDD-<sha7>` release.
+
+- **Runs only from `main`.** The plan job refuses any other ref.
+- **Signing.** Only `build-macos` can read the signing keys. It runs in the
+  `macos-nightly-signing` environment, which accepts deployments from `main`
+  only. That environment holds five secrets:
+  - `MACOS_CERT_P12_BASE64`: the Developer ID Application certificate and its
+    private key, exported from Keychain Access as a `.p12`, then base64.
+  - `MACOS_CERT_PASSWORD`: the password chosen when exporting the `.p12`.
+  - `APPLE_API_KEY_BASE64`: the App Store Connect API key (`AuthKey_*.p8`),
+    base64.
+  - `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`: that key's ID and issuer ID.
+- **The update package.** The Mac updater checks the app inside the `.pkg`
+  (team, app ID, version, build number), not the package's own signature, so
+  the CI package is not installer-signed.
+- **Dry run.** With no secrets, `dry_run` still plans and builds an unsigned,
+  unnotarized copy and prints the publish commands without running them.
