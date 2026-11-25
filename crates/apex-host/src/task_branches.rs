@@ -298,6 +298,8 @@ pub(crate) mod fixture {
             git(r, &["commit", "-qm", "base"]);
             git(r, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
             git(r, &["config", "remote.origin.pushurl", "https://github.com/test/repo.git"]);
+            // Nothing in a test reaches GitHub: a merge worker's push fails here, locally.
+            git(r, &["config", "http.proxy", "http://127.0.0.1:9"]);
             git(r, &["push", "-q", bare.path().to_str().unwrap(), "main:main"]);
             git(r, &["fetch", "-q", "origin"]);
             let store = TaskBranches::new(data.path());

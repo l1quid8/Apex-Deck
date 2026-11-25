@@ -1001,16 +1001,16 @@ export type ThreadGitAction = {
   expected: State;
   kind: "request_merge";
 } | {
-  expected: State;
+  expected: WorkflowKey;
   kind: "merge_ready";
 } | {
-  expected: State;
+  expected: WorkflowKey;
   kind: "fix_checks";
 } | {
-  expected: State;
+  expected: WorkflowKey;
   kind: "cancel_merge";
 } | {
-  expected: State;
+  expected: WorkflowKey;
   kind: "ask_fix";
 };
 
@@ -1105,6 +1105,18 @@ export type Workflow = {
   repo: string;
   result_oid?: string | null;
   reviewer?: string | null;
+  root: string;
+};
+
+/**
+ * The merge request a card acts on, read from the card the person saw.
+ * Its folder may be a task folder, not the thread's own.
+ */
+export type WorkflowKey = {
+  branch: string;
+  generation: number;
+  head: string;
+  repo: string;
   root: string;
 };
 

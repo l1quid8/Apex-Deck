@@ -548,6 +548,9 @@ fn full_access_asks_only_the_persons_decisions() {
             let system = &requests[0].system;
             assert_eq!(system.contains("a decision that belongs to them"), expects_full_prompt);
             assert_eq!(system.contains("Add diagnostic logging"), !expects_full_prompt);
+            // Either text keeps a label off Deck's own Git actions and sits above any receipt.
+            assert!(system.contains("Git/Host actions such as push, merge, ship or cancel"), "{system}");
+            assert!(system.contains("immediately before any Deck built, Deck ship or Deck review passed receipt"), "{system}");
         }
     });
 }

@@ -48,7 +48,13 @@ export function PhoneThreadGit({ backend, room }: { backend: Backend; room: stri
     setBusy(true);
     setError("");
     try {
-      const action = { kind, expected: { ...state, files: [] } };
+      // Cancel and Ask agent to fix name the merge request; Push and Merge carry this folder's state.
+      const flow = state.workflow;
+      const key = flow && { root: flow.root, branch: flow.branch, repo: flow.repo, head: flow.head, generation: flow.generation };
+      const action = kind === "cancel_merge" || kind === "ask_fix"
+        ? (key ? { kind, expected: key } : null)
+        : { kind, expected: { ...state, files: [] } };
+      if (!action) throw new Error("Refresh the Git actions.");
       const result = await backend.call<GitOutcome>("room_thread_git_action", { id: room, action });
       setState(result.state);
       setStatus(result.message);

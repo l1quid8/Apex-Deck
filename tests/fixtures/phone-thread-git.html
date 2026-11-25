@@ -44,6 +44,11 @@ const backend = {async call(cmd, {id, action}) {
     return state();
   }
   if (cmd !== 'room_thread_git_action' || action.expected.head !== workflow.head) throw Error('Wrong command or commit');
+  // Card and Cancel/Ask-to-fix actions name the merge request; Push and Merge carry the Git state.
+  const named = ['merge_ready', 'cancel_merge', 'fix_checks', 'ask_fix'].includes(action.kind);
+  const key = JSON.stringify(Object.keys(action.expected).sort().map(k => [k, action.expected[k]]));
+  const want = JSON.stringify(Object.entries({...checkout, head: workflow.head}).sort(([a], [b]) => a < b ? -1 : 1));
+  if (named ? key !== want : !(Array.isArray(action.expected.files) && action.expected.ahead === 1)) throw Error('Wrong payload for ' + action.kind + ': ' + JSON.stringify(action.expected));
   if (failNextWrite) { failNextWrite = false; throw Error('Push rejected by remote'); }
   writes.push(action.kind);
   switch (action.kind) {

@@ -45,20 +45,30 @@ impl Fixture {
         assert!(out.status.success(), "{:?}", out);
         String::from_utf8(out.stdout).unwrap().trim().into()
     }
-    fn mark(&self, id: &str, model: &str, built: bool) {
-        let by=serde_json::from_value(serde_json::json!({"id":id,"display_name":id,"backend":{"kind":"open_ai_compatible","base_url":"http://test.invalid","model":model}})).unwrap();
-        let text = format!(
-            "{} {}",
-            if built {
-                "Deck built"
-            } else {
-                "Deck review passed"
-            },
-            self.git(&["rev-parse", "HEAD"])
-        );
-        self.store
-            .record("r", self.data.path(), self.checkout.path(), &by, &text)
-            .unwrap();
+    fn mark(&self, id: &str, model: &str, built: bool) -> RecordOutcome {
+        self.receipt(id, model, if built { "Deck built" } else { "Deck review passed" })
+    }
+    /// `line` and the checkout's HEAD, from agent `id` running `model` (empty: the tool's default).
+    fn receipt(&self, id: &str, model: &str, line: &str) -> RecordOutcome {
+        self.try_receipt(id, model, line).unwrap()
+    }
+    fn try_receipt(&self, id: &str, model: &str, line: &str) -> Result<RecordOutcome, String> {
+        let backend = if model.is_empty() {
+            serde_json::json!({"kind":"agent","tool":"claude_code","model":null})
+        } else {
+            serde_json::json!({"kind":"open_ai_compatible","base_url":"http://test.invalid","model":model})
+        };
+        let by = serde_json::from_value(serde_json::json!({"id":id,"display_name":id,"backend":backend})).unwrap();
+        let text = format!("{line} {}", self.git(&["rev-parse", "HEAD"]));
+        self.store.record("r", self.data.path(), self.checkout.path(), &by, &text)
+    }
+    /// The saved workflow, as a card names it.
+    fn key(&self) -> WorkflowKey {
+        WorkflowKey::of(&self.store.get("r").unwrap().unwrap())
+    }
+    fn reviewed_key(&self) -> WorkflowKey {
+        self.reviewed();
+        self.key()
     }
     fn state(&self) -> State {
         let mut state = crate::git_changes::status(self.data.path(), self.checkout.path()).unwrap();
@@ -149,7 +159,7 @@ impl Shell for Github {
 async fn restart_during_checks_resumes_one_pr_and_reconciles_after_submission() {
     let f = Fixture::new();
     let remote = Github::default();
-    f.store.admit("r", &f.reviewed(), false).unwrap();
+    f.store.admit("r", &f.reviewed_key()).unwrap();
     f.tick(&f.store, &remote).await;
     let reopened = ThreadGit::new(f.data.path());
     assert_eq!(reopened.pending().unwrap()[0].1.phase, Phase::Checks);
@@ -216,11 +226,11 @@ async fn cancel_racing_dispatched_merge_reports_github_result() {
     let f = Fixture::new();
     let remote = Github::default();
     remote.pause.store(true, Ordering::SeqCst);
-    f.store.admit("r", &f.reviewed(), false).unwrap();
+    f.store.admit("r", &f.reviewed_key()).unwrap();
     f.tick(&f.store, &remote).await;
     tokio::join!(f.tick(&f.store, &remote), async {
         remote.dispatch.notified().await;
-        f.store.admit("r", &f.state(), true).unwrap();
+        assert!(f.store.cancel("r", &f.key()).unwrap().cancelled);
         assert_eq!(f.state().workflow.unwrap().phase, Phase::Cancelling);
         remote.resume.notify_one();
     });
@@ -231,14 +241,15 @@ async fn cancel_racing_dispatched_merge_reports_github_result() {
 async fn double_clicks_share_one_request_and_cancel_beats_an_old_poll() {
     let f = Fixture::new();
     let remote = Github::default();
-    let initial = f.reviewed();
+    let initial = f.reviewed_key();
     for _ in 0..2 {
-        f.store.admit("r", &initial, false).unwrap();
+        f.store.admit("r", &initial).unwrap();
     }
     f.tick(&f.store, &remote).await;
     let waiting = f.state();
+    let shown = f.key();
     for _ in 0..2 {
-        f.store.admit("r", &waiting, true).unwrap();
+        f.store.cancel("r", &shown).unwrap();
     }
     f.store
         .advance(
@@ -254,33 +265,34 @@ async fn double_clicks_share_one_request_and_cancel_beats_an_old_poll() {
     assert_eq!(f.state().workflow.unwrap().phase, Phase::Cancelled);
     assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
     assert_eq!(remote.creates.load(Ordering::SeqCst), 1);
-    assert!(f.store.admit("r", &initial, false).is_err());
+    assert!(f.store.admit("r", &initial).is_err());
 }
 #[tokio::test]
 async fn new_head_invalidates_review_and_alias_of_builder_model_cannot_approve() {
     let f = Fixture::new();
     let remote = Github::default();
-    f.store.admit("r", &f.reviewed(), false).unwrap();
+    f.store.admit("r", &f.reviewed_key()).unwrap();
     f.tick(&f.store, &remote).await;
     f.git(&["commit", "--allow-empty", "-qm", "updated"]);
     f.tick(&f.store, &remote).await;
     assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
-    assert!(f.store.admit("r", &f.state(), false).is_err());
+    assert!(f.store.admit("r", &f.key()).is_err(), "the stopped merge of the old commit");
     f.mark("builder", "model-a", true);
     f.mark("alias", "model-a", false);
     assert!(f.state().workflow.unwrap().reviewer.is_none());
     f.mark("reviewer", "model-b", false);
-    assert!(f.store.admit("r", &f.state(), false).is_ok());
+    assert!(f.state().workflow.unwrap().reviewer.is_some());
+    assert!(f.store.admit("r", &f.key()).is_ok());
 }
 #[tokio::test]
 async fn failed_check_exposes_output_and_only_an_explicit_fix_marks_it_requested() {
     let f = Fixture::new();
     let remote = Github::default();
     remote.fail.store(true, Ordering::SeqCst);
-    f.store.admit("r", &f.reviewed(), false).unwrap();
+    f.store.admit("r", &f.reviewed_key()).unwrap();
     f.tick(&f.store, &remote).await;
     f.tick(&f.store, &remote).await;
-    let failed = f.store.fix("r", &f.state()).unwrap();
+    let failed = f.store.fix("r", &f.key()).unwrap();
     assert!(failed.detail.contains("Windows reported FAILURE"));
     assert!(!failed.fix_requested);
     assert!(f.store.mark_fix("r", &failed).unwrap());
@@ -299,7 +311,7 @@ async fn a_green_check_requires_a_complete_nonempty_required_set() {
             required: Some(required),
             ..Github::default()
         };
-        f.store.admit("r", &f.reviewed(), false).unwrap();
+        f.store.admit("r", &f.reviewed_key()).unwrap();
         f.tick(&f.store, &remote).await;
         f.tick(&f.store, &remote).await;
         assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
@@ -346,7 +358,7 @@ async fn the_probe_reads_github_and_changes_nothing() {
 async fn a_card_merge_double_tapped_merges_once() {
     let f = Fixture::new();
     let remote = listed(&["Windows"]);
-    let shown = f.reviewed();
+    let shown = f.reviewed_key();
     f.store.admit_ready("r", &shown).unwrap();
     f.store.admit_ready("r", &shown).unwrap();
     assert_eq!(f.store.get("r").unwrap().unwrap().generation, 1);
@@ -364,7 +376,7 @@ async fn a_card_merge_double_tapped_merges_once() {
 async fn a_card_merge_stops_instead_of_waiting_when_checks_changed_even_across_a_restart() {
     // Main now requires a check that has not reported: stop, do not wait.
     let f = Fixture::new();
-    f.store.admit_ready("r", &f.reviewed()).unwrap();
+    f.store.admit_ready("r", &f.reviewed_key()).unwrap();
     f.tick(&f.store, &listed(&["Windows"])).await;
     assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Checks);
     let restarted = ThreadGit::new(f.data.path());
@@ -376,13 +388,13 @@ async fn a_card_merge_stops_instead_of_waiting_when_checks_changed_even_across_a
     assert_eq!(changed.puts.load(Ordering::SeqCst), 0);
     // The same merge asked for from the old bar still waits, as before.
     let g = Fixture::new();
-    g.store.admit("r", &g.reviewed(), false).unwrap();
+    g.store.admit("r", &g.reviewed_key()).unwrap();
     g.tick(&g.store, &changed).await;
     g.tick(&g.store, &changed).await;
     assert_eq!(g.store.get("r").unwrap().unwrap().phase, Phase::Checks);
     // After a restart with the checks still green, the card's merge goes through once.
     let h = Fixture::new();
-    h.store.admit_ready("r", &h.reviewed()).unwrap();
+    h.store.admit_ready("r", &h.reviewed_key()).unwrap();
     let green = listed(&["Windows"]);
     h.tick(&h.store, &green).await;
     let again = ThreadGit::new(h.data.path());
@@ -394,23 +406,158 @@ async fn a_card_merge_stops_instead_of_waiting_when_checks_changed_even_across_a
 async fn cancel_reaches_a_card_merge_and_reports_one_that_already_landed() {
     let f = Fixture::new();
     let remote = listed(&["Windows"]);
-    let shown = f.reviewed();
+    let shown = f.reviewed_key();
     f.store.admit_ready("r", &shown).unwrap();
     f.tick(&f.store, &remote).await;
-    let shown = f.state();
-    f.store.admit("r", &shown, true).unwrap();
+    assert!(f.store.cancel("r", &f.key()).unwrap().cancelled);
     f.tick(&f.store, &remote).await;
     assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Cancelled);
     assert_eq!(remote.puts.load(Ordering::SeqCst), 0);
     // GitHub merged before the cancel was confirmed: the result is the merge.
     let g = Fixture::new();
     let landed = listed(&["Windows"]);
-    g.store.admit_ready("r", &g.reviewed()).unwrap();
+    g.store.admit_ready("r", &g.reviewed_key()).unwrap();
     g.tick(&g.store, &landed).await;
     landed.merged.store(true, Ordering::SeqCst);
-    g.store.admit("r", &g.state(), true).unwrap();
+    g.store.cancel("r", &g.key()).unwrap();
     g.tick(&g.store, &landed).await;
     let result = g.store.get("r").unwrap().unwrap();
     assert!(matches!(result.phase, Phase::Syncing | Phase::Merged), "{:?}", result.phase);
     assert!(result.detail.contains("Merged PR #42"), "{}", result.detail);
+}
+
+#[test]
+fn a_builder_receipt_needs_no_named_model() {
+    let f = Fixture::new();
+    assert_eq!(f.receipt("builder", "", "Deck built"), RecordOutcome::Recorded);
+    let w = f.store.get("r").unwrap().unwrap();
+    assert_eq!((w.builder.as_str(), w.phase.clone(), w.head), ("builder", Phase::Ready, f.git(&["rev-parse", "HEAD"])));
+    // Models are compared only when both are named; the reviewer is still another agent.
+    f.receipt("builder", "", "Deck review passed");
+    assert!(f.store.get("r").unwrap().unwrap().reviewer.is_none(), "the builder can't review its own commit");
+    f.receipt("reviewer", "model-b", "Deck review passed");
+    assert_eq!(f.store.get("r").unwrap().unwrap().reviewer.as_deref(), Some("reviewer"));
+}
+
+#[test]
+fn a_merge_no_longer_waits_for_a_review() {
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    assert!(f.store.get("r").unwrap().unwrap().reviewer.is_none());
+    f.store.admit("r", &f.key()).unwrap();
+    assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Preparing);
+}
+
+#[test]
+fn a_stale_key_is_refused_and_changes_nothing() {
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    let saved = f.store.get("r").unwrap().unwrap();
+    let mut old_head = f.key();
+    old_head.head = "b".repeat(40);
+    let mut other_merge = f.key();
+    other_merge.generation += 1;
+    for stale in [&old_head, &other_merge] {
+        assert!(f.store.admit_ready("r", stale).is_err(), "{stale:?}");
+        assert!(f.store.cancel("r", stale).is_err(), "{stale:?}");
+    }
+    assert_eq!(f.store.get("r").unwrap().unwrap(), saved);
+}
+
+#[test]
+fn ship_asks_for_the_merge_of_the_recorded_commit_only() {
+    let f = Fixture::new();
+    assert_eq!(f.receipt("builder", "", "Deck ship"), RecordOutcome::Recorded);
+    let head = f.git(&["rev-parse", "HEAD"]);
+    assert!(f.store.ship("r", "builder", &"c".repeat(40)).is_err(), "not the recorded commit");
+    assert!(f.store.ship("r", "reviewer", &head).is_err(), "not its builder");
+    assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Ready);
+    f.store.ship("r", "builder", &head).unwrap();
+    let w = f.store.get("r").unwrap().unwrap();
+    assert_eq!((w.phase, w.generation), (Phase::Preparing, 1));
+    f.store.ship("r", "builder", &head).unwrap();
+    assert_eq!(f.store.get("r").unwrap().unwrap().generation, 1, "a second ship line shares the merge");
+}
+
+#[tokio::test]
+async fn cancel_reports_whether_this_tap_started_cancelling() {
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    f.store.admit("r", &f.key()).unwrap();
+    // Still preparing: no pull request yet.
+    let first = f.store.cancel("r", &f.key()).unwrap();
+    assert_eq!((first.cancelled, first.pr), (true, None));
+    let again = f.store.cancel("r", &f.key()).unwrap();
+    assert!(!again.cancelled, "a second tap moves nothing");
+    // Waiting for checks on PR #42.
+    let g = Fixture::new();
+    g.mark("builder", "model-a", true);
+    g.store.admit("r", &g.key()).unwrap();
+    g.tick(&g.store, &listed(&["Windows", "Linux"])).await;
+    let checks = g.store.get("r").unwrap().unwrap();
+    assert_eq!((checks.phase.clone(), checks.pr), (Phase::Checks, Some(42)));
+    let tap = g.store.cancel("r", &g.key()).unwrap();
+    assert_eq!((tap.cancelled, tap.pr), (true, Some(42)));
+}
+
+#[test]
+fn a_stale_cancel_during_syncing_moves_nothing() {
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    let mut syncing = f.store.get("r").unwrap().unwrap();
+    syncing.phase = Phase::Syncing;
+    syncing.pr = Some(42);
+    f.store.edit(|rooms| { rooms.insert("r".into(), syncing.clone()); Ok(()) }).unwrap();
+    let tap = f.store.cancel("r", &f.key()).unwrap();
+    assert!(!tap.cancelled);
+    assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Syncing, "the merge already landed");
+}
+
+#[test]
+fn a_second_builder_waits_for_a_merge_in_flight() {
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    f.store.admit("r", &f.key()).unwrap();
+    let in_flight = f.store.get("r").unwrap().unwrap();
+    f.git(&["commit", "--allow-empty", "-qm", "the other agent's work"]);
+    for line in ["Deck built", "Deck ship"] {
+        assert_eq!(f.receipt("other", "", line), RecordOutcome::BusyOther { other: "builder".into() }, "{line}");
+        assert_eq!(f.store.get("r").unwrap().unwrap(), in_flight, "{line}: nothing replaced the merge in flight");
+    }
+    // The same builder's new commit replaces a merge that is still waiting.
+    assert_eq!(f.mark("builder", "model-a", true), RecordOutcome::Recorded);
+    let replaced = f.store.get("r").unwrap().unwrap();
+    assert_eq!((replaced.phase.clone(), replaced.head.clone()), (Phase::Ready, f.git(&["rev-parse", "HEAD"])));
+    // While a merge is being confirmed with GitHub, even its builder waits.
+    let mut confirming = replaced.clone();
+    confirming.phase = Phase::Submitting;
+    f.store.edit(|rooms| { rooms.insert("r".into(), confirming.clone()); Ok(()) }).unwrap();
+    f.git(&["commit", "--allow-empty", "-qm", "later"]);
+    assert!(f.try_receipt("builder", "", "Deck built").is_err());
+    assert_eq!(f.store.get("r").unwrap().unwrap(), confirming);
+}
+
+#[tokio::test]
+async fn a_poll_that_blocks_a_pending_merge_says_so_once() {
+    let f = Fixture::new();
+    f.mark("builder", "model-a", true);
+    f.store.admit("r", &f.key()).unwrap();
+    let preparing = f.store.get("r").unwrap().unwrap();
+    // The local commit moved before anything reached GitHub.
+    f.git(&["commit", "--allow-empty", "-qm", "moved"]);
+    let blocked = f.store.advance(&Github::default(), "r", &preparing, f.data.path(), Some(f.checkout.path())).await.unwrap();
+    assert_eq!(blocked.as_deref(), Some("Merge stopped before submission."));
+    assert_eq!(f.store.get("r").unwrap().unwrap().phase, Phase::Blocked);
+    let stale = f.store.advance(&Github::default(), "r", &preparing, f.data.path(), Some(f.checkout.path())).await.unwrap();
+    assert_eq!(stale, None, "a second, stale poll changes nothing and reports nothing");
+}
+
+#[test]
+fn the_marker_reads_built_ship_and_review_lines() {
+    let sha = "d".repeat(40);
+    assert_eq!(marker(&format!("Done.\nDeck built {sha}")), Some((Marker::Built, sha.as_str())));
+    assert_eq!(marker(&format!("Done.\nDeck ship {sha}\n")), Some((Marker::Ship, sha.as_str())));
+    assert_eq!(marker(&format!("Deck review passed {sha}")), Some((Marker::ReviewPassed, sha.as_str())));
+    assert_eq!(marker(&format!("Deck ship {}", &sha[..39])), None);
+    assert_eq!(marker(&format!("Deck ship {sha}\nmore")), None, "only the last line");
 }

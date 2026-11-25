@@ -198,8 +198,21 @@ pub(super) async fn probe(shell: &impl Shell, w: &Workflow, data: &Path) -> Resu
         },
     })
 }
+#[cfg(test)]
+static FAKE_CHECKS: std::sync::Mutex<Vec<(String, Checks)>> = std::sync::Mutex::new(Vec::new());
+/// Tests: what `checks` answers for commit `head`, instead of asking GitHub.
+#[cfg(test)]
+pub(crate) fn fake_checks(head: &str, answer: Checks) {
+    let mut fakes = FAKE_CHECKS.lock().unwrap();
+    fakes.retain(|(seen, _)| seen != head);
+    fakes.push((head.to_owned(), answer));
+}
 /// `probe` against the real project, with a failure to ask read as unknown.
 pub async fn checks(data: &Path, w: &Workflow) -> Checks {
+    #[cfg(test)]
+    if let Some((_, answer)) = FAKE_CHECKS.lock().unwrap().iter().find(|(head, _)| *head == w.head) {
+        return answer.clone();
+    }
     probe(&ProjectShell, w, data)
         .await
         .unwrap_or_else(|why| Checks::Unknown(why.chars().take(300).collect()))
@@ -322,9 +335,17 @@ impl ThreadGit {
         w: &Workflow,
         data: &Path,
         mounted: Option<&Path>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let root = Path::new(&w.root);
         let gh_repo = format!("github.com/{}", w.repo);
+        // Moves a pending merge into Blocked; the detail, only when this call did it.
+        let block = |prior: &Workflow, detail: String| -> Result<Option<String>, String> {
+            let moved = self.update(room, prior, |j| {
+                j.phase = Phase::Blocked;
+                j.detail = detail.clone();
+            })?;
+            Ok(moved.then_some(detail))
+        };
         // No checkout or credentials inferred from another room on recovery.
         let local = if let Some(cwd) = mounted {
             let head = shell.run(data, cwd, "git", &["rev-parse", "HEAD"]).await?;
@@ -346,23 +367,18 @@ impl ThreadGit {
             false
         };
         if w.pr.is_none() && (w.phase == Phase::Cancelling || !local) {
+            if !local {
+                return block(w, "Merge stopped before submission.".into());
+            }
             self.update(room, w, |j| {
-                j.phase = if local {
-                    Phase::Cancelled
-                } else {
-                    Phase::Blocked
-                };
+                j.phase = Phase::Cancelled;
                 j.detail = "Merge stopped before submission.".into();
             })?;
-            return Ok(());
+            return Ok(None);
         }
         if w.phase == Phase::Preparing {
             if !local {
-                self.update(room, w, |j| {
-                    j.phase = Phase::Blocked;
-                    j.detail = "The local commit changed. Review the new commit.".into();
-                })?;
-                return Ok(());
+                return block(w, "The local commit changed. Review the new commit.".into());
             }
             let state = crate::git_changes::status(data, root)?;
             if git(
@@ -385,11 +401,11 @@ impl ThreadGit {
                         j.phase = Phase::Failed;
                         j.detail = why.chars().take(6000).collect();
                     })?;
-                    return Ok(());
+                    return Ok(None);
                 }
             }
             if self.get(room)?.as_ref() != Some(w) {
-                return Ok(());
+                return Ok(None);
             }
         }
         if w.pr.is_none() {
@@ -472,14 +488,14 @@ impl ThreadGit {
                 j.phase = Phase::Checks;
                 j.detail = format!("Waiting for checks on PR #{n}…");
             })?;
-            return Ok(());
+            return Ok(None);
         }
         if w.phase == Phase::Preparing {
             self.update(room, w, |j| {
                 j.phase = Phase::Checks;
                 j.detail = "Waiting for checks…".into();
             })?;
-            return Ok(());
+            return Ok(None);
         }
         let number = w.pr.unwrap().to_string();
         let raw=shell.run(data,root,"gh",&["pr","view",&number,"--repo",&gh_repo,"--json",PULL_FIELDS]).await?;
@@ -493,6 +509,7 @@ impl ThreadGit {
                 })?;
             }
             Decision::Wait => {}
+            Decision::Finish(Phase::Blocked, detail) => return block(w, detail),
             Decision::Finish(phase, mut detail) => {
                 if phase == Phase::Failed {
                     // Fetch only the failing Actions run for this PR's commit.
@@ -557,11 +574,7 @@ impl ThreadGit {
             Decision::Submit => {
                 match required(shell, w, &pr, data, root).await? {
                     Required::None => {
-                        self.update(room, w, |job| {
-                            job.phase = Phase::Blocked;
-                            job.detail = "GitHub reports no required status checks for main. Configure required checks before merging from Deck.".into();
-                        })?;
-                        return Ok(());
+                        return block(w, "GitHub reports no required status checks for main. Configure required checks before merging from Deck.".into());
                     }
                     Required::Waiting(name) => {
                         self.update(room, w, |job| {
@@ -572,7 +585,7 @@ impl ThreadGit {
                                 job.detail = format!("Waiting for required check: {name}.");
                             }
                         })?;
-                        return Ok(());
+                        return Ok(None);
                     }
                     Required::Passed => {}
                 }
@@ -581,7 +594,7 @@ impl ThreadGit {
                 submitting.phase = Phase::Submitting;
                 submitting.detail = "Confirming merge with GitHub…".into();
                 if !self.update(room, w, |job| *job = submitting.clone())? {
-                    return Ok(());
+                    return Ok(None);
                 }
                 let result = shell
                     .run(
@@ -608,25 +621,30 @@ impl ThreadGit {
                     let refused = ["HTTP 403", "HTTP 404", "HTTP 405", "HTTP 409", "HTTP 422"]
                         .iter()
                         .any(|status| why.contains(status));
-                    self.update(room, &submitting, |job| {
-                        if refused {
-                            job.phase = Phase::Blocked;
-                        }
-                        job.detail = why.chars().take(1500).collect();
-                    })?;
+                    let detail: String = why.chars().take(1500).collect();
+                    if refused {
+                        return block(&submitting, detail);
+                    }
+                    self.update(room, &submitting, |job| job.detail = detail)?;
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
-    pub async fn poll(&self, room: &str, job: Workflow, data: &Path, mounted: Option<&Path>) {
-        if let Err(why) = self.advance(&ProjectShell, room, &job, data, mounted).await {
-            let _ = self.update(room, &job, |j| {
-                j.detail = format!(
-                    "Waiting for GitHub · {}",
-                    why.chars().take(1500).collect::<String>()
-                )
-            });
+    /// One step of the merge worker. Returns why, when this step stopped a
+    /// pending merge as Blocked, so the thread can be told once.
+    pub async fn poll(&self, room: &str, job: Workflow, data: &Path, mounted: Option<&Path>) -> Option<String> {
+        match self.advance(&ProjectShell, room, &job, data, mounted).await {
+            Ok(blocked) => blocked,
+            Err(why) => {
+                let _ = self.update(room, &job, |j| {
+                    j.detail = format!(
+                        "Waiting for GitHub · {}",
+                        why.chars().take(1500).collect::<String>()
+                    )
+                });
+                None
+            }
         }
     }
 }

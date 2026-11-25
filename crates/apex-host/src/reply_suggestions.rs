@@ -55,7 +55,7 @@ impl Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// Review and required checks passed for this commit. Deck merges; 0 turns.
+    /// Every required check passed for this commit. Deck merges; 0 turns.
     Merge,
     /// A required check failed before any merge was asked for. 1 turn.
     FixChecks,
@@ -153,7 +153,8 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
     };
     // A merge in flight is reachable whatever the setting says.
     if let Some(w) = facts.workflow.filter(|w| w.pending()) {
-        return Some(git(w, Kind::Merging, "merging", "Merging…", None, 0, None));
+        let question = if w.phase == Phase::Checks { "Merging when checks pass…" } else { "Merging…" };
+        return Some(git(w, Kind::Merging, "merging", question, None, 0, None));
     }
     let reply = facts.reply.as_ref()?;
     if facts.mode != Mode::DecisionCard || facts.busy {
@@ -171,13 +172,17 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
             1,
             Some(w.detail.clone()),
         )),
-        (Phase::Ready | Phase::Cancelled, Checks::Passed { pr }) if w.reviewer.is_some() => {
+        (Phase::Ready | Phase::Cancelled, Checks::Passed { pr }) => {
             let mut card = git(w, Kind::Merge, "merge", "Merge into main?", Some("Merge to main"), 0, None);
-            card.context = format!("PR #{pr} · review passed for {} · required checks passed", short(&w.head));
+            // A different model's review is the author's job now; shown when there was one.
+            card.context = match &w.reviewer {
+                Some(_) => format!("PR #{pr} · checks passed · review passed for {}", short(&w.head)),
+                None => format!("PR #{pr} · checks passed"),
+            };
             card.pr = Some(*pr);
             Some(card)
         }
-        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if w.reviewer.is_some() && !w.fix_requested => {
+        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if !w.fix_requested => {
             let mut card = git(
                 w,
                 Kind::FixChecks,
@@ -225,15 +230,15 @@ pub struct Ask {
 
 /// Words that belong to buttons the Mac runs itself. An agent's button may not
 /// borrow them, so a text-only button never reads as a Deck action.
-const HOST_ACTIONS: [&str; 3] = ["merg", "push", "cancel"];
+const HOST_ACTIONS: [&str; 4] = ["merg", "push", "cancel", "ship"];
 
 /// `Deck asks: <question>? | <yes label>` as the reply's last line, or the
-/// line before a `Deck built` / `Deck review passed` receipt. Anything
-/// malformed is no question at all.
+/// line before a `Deck built` / `Deck ship` / `Deck review passed` receipt.
+/// Anything malformed is no question at all.
 pub fn ask(text: &str) -> Option<Ask> {
     let mut lines = text.trim_end().lines().rev().filter(|l| !l.trim().is_empty());
     let mut line = lines.next()?;
-    if line.starts_with("Deck built ") || line.starts_with("Deck review passed ") {
+    if line.starts_with("Deck built ") || line.starts_with("Deck ship ") || line.starts_with("Deck review passed ") {
         line = lines.next()?;
     }
     let (question, label) = line.strip_prefix("Deck asks: ")?.rsplit_once(" | ")?;
@@ -394,9 +399,8 @@ mod tests {
     fn each_row_of_the_table() {
         let card = Mode::DecisionCard;
         let ready = workflow(Phase::Ready, true);
-        // Nothing: no commits, waiting for review, checks running or unknown.
+        // Nothing: no commits, checks running or unknown.
         assert_eq!(decided(card, None, PASSED, "Done.", &[]), None);
-        assert_eq!(decided(card, Some(&workflow(Phase::Ready, false)), PASSED, "Done.", &[]), None, "review first");
         assert_eq!(decided(card, Some(&ready), Checks::Running, "Done.", &[]), None);
         assert_eq!(decided(card, Some(&ready), Checks::Unknown("no pull request".into()), "Done.", &[]), None);
         // Review and required checks passed on the same commit.
@@ -422,6 +426,39 @@ mod tests {
         let question = decided(card, None, Checks::Running, asks, &[]).unwrap();
         assert_eq!((question.kind, question.turns, question.to.as_deref(), question.prompt.as_deref()), (Kind::Question, 1, Some("jigga"), Some("Yes, add logging")));
         assert_eq!(decided(card, Some(&ready), PASSED, asks, &[]).unwrap().kind, Kind::Merge);
+    }
+
+    #[test]
+    fn the_merge_card_needs_only_passing_checks() {
+        let card = Mode::DecisionCard;
+        let unreviewed = decided(card, Some(&workflow(Phase::Ready, false)), PASSED, "Done.", &[]).unwrap();
+        assert_eq!((unreviewed.kind, unreviewed.context.as_str(), unreviewed.primary.as_deref()), (Kind::Merge, "PR #42 · checks passed", Some("Merge to main")));
+        let reviewed = decided(card, Some(&workflow(Phase::Ready, true)), PASSED, "Done.", &[]).unwrap();
+        assert_eq!(reviewed.context, "PR #42 · checks passed · review passed for aaaaaaaa");
+    }
+
+    #[test]
+    fn a_failed_check_without_a_review_still_offers_a_fix() {
+        let fix = decided(Mode::DecisionCard, Some(&workflow(Phase::Ready, false)), Checks::Failed { pr: 42, detail: "Windows failed".into() }, "Done.", &[]).unwrap();
+        assert_eq!((fix.kind, fix.turns), (Kind::FixChecks, 1));
+    }
+
+    #[test]
+    fn a_merge_waiting_for_checks_says_so() {
+        let question = |phase| decided(Mode::DecisionCard, Some(&workflow(phase, false)), Checks::Running, "Done.", &[]).unwrap().question;
+        assert_eq!(question(Phase::Checks), "Merging when checks pass…");
+        for phase in [Phase::Preparing, Phase::Submitting, Phase::Cancelling, Phase::Syncing] {
+            assert_eq!(question(phase.clone()), "Merging…", "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_button_may_not_say_ship_and_a_ship_line_is_a_receipt() {
+        let sha = "c".repeat(40);
+        assert_eq!(ask("All set.\nDeck asks: Ready to go? | Ship it"), None);
+        assert_eq!(ask("All set.\nDeck asks: Ready to go now? | Shipping"), None);
+        let above = ask(&format!("Done.\nDeck asks: Show the setting on the phone too? | Show it on the phone\nDeck ship {sha}")).unwrap();
+        assert_eq!(above.label, "Show it on the phone");
     }
 
     #[test]

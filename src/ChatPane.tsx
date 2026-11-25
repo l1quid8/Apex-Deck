@@ -755,7 +755,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   const [gitCardSeq, setGitCardSeq] = useState<number | null>(null);
   const [gitCardTarget, setGitCardTarget] = useState<HTMLDivElement | null>(null);
   const closeGitCard = useCallback(() => { setGitMenuRequest(null); setGitCardSeq(null); }, []);
-  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && (turnFiles.get(entry.message.seq)?.length || /(?:^|\n)Deck built [0-9a-f]{40}\s*$/.test(entry.message.text)));
+  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && (turnFiles.get(entry.message.seq)?.length || /(?:^|\n)Deck (?:built|ship) [0-9a-f]{40}\s*$/.test(entry.message.text)));
   const latestGitSeq = latestGitReply?.kind === "message" ? latestGitReply.message.seq : null;
   const openGitCard = (seq: number, paths: string[] | null) => {
     setGitCardSeq(seq);
