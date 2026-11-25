@@ -271,6 +271,19 @@ try {
   Setup $StableSetup
   StartChannel $channels.stable
   $stable = Snapshot $channels.stable 'before first Nightly install'
+  # Opening Setup and closing it on its first page must change nothing. Setup
+  # used to stop the protected service in .onInit, before the wizard, and a clean
+  # stop is not a failure, so Windows never started it again.
+  $opened = Start-Process -FilePath (Resolve-Path $StableSetup).Path -PassThru
+  $deadline = (Get-Date).AddSeconds(60)
+  do { Start-Sleep -Milliseconds 500; $opened.Refresh() } until ($opened.HasExited -or $opened.MainWindowHandle -ne 0 -or (Get-Date) -gt $deadline)
+  # Past .onInit either way: the window exists, or 60 s have gone by.
+  Start-Sleep -Seconds 3
+  if (!$opened.HasExited) { Stop-Process -Id $opened.Id -Force; $opened.WaitForExit(30000) | Out-Null }
+  $service = (Get-Service $channels.stable.WINDOWS_SERVICE).Status
+  Write-Host "EVIDENCE setup-opened-and-closed {""window"":$($opened.MainWindowHandle -ne 0),""service"":""$service""}"
+  if ($service -ne 'Running') { throw "Opening and closing Stable Setup left $($channels.stable.WINDOWS_SERVICE) $service" }
+  Survived $stable (Snapshot $channels.stable 'after Setup was opened and closed')
   $unusedFolder = Join-Path $env:TEMP "noncanonical-nightly-$run"
   $refused = Start-Process -FilePath (Resolve-Path $NightlySetup).Path -ArgumentList @('/S', "/D=$unusedFolder") -PassThru
   if (!$refused.WaitForExit(30000) -or $refused.ExitCode -ne 2 -or (Test-Path "$unusedFolder\resources\app.asar")) {

@@ -182,46 +182,107 @@ Var pid
 !macro customInit
   !insertmacro PinInstallLocation
   !insertmacro CheckInstallRegistration
+  ; Nothing is stopped here. .onInit runs as soon as Setup opens, before the
+  ; wizard, so stopping the protected service here left it stopped for good
+  ; whenever someone opened Setup and cancelled: a clean stop is not a failure,
+  ; so Windows never restarts it, and every chat then fails with "Host does not
+  ; own this protected provenance scope" until a reboot. The install section
+  ; stops it instead (StopAuthorityForInstall, from machineUpgrade.nsh).
+!macroend
+
+!ifndef BUILD_UNINSTALLER
+  ; 1 once this Setup has stopped the service; 1 once it is running again (by
+  ; `apex-provenance install` or RestartAuthority), so it is started only once.
+  Var apexAuthorityStopped
+  Var apexAuthorityDone
+  Var apexAuthorityResult
+
+  ; Start the service this Setup stopped, before any exit that leaves the
+  ; install unfinished. Best effort: if the files on disk no longer match its
+  ; protected pins, the service refuses and writes service-error.txt, which is
+  ; at least visible. NSIS runs no callback after Quit, so every Quit after the
+  ; stop has to call this itself.
+  !macro RestartAuthority
+    ${If} $apexAuthorityStopped == 1
+    ${AndIf} $apexAuthorityDone != 1
+      StrCpy $apexAuthorityDone 1
+      DetailPrint "Starting ${APEX_SERVICE} again."
+      nsExec::Exec '"$SYSDIR\sc.exe" start "${APEX_SERVICE}"'
+      Pop $apexAuthorityResult
+    ${EndIf}
+  !macroend
+
   ; Stop the protected service before replacing its executable or pinned UI.
-  ; A first install has no service; sc returns 1060 and needs no repair.
+  ; Runs inside the install section, after the person clicked Install and the
+  ; app window was closed, right before the old version is removed. A first
+  ; install has no service; sc returns 1060 and needs no repair.
   ; A kill counts as a crash, so Windows would restart the service mid-install:
   ; wait for it to stop on request, and kill it only if it never does.
-  StrCpy $R6 0
-  ${Do}
-    nsExec::Exec '"$SYSDIR\sc.exe" stop "${APEX_SERVICE}"'
-    Pop $R5
-    nsExec::Exec '"$SYSDIR\sc.exe" query "${APEX_SERVICE}"'
-    Pop $R5
-    ${If} $R5 != 0
-      ${ExitDo}
-    ${EndIf}
-    nsExec::Exec `"$SYSDIR\cmd.exe" /c ""$SYSDIR\sc.exe" query "${APEX_SERVICE}" | "$SYSDIR\find.exe" "STOPPED""`
-    Pop $R5
-    ${If} $R5 == 0
-      ${ExitDo}
-    ${EndIf}
-    IntOp $R6 $R6 + 1
-    ${If} $R6 >= 60
-      nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_HELPER_IMAGE}"'
+  !macro StopAuthorityForInstall
+    StrCpy $apexAuthorityStopped 1
+    StrCpy $R6 0
+    ${Do}
+      nsExec::Exec '"$SYSDIR\sc.exe" stop "${APEX_SERVICE}"'
       Pop $R5
-      ${ExitDo}
-    ${EndIf}
-    Sleep 500
-  ${Loop}
-  !insertmacro StopDaemon
+      nsExec::Exec '"$SYSDIR\sc.exe" query "${APEX_SERVICE}"'
+      Pop $R5
+      ${If} $R5 != 0
+        ${ExitDo}
+      ${EndIf}
+      nsExec::Exec `"$SYSDIR\cmd.exe" /c ""$SYSDIR\sc.exe" query "${APEX_SERVICE}" | "$SYSDIR\find.exe" "STOPPED""`
+      Pop $R5
+      ${If} $R5 == 0
+        ${ExitDo}
+      ${EndIf}
+      IntOp $R6 $R6 + 1
+      ${If} $R6 >= 60
+        nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APEX_HELPER_IMAGE}"'
+        Pop $R5
+        ${ExitDo}
+      ${EndIf}
+      Sleep 500
+    ${Loop}
+    !insertmacro StopDaemon
 
-  ; Say what to do instead of failing later with a locked-file error nobody can
-  ; read. Silent installs skip the box but must not skip the failure: reporting
-  ; success and then leaving a locked image behind is how an unattended upgrade
-  ; breaks with nothing in the log to explain it.
-  ${If} $R7 >= 20
-    ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "${PRODUCT_NAME}'s background service keeps restarting, so this version cannot replace it.$\n$\nClose ${PRODUCT_NAME}, end ${APEX_DAEMON_IMAGE} on Task Manager's Details tab, then run this installer again."
+    ; Say what to do instead of failing later with a locked-file error nobody can
+    ; read. Silent installs skip the box but must not skip the failure: reporting
+    ; success and then leaving a locked image behind is how an unattended upgrade
+    ; breaks with nothing in the log to explain it.
+    ${If} $R7 >= 20
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONSTOP|MB_OK "${PRODUCT_NAME}'s background service keeps restarting, so this version cannot replace it.$\n$\nClose ${PRODUCT_NAME}, end ${APEX_DAEMON_IMAGE} on Task Manager's Details tab, then run this installer again."
+      ${EndIf}
+      !insertmacro RestartAuthority
+      SetErrorLevel 2
+      Quit
     ${EndIf}
-    SetErrorLevel 2
-    Quit
-  ${EndIf}
-!macroend
+  !macroend
+
+  ; Replaces the template's check of the old uninstaller's result (installUtil.nsh
+  ; handleUninstallResult, SHELL_CONTEXT) so its Quit starts the service again.
+  ; Same messages and outcome otherwise.
+  !macro customUnInstallCheck
+    ; $R0 is the old uninstaller's exit code here (set by uninstallOldVersion),
+    ; not taskkill's; copied so the StopDaemon guard on $R0 stays strict.
+    StrCpy $apexAuthorityResult $R0
+    ${If} ${Errors}
+      DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
+    ${ElseIf} $apexAuthorityResult != 0
+      MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
+      DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+      !insertmacro RestartAuthority
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+  !macroend
+
+  ; Backstop for a section that ends with Abort. The template's own Quits
+  ; (a failed unpack in extractAppPackage.nsh) run no callback and are not
+  ; covered; the daemon log names the stopped service in that case.
+  Function .onInstFailed
+    !insertmacro RestartAuthority
+  FunctionEnd
+!endif
 
 !macro customInstall
   nsExec::ExecToStack '"$INSTDIR\resources\bin\${APEX_HELPER_IMAGE}" install'
@@ -232,9 +293,12 @@ Var pid
     ${IfNot} ${Silent}
       MessageBox MB_ICONSTOP|MB_OK "${PRODUCT_NAME} could not install its protected authority service.$\n$\n$R1"
     ${EndIf}
+    !insertmacro RestartAuthority
     SetErrorLevel 2
     Quit
   ${EndIf}
+  ; `install` started the service; nothing to restart on the way out.
+  StrCpy $apexAuthorityDone 1
 !macroend
 
 !macro customUnInstall

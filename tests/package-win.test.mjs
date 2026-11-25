@@ -134,7 +134,7 @@ test('Setup pins each channel before stopping services and only invokes the mach
   assert.ok(running.includes('!include "${PROJECT_DIR}\\build\\machineUpgrade.nsh"'));
   const upgrade = read('build/machineUpgrade.nsh');
   assert.match(upgrade, /!macroundef uninstallOldVersion/);
-  assert.match(upgrade, /== "SHELL_CONTEXT"\s+Push "HKEY_LOCAL_MACHINE"\s+Call uninstallOldVersion/);
+  assert.match(upgrade, /== "SHELL_CONTEXT"(?:\s+;[^\n]*)*\s+!insertmacro StopAuthorityForInstall\s+Push "HKEY_LOCAL_MACHINE"\s+Call uninstallOldVersion/);
   assert.match(upgrade, /== "HKEY_CURRENT_USER"\s+ClearErrors\s+StrCpy \$R0 0\s+!else/);
 });
 
@@ -190,12 +190,13 @@ test('the installer stops the old service before it copies files', () => {
   assert.match(nsis, /include: build\/installer\.nsh/, 'without the include the hooks never run');
   const hook = read('build/installer.nsh');
 
-  // .onInit, before instFiles copies anything: the image stays locked otherwise.
-  assert.match(hook, /!macro customInit[\s\S]*?!insertmacro StopDaemon/);
+  // In the install section, before the old version is removed and files are
+  // copied: the image stays locked otherwise. Never in .onInit (see below).
+  assert.match(hook, /!macro StopAuthorityForInstall[\s\S]*?!insertmacro StopDaemon/);
   // An uninstall must not fail on a running image, or leave a task pointing at
   // a binary it is about to delete.
   assert.match(hook, /!macro customUnInstall[\s\S]*?!insertmacro StopDaemon/);
-  const uninstallAt = hook.indexOf('!macro customUnInstall');
+  const uninstallAt = hook.indexOf('!macro customUnInstall\n');
   const uninstall = hook.slice(uninstallAt, hook.indexOf('!macroend', uninstallAt));
   assert.match(uninstall, /schtasks\.exe" \/Delete \/TN "\$\{APEX_DAEMON_TASK\}" \/F/,
     'ending the task is not enough: the definition would outlive the binary it starts');
@@ -238,7 +239,8 @@ test('the installer stops the old service before it copies files', () => {
       assert.ok(!operation.includes(name), operation);
     }
   }
-  assert.equal(operations.filter(line => line.includes('sc.exe"')).length, 3);
+  // stop, query, query | find STOPPED, and start again on an unfinished install.
+  assert.equal(operations.filter(line => line.includes('sc.exe"')).length, 4);
   assert.ok(operations.filter(line => line.includes('sc.exe"')).every(line => line.includes('"${APEX_SERVICE}"')));
   assert.ok(code.includes('taskkill.exe" /F /IM "${APEX_HELPER_IMAGE}"'));
   assert.ok(code.includes('resources\\bin\\${APEX_HELPER_IMAGE}" install'));
@@ -301,4 +303,39 @@ test('the installer is actually run on Windows before it is published', () => {
   const uploadAt = workflow.indexOf('name: Apex-Deck-Setup-windows-x64');
   assert.ok(smokeAt > 0, 'the installer must be run');
   assert.ok(smokeAt < uploadAt, 'and before the artifact is attached');
+});
+
+test('opening Setup and cancelling never leaves the protected service stopped', () => {
+  const hook = read('build/installer.nsh').replaceAll('\r\n', '\n');
+  const macro = name => hook.split(`!macro ${name}\n`).at(1)?.split('!macroend')[0];
+  const code = text => text.split('\n').filter(line => !line.trimStart().startsWith(';')).join('\n');
+  // .onInit runs when Setup opens, before the wizard. A clean stop there is not a
+  // failure, so Windows never restarted the service after a cancel.
+  const init = code(macro('customInit'));
+  assert.ok(!init.includes('sc.exe'), 'customInit must not touch the service');
+  assert.ok(!init.includes('StopDaemon') && !init.includes('StopAuthorityForInstall'));
+  // The stop happens in the install section, right before the old version goes.
+  const upgrade = read('build/machineUpgrade.nsh');
+  assert.match(upgrade, /== "SHELL_CONTEXT"[\s\S]*?!insertmacro StopAuthorityForInstall\s+Push "HKEY_LOCAL_MACHINE"\s+Call uninstallOldVersion/);
+  assert.match(read('node_modules/app-builder-lib/templates/nsis/installSection.nsh'),
+    /!insertmacro uninstallOldVersion SHELL_CONTEXT[\s\S]+!insertmacro installApplicationFiles/,
+    'the old version is removed before the new files are copied');
+  // Every Quit our code issues after the stop starts the service again first.
+  for (const name of ['StopAuthorityForInstall', 'customUnInstallCheck', 'customInstall']) {
+    const body = code(macro(name));
+    const quits = body.split('\n').filter(line => line.trim() === 'Quit').length;
+    assert.ok(quits > 0, `${name} has an exit to cover`);
+    assert.equal(body.match(/!insertmacro RestartAuthority\s+SetErrorLevel 2\s+Quit/g)?.length, quits, name);
+  }
+  // The template's own check would Quit without restarting; ours replaces it.
+  assert.match(read('node_modules/app-builder-lib/templates/nsis/include/installUtil.nsh'),
+    /!ifmacrodef customUnInstallCheck\s+!insertmacro customUnInstallCheck\s+Return/);
+  const restart = code(macro('RestartAuthority'));
+  assert.match(restart, /\$apexAuthorityStopped == 1[\s\S]*\$apexAuthorityDone != 1/, 'only a service this Setup stopped, once');
+  assert.match(restart, /sc\.exe" start "\$\{APEX_SERVICE\}"/);
+  assert.match(code(macro('customInstall')), /StrCpy \$apexAuthorityDone 1\s*$/, 'a finished install needs no restart');
+  assert.match(hook, /Function \.onInstFailed\s+!insertmacro RestartAuthority\s+FunctionEnd/);
+  // The installer-only pieces stay out of the uninstaller pass, where unused
+  // variables would be makensis warnings that electron-builder treats as fatal.
+  assert.match(hook, /!ifndef BUILD_UNINSTALLER\s+;[\s\S]*?Var apexAuthorityStopped[\s\S]*?Function \.onInstFailed[\s\S]*?FunctionEnd\s+!endif/);
 });
