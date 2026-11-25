@@ -172,7 +172,15 @@ function OpenAboutUpdates {
     }
   }
   if (!$about) { Dump 'no About & updates'; throw 'No About & updates section' }
-  Activate $about
+  # Settings may still be laying out when the first click lands; confirm the page
+  # changed by waiting for a heading only About & updates has.
+  for ($try = 1; $try -le 3; $try++) {
+    Activate $about
+    if (WaitFor '^Build details & diagnostics$' $null 10) { return }
+    $about = WaitFor '^About & updates$' ([Windows.Automation.ControlType]::Button) 10
+    if (!$about) { break }
+  }
+  Dump 'About & updates did not open'; throw 'About & updates did not open'
 }
 
 $statusPattern = "^$([regex]::Escape($feed.version))\. "
