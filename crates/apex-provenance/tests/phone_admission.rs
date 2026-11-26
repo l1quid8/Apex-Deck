@@ -201,7 +201,9 @@ fn agent_full_access_claims_bind_grant_and_revoke_to_live_paired_authority() {
         grant(&mut journal, false);
         assert!(claim(&mut journal, 1, intent.clone(), false, false).is_err());
         let accepted = claim(&mut journal, 1, intent.clone(), true, false).unwrap();
-        assert_eq!(accepted["receipt"]["command"], intent);
+        assert_eq!(accepted["receipt"]["command"]["cmd"], intent["cmd"]);
+        assert_eq!(accepted["receipt"]["command"]["args"], intent["args"]);
+        assert!(accepted["receipt"]["command"]["provenanceRequestId"].as_str().unwrap().starts_with("phone:"));
         assert!(claim(&mut journal, 1, intent, true, false).is_err());
     }
 }

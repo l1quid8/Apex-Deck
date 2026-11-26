@@ -8,12 +8,12 @@ New agents receive opaque random identities. Edits and intentional same-ID copie
 
 ## Review and checks
 
-- Independent permission review: gpt-6-astra. Findings addressed: batch-add confirmation and revocation waiting on unrelated room locks. Final regression gates pending.
+- Independent permission review: gpt-6-astra. Findings addressed: batch-add confirmation and revocation waiting on unrelated room locks. Source review approved; final local regressions passed. CI pending.
 - `npx tsc --noEmit`: passed after schema generation.
 - Focused helper/component/identity/phone/assistant tests: 61 passed.
 - Chromium Full access settings integration: passed, including consent cancellation, failed revoke, restricted mode and old-host behavior.
 - Existing Chromium BotSettings integration: passed with capability-aware fixture.
-- Rust identity tests: 8 passed. Host admission/revocation and transport regressions are running for final source.
+- Rust identity tests: 8 passed. Host admission/revocation: 2 passed, including the held unrelated-room-lock regression. Actual Linux paired transport/authority: 2 passed. Broker grant/revoke/replay: 1 passed. Core persistence/revocation: 1 passed.
 - Desktop provenance: 24 passed with macOS platform fixture; native Linux has existing platform-expectation failures in older tests. New cases pass natively.
 - Mockup: `docs/mockups/agent-full-access.html`.
 
