@@ -12,12 +12,12 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
   const html=`<html><meta name="viewport" content="width=device-width,initial-scale=1"><body><div id="root"></div><script type="module">
     import React from 'react';import {createRoot} from 'react-dom/client';
     import {setAssistantComposerField} from '/src/assistantComposerDrafts.ts';import '/src/styles.css';import {ApexAgentAll} from '/src/ApexAgentAll.tsx';import '/src/phone/phone.css';
-    const f=window.fixture={sent:[],reactions:[],phone:true};f.setPlan=()=>setAssistantComposerField('layout-test','planOn',true);
+    const f=window.fixture={sent:[],reactions:[],stopped:[],phone:true};f.setPlan=()=>setAssistantComposerField('layout-test','planOn',true);
     const personal={name:'Alfred',hostName:'MacBook Pro with a long destination name',offline:false,
       assistant:{id:'a',name:'Alfred',hostId:'mac',revision:1,allowedFolders:[],tasks:[],messages:[
         {id:'m1',role:'human',kind:'message',at:Date.now()-60000,text:'Check these changes for me.'},
         {id:'m2',role:'assistant',kind:'message',at:Date.now(),text:'I’ll check the changes and let you know what needs attention.\\n\\n## Next steps\\n\\n1. Review the proposed changes.\\n2. Check the tests before merging.\\n3. Report the result clearly.'}]},
-      send:async text=>{f.sent.push(text)},decide:async()=>{},cancel:async()=>{}};
+      cancelReply:async id=>{f.stopped.push(id)},send:async text=>{f.sent.push(text)},decide:async()=>{},cancel:async()=>{}};
     f.personal=personal;
     const root=createRoot(document.getElementById('root'));
     f.render=()=>root.render(React.createElement('div',{className:f.phone?'ph-app':''},React.createElement('div',{className:'apex-agent-backdrop'},React.createElement(ApexAgentAll,{phone:f.phone,draftKey:'layout-test',taskContext:f.taskContext,workspaces:[],monitors:[],personal,onReply:async()=>{},onMutate:async()=>{},onSetUp(){},onClose(){},onReact:async(...args)=>f.reactions.push(args),saveAttachment:async(_lane,name)=>'/attachments/'+name}))));
@@ -109,14 +109,49 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
         for(const r of await run(geometry))assert.ok(r.left>=-1&&r.right<=321,JSON.stringify(r));
         assert.ok(await run(()=>document.documentElement.scrollWidth<=innerWidth));
         await run(()=>{window.fixture.taskContext=null;window.fixture.render();document.querySelector('.plan-chip').click();document.querySelector('[aria-label=\"TL;DR mode\"]').click();document.querySelector('[aria-label="Hide message actions"]').click();});
+        await run(()=>{window.fixture.personal.assistant.events=[{id:'queued',source:{kind:'human'},state:'received',receivedAt:Date.now()},{id:'active',source:{kind:'human'},state:'processing',receivedAt:Date.now()-12000}];window.fixture.render()});
+        await wait(()=>!!document.querySelector('.ph-live'));
+        assert.equal(await run(()=>document.querySelectorAll('.assistant-reply-progress').length),0);
+        assert.ok(await run(()=>!!document.querySelector('.assistant-chat-transcript .ph-live')));
+        assert.match(await run(()=>document.querySelector('.ph-live').textContent),/Alfred is working.*1 queued/);
+        assert.ok(await run(()=>!!document.querySelector('.ph-live .identicon.working')));
+        for(const [width,height] of [[320,640],[393,852],[430,932],[393,430]]){
+          await resize(width,height);
+          assert.ok(await run(()=>document.querySelector('.ph-composer').getBoundingClientRect().height<=65));
+          for(const r of await run(()=>[...document.querySelectorAll('.ph-working,.ph-working-toggle,.ph-stop')].map(e=>({left:e.getBoundingClientRect().left,right:e.getBoundingClientRect().right}))))assert.ok(r.left>=0&&r.right<=width,JSON.stringify(r));
+        }
+        await run(()=>document.querySelector('.ph-working-toggle').click());
+        await wait(()=>document.querySelector('.ph-working-toggle').getAttribute('aria-expanded')==='true');
+        assert.match(await run(()=>document.querySelector('.ph-progress').textContent),/preparing a reply/);
+        await run(()=>document.querySelector('.ph-stop').click());
+        await wait(()=>window.fixture.stopped.length===1);
+        assert.deepEqual(await run(()=>window.fixture.stopped),['active']);
+        await run(()=>{window.fixture.personal.offline=true;window.fixture.render()});
+        await wait(()=>document.querySelector('.ph-stop').disabled);
+        assert.equal(await run(()=>!!document.querySelector('.ph-live .identicon.working')),false);
+        assert.match(await run(()=>document.querySelector('.ph-live').textContent),/Waiting for connection/);
+        await run(()=>{window.fixture.personal.offline=false;window.fixture.personal.assistant.events[1].state='done';window.fixture.render()});
+        await wait(()=>document.querySelector('.ph-live').textContent.includes('Alfred is waiting'));
+        await run(()=>{window.fixture.personal.assistant.events[0].state='processing';window.fixture.render()});
+        await wait(()=>document.querySelector('.ph-live').textContent.includes('Alfred is working'));
+        assert.equal(await run(()=>document.querySelector('.ph-working-toggle').getAttribute('aria-expanded')),'false');
         await resize(393,852);
         fs.writeFileSync(${JSON.stringify(process.env.APEX_LAYOUT_SCREENSHOT ?? path.join(temp,'layout.png'))},(await win.webContents.capturePage()).toPNG());
+        await run(()=>{window.fixture.cancelReply=window.fixture.personal.cancelReply;window.fixture.personal.cancelReply=undefined;window.fixture.render()});
+        await wait(()=>!document.querySelector('.ph-stop'));
+        assert.ok(await run(()=>!!document.querySelector('.ph-live')));
+        await run(()=>{window.fixture.personal.cancelReply=window.fixture.cancelReply;window.fixture.render()});
+        await run(()=>{window.fixture.personal.assistant.events=[];window.fixture.render()});
+        await wait(()=>!document.querySelector('.ph-live'));
         await run(()=>{window.fixture.phone=false;window.fixture.render()});
         await resize(1100,850);
         await wait(()=>!!document.querySelector('.apex-agent-all-send'));
         assert.equal(await run(()=>document.querySelectorAll('.assistant-phone-send').length),0);
         assert.equal(await run(()=>document.querySelectorAll('.compact-actions').length),0);
         assert.ok(await run(()=>document.querySelectorAll('.message-primary-actions .copy').length)>0);
+        await run(()=>{window.fixture.personal.assistant.events=[{id:'desktop-active',source:{kind:'human'},state:'processing'}];window.fixture.render()});
+        await wait(()=>!!document.querySelector('.assistant-reply-progress'));
+        assert.equal(await run(()=>document.querySelectorAll('.ph-live').length),0);
         win.destroy();app.exit(0);
       }catch(error){console.error(error.stack);app.exit(1);}});
     `);
