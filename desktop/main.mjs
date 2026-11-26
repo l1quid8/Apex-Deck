@@ -272,6 +272,7 @@ const links = createHostLinks({
     });
   },
   emit: (contentsId, hostId, gen, channel, value) => {
+    if (channel === 'daemon:line' && diagIds.size) { try { const m = JSON.parse(value); if (diagIds.has(m?.id)) { diagIds.delete(m.id); console.error(`[diag] reply ${m.id} ${'err' in m ? 'err: ' + m.err : 'ok'}`); } } catch {} } // TEMP-DIAG
     if (channel === 'daemon:line' && hostId === LOCAL && linuxSaves?.incoming(contentsId, gen, value)) return;
     emitTo(contentsId, hostId, gen, channel, value);
   },
@@ -298,6 +299,7 @@ function deckWindow(event) {
 }
 const fromUi = event => deckWindow(event) !== null;
 const watchedContents = new Set();
+const diagIds = new Set(); // TEMP-DIAG
 // Google sign-in for Gmail and Drive. The system browser does the sign-in; the code comes back to a server on this Mac only.
 const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.readonly';
 const GOOGLE_SIGN_IN_MS = 5 * 60 * 1000;
@@ -374,6 +376,7 @@ ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
 ipcMain.on('daemon:send', async (event, hostId, gen, line) => {
   if (!fromUi(event) || typeof line !== 'string') return;
   let frame; try { frame = JSON.parse(line); } catch { return; }
+  if (/^project_/.test(frame?.cmd)) { diagIds.add(frame.id); console.error(`[diag] send ${frame.cmd} id=${frame.id} host=${hostId}`); } // TEMP-DIAG
   if (hostId !== LOCAL && ['session_save', 'settings_save'].includes(frame.cmd)) {
     event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: `App preferences are owned by ${LOCAL_NAME}.` }));
     return;
@@ -506,6 +509,7 @@ handle('shell:pickPath', async ({ win }, kind, title) => {
     title: String(title || ''),
     properties: [kind === 'directory' ? 'openDirectory' : 'openFile', 'createDirectory'],
   });
+  console.error(`[diag] pickPath ${kind} canceled=${picked.canceled} n=${picked.filePaths?.length ?? 0}`); // TEMP-DIAG
   return picked.canceled ? null : (picked.filePaths[0] ?? null);
 });
 
