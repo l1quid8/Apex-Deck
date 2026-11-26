@@ -19,7 +19,7 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
     const vision={...bot,id:"vision",display_name:"Vision",backend:{kind:"open_ai_compatible",base_url:"https://fixture.invalid",model:"vision",api_key_env:null}};
     const snapshot={participants:[bot,vision],options:{policy:'mention',max_bot_hops:3},transcript:[]};
     window.posts=[]; window.roomWaiters=[]; window.borrowed=[];
-    const backend={...await getBackend(),roomTargets:async(_room,text)=>text.includes('@vision')?['vision']:['bot'],apiModels:async()=>[{id:'vision',image_input:true}],saveAttachment:async(_room,name)=>'/attachments/'+name,roomPostTo:async(...args)=>{window.posts.push(args);},roomState:async()=>{await new Promise(r=>window.roomWaiters.push(r));return {recovery_seq:1,snapshot,active:[],approvals:[]};},roomSteps:async()=>null,onRoomEvent:async()=>()=>{},onPtyData:async()=>()=>{},onPtyExit:async()=>()=>{},roomClose:async()=>{}};
+    const backend={...await getBackend(),roomTargets:async(_room,text)=>text.includes('@vision')?['vision']:['bot'],apiModels:async()=>{await new Promise(resolve=>(window.modelWaiters??=[]).push(resolve));return [{id:'vision',image_input:true}];},saveAttachment:async(_room,name)=>'/attachments/'+name,roomPostTo:async(...args)=>{window.posts.push(args);},roomState:async()=>{await new Promise(r=>window.roomWaiters.push(r));return {recovery_seq:1,snapshot,active:[],approvals:[]};},roomSteps:async()=>null,onRoomEvent:async()=>()=>{},onPtyData:async()=>()=>{},onPtyExit:async()=>()=>{},roomClose:async()=>{}};
     function Fixture(){
       const [target,setTarget]=useState('a'), [slot,setSlot]=useState(null), [outside,setOutside]=useState(false), [inline,setInline]=useState(false), [agents,setAgents]=useState(0);
       window.fixture={agents:setAgents,outside,focus:setTarget,pop(){setOutside(true);setTarget('b');},inline(){setInline(true);},insert(id,text){window.dispatchEvent(new CustomEvent(INSERT_COMPOSER_EVENT,{detail:{paneId:id,text}}));}};
@@ -110,6 +110,8 @@ test('shared dock keeps real thread drafts, caret, sizing and external insertion
         assert.equal(await run(()=>window.posts.length),1);
         assert.ok(await run(()=>document.querySelector('[aria-label="Remove example.png"]')));
         await type('@vision inspect this');
+        await wait(()=>document.body.textContent.includes('Checking image support…') && document.querySelector('.round-send:disabled'), 'checking a model keeps Send disabled');
+        await run(()=>window.modelWaiters.splice(0).forEach(r=>r()));
         await wait(()=>document.querySelector('.round-send:not(:disabled)') && !document.body.textContent.includes('Bot can’t receive images'), 'vision recipient accepts the same draft');
         win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
         win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
