@@ -5780,8 +5780,12 @@ mod host_tests {
         assert!(change(Some(Access::Ask), actual.clone(), &|| Err("device revoked".into())).unwrap_err().contains("device revoked"));
         assert_eq!(change(Some(Access::Ask), actual, &|| Ok(())).unwrap().access, Access::Full);
         assert!(!data.join("agent-full-access.json").exists());
-        host.room_mount("r".into(), tree.to_string_lossy().into()).unwrap();
-        assert_eq!(host.handle("r").unwrap().context.cwd, Some(tree.clone()));
+        // Automatic Git still needs its own lower-access jail. Full agent access
+        // must not silently turn those unrelated project operations into Full.
+        match host.room_mount("r".into(), tree.to_string_lossy().into()) {
+            Ok(_) => assert_eq!(host.handle("r").unwrap().context.cwd, Some(tree.clone())),
+            Err(why) => assert!(why.starts_with("needs bubblewrap (admin):") || why.starts_with("Automatic project operation refused:"), "{why}"),
+        }
         assert!(!crate::folder_trust::is_accepted(&data, &tree));
     }
 
