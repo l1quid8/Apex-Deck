@@ -12,7 +12,7 @@ const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="t
 const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 
 /** Shared message controls. They sit under the bubble, the same way a thread's action row does. A reaction is shown as selected only after the host snapshot confirms it. */
-export function ApexAgentMessageActions({ reactions = [], onToggleReaction, onReply, disabled = false, text, at, stateKey, onRetry, onRevert, mine = false }: {
+export function ApexAgentMessageActions({ reactions = [], onToggleReaction, onReply, disabled = false, text, at, stateKey, onRetry, onRevert, mine = false, compact = false }: {
   text?: string;
   at?: number;
   stateKey?: string;
@@ -24,6 +24,7 @@ export function ApexAgentMessageActions({ reactions = [], onToggleReaction, onRe
   disabled?: boolean;
   /** Your messages mirror a model's row: time and collapse sit on the left, reply on the right. */
   mine?: boolean;
+  compact?: boolean;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -33,30 +34,30 @@ export function ApexAgentMessageActions({ reactions = [], onToggleReaction, onRe
   const [pending, setPending] = useState(false);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => { root.current?.closest('article')?.classList.toggle('apex-agent-message-pinned', pinned); }, [pinned]);
-  const reply = onReply && <button type="button" className="msg-action quote" onClick={onReply} disabled={disabled} aria-label="Reply to this message" title="Reply"><DeckIcon name="reply" size={18} /></button>;
-  const copy = text !== undefined && <button type="button" className="msg-action copy" aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy'} onClick={async () => { try { await deckClipboard.writeText(text); setCopied(true); setFailure(''); setTimeout(() => setCopied(false), 1600); } catch { setFailure('Could not copy message.'); } }}>{copied ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}</button>;
-  const pin = stateKey && <button type="button" className="msg-action pin-action" aria-label={pinned ? 'Unpin message' : 'Pin message'} aria-pressed={pinned} title={pinned ? 'Unpin (this device)' : 'Pin (this device)'} onClick={(event) => { try { localStorage.setItem(`apex-agent-pin:${stateKey}`, String(!pinned)); setPinned(!pinned); event.currentTarget.closest('article')?.classList.toggle('apex-agent-message-pinned', !pinned); } catch { setFailure('Could not save pin.'); } }}><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? 'currentColor' : 'none'}/><path d="M12 16v6" /></svg></button>;
-  const retry = onRetry && <button type="button" className="msg-action retry" disabled={disabled || pending} aria-label="Retry answer" title="Request another answer; history and files are preserved" onClick={async () => { setPending(true); try { await onRetry(); setFailure(''); } catch (error) { setFailure(String(error)); } finally { setPending(false); } }}>{retryIcon}</button>;
-  const revert = onRevert && <button type="button" className="msg-action revert" disabled={disabled} aria-label="Revert to composer" title="Restore message to composer; history and files are preserved" onClick={onRevert}>{revertIcon}</button>;
+  const reply = onReply && <button key="reply" type="button" className="msg-action quote" onClick={onReply} disabled={disabled} aria-label="Reply to this message" title="Reply"><DeckIcon name="reply" size={18} /></button>;
+  const copy = text !== undefined && <button key="copy" type="button" className="msg-action copy" aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy'} onClick={async () => { try { await deckClipboard.writeText(text); setCopied(true); setFailure(''); setTimeout(() => setCopied(false), 1600); } catch { setFailure('Could not copy message.'); } }}>{copied ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}</button>;
+  const pin = stateKey && <button key="pin" type="button" className="msg-action pin-action" aria-label={pinned ? 'Unpin message' : 'Pin message'} aria-pressed={pinned} title={pinned ? 'Unpin (this device)' : 'Pin (this device)'} onClick={(event) => { try { localStorage.setItem(`apex-agent-pin:${stateKey}`, String(!pinned)); setPinned(!pinned); event.currentTarget.closest('article')?.classList.toggle('apex-agent-message-pinned', !pinned); } catch { setFailure('Could not save pin.'); } }}><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? 'currentColor' : 'none'}/><path d="M12 16v6" /></svg></button>;
+  const retry = onRetry && <button key="retry" type="button" className="msg-action retry" disabled={disabled || pending} aria-label="Retry answer" title="Request another answer; history and files are preserved" onClick={async () => { setPending(true); try { await onRetry(); setFailure(''); } catch (error) { setFailure(String(error)); } finally { setPending(false); } }}>{retryIcon}</button>;
+  const revert = onRevert && <button key="revert" type="button" className="msg-action revert" disabled={disabled} aria-label="Revert to composer" title="Restore message to composer; history and files are preserved" onClick={onRevert}>{revertIcon}</button>;
   // Like a thread's row: the chevron reveals or hides the extra actions, never the message text.
   const pointsLeft = mine === expanded;
-  const disclosure = <button type="button" className="msg-action action-disclosure" aria-label={expanded ? 'Hide message actions' : 'Show message actions'} aria-expanded={expanded} title={expanded ? 'Hide message actions' : 'Show message actions'} onClick={() => setExpanded(!expanded)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={pointsLeft ? 'M15 6 9 12l6 6' : 'm9 6 6 6-6 6'} /></svg></button>;
+  const disclosure = <button type="button" className="msg-action action-disclosure" aria-label={expanded ? 'Hide message actions' : 'Show message actions'} aria-expanded={expanded} title={expanded ? 'Hide message actions' : 'Show message actions'} onClick={() => setExpanded(!expanded)}>{compact ? <span aria-hidden="true">•••</span> : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={pointsLeft ? 'M15 6 9 12l6 6' : 'm9 6 6 6-6 6'} /></svg>}</button>;
   const readAloud = text !== undefined && text.trim() !== '' && <ReadAloudAction key="read-aloud" text={text} />;
-  const stamp = at !== undefined && <time className="message-time" dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()}>{messageTime(at)}</time>;
+  const stamp = at !== undefined && <time className="message-time" dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()} aria-label={new Date(at).toLocaleString()}>{compact ? new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : messageTime(at)}</time>;
   const primary = [reply, copy, readAloud, pin].filter(Boolean) as ReactNode[];
   const extra = [retry, revert].filter(Boolean) as ReactNode[];
   const ordered = (items: ReactNode[]) => mine ? [...items].reverse() : items;
-  return <div ref={root} className={`apex-agent-message-actions message-actions collapsed-actions${open ? ' held' : ''}`} aria-label="Message actions">
+  return <div ref={root} className={`apex-agent-message-actions message-actions collapsed-actions${compact ? ' compact-actions' : ''}${expanded ? ' expanded' : ''}${open ? ' held' : ''}`} aria-label="Message actions">
     {mine && stamp}
     {mine && disclosure}
     {mine && expanded && <span className="message-action-items">{ordered(extra)}</span>}
-    <span className="message-primary-actions">{ordered(primary)}</span>
+    <span className="message-primary-actions" hidden={compact && !expanded}>{ordered(primary)}</span>
     {!mine && expanded && <span className="message-action-items">{extra}</span>}
     {!mine && disclosure}
     {!mine && stamp}
     {onToggleReaction && <div className="apex-agent-reactions" aria-label="Reactions">
-      <button type="button" className="msg-action apex-agent-reaction-picker" aria-label="Add reaction" title="React" disabled={disabled} aria-expanded={open} onClick={() => setOpen((value) => !value)}>☺</button>
-      {open && <div className="apex-agent-reaction-options" role="group" aria-label="Choose reaction">{REACTIONS.map((emoji) => <button type="button" key={emoji} className="msg-action apex-agent-reaction" aria-label={`React ${emoji}`} aria-pressed={reactions.includes(emoji)} disabled={disabled} onClick={() => { setOpen(false); void onToggleReaction(emoji, !reactions.includes(emoji)); }}>{emoji}</button>)}</div>}
+      {(!compact || expanded) && <button type="button" className="msg-action apex-agent-reaction-picker" aria-label="Add reaction" title="React" disabled={disabled} aria-expanded={open} onClick={() => setOpen((value) => !value)}>☺</button>}
+      {open && (!compact || expanded) && <div className="apex-agent-reaction-options" role="group" aria-label="Choose reaction">{REACTIONS.map((emoji) => <button type="button" key={emoji} className="msg-action apex-agent-reaction" aria-label={`React ${emoji}`} aria-pressed={reactions.includes(emoji)} disabled={disabled} onClick={() => { setOpen(false); void onToggleReaction(emoji, !reactions.includes(emoji)); }}>{emoji}</button>)}</div>}
       {reactions.map((emoji) => <button type="button" key={emoji} className="msg-action apex-agent-reaction-selected" aria-label={`Remove reaction ${emoji}`} aria-pressed="true" disabled={disabled} onClick={() => { void onToggleReaction(emoji as MessageReaction, false); }}>{emoji}</button>)}
     </div>}
     {failure && <span role="alert">{failure}</span>}
