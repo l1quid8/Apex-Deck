@@ -210,6 +210,8 @@ pub enum Command {
     LibraryRemove { file: String },
     LibraryRename { file: String, name: String },
     RoomMount { id: String, cwd: String },
+    /// Confirm or revoke agent-wide Full access; neither flag reads current approval.
+    AgentFullAccess { agent: String, #[serde(default)] confirm: bool, #[serde(default)] revoke: bool },
     FolderAccept { path: String, who: Option<String> },
     FolderWithdraw { path: String },
     TrustStatus {},
@@ -444,7 +446,8 @@ impl Command {
             DataFolder { .. } | EnvPresent { .. } | ApiKeyStatus { .. } | ApiKeySave { .. } | ApiKeyRemove { .. } | ApiModels { .. } | ApiBalance { .. }
             | ApiQuote { .. } => Policy::OPEN,
             // File
-            StartupFolders { .. } | FolderAccept { .. } | FolderWithdraw { .. } | WorkspaceRead { .. } | PathsExist { .. } | FolderList { .. } | FileRead { .. }
+            AgentFullAccess { confirm: true, .. } | AgentFullAccess { revoke: true, .. } => Policy::PROTECTED,
+            AgentFullAccess { .. } | StartupFolders { .. } | FolderAccept { .. } | FolderWithdraw { .. } | WorkspaceRead { .. } | PathsExist { .. } | FolderList { .. } | FileRead { .. }
             | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileWrite { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. }
             | WorktreeList { .. } | BotCopiesSetCheck { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreeForget { .. } | WorktreePrune { .. } => Policy::OPEN,
             // Pty
@@ -632,7 +635,7 @@ impl Host {
                 return self.dispatch_command(command, caller).await;
             }
             // The daemon already checked this device's full grant, and it's all a receipt would prove here.
-            if matches!(command, Command::PersonalBrowserSession {}) {
+            if matches!(command, Command::PersonalBrowserSession {} | Command::AgentFullAccess { .. }) {
                 return self.dispatch_command(command, caller).await;
             }
             return self.call_from(command, caller).await;
@@ -1090,6 +1093,15 @@ impl Host {
             ModFsWrite { path, text } => reply(self.mod_fs_write(path, text)?),
             ModFsStat { path, resolve } => reply(self.mod_fs_stat(path, resolve)?),
             ModEnvGet { name } => reply(self.mod_env_get(name)),
+            AgentFullAccess { agent, confirm, revoke } => {
+                if confirm && revoke { return Err("Choose either confirm or revoke Full access.".into()); }
+                if confirm {
+                    self.validate_agent_full_access_identity(&agent)?;
+                    apex_core::agent_full_access::approve(self.data_dir(), &agent)?;
+                }
+                if revoke { self.revoke_agent_full_access(&agent).await?; }
+                Ok(serde_json::json!({"approved": apex_core::agent_full_access::approved(self.data_dir(), &agent)?}))
+            }
             FolderAccept { path, who } => reply(self.folder_accept(path, who)?),
             FolderWithdraw { path } => reply(self.folder_withdraw(path)?),
             TrustStatus {} => reply(self.trust_status()?),
@@ -1110,6 +1122,41 @@ mod tests {
     use super::*;
     use crate::HostPaths;
     use serde_json::json;
+
+    #[test]
+    fn agent_full_access_public_admission_refuses_local_mutations_and_accepts_confined_device() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-agent-full-access-admission-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        // Production construction: this data directory is never opted into the verified-UI seam.
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let agent = "agent-0123456789abcdef0123456789abcdef";
+        let intent = |confirm, revoke| json!({"cmd":"agent_full_access","args":{"agent":agent,"confirm":confirm,"revoke":revoke}});
+        for value in [intent(true, false), intent(false, true)] {
+            let error = runtime.block_on(host.call(Command::from_json(value.clone()).unwrap())).unwrap_err();
+            assert!(error.contains("protected provenance receipt"), "{error}");
+            let error = runtime.block_on(host.call_from_local_linux_cli(Command::from_json(value).unwrap(), Caller::in_process(apex_core::GeneratedUiCapability::Unsupported))).unwrap_err();
+            assert!(error.contains("protected provenance receipt"), "{error}");
+        }
+        assert!(!apex_core::agent_full_access::approved(&data, agent).unwrap());
+        let read = runtime.block_on(host.call(Command::from_json(intent(false, false)).unwrap())).unwrap();
+        assert_eq!(read["approved"], false);
+        let caller = || Caller::in_process(apex_core::GeneratedUiCapability::Unsupported);
+        let denied = std::sync::Arc::new(|| Err("device was revoked".into()));
+        assert!(runtime.block_on(host.call_from_confined_device(intent(true, false), caller(), denied)).unwrap_err().contains("device was revoked"));
+        assert!(!apex_core::agent_full_access::approved(&data, agent).unwrap());
+        let accepted = std::sync::Arc::new(|| Ok(()));
+        let granted = runtime.block_on(host.call_from_confined_device(intent(true, false), caller(), accepted.clone())).unwrap();
+        assert_eq!(granted["approved"], true);
+        assert!(apex_core::agent_full_access::approved(&data, agent).unwrap());
+        let error = runtime.block_on(host.call_from_confined_device(intent(true, true), caller(), accepted.clone())).unwrap_err();
+        assert!(error.contains("either confirm or revoke"));
+        assert!(apex_core::agent_full_access::approved(&data, agent).unwrap());
+        let removed = runtime.block_on(host.call_from_confined_device(intent(false, true), caller(), accepted)).unwrap();
+        assert_eq!(removed["approved"], false);
+        drop(host);
+        let _ = std::fs::remove_dir_all(data);
+    }
 
     #[test]
     fn curate_commands_parse() {
@@ -1441,8 +1488,9 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 254);
+        assert_eq!(names.len(), 255);
         for name in [
+            "agent_full_access",
             "session_save_layout",
             "search_open",
             "search",

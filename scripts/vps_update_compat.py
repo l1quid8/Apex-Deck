@@ -104,6 +104,10 @@ NATIVE_REGIONS = (
         # open commands everywhere else; on Linux they now need a paired device
         # or the installed window's receipt (apex-daemon access_effect). Tightens.
         "dfb11fae8703145064bc6099ab42d059c94ef23217f6201de269d5e6ccd03661",
+        # Adds only AgentFullAccess to the authenticated Linux device dispatch
+        # exception beside PersonalBrowserSession. Raw calls retain the receipt
+        # gate and confined devices retain their live authorization check.
+        "4026f0eb80d70917086b624f6bf0dd1f3680f0f577b51eefc23db3ff52d24cb4",
     }),
 )
 

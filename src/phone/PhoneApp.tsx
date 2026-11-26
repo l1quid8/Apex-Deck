@@ -1,3 +1,6 @@
+import type { Backend } from "../backend";
+import { AgentFullAccessStatus } from "../AgentFullAccessStatus";
+import { addWithAgentsFullAccess, addWithAgentFullAccess, confirmAgentFullAccess } from "../agentFullAccess";
 import { WorkspaceTaskDetails } from '../WorkspaceTaskDetails';
 import { projectTaskKey } from '../apexAgentTaskView.ts';
 import { addTokenUsage } from "../tokenUsage";
@@ -1479,7 +1482,8 @@ export function PhoneApp() {
       const route = source && phoneTaskBackend({verifiedHostId:assistant.hostId,routeHostId:source.routeHostId ?? assistant.hostId,offline:source.offline}, taskHosts);
       if (!route || project.hostId !== assistant.hostId) throw new Error('Reconnect the owning machine before choosing a worker.');
       const threadId = `pane-${crypto.randomUUID()}`;
-      await route.roomCreate(threadId, [profile], NEW_THREAD, project.cwd);
+      const warning = await addWithAgentFullAccess(route, profile, () => route.roomCreate(threadId, [profile], NEW_THREAD, project.cwd));
+      if (warning) setNotice(warning);
       const fresh = await route.sessionLoad();
       if (!fresh) throw new Error('The owning machine has no saved workspace.');
       await route.sessionSave({ ...fresh, panes: [...fresh.panes, { id: threadId, workspaceId: project.workspaceId, kind: 'chat', assistantDraftFor: assistant, title: `${profile.display_name} · Task worker` }] });
@@ -1531,9 +1535,14 @@ export function PhoneApp() {
     setAgentSaving(true);
     setAgentSaveProblem("");
     try {
-      await saveSession((current) => {
+      await saveSession(async (current) => {
         const next = saveAgentDraft(current.profiles, change);
         if (typeof next === "string") throw new Error(next);
+        const changed = next.find(profile => change.id ? profile.id === change.id : !current.profiles.some(old => old.id === profile.id));
+        if (changed?.access === 'full') {
+          if (!macHost) throw new Error('Reconnect the agent’s machine to confirm Full access.');
+          await confirmAgentFullAccess(macHost.backend, changed, undefined, current.profiles.find(profile => profile.id === changed.id)?.access);
+        }
         return { ...current, profiles: next };
       });
       setAgentSheet(null);
@@ -1879,7 +1888,9 @@ export function PhoneApp() {
         const made = pendingRoomIds.current[pending.id] ?? { id: `pane-${Date.now().toString(36)}`, workspaceId: pending.workspaceId, kind: "chat" as const, title: "New thread" };
         pendingRoomIds.current[pending.id] = made;
         // Open the room before saving or showing it, so a second open keeps the chosen agents.
-        const state = await loadRoomState(host.backend, made.id, pendingAgents, NEW_THREAD, openPath);
+        const approvalWarning = await addWithAgentsFullAccess(host.backend, pendingAgents, () => loadRoomState(host.backend, made.id, pendingAgents, NEW_THREAD, openPath));
+        if (approvalWarning) setNotice(approvalWarning);
+        const state = await loadRoomState(host.backend, made.id, [], NEW_THREAD, openPath);
         await setPlanBeforeContinuation(
           made.id,
           pendingDraftPlans[pending.id] ?? false,
@@ -2059,6 +2070,7 @@ export function PhoneApp() {
         const saved = now.participants.find((config) => config.id === botId);
         if (!saved) throw new Error("This agent is no longer in the thread.");
         const next = withPhoneChange(saved, change, reported, apiModels);
+        if (change.access === "full") await confirmAgentFullAccess(host.backend, next, undefined, saved.access);
         const result = await host.backend.roomUpdateParticipant(paneId, next, saved);
         const actual = result || (await host.backend.roomCreate(paneId, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(config => config.id === botId) || next;
         if (!result) setRoom((current) => current && current.id === paneId ? { ...current, configs: current.configs.map((config) => config.id === botId ? actual : config) } : current);
@@ -3330,7 +3342,7 @@ export function PhoneApp() {
           if (agentSheet.id && !editing) return null;
           return (
             <Sheet title={editing ? editing.display_name : "New agent"} onClose={() => setAgentSheet(null)}>
-              <AgentSheet agent={editing}
+              <AgentSheet agent={editing} backend={macHost?.backend}
                 others={(session?.profiles ?? []).filter((profile) => profile.id !== agentSheet.id)}
                 templates={editing ? null : agentTemplates} templatesProblem={agentTemplatesProblem}
                 saveProblem={agentSaveProblem} saving={agentSaving}
@@ -3387,7 +3399,7 @@ export function PhoneApp() {
           const next = answerers?.paneId === room.id && answerers.ids.includes(who.id);
           const sharing = provider ? room.configs.filter((other) => planProvider(other) === provider && planModel(other) === planModel(config)).length : 0;
           return (
-            <BotSheet key={`${room.id}:${who.id}`} pull={botPanel.pull} who={who} config={config} reported={reported} apiModels={apiModels}
+            <BotSheet hostBackend={phoneHost(openLink.id)?.backend} key={`${room.id}:${who.id}`} pull={botPanel.pull} who={who} config={config} reported={reported} apiModels={apiModels}
               status={asking ? "Waiting on your answer" : turn ? `${toolLine(turnWords(turn, false, room.plan))} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}
               statusWarn={asking} working={Boolean(turn)} asking={asking}
               meters={botMeters(provider, room.fill[who.id], planOf(room.plans, provider, planModel(config)), new Date(), gatewayPlan(config) ? null : account?.balance ?? null)}
@@ -3493,7 +3505,10 @@ export function PhoneApp() {
             setBotChange({ roomId: room.id, botId: config.id, pending: true, error: "" });
             try {
               if (remove) await host.backend.roomRemoveParticipant(room.id, config.id);
-              else await host.backend.roomAddParticipant(room.id, config);
+              else {
+                const warning = await addWithAgentFullAccess(host.backend, config, () => host.backend.roomAddParticipant(room.id, config));
+                if (warning) setNotice(warning);
+              }
               setRoom((current) => current && current.id === room.id ? {
                 ...current,
                 configs: remove ? current.configs.filter((item) => item.id !== config.id) : [...current.configs.filter((item) => item.id !== config.id), config],
@@ -3798,6 +3813,7 @@ function Sheet({ title, tag, onClose, children, variant, pull }: { title: string
 
 /** A held bot: what it runs on, how much it has left, and its model and reasoning, which save as they're picked, as on the desktop. */
 function BotSheet(props: {
+  hostBackend?: Backend;
   who: Person; config: ParticipantConfig; reported: ModelChoice[];
   pull?: BotPull;
   /** What an API bot's provider lists; empty for other bots, or until the machine answers. */
@@ -4011,6 +4027,7 @@ function BotSheet(props: {
             </div>
           )}
         </fieldset>
+        {props.onApplyAccess && props.hostBackend && <AgentFullAccessStatus backend={props.hostBackend} config={props.config} />}
         {accessWaits && (
           <div className="ph-access-wait" role="group" aria-label="When to apply this access">
             <p className="ph-sheet-text ph-quiet">Applies after this reply. Apply now stops {name} and restarts it from the thread, so it loses track of its current steps and a running command is cut off.</p>

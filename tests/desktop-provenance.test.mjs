@@ -354,3 +354,24 @@ test('shared agent, provider setup, and backend lifecycle intents bind exact pro
     await assert.rejects(mod.attestFrame(frame,{dataDir:'/data',uid:501,publicKey:raw,issue:async request=>response({...request.command,args:{...args,substituted:true}})}),/Receipt does not match/);
   }
 });
+
+
+test('agent Full access mutations attest exact intent while reads stay open', async () => {
+  const read = {id: 1, cmd: 'agent_full_access', args: {agent: 'worker'}};
+  assert.equal(mod.needsAttestation(read.cmd, false, read.args), false);
+  assert.deepEqual(await mod.attestFrame(read, {issue: () => assert.fail('Read must not ask the broker')}), read);
+  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+  const raw=publicKey.export({type:'spki',format:'der'}).subarray(-32);
+  for (const args of [{agent:'worker',confirm:true}, {agent:'worker',revoke:true}]) {
+    const frame = {id: 2, cmd: 'agent_full_access', args};
+    const attested = await mod.attestFrame(frame, {dataDir:'/data', uid:501, publicKey:raw, platform:'darwin', issue: async request => {
+      assert.equal(request.op, 'issue');
+      assert.deepEqual(request.command.args, args);
+      const payload=JSON.stringify({domain:channel.DOMAIN,kind:'submission',receipt:{uid:501,dataDir:'/data',command:request.command,key:'k'}});
+      return {payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+    }});
+    assert.equal(attested.cmd, 'provenance_execute');
+    assert.equal(mod.needsAttestation('agent_full_access', false, args), true);
+    assert.equal(mod.needsAttestation('agent_full_access', true, args), false);
+  }
+});

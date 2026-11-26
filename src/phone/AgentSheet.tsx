@@ -1,3 +1,5 @@
+import type { Backend } from "../backend";
+import { AgentFullAccessStatus } from "../AgentFullAccessStatus";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AgentTool, ApiModel, ModelChoice, ParticipantConfig } from "../types";
 import type { ChatProfile } from "../chatCatalog";
@@ -25,6 +27,7 @@ import { applyPersona, DraftRun } from "../personaDraft";
 export function AgentSheet(props: {
   /** The agent being changed, or null to make a new one. */
   agent: ParticipantConfig | null;
+  backend?: Backend;
   /** Every other saved agent: a name another one already answers to can't be used. */
   others: ParticipantConfig[];
   /** The bots the machine already knows, a new agent starts from one of them. Null while loading. */
@@ -357,6 +360,7 @@ export function AgentSheet(props: {
       ))}
     </div>
     <p className="ph-sheet-text">{access.find((choice) => choice.id === draft.access)?.title}</p>
+    {props.backend && props.agent && <AgentFullAccessStatus backend={props.backend} config={props.agent} />}
     <p className="ph-sheet-text ph-quiet">Voice, look and picture settings stay as {props.agent ? "the Mac has them" : "the agent you started from"}.</p>
     {problem && <p className="ph-sheet-text ph-amber">{problem}</p>}
     {props.saveProblem && <p className="ph-sheet-text ph-amber">{props.saveProblem}</p>}

@@ -39,7 +39,7 @@ pub const PROTOCOL: u64 = 1;
 /// names rather than on the version, so an older server degrades a feature at a
 /// time. Append-only within a protocol number; `voice_server_v1` is added at
 /// runtime where the platform supports local voice (see `OPTIONAL_CAPABILITIES`).
-pub const CAPABILITIES: &[&str] = &["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1", "search_v1", "reply_suggestions_v1"];
+pub const CAPABILITIES: &[&str] = &["monitor", "monitor_profile_update", "monitor_watch_v1", "assistant_delegation", "plan_run_v1", "assistant_isolation", "assistant_workspace_v3", "assistant_workspace_v4", "assistant_task_lifecycle_v1", "assistant_task_purge_v1", "assistant_archive_v1", "assistant_task_revise_startup_v1", "assistant_voice_v1", "assistant_live_context_v1", "assistant_permissions_v1", "assistant_approval_grants_v1", "room_trash_v1", "project_lifecycle_v1", "assistant_provider_conversations_v1", "assistant_project_folder_grant_v1", "assistant_avatar_generation_v1", "assistant_project_memory_v1", "assistant_legacy_import_v1", "personal_assistant", "assistant_conversation_handoff_v1", "voice_turn_correlation_v1", "model_metrics_v1", "chat_rooms", "chat_delivery_v1", "room_runner_v1", "attachment_chunks_v1", "search_v1", "reply_suggestions_v1", "agent_full_access_v1"];
 /// Capabilities a daemon lists only when it has them.
 pub const OPTIONAL_CAPABILITIES: &[&str] = &["voice_server_v1", "maintenance_v1", "phone_thread_git_v1"];
 
@@ -1880,6 +1880,40 @@ mod tests {
 
     async fn ended_within(session: tokio::task::JoinHandle<Ended>, wait: Duration) -> Ended {
         tokio::time::timeout(wait, session).await.expect("the session ended in time").unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_full_access_transport_requires_paired_device_and_persists_revoke() {
+        if crate::trust_host::tests::isolated_process() { return; }
+        let (mut daemon, _data) = daemon();
+        Arc::get_mut(&mut daemon).unwrap().linux_device_policy = Some(true);
+        daemon.confinement.set(Ok(())).unwrap();
+        crate::trust_host::run_no_reboot(&daemon.data, true).unwrap();
+        let phone = add(&daemon, 1);
+        let agent = "agent-0123456789abcdef0123456789abcdef";
+        let grant = json!({"id":1,"cmd":"agent_full_access","args":{"agent":agent,"confirm":true}});
+        for trust in [Trust::Local, Trust::Token] {
+            let mut client = connect_to(&daemon, trust);
+            client.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret"}})).await;
+            assert!(client.next().await.unwrap().get("ok").is_some());
+            client.send(grant.clone()).await;
+            let response = client.until_reply(1).await.pop().unwrap();
+            assert!(response["err"].as_str().unwrap().contains("paired device"), "{response}");
+        }
+        assert!(!apex_core::agent_full_access::approved(&daemon.data, agent).unwrap());
+        let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
+        client.hello().await;
+        client.send(grant).await;
+        let granted = client.until_reply(1).await.pop().unwrap();
+        assert_eq!(granted["ok"]["approved"], true, "{granted}");
+        assert!(apex_core::agent_full_access::approved(&daemon.data, agent).unwrap());
+        client.send(json!({"id":2,"cmd":"agent_full_access","args":{"agent":agent,"revoke":true}})).await;
+        let removed = client.until_reply(2).await.pop().unwrap();
+        assert_eq!(removed["ok"]["approved"], false, "{removed}");
+        assert!(!apex_core::agent_full_access::approved(&daemon.data, agent).unwrap());
+        client.send(json!({"id":3,"cmd":"agent_full_access","args":{"agent":"future-agent","confirm":true}})).await;
+        let unknown = client.until_reply(3).await.pop().unwrap();
+        assert!(unknown["err"].as_str().unwrap().contains("not saved"), "{unknown}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

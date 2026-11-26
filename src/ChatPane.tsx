@@ -1,3 +1,5 @@
+import { AgentFullAccessStatus } from "./AgentFullAccessStatus";
+import { addWithAgentFullAccess, confirmAgentFullAccess } from "./agentFullAccess";
 import { useComposerHistory } from "./useComposerHistory";
 import { threadHistoryTexts } from "./composerHistory";
 import { stepDraft } from "./phone/stepDraft";
@@ -1634,6 +1636,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     if ("error" in identity) return setFormError(identity.error);
     const config = { ...built, id: identity.id, appearance: built.appearance ?? (editing ? appearance(editing) : createAppearance([...identities.current.values()])) };
     try {
+      await confirmAgentFullAccess(backend, config, undefined, editingBase.current?.access);
       if (profileMode) {
         const next = editing ? participants.map((p) => p.id === editing ? config : p) : [...participants, config];
         setParticipants(next);
@@ -3396,6 +3399,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
                 ]}
               />
               <span className="hint">{accessNote}</span>
+              {editing && participants.find(p => p.id === editing) && <AgentFullAccessStatus backend={backend} config={participants.find(p => p.id === editing)!} />}
             </div>
           )}
           {!isWindows && <label className="voice-field">
@@ -3532,7 +3536,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
       }
       return false;
     }
-    const result = await addInOrder(checked.ok, (config) => backend.roomAddParticipant(pane.id, config));
+    const result = await addInOrder(checked.ok, async (config) => {
+      const warning = await addWithAgentFullAccess(backend, config, () => backend.roomAddParticipant(pane.id, config));
+      if (warning) notify(warning, "error");
+    });
     setParticipants((list) => [...list, ...result.added.filter((c) => !list.some((p) => p.id === c.id))]);
     for (const c of result.added) {
       if (c.backend.kind === "agent" && c.backend.model) {

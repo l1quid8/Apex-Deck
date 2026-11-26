@@ -310,12 +310,12 @@ impl CliParticipant {
             })?;
             return self.start_jailed(program, args, env, &bwrap, hook);
         }
-        // Full gate: even unjailed Full bots are refused in tainted folders
+        // Full code execution requires agent-wide confirmation or legacy folder acceptance.
         #[cfg(unix)]
         if matches!(self.config.access, apex_core::Access::Full) {
             if let Some(cwd) = &self.cwd {
                 if let Some(data_dir) = &self.data_dir {
-                    if let Err(why) = crate::linux_jail::check_full_allowed(data_dir, cwd) {
+                    if let Err(why) = apex_core::agent_full_access::check(data_dir, cwd, self.config.id.as_str()) {
                         return Err(ParticipantError::Failed(why));
                     }
                 }
@@ -1363,6 +1363,47 @@ impl Participant for CliParticipant {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn full_agent_confirmation_allows_launch_without_trusting_the_folder() {
+        // Jail test switches are process-wide: isolate them from other adapter tests.
+        if std::env::var_os("APEX_TEST_FULL_AGENT_CONFIRMATION").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "cli::tests::full_agent_confirmation_allows_launch_without_trusting_the_folder", "--nocapture"])
+                .env("APEX_TEST_FULL_AGENT_CONFIRMATION", "1").output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        use apex_core::Participant;
+        let temp = crate::attachments::Staged::new().unwrap();
+        let data = temp.dir.join("data");
+        let project = temp.dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        apex_core::folder_trust::mark_tainted(&data, &project).unwrap();
+        let config = |id: &str| serde_json::from_value(serde_json::json!({
+            "id": id, "display_name": id, "access": "full",
+            "backend": {"kind":"cli", "program":"/bin/sh", "args":["-c", "printf approved"]}
+        })).unwrap();
+        let context = crate::BuildContext { cwd: Some(project.clone()), data_dir: Some(data.clone()), ..Default::default() };
+        let bot = super::CliParticipant::new(config("null")).with_context(&context);
+        let request = || apex_core::TurnRequest { system: "test".into(), ..Default::default() };
+        assert!(bot.respond(request(), &|_| {}).await.unwrap_err().to_string().contains("confirm Full access"));
+        apex_core::agent_full_access::approve(&data, "null").unwrap();
+        assert_eq!(bot.respond(request(), &|_| {}).await.unwrap().text, "approved");
+        let other = super::CliParticipant::new(config("jigga")).with_context(&context);
+        assert!(other.respond(request(), &|_| {}).await.is_err());
+        assert!(!apex_core::folder_trust::is_accepted(&data, &project));
+        // A confirmed agent must still respect the jail's refusal after a downgrade.
+        crate::linux_jail::set_forced_for_test(true);
+        crate::linux_jail::set_state_for_test(Some(crate::linux_jail::JailState::Fails("restricted jail refused".into())));
+        for access in [apex_core::Access::Read, apex_core::Access::Ask, apex_core::Access::Edits] {
+            let mut restricted: apex_core::ParticipantConfig = config("null");
+            restricted.access = access;
+            let bot = super::CliParticipant::new(restricted).with_context(&context);
+            assert!(bot.respond(request(), &|_| {}).await.unwrap_err().to_string().contains("restricted jail refused"));
+        }
+    }
+
     use apex_core::AgentTool;
 
     #[cfg(target_os = "macos")]
