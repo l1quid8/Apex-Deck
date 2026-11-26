@@ -34,7 +34,18 @@ pub(crate) const GROK_CONFIG: &str = "[cli]\nuse_leader = false\nauto_update = f
 pub(crate) const BWRAP_REQUIRED_MESSAGE: &str =
     "Linux process isolation requires bubblewrap (bwrap). Install bubblewrap or use Claude Code or an API model.";
 
+/// Set by the protected Linux broker when it starts the engine: Deck's own
+/// bubblewrap copy, the one AppArmor lets make user namespaces on Ubuntu 23.10+.
+pub(crate) const JAIL_BWRAP_ENV: &str = "APEX_JAIL_BWRAP";
+
 pub(crate) fn find_bwrap(path: Option<&str>) -> Option<PathBuf> {
+    if let Some(own) = std::env::var_os(JAIL_BWRAP_ENV)
+        .map(PathBuf::from)
+        .filter(|own| own.is_absolute())
+        .and_then(|own| own.canonicalize().ok())
+    {
+        return Some(own);
+    }
     let search = path
         .map(str::to_owned)
         .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());

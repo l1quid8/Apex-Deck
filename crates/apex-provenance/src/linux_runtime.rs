@@ -13,6 +13,16 @@ use std::{
     path::Path,
 };
 
+/// Deck's own bubblewrap, copied by the installer to `/usr/local/libexec/<slug>/bwrap`
+/// and the only copy its AppArmor profile lets make user namespaces. Passed to
+/// the engine only while it is a root-owned file no one else can replace.
+fn jail_bwrap() -> Option<std::path::PathBuf> {
+    let slug = Path::new(crate::channel::LINUX_TREE).file_name()?;
+    let bwrap = Path::new("/usr/local/libexec").join(slug).join("bwrap");
+    let meta = std::fs::symlink_metadata(&bwrap).ok()?;
+    (meta.file_type().is_file() && crate::linux_install::protected_path(&bwrap).is_ok()).then_some(bwrap)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     App,
@@ -227,6 +237,9 @@ impl Context {
             command
                 .args(["serve", "--local-only", "--data-dir"])
                 .arg(registration.data_dir());
+            if let Some(bwrap) = jail_bwrap() {
+                command.env("APEX_JAIL_BWRAP", bwrap);
+            }
         } else {
             let runtime = format!("/run/user/{}", registration.uid());
             let runtime_path = Path::new(&runtime);

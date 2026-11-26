@@ -33,6 +33,10 @@ readonly INSTALLER="/usr/local/sbin/${SLUG}-install"
 readonly DESKTOP="/usr/local/share/applications/${APP_ID}.desktop"
 readonly ICONS=/usr/local/share/icons/hicolor
 readonly APPARMOR="/etc/apparmor.d/${SLUG}"
+# Deck's own bubblewrap for the agent jail: the only copy AppArmor lets make
+# user namespaces, runnable by the enrolled account alone.
+readonly JAIL_DIR="/usr/local/libexec/${SLUG}"
+readonly JAIL_BWRAP="$JAIL_DIR/bwrap"
 readonly SYSTEMD=/etc/systemd/system
 
 say() { printf '%s\n' "$*"; }
@@ -164,9 +168,29 @@ install_launcher() { # tree
   command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f "$ICONS" || true
 }
 
+# The agent jail runs bubblewrap, which needs user namespaces too. Rather than
+# exempt the system's /usr/bin/bwrap for every program, copy it into a
+# root-owned folder only the enrolled account can enter and exempt that copy
+# alone. The broker points the engine at it. Repair refreshes the copy.
+install_jail_bwrap() { # user
+  local user=$1 system group
+  system=$(command -v bwrap 2>/dev/null) || {
+    rm -rf -- "$JAIL_DIR"
+    say "Note: bubblewrap is not installed, so agents below Full access stay off. Install it (apt install bubblewrap), then run '$INSTALLER repair'."
+    return 0
+  }
+  system=$(realpath -e "$system")
+  group=$(id -g "$user")
+  install -d -m 0750 -o root -g "$group" "$JAIL_DIR"
+  install -m 0750 -o root -g "$group" "$system" "$JAIL_BWRAP.new"
+  mv -f "$JAIL_BWRAP.new" "$JAIL_BWRAP"
+}
+
 # Ubuntu 23.10+ blocks unprivileged user namespaces unless a profile allows
-# them; Chromium's sandbox needs them. Grant only that, only to the app binary.
-install_apparmor() {
+# them; Chromium's sandbox and the agent jail need them. Grant only that, only
+# to the app binary and Deck's own bubblewrap copy.
+install_apparmor() { # user
+  install_jail_bwrap "$1"
   [[ -d /etc/apparmor.d && -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] || return 0
   cat >"$APPARMOR" <<EOF
 abi <abi/4.0>,
@@ -175,6 +199,11 @@ include <tunables/global>
 profile $SLUG $TREES/staging-*/apex-deck flags=(unconfined) {
   userns,
   include if exists <local/$SLUG>
+}
+
+profile $SLUG-bwrap $JAIL_BWRAP flags=(unconfined) {
+  userns,
+  include if exists <local/$SLUG-bwrap>
 }
 EOF
   chmod 0644 "$APPARMOR"
@@ -212,7 +241,7 @@ cmd_install() {
   broker "$boot" initialize-linux-authority
   tree=$(stage "$boot" "$work")
   say "Staged $tree"
-  install_apparmor
+  install_apparmor "$user"
   enroll "$tree" "$user" "$data"
   activate "$tree" "$work"
   printf 'USER=%q\nDATA_DIR=%q\n' "$user" "$data" >"$STATE/install.env"
@@ -229,6 +258,14 @@ cmd_status() {
   systemctl --no-pager --lines=0 status "$SERVICE" || true
 }
 
+# install.env is root-owned and written by cmd_install with printf %q.
+installed_user() {
+  local user
+  user=$( . "$STATE/install.env" 2>/dev/null && printf '%s' "${USER:-}" )
+  [[ -n $user ]] && id "$user" >/dev/null 2>&1 || die "no enrolled user recorded in $STATE/install.env."
+  printf '%s\n' "$user"
+}
+
 cmd_repair() {
   require_host
   local tree sha meta
@@ -239,7 +276,7 @@ cmd_repair() {
     sha=$(sha256sum "$meta/manifest.json" | cut -d' ' -f1)
     if broker "$tree" verify-linux-release "$meta/manifest.json" "$meta/manifest.sig" "$meta/payload.tar" >/dev/null 2>&1 &&
        [[ $tree == *-"${sha:0:16}" ]]; then
-      install_apparmor
+      install_apparmor "$(installed_user)"
       broker "$tree" recover-linux-release "$tree" "$meta/manifest.json" "$meta/manifest.sig" "$meta/payload.tar"
       install_launcher "$tree"
       say "Repaired $PRODUCT at $tree."
@@ -267,7 +304,7 @@ cmd_uninstall() {
     apparmor_parser -R "$APPARMOR" 2>/dev/null || true
     rm -f -- "$APPARMOR"
   fi
-  rm -rf -- "$TREES" "$RUNTIME"
+  rm -rf -- "$TREES" "$RUNTIME" "$JAIL_DIR"
   if (( purge )); then
     [[ -t 0 ]] || die "--purge needs an interactive terminal."
     say "Purging deletes the protected authority key and journal. The enrolled data folder"

@@ -412,7 +412,7 @@ def send(session, text, marker_text):
     session.until("the composer to empty after sending", lambda: text_of(composer).strip() == "")
 
 
-ERRORS = ("Could not send", "Could not load the chat", "Protected provenance", "Could not add", "turn failed")
+ERRORS = ("Could not send", "Could not load the chat", "Protected provenance", "Could not add", "turn failed", "could not reply")
 
 
 def card_for(session, marker):
