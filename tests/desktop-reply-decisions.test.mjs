@@ -187,6 +187,8 @@ test('the pull request card in the assistant conversation ships, cancels and rep
     await shot('assistant-ship-cards');
     // Ready: one tap, for the commit the card showed.
     assert.equal(await text(cardAt(1)+' .primary'),'Ship it');
+    // What the Mac itself says this pull request is, beside the assistant's words.
+    assert.equal(await text(cardAt(1)+' .source'),'example/deck · fix/alert · commit aaaaaaaa');
     assert.equal(await run('document.querySelectorAll('+JSON.stringify(cardAt(1)+' .pull-status li')+').length'),4);
     await run('(()=>{const b=document.querySelector('+JSON.stringify(cardAt(1)+' .primary')+');b.click();b.click();})()');
     await until('!!document.querySelector('+JSON.stringify(cardAt(1)+' .result')+')');

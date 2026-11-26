@@ -80,7 +80,7 @@ export function ShipOfferCard({ offer, lane, refresh }: { offer: ShipOffer; lane
   return <section className="reply-decision ship-offer" aria-label={`Pull request ${offer.pr}`} aria-busy={busy}>
     {card.context && <p className="context">{card.context.includes(`#${offer.pr}`) ? card.context : `PR #${offer.pr} · ${card.context}`}</p>}
     <strong>{card.question}</strong>
-    {offer.checkout && card.head && <p className="result">{offer.checkout.repo} · {offer.checkout.branch} · commit {card.head.slice(0, 8)}</p>}
+    {offer.checkout && card.head && <p className="source">{offer.checkout.repo} · {offer.checkout.branch} · commit {card.head.slice(0, 8)}</p>}
     <PullStatus status={card.status} />
     {card.detail && <details><summary>Show check output</summary><pre>{card.detail}</pre></details>}
     {label && <div className="actions">
