@@ -16,8 +16,9 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
     const personal={name:'Alfred',hostName:'MacBook Pro with a long destination name',offline:false,
       assistant:{id:'a',name:'Alfred',hostId:'mac',revision:1,allowedFolders:[],tasks:[],messages:[
         {id:'m1',role:'human',kind:'message',at:Date.now()-60000,text:'Check these changes for me.'},
-        {id:'m2',role:'assistant',kind:'message',at:Date.now(),text:'I’ll check the changes and let you know what needs attention. All existing actions remain available.'}]},
+        {id:'m2',role:'assistant',kind:'message',at:Date.now(),text:'I’ll check the changes and let you know what needs attention.\\n\\n## Next steps\\n\\n1. Review the proposed changes.\\n2. Check the tests before merging.\\n3. Report the result clearly.'}]},
       send:async text=>{f.sent.push(text)},decide:async()=>{},cancel:async()=>{}};
+    f.personal=personal;
     const root=createRoot(document.getElementById('root'));
     f.render=()=>root.render(React.createElement('div',{className:f.phone?'ph-app':''},React.createElement('div',{className:'apex-agent-backdrop'},React.createElement(ApexAgentAll,{phone:f.phone,draftKey:'layout-test',taskContext:f.taskContext,workspaces:[],monitors:[],personal,onReply:async()=>{},onMutate:async()=>{},onSetUp(){},onClose(){},onReact:async(...args)=>f.reactions.push(args),saveAttachment:async(_lane,name)=>'/attachments/'+name}))));
     f.render();
@@ -45,19 +46,30 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
           throw Error('Viewport did not resize to '+width+'x'+height);
         };
         await win.loadURL('http://localhost:${server.httpServer.address().port}/assistant-layout');
-        await wait(()=>!!document.querySelector('.assistant-phone-send'));
+        await wait(()=>!!document.querySelector('.ph-call-mic'));
         const geometry=()=>{
-          const nodes=[...document.querySelectorAll('.composer-box,.composer-field,textarea,.tldr-pill,.assistant-phone-send,.compact-actions,.apex-agent-reaction-options')].filter(e=>e.getClientRects().length);
+          const nodes=[...document.querySelectorAll('.ph-compose-row,.ph-input,textarea,.tldr-pill,.ph-call-mic,.assistant-phone-send,.compact-actions,.apex-agent-reaction-options')].filter(e=>e.getClientRects().length);
           return nodes.map(e=>({name:e.className,left:e.getBoundingClientRect().left,right:e.getBoundingClientRect().right,width:e.getBoundingClientRect().width}));
         };
         for(const [width,height] of [[320,640],[393,852],[430,932],[393,430]]){
           await resize(width,height);
           for(const r of await run(geometry)){assert.ok(r.left>=-1&&r.right<=width+1,JSON.stringify({width,r}));}
           const box=await run(()=>{const r=document.querySelector('.apex-agent-all-composer').getBoundingClientRect();return {bottom:r.bottom,height:r.height}});
-          assert.ok(box.bottom<=height+1,JSON.stringify(box));assert.ok(box.height<180,JSON.stringify(box));
+          assert.ok(box.bottom<=height+1,JSON.stringify(box));assert.ok(box.height<=65,JSON.stringify(box));
         }
-        assert.equal(await run(()=>document.querySelectorAll('.apex-agent-all-composer button[type=submit]').length),1);
-        assert.equal(await run(()=>document.querySelector('.assistant-phone-send').disabled),true);
+        assert.equal(await run(()=>document.querySelectorAll('.apex-agent-all-composer button[type=submit]').length),0);
+        assert.equal(await run(()=>document.querySelectorAll('.apex-agent-all-composer .ph-call-mic').length),1);
+        assert.equal(await run(()=>document.querySelector('.ph-input').contains(document.querySelector('.composer-plus'))),false,'plus stays outside the pill as in Threads');
+        assert.equal(await run(()=>document.querySelector('.apex-agent-all-compose-row').getClientRects().length),0,'single personal destination needs no duplicate footer');
+        await run(()=>document.querySelector('.ph-call-mic').click());
+        await wait(()=>!!document.querySelector('.personal-call[role="dialog"]'));
+        assert.equal(await run(()=>window.fixture.sent.length),0,'opening voice does not submit');
+        await run(()=>[...document.querySelectorAll('.personal-call button')].find(b=>b.textContent==='End call').click());
+        await wait(()=>!document.querySelector('.personal-call'));
+        await run(()=>{window.fixture.personal.offline=true;window.fixture.render()});
+        await wait(()=>document.querySelector('.ph-call-mic').disabled);
+        await run(()=>{window.fixture.personal.offline=false;window.fixture.render()});
+        await wait(()=>!document.querySelector('.ph-call-mic').disabled);
         assert.equal(await run(()=>[...document.querySelectorAll('.compact-actions .copy')].filter(e=>e.getClientRects().length).length),0);
         await run(()=>document.querySelectorAll('.action-disclosure')[1].click());
         await wait(()=>!!document.querySelector('.compact-actions .copy'));
@@ -79,8 +91,12 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
         await wait(()=>!!document.querySelector('.apex-agent-reply-quote'));
         await run(()=>document.querySelector('[aria-label="TL;DR mode"]').click());
         assert.equal(await run(()=>document.querySelector('[aria-label="TL;DR mode"]').getAttribute('aria-pressed')),'true');
+        await run(()=>{const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,Array(12).fill('A long message typed into the narrow phone composer.').join(String.fromCharCode(10)));input.dispatchEvent(new Event('input',{bubbles:true}));});
+        await wait(()=>!!document.querySelector('.assistant-phone-send')&&!document.querySelector('.assistant-phone-send').disabled);
+        for(const r of await run(geometry))assert.ok(r.left>=-1&&r.right<=321,JSON.stringify(r));
+        assert.ok(await run(()=>{const r=document.querySelector('textarea').getBoundingClientRect();return r.height>44&&r.height<=144}),'long input grows and is capped');
         await run(()=>{const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Please review this');input.dispatchEvent(new Event('input',{bubbles:true}));});
-        await wait(()=>!document.querySelector('.assistant-phone-send').disabled);
+        await wait(()=>!!document.querySelector('.assistant-phone-send')&&!document.querySelector('.assistant-phone-send').disabled);
         await run(()=>document.querySelector('.assistant-phone-send').click());
         await wait(()=>window.fixture.sent.length===1);
         assert.match(await run(()=>window.fixture.sent[0]),/Please review this/);
@@ -92,7 +108,7 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
         await wait(()=>!!document.querySelector('.plan-chip')&&!!document.querySelector('.assistant-composer-heading'));
         for(const r of await run(geometry))assert.ok(r.left>=-1&&r.right<=321,JSON.stringify(r));
         assert.ok(await run(()=>document.documentElement.scrollWidth<=innerWidth));
-        await run(()=>{window.fixture.taskContext=null;window.fixture.render();document.querySelector('.plan-chip').click();document.querySelector('[aria-label="Hide message actions"]').click();});
+        await run(()=>{window.fixture.taskContext=null;window.fixture.render();document.querySelector('.plan-chip').click();document.querySelector('[aria-label=\"TL;DR mode\"]').click();document.querySelector('[aria-label="Hide message actions"]').click();});
         await resize(393,852);
         fs.writeFileSync(${JSON.stringify(process.env.APEX_LAYOUT_SCREENSHOT ?? path.join(temp,'layout.png'))},(await win.webContents.capturePage()).toPNG());
         await run(()=>{window.fixture.phone=false;window.fixture.render()});
