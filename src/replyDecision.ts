@@ -22,6 +22,27 @@ export interface ReplyDecision {
   pr?: number;
   to?: string;
   prompt?: string;
+  /** Why the main button is off: what GitHub would refuse, found before asking. */
+  blocked?: string;
+  /** A pull request's checks, conflicts and review, one row each. */
+  status?: PullStatusLine[];
+}
+export interface PullStatusLine { label: string; text: string; state: "ok" | "wait" | "bad" | "unknown" }
+
+/** A pull request's card under an assistant's reply that mentions it. */
+export interface ShipOffer {
+  pr: number;
+  messageId: string;
+  state: "ready" | "waiting" | "blocked" | "merging" | "merged";
+  room?: string;
+  checkout?: Pick<ThreadWorkflow, "generation" | "root" | "branch" | "repo">;
+  card?: ReplyDecision | null;
+  /** A merged pull request: what Deck knows about how it ended. */
+  message?: string;
+}
+/** Whether a conversation's recent replies name a pull request at all, so nothing is asked when none do. */
+export function mentionsPullRequest(texts: string[]): boolean {
+  return texts.some(text => /\bPR\s*#?\d|\/pull\/\d|\bpull request\s*#?\d/i.test(text));
 }
 export interface ReplyOffer {
   mode: SuggestionsMode;

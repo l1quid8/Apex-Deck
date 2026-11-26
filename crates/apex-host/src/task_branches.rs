@@ -220,6 +220,15 @@ impl TaskBranches {
         })
     }
 
+    /// The task folder on this branch of this GitHub repository, if one still exists.
+    pub fn owner(&self, repo: &str, branch: &str) -> Result<Option<TaskFolder>, String> {
+        let named = self.edit(|folders| Ok(folders.iter().find(|f| f.repo == repo && f.branch == branch).map(|f| (f.thread.clone(), f.agent.clone()))))?;
+        match named {
+            Some((thread, agent)) => self.get(&thread, &agent),
+            None => Ok(None),
+        }
+    }
+
     /// Always drops the record; removes the folder and branch only when nothing
     /// in them is missing from the merge.
     pub fn close(&self, data: &Path, thread: &str, agent: &str, why: Close) -> Result<Closed, String> {

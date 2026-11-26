@@ -4,7 +4,7 @@
 //! A Git decision comes only from the saved merge workflow and GitHub. A
 //! question an agent wrote can only ever send text back to that agent.
 
-use crate::thread_git::{Checks, Phase, Workflow};
+use crate::thread_git::{Checks, Line, Phase, Readiness, Workflow};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -54,7 +54,8 @@ impl Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// Every required check passed for this commit. Deck merges; 0 turns.
+    /// The commit's pull request: Deck merges on a tap, 0 turns. When GitHub
+    /// would refuse, the card says why and its button is off.
     Merge,
     /// A required check failed before any merge was asked for. 1 turn.
     FixChecks,
@@ -94,6 +95,12 @@ pub struct Decision {
     pub to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Why the main button is off: what GitHub would refuse, found before asking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
+    /// A pull request's checks, conflicts and review, one row each.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub status: Vec<Line>,
 }
 
 /// The newest message in the thread.
@@ -113,7 +120,8 @@ pub struct Facts<'a> {
     pub workflow: Option<&'a Workflow>,
     /// The commit checked out in the thread's folder right now.
     pub head: Option<&'a str>,
-    pub checks: &'a Checks,
+    /// What GitHub says about that commit's pull request.
+    pub ready: &'a Readiness,
 }
 
 fn key(repo: &str, room: &str, seq: usize, action: &str, commit: &str) -> String {
@@ -132,10 +140,10 @@ fn short(sha: &str) -> &str {
     sha.get(..8).unwrap_or(sha)
 }
 
-pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Decision> {
-    let seq = facts.reply.as_ref().map_or(0, |r| r.seq);
-    let git = |w: &Workflow, kind: Kind, action: &str, question: &str, primary: Option<&str>, turns: u8, detail: Option<String>| Decision {
-        key: key(&w.repo, facts.room, seq, action, &w.head),
+#[allow(clippy::too_many_arguments)]
+fn git_card(room: &str, seq: usize, w: &Workflow, kind: Kind, action: &str, question: &str, primary: Option<&str>, turns: u8, detail: Option<String>) -> Decision {
+    Decision {
+        key: key(&w.repo, room, seq, action, &w.head),
         kind,
         context: w.detail.lines().next().unwrap_or("").to_owned(),
         question: question.to_owned(),
@@ -148,56 +156,74 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
         pr: w.pr,
         to: None,
         prompt: None,
+        blocked: None,
+        status: Vec::new(),
+    }
+}
+
+/// A merge in flight: reachable whatever the setting says, so Cancel is too.
+pub fn merging_card(room: &str, seq: usize, w: &Workflow) -> Decision {
+    let question = if w.phase == Phase::Checks { "Merging when checks pass…" } else { "Merging…" };
+    git_card(room, seq, w, Kind::Merging, "merging", question, None, 0, None)
+}
+
+/// The pull request for `w`'s commit, with whatever stands in its way shown
+/// before the tap. None when the commit has no pull request.
+pub fn ship_card(room: &str, seq: usize, w: &Workflow, ready: &Readiness) -> Option<Decision> {
+    let pr = ready.pr?;
+    let (question, label) = match (&ready.blocker, ready.waiting) {
+        (None, _) => ("Merge into main?", "Ship it"),
+        (Some(_), true) => ("Merge into main once the checks pass?", "Ship when checks pass"),
+        (Some(_), false) => ("This can't merge yet.", "Ship it"),
     };
+    let mut card = git_card(room, seq, w, Kind::Merge, "merge", question, Some(label), 0, None);
+    // A different model's review is the author's job now; shown when there was one.
+    card.context = match (&ready.blocker, &w.reviewer) {
+        (Some(why), _) => format!("PR #{pr} · {why}"),
+        (None, Some(_)) => format!("PR #{pr} · checks passed · review passed for {}", short(&w.head)),
+        (None, None) => format!("PR #{pr} · checks passed"),
+    };
+    card.pr = Some(pr);
+    card.blocked = ready.blocker.clone().filter(|_| !ready.waiting);
+    card.status = ready.lines.clone();
+    Some(card)
+}
+
+pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Decision> {
+    let seq = facts.reply.as_ref().map_or(0, |r| r.seq);
     // A merge in flight is reachable whatever the setting says.
     if let Some(w) = facts.workflow.filter(|w| w.pending()) {
-        let question = if w.phase == Phase::Checks { "Merging when checks pass…" } else { "Merging…" };
-        return Some(git(w, Kind::Merging, "merging", question, None, 0, None));
+        return Some(merging_card(facts.room, seq, w));
     }
     let reply = facts.reply.as_ref()?;
     if facts.mode != Mode::DecisionCard || facts.busy {
         return None;
     }
     let current = facts.workflow.filter(|w| facts.head == Some(w.head.as_str()));
-    let candidate = current.and_then(|w| match (&w.phase, facts.checks) {
-        (Phase::Failed, _) if !w.fix_requested => Some(git(
-            w,
-            Kind::FixFailed,
-            "fix",
-            "Send the failed check to the builder?",
-            Some("Ask agent to fix"),
-            1,
-            Some(w.detail.clone()),
-        )),
-        (Phase::Ready | Phase::Cancelled, Checks::Passed { pr }) => {
-            let mut card = git(w, Kind::Merge, "merge", "Merge into main?", Some("Merge to main"), 0, None);
-            // A different model's review is the author's job now; shown when there was one.
-            card.context = match &w.reviewer {
-                Some(_) => format!("PR #{pr} · checks passed · review passed for {}", short(&w.head)),
-                None => format!("PR #{pr} · checks passed"),
-            };
-            card.pr = Some(*pr);
-            Some(card)
-        }
-        (Phase::Ready | Phase::Cancelled, Checks::Failed { pr, detail }) if !w.fix_requested => {
-            let mut card = git(
-                w,
-                Kind::FixChecks,
-                "fix",
-                "Send the failed check to the builder?",
-                Some("Ask agent to fix"),
-                1,
-                Some(detail.clone()),
-            );
+    let ready = facts.ready;
+    let fix = |w: &Workflow, kind, detail: String| git_card(facts.room, seq, w, kind, "fix", "Send the failed check to the builder?", Some("Ask agent to fix"), 1, Some(detail));
+    let candidate = current.and_then(|w| match (&w.phase, &ready.checks) {
+        (Phase::Failed, _) if !w.fix_requested => Some(fix(w, Kind::FixFailed, w.detail.clone())),
+        (Phase::Ready | Phase::Cancelled | Phase::Blocked, Checks::Failed { pr, detail }) if !w.fix_requested => {
+            let mut card = fix(w, Kind::FixChecks, detail.clone());
             card.context = format!("PR #{pr} · {}", detail.lines().next().unwrap_or("A required check failed"));
             card.pr = Some(*pr);
+            card.status = ready.lines.clone();
             Some(card)
         }
+        (Phase::Ready | Phase::Cancelled | Phase::Blocked, _) => ship_card(facts.room, seq, w, ready),
         _ => None,
-    });
-    if let Some(card) = candidate.filter(|card| !dismissed(&card.key)) {
-        return Some(card);
+    })
+    .filter(|card| !dismissed(&card.key));
+    let asked = question(facts, reply).filter(|card| !dismissed(&card.key));
+    // A card that can act comes first; one that only explains gives way to the agent's question.
+    match candidate {
+        Some(card) if card.blocked.is_none() || asked.is_none() => Some(card),
+        _ => asked,
     }
+}
+
+fn question(facts: &Facts<'_>, reply: &Reply<'_>) -> Option<Decision> {
     let by = reply.by?;
     let ask = ask(reply.text)?;
     let repo = facts.workflow.map_or("", |w| w.repo.as_str());
@@ -215,8 +241,9 @@ pub fn decide(facts: &Facts<'_>, dismissed: impl Fn(&str) -> bool) -> Option<Dec
         pr: None,
         to: Some(by.to_owned()),
         prompt: Some(ask.label),
+        blocked: None,
+        status: Vec::new(),
     })
-    .filter(|card| !dismissed(&card.key))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -267,7 +294,7 @@ pub struct ReplySuggestions {
     mode: AtomicU8,
     ledger: Mutex<Option<Ledger>>,
     /// Thread → (commit, when asked, GitHub's answer). Never saved: a restart asks again.
-    checks: Mutex<BTreeMap<String, (String, Instant, Checks)>>,
+    checks: Mutex<BTreeMap<String, (String, Instant, Readiness)>>,
 }
 impl ReplySuggestions {
     pub fn new(data: &Path, mode: Mode) -> Self {
@@ -322,12 +349,12 @@ impl ReplySuggestions {
         Ok(())
     }
     /// GitHub's last answer for this commit, while it is still fresh.
-    pub fn recent_checks(&self, room: &str, head: &str) -> Option<Checks> {
+    pub fn recent_checks(&self, room: &str, head: &str) -> Option<Readiness> {
         let checks = self.checks.lock().ok()?;
         let (commit, at, answer) = checks.get(room)?;
         (commit == head && at.elapsed() < CHECKS_TTL).then(|| answer.clone())
     }
-    pub fn observe(&self, room: &str, head: &str, answer: Checks) {
+    pub fn observe(&self, room: &str, head: &str, answer: Readiness) {
         if let Ok(mut checks) = self.checks.lock() {
             checks.insert(room.to_owned(), (head.to_owned(), Instant::now(), answer));
         }
@@ -385,8 +412,9 @@ mod tests {
     }
     fn decided(mode: Mode, w: Option<&Workflow>, checks: Checks, text: &str, dismissed: &[String]) -> Option<Decision> {
         let head = "a".repeat(40);
+        let ready = Readiness::of(checks);
         decide(
-            &Facts { mode, room: "r", busy: false, reply: Some(Reply { seq: 7, by: Some("jigga"), text }), workflow: w, head: Some(&head), checks: &checks },
+            &Facts { mode, room: "r", busy: false, reply: Some(Reply { seq: 7, by: Some("jigga"), text }), workflow: w, head: Some(&head), ready: &ready },
             |key| dismissed.iter().any(|k| k == key),
         )
     }
@@ -402,13 +430,14 @@ mod tests {
         assert_eq!(decided(card, Some(&ready), Checks::Unknown("no pull request".into()), "Done.", &[]), None);
         // Review and required checks passed on the same commit.
         let merge = decided(card, Some(&ready), PASSED, "Done.", &[]).unwrap();
-        assert_eq!((merge.kind, merge.turns, merge.primary.as_deref(), merge.pr), (Kind::Merge, 0, Some("Merge to main"), Some(42)));
+        assert_eq!((merge.kind, merge.turns, merge.primary.as_deref(), merge.pr), (Kind::Merge, 0, Some("Ship it"), Some(42)));
         assert_eq!(decided(card, Some(&workflow(Phase::Cancelled, true)), PASSED, "Done.", &[]).unwrap().kind, Kind::Merge, "a cancelled merge can be asked again");
         // A required check failed.
         let fix = decided(card, Some(&ready), Checks::Failed { pr: 42, detail: "Windows failed\nlog".into() }, "Done.", &[]).unwrap();
         let mut requested = ready.clone();
         requested.fix_requested = true;
-        assert!(decided(card, Some(&requested), Checks::Failed { pr: 42, detail: "Windows".into() }, "Done.", &[]).is_none());
+        let asked = decided(card, Some(&requested), Checks::Failed { pr: 42, detail: "Windows".into() }, "Done.", &[]).unwrap();
+        assert_eq!((asked.kind, asked.blocked.as_deref()), (Kind::Merge, Some("Windows")), "already sent to the builder: the card only says why it can't merge");
         assert_eq!((fix.kind, fix.turns, fix.detail.as_deref()), (Kind::FixChecks, 1, Some("Windows failed\nlog")));
         let failed = decided(card, Some(&workflow(Phase::Failed, true)), Checks::Running, "Done.", &[]).unwrap();
         assert_eq!((failed.kind, failed.turns), (Kind::FixFailed, 1));
@@ -429,9 +458,64 @@ mod tests {
     fn the_merge_card_needs_only_passing_checks() {
         let card = Mode::DecisionCard;
         let unreviewed = decided(card, Some(&workflow(Phase::Ready, false)), PASSED, "Done.", &[]).unwrap();
-        assert_eq!((unreviewed.kind, unreviewed.context.as_str(), unreviewed.primary.as_deref()), (Kind::Merge, "PR #42 · checks passed", Some("Merge to main")));
+        assert_eq!((unreviewed.kind, unreviewed.context.as_str(), unreviewed.primary.as_deref()), (Kind::Merge, "PR #42 · checks passed", Some("Ship it")));
         let reviewed = decided(card, Some(&workflow(Phase::Ready, true)), PASSED, "Done.", &[]).unwrap();
         assert_eq!(reviewed.context, "PR #42 · checks passed · review passed for aaaaaaaa");
+    }
+
+    fn reading(pr: u64, checks: Checks, blocker: Option<&str>, waiting: bool) -> Readiness {
+        Readiness { pr: Some(pr), checks, lines: vec![Line { label: "Conflicts".into(), text: "none".into(), state: crate::thread_git::Light::Ok }], blocker: blocker.map(str::to_owned), waiting }
+    }
+    fn shown(w: &Workflow, ready: &Readiness, text: &str, dismissed: &[String]) -> Option<Decision> {
+        let head = "a".repeat(40);
+        decide(
+            &Facts { mode: Mode::DecisionCard, room: "r", busy: false, reply: Some(Reply { seq: 7, by: Some("jigga"), text }), workflow: Some(w), head: Some(&head), ready },
+            |key| dismissed.iter().any(|k| k == key),
+        )
+    }
+
+    #[test]
+    fn a_pull_request_that_cant_merge_says_why_before_anyone_taps() {
+        let w = workflow(Phase::Ready, false);
+        for why in ["main has no required checks on GitHub", "It conflicts with main", "It needs an approving review"] {
+            let card = shown(&w, &reading(42, Checks::Running, Some(why), false), "Done.", &[]).unwrap();
+            assert_eq!((card.kind, card.blocked.as_deref(), card.primary.as_deref(), card.turns), (Kind::Merge, Some(why), Some("Ship it"), 0), "{why}");
+            assert_eq!(card.context, format!("PR #42 · {why}"));
+            assert_eq!(card.question, "This can't merge yet.");
+            assert_eq!(card.status.len(), 1, "the rows come with it");
+        }
+        // The same card once nothing is in the way.
+        let ready = shown(&w, &reading(42, Checks::Passed { pr: 42 }, None, false), "Done.", &[]).unwrap();
+        assert_eq!((ready.blocked.clone(), ready.primary.as_deref(), ready.question.as_str()), (None, Some("Ship it"), "Merge into main?"));
+        let json = serde_json::to_value(&ready).unwrap();
+        assert_eq!(json["status"][0], serde_json::json!({ "label": "Conflicts", "text": "none", "state": "ok" }));
+        assert!(json.get("blocked").is_none());
+    }
+
+    #[test]
+    fn checks_still_running_can_be_shipped_ahead_of_time() {
+        let card = shown(&workflow(Phase::Ready, false), &reading(42, Checks::Running, Some("3 checks are still running"), true), "Done.", &[]).unwrap();
+        assert_eq!((card.kind, card.blocked.clone(), card.primary.as_deref()), (Kind::Merge, None, Some("Ship when checks pass")));
+        assert_eq!(card.question, "Merge into main once the checks pass?");
+        assert_eq!(card.context, "PR #42 · 3 checks are still running");
+    }
+
+    #[test]
+    fn a_merge_github_refused_can_be_asked_again() {
+        let blocked = workflow(Phase::Blocked, false);
+        assert_eq!(shown(&blocked, &reading(42, Checks::Passed { pr: 42 }, None, false), "Done.", &[]).unwrap().primary.as_deref(), Some("Ship it"));
+        assert_eq!(shown(&blocked, &reading(42, Checks::Unknown("x".into()), Some("main has no required checks on GitHub"), false), "Done.", &[]).unwrap().blocked.as_deref(), Some("main has no required checks on GitHub"));
+    }
+
+    #[test]
+    fn a_card_that_only_explains_gives_way_to_the_agents_question() {
+        let w = workflow(Phase::Ready, false);
+        let asks = "Deck asks: Add a timestamp so we can measure the delay? | Yes, add logging";
+        let stuck = reading(42, Checks::Running, Some("It conflicts with main"), false);
+        assert_eq!(shown(&w, &stuck, asks, &[]).unwrap().kind, Kind::Question);
+        assert_eq!(shown(&w, &stuck, "Done.", &[]).unwrap().kind, Kind::Merge);
+        // One that can act still comes first.
+        assert_eq!(shown(&w, &reading(42, Checks::Running, Some("2 checks are still running"), true), asks, &[]).unwrap().kind, Kind::Merge);
     }
 
     #[test]
@@ -470,7 +554,8 @@ mod tests {
     #[test]
     fn a_new_commit_or_a_working_agent_removes_the_merge_card() {
         let ready = workflow(Phase::Ready, true);
-        let facts = |head: &'static str, busy| Facts { mode: Mode::DecisionCard, room: "r", busy, reply: Some(Reply { seq: 7, by: Some("jigga"), text: "Done." }), workflow: Some(&ready), head: Some(head), checks: &PASSED };
+        let passed = Readiness::of(PASSED);
+        let facts = |head: &'static str, busy| Facts { mode: Mode::DecisionCard, room: "r", busy, reply: Some(Reply { seq: 7, by: Some("jigga"), text: "Done." }), workflow: Some(&ready), head: Some(head), ready: &passed };
         let stale = "b".repeat(40);
         let stale: &'static str = Box::leak(stale.into_boxed_str());
         let same: &'static str = Box::leak("a".repeat(40).into_boxed_str());

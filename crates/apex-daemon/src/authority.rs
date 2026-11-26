@@ -40,6 +40,7 @@ pub fn command_needs(command: &Command) -> Need {
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } | ProjectTaskLifecycle { .. } => Need::Paired,
         RoomState { .. } => Need::Paired,
         RoomDiff { .. } | RoomGitStatus { .. } | RoomReplyDecision { .. } | RoomReplyDecisionDismiss { .. } => Need::Paired,
+        PersonalShipOffers { .. } | PersonalShip { .. } => Need::Paired,
         RoomThreadGitAction { .. } | RoomGitAction { .. } => Need::Paired,
         ArtifactsLoad { .. } => Need::Paired,
         AnswersLoad { .. } => Need::Paired,
@@ -407,6 +408,8 @@ pub fn access_effect(command: &Command) -> AccessEffect {
         // Which suggestion follows a reply, and putting one off: neither touches access.
         RoomReplyDecision { .. } | RoomReplyDecisionDismiss { .. } | SettingsReplySuggestionsSet { .. } => None,
         RoomThreadGitAction { .. } | RoomGitAction { .. } => None,
+        // A pull request's card in an assistant's conversation and its Ship it tap: a merge, never an access level.
+        PersonalShipOffers { .. } | PersonalShip { .. } => None,
         ExportThread { .. } => None,
         SaveAttachment { .. } => None,
         CopyAttachment { .. } => None,
@@ -613,6 +616,8 @@ pub(crate) mod tests {
             ("room_diff", true, json!({ "id": "mine" })),
             ("room_git_status", true, json!({ "id": "mine" })),
             ("room_reply_decision", true, json!({ "id": "mine" })),
+            ("personal_ship_offers", true, json!({ "assistantId": "asst-1" })),
+            ("personal_ship", true, json!({ "assistantId": "asst-1", "pr": 84, "head": "abc" })),
             ("room_reply_decision_dismiss", true, json!({ "id": "mine", "key": "test/repo|mine|7|merge|abc" })),
             ("room_thread_git_action", true, json!({ "id": "mine", "action": { "kind": "request_merge", "expected": { "root": "/repo", "head": "abc", "tree": "tree", "ahead": 1, "behind": 0, "files": [], "checksPassed": false, "clean": true } } })),
             ("room_git_action", true, json!({ "id": "mine", "action": { "kind": "checks", "expected": { "root": "/repo", "head": "abc", "tree": "tree", "branch": "feat/test", "target": "main", "targetHead": "base", "ahead": 1, "behind": 0, "files": [], "checksPassed": false, "clean": true } } })),

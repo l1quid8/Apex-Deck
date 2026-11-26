@@ -154,6 +154,14 @@ pub struct Workflow {
     /// if they no longer do, the merge stops and nothing waits.
     #[serde(default)]
     ready_only: bool,
+    /// Files with local changes in the Mac's main folder that the update after
+    /// the merge left as they were.
+    #[serde(default)]
+    pub kept_edits: usize,
+    /// The assistant the person told to ship this commit's pull request, for
+    /// the merge now asked for. Its conversation hears how the merge ended.
+    #[serde(default)]
+    pub relayed_by: Option<String>,
 }
 
 /// What GitHub says about the reviewed commit before any merge is asked for.
@@ -166,6 +174,28 @@ pub enum Checks {
     Failed { pr: u64, detail: String },
 }
 impl Workflow {
+    /// A merge request not saved anywhere: what one for this commit would be.
+    pub(crate) fn draft(root: String, branch: String, repo: String, head: String, builder: String) -> Self {
+        Self {
+            root,
+            branch,
+            repo,
+            head,
+            builder,
+            builder_model: String::new(),
+            reviewer: None,
+            phase: Phase::Ready,
+            generation: 0,
+            pr: None,
+            detail: "Waiting for checks".into(),
+            result_oid: None,
+            pushed: false,
+            fix_requested: false,
+            ready_only: false,
+            kept_edits: 0,
+            relayed_by: None,
+        }
+    }
     pub(crate) fn pending(&self) -> bool {
         matches!(
             self.phase,
@@ -181,14 +211,17 @@ impl Workflow {
             && self.root == state.root
             && state.branch.as_ref() == Some(&self.branch)
     }
-    fn request(&mut self) -> Result<(), String> {
+    /// `retry`: the caller has just seen this commit checked out and GitHub
+    /// ready for it, so a merge that was refused earlier may be asked again.
+    fn request(&mut self, retry: bool) -> Result<(), String> {
         if self.pending() || self.phase == Phase::Merged {
             return Ok(());
         }
-        if !matches!(self.phase, Phase::Ready | Phase::Cancelled) {
+        if !(matches!(self.phase, Phase::Ready | Phase::Cancelled) || (retry && self.phase == Phase::Blocked)) {
             return Err(self.detail.clone());
         }
         self.generation += 1;
+        self.relayed_by = None;
         self.phase = Phase::Preparing;
         self.detail = "Publishing the commit…".into();
         Ok(())
@@ -333,6 +366,8 @@ impl ThreadGit {
                         pushed: false,
                         fix_requested: false,
                         ready_only: false,
+                        kept_edits: 0,
+                        relayed_by: None,
                     },
                 );
             } else if same {
@@ -348,13 +383,18 @@ impl ThreadGit {
     }
     /// From the thread folder's Git panel.
     pub fn admit(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
-        self.admit_with(room, expected, false)
+        self.admit_with(room, expected, false, false)
     }
     /// A merge asked for from the decision card, after its checks passed.
     pub fn admit_ready(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
-        self.admit_with(room, expected, true)
+        self.admit_with(room, expected, true, true)
     }
-    fn admit_with(&self, room: &str, expected: &WorkflowKey, ready_only: bool) -> Result<String, String> {
+    /// A merge asked for from the decision card while its checks were still
+    /// running, with nothing else in the way: it waits for them.
+    pub fn admit_waiting(&self, room: &str, expected: &WorkflowKey) -> Result<String, String> {
+        self.admit_with(room, expected, false, true)
+    }
+    fn admit_with(&self, room: &str, expected: &WorkflowKey, ready_only: bool, retry: bool) -> Result<String, String> {
         self.edit(|rooms| {
             let w = rooms
                 .get_mut(room)
@@ -367,7 +407,7 @@ impl ThreadGit {
                 return Err("Refresh the current branch before merging.".into());
             }
             let before = w.generation;
-            w.request()?;
+            w.request(retry)?;
             if w.generation != before {
                 w.ready_only = ready_only;
             }
@@ -383,7 +423,7 @@ impl ThreadGit {
                 .filter(|w| w.head == sha && w.builder == builder)
                 .ok_or("The shipped commit is no longer this thread's merge request.")?;
             let before = w.generation;
-            w.request()?;
+            w.request(false)?;
             if w.generation != before {
                 w.ready_only = false;
             }
@@ -410,6 +450,19 @@ impl ThreadGit {
                 w.detail = "Confirming cancellation with GitHub…".into();
             }
             Ok(CancelOutcome { detail: w.detail.clone(), cancelled, pr: w.pr })
+        })
+    }
+    /// Every thread whose merge request is for this branch of this repository.
+    pub fn find(&self, repo: &str, branch: &str) -> Result<Vec<(String, Workflow)>, String> {
+        self.edit(|rooms| Ok(rooms.iter().filter(|(_, w)| w.repo == repo && w.branch == branch).map(|(room, w)| (room.clone(), w.clone())).collect()))
+    }
+    /// The merge of `expected`'s commit now in flight was approved through
+    /// `assistant`. `false` when that merge is no longer the one in flight.
+    pub fn relayed(&self, room: &str, expected: &WorkflowKey, assistant: &str) -> Result<bool, String> {
+        self.edit(|rooms| {
+            let Some(w) = rooms.get_mut(room).filter(|w| expected.names_commit(w) && w.pending()) else { return Ok(false) };
+            w.relayed_by = Some(assistant.to_owned());
+            Ok(true)
         })
     }
     #[cfg(test)]
@@ -489,6 +542,8 @@ pub async fn push(data: &Path, state: &State) -> Result<(), String> {
 mod github;
 pub(crate) mod ship;
 pub use github::checks;
+pub use github::preflight::{Light, Line, Readiness};
+pub use github::readiness;
 #[cfg(test)]
 pub(crate) use github::fake_checks;
 #[cfg(test)]

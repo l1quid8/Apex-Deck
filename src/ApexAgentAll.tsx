@@ -1,3 +1,4 @@
+import { ShipOfferCard, useShipOffers } from './ShipOfferCard';
 import { useComposerHistory } from "./useComposerHistory";
 import { LOCAL_HOST_REFERENCE } from "./hostFacts.ts";
 import { assistantHistoryTexts } from "./composerHistory";
@@ -178,6 +179,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const [calling, setCalling] = useState(false);
   const [tldr,setTldr]=useAssistantComposerDraftState(draftKey,'tldr',false);
   const [planOn,setPlanOn]=useAssistantComposerDraftState(draftKey,'planOn',false);
+  const shipOffers = useShipOffers(personal);
   const voice=useAssistantVoice({lane:personal,backend:voiceBackend,settings:voiceSettings,onSettings:onVoiceSettings,onFocus:onVoiceFocus});
   // One conversation, plus a Tasks view. Each project's task components report their rows here by store.
   const [savedView, setSavedView] = useAssistantComposerDraftState<'chat' | 'tasks' | 'notifications'>(draftKey, 'view', 'chat');
@@ -726,6 +728,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
             {item.taskProblem && task && <button type="button" className="apex-agent-task-link plain dot-link" onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id, personal?.ref?.assistantId))}>Review task</button>}
             {item.kind === 'delegation_failed' && onDelegateTask && <button type="button" className="assistant-chat-action" onClick={onDelegateTask}>Delegate a task</button>}
             {plannedJob && <button type="button" className="assistant-chat-action" onClick={() => onOpenProjectTask?.(projectTaskKey(plannedJob.owner.hostId, plannedJob.owner.workspaceId, plannedJob.id))}>{plannedJob.status === 'proposed' ? 'Review plan' : 'Open task'}</button>}
+            {item.role !== 'human' && shipOffers.offers.filter(offer => offer.messageId === item.id).map(offer => <ShipOfferCard key={offer.pr} offer={offer} lane={personal!} refresh={shipOffers.refresh} />)}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
             addReplyQuote({ messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL });
