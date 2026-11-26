@@ -7141,6 +7141,27 @@ done
     }
 
     #[test]
+    fn closing_a_reopened_pr_posts_a_new_note_for_the_same_pr() {
+        use crate::pr_watch::Observation;
+        let t = ship_thread("watch-close-reopen", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.say("a", "@a build");
+        let open = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        t.runtime.block_on(t.host.apply_pr_observation("r", &open, &Observation::Closed)).unwrap();
+        assert_eq!(t.notes().len(), 1);
+
+        // GitHub reopened the same PR and an active merge job saw it close
+        // again. The old folder is now kept on disk and released from Deck.
+        t.host.thread_git.put("r", open.clone()).unwrap();
+        let closing = t.host.thread_git.mark_closed("r", &open).unwrap();
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        let notes = t.notes();
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().all(|note| note.starts_with("PR #42 was closed without merging.")));
+        assert!(!t.workflow().unwrap().close_pending);
+        t.finish();
+    }
+
+    #[test]
     fn closing_an_old_pr_does_not_release_the_owners_replacement_task() {
         let t = ship_thread("watch-close-replacement", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
         t.say("a", "@a build");

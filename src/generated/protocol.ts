@@ -1097,6 +1097,7 @@ export type Workflow = {
   builder: string;
   builder_model: string;
   close_pending?: boolean;
+  close_since?: number | null;
   detail: string;
   fix_requested: boolean;
   generation: number;

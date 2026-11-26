@@ -225,7 +225,23 @@ async fn externally_finished_prs_reconcile_during_pending_ci_even_at_a_newer_hea
                 ),
                 (Phase::Syncing, "new-head", Some("merge-oid"))
             ),
-            _ => assert_eq!((saved.phase, saved.close_pending), (Phase::Blocked, false)),
+            _ => {
+                assert_eq!(saved.phase, Phase::Cancelled);
+                assert_eq!(
+                    store.workflows().unwrap(),
+                    vec![("r".into(), saved.clone())]
+                );
+                let merged = Remote {
+                    pull: pull("MERGED", "new-head", "UNKNOWN", json!([])),
+                    list: Value::Null,
+                    log_id: None,
+                };
+                let observed = observe_pr_with(&merged, data.path(), &saved).await.unwrap();
+                assert!(
+                    matches!(next(&saved, &Seen::default(), &observed, OwnerState::Ready, false),
+                    Act::Sync { head, .. } if head == "new-head")
+                );
+            }
         }
     }
 }

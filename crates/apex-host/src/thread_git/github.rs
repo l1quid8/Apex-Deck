@@ -24,6 +24,7 @@ enum Decision {
     Wait,
     Submit,
     Closed,
+    HeadChanged,
     Finish(Phase, String),
 }
 fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
@@ -62,7 +63,10 @@ fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
             "Merge cancelled. The branch stays on GitHub.".into(),
         );
     }
-    if !local_current || pr.state != "OPEN" || pr.head_ref_oid != w.head {
+    if pr.state == "OPEN" && pr.head_ref_oid != w.head {
+        return Decision::HeadChanged;
+    }
+    if !local_current || pr.state != "OPEN" {
         return Decision::Finish(
             Phase::Blocked,
             "The branch or PR changed. A new merge request is needed.".into(),
@@ -360,6 +364,7 @@ pub(super) async fn probe(shell: &impl Shell, w: &Workflow, data: &Path) -> Resu
     Ok(match reconcile(&asked, &pr, true) {
         Decision::Finish(Phase::Failed, detail) => Checks::Failed { pr: number, detail },
         Decision::Finish(_, detail) => Checks::Unknown(detail),
+        Decision::HeadChanged => Checks::Unknown("The pull request changed. Review the new commit.".into()),
         Decision::Closed => Checks::Unknown("The pull request was closed.".into()),
         Decision::Wait => Checks::Running,
         Decision::Submit => match required(shell, w, &pr, data, root).await? {
@@ -701,6 +706,14 @@ impl ThreadGit {
             }
             Decision::Wait => {}
             Decision::Closed => { self.mark_closed(room, w)?; }
+            Decision::HeadChanged => {
+                let detail = "The pull request changed. A new receipt is needed to merge it.";
+                let moved = self.update(room, w, |job| {
+                    job.phase = Phase::Cancelled;
+                    job.detail = detail.into();
+                })?;
+                return Ok(moved.then(|| detail.into()));
+            }
             Decision::Finish(Phase::Blocked, detail) => return block(w, detail),
             Decision::Finish(phase, mut detail) => {
                 if phase == Phase::Failed && pr.merge_state_status != "DIRTY" {

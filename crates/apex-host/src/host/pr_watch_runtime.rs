@@ -43,7 +43,7 @@ impl Host {
         if w.close_pending {
             let gate = self.runner_gate(room);
             let _guard = gate.lock().await;
-            return self.finish_closed_pr(room, &w).await;
+            return self.finish_closed_pr(room, w).await;
         }
         if w.pending()
             || matches!(w.phase, Phase::Merged | Phase::Blocked)
@@ -133,7 +133,7 @@ impl Host {
             }
             Act::Close => {
                 let closed = self.thread_git.mark_closed(room, w)?;
-                return self.finish_closed_pr(room, &closed).await;
+                return self.finish_closed_pr(room, closed).await;
             }
         }
         // Record the sequence of the stop note, even if another agent is
@@ -151,10 +151,10 @@ impl Host {
 
     /// Resume the two effects of closing under the Runner gate. Keep the
     /// workflow Blocked throughout; this path makes no GitHub calls.
-    async fn finish_closed_pr(self: &Arc<Self>, room: &str, w: &Workflow) -> Result<(), String> {
+    async fn finish_closed_pr(self: &Arc<Self>, room: &str, mut w: Workflow) -> Result<(), String> {
         if self.refuse_moved_chat(room).is_err()
             || self.active_runner(room)?
-            || self.thread_git.get(room)?.as_ref() != Some(w)
+            || self.thread_git.get(room)?.as_ref() != Some(&w)
         {
             return Ok(());
         }
@@ -184,6 +184,16 @@ impl Host {
         );
         let plain_note = format!("{closed}\n{context}");
         let deck = Speaker::Bot(ParticipantId::new("deck"));
+        let first_seq = match w.close_since {
+            Some(seq) => seq,
+            None => {
+                // Transcript edits renumber display positions. The source
+                // sequence stays stable across those edits and reopen.
+                let seq = handle.checkpoint.lock().unwrap().snapshot.next_origin_seq;
+                w = self.thread_git.start_close_note(room, &w, seq)?;
+                seq
+            }
+        };
         let already_posted = handle
             .checkpoint
             .lock()
@@ -191,7 +201,11 @@ impl Host {
             .snapshot
             .transcript
             .iter()
-            .any(|m| m.speaker == deck && (m.text == task_note || m.text == plain_note));
+            .any(|m| {
+                m.origin_seq.unwrap_or(m.seq) >= first_seq
+                    && m.speaker == deck
+                    && (m.text == task_note || m.text == plain_note)
+            });
         if !already_posted {
             let note = if folder.is_some() {
                 &task_note
@@ -233,7 +247,7 @@ impl Host {
         if let Some(folder) = folder {
             self.task_branches.abandon(&folder)?;
         }
-        self.thread_git.finish_close(room, w)
+        self.thread_git.finish_close(room, &w)
     }
 
     /// Admit Deck's message and reserve the owner's turn before releasing the

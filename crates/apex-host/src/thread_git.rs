@@ -154,6 +154,8 @@ pub struct Workflow {
     pub local_check_failed: bool,
     #[serde(default)]
     pub(crate) close_pending: bool,
+    #[serde(default)]
+    pub(crate) close_since: Option<usize>,
     /// Asked for from the decision card, where the checks had already passed:
     /// if they no longer do, the merge stops and nothing waits.
     #[serde(default)]
@@ -273,7 +275,15 @@ impl ThreadGit {
         let mut next = expected.clone();
         next.phase = Phase::Blocked;
         next.close_pending = true;
+        next.close_since = None;
         next.detail = "The pull request was closed without merging.".into();
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn start_close_note(&self, room: &str, expected: &Workflow, first_seq: usize) -> Result<Workflow, String> {
+        let mut next = expected.clone();
+        next.close_since = Some(first_seq);
         self.save_observation(room, expected, next.clone())?;
         Ok(next)
     }
@@ -388,6 +398,7 @@ impl ThreadGit {
                         fix_requested: false,
                         local_check_failed: false,
                         close_pending: false,
+                        close_since: None,
                         ready_only: false,
                     },
                 );
