@@ -36,6 +36,9 @@ pub struct ApiModel {
     /// Whether the model takes tool calls, when the server says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<bool>,
+    /// Explicit image input capability. Missing metadata leaves support unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -196,6 +199,11 @@ fn parse_entry(item: &Value) -> Option<ApiModel> {
             ModelKind::Video => Some(video_spec(spec)),
         },
         // Venice says so in its capabilities, OpenRouter in the parameters it takes.
+        image_input: capabilities["supportsVision"].as_bool().or_else(|| {
+            let inputs = item["architecture"]["input_modalities"].as_array().or_else(|| item["input_modalities"].as_array())?;
+            if inputs.is_empty() || !inputs.iter().all(Value::is_string) { return None; }
+            Some(inputs.iter().any(|input| input == "image"))
+        }),
         tools: capabilities["supportsFunctionCalling"].as_bool().or_else(|| {
             item["supported_parameters"].as_array().map(|params| params.iter().any(|p| p == "tools"))
         }),
@@ -266,21 +274,22 @@ fn per_token_price(value: &Value) -> Option<f64> {
     (per_token >= 0.0).then_some(per_token * 1_000_000.0)
 }
 
-type Cache = Mutex<HashMap<String, (Instant, Vec<ApiModel>)>>;
+type Cache = Mutex<HashMap<(String, String), (Instant, Vec<ApiModel>)>>;
 
 static CACHE: OnceLock<Cache> = OnceLock::new();
 
 const CACHE_FOR: Duration = Duration::from_secs(600);
 
 /// The models a server offers, from its `/models` endpoint. Successful
-/// answers are kept for ten minutes per base URL.
+/// answers are kept for ten minutes per endpoint and key name.
 pub async fn models(base_url: &str, api_key_env: Option<&str>) -> Result<Vec<ApiModel>, String> {
     let base = base_url.trim_end_matches('/');
+    let key = (base.to_owned(), api_key_env.unwrap_or_default().to_owned());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let cached = cache
         .lock()
         .unwrap()
-        .get(base)
+        .get(&key)
         .filter(|(at, _)| at.elapsed() < CACHE_FOR)
         .map(|(_, models)| models.clone());
     if let Some(models) = cached {
@@ -302,8 +311,21 @@ pub async fn models(base_url: &str, api_key_env: Option<&str>) -> Result<Vec<Api
     }
     let body: Value =
         response.json().await.map_err(|e| format!("{url} did not return a model list: {e}"))?;
-    let models = parse_models(&body);
-    cache.lock().unwrap().insert(base.to_string(), (Instant::now(), models.clone()));
+    let mut models = parse_models(&body);
+    if crate::openai::is_direct_openai(base) {
+        for model in &mut models {
+            // The direct /models list usually contains only IDs. Use documented exact aliases.
+            // https://developers.openai.com/api/docs/guides/images-vision
+            model.image_input = model.image_input.or(match model.id.as_str() {
+                "gpt-6.2-astra" | "gpt-6.2-sol" | "gpt-6.1-terra" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" |
+                "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-nano" | "gpt-5.2" | "gpt-5.1" | "gpt-5" |
+                "gpt-4o" | "gpt-4o-mini" | "gpt-4.1" | "gpt-4.1-mini" | "o1" | "o1-pro" | "o3" => Some(true),
+                "o1-mini" | "o1-mini-2024-09-12" | "o3-mini" => Some(false),
+                _ => None,
+            });
+        }
+    }
+    cache.lock().unwrap().insert(key, (Instant::now(), models.clone()));
     Ok(models)
 }
 
@@ -321,16 +343,16 @@ pub async fn model(base_url: &str, api_key_env: Option<&str>, id: &str) -> Optio
 /// What kind of model `id` is, from the last list fetched, however old.
 /// None until the list has been fetched once. For decisions that can't
 /// wait for the network, such as who a message goes to.
-pub fn cached_kind(base_url: &str, id: &str) -> Option<ModelKind> {
+pub fn cached_kind(base_url: &str, key: Option<&str>, id: &str) -> Option<ModelKind> {
     let cache = CACHE.get()?.lock().unwrap();
-    cache.get(base_url.trim_end_matches('/'))?.1.iter().find(|model| model.id == id).map(|model| model.kind)
+    cache.get(&(base_url.trim_end_matches('/').to_owned(), key.unwrap_or_default().to_owned()))?.1.iter().find(|model| model.id == id).map(|model| model.kind)
 }
 
 /// Whether model `id` takes tool calls, from the last list fetched,
 /// however old. None until the list has been fetched or when it doesn't say.
-pub fn cached_tools(base_url: &str, id: &str) -> Option<bool> {
+pub fn cached_tools(base_url: &str, key: Option<&str>, id: &str) -> Option<bool> {
     let cache = CACHE.get()?.lock().unwrap();
-    cache.get(base_url.trim_end_matches('/'))?.1.iter().find(|model| model.id == id).and_then(|model| model.tools)
+    cache.get(&(base_url.trim_end_matches('/').to_owned(), key.unwrap_or_default().to_owned()))?.1.iter().find(|model| model.id == id).and_then(|model| model.tools)
 }
 
 /// The remaining account balance in US dollars, for the providers that
@@ -390,6 +412,18 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn image_input_distinguishes_explicit_support_from_missing_metadata() {
+        let models = parse_models(&json!({"data":[
+            {"id":"a", "model_spec":{"capabilities":{"supportsVision":false}}},
+            {"id":"b", "architecture":{"input_modalities":["text","image"]}},
+            {"id":"c", "input_modalities":["text"]},
+            {"id":"d"}, {"id":"e", "architecture":{"input_modalities":[]}}
+        ]}));
+        assert_eq!(models.iter().map(|m| m.image_input).collect::<Vec<_>>(),
+            vec![Some(false), Some(true), Some(false), None, None]);
+    }
 
     fn venice_glm() -> Value {
         json!({"context_length":1000000,"id":"zai-org-glm-5-2","model_spec":{"pricing":{"input":{"usd":1.4},"cache_input":{"usd":0.26},"output":{"usd":4.4}},"availableContextTokens":1000000,"capabilities":{"supportsReasoning":true,"supportsReasoningEffort":true,"reasoningEffortOptions":["none","high","max"],"defaultReasoningEffort":"max"},"name":"GLM 5.2"},"object":"model","type":"text"})

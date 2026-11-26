@@ -149,7 +149,7 @@ test("the capability note tells the truth about each limit, with no switch of it
   assert.equal(computerSummary({ ...base, profile: claude, enabled: false }).state, "Off for every agent");
   assert.equal(computerSummary({ ...base, profile: claude, access: "read" }).state, "On · read only");
   assert.equal(computerSummary({ ...base, profile: claude, record: { ...record, rules: [{ class: "write", mode: "handOff" }] } }).state, "On · read only");
-  assert.match(computerSummary({ ...base, profile: api }).notes.join(), /can't read screenshots/);
+  assert.deepEqual(computerSummary({ ...base, profile: api }).notes, []);
   assert.deepEqual(computerSummary({ ...base, profile: { ...api, can_read_images: true } }).notes, []);
 });
 

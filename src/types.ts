@@ -58,6 +58,7 @@ export interface ModelChoice {
 
 /** A model an OpenAI-compatible server offers. Older servers only send the id. */
 export interface ApiModel {
+  image_input?: boolean | null;
   id: string;
   label?: string | null;
   /** Levels the model accepts. Missing = not known; empty = no reasoning setting. */

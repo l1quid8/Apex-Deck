@@ -559,7 +559,7 @@ export type ParticipantConfig = {
   access?: Access;
   appearance?: AgentAppearance | null;
   backend: Backend;
-  /** Whether this bot's model accepts computer screenshots. Opt in explicitly. */
+  /** Legacy profile field retained for wire compatibility. Image support comes from the model. */
   can_read_images?: boolean;
   display_name: string;
   /**

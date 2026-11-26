@@ -17,7 +17,6 @@ export function computerSummary(input: { name: string; profile?: ParticipantConf
   if (record.paused) notes.push(`${name} is paused, so it won't use apps until you resume it.`);
   if (handedOff) notes.push("Your rules hand changes to you, so this stays read only.");
   else if (access === "read") notes.push("Assistant access is Read only, and that also keeps apps read only.");
-  if (backend?.kind === "open_ai_compatible" && !profile?.can_read_images) notes.push("This model can't read screenshots and relies on accessibility text. Some controls may be missing or misread.");
   if (tool === "muse") notes.push("Muse's screenshot support and tool access in assistant chats aren't confirmed yet.");
   return { state: handedOff || access === "read" ? "On · read only" : "On", notes };
 }

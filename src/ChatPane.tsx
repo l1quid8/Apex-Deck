@@ -130,6 +130,7 @@ import { ParticipantQueues, queuedSticky, type ParticipantMessage, type QueueHol
 import { queueSync } from "./phoneQueue";
 import { handOffChoices, handOffLabel, moreDetailsText, partQuote, quoteFor, quoteTarget, replyText, replyLead, replyWith, type ReplyQuote } from "./reply";
 import { SelectionActions } from "./SelectionActions";
+import { imageInputNotice } from "./imageInput";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, missingPicture, priceSend, sourceKey } from "./mediaPrice";
@@ -2733,6 +2734,10 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend, providerSig]);
   const picturesAttached = sendable.some(a => isImage(a.path!));
+  const imageNoticeFor = (to: string[], roster: ParticipantConfig[], lists: Record<string, ApiModel[]>) =>
+    imageInputNotice(to, roster, b => lists[sourceKey(b.base_url, b.api_key_env)]?.find(m => m.id === b.model));
+  const draftImageNotice = attached.some(a => isImage(a.path ?? a.name))
+    ? imageNoticeFor(serverTargets, participants, providerModels) : null;
   const mediaSends = mediaSendsFor(serverTargets, participants, providerModels, picturesAttached);
   const mediaSig = JSON.stringify(mediaSends);
   const [pricing, setPricing] = useState<{ sig: string; usd: number | null } | null>(null);
@@ -2788,6 +2793,8 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
   sendChecks.current = { participants, serverLists, providerModels };
   const checkSend = (to: string[], servers: string[], pictures: boolean): string | null => {
     const now = sendChecks.current;
+    const images = pictures && imageNoticeFor(to, now.participants, now.providerModels);
+    if (images && images.blocked) return images.text;
     const unknown = to.length && to.every(id => now.serverLists[id] !== undefined)
       ? resolveServerRequests(servers, to.flatMap(id => now.serverLists[id])).unknown : [];
     if (unknown.length) return `No server, app or plugin called "${unknown[0]}" for ${to.map(id => now.participants.find(p => p.id === id)?.display_name ?? id).join(", ")}`;
@@ -2853,7 +2860,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
 
   const send = async (steer = false) => {
     if (admittingOwn.current || (dock?.since && Date.now() - dock.since < 600)) return;
-    if (!ready || chatReadOnly || chatBlocked) return;
+    if (!ready || chatReadOnly || chatBlocked || draftImageNotice?.blocked) return;
     if (talkOnly && onChatSend) {
       const body = text.trim();
       if (!body) return;
@@ -4255,6 +4262,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
+        {draftImageNotice && <p className="muted" role="status">{draftImageNotice.text}</p>}
         {!profileMode && <QuestionForm view={composerForm} nameOf={(id) => agentName(id)} colorOf={color}
           highlighted={highlighted} collapsed={formFolded} notice={formNotice}
           onHighlight={setHighlighted} onExpand={() => setFormFolded(false)}
@@ -4356,7 +4364,7 @@ export function ChatPane({ tagThreads, onTagThread, multiWaiting = false, multiB
           {/* One round button: the mic while the box is empty, Send once it has something. Each reply keeps its own Stop, and Esc stops them all. */}
           {roundButton.mic && <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />}
           {roundButton.send && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
-          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title={ownSending ? "Sending…" : "Send (↵)"} onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={ownSending || chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
+          {roundButton.send && <button type="button" className="round-send" aria-label="Send" title={ownSending ? "Sending…" : "Send (↵)"} onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={ownSending || draftImageNotice?.blocked || chatReadOnly || !!chatBlocked || !ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? LOCAL_HOST_NAME}`} canCopyFolder={!backend.host || backend.host.id === "local"}
             onAttach={attachPath} onTool={useTool}

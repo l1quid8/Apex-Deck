@@ -19,6 +19,6 @@ Where every assistant setting lives after the Alfred upgrade. All save through t
 
 ## Known limits
 
-- Model image support is shown, not set, for assistants: an API model's "can read images" comes from its saved agent profile.
+- Deck uses the API provider’s reported image support for assistant screenshots.
 - Provider session reset and compaction don't exist for assistants. New conversation only moves where the model's context starts.
 - The floating window has no attachments or approval cards; both stay in Deck. Its Call button uses the same call Deck would start.

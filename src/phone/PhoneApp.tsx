@@ -57,7 +57,9 @@ import { QuestionForm } from "../QuestionForm";
 import { ReplyNextSteps } from "../ReplyNextSteps";
 import { PhonePictures } from "./PhonePictures";
 import { PictureCache, pictureBlock } from "./pictureRules";
-import { attachedImages, replyImages } from "../attachments";
+import { mediaKind } from "../media";
+import { imageInputNotice } from "../imageInput";
+import { attachedImages, isImage, replyImages } from "../attachments";
 import { applyQuestionEvent, formView, questionOnly, restoreQuestions, type Offer, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
 import { loadTldr, saveTldr, splitTldr, tldrFor, wiggle, withTldr } from "../tldr";
@@ -82,7 +84,7 @@ import {
   connectionKey, isPaired, withHints, readHostIds, withMacHostIds,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
-import { recipientName } from "../recipients";
+import { mentionTarget, recipientName } from "../recipients";
 import { mentionFor } from "../slug";
 import { ageWords, homeShort, hostTints, noteActive, sidebarSections, unarchiveThreads } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
@@ -1452,7 +1454,22 @@ export function PhoneApp() {
         // Retry asks the bot again on the chat as it is, posting nothing, as on the desktop.
         if (kind === "turn") { await backend().roomTurn(paneId, to, hops ?? null); return; }
         const key = `${queueKey(hostId, paneId)}\u0000${text}`;
-        try { await postFromPhone(backend(), paneId, text, to, voice); }
+        try {
+          const api = backend();
+          if (attachedImages(text).length) {
+            const state = api.roomState ? await api.roomState(paneId) : await api.call<RoomState>("room_state", { id: paneId });
+            const configs = state.snapshot.participants;
+            const models = new Map<string, ApiModel[]>();
+            await Promise.all(configs.filter(p => to.includes(p.id)).map(async p => {
+              if (p.backend.kind !== "open_ai_compatible") return;
+              const list = await api.roomBotModels?.(paneId, p.id).catch(() => undefined);
+              if (list) models.set(apiAccountKey(hostId, p.backend), list);
+            }));
+            const check = imageInputNotice(to, configs, b => models.get(apiAccountKey(hostId, b))?.find(m => m.id === b.model));
+            if (check?.blocked) throw new Error(check.text);
+          }
+          await postFromPhone(api, paneId, text, to, voice);
+        }
         catch (error) {
           if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
           throw unsentDraft(text, to, error);
@@ -1861,6 +1878,7 @@ export function PhoneApp() {
     // This thread's box, quotes and TL;DR, under its machine and id: a pending draft has neither yet.
     const box = openKey ?? id;
     const draft = draftFor(box);
+    if (imageNotice?.blocked) { setNotice(imageNotice.text); return; }
     const gate = threadSend(links, openLink.id, draft.text, draft.files.length);
     if (!gate.enabled) { if (gate.reason) setNotice(gate.reason); return; }
     const host = phoneHost(openLink.id);
@@ -2719,6 +2737,27 @@ export function PhoneApp() {
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
   const nextTo = openRoom && answerers?.paneId === openRoom.id ? answerers.ids : [];
   const queueing = nextTo.length > 0 && nextTo.every((pid) => pid in (openRoom?.working ?? {}));
+  const imageRoster = viewingPending ? pendingAgents : openRoom?.configs ?? [];
+  const hasImageDraft = !openChat && draft.files.some(file => isImage(file.name));
+  const imageModelRequests = JSON.stringify(hasImageDraft ? imageRoster.flatMap(config =>
+    config.backend.kind === "open_ai_compatible" ? [[config.id, apiAccountKey(openHostId, config.backend)]] : []) : []);
+  useEffect(() => {
+    let live = true;
+    const api = phoneHost(openHostId)?.backend;
+    for (const [id, key] of JSON.parse(imageModelRequests) as string[][]) {
+      const list = openRoom ? api?.roomBotModels?.(openRoom.id, id) : api?.agentBotModels?.(id);
+      list?.then(models => {
+        if (live) setApiOffered(all => ({ ...all, [key]: { ...all[key], models } }));
+      }).catch(() => {});
+    }
+    return () => { live = false; };
+  }, [openHostId, openRoom?.id, imageModelRequests]);
+  const named = mentionTarget(draft.text, imageRoster);
+  const listedModel = (b: Extract<ParticipantConfig["backend"], { kind: "open_ai_compatible" }>) =>
+    apiOffered[apiAccountKey(openHostId, b)]?.models?.find(m => m.id === b.model);
+  const unnamed = imageRoster.filter(p => p.backend.kind !== "open_ai_compatible" || !mediaKind(listedModel(p.backend)));
+  const pendingTargets = named === "everyone" ? unnamed.map(p => p.id) : named.length ? named : unnamed.slice(0, 1).map(p => p.id);
+  const imageNotice = hasImageDraft ? imageInputNotice(viewingPending ? pendingTargets : nextTo, imageRoster, listedModel) : null;
   const sendGate = botSendGate(openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." }, viewingPending ? pendingAgents.length : room?.participants.length ?? 0);
   const tints = hostTints(machines.filter((machine) => machine.kind === "server").map((machine) => machine.id));
   const machineIcon = (hostId: string, size = 16) => hostId === "local"
@@ -2971,7 +3010,8 @@ export function PhoneApp() {
             onRemoveQueued={(item) => openPane && queues.current.get(queueKey(openHostId, openPane.id))?.remove(item)}
             onResume={() => openPane && queues.current.get(queueKey(openHostId, openPane.id))?.resume()}
             draft={draft}
-            gate={openChat ? chatGate : sendGate}
+            imageNotice={imageNotice?.text}
+            gate={openChat ? chatGate : imageNotice?.blocked ? { enabled: false, reason: imageNotice.text } : sendGate}
             sending={sending}
             attaching={reading > 0}
             fork={openPane?.fork}
@@ -4074,7 +4114,7 @@ function ThreadView(props: {
   /** Where /compact cut in, drawn as a line the person can open to read the summary. */
   compaction: Room["compaction"];
   participants: Person[]; working: PhoneWorking; progress?: TurnProgress; cut: PhoneCuts;
-  paneId: string; stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; gate: { enabled: boolean; reason: string };
+  paneId: string; stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; imageNotice?: string; gate: { enabled: boolean; reason: string };
   /** Who a message without an @name goes to: "Null", "everyone"; null while unknown. */
   to: string | null;
   /** The same, as bot ids, for the bar to light up. */
@@ -4856,6 +4896,7 @@ function ThreadView(props: {
             {round.send && <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>}
           </div>
         </div>
+        {props.imageNotice && <p role="status" className="ph-caption warn">{props.imageNotice}</p>}
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}
       </form>
     </>
