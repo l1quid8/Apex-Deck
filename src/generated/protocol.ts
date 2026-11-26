@@ -1167,6 +1167,11 @@ export type Command = {
   };
   cmd: "session_save";
 } | {
+  args: {
+    session: unknown;
+  };
+  cmd: "session_save_layout";
+} | {
   args: Record<string, never>;
   cmd: "settings_load";
 } | {
@@ -4435,6 +4440,9 @@ export interface Commands {
   search_open: Record<string, never>;
   session_load: Record<string, never>;
   session_save: {
+    session: unknown;
+  };
+  session_save_layout: {
     session: unknown;
   };
   settings_code_mode_set: {

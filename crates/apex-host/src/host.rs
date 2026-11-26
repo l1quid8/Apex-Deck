@@ -3264,6 +3264,16 @@ impl Host {
         Ok(())
     }
 
+    /// Save the session only if the saved agent profiles stay as they are.
+    /// The check and the write happen under the store's one write lock, so a
+    /// concurrent receipted save cannot be reverted by a layout save.
+    pub fn session_save_layout(&self, session: serde_json::Value) -> Result<(), String> {
+        let session = Session::from_value(session)?.to_value();
+        let session = self.store.save_session_layout(&session)?;
+        self.emit(HostEvent::SessionChanged(session));
+        Ok(())
+    }
+
     pub fn settings_load(&self) -> Result<Option<serde_json::Value>, String> {
         Ok(self.settings()?.map(|settings| settings.to_value()))
     }

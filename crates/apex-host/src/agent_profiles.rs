@@ -97,6 +97,34 @@ impl Host {
         assert_eq!(reopened["profileRevision"],revision+2);
         std::fs::remove_dir_all(path).unwrap();
     }
+    #[test] fn layout_saves_keep_profiles_and_refuse_profile_changes() {
+        let path=std::env::temp_dir().join(format!("apex-profiles-layout-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let store=crate::storage::Store::new(path.clone());
+        let read=json!({"id":"worker","display_name":"Worker","persona":"","access":"read","backend":{"kind":"scripted","lines":[]}});
+        let initial=store.save_session_snapshot(&json!({"version":1,"profiles":[read.clone()]})).unwrap();
+        let revision=initial["profileRevision"].as_u64().unwrap();
+        // Layout changes with the same profiles, or with none at all, are saved.
+        let moved=store.save_session_layout(&json!({"version":1,"profiles":[read.clone()],"profileRevision":revision,"workspaces":[{"id":"w","path":"/tmp"}],"section":"threads"})).unwrap();
+        assert_eq!(moved["workspaces"][0]["id"],"w");
+        assert_eq!(moved["profileRevision"],revision);
+        store.save_session_layout(&json!({"version":1,"section":"agents"})).unwrap();
+        assert_eq!(store.session().unwrap().unwrap()["profiles"][0]["access"],"read");
+        // Raising, adding or removing a profile is refused and nothing is written.
+        let mut full=read.clone(); full["access"]=json!("full");
+        for profiles in [json!([full.clone()]),json!([read.clone(),full.clone()]),json!([])] {
+            let refused=store.save_session_layout(&json!({"version":1,"profiles":profiles,"profileRevision":revision,"section":"x"}));
+            assert_eq!(refused.unwrap_err(),crate::storage::LAYOUT_SAVE_CHANGES_PROFILES);
+        }
+        let kept=store.session().unwrap().unwrap();
+        assert_eq!(kept["profiles"],json!([read.clone()])); assert_eq!(kept["section"],"agents");
+        // A stale revision cannot write profiles either way: the saved ones stay.
+        let stale=store.save_session_layout(&json!({"version":1,"profiles":[full.clone()],"profileRevision":revision+7})).unwrap();
+        assert_eq!(stale["profiles"],json!([read.clone()]));
+        // The ordinary (receipted on Linux) save still changes them.
+        let raised=store.save_session_snapshot(&json!({"version":1,"profiles":[full.clone()],"profileRevision":revision})).unwrap();
+        assert_eq!(raised["profiles"][0]["access"],"full");
+        std::fs::remove_dir_all(path).unwrap();
+    }
     #[test] fn desktop_identity_and_metadata_survive_cli_edits_and_mentions_stay_unique() {
         let path=std::env::temp_dir().join(format!("apex-profile-desktop-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let store=crate::storage::Store::new(path.clone());

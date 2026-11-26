@@ -1,0 +1,327 @@
+#!/usr/bin/python3
+"""Deterministic stand-in for the Codex CLI, for installed-mode Linux CI.
+
+Installed as /usr/bin/codex on the runner. Python 3 standard library only.
+
+What the daemon needs from `codex` (see crates/apex-adapters/src/codex_server.rs):
+
+* `codex app-server -c tools.update_plan.enabled=true` speaking JSON-RPC, one
+  JSON object per line on stdin/stdout:
+    initialize -> initialized, hooks/list (+ config/batchWrite), plugin/list,
+    mcpServerStatus/list, thread/start, turn/start (+ notifications until
+    turn/completed), account/rateLimits/read, account/read, model/list,
+    turn/interrupt.
+* `codex --version` and `codex login status` are answered too (only the avatar
+  generator probes `login status`; nothing in a chat turn needs them).
+
+Turn behaviour:
+
+* A user turn whose text contains `@marker <absolute path>` makes the fake send
+  `item/commandExecution/requestApproval` (the request that puts an
+  "Allow once / Deny" card in the UI). On `accept`/`acceptForSession` it writes
+  "accepted" to that path and finishes with "Marker created: PATH". On
+  `decline`/`cancel` it writes nothing and finishes with "Marker declined: PATH".
+  The last `@marker` in the prompt wins (Deck may resend earlier transcript).
+* Any other turn answers "fake-codex: ok" and completes.
+
+Runner prerequisites (not done by this script):
+
+* On Linux the shipped daemon runs Codex in its bwrap jail for every access
+  level except Full. The jail has a private /tmp and only the thread's project
+  folder is writable, and only at Ask or Edits access. So the marker must live
+  inside the thread's project folder and the thread must use Ask (or Edits).
+* `~/.codex/auth.json` must be non-empty (or OPENAI_API_KEY set for the daemon)
+  or Deck reports Codex as "Needs sign-in" for chat profiles. A placeholder works:
+      install -m600 /dev/stdin ~/.codex/auth.json <<<'{"OPENAI_API_KEY":"sk-fake-ci"}'
+
+Optional: FAKE_CODEX_LOG=/path appends a protocol trace (the daemon discards
+stderr, and the jail drops most environment variables, so treat it as a local
+debugging aid only).
+
+Self-test: `fake-codex --self-test` runs this file as an app server and drives
+the approve and decline paths end to end.
+"""
+
+import json
+import os
+import re
+import sys
+import uuid
+
+VERSION = "0.200.0"
+MODEL = "gpt-fake-ci"
+MARKER = re.compile(r"@marker\s+(/\S+)")
+
+
+def log(text):
+    path = os.environ.get("FAKE_CODEX_LOG")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"[{os.getpid()}] {text}\n")
+    except OSError:
+        pass
+
+
+class Server:
+    def __init__(self, stdin, stdout):
+        self.stdin = stdin
+        self.stdout = stdout
+        self.threads = set()
+        self.backlog = []  # client requests that arrived while we waited on an answer
+        self.next_request = 0
+
+    # -- transport -------------------------------------------------------
+    def send(self, message):
+        line = json.dumps(message, separators=(",", ":"))
+        log(f"-> {line}")
+        self.stdout.write(line + "\n")
+        self.stdout.flush()
+
+    def notify(self, method, params):
+        self.send({"method": method, "params": params})
+
+    def read(self):
+        while True:
+            line = self.stdin.readline()
+            if not line:
+                return None
+            line = line.strip()
+            if not line:
+                continue
+            log(f"<- {line}")
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(message, dict):
+                return message
+
+    def ask(self, method, params):
+        """Send a server->client request and wait for its answer. Client
+        requests that arrive meanwhile are kept and handled afterwards."""
+        self.next_request += 1
+        request_id = f"fake-{self.next_request}"
+        self.send({"id": request_id, "method": method, "params": params})
+        while True:
+            message = self.read()
+            if message is None:
+                return None
+            if "method" not in message and message.get("id") == request_id:
+                return message
+            if "method" in message:
+                self.backlog.append(message)
+
+    # -- main loop -------------------------------------------------------
+    def run(self):
+        while True:
+            message = self.backlog.pop(0) if self.backlog else self.read()
+            if message is None:
+                return 0
+            method = message.get("method")
+            if method is None:
+                continue  # a stray answer
+            if "id" not in message:
+                continue  # notification (initialized, ...)
+            try:
+                self.dispatch(message["id"], method, message.get("params") or {})
+            except BrokenPipeError:
+                return 0
+
+    def reply(self, request_id, result):
+        self.send({"id": request_id, "result": result})
+
+    def dispatch(self, request_id, method, params):
+        if method == "initialize":
+            self.reply(request_id, {"userAgent": f"fake-codex/{VERSION}"})
+        elif method == "hooks/list":
+            # No Deck hook listed: the daemon falls back to the MCP inventory.
+            self.reply(request_id, {"data": []})
+        elif method == "config/batchWrite":
+            self.reply(request_id, {})
+        elif method == "plugin/list":
+            self.reply(request_id, {"marketplaces": []})
+        elif method == "mcpServerStatus/list":
+            self.reply(request_id, {"data": [], "nextCursor": None})
+        elif method == "model/list":
+            self.reply(request_id, {"data": [{
+                "id": MODEL, "model": MODEL, "displayName": "GPT Fake (CI)",
+                "description": "Deterministic CI stand-in", "isDefault": True,
+                "supportedReasoningEfforts": [], "defaultReasoningEffort": "medium",
+            }], "nextCursor": None})
+        elif method == "account/read":
+            self.reply(request_id, {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True})
+        elif method == "account/rateLimits/read":
+            self.reply(request_id, {"rateLimits": None})
+        elif method == "thread/start":
+            thread = f"thr_{uuid.uuid4().hex[:12]}"
+            self.threads.add(thread)
+            self.reply(request_id, {
+                "thread": {"id": thread, "preview": "", "ephemeral": bool(params.get("ephemeral"))},
+                "model": params.get("model") or MODEL,
+                "cwd": params.get("cwd") or os.getcwd(),
+                "approvalPolicy": params.get("approvalPolicy"),
+                "sandbox": params.get("sandbox"),
+            })
+        elif method == "turn/start":
+            self.turn(request_id, params)
+        elif method == "turn/interrupt":
+            self.reply(request_id, {})
+        else:
+            self.send({"id": request_id, "error": {"code": -32601, "message": f"fake-codex: unsupported method {method}"}})
+
+    # -- one turn ----------------------------------------------------------
+    def turn(self, request_id, params):
+        thread = params.get("threadId") or ""
+        if thread not in self.threads:
+            self.send({"id": request_id, "error": {"code": -32600, "message": f"unknown thread {thread}"}})
+            return
+        turn = f"turn_{uuid.uuid4().hex[:12]}"
+        text = "\n".join(
+            item.get("text", "") for item in params.get("input") or []
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+        self.reply(request_id, {"turn": {"id": turn, "status": "inProgress", "items": [], "error": None}})
+        ids = {"thread": thread, "turn": turn}
+        self.notify("turn/started", {"threadId": thread, "turn": {"id": turn, "status": "inProgress", "items": [], "error": None}})
+
+        markers = MARKER.findall(text)
+        if markers:
+            reply = self.marker_turn(ids, markers[-1], params)
+            if reply is None:
+                return  # the client went away mid-approval
+        else:
+            reply = "fake-codex: ok"
+
+        message_id = f"msg_{uuid.uuid4().hex[:8]}"
+        item = {"type": "agentMessage", "id": message_id, "text": reply, "phase": "final_answer"}
+        self.notify("item/started", {"threadId": thread, "turnId": turn, "item": {**item, "text": ""}})
+        self.notify("item/agentMessage/delta", {"threadId": thread, "turnId": turn, "itemId": message_id, "delta": reply})
+        self.notify("item/completed", {"threadId": thread, "turnId": turn, "item": item})
+        self.notify("thread/tokenUsage/updated", {"threadId": thread, "turnId": turn, "tokenUsage": {
+            "last": {"inputTokens": 10, "outputTokens": 5},
+            "total": {"inputTokens": 10, "cachedInputTokens": 0, "outputTokens": 5, "reasoningOutputTokens": 0, "totalTokens": 15},
+        }})
+        self.notify("turn/completed", {"threadId": thread, "turn": {"id": turn, "status": "completed", "items": [], "error": None}})
+
+    def marker_turn(self, ids, path, params):
+        thread, turn = ids["thread"], ids["turn"]
+        item_id = f"call_{uuid.uuid4().hex[:8]}"
+        command = f"/bin/sh -c 'printf accepted > {path}'"
+        cwd = os.getcwd()
+        started = {"type": "commandExecution", "id": item_id, "command": command, "cwd": cwd,
+                   "status": "inProgress", "commandActions": [], "aggregatedOutput": None,
+                   "exitCode": None, "durationMs": None}
+        self.notify("item/started", {"threadId": thread, "turnId": turn, "item": started})
+        answer = self.ask("item/commandExecution/requestApproval", {
+            "threadId": thread, "turnId": turn, "itemId": item_id,
+            "command": command, "cwd": cwd, "reason": "Create the CI marker file",
+        })
+        if answer is None:
+            return None
+        decision = (answer.get("result") or {}).get("decision")
+        if isinstance(decision, dict):  # e.g. {"acceptWithExecpolicyAmendment": {...}}
+            decision = next(iter(decision), None)
+        accepted = isinstance(decision, str) and decision.startswith("accept")
+        if accepted:
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("accepted")
+                status, exit_code, output = "completed", 0, ""
+                reply = f"Marker created: {path}"
+            except OSError as error:
+                status, exit_code, output = "failed", 1, str(error)
+                reply = f"Marker write FAILED for {path}: {error}"
+        else:
+            status, exit_code, output = "declined", None, None
+            reply = f"Marker declined: {path}"
+        log(f"decision={decision!r} accepted={accepted} path={path}")
+        done = {**started, "status": status, "exitCode": exit_code, "aggregatedOutput": output, "durationMs": 1}
+        self.notify("item/completed", {"threadId": thread, "turnId": turn, "item": done})
+        return reply
+
+
+# -- self-test -------------------------------------------------------------
+def self_test():
+    import subprocess
+    import tempfile
+
+    def session(decision, marker):
+        child = subprocess.Popen([sys.executable, os.path.abspath(__file__), "app-server", "-c", "tools.update_plan.enabled=true"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+        def send(message):
+            child.stdin.write(json.dumps(message) + "\n")
+            child.stdin.flush()
+
+        def until(test):
+            while True:
+                line = child.stdout.readline()
+                assert line, "fake-codex exited early"
+                message = json.loads(line)
+                if test(message):
+                    return message
+
+        send({"id": 0, "method": "initialize", "params": {"clientInfo": {"name": "t", "version": "0"}}})
+        until(lambda m: m.get("id") == 0)
+        send({"method": "initialized", "params": {}})
+        send({"id": 120, "method": "hooks/list", "params": {"cwds": []}})
+        assert until(lambda m: m.get("id") == 120)["result"] == {"data": []}
+        send({"id": 110, "method": "plugin/list", "params": {}})
+        send({"id": 10, "method": "mcpServerStatus/list", "params": {"limit": 100, "cursor": None}})
+        assert until(lambda m: m.get("id") == 10)["result"]["nextCursor"] is None
+        send({"id": 1, "method": "thread/start", "params": {"ephemeral": True}})
+        thread = until(lambda m: m.get("id") == 1)["result"]["thread"]["id"]
+        send({"id": 2, "method": "turn/start", "params": {"threadId": thread, "input": [{"type": "text", "text": f"please @marker {marker}"}]}})
+        turn = until(lambda m: m.get("id") == 2)["result"]["turn"]["id"]
+        request = until(lambda m: m.get("method") == "item/commandExecution/requestApproval")
+        assert request["params"]["threadId"] == thread and request["params"]["turnId"] == turn
+        assert not os.path.exists(marker), "marker written before the answer"
+        send({"id": request["id"], "result": {"decision": decision}})
+        final = until(lambda m: m.get("method") == "item/completed" and m["params"]["item"]["type"] == "agentMessage")
+        until(lambda m: m.get("method") == "turn/completed")
+        send({"id": 3, "method": "account/rateLimits/read"})
+        until(lambda m: m.get("id") == 3)
+        send({"id": 4, "method": "turn/start", "params": {"threadId": thread, "input": [{"type": "text", "text": "hello"}]}})
+        until(lambda m: m.get("id") == 4)
+        plain = until(lambda m: m.get("method") == "item/completed" and m["params"]["item"]["type"] == "agentMessage")
+        assert plain["params"]["item"]["text"] == "fake-codex: ok"
+        until(lambda m: m.get("method") == "turn/completed")
+        send({"id": 5, "method": "no/such", "params": {}})
+        assert "error" in until(lambda m: m.get("id") == 5)
+        child.stdin.close()
+        assert child.wait(timeout=10) == 0
+        return final["params"]["item"]["text"]
+
+    with tempfile.TemporaryDirectory() as folder:
+        yes, no = os.path.join(folder, "yes"), os.path.join(folder, "no")
+        assert session("accept", yes) == f"Marker created: {yes}"
+        with open(yes, encoding="utf-8") as handle:
+            assert handle.read() == "accepted"
+        assert session("decline", no) == f"Marker declined: {no}"
+        assert not os.path.exists(no)
+    print("fake-codex self-test: ok")
+    return 0
+
+
+def main(argv):
+    if argv[:1] in (["--version"], ["-V"]):
+        print(f"codex-cli {VERSION}")
+        return 0
+    if argv[:2] == ["login", "status"]:
+        # Real CLIs print this to stderr in some versions; print to both.
+        print("Logged in using an API key - sk-fake-ci")
+        print("Logged in using an API key - sk-fake-ci", file=sys.stderr)
+        return 0
+    if argv[:1] == ["--self-test"]:
+        return self_test()
+    if argv[:1] == ["app-server"]:
+        log(f"start argv={argv} cwd={os.getcwd()}")
+        return Server(sys.stdin, sys.stdout).run()
+    print(f"fake-codex: unsupported invocation: {' '.join(argv)}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

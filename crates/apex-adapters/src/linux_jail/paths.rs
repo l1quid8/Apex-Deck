@@ -241,6 +241,11 @@ pub fn standard_protected(home: &Path, data_dir: &Path) -> Vec<PathBuf> {
                  ".codex", ".gemini", ".grok", ".muse"] {
         out.push(home.join(name));
     }
+    // Deck's AppArmor-exempt bubblewrap: no folder holding it may be mounted,
+    // or a jailed agent could run it to make user namespaces of its own.
+    if let Some(folder) = crate::gateway_sandbox::jail_bwrap().as_deref().and_then(Path::parent) {
+        out.push(folder.to_path_buf());
+    }
     out
 }
 

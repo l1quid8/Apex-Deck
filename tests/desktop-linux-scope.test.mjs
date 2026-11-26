@@ -24,7 +24,7 @@ test('installed UI waits for a restarting engine without retrying invalid identi
   assert.equal(broken.kind,'notice');assert.equal(calls,1);
   calls=0;
   const stopped=await service.resolveLinuxLaunch({plan,bundle,identity:async()=>{calls++;throw new Error('Installed daemon readiness probe failed');},wait:async()=>{}});
-  assert.equal(stopped.kind,'notice');assert.equal(calls,12);
+  assert.equal(stopped.kind,'notice');assert.equal(calls,120); // about a minute: a slow arm64 engine took 26 s to listen after a restart
 });
 test('Linux scope verifies signatures, fresh challenge, enrolled UID and exact paths',async()=>{
   assert.equal(typeof provenance.linuxIdentity,'function');
