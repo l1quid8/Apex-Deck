@@ -192,3 +192,40 @@ async fn a_pr_the_agent_opened_is_found_by_branch_and_ignores_old_reused_branch_
         assert_eq!(find_pr_with(&remote, dir, &w).await.unwrap(), expected);
     }
 }
+
+#[tokio::test]
+async fn externally_finished_prs_reconcile_during_pending_ci_even_at_a_newer_head() {
+    for state in ["CLOSED", "MERGED", "OPEN"] {
+        let data = TestDataDir::new();
+        let w = workflow(data.path());
+        let store = ThreadGit::new(data.path());
+        store
+            .edit(|rooms| {
+                rooms.insert("r".into(), w.clone());
+                Ok(())
+            })
+            .unwrap();
+        let remote = Remote {
+            pull: pull(state, "new-head", "CLEAN", json!([])),
+            list: Value::Null,
+            log_id: None,
+        };
+        store
+            .advance(&remote, "r", &w, data.path(), Some(data.path()))
+            .await
+            .unwrap();
+        let saved = store.get("r").unwrap().unwrap();
+        match state {
+            "CLOSED" => assert!(saved.close_pending),
+            "MERGED" => assert_eq!(
+                (
+                    saved.phase,
+                    saved.head.as_str(),
+                    saved.result_oid.as_deref()
+                ),
+                (Phase::Syncing, "new-head", Some("merge-oid"))
+            ),
+            _ => assert_eq!((saved.phase, saved.close_pending), (Phase::Blocked, false)),
+        }
+    }
+}

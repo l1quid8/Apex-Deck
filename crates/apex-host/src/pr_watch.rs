@@ -193,6 +193,11 @@ impl PrWatch {
             };
         }
         seen.pr = w.pr.or(seen.pr);
+        if ledger.rooms.get(room).is_some_and(|prior| prior != &seen) {
+            ledger.rooms.insert(room.to_owned(), seen.clone());
+            cache.unflushed = true;
+            self.flush(&mut cache)?;
+        }
         Ok(seen)
     }
 
@@ -413,6 +418,25 @@ mod tests {
         )
         .unwrap();
         assert!(state.seen("room", &w).is_err());
+    }
+
+    #[test]
+    fn a_passing_first_pr_binds_the_pre_pr_budget_before_the_branch_is_reused() {
+        let data = TestDataDir::new();
+        let state = PrWatch::load(data.path());
+        let mut w = workflow();
+        w.pr = None;
+        let seen = state.seen("r", &w).unwrap();
+        let observation = Observation::LocalCheckFailed {
+            head: w.head.clone(),
+            detail: "tsc".into(),
+        };
+        let act = next(&w, &seen, &observation, OwnerState::Ready, false);
+        state.record("r", seen, &act, false, 0).unwrap();
+        w.pr = Some(42);
+        assert_eq!(state.seen("r", &w).unwrap().wakes, 1);
+        w.pr = Some(43);
+        assert_eq!(PrWatch::load(data.path()).seen("r", &w).unwrap().wakes, 0);
     }
 
     #[test]

@@ -32,7 +32,7 @@ impl Host {
             .is_some_and(|run| run.is_active()))
     }
 
-    async fn watch_pull_request(
+    pub(super) async fn watch_pull_request(
         self: &Arc<Self>,
         room: &str,
         mut w: Workflow,
@@ -40,6 +40,11 @@ impl Host {
         let Ok(_maintenance) = self.maintenance.enter() else {
             return Ok(());
         };
+        if w.close_pending {
+            let gate = self.runner_gate(room);
+            let _guard = gate.lock().await;
+            return self.finish_closed_pr(room, &w).await;
+        }
         if w.pending()
             || matches!(w.phase, Phase::Merged | Phase::Blocked)
             || !self.merges_from_task_folder(room, &w)
@@ -127,26 +132,8 @@ impl Host {
                     .mark_observed_merge(room, w, oid.clone(), head.clone())?
             }
             Act::Close => {
-                let pr = w.pr.ok_or("A closed pull request must have a number.")?;
-                let path = crate::assistant_git::external_path(Path::new(&w.root));
-                self.thread_git.mark_closed(room, w)?;
-                let note = self
-                    .deck_note(
-                        room,
-                        format!(
-                            "PR #{pr} was closed without merging. Its task folder stays at {}.",
-                            path.display()
-                        ),
-                    )
-                    .await;
-                let closed = self.task_branches.close(
-                    &self.paths.data,
-                    room,
-                    &w.builder,
-                    crate::task_branches::Close::Abandoned,
-                );
-                note?;
-                closed?;
+                let closed = self.thread_git.mark_closed(room, w)?;
+                return self.finish_closed_pr(room, &closed).await;
             }
         }
         // Record the sequence of the stop note, even if another agent is
@@ -160,6 +147,93 @@ impl Host {
             0
         };
         self.pr_watch.record(room, seen, &act, person_wrote, seq)
+    }
+
+    /// Resume the two effects of closing under the Runner gate. Keep the
+    /// workflow Blocked throughout; this path makes no GitHub calls.
+    async fn finish_closed_pr(self: &Arc<Self>, room: &str, w: &Workflow) -> Result<(), String> {
+        if self.refuse_moved_chat(room).is_err()
+            || self.active_runner(room)?
+            || self.thread_git.get(room)?.as_ref() != Some(w)
+        {
+            return Ok(());
+        }
+        if !self.rooms.lock().unwrap().contains_key(room) {
+            self.room_open(room.to_owned(), vec![], RoomOptions::default(), None, true)?;
+        }
+        let handle = self.handle(room)?;
+        let Ok(_checkout) = handle.checkout_action.try_write() else {
+            return Ok(());
+        };
+        if handle.runtime.busy() || self.refuse_moved_chat(room).is_err() {
+            return Ok(());
+        }
+
+        let pr = w.pr.ok_or("A closed pull request must have a number.")?;
+        let folder = self.task_branches.get(room, &w.builder)?.filter(|folder| {
+            folder.branch == w.branch
+                && folder.repo == w.repo
+                && same_folder(Path::new(&w.root), &folder.path)
+        });
+        let context = format!("{} · https://github.com/{}/pull/{pr}", w.branch, w.repo);
+        let closed = format!("PR #{pr} was closed without merging.");
+        let path = crate::assistant_git::external_path(Path::new(&w.root));
+        let task_note = format!(
+            "{closed} Its task folder stays at {}.\n{context}",
+            path.display()
+        );
+        let plain_note = format!("{closed}\n{context}");
+        let deck = Speaker::Bot(ParticipantId::new("deck"));
+        let already_posted = handle
+            .checkpoint
+            .lock()
+            .unwrap()
+            .snapshot
+            .transcript
+            .iter()
+            .any(|m| m.speaker == deck && (m.text == task_note || m.text == plain_note));
+        if !already_posted {
+            let note = if folder.is_some() {
+                &task_note
+            } else {
+                &plain_note
+            };
+            // Commit the note before announcing it. A storage error rolls
+            // back the append, leaving the next pass free to retry it.
+            drop(
+                handle
+                    .runtime
+                    .begin_post_with_commit_keeping_default(
+                        deck,
+                        note,
+                        Some(vec![]),
+                        true,
+                        &|snapshot| {
+                            if handle.runtime.busy() {
+                                return Err("Wait for the current work to finish.".into());
+                            }
+                            self.commit_client_snapshot(room, &handle, snapshot)?;
+                            handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        },
+                        &|event| self.room_event(room, event),
+                    )
+                    .await?,
+            );
+            if let Err(error) = self.checkpoint_room(&handle, room).await {
+                self.room_event_for(room, &handle, RoomEvent::JournalWarning { error });
+            }
+        }
+        let Some(_room) = handle.room.try_lock() else {
+            return Ok(());
+        };
+        if handle.runtime.busy() {
+            return Ok(());
+        }
+        if let Some(folder) = folder {
+            self.task_branches.abandon(&folder)?;
+        }
+        self.thread_git.finish_close(room, w)
     }
 
     /// Admit Deck's message and reserve the owner's turn before releasing the

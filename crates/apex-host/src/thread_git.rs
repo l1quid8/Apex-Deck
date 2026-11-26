@@ -152,6 +152,8 @@ pub struct Workflow {
     pub fix_requested: bool,
     #[serde(default)]
     pub local_check_failed: bool,
+    #[serde(default)]
+    pub(crate) close_pending: bool,
     /// Asked for from the decision card, where the checks had already passed:
     /// if they no longer do, the merge stops and nothing waits.
     #[serde(default)]
@@ -255,7 +257,7 @@ impl ThreadGit {
     }
     pub(crate) fn workflows(&self) -> Result<Vec<(String, Workflow)>, String> {
         self.edit(|rooms| Ok(rooms.iter()
-            .filter(|(_, w)| !w.pending() && !matches!(w.phase, Phase::Merged | Phase::Blocked))
+            .filter(|(_, w)| w.close_pending || (!w.pending() && !matches!(w.phase, Phase::Merged | Phase::Blocked)))
             .map(|(room, w)| (room.clone(), w.clone()))
             .collect()))
     }
@@ -267,10 +269,18 @@ impl ThreadGit {
         Ok(next)
     }
 
-    pub(crate) fn mark_closed(&self, room: &str, expected: &Workflow) -> Result<(), String> {
+    pub(crate) fn mark_closed(&self, room: &str, expected: &Workflow) -> Result<Workflow, String> {
         let mut next = expected.clone();
         next.phase = Phase::Blocked;
+        next.close_pending = true;
         next.detail = "The pull request was closed without merging.".into();
+        self.save_observation(room, expected, next.clone())?;
+        Ok(next)
+    }
+
+    pub(crate) fn finish_close(&self, room: &str, expected: &Workflow) -> Result<(), String> {
+        let mut next = expected.clone();
+        next.close_pending = false;
         self.save_observation(room, expected, next)
     }
 
@@ -339,6 +349,9 @@ impl ThreadGit {
         let repo = repository(&read(&["remote", "get-url", "--push", "origin"])?)?;
         self.edit(|r| {
             let current = r.get(room);
+            if current.is_some_and(|w| w.close_pending) {
+                return Err("Deck is finishing the previous closed pull request.".into());
+            }
             let same = current.is_some_and(|w| {
                 w.head == sha && w.repo == repo && w.branch == branch && w.root == root
             });
@@ -374,6 +387,7 @@ impl ThreadGit {
                         pushed: false,
                         fix_requested: false,
                         local_check_failed: false,
+                        close_pending: false,
                         ready_only: false,
                     },
                 );

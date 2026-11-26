@@ -23,10 +23,11 @@ struct Oid {
 enum Decision {
     Wait,
     Submit,
+    Closed,
     Finish(Phase, String),
 }
 fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
-    if pr.head_ref_oid != w.head
+    if w.pr.is_some_and(|number| number != pr.number)
         || pr.head_ref_name != w.branch
         || pr.base_ref_name != "main"
         || pr.is_cross_repository
@@ -36,7 +37,13 @@ fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
             "The pull request changed. Review the new commit.".into(),
         );
     }
+    if pr.state == "CLOSED" {
+        return Decision::Closed;
+    }
     if pr.state == "MERGED" {
+        if pr.merge_commit.is_none() {
+            return Decision::Wait;
+        }
         return Decision::Finish(
             Phase::Merged,
             format!(
@@ -55,7 +62,7 @@ fn reconcile(w: &Workflow, pr: &Pull, local_current: bool) -> Decision {
             "Merge cancelled. The branch stays on GitHub.".into(),
         );
     }
-    if !local_current || pr.state != "OPEN" {
+    if !local_current || pr.state != "OPEN" || pr.head_ref_oid != w.head {
         return Decision::Finish(
             Phase::Blocked,
             "The branch or PR changed. A new merge request is needed.".into(),
@@ -349,9 +356,11 @@ pub(super) async fn probe(shell: &impl Shell, w: &Workflow, data: &Path) -> Resu
     // The same reading the merge worker uses, as if the merge had been asked for.
     let mut asked = w.clone();
     asked.phase = Phase::Checks;
+    asked.pr = Some(number);
     Ok(match reconcile(&asked, &pr, true) {
         Decision::Finish(Phase::Failed, detail) => Checks::Failed { pr: number, detail },
         Decision::Finish(_, detail) => Checks::Unknown(detail),
+        Decision::Closed => Checks::Unknown("The pull request was closed.".into()),
         Decision::Wait => Checks::Running,
         Decision::Submit => match required(shell, w, &pr, data, root).await? {
             Required::Passed => Checks::Passed { pr: number },
@@ -691,6 +700,7 @@ impl ThreadGit {
                 })?;
             }
             Decision::Wait => {}
+            Decision::Closed => { self.mark_closed(room, w)?; }
             Decision::Finish(Phase::Blocked, detail) => return block(w, detail),
             Decision::Finish(phase, mut detail) => {
                 if phase == Phase::Failed && pr.merge_state_status != "DIRTY" {
@@ -739,6 +749,7 @@ impl ThreadGit {
                 self.update(room, w, |j| {
                     j.phase = phase;
                     if j.phase == Phase::Merged {
+                        j.head.clone_from(&pr.head_ref_oid);
                         j.result_oid = pr.merge_commit.as_ref().map(|c| c.oid.clone());
                         if j.result_oid.is_some() {
                             j.phase = Phase::Syncing;

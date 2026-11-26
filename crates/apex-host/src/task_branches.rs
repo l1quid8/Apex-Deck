@@ -220,6 +220,15 @@ impl TaskBranches {
         })
     }
 
+    /// Release only the task folder that the caller inspected. Its checkout
+    /// and branch remain available on disk.
+    pub(crate) fn abandon(&self, expected: &TaskFolder) -> Result<(), String> {
+        self.edit(|folders| {
+            folders.retain(|folder| folder != expected);
+            Ok(())
+        })
+    }
+
     /// Always drops the record; removes the folder and branch only when nothing
     /// in them is missing from the merge.
     pub fn close(&self, data: &Path, thread: &str, agent: &str, why: Close) -> Result<Closed, String> {

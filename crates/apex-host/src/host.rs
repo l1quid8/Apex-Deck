@@ -7067,7 +7067,9 @@ done
         use crate::pr_watch::Observation;
         use crate::thread_git::Phase;
         let t = ship_thread("watch-closed-pr", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
-        t.say("a", "@a build");
+        t.say("a", "Ship it.");
+        let armed = t.host.store.room("r").unwrap().unwrap().snapshot;
+        assert!(crate::thread_git::ship::ship_armed(&armed.transcript, armed.compaction.as_ref()));
         let folder = t.host.task_branches.get("r", "a").unwrap().unwrap();
         let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
         t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed)).unwrap();
@@ -7075,8 +7077,84 @@ done
         assert!(t.host.task_branches.get("r", "a").unwrap().is_none());
         assert!(folder.path.is_dir());
         let display_path = crate::assistant_git::external_path(&folder.path);
-        assert_eq!(t.notes(), vec![format!("PR #42 was closed without merging. Its task folder stays at {}.", display_path.display())]);
+        assert_eq!(t.notes(), vec![format!("PR #42 was closed without merging. Its task folder stays at {}.\n{} · https://github.com/{}/pull/42", display_path.display(), w.branch, w.repo)]);
+        let closed = t.host.store.room("r").unwrap().unwrap().snapshot;
+        assert!(!crate::thread_git::ship::ship_armed(&closed.transcript, closed.compaction.as_ref()));
         assert!(t.offer()["decision"].is_null());
+        t.finish();
+    }
+
+    #[test]
+    fn closing_retries_when_the_note_cannot_be_saved() {
+        use crate::pr_watch::Observation;
+        let t = ship_thread("watch-close-note-retry", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.say("a", "@a build");
+        let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        let rooms = t.host.store.root().join("rooms");
+        let saved_rooms = rooms.with_extension("saved");
+        std::fs::rename(&rooms, &saved_rooms).unwrap();
+        std::fs::write(&rooms, "A file here prevents saving the close note.").unwrap();
+        let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed));
+        std::fs::remove_file(&rooms).unwrap();
+        std::fs::rename(&saved_rooms, &rooms).unwrap();
+        assert!(failure.is_err());
+        assert!(t.notes().is_empty());
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_some());
+
+        let closing = t.workflow().unwrap();
+        assert!(closing.close_pending);
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        assert!(!t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes().len(), 1);
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_none());
+        t.finish();
+    }
+
+    #[test]
+    fn closing_retries_task_release_after_restart_without_reposting_the_note() {
+        use crate::pr_watch::Observation;
+        let t = ship_thread("watch-close-release-retry", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.say("a", "@a build");
+        let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        let ledger = t.data.join("task-branches-v1.json");
+        let saved_ledger = ledger.with_extension("saved");
+        std::fs::rename(&ledger, &saved_ledger).unwrap();
+        std::fs::create_dir(&ledger).unwrap();
+        let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed));
+        std::fs::remove_dir(&ledger).unwrap();
+        std::fs::rename(&saved_ledger, &ledger).unwrap();
+        assert!(failure.is_err());
+        assert!(t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes().len(), 1);
+
+        let ShipThread { host, runtime, data, repo, shas } = t;
+        host.shutdown();
+        drop(host);
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let t = ShipThread { host, runtime, data, repo, shas };
+        let closing = t.workflow().unwrap();
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        assert!(!t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes().len(), 1);
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_none());
+        t.finish();
+    }
+
+    #[test]
+    fn closing_an_old_pr_does_not_release_the_owners_replacement_task() {
+        let t = ship_thread("watch-close-replacement", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
+        t.say("a", "@a build");
+        let old = t.host.task_branches.get("r", "a").unwrap().unwrap();
+        let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
+        let closing = t.host.thread_git.mark_closed("r", &w).unwrap();
+        t.host.task_branches.abandon(&old).unwrap();
+        let new = t.host.task_branches.start(&t.data, t.repo.root(), None, "r", "a", "fix/replacement").unwrap().folder;
+
+        t.runtime.block_on(t.host.watch_pull_request("r", closing)).unwrap();
+        assert_eq!(t.host.task_branches.get("r", "a").unwrap(), Some(new));
+        assert!(old.path.is_dir());
+        assert!(!t.workflow().unwrap().close_pending);
+        assert_eq!(t.notes(), vec![format!("PR #42 was closed without merging.\n{} · https://github.com/{}/pull/42", w.branch, w.repo)]);
         t.finish();
     }
 
