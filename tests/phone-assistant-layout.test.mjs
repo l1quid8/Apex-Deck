@@ -29,9 +29,21 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
     fs.writeFileSync(main,`
       const {app,BrowserWindow}=require('electron');const assert=require('node:assert/strict');const fs=require('node:fs');
       app.whenReady().then(async()=>{try{
-        const win=new BrowserWindow({show:false,width:393,height:852});
+        const win=new BrowserWindow({show:false,width:393,height:852,webPreferences:{backgroundThrottling:false}});
         const run=fn=>win.webContents.executeJavaScript('('+fn.toString()+')()');
         const wait=async fn=>{for(let i=0;i<400;i++){if(await run(fn))return;await new Promise(r=>setTimeout(r,25));}throw Error('Timed out '+fn);};
+        const resize=async(width,height)=>{
+          win.setContentSize(width,height);
+          for(let i=0;i<400;i++){
+            const size=await run(()=>[innerWidth,innerHeight]);
+            if(size[0]===width&&size[1]===height){
+              await run(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+              return;
+            }
+            await new Promise(r=>setTimeout(r,25));
+          }
+          throw Error('Viewport did not resize to '+width+'x'+height);
+        };
         await win.loadURL('http://localhost:${server.httpServer.address().port}/assistant-layout');
         await wait(()=>!!document.querySelector('.assistant-phone-send'));
         const geometry=()=>{
@@ -39,7 +51,7 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
           return nodes.map(e=>({name:e.className,left:e.getBoundingClientRect().left,right:e.getBoundingClientRect().right,width:e.getBoundingClientRect().width}));
         };
         for(const [width,height] of [[320,640],[393,852],[430,932],[393,430]]){
-          win.setContentSize(width,height);await new Promise(r=>setTimeout(r,150));
+          await resize(width,height);
           for(const r of await run(geometry)){assert.ok(r.left>=-1&&r.right<=width+1,JSON.stringify({width,r}));}
           const box=await run(()=>{const r=document.querySelector('.apex-agent-all-composer').getBoundingClientRect();return {bottom:r.bottom,height:r.height}});
           assert.ok(box.bottom<=height+1,JSON.stringify(box));assert.ok(box.height<180,JSON.stringify(box));
@@ -57,7 +69,7 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
         await wait(()=>!!document.querySelector('.compact-actions.expanded'));
         assert.equal(await run(()=>window.fixture.readButton===document.querySelector('.compact-actions.expanded .read-aloud')),true);
 
-        win.setContentSize(320,640);await new Promise(r=>setTimeout(r,150));
+        await resize(320,640);
         await run(()=>document.querySelector('.compact-actions [aria-label="Add reaction"]').click());
         await wait(()=>!!document.querySelector('.apex-agent-reaction-options'));
         for(const r of await run(geometry))assert.ok(r.left>=-1&&r.right<=321,JSON.stringify(r));
@@ -81,10 +93,10 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
         for(const r of await run(geometry))assert.ok(r.left>=-1&&r.right<=321,JSON.stringify(r));
         assert.ok(await run(()=>document.documentElement.scrollWidth<=innerWidth));
         await run(()=>{window.fixture.taskContext=null;window.fixture.render();document.querySelector('.plan-chip').click();document.querySelector('[aria-label="Hide message actions"]').click();});
-        win.setContentSize(393,852);await new Promise(r=>setTimeout(r,150));
+        await resize(393,852);
         fs.writeFileSync(${JSON.stringify(process.env.APEX_LAYOUT_SCREENSHOT ?? path.join(temp,'layout.png'))},(await win.webContents.capturePage()).toPNG());
         await run(()=>{window.fixture.phone=false;window.fixture.render()});
-        win.setContentSize(1100,850);
+        await resize(1100,850);
         await wait(()=>!!document.querySelector('.apex-agent-all-send'));
         assert.equal(await run(()=>document.querySelectorAll('.assistant-phone-send').length),0);
         assert.equal(await run(()=>document.querySelectorAll('.compact-actions').length),0);
