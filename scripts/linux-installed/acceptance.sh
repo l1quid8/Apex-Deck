@@ -35,6 +35,9 @@ collect() {
   [[ -n ${UID_T:-} ]] && sudo -u "$TESTER" DISPLAY=$DISPLAY_NUM xwd -root -silent 2>/dev/null >"$EVIDENCE/screen.xwd"
   local data="$(getent passwd "$TESTER" | cut -d: -f6)/.local/share/dev.apexdeck.app.nightly"
   stat -c '%U:%G %a %n' "$data" "$data/saved-chats-v1" >"$EVIDENCE/scope-modes.txt" 2>&1
+  # The host's project list: tells a project the UI never showed from one it never added.
+  find "$data" -maxdepth 3 -name 'lifecycle-v1.json' -exec cp {} "$EVIDENCE/" \; 2>/dev/null
+  find "$data" -maxdepth 3 -printf '%M %u %s %p\n' >"$EVIDENCE/data-files.txt" 2>&1
   cp /tmp/apex-acceptance-*.log /tmp/apex-acceptance-*.xwd "$EVIDENCE/" 2>/dev/null
   chmod -R a+rX "$EVIDENCE"
 }
