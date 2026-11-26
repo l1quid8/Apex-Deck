@@ -1220,73 +1220,46 @@
 .ph-app .apex-agent-all .assistant-chat-message > p { margin: 5px 0 0; }
 .ph-app .apex-agent-all .apex-agent-message-meta { font-size: 11px; line-height: 1.35; }
 .ph-app .apex-agent-all .apex-agent-project-tag { min-height: 44px; padding: 0 4px; font-size: inherit; vertical-align: middle; }
-.ph-app .apex-agent-all-composer {
-  flex: none;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 58px;
-  grid-template-rows: auto auto;
-  align-items: center;
-  gap: 2px 8px;
-  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--line);
-  background: var(--panel, var(--bg));
+/* The phone uses the shared composer markup: text above a touch toolbar. */
+.ph-app .apex-agent-all .apex-agent-all-composer {
+  flex: none; display: flex; flex-direction: column; gap: 4px;
+  min-width: 0; padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line); background: var(--bg);
 }
-.ph-app .apex-agent-all-composer > textarea,
-.ph-app .apex-agent-all-composer > .apex-agent-all-input {
-  grid-column: 1;
-  grid-row: 2;
-  width: 100%;
-  height: 44px;
-  min-height: 44px;
-  max-height: 144px;
-  resize: none;
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 16px;
-  line-height: 22px;
-  overflow-y: auto;
-  -webkit-appearance: none;
+.ph-app .apex-agent-all .apex-agent-all-composer[hidden] { display: none; }
+.ph-app .apex-agent-all .composer-box {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+  width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 18px;
 }
-.ph-app .apex-agent-all-composer > div,
-.ph-app .apex-agent-all-composer > .apex-agent-all-compose-row { display: contents; }
-.ph-app .apex-agent-all-composer > div > small,
-.ph-app .apex-agent-all-composer > .apex-agent-all-compose-row > .apex-agent-all-destination {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.ph-app .apex-agent-all .composer-box > .composer-field { order: -1; flex: 1 1 100%; min-width: 0; }
+.ph-app .apex-agent-all .composer-field > .apex-agent-all-input {
+  display: block; width: 100%; height: 44px; min-height: 44px; max-height: 144px;
+  box-sizing: border-box; resize: none; padding: 10px 4px; border: 0;
+  border-radius: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: 16px; line-height: 22px; box-shadow: none;
 }
-.ph-app .apex-agent-all-composer > div > button,
-.ph-app .apex-agent-all-composer > .apex-agent-all-compose-row > .apex-agent-all-send,
-.ph-app .apex-agent-all-composer > .apex-agent-all-send {
-  grid-column: 2;
-  grid-row: 2;
-  width: 58px;
-  min-width: 58px;
-  min-height: 44px;
-  padding: 0 8px;
-  border-radius: 12px;
-  font-size: 13px;
+.ph-app .apex-agent-all .composer-box > .composer-tools { margin: 0; flex: none; }
+.ph-app .apex-agent-all .composer-plus { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+.ph-app .apex-agent-all .composer-box > :is(.tldr-pill, .plan-chip) {
+  flex: none; align-self: center; margin: 0; min-width: 52px; height: 44px;
+  min-height: 44px; padding: 0; font-size: 11px; box-sizing: border-box;
 }
-.ph-app .apex-agent-all-composer .assistant-composer-heading { grid-column: 1 / -1; grid-row: 1; }
-.ph-app .apex-agent-all-composer .assistant-composer-heading button { min-height: 44px; }
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) { grid-template-rows: auto auto auto; }
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > div > small,
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-compose-row > .apex-agent-all-destination { grid-row: 2; }
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > textarea,
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-input { grid-row: 3; }
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > div > button,
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-compose-row > .apex-agent-all-send,
-.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-send { grid-row: 3; }
+.ph-app .apex-agent-all .composer-box > .tldr-pill::before { inset: 0; }
+.ph-app .apex-agent-all .composer-box > .assistant-phone-send {
+  flex: none; width: 44px; min-width: 44px; height: 44px; min-height: 44px;
+  align-self: center; margin: 0 0 0 auto; padding: 0; border-radius: 50%;
+  font-size: 24px; background: var(--accent); color: var(--bg);
+}
+.ph-app .apex-agent-all .assistant-phone-send:disabled { opacity: .35; }
+.ph-app .apex-agent-all .composer-box > input[hidden] { display: none; }
+.ph-app .apex-agent-all .composer-box .attachments { order: -2; flex: 1 1 100%; min-width: 0; }
+.ph-app .apex-agent-all .composer-menu { left: 0; right: auto; bottom: calc(100% + 8px); width: min(320px, calc(100vw - 48px)); max-height: 45vh; overflow: auto; }
+.ph-app .apex-agent-all .apex-agent-reply-quote { width: 100%; min-width: 0; box-sizing: border-box; }
+.ph-app .apex-agent-all .apex-agent-all-compose-row { display: flex; min-width: 0; padding: 0 4px; }
+.ph-app .apex-agent-all .apex-agent-all-destination { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 18px; }
+.ph-app .apex-agent-all .assistant-composer-heading { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.ph-app .apex-agent-all .assistant-composer-heading button { min-height: 44px; flex: none; }
 .ph-app .apex-agent-all .apex-agent-task-card { margin: 8px 12px; max-width: calc(100% - 24px); padding: 12px; }
 .ph-app .apex-agent-all .apex-agent-task-decide > button,
 .ph-app .apex-agent-all .assistant-task-decision-actions button,
@@ -1300,22 +1273,6 @@
 /* The overlay follows the same visible viewport as the phone, including the keyboard. */
 .ph-app .apex-agent-backdrop { bottom: auto; height: var(--ph-height, 100%); }
 :root[data-keyboard] .ph-app .apex-agent-all-composer { padding-bottom: 8px; }
-.ph-app .apex-agent-all-composer .apex-agent-all-send { align-self: end; }
-.ph-app .apex-agent-all-composer > .assistant-composer-heading { display: flex; }
-.ph-app .apex-agent-all-composer { display: flex !important; flex-direction: column; align-items: stretch; gap: 6px; }
-.ph-app .apex-agent-all-composer > div { display: flex; }
-.ph-app .apex-agent-all-composer[hidden] { display: none !important; }
-.ph-app .apex-agent-all-compose-box { display: grid !important; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: auto; align-items: end; gap: 0 8px; width: 100%; }
-.ph-app .apex-agent-all-compose-box > div:first-child { display: contents; }
-.ph-app .apex-agent-all-compose-box .composer-tools { grid-column: 1; grid-row: 1; align-self: end; }
-.ph-app .apex-agent-all-compose-box .composer-plus { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
-.ph-app .apex-agent-all-composer .apex-agent-all-input { grid-column: 2; grid-row: 1; width: 100%; height: 44px; min-height: 44px; max-height: 144px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font-size: 16px; line-height: 22px; }
-.ph-app .apex-agent-all-compose-box .attachments { grid-column: 1 / -1; width: 100%; min-width: 0; }
-.ph-app .apex-agent-all-compose-box .composer-menu { left: 0; right: auto; bottom: calc(100% + 8px); width: min(320px, calc(100vw - 24px)); max-height: 55vh; overflow: auto; }
-.ph-app .apex-agent-all-composer .apex-agent-reply-quote { width: 100%; box-sizing: border-box; }
-.ph-app .apex-agent-all-composer .apex-agent-all-compose-row { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 8px; }
-.ph-app .apex-agent-all-composer .apex-agent-all-compose-row .apex-agent-all-destination { flex: 1; min-width: 0; overflow: hidden; font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.ph-app .apex-agent-all-composer .apex-agent-all-compose-row .apex-agent-all-send { flex: none; width: 58px; min-width: 58px; min-height: 44px; padding: 0 8px; border-radius: 12px; font-size: 13px; }
 .ph-app .apex-agent-notifications-home { padding: 12px; }
 .ph-app .apex-agent-all .apex-agent-message-body .md { gap: 12px; margin-top: 6px; }
 .ph-app .apex-agent-all .apex-agent-message-body .md p { margin: 0; white-space: normal; }
@@ -1614,3 +1571,23 @@
 .ph-suggestion-setting select { max-width: 100%; }
 .ph-app .reply-decision .actions button { min-height: 32px; position: relative; }
 .ph-app .reply-decision .actions button::before { content: ""; position: absolute; inset: -6px 0; }
+
+/* Conversation content takes priority; message tools expand on demand. */
+.ph-app .apex-agent-all .assistant-chat-transcript { gap: 20px; padding: 16px 20px; }
+.ph-app .apex-agent-all .apex-agent-message-row { width: 100%; max-width: 100%; gap: 2px; }
+.ph-app .apex-agent-all .apex-agent-message-row.human { width: auto; max-width: 90%; }
+.ph-app .apex-agent-all .assistant-chat-message.assistant { padding: 0; border: 0; background: none; border-radius: 0; box-shadow: none; width: 100%; }
+.ph-app .apex-agent-all .apex-agent-message-pinned > .assistant-chat-message { border-left: 2px solid var(--accent); padding-left: 10px; }
+.ph-app .apex-agent-all .compact-actions { width: 100%; min-width: 0; flex-wrap: wrap; gap: 0 4px; }
+.ph-app .apex-agent-all .compact-actions > .message-time { order: -2; opacity: 1; font-size: 11px; margin: 0; }
+.ph-app .apex-agent-all .compact-actions > .action-disclosure { order: -1; }
+.ph-app .apex-agent-all .compact-actions .msg-action { min-width: 44px; min-height: 44px; height: 44px; opacity: 1; }
+.ph-app .apex-agent-all .compact-actions :is(.message-primary-actions, .message-action-items) { display: flex; flex-wrap: wrap; gap: 0; }
+.ph-app .apex-agent-all .compact-actions.expanded > .message-primary-actions { flex-basis: 100%; }
+.ph-app .apex-agent-all .compact-actions .apex-agent-reaction-options { max-width: calc(100vw - 56px); flex-wrap: wrap; box-sizing: border-box; }
+.ph-app .apex-agent-all .compact-actions .apex-agent-reactions { max-width: 100%; flex-wrap: wrap; }
+
+.ph-app .apex-agent-all .compact-actions .message-primary-actions[hidden] { display: none; }
+.ph-app .apex-agent-all .assistant-composer-heading strong { min-width: 0; overflow-wrap: anywhere; }
+.ph-app .apex-agent-all .compact-actions.expanded > .apex-agent-reactions { flex-basis: 100%; }
+.ph-app .apex-agent-all .apex-agent-message-row.human .compact-actions.expanded > .apex-agent-reactions { justify-content: flex-end; }
