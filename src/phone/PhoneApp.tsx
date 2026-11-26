@@ -1,3 +1,4 @@
+import { PhoneComposerRow } from '../ThreadComposer';
 import { WorkspaceTaskDetails } from '../WorkspaceTaskDetails';
 import { projectTaskKey } from '../apexAgentTaskView.ts';
 import { addTokenUsage } from "../tokenUsage";
@@ -4817,13 +4818,10 @@ function ThreadView(props: {
         )}
         {props.callStrip}
         {/* One row, as in Messages: + for files and tools, then the message box. */}
-        <div className="ph-compose-row">
-          {/* A chat is talk-only: no files to attach and no tools to pick. */}
-          {!props.chat && <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
+        <PhoneComposerRow tools={!props.chat && <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
             <Plus size={22} />
             {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
-          </button>}
-          <div className={`ph-input${pillCall ? " ph-in-call" : ""}`}>
+          </button>} inputClassName={pillCall ? "ph-in-call" : ""}>
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
               onPaste={(event) => {
                 if (props.chat) return;
@@ -4854,8 +4852,7 @@ function ThreadView(props: {
               onClick={props.onTldr}><span aria-hidden="true">TL;</span><span aria-hidden="true">DR</span></button>
             {props.call?.(round.mic)}
             {round.send && <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>}
-          </div>
-        </div>
+        </PhoneComposerRow>
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}
       </form>
     </>

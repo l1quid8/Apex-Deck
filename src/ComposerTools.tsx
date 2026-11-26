@@ -1,3 +1,4 @@
+import { Plus } from './phone/icons';
 import type { ReactNode } from "react";
 import type { ToolServer } from "./types";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
@@ -28,7 +29,8 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   /** Command key to reason when this surface cannot run it. */
   disabledCommands?: Record<string, string>;
   disabled?: boolean;
-}>(({ participants, servers, serverStatus, threadItems, threadNotice, mods = [], trigger, choose, planOn = false, talkOnly = false, canAttach = true, canAttachFolder = true, canUseTools = true, includeAll = true, allMentionDetail, folderUnavailableReason, filesUnavailableReason, disabledCommands = {}, disabled = false }, ref) => {
+  phone?: boolean;
+}>(({ participants, servers, serverStatus, threadItems, threadNotice, mods = [], trigger, choose, planOn = false, talkOnly = false, canAttach = true, canAttachFolder = true, canUseTools = true, includeAll = true, allMentionDetail, folderUnavailableReason, filesUnavailableReason, disabledCommands = {}, disabled = false, phone = false }, ref) => {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -79,8 +81,8 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   };
   useImperativeHandle(ref, () => ({ key: boxKey }));
   return <div className="composer-tools" ref={root}>
-    <button type="button" className="icon composer-plus" disabled={disabled} aria-label="Files, tools, commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
-      onClick={() => { if (visible) close(); else { setOpen(true); setQuery(""); setSelected(0); } }}>+</button>
+    <button type="button" className={`icon composer-plus${phone ? " ph-add" : ""}`} disabled={disabled} aria-label="Files, tools, commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
+      onClick={() => { if (visible) close(); else { setOpen(true); setQuery(""); setSelected(0); } }}>{phone ? <Plus size={22}/> : "+"}</button>
     {visible && <div className="composer-menu" role="dialog" aria-label="Commands and mentions" onKeyDown={key}>
       {open && <input ref={search} disabled={disabled} aria-label="Find command or participant" placeholder="Find a tool, command or @name…" value={query} onChange={e => setQuery(e.target.value)} />}
       <div role="listbox" aria-label={trigger?.kind === "thread" ? "Threads" : "Available commands and mentions"}>

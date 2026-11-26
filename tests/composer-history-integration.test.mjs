@@ -65,7 +65,7 @@ for (const file of ['ChatPane.tsx', 'ApexAgentAll.tsx']) {
   test(`${file} gives menus and questions priority over recall without submitting`, () => {
     const src = fs.readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
     const start = src.indexOf('onKeyDown={', src.indexOf('aria-label="Message the room"') >= 0 ? src.indexOf('aria-label="Message the room"') : src.indexOf('className="apex-agent-all-input"'));
-    const end = file === 'ChatPane.tsx' ? src.indexOf('\n          rows={1}', start) : src.indexOf(' /></div>', start);
+    const end = file === 'ChatPane.tsx' ? src.indexOf('\n          rows={1}', start) : src.indexOf(' />', start);
     const expression = src.slice(start + 'onKeyDown={'.length, end).trim().replace(/}$/, '');
     let menu = false, question = false, recalls = 0, submits = 0;
     const handler = new Function('composerMenu', 'formKeys', 'composerHistory', 'send', 'tldr', 'setTldr', 'toggleTldr', 'pendingReply', 'personal', 'busy', 'stopBots', 'run', 'text', transform(`return (${expression});`, { transforms: ['typescript'] }).code)(
