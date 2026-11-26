@@ -82,7 +82,7 @@ test('phone assistant fits narrow and keyboard viewports with reachable message 
         assert.ok(await run(()=>document.documentElement.scrollWidth<=innerWidth));
         await run(()=>{window.fixture.taskContext=null;window.fixture.render();document.querySelector('.plan-chip').click();document.querySelector('[aria-label="Hide message actions"]').click();});
         win.setContentSize(393,852);await new Promise(r=>setTimeout(r,150));
-        fs.writeFileSync('/tmp/apex-ios-assistant-layout.png',(await win.webContents.capturePage()).toPNG());
+        fs.writeFileSync(${JSON.stringify(process.env.APEX_LAYOUT_SCREENSHOT ?? path.join(temp,'layout.png'))},(await win.webContents.capturePage()).toPNG());
         await run(()=>{window.fixture.phone=false;window.fixture.render()});
         win.setContentSize(1100,850);
         await wait(()=>!!document.querySelector('.apex-agent-all-send'));
