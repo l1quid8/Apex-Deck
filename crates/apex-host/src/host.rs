@@ -7042,17 +7042,12 @@ done
     #[test]
     fn seen_is_not_saved_when_wake_agent_fails() {
         let t = ship_thread("wake-failed-save", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}", "Working on it."])]);
-        t.say("a", "@a build");
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
         let w = t.workflow().unwrap();
         let observation = crate::pr_watch::Observation::LocalCheckFailed { head: w.head.clone(), detail: "Type error.".into() };
-        let rooms = t.host.store.root().join("rooms");
-        let saved_rooms = rooms.with_extension("saved");
-        std::fs::rename(&rooms, &saved_rooms).unwrap();
-        std::fs::write(&rooms, "A file here prevents saving the wake.").unwrap();
+        t.host.store.fail_next_room_save();
         let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &observation));
-        std::fs::remove_file(&rooms).unwrap();
-        std::fs::rename(&saved_rooms, &rooms).unwrap();
-        assert!(failure.is_err());
+        assert_eq!(failure, Err("Injected room save failure.".into()));
         assert!(t.notes().is_empty());
         assert_eq!(t.host.pr_watch.seen("r", &w).unwrap().wakes, 0);
 
@@ -7067,7 +7062,7 @@ done
         use crate::pr_watch::Observation;
         use crate::thread_git::Phase;
         let t = ship_thread("watch-closed-pr", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
-        t.say("a", "Ship it.");
+        t.runtime.block_on(t.host.room_post("r".into(), "Ship it.".into())).unwrap();
         let armed = t.host.store.room("r").unwrap().unwrap().snapshot;
         assert!(crate::thread_git::ship::ship_armed(&armed.transcript, armed.compaction.as_ref()));
         let folder = t.host.task_branches.get("r", "a").unwrap().unwrap();
@@ -7076,7 +7071,7 @@ done
         assert_eq!(t.workflow().unwrap().phase, Phase::Blocked);
         assert!(t.host.task_branches.get("r", "a").unwrap().is_none());
         assert!(folder.path.is_dir());
-        let display_path = crate::assistant_git::external_path(&folder.path);
+        let display_path = crate::assistant_git::external_path(Path::new(&w.root));
         assert_eq!(t.notes(), vec![format!("PR #42 was closed without merging. Its task folder stays at {}.\n{} · https://github.com/{}/pull/42", display_path.display(), w.branch, w.repo)]);
         let closed = t.host.store.room("r").unwrap().unwrap().snapshot;
         assert!(!crate::thread_git::ship::ship_armed(&closed.transcript, closed.compaction.as_ref()));
@@ -7088,16 +7083,11 @@ done
     fn closing_retries_when_the_note_cannot_be_saved() {
         use crate::pr_watch::Observation;
         let t = ship_thread("watch-close-note-retry", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
-        t.say("a", "@a build");
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
         let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
-        let rooms = t.host.store.root().join("rooms");
-        let saved_rooms = rooms.with_extension("saved");
-        std::fs::rename(&rooms, &saved_rooms).unwrap();
-        std::fs::write(&rooms, "A file here prevents saving the close note.").unwrap();
+        t.host.store.fail_next_room_save();
         let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed));
-        std::fs::remove_file(&rooms).unwrap();
-        std::fs::rename(&saved_rooms, &rooms).unwrap();
-        assert!(failure.is_err());
+        assert_eq!(failure, Err("Injected room save failure.".into()));
         assert!(t.notes().is_empty());
         assert!(t.host.task_branches.get("r", "a").unwrap().is_some());
 
@@ -7114,16 +7104,12 @@ done
     fn closing_retries_task_release_after_restart_without_reposting_the_note() {
         use crate::pr_watch::Observation;
         let t = ship_thread("watch-close-release-retry", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
-        t.say("a", "@a build");
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
         let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
-        let ledger = t.data.join("task-branches-v1.json");
-        let saved_ledger = ledger.with_extension("saved");
-        std::fs::rename(&ledger, &saved_ledger).unwrap();
-        std::fs::create_dir(&ledger).unwrap();
+        t.host.task_branches.fail_next_save();
         let failure = t.runtime.block_on(t.host.apply_pr_observation("r", &w, &Observation::Closed));
-        std::fs::remove_dir(&ledger).unwrap();
-        std::fs::rename(&saved_ledger, &ledger).unwrap();
-        assert!(failure.is_err());
+        assert_eq!(failure, Err("Injected task ledger save failure.".into()));
+        assert!(t.host.task_branches.get("r", "a").unwrap().is_some());
         assert!(t.workflow().unwrap().close_pending);
         assert_eq!(t.notes().len(), 1);
 
@@ -7144,7 +7130,7 @@ done
     fn closing_a_reopened_pr_posts_a_new_note_for_the_same_pr() {
         use crate::pr_watch::Observation;
         let t = ship_thread("watch-close-reopen", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
-        t.say("a", "@a build");
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
         let open = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
         t.runtime.block_on(t.host.apply_pr_observation("r", &open, &Observation::Closed)).unwrap();
         assert_eq!(t.notes().len(), 1);
@@ -7164,7 +7150,7 @@ done
     #[test]
     fn closing_an_old_pr_does_not_release_the_owners_replacement_task() {
         let t = ship_thread("watch-close-replacement", &["a"], &[("a", Access::Full, &["Built.\nDeck built {sha:a}"])]);
-        t.say("a", "@a build");
+        t.runtime.block_on(t.host.room_post("r".into(), "@a build".into())).unwrap();
         let old = t.host.task_branches.get("r", "a").unwrap().unwrap();
         let w = t.host.thread_git.set_pr("r", &t.workflow().unwrap(), 42).unwrap();
         let closing = t.host.thread_git.mark_closed("r", &w).unwrap();

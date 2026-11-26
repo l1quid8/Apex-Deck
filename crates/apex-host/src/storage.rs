@@ -303,6 +303,8 @@ pub use lifecycle::ProjectEntry;
 pub struct Store {
     root: PathBuf,
     writes: Mutex<()>,
+    #[cfg(test)]
+    fail_room_save: std::sync::atomic::AtomicBool,
 }
 
 /// The window resends a refused layout save through the broker on this text.
@@ -310,7 +312,17 @@ pub const LAYOUT_SAVE_CHANGES_PROFILES: &str = "This save changes agent profiles
 
 impl Store {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, writes: Mutex::new(()) }
+        Self {
+            root,
+            writes: Mutex::new(()),
+            #[cfg(test)]
+            fail_room_save: Default::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_room_save(&self) {
+        self.fail_room_save.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The folder Deck keeps its own files in, so a promotion can refuse it
@@ -718,6 +730,10 @@ impl Store {
             }
             None => 0,
         };
+        #[cfg(test)]
+        if self.fail_room_save.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err("Injected room save failure.".into());
+        }
         self.write_held(&room_path, room)?;
         if let Err(why) = self.save_room_authority_held(id,room,authorities) {
             let restored = match &before {
