@@ -68,7 +68,10 @@ export function packagePayload({ payload, prefix, privateKey, arch, version, com
     const bytes = Buffer.from(JSON.stringify(manifest));
     if (bytes.length > 4 * 1024 ** 2) throw new Error('Manifest exceeds bounds');
     writeFileSync(`${prefix}.manifest.json`, bytes, { flag: 'wx', mode: 0o644 });
-    writeFileSync(`${prefix}.sig`, sign(null, bytes, privateKey), { flag: 'wx', mode: 0o644 });
+    // Production bundles are signed later, in a job that holds only the key
+    // (scripts/seal-linux-installer.mjs); evaluation bundles are signed here.
+    if (privateKey) writeFileSync(`${prefix}.sig`, sign(null, bytes, privateKey), { flag: 'wx', mode: 0o644 });
+    else if (evaluation) throw new Error('An evaluation payload must be signed with its evaluation key');
     return manifest;
   } catch (error) {
     if (fd !== undefined) closeSync(fd);

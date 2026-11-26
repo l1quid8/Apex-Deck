@@ -1,0 +1,5 @@
+{
+  "_comment": "Ed25519 public keys (base64 of the raw 32 bytes) the production Linux broker trusts for signed releases, per channel. Add a key before rotating; remove the old one only after every install has moved. Empty means protected installation is disabled for that channel.",
+  "stable": [],
+  "nightly": []
+}

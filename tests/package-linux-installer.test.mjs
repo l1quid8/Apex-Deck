@@ -68,3 +68,42 @@ test('bundle carries a signed payload with broker, launcher assets and the same 
     assert.equal(statSync(path.join(top, 'apex-deck-install')).mode & 0o777, 0o755);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('an unsigned production bundle seals with a committed key into the shape the broker verifies', { skip: process.platform !== 'linux' }, async () => {
+  const { seal, rawPublicKey } = await import('../scripts/seal-linux-installer.mjs');
+  const root = mkdtempSync(path.join(tmpdir(), 'apex-installer-seal-'));
+  try {
+    const unpacked = path.join(root, 'linux-unpacked');
+    mkdirSync(path.join(unpacked, 'resources/bin'), { recursive: true });
+    writeFileSync(path.join(unpacked, 'apex-deck'), 'electron', { mode: 0o755 });
+    writeFileSync(path.join(unpacked, 'resources/app.asar'), 'asar');
+    const provenance = path.join(root, 'apex-provenance');
+    writeFileSync(provenance, 'broker', { mode: 0o755 });
+    const commit = 'c'.repeat(40);
+    const appImage = 'Apex-Deck-Nightly_20261126_ccccccc_arm64.AppImage';
+    const json = path.join(root, 'app.json');
+    writeFileSync(json, JSON.stringify({ channel: 'nightly', version: '0.9.19', arch: 'arm64', sourceCommit: commit, buildNumber: 5, date: '20261126', name: appImage }));
+    const unsigned = buildBundle({ unpacked, provenance, appimageJson: json, out: path.join(root, 'unsigned'), privateKey: null, evaluation: false });
+    assert.equal(path.basename(unsigned.artifact), 'Apex-Deck-Nightly_20261126_ccccccc_arm64.linux-installer.unsigned.tar');
+    const listing = execFileSync('tar', ['-tf', unsigned.artifact], { encoding: 'utf8' });
+    assert.doesNotMatch(listing, /manifest\.sig/, 'the build job never signs');
+    assert.throws(() => buildBundle({ unpacked, provenance, appimageJson: json, out: path.join(root, 'bad'), privateKey: null }), /evaluation payload must be signed/);
+
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const keyPath = path.join(root, 'key.pem');
+    writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+    const keysFile = path.join(root, 'keys.json');
+    writeFileSync(keysFile, JSON.stringify({ stable: [], nightly: [rawPublicKey(privateKey)] }));
+    const sealed = seal({ unsigned: unsigned.artifact, keyPath, keysFile, out: path.join(root, 'sealed'),
+      channel: 'nightly', version: '0.9.19', commit, buildNumber: 5, arch: 'arm64', appImage, date: '20261126' });
+    assert.equal(path.basename(sealed.artifact), 'Apex-Deck-Nightly_20261126_ccccccc_arm64.linux-installer.tar');
+    assert.equal(sealed.manifestSha256, unsigned.manifestSha256, 'the seal signs the manifest bytes the build wrote');
+    const extracted = path.join(root, 'extracted'); mkdirSync(extracted);
+    execFileSync('tar', ['-xf', sealed.artifact, '-C', extracted]);
+    const top = path.join(extracted, 'Apex-Deck-Nightly_20261126_ccccccc_arm64.linux-installer');
+    const manifestBytes = readFileSync(path.join(top, 'release/manifest.json'));
+    assert(verify(null, manifestBytes, publicKey, readFileSync(path.join(top, 'release/manifest.sig'))));
+    assert.equal(JSON.parse(manifestBytes).evaluation, false);
+    assert.equal(statSync(path.join(top, 'apex-deck-install')).mode & 0o777, 0o755);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

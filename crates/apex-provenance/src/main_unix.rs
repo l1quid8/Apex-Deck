@@ -561,7 +561,7 @@ fn main() {
             let signature=bounded(&args[3],64)?;
             let mut archive=std::fs::File::open(&args[4]).map_err(|e|e.to_string())?;
             let verified=linux_install::verify_release(&manifest,&signature,&mut archive)?;
-            println!("Verified evaluation-only Linux payload: {} {} {}",verified.version,verified.commit,verified.arch);
+            println!("Verified {} Linux payload: {} {} {}",if verified.evaluation {"evaluation-only"} else {"production"},verified.version,verified.commit,verified.arch);
             Ok(())
         })();
         if let Err(error)=result {eprintln!("apex-provenance: {error}");std::process::exit(1);}
