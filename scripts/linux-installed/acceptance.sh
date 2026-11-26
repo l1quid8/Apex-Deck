@@ -117,7 +117,8 @@ install -D -m 0755 "$HERE/ui-driver.py" "$DRIVER"
 
 broker_pid() { systemctl show -p MainPID --value "$SERVICE"; }
 launch_ui() {
-  as_user /usr/local/bin/$SLUG >>/tmp/apex-acceptance-launcher.log 2>&1 || true
+  echo "launching the UI"
+  as_user timeout 120 /usr/local/bin/$SLUG >>/tmp/apex-acceptance-launcher.log 2>&1 || true
   as_user "$DRIVER" wait-window --timeout 120 || fail "UI window did not appear"
   # The window must belong to the broker's supervised launch, not the launcher.
   local window pid parent
@@ -140,8 +141,10 @@ as_user "$DRIVER" deny --marker "$MARKERS/denied-1"
 step "Restart the broker: the supervised UI and engine are replaced, authority kept"
 KEY_BEFORE=$(sha256sum /var/lib/$SLUG-provenance/public-key)
 OLD_UI=$(pgrep -u "$TESTER" -f "/opt/$SLUG/.*/apex-deck" | head -1 || true)
-systemctl restart "$SERVICE"
-systemctl start "$SLUG-daemon@$UID_T.service"
+echo "restarting the broker (old UI pid ${OLD_UI:-none})"
+timeout 240 systemctl restart "$SERVICE" || fail "broker restart did not finish in 4 minutes"
+echo "starting the engine"
+timeout 240 systemctl start "$SLUG-daemon@$UID_T.service" || fail "engine start did not finish in 4 minutes"
 for _ in $(seq 100); do [[ -z $OLD_UI ]] || ! kill -0 "$OLD_UI" 2>/dev/null && break; sleep 0.2; done
 [[ -z $OLD_UI ]] || ! kill -0 "$OLD_UI" 2>/dev/null || fail "old UI survived broker restart"
 [[ "$(sha256sum /var/lib/$SLUG-provenance/public-key)" == "$KEY_BEFORE" ]] || fail "authority key changed"
