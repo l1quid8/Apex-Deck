@@ -35,7 +35,7 @@ collect() {
   [[ -n ${UID_T:-} ]] && sudo -u "$TESTER" DISPLAY=$DISPLAY_NUM xwd -root -silent 2>/dev/null >"$EVIDENCE/screen.xwd"
   local data="$(getent passwd "$TESTER" | cut -d: -f6)/.local/share/dev.apexdeck.app.nightly"
   stat -c '%U:%G %a %n' "$data" "$data/saved-chats-v1" >"$EVIDENCE/scope-modes.txt" 2>&1
-  cp /tmp/apex-acceptance-*.log "$EVIDENCE/" 2>/dev/null
+  cp /tmp/apex-acceptance-*.log /tmp/apex-acceptance-*.xwd "$EVIDENCE/" 2>/dev/null
   chmod -R a+rX "$EVIDENCE"
 }
 trap collect EXIT

@@ -32,6 +32,7 @@ How Chromium (Electron 44) behaves, as observed locally:
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 
@@ -265,6 +266,38 @@ def text_of(node):
     return safe(lambda: Atspi.Text.get_text(node, 0, -1), "") or ""
 
 
+def active_window():
+    """The focused X window's title; the GTK chooser is not on the AT-SPI bus."""
+    run = subprocess.run(["xdotool", "getactivewindow", "getwindowname"], capture_output=True, text=True)
+    return (run.stdout or run.stderr).strip()
+
+
+def snapshot(name):
+    """Evidence for the CI artifact: acceptance.sh copies /tmp/apex-acceptance-*."""
+    subprocess.run(["xwd", "-root", "-silent", "-out", f"/tmp/apex-acceptance-{name}.xwd"], check=False)
+
+
+def notices(session):
+    texts = []
+    for node in find_all(session.root(), role=("status bar", "alert", "notification")):
+        text = " ".join(name_of(child) for child, _ in walk(node, limit=8) if name_of(child))
+        if text:
+            texts.append(text)
+    return texts
+
+
+def watch_notices(session, done, seconds):
+    """Log every toast or alert that appears, until `done()` or `seconds` pass.
+    Toasts vanish long before a timeout, so this is the only record of them."""
+    seen, end = set(), time.monotonic() + seconds
+    while time.monotonic() < end and not done():
+        for text in notices(session):
+            if text not in seen:
+                seen.add(text)
+                log(f"notice: {text!r}")
+        time.sleep(0.4)
+
+
 def project_button(session, name):
     for node in find_all(session.root(), role="button"):
         label = name_of(node)
@@ -284,10 +317,16 @@ def ensure_project(session, folder):
         session.press("Add workspace", role="button", name="Add workspace")
         session.press("'This Mac' in the Add a workspace menu", role="menu item", name="This Mac")
         time.sleep(2.0)  # let the GTK chooser map and take focus
+        log(f"active window after 'This Mac': {active_window()!r}")
         ctrl(LETTER_L)
         keys(folder.rstrip("/") + "/")
         time.sleep(0.7)
+        log(f"active window before Return: {active_window()!r}")
+        snapshot("chooser-typed")
         key(RETURN)
+        watch_notices(session, lambda: project_button(session, name), 20)
+        log(f"active window after Return: {active_window()!r}")
+        snapshot("after-return")
         node = session.until(f"project {name!r} in the sidebar", lambda: project_button(session, name))
     click(node, f"project {name!r}")
     return name
