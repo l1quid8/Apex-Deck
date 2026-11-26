@@ -406,7 +406,9 @@ test('the Linux workflow needs no Apple or Windows secrets and writes only the L
   assert.deepEqual(workflow.jobs.publish.needs, ['plan', 'build', 'verify']);
 });
 
-test('the feed carries protected installers only when given, and each must be signed by a committed key', () => {
+// Installers are checked with the system tar on /usr/bin:/bin, as the Linux
+// publish job does; Windows runs this suite too and has no tar there.
+test('the feed carries protected installers only when given, and each must be signed by a committed key', { skip: process.platform === 'win32' && 'the Linux publish job reads installers with /usr/bin/tar' }, () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
   const other = crypto.generateKeyPairSync('ed25519');
   const builds = { x86_64: fakeBuild('x86_64'), arm64: fakeBuild('arm64') };

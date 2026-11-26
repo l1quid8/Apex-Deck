@@ -251,6 +251,7 @@ export function nightlyPublisherKeys(file = PUBLISHER_KEYS) {
 
 function tarMember(archive, member) {
   const result = spawnSync('tar', ['--extract', '--to-stdout', '--file', archive, member], { env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' }, maxBuffer: 8 * 1024 ** 2 });
+  if (result.error) throw new Error(`cannot run tar to read ${member}: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`cannot read ${member}: ${String(result.stderr).trim()}`);
   return result.stdout;
 }
