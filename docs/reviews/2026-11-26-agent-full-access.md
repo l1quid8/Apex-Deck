@@ -1,3 +1,5 @@
+> Superseded by the user’s clarification: Full is the only approval. The follow-up removes the separate confirmation UI, ledger enforcement, and endpoint; existing and new Full agents use the same configured access. This record describes the earlier implementation.
+
 # Agent-wide Full access update
 
 ## Expected behavior

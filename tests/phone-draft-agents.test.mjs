@@ -8,7 +8,6 @@ import electron from 'electron';
 import { createServer } from 'vite';
 import { runElectronScenario } from './helpers/electron-test.mjs';
 import * as agentEdit from '../src/phone/agentEdit.ts';
-import { addWithAgentsFullAccess } from '../src/agentFullAccess.ts';
 
 test('draft agents keep explicit picks and never replace an empty or deleted selection with the default', () => {
   assert.equal(typeof agentEdit.draftAgents, 'function', 'draft roster resolver exists');
@@ -33,15 +32,13 @@ test('the first Send creates the room with the chosen agents and an empty select
   for (const picked of [['jigga'], ['jigga', 'null'], []]) {
     const profiles = [{id:'null'}, {id:'jigga'}];
     const opened = [];
-    let roomAgents;
     const env = {
-      addWithAgentsFullAccess,
       viewingPending:true, pending:{id:'draft',workspaceId:'ws',agents:picked},
       pendingAgents:agentEdit.draftAgents(profiles,picked), pendingRoomIds:{current:{}},
       pane:null, participants:[], transcriptLength:0, host:{backend:{},machine:{id:'mac'}},
       NEW_THREAD:{}, openPath:'/project', pendingDraftPlans:{}, movedRef:{current:{}},
       draft:{text:'hello',files:[]}, saved:{panes:[]}, drafts:{draft:{text:'hello',files:[]}},
-      async loadRoomState(_backend,id,agents) { opened.push(agents); roomAgents ??= agents; return {snapshot:{participants:roomAgents,transcript:[]}}; },
+      async loadRoomState(_backend,id,agents) { opened.push(agents); return {snapshot:{participants:agents,transcript:[]}}; },
       async setPlanBeforeContinuation(_id,_enabled,_set,save) { await save(); },
       async saveSession(update) { env.saved=update(env.saved); },
       toPerson:config=>config, threadKey:(pane,host)=>`${host}:${pane.id}`,
@@ -51,9 +48,8 @@ test('the first Send creates the room with the chosen agents and an empty select
       setNotice:text=>{env.notice=text;}, setMenu:value=>{env.menu=value;},
     };
     await create(env);
-    assert.deepEqual(opened.map(agents=>agents.map(agent=>agent.id)), picked.length ? [picked, []] : [], 'creation supplies the selection; the refresh reads the persisted room');
+    assert.deepEqual(opened.map(agents=>agents.map(agent=>agent.id)), picked.length ? [picked] : []);
     if (picked.length) {
-      assert.deepEqual(env.participants.map(agent=>agent.id),picked, 'the post-approval refresh preserves the chosen roster');
       assert.equal(env.saved.panes.length,1);
       assert.equal(env.nextPending,null);
       assert.equal(env.drafts[`mac:${env.openId}`].text,'hello');

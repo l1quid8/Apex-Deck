@@ -802,7 +802,7 @@ pub fn protected(name: &str) -> bool {
             | "room_set_options"
             | "room_forget_allowed"
             | "room_thread_git_action" | "room_runner_start" | "room_runner_action" | "room_set_plan"
-            | "room_mount" | "agent_full_access"
+            | "room_mount"
             | "personal_memory_add"
             | "personal_memory_correct"
             | "personal_memory_forget"

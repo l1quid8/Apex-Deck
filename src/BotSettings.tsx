@@ -1,5 +1,3 @@
-import { AgentFullAccessStatus } from "./AgentFullAccessStatus";
-import { confirmAgentFullAccess } from "./agentFullAccess";
 import { menuPlacement, popoverTop } from './floating';
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -71,9 +69,7 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
   const orderedSave = useRef(latestSaveQueue<{ change: Change; base: ParticipantConfig }>(async value => {
     const current = loadCurrentRef.current ? await loadCurrentRef.current() : roomId ? (await backend.roomCreate(roomId, [], { policy: 'mention', max_bot_hops: 0 }, '')).participants.find(p => p.id === value.base.id) : undefined;
     if (!current) throw new Error('This agent is no longer in the thread.');
-    const next = applyTurnChange(current, value.change);
-    if (!loadCurrentRef.current && value.change.access === "full") await confirmAgentFullAccess(backend, next, undefined, current.access);
-    await saveRef.current(next, current);
+    await saveRef.current(applyTurnChange(current, value.change), current);
   }));
   const touched = useRef<Change>({});
   const [settled, setSettled] = useState(0);
@@ -354,7 +350,6 @@ export function BotSettings({ config, roomId, anchor = null, inline = false, bac
             onChange={access => { void apply({ access }); }} icon={value => <AccessIcon value={value} />} />}
         {resets}
       </div>
-      {!talkOnly && !loadCurrent && <AgentFullAccessStatus backend={backend} config={config} />}
       {!talkOnly && (tool || api) && <>
         {accessPending && accessChange && !laterChosen
           ? <div className="bot-access-choice" role="group" aria-label="When to apply this access">
